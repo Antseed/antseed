@@ -1,6 +1,14 @@
 import { describe, it, expect, vi } from 'vitest';
 import plugin from './index.js';
 
+async function serializeForm(form: FormData): Promise<{ body: Uint8Array; contentType: string }> {
+  const encoded = new Response(form);
+  return {
+    body: new Uint8Array(await encoded.arrayBuffer()),
+    contentType: encoded.headers.get('content-type') ?? '',
+  };
+}
+
 describe('provider-openai plugin', () => {
   it('has correct name and metadata', () => {
     expect(plugin.name).toBe('openai');
@@ -16,6 +24,7 @@ describe('provider-openai plugin', () => {
     expect(keys).toContain('OPENAI_PROVIDER_FLAVOR');
     expect(keys).toContain('OPENAI_UPSTREAM_PROVIDER');
     expect(keys).toContain('ANTSEED_SERVICE_ALIAS_MAP_JSON');
+    expect(keys).toContain('ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON');
     expect(keys).toContain('ANTSEED_INPUT_USD_PER_MILLION');
     expect(keys).toContain('ANTSEED_OUTPUT_USD_PER_MILLION');
     expect(keys).toContain('ANTSEED_MAX_CONCURRENCY');
@@ -242,8 +251,359 @@ describe('provider-openai plugin', () => {
 
     for (const service of imageServices) {
       expect(provider.serviceApiProtocols?.[service]).toEqual(['openai-images']);
-      expect(provider.serviceCapabilities?.[service]).toEqual({ outputs: ['image'] });
+      expect(provider.serviceCapabilities?.[service]).toEqual({
+        outputs: ['image'],
+        inputs: ['text'],
+      });
     }
+  });
+
+  it('advertises Venice image input only for explicitly paired edit services', async () => {
+    const provider = await plugin.createProvider({
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_BASE_URL: 'https://api.venice.ai/api',
+      ANTSEED_ALLOWED_SERVICES: 'grok-imagine-image-quality,venice-sd35',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: JSON.stringify({
+        'grok-imagine-image-quality': 'grok-imagine-quality-edit',
+      }),
+      ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({
+        'grok-imagine-image-quality': { supportedParameters: ['quality'] },
+        'venice-sd35': { inputs: ['text', 'image'] },
+      }),
+    });
+
+    expect(provider.serviceCapabilities?.['grok-imagine-image-quality']).toEqual({
+      outputs: ['image'],
+      inputs: ['text', 'image'],
+      supportedParameters: ['quality', 'moderation'],
+    });
+    expect(provider.serviceCapabilities?.['venice-sd35']).toEqual({
+      outputs: ['image'],
+      inputs: ['text'],
+    });
+  });
+
+  it('translates OpenAI multipart edits to the configured Venice native model', async () => {
+    const originalFetch = globalThis.fetch;
+    const png = new Uint8Array([0x89, 0x50, 0x4e, 0x47, 0x0d, 0x0a, 0x1a, 0x0a, 1, 2, 3]);
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(png, {
+        status: 200,
+        headers: {
+          'content-type': 'image/png',
+          'x-venice-enhanced-prompt': 'make%20the%20sky%20warmer',
+        },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_BASE_URL: 'https://api.venice.ai/api',
+        ANTSEED_ALLOWED_SERVICES: 'cover-art',
+        ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality"}',
+        ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"grok-imagine-quality-edit"}',
+      });
+      const form = new FormData();
+      form.append('model', 'cover-art');
+      form.append('prompt', 'make the sky warmer');
+      form.append('n', '1');
+      form.append('response_format', 'b64_json');
+      form.append('moderation', 'low');
+      form.append('quality', 'high');
+      form.append('image', new Blob([new Uint8Array([4, 5, 6])], { type: 'image/png' }), 'source.png');
+      const encoded = await serializeForm(form);
+
+      const response = await provider.handleRequest({
+        requestId: 'req-venice-edit',
+        method: 'POST',
+        path: '/v1/images/edits',
+        headers: {
+          'content-type': encoded.contentType,
+          'x-antseed-service': 'cover-art',
+        },
+        body: encoded.body,
+      });
+
+      expect(fetchMock).toHaveBeenCalledTimes(1);
+      const [url, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.venice.ai/api/v1/image/edit');
+      const upstreamForm = await new Request(url, {
+        method: 'POST',
+        headers: requestInit.headers,
+        body: requestInit.body,
+      }).formData();
+      expect(upstreamForm.get('model')).toBe('grok-imagine-quality-edit');
+      expect(upstreamForm.get('prompt')).toBe('make the sky warmer');
+      expect(upstreamForm.get('safe_mode')).toBe('false');
+      expect(upstreamForm.get('quality')).toBe('high');
+      expect(upstreamForm.has('n')).toBe(false);
+      expect(upstreamForm.has('response_format')).toBe(false);
+      expect(upstreamForm.has('moderation')).toBe(false);
+      const upstreamImage = upstreamForm.get('image');
+      expect(upstreamImage).toBeInstanceOf(Blob);
+      expect(Array.from(new Uint8Array(await (upstreamImage as Blob).arrayBuffer()))).toEqual([4, 5, 6]);
+
+      expect(response.statusCode).toBe(200);
+      expect(response.headers['content-type']).toBe('application/json');
+      const payload = JSON.parse(new TextDecoder().decode(response.body)) as {
+        data: Array<{ b64_json?: string; revised_prompt?: string }>;
+      };
+      expect(payload.data).toEqual([{
+        b64_json: Buffer.from(png).toString('base64'),
+        revised_prompt: 'make the sky warmer',
+      }]);
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('keeps first-prompt Venice generation on the configured generation model', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ data: [{ b64_json: 'generated-image' }] }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_BASE_URL: 'https://api.venice.ai/api',
+        ANTSEED_ALLOWED_SERVICES: 'cover-art',
+        ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality"}',
+        ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"grok-imagine-quality-edit"}',
+      });
+
+      const response = await provider.handleRequest({
+        requestId: 'req-venice-generation',
+        method: 'POST',
+        path: '/v1/images/generations',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({
+          model: 'cover-art',
+          prompt: 'a warm Venice sunset',
+        })),
+      });
+
+      expect(response.statusCode).toBe(200);
+      const [url, requestInit] = fetchMock.mock.calls[0] as [string, RequestInit];
+      expect(url).toBe('https://api.venice.ai/api/v1/images/generations');
+      expect(JSON.parse(new TextDecoder().decode(requestInit.body as Uint8Array))).toMatchObject({
+        model: 'grok-imagine-image-quality',
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects Venice edits before fetch when the generation service has no edit pairing', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_BASE_URL: 'https://api.venice.ai/api',
+        ANTSEED_ALLOWED_SERVICES: 'venice-sd35',
+      });
+      const form = new FormData();
+      form.append('model', 'venice-sd35');
+      form.append('prompt', 'make it warmer');
+      form.append('image', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'source.png');
+      const encoded = await serializeForm(form);
+
+      const response = await provider.handleRequest({
+        requestId: 'req-unsupported-edit',
+        method: 'POST',
+        path: '/v1/images/edits',
+        headers: { 'content-type': encoded.contentType },
+        body: encoded.body,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(new TextDecoder().decode(response.body)).toContain('does not have a Venice image edit model configured');
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it.each(['size', 'background', 'output_compression', 'user', 'unexpected']) (
+    'rejects unsupported Venice edit field %s before fetch',
+    async (field) => {
+      const originalFetch = globalThis.fetch;
+      const fetchMock = vi.fn();
+      globalThis.fetch = fetchMock as unknown as typeof fetch;
+      try {
+        const provider = await plugin.createProvider({
+          OPENAI_API_KEY: 'sk-test-key',
+          OPENAI_PROVIDER_FLAVOR: 'venice',
+          ANTSEED_ALLOWED_SERVICES: 'cover-art',
+          ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality"}',
+          ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"qwen-edit"}',
+        });
+        const form = new FormData();
+        form.append('model', 'cover-art');
+        form.append('prompt', 'make it warmer');
+        form.append(field, 'unsupported-value');
+        form.append('image', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'source.png');
+        const encoded = await serializeForm(form);
+
+        const response = await provider.handleRequest({
+          requestId: `req-unsupported-${field}`,
+          method: 'POST',
+          path: '/v1/images/edits',
+          headers: { 'content-type': encoded.contentType },
+          body: encoded.body,
+        });
+
+        expect(response.statusCode).toBe(400);
+        expect(fetchMock).not.toHaveBeenCalled();
+        expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({
+          error: {
+            message: `Venice image edits do not support the "${field}" field.`,
+            type: 'invalid_request_error',
+            param: field,
+          },
+        });
+      } finally {
+        globalThis.fetch = originalFetch;
+      }
+    },
+  );
+
+  it('rejects response_format=url before sending a Venice edit upstream', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_PROVIDER_FLAVOR: 'venice',
+        ANTSEED_ALLOWED_SERVICES: 'cover-art',
+        ANTSEED_SERVICE_ALIAS_MAP_JSON: '{"cover-art":"grok-imagine-image-quality"}',
+        ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"cover-art":"qwen-edit"}',
+      });
+      const form = new FormData();
+      form.append('model', 'cover-art');
+      form.append('prompt', 'make it warmer');
+      form.append('response_format', 'url');
+      form.append('image', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'source.png');
+      const encoded = await serializeForm(form);
+
+      const response = await provider.handleRequest({
+        requestId: 'req-url-format',
+        method: 'POST',
+        path: '/v1/images/edits',
+        headers: { 'content-type': encoded.contentType },
+        body: encoded.body,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({
+        error: {
+          message: 'Venice image edits support only response_format="b64_json".',
+          type: 'invalid_request_error',
+          param: 'response_format',
+        },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects conflicting moderation and safe_mode fields before fetch', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn();
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_PROVIDER_FLAVOR: 'venice',
+        ANTSEED_ALLOWED_SERVICES: 'grok-imagine-image-quality',
+        ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"grok-imagine-image-quality":"qwen-edit"}',
+      });
+      const form = new FormData();
+      form.append('model', 'grok-imagine-image-quality');
+      form.append('prompt', 'make it warmer');
+      form.append('moderation', 'low');
+      form.append('safe_mode', 'true');
+      form.append('image', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'source.png');
+      const encoded = await serializeForm(form);
+
+      const response = await provider.handleRequest({
+        requestId: 'req-conflicting-moderation',
+        method: 'POST',
+        path: '/v1/images/edits',
+        headers: { 'content-type': encoded.contentType },
+        body: encoded.body,
+      });
+
+      expect(response.statusCode).toBe(400);
+      expect(fetchMock).not.toHaveBeenCalled();
+      expect(new TextDecoder().decode(response.body)).toContain(
+        'moderation and safe_mode cannot both be provided',
+      );
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('preserves Venice edit status and normalizes string errors for OpenAI clients', async () => {
+    const originalFetch = globalThis.fetch;
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ error: 'model overloaded' }), {
+        status: 503,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    try {
+      const provider = await plugin.createProvider({
+        OPENAI_API_KEY: 'sk-test-key',
+        OPENAI_PROVIDER_FLAVOR: 'venice',
+        ANTSEED_ALLOWED_SERVICES: 'qwen-image-3-pro',
+        ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"qwen-image-3-pro":"qwen-image-3-pro-edit"}',
+      });
+      const form = new FormData();
+      form.append('model', 'qwen-image-3-pro');
+      form.append('prompt', 'add a red umbrella');
+      form.append('image', new Blob([new Uint8Array([1])], { type: 'image/png' }), 'source.png');
+      const encoded = await serializeForm(form);
+
+      const response = await provider.handleRequest({
+        requestId: 'req-venice-error',
+        method: 'POST',
+        path: '/v1/images/edits',
+        headers: { 'content-type': encoded.contentType },
+        body: encoded.body,
+      });
+
+      expect(response.statusCode).toBe(503);
+      expect(JSON.parse(new TextDecoder().decode(response.body))).toEqual({
+        error: { message: 'model overloaded', type: 'upstream_error' },
+      });
+    } finally {
+      globalThis.fetch = originalFetch;
+    }
+  });
+
+  it('rejects edit mappings for unknown or non-image services', () => {
+    expect(() => plugin.createProvider({
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_PROVIDER_FLAVOR: 'venice',
+      ANTSEED_ALLOWED_SERVICES: 'venice-sd35',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"missing":"qwen-edit"}',
+    })).toThrow('unknown service "missing"');
+    expect(() => plugin.createProvider({
+      OPENAI_API_KEY: 'sk-test-key',
+      OPENAI_PROVIDER_FLAVOR: 'venice',
+      ANTSEED_ALLOWED_SERVICES: 'gpt-5.5',
+      ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON: '{"gpt-5.5":"qwen-edit"}',
+    })).toThrow('non-image service "gpt-5.5"');
   });
 
   it('does not advertise image services for openrouter flavor yet', async () => {

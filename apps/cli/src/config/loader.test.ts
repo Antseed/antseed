@@ -135,6 +135,7 @@ test('loadConfig reads nested seller.providers[name].services[id] shape', async 
             services: {
               'claude-sonnet-4-5-20250929': {
                 upstreamModel: 'claude-sonnet-4-5-20250929',
+                imageEditModel: 'qwen-edit',
                 categories: ['coding', 'chat'],
                 pricing: {
                   inputUsdPerMillion: 12,
@@ -167,6 +168,7 @@ test('loadConfig reads nested seller.providers[name].services[id] shape', async 
       const service = anthropic.services['claude-sonnet-4-5-20250929'];
       assert.ok(service);
       assert.equal(service.upstreamModel, 'claude-sonnet-4-5-20250929');
+      assert.equal(service.imageEditModel, 'qwen-edit');
       assert.deepEqual(service.categories, ['coding', 'chat']);
       assert.equal(service.pricing?.inputUsdPerMillion, 12);
       assert.equal(service.pricing?.outputUsdPerMillion, 18);

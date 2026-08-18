@@ -324,6 +324,7 @@ export function buildSellerPluginRuntimeEnv(
   // the plugin env avoids dead noise in process.env.
   const servicePricing: Record<string, unknown> = {}
   const serviceAliasMap: Record<string, string> = {}
+  const serviceImageEditModelMap: Record<string, string> = {}
   const serviceCapabilities: Record<string, unknown> = {}
   const serviceUnitBillingModels: Record<string, unknown> = {}
   for (const [serviceId, serviceCfg] of Object.entries(providerCfg.services)) {
@@ -332,6 +333,9 @@ export function buildSellerPluginRuntimeEnv(
     }
     if (serviceCfg.upstreamModel && serviceCfg.upstreamModel !== serviceId) {
       serviceAliasMap[serviceId] = serviceCfg.upstreamModel
+    }
+    if (serviceCfg.imageEditModel) {
+      serviceImageEditModelMap[serviceId] = serviceCfg.imageEditModel
     }
     if (serviceCfg.capabilities) {
       serviceCapabilities[serviceId] = serviceCfg.capabilities
@@ -345,6 +349,9 @@ export function buildSellerPluginRuntimeEnv(
   }
   if (Object.keys(serviceAliasMap).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_ALIAS_MAP_JSON'] = JSON.stringify(serviceAliasMap)
+  }
+  if (Object.keys(serviceImageEditModelMap).length > 0) {
+    runtimeEnv['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON'] = JSON.stringify(serviceImageEditModelMap)
   }
   if (Object.keys(serviceCapabilities).length > 0) {
     runtimeEnv['ANTSEED_SERVICE_CAPABILITIES_JSON'] = JSON.stringify(serviceCapabilities)
@@ -427,6 +434,18 @@ export function getUnsupportedUnitBillingWarning(
     return undefined
   }
   return `Provider "${providerName}" (${providerConfig.plugin}) ignores unitBillingModels for service(s): ${configuredServices.join(', ')} because its plugin does not support unit billing.`
+}
+
+export function getImageEditUnitBillingWarning(
+  providerName: string,
+  providerConfig: SellerProviderConfig,
+): string | undefined {
+  const unpricedEditServices = Object.entries(providerConfig.services)
+    .filter(([, service]) => service.imageEditModel !== undefined
+      && service.unitBillingModels?.['openai-images'] === undefined)
+    .map(([serviceId]) => serviceId)
+  if (unpricedEditServices.length === 0) return undefined
+  return `Provider "${providerName}" has imageEditModel configured for service(s): ${unpricedEditServices.join(', ')} without openai-images unit billing. Configure a shared output_images price for generation and edits.`
 }
 
 export function mergeSellerRuntimeEnv(
@@ -562,6 +581,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           ]) {
             if (!warning) continue
             spinner.warn(chalk.yellow(warning))
+            spinner.start(`Loading provider plugin "${packageName}" for "${providerName}"...`)
+          }
+          const imageEditBillingWarning = getImageEditUnitBillingWarning(providerName, providerCfg)
+          if (imageEditBillingWarning) {
+            spinner.warn(chalk.yellow(imageEditBillingWarning))
             spinner.start(`Loading provider plugin "${packageName}" for "${providerName}"...`)
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)

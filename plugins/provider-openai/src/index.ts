@@ -13,8 +13,9 @@ import {
   parseServicePricingJson,
 } from '@antseed/provider-core';
 import type { ServiceApiProtocol, ServiceCapabilities } from '@antseed/node';
+import { VeniceImageEditProvider } from './venice-image-edit.js';
 
-const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter'] as const;
+const SPECIAL_OPENAI_COMPAT_PROVIDERS = ['openrouter', 'venice'] as const;
 type OpenAiCompatFlavor = 'generic' | (typeof SPECIAL_OPENAI_COMPAT_PROVIDERS)[number];
 
 function parseExtraHeaders(raw: string | undefined): Record<string, string> | undefined {
@@ -40,8 +41,8 @@ function parseExtraHeaders(raw: string | undefined): Record<string, string> | un
 
 function resolveFlavor(configFlavor: string | undefined, baseUrl: string | undefined): OpenAiCompatFlavor {
   const flavor = configFlavor?.trim().toLowerCase();
-  if (flavor === 'openrouter') {
-    return 'openrouter';
+  if (flavor === 'openrouter' || flavor === 'venice') {
+    return flavor;
   }
 
   if (baseUrl) {
@@ -50,9 +51,15 @@ function resolveFlavor(configFlavor: string | undefined, baseUrl: string | undef
       if (host.includes('openrouter.ai')) {
         return 'openrouter';
       }
+      if (host === 'venice.ai' || host.endsWith('.venice.ai')) {
+        return 'venice';
+      }
     } catch {
       if (baseUrl.toLowerCase().includes('openrouter.ai')) {
         return 'openrouter';
+      }
+      if (baseUrl.toLowerCase().includes('venice.ai')) {
+        return 'venice';
       }
     }
   }
@@ -95,11 +102,14 @@ function buildOpenAiServiceApiProtocols(
 
 /**
  * Image services always produce images, so advertise `outputs: ["image"]`
- * without requiring seller config. Explicit capability config wins per-field.
+ * without requiring seller config. Venice input modalities are derived from
+ * the edit-model map so manual capability hints cannot over-advertise edits.
  */
 function withImageServiceCapabilityDefaults(
   serviceApiProtocols: Record<string, ServiceApiProtocol[]> | undefined,
   serviceCapabilities: Record<string, ServiceCapabilities> | undefined,
+  flavor: OpenAiCompatFlavor,
+  imageEditModelMap?: Record<string, string>,
 ): Record<string, ServiceCapabilities> | undefined {
   const imageServices = Object.entries(serviceApiProtocols ?? {})
     .filter(([, protocols]) => protocols.includes('openai-images'))
@@ -107,9 +117,64 @@ function withImageServiceCapabilityDefaults(
   if (imageServices.length === 0) return serviceCapabilities;
   const merged: Record<string, ServiceCapabilities> = { ...serviceCapabilities };
   for (const service of imageServices) {
-    merged[service] = { outputs: ['image'], ...merged[service] };
+    const configured = merged[service];
+    const hasVeniceEditModel = Boolean(imageEditModelMap?.[service.trim().toLowerCase()]);
+    const supportedParameters = hasVeniceEditModel
+      ? Array.from(new Set([...(configured?.supportedParameters ?? []), 'moderation']))
+      : configured?.supportedParameters;
+    merged[service] = {
+      outputs: ['image'],
+      ...configured,
+      ...(flavor === 'venice'
+        ? {
+            inputs: hasVeniceEditModel ? ['text', 'image'] : ['text'],
+            ...(supportedParameters ? { supportedParameters } : {}),
+          }
+        : {}),
+    };
   }
   return merged;
+}
+
+function parseImageEditModelMap(raw: string | undefined): Record<string, string> | undefined {
+  const parsed = parseJsonObject(raw, 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON');
+  if (!parsed) return undefined;
+
+  const out: Record<string, string> = {};
+  for (const [serviceRaw, editModelRaw] of Object.entries(parsed)) {
+    const service = serviceRaw.trim().toLowerCase();
+    if (!service) continue;
+    if (typeof editModelRaw !== 'string' || !editModelRaw.trim()) {
+      throw new Error(
+        `ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON entry "${serviceRaw}" must map to a non-empty string`,
+      );
+    }
+    out[service] = editModelRaw.trim();
+  }
+  return Object.keys(out).length > 0 ? out : undefined;
+}
+
+function validateVeniceEditModelMap(
+  flavor: OpenAiCompatFlavor,
+  allowedServices: string[],
+  serviceApiProtocols: Record<string, ServiceApiProtocol[]> | undefined,
+  imageEditModelMap: Record<string, string> | undefined,
+): void {
+  if (!imageEditModelMap) return;
+  if (flavor !== 'venice') {
+    throw new Error('ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON is supported only for Venice upstreams');
+  }
+
+  const allowed = new Set(allowedServices.map((service) => service.trim().toLowerCase()));
+  for (const service of Object.keys(imageEditModelMap)) {
+    if (!allowed.has(service)) {
+      throw new Error(`Venice image edit model configured for unknown service "${service}"`);
+    }
+    const advertisedService = allowedServices.find((candidate) => candidate.trim().toLowerCase() === service);
+    if (!advertisedService || !serviceApiProtocols?.[advertisedService]?.includes('openai-images')) {
+      throw new Error(`Venice image edit model configured for non-image service "${service}"`);
+    }
+  }
 }
 
 const plugin: AntseedProviderPlugin = {
@@ -121,7 +186,7 @@ const plugin: AntseedProviderPlugin = {
   configSchema: [
     { key: 'OPENAI_API_KEY', label: 'API Key', type: 'secret', required: true, description: 'OpenAI-compatible upstream API key' },
     { key: 'OPENAI_BASE_URL', label: 'Base URL', type: 'string', required: false, default: 'https://api.openai.com', description: 'OpenAI-compatible base URL' },
-    { key: 'OPENAI_PROVIDER_FLAVOR', label: 'Provider Flavor', type: 'string', required: false, default: 'generic', description: 'Special handling profile: generic | openrouter' },
+    { key: 'OPENAI_PROVIDER_FLAVOR', label: 'Provider Flavor', type: 'string', required: false, default: 'generic', description: 'Special handling profile: generic | openrouter | venice' },
     { key: 'OPENAI_UPSTREAM_PROVIDER', label: 'Upstream Provider', type: 'string', required: false, description: 'Optional OpenRouter provider selector value' },
     { key: 'OPENAI_EXTRA_HEADERS_JSON', label: 'Extra Headers JSON', type: 'string', required: false, description: 'Optional JSON object of extra headers' },
     { key: 'OPENAI_BODY_INJECT_JSON', label: 'Body Inject JSON', type: 'string', required: false, description: 'Optional JSON object merged into request body' },
@@ -135,6 +200,7 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Max Concurrency', type: 'number', required: false, default: 10, description: 'Max concurrent requests' },
     { key: 'ANTSEED_ALLOWED_SERVICES', label: 'Allowed Services', type: 'string[]', required: false, description: 'Service allow-list' },
     { key: 'ANTSEED_SERVICE_ALIAS_MAP_JSON', label: 'Service Alias Map', type: 'string', required: false, description: 'JSON map of announced service → upstream model name (generic, works across all providers)' },
+    { key: 'ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON', label: 'Image Edit Model Map', type: 'string', required: false, description: 'JSON map of announced image service → Venice native edit model' },
     { key: 'OPENAI_PATH_REWRITE_JSON', label: 'Path Rewrite', type: 'string', required: false, description: 'JSON map of path prefix rewrites, e.g. {"/v1":"/v4"} for APIs that use a different version prefix' },
     { key: 'ANTSEED_FALLBACK_UPSTREAMS_JSON', label: 'Fallback Upstreams', type: 'string', required: false, description: 'JSON array of backup upstreams for the same services ({baseUrl, apiKey?, services?, serviceAliasMap?, pathRewrite?}), tried in order when the main upstream fails' },
   ],
@@ -165,7 +231,11 @@ const plugin: AntseedProviderPlugin = {
     const flavor = resolveFlavor(config['OPENAI_PROVIDER_FLAVOR'], configuredBaseUrl);
     const baseUrl = configuredBaseUrl && configuredBaseUrl.length > 0
       ? configuredBaseUrl
-      : (flavor === 'openrouter' ? 'https://openrouter.ai/api' : 'https://api.openai.com');
+      : (flavor === 'openrouter'
+          ? 'https://openrouter.ai/api'
+          : flavor === 'venice'
+            ? 'https://api.venice.ai/api'
+            : 'https://api.openai.com');
     const upstreamProvider = config['OPENAI_UPSTREAM_PROVIDER']?.trim();
     const bodyInject = parseJsonObject(config['OPENAI_BODY_INJECT_JSON'], 'OPENAI_BODY_INJECT_JSON') ?? {};
     if (flavor === 'openrouter' && upstreamProvider) {
@@ -180,10 +250,14 @@ const plugin: AntseedProviderPlugin = {
     const tokenProvider = new StaticTokenProvider(apiKey);
     const serviceRewriteMap = parseServiceAliasMap(config['ANTSEED_SERVICE_ALIAS_MAP_JSON']);
     const serviceApiProtocols = buildOpenAiServiceApiProtocols(allowedServices, flavor, serviceRewriteMap);
+    const imageEditModelMap = parseImageEditModelMap(config['ANTSEED_SERVICE_IMAGE_EDIT_MODEL_MAP_JSON']);
+    validateVeniceEditModelMap(flavor, allowedServices, serviceApiProtocols, imageEditModelMap);
     const serviceUnitBillingModels = parseServiceUnitBillingModelsJson(config['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']);
     const serviceCapabilities = withImageServiceCapabilityDefaults(
       serviceApiProtocols,
       parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']),
+      flavor,
+      imageEditModelMap,
     );
     const pathRewrite = parseJsonObject(config['OPENAI_PATH_REWRITE_JSON'], 'OPENAI_PATH_REWRITE_JSON') as Record<string, string> | undefined;
     const fallbackUpstreams = parseFallbackUpstreamsJson(config['ANTSEED_FALLBACK_UPSTREAMS_JSON'])?.map((fallback) => ({
@@ -194,7 +268,7 @@ const plugin: AntseedProviderPlugin = {
       ...(fallback.pathRewrite ? { pathRewrite: fallback.pathRewrite } : {}),
     }));
 
-    return new BaseProvider({
+    const baseProvider = new BaseProvider({
       name: 'openai',
       services: allowedServices,
       pricing,
@@ -207,7 +281,9 @@ const plugin: AntseedProviderPlugin = {
         authHeaderValue: `Bearer ${apiKey}`,
         tokenProvider,
         maxConcurrency,
-        allowedServices,
+        allowedServices: flavor === 'venice'
+          ? [...allowedServices, ...Object.values(imageEditModelMap ?? {})]
+          : allowedServices,
         ...(serviceRewriteMap ? { serviceRewriteMap } : {}),
         ...(effectiveStripHeaderPrefixes.length > 0 ? { stripHeaderPrefixes: effectiveStripHeaderPrefixes } : {}),
         ...(Object.keys(bodyInject).length > 0 ? { injectJsonFields: bodyInject } : {}),
@@ -216,6 +292,9 @@ const plugin: AntseedProviderPlugin = {
         ...(fallbackUpstreams ? { fallbackUpstreams } : {}),
       },
     });
+    return flavor === 'venice'
+      ? new VeniceImageEditProvider(baseProvider, imageEditModelMap ?? {})
+      : baseProvider;
   },
 };
 

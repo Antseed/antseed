@@ -143,6 +143,9 @@ function validateSellerProviders(
       if (serviceCfg.upstreamModel !== undefined && serviceCfg.upstreamModel.trim().length === 0) {
         errors.push(`${servicePath}.upstreamModel must be a non-empty string when provided`);
       }
+      if (serviceCfg.imageEditModel !== undefined && serviceCfg.imageEditModel.trim().length === 0) {
+        errors.push(`${servicePath}.imageEditModel must be a non-empty string when provided`);
+      }
       if (serviceCfg.pricing) {
         validatePricingLeaf(`${servicePath}.pricing`, serviceCfg.pricing, errors);
       }
