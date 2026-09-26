@@ -43,24 +43,9 @@ function PrivacyHero() {
 /* What a provider sees — the page's real differentiator, pulled from the
    privacy answers in docs/faq.mdx. */
 const SEES_ROWS: {label: string; standard: string; tee: string; antseed: string}[] = [
-  {
-    label: 'Who you are',
-    standard: 'A peer id and a wallet. No name, no email, no account.',
-    tee: 'A peer id and a wallet. No name, no email, no account.',
-    antseed: 'Nothing. There is no account and no central log.',
-  },
-  {
-    label: 'Your prompt',
-    standard: 'Can read the prompt it serves.',
-    tee: 'Cannot. The hardware seals it, and you get an attestation to prove it.',
-    antseed: 'Never. Requests go straight from your device to the provider.',
-  },
-  {
-    label: 'Your payment',
-    standard: 'A USDC settlement from a wallet, visible on Base like any onchain transaction.',
-    tee: 'A USDC settlement from a wallet, visible on Base like any onchain transaction.',
-    antseed: 'A settlement on a public chain, tied to a wallet, not to your name.',
-  },
+  {label: 'Who you are', standard: 'A peer id', tee: 'A peer id', antseed: 'Nothing'},
+  {label: 'Your prompt', standard: 'Just like any API', tee: 'Nothing', antseed: 'Nothing'},
+  {label: 'Your payment', standard: 'A wallet', tee: 'A wallet', antseed: 'Nothing'},
 ];
 
 function WhatAProviderSees() {
