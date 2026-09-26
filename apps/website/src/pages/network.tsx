@@ -21,6 +21,14 @@ const STAGES = [
   {name: 'Pay', label: '04 / PAY', title: 'Per request, in USDC on Base.', detail: 'You sign a running total after each response. The provider settles it on Base and gets paid in USDC.'},
 ];
 
+const CLIENT_STATUS = ['Finding providers…', 'Route selected locally', 'Receiving response…', 'Request complete'];
+
+const OFFERS = [
+  {peer: '01', price: '0.80', reason: 'Higher price'},
+  {peer: '02', price: '0.40', reason: 'Selected route'},
+  {peer: '03', price: '0.65', reason: 'Lower trust'},
+];
+
 const TRACE_MESSAGES = [
   ['FINDING PROVIDERS', 'Asking the network for provider addresses'],
   ['ROUTE CHOSEN LOCALLY', 'Peer 02 fits your settings and price'],
@@ -76,6 +84,12 @@ const LOOKUP_PATHS = [
 const MATCHED_NODES = new Set([23, 26, 27]);
 const QUERY_NODES = new Set([0, 4, 7, 8, 11, 14, 15, 18, 24]);
 
+function swarmNodeStyle(index: number): {className: string; radius: number; halo: number | null} {
+  if (MATCHED_NODES.has(index)) return {className: styles.swarmMatch, radius: 6, halo: 14};
+  if (QUERY_NODES.has(index)) return {className: styles.swarmQuery, radius: 4.5, halo: 11};
+  return {className: styles.swarmPeer, radius: 3, halo: null};
+}
+
 function DiscoverySwarm() {
   return (
     <div className={styles.discoveryCloud} aria-hidden="true">
@@ -91,13 +105,13 @@ function DiscoverySwarm() {
           </g>
         ))}
         {SWARM_NODES.map(([nodeX, nodeY], index) => {
-          const matched = MATCHED_NODES.has(index);
-          const queried = QUERY_NODES.has(index);
+          const {className, radius, halo} = swarmNodeStyle(index);
+          const labelled = MATCHED_NODES.has(index) || index % 4 === 0;
           return (
-            <g key={index} className={matched ? styles.swarmMatch : queried ? styles.swarmQuery : styles.swarmPeer} style={{'--delay': `${index * -.27}s`} as CSSProperties}>
-              {(matched || queried) && <circle className={styles.swarmHalo} cx={nodeX} cy={nodeY} r={matched ? 14 : 11} />}
-              <circle className={styles.swarmNode} cx={nodeX} cy={nodeY} r={matched ? 6 : queried ? 4.5 : 3} />
-              {(matched || index % 4 === 0) && <text x={nodeX + 9} y={nodeY - 10}>{((index + 1) * 1973).toString(16).padStart(4, '0')}</text>}
+            <g key={index} className={className} style={{'--delay': `${index * -.27}s`} as CSSProperties}>
+              {halo !== null && <circle className={styles.swarmHalo} cx={nodeX} cy={nodeY} r={halo} />}
+              <circle className={styles.swarmNode} cx={nodeX} cy={nodeY} r={radius} />
+              {labelled && <text x={nodeX + 9} y={nodeY - 10}>{((index + 1) * 1973).toString(16).padStart(4, '0')}</text>}
             </g>
           );
         })}
@@ -135,12 +149,24 @@ function RequestTrace({motionPaused}: {motionPaused: boolean}) {
       if (!document.hidden) setActive(current => (current + 1) % STAGES.length);
     }, 4400);
     return () => window.clearInterval(timer);
-  }, [running, active]);
+  }, [running]);
 
   const stage = STAGES[active];
   const selected = active >= 1;
   const direct = active >= 2;
-  const clientStatus = ['Finding providers…', 'Route selected locally', 'Receiving response…', 'Request complete'][active];
+  const manual = motionPaused || reducedMotion;
+  const clientStatus = CLIENT_STATUS[active];
+
+  function offerBadge(isChosen: boolean): string {
+    if (!selected) return 'FOUND';
+    return isChosen ? 'SELECTED' : 'SKIPPED';
+  }
+
+  function playbackLabel(): string {
+    if (manual) return 'Manual mode';
+    return playing ? 'Ⅱ Pause walkthrough' : '▶ Play walkthrough';
+  }
+
   return (
     <div ref={traceRef} className={`${styles.trace} ${!running ? styles.traceStill : ''}`}>
       <div className={styles.panelBar}><span><i className={styles.statusDot} /> ONE REQUEST / THROUGH THE NETWORK</span><span>Illustrative · not live traffic</span></div>
@@ -166,9 +192,9 @@ function RequestTrace({motionPaused}: {motionPaused: boolean}) {
           <div className={styles.clientStatus}><i />{clientStatus}</div>
         </div>
         <DiscoverySwarm />
-        {[['01', '0.80', 'Higher price'], ['02', '0.40', 'Selected route'], ['03', '0.65', 'Lower trust']].map(([peer, price, reason], index) => (
+        {OFFERS.map(({peer, price, reason}, index) => (
           <div key={peer} className={`${styles.offerCard} ${index === 1 ? styles.chosenOffer : ''}`} style={{'--offer': index} as CSSProperties} aria-hidden="true">
-            <div><span className={styles.serverGlyph}>▤</span><strong>Peer {peer}</strong><span className={styles.offerBadge}>{selected ? index === 1 ? 'SELECTED' : 'SKIPPED' : 'FOUND'}</span></div>
+            <div><span className={styles.serverGlyph}>▤</span><strong>Peer {peer}</strong><span className={styles.offerBadge}>{offerBadge(index === 1)}</span></div>
             <p><span>${price}<small> / 1M input</small></span><span>{selected ? reason : 'Model available'}</span></p>
           </div>
         ))}
@@ -176,7 +202,7 @@ function RequestTrace({motionPaused}: {motionPaused: boolean}) {
         <div className={styles.baseCard} aria-hidden="true"><span className={styles.baseMark} /><strong>Base</strong><span>{active === 3 ? '0.047 USDC · settled ✓' : 'USDC settlement'}</span></div>
         <span className={styles.sceneFootnote}>{direct ? 'Once connected, the request skips the discovery layer entirely.' : 'The network finds addresses. Listings describe services. You choose.'}</span>
       </div>
-      <div className={styles.playbackBar}><span>0{active + 1} / 04 <span>{direct ? 'DIRECT PEER SESSION' : 'FIND & CHOOSE'}</span></span><button type="button" disabled={motionPaused || reducedMotion} onClick={() => setPlaying(current => !current)}>{motionPaused || reducedMotion ? 'Manual mode' : playing ? 'Ⅱ Pause walkthrough' : '▶ Play walkthrough'}</button></div>
+      <div className={styles.playbackBar}><span>0{active + 1} / 04 <span>{direct ? 'DIRECT PEER SESSION' : 'FIND & CHOOSE'}</span></span><button type="button" disabled={manual} onClick={() => setPlaying(current => !current)}>{playbackLabel()}</button></div>
       <div className={styles.traceControls} role="group" aria-label="Explore the request lifecycle">
         {STAGES.map((item, index) => <button key={item.name} type="button" aria-pressed={active === index} aria-controls="trace-detail" onClick={() => {setActive(index); setPlaying(false);}}><span>0{index + 1}</span>{item.name}{active === index && running && <i key={`${index}-${running}`} className={styles.stageProgress} />}</button>)}
       </div>

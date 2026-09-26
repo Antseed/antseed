@@ -5,30 +5,16 @@ import Layout from '@theme/Layout';
 import styles from './agents.module.css';
 import {Button, Faq, FinalCta, Reveal, Section, SectionHeader, ArrowRight} from '../components/ui';
 import {AgentsHeroArt} from '../components/AgentsHeroArt';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
+import {DownloadButton} from '../components/DownloadButton';
+import {faqJsonLd} from '../lib/faqJsonLd';
 import {PricingBlock} from '../components/PricingBlock';
-import {AgentsLogoBar} from '../components/AgentsLogoBar';
+import {AgentsLogoBar, SquareGlyph, PiGlyph} from '../components/AgentsLogoBar';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
 import {SkillChip} from '../components/SkillChip';
 
 const TITLE = 'Run AI agents for a fraction of the price | Antseed';
 const DESCRIPTION =
   'Hermes, OpenClaw, Codex, OpenCode, your own. Your agent installs Antseed from one skill and every request goes to the cheapest verified provider. No usage caps, no sign-up.';
-
-const SquareGlyph = (
-  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true">
-    <path fillRule="evenodd" clipRule="evenodd" d="M13 7H7v6h6V7zm3 9H4V4h12v12z" />
-  </svg>
-);
-
-const PiGlyph = (
-  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true">
-    <path d="M3.5 6h13" />
-    <path d="M6.5 6v9" />
-    <path d="M13.5 6v6.5c0 1.5.8 2.5 2 2.5" />
-  </svg>
-);
 
 /* Works with the agents you run. One card per supported integration:
    logo, one line, link to its own setup guide. */
@@ -42,17 +28,6 @@ const CONNECT_CARDS: ConnectCard[] = [
   {name: 'OpenCode', glyph: SquareGlyph, body: 'Launch OpenCode through Antseed and pick any model on the network.', to: '/integrations/opencode'},
   {name: 'Pi', glyph: PiGlyph, body: 'Use your local endpoint as a model provider in Pi.', to: '/integrations/pi'},
 ];
-
-function DownloadButton({size = 'lg'}: {size?: 'md' | 'lg'}) {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
-  return (
-    <Button href={download.href} size={size} variant="white" className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download the AI VPN</span>
-      <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
-    </Button>
-  );
-}
 
 function AgentsHero() {
   return (
@@ -246,6 +221,8 @@ const AGENT_FAQ = [
   },
 ];
 
+const AGENT_FAQ_LD = faqJsonLd(AGENT_FAQ);
+
 function AgentFaq() {
   return (
     <Section tone="tinted">
@@ -269,17 +246,7 @@ export default function AgentsPage(): JSX.Element {
         <meta property="og:description" content={DESCRIPTION} />
         <link rel="canonical" href="https://antseed.com/agents/" />
         <link rel="alternate" type="text/markdown" href="/skill.md" title="Agent-readable setup skill" />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'FAQPage',
-            mainEntity: AGENT_FAQ.map(({q, a}) => ({
-              '@type': 'Question',
-              name: q,
-              acceptedAnswer: {'@type': 'Answer', text: a.replace(/<[^>]+>/g, '')},
-            })),
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(AGENT_FAQ_LD)}</script>
       </Head>
       <AgentsHero />
       <AgentsLogoBar />
@@ -289,7 +256,7 @@ export default function AgentsPage(): JSX.Element {
       <WhatTheSkillDoes />
       <AgentFaq />
       <FinalCta title="Run your agents on your terms." sub="Give your agent the skill, or download the AI VPN and connect it yourself.">
-        <DownloadButton />
+        <DownloadButton variant="white" />
         <SkillChip dark />
       </FinalCta>
     </Layout>

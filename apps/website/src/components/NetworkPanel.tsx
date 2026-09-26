@@ -6,17 +6,17 @@ const OWNED_CARDS = [
   {
     title: 'Open source and onchain',
     body: 'Every layer is public code, and every payment settles in USDC on Base.',
-    illo: <img src="/img/home/illo-best-prices.svg" alt="" aria-hidden="true" />,
+    illo: 'illo-best-prices',
   },
   {
     title: 'Nothing in the middle',
     body: 'Your device finds the provider, talks to it directly, and pays it directly.',
-    illo: <img src="/img/home/illo-private-by-design.svg" alt="" aria-hidden="true" />,
+    illo: 'illo-private-by-design',
   },
   {
     title: 'Distributed and always on',
     body: 'Independent providers all over the world. If one goes down, your request moves on.',
-    illo: <img src="/img/home/illo-distributed-always-on.svg" alt="" aria-hidden="true" />,
+    illo: 'illo-distributed-always-on',
   },
 ];
 
@@ -41,7 +41,9 @@ export function OwnedByNoOne() {
         <div className={styles.cardGrid3}>
           {OWNED_CARDS.map((card, i) => (
             <Reveal key={card.title} className={styles.featureCard} delay={i * 100}>
-              <div className={styles.featureIlloWell}>{card.illo}</div>
+              <div className={styles.featureIlloWell}>
+                <img src={`/img/home/${card.illo}.svg`} alt="" aria-hidden="true" />
+              </div>
               <div className={styles.featureDivider} />
               <div className={styles.featureCopy}>
                 <h3>{card.title}</h3>

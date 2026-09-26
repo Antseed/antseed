@@ -29,7 +29,12 @@ import {useMarketplaceShowcase} from '../lib/useMarketplacePrices';
  * never drift.
  */
 
+export const LIVE_PRICES_URL = 'https://antseedstats.com/network';
+
 type IconSize = (props: {size?: number}) => ReactNode;
+type IconCombine = (props: {size?: number; textMultiple?: number}) => ReactNode;
+/** A @lobehub/icons mark: the icon itself, plus optional lockup variants. */
+export type LobeIcon = IconSize & {Combine?: IconCombine; Text?: IconSize};
 
 export const VENDOR_GLYPHS = {
   Anthropic,
@@ -49,7 +54,7 @@ export const VENDOR_GLYPHS = {
   Stepfun,
   Nvidia,
   XAI,
-} as unknown as Record<string, IconSize>;
+} as unknown as Record<string, LobeIcon>;
 
 /* hugeicons:checkmark (12) */
 function CheckIcon() {
@@ -69,7 +74,7 @@ export function PriceBoard({count = 4, delay = 120}: {count?: number; delay?: nu
         <span>Official API Price</span>
         <a
           className={styles.priceLive}
-          href="https://antseedstats.com/network"
+          href={LIVE_PRICES_URL}
           target="_blank"
           rel="noopener noreferrer">
           <span className={styles.signalDots} aria-hidden="true"><i /><i /><i /></span>

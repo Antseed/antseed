@@ -11,19 +11,24 @@ import {useAntsSupply} from '../lib/useAntsSupply';
 
 const HALVING_EPOCHS = 104;
 
-const fmt = (n: number, digits = 1) =>
-  n >= 1e9
-    ? `${(n / 1e9).toLocaleString('en-US', {maximumFractionDigits: 2})}B`
-    : n >= 1e6
-      ? `${(n / 1e6).toLocaleString('en-US', {maximumFractionDigits: digits})}M`
-      : n >= 1e3
-        ? `${(n / 1e3).toLocaleString('en-US', {maximumFractionDigits: 0})}k`
-        : n.toLocaleString('en-US', {maximumFractionDigits: 0});
+function fmt(n: number, digits = 1): string {
+  if (n >= 1e9) return `${(n / 1e9).toLocaleString('en-US', {maximumFractionDigits: 2})}B`;
+  if (n >= 1e6) return `${(n / 1e6).toLocaleString('en-US', {maximumFractionDigits: digits})}M`;
+  if (n >= 1e3) return `${(n / 1e3).toLocaleString('en-US', {maximumFractionDigits: 0})}k`;
+  return n.toLocaleString('en-US', {maximumFractionDigits: 0});
+}
+
+/** Live total supply when available, otherwise the emission schedule (null before the clock starts). */
+function totalSupply(live: {total: number} | null, started: boolean, epoch: number): number | null {
+  if (live) return live.total;
+  if (started) return epoch * INITIAL_EMISSION;
+  return null;
+}
 
 export function TokenHeroArt() {
   const {epoch, timeLeft, progress, started} = useEpochCountdown();
   const live = useAntsSupply();
-  const total = live ? live.total : started ? epoch * INITIAL_EMISSION : null;
+  const total = totalSupply(live, started, epoch);
   const pct = total === null ? 0 : (total / MAX_SUPPLY) * 100;
   const emission = started ? INITIAL_EMISSION / 2 ** Math.floor(epoch / HALVING_EPOCHS) : null;
 

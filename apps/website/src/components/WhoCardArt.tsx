@@ -1,4 +1,3 @@
-import React from 'react';
 
 /**
  * Illustrations for the "Who it's for" cards — from the Antseed design

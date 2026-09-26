@@ -1,4 +1,4 @@
-import React, {useCallback, useEffect, useState} from 'react';
+import {useCallback, useEffect, useState} from 'react';
 import {createPortal} from 'react-dom';
 import {DesktopDownloadIcon} from './DesktopDownloadIcon';
 import {LinuxIcon} from '../components/ui';

@@ -22,7 +22,7 @@ import {
 } from '@hugeicons/core-free-icons';
 
 /* ── FAQ ─────────────────────────────────────────────────────── */
-const FAQ_DATA = [
+const PROVIDER_FAQ = [
   {
     q: 'Does the network see my backend, model choice, or routing logic?',
     a: 'The network only sees what you announce: your service names, pricing, capability tags, and onchain reputation. Your backend URL, model provider, routing strategy, system prompt, and fine-tune weights stay under your control. You are responsible for securing your own node, credentials, logs, and infrastructure.',
@@ -374,7 +374,7 @@ export default function Providers(): JSX.Element {
           <SectionHeader title="Common questions" />
         </Reveal>
         <Reveal delay={80}>
-          <Faq items={FAQ_DATA} />
+          <Faq items={PROVIDER_FAQ} />
         </Reveal>
       </Section>
 

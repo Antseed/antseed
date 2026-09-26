@@ -11,20 +11,17 @@ import {WhoItsFor} from '../components/WhoItsFor';
 import {PrivacyPanel} from '../components/PrivacyPanel';
 import {Faq, Reveal, SectionHeader, ArrowRight} from '../components/ui';
 import {HeroDemo} from '../components/HeroDemo';
-import {HeroDotCanvas, HeroStatsRow, HeroUseCta, HeroUseSwitch, HeroCliVisual, StackedHero, type HeroUse} from '../components/HomeHero';
+import {HeroDotCanvas, HeroStatsRow, HeroUseCta, HeroUseSwitch, HeroCliVisual, type HeroUse} from '../components/HomeHero';
 import {HeroAgentMarket} from '../components/HeroAgentMarket';
 import {LogoMarquee} from '../components/LogoMarquee';
 import {OwnedByNoOne} from '../components/NetworkPanel';
 import {SellSection} from '../components/SellSection';
 import {HOME_FAQ} from '../components/homeFaq';
 import {FinalCtaBand} from '../components/FinalCtaBand';
+import {faqJsonLd} from '../lib/faqJsonLd';
 
-
-/* Layout experiment: 'stacked' is the shipped centred hero; 'split' puts the
-   copy on the left and the AI VPN demo (compact scene) on the right on wide
-   viewports, collapsing back to stacked under 997px. */
-const HERO_LAYOUT: 'stacked' | 'split' = 'split';
-
+/* Split hero: copy on the left and the AI VPN demo (compact scene) on the
+   right on wide viewports, collapsing to stacked under 997px. */
 function Hero() {
   const [use, setUse] = useState<HeroUse>('app');
   const [visualHeight, setVisualHeight] = useState(0);
@@ -52,9 +49,11 @@ function Hero() {
     return () => observer.disconnect();
   }, []);
 
-  if (HERO_LAYOUT !== 'split') {
-    return <StackedHero title="Run your agents on your terms" caption="Start for free. Keep using your tools." />;
-  }
+  const visuals: {view: HeroUse; content: ReactNode}[] = [
+    {view: 'app', content: <HeroDemo frameRef={frameRef} shutdownRef={shutdownRef} compact />},
+    {view: 'cli', content: <HeroCliVisual active={use === 'cli'} />},
+    {view: 'agent', content: <HeroAgentMarket active={use === 'agent'} />},
+  ];
 
   return (
     <header className={`${styles.hero} ${styles.heroSplit}`}>
@@ -75,15 +74,14 @@ function Hero() {
         </div>
         <div className={`${styles.demoFrame} ${styles.demoFrameSplit} ${styles.heroVisualStack}`} ref={demoRef}
           style={{minHeight: visualHeight || undefined}} id="hero-use-visual" role="tabpanel" aria-labelledby={`hero-tab-${use}`}>
-          <div className={`${styles.heroVisualLayer} ${use === 'app' ? styles.heroVisualActive : ''}`} data-view="app" inert={use !== 'app'} aria-hidden={use !== 'app'}>
-            <HeroDemo frameRef={frameRef} shutdownRef={shutdownRef} compact />
-          </div>
-          <div className={`${styles.heroVisualLayer} ${use === 'cli' ? styles.heroVisualActive : ''}`} data-view="cli" inert={use !== 'cli'} aria-hidden={use !== 'cli'}>
-            <HeroCliVisual active={use === 'cli'} />
-          </div>
-          <div className={`${styles.heroVisualLayer} ${use === 'agent' ? styles.heroVisualActive : ''}`} data-view="agent" inert={use !== 'agent'} aria-hidden={use !== 'agent'}>
-            <HeroAgentMarket active={use === 'agent'} />
-          </div>
+          {visuals.map(({view, content}) => {
+            const active = use === view;
+            return (
+              <div key={view} className={`${styles.heroVisualLayer} ${active ? styles.heroVisualActive : ''}`} data-view={view} inert={!active} aria-hidden={!active}>
+                {content}
+              </div>
+            );
+          })}
         </div>
         <HeroStatsRow />
       </div>
@@ -91,12 +89,9 @@ function Hero() {
   );
 }
 
-
 /* ============================================================
    PRICING — the same models, a fraction of the price
    ============================================================ */
-/* Drop-trail dots — spaced to match the dashed line asset's 8px pitch
-   (dots at y=3..91), each lighting up in sequence top-to-bottom. */
 function PricingSection() {
   return (
     <PricingBlock
@@ -170,8 +165,6 @@ function PillarsSection() {
 /* ============================================================
    3 STEPS
    ============================================================ */
-/* The provider count streams from Antscan via useNetworkStats, same source as
-   the hero stat, so step 2 tracks the network instead of drifting. */
 const STEPS = [
   {
     num: '1',
@@ -209,14 +202,8 @@ function StepsSection() {
 }
 
 /* ============================================================
-   ANYONE CAN SELL INTELLIGENCE
-   ============================================================ */
-
-
-/* ============================================================
    FAQ — fair questions
    ============================================================ */
-
 function FAQSection() {
   return (
     <section className={`${styles.section} ${styles.sectionTinted}`}>
@@ -233,46 +220,30 @@ function FAQSection() {
 }
 
 /* ============================================================
-   FINAL CTA
-   ============================================================ */
-
-
-/* ============================================================
    PAGE
    ============================================================ */
+const FAQ_LD = faqJsonLd(HOME_FAQ);
+
+// Standalone Organization entity. The SoftwareApplication block in
+// docusaurus.config.ts references the org as `creator`; this declares it in
+// its own right so the brand resolves as an entity.
+const ORG_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  name: 'Antseed',
+  url: 'https://antseed.com/',
+  logo: 'https://antseed.com/logo.svg',
+  description:
+    'Antseed is a decentralized peer-to-peer marketplace for AI inference. Providers compete on price to run any AI model, with no central account.',
+  sameAs: [
+    'https://github.com/AntSeed/antseed',
+    'https://x.com/antseed',
+    'https://t.me/antseed',
+  ],
+};
+
 export default function Home(): JSX.Element {
   const {siteConfig} = useDocusaurusContext();
-
-  const faqLd = {
-    '@context': 'https://schema.org',
-    '@type': 'FAQPage',
-    mainEntity: HOME_FAQ.map(({q, a}) => ({
-      '@type': 'Question',
-      name: q,
-      acceptedAnswer: {
-        '@type': 'Answer',
-        text: a.replace(/<[^>]*>/g, '').trim(),
-      },
-    })),
-  };
-
-  // Standalone Organization entity. The SoftwareApplication block in
-  // docusaurus.config.ts references the org as `creator`; this declares it in
-  // its own right so the brand resolves as an entity.
-  const orgLd = {
-    '@context': 'https://schema.org',
-    '@type': 'Organization',
-    name: 'Antseed',
-    url: 'https://antseed.com/',
-    logo: 'https://antseed.com/logo.svg',
-    description:
-      'Antseed is a decentralized peer-to-peer marketplace for AI inference. Providers compete on price to run any AI model, with no central account.',
-    sameAs: [
-      'https://github.com/AntSeed/antseed',
-      'https://x.com/antseed',
-      'https://t.me/antseed',
-    ],
-  };
 
   return (
     <Layout
@@ -296,8 +267,8 @@ export default function Home(): JSX.Element {
           property="og:description"
           content="Antseed lets you run your agents on your terms. Every model, no middleman. Anonymous. Best price. Works with the tools you already use. Owned by no one. Available to everyone."
         />
-        <script type="application/ld+json">{JSON.stringify(orgLd)}</script>
-        <script type="application/ld+json">{JSON.stringify(faqLd)}</script>
+        <script type="application/ld+json">{JSON.stringify(ORG_LD)}</script>
+        <script type="application/ld+json">{JSON.stringify(FAQ_LD)}</script>
       </Head>
 
       <Hero />

@@ -5,25 +5,14 @@ import Layout from '@theme/Layout';
 import styles from './agents.module.css';
 import {Button, Faq, FinalCta, Reveal, Section, SectionHeader, ArrowRight} from '../components/ui';
 import {PrivacyHeroArt} from '../components/PrivacyHeroArt';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
+import {DownloadButton} from '../components/DownloadButton';
+import {faqJsonLd} from '../lib/faqJsonLd';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
 import {PrivacyPanel} from '../components/PrivacyPanel';
 
 const TITLE = 'Private AI: no account, no email, no one in the middle | Antseed';
 const DESCRIPTION =
   'Use AI without giving up who you are. No account, no email, requests route peer-to-peer, and a TEE-verified provider keeps even your prompt sealed.';
-
-function DownloadButton({size = 'lg', variant}: {size?: 'md' | 'lg'; variant?: 'dark' | 'white'}) {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
-  return (
-    <Button href={download.href} size={size} variant={variant} className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download the AI VPN</span>
-      <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
-    </Button>
-  );
-}
 
 function PrivacyHero() {
   return (
@@ -222,6 +211,8 @@ const PRIVACY_FAQ = [
   },
 ];
 
+const PRIVACY_FAQ_LD = faqJsonLd(PRIVACY_FAQ);
+
 function PrivacyFaq() {
   return (
     <Section tone="tinted">
@@ -244,17 +235,7 @@ export default function PrivacyPage(): JSX.Element {
         <meta property="og:title" content={TITLE} />
         <meta property="og:description" content={DESCRIPTION} />
         <link rel="canonical" href="https://antseed.com/privacy/" />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'FAQPage',
-            mainEntity: PRIVACY_FAQ.map(({q, a}) => ({
-              '@type': 'Question',
-              name: q,
-              acceptedAnswer: {'@type': 'Answer', text: a.replace(/<[^>]+>/g, '')},
-            })),
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(PRIVACY_FAQ_LD)}</script>
       </Head>
       <PrivacyHero />
       <PrivacyPanel title="Privacy by design" />

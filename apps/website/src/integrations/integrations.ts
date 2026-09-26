@@ -1405,23 +1405,8 @@ export const FORMAT_LABELS: Record<IntegrationFormat, string> = {
   multi: 'Multi-format',
 };
 
-/** Short variants used on small surfaces like cards. */
-export const FORMAT_SHORT: Record<IntegrationFormat, string> = {
-  'anthropic-messages': 'Anthropic',
-  'openai-chat': 'OpenAI',
-  'openai-responses': 'OpenAI Resp',
-  multi: 'Multi',
-};
-
 export const STATUS_LABELS: Record<IntegrationStatus, string> = {
   verified: 'Verified',
   community: 'Community',
   'coming-soon': 'Coming soon',
 };
-
-export function bySlug(slug: string): Integration | undefined {
-  return integrations.find((i) => i.slug === slug);
-}
-
-export const ANT_PROXY_PORT = ANT_PORT;
-export const ANT_PROXY_URL = `http://localhost:${ANT_PORT}`;

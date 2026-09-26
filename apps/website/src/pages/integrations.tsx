@@ -22,11 +22,7 @@ import {
   ComputerTerminal01Icon,
 } from '@hugeicons/core-free-icons';
 
-/* --------------------------- Category icons --------------------------- *
- * Hugeicons, stroke style, 20x20. Centralized so we don't sprinkle
- * ASCII glyphs around the UI.
- * -------------------------------------------------------------------- */
-
+/* Category icons: Hugeicons, stroke style, 20x20. */
 const CATEGORY_ICON = {
   'coding-agent': SourceCodeIcon,
   'agent-platform': NeuralNetworkIcon,
@@ -36,6 +32,14 @@ const CATEGORY_ICON = {
 
 function CategoryIcon({category}: {category: IntegrationCategory}) {
   return <HugeiconsIcon icon={CATEGORY_ICON[category]} size={20} strokeWidth={1.6} />;
+}
+
+function matchesQuery(i: Integration, q: string): boolean {
+  return (
+    i.name.toLowerCase().includes(q) ||
+    i.oneLiner.toLowerCase().includes(q) ||
+    CATEGORY_LABELS[i.category].toLowerCase().includes(q)
+  );
 }
 
 function IntegrationCard({i}: {i: Integration}) {
@@ -104,22 +108,25 @@ function CategorySection({
   );
 }
 
+const BREADCRUMB_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    {'@type': 'ListItem', position: 1, name: 'Home', item: 'https://antseed.com/'},
+    {'@type': 'ListItem', position: 2, name: 'Integrations', item: 'https://antseed.com/integrations/'},
+  ],
+};
+
 export default function ConnectHub(): JSX.Element {
   const [query, setQuery] = useState('');
 
   const grouped = useMemo<Record<IntegrationCategory, Integration[]>>(() => {
     const out = {} as Record<IntegrationCategory, Integration[]>;
     for (const cat of CATEGORY_ORDER) out[cat] = [];
+    const filtering = query.trim() !== '';
+    const q = query.toLowerCase();
     for (const i of integrations) {
-      if (query.trim()) {
-        const q = query.toLowerCase();
-        if (
-          !i.name.toLowerCase().includes(q) &&
-          !i.oneLiner.toLowerCase().includes(q) &&
-          !CATEGORY_LABELS[i.category].toLowerCase().includes(q)
-        )
-          continue;
-      }
+      if (filtering && !matchesQuery(i, q)) continue;
       out[i.category].push(i);
     }
     return out;
@@ -158,16 +165,7 @@ export default function ConnectHub(): JSX.Element {
       <Head>
         <meta property="og:title" content="Integrations | Antseed" />
         <meta property="og:description" content="Every way to use Antseed: coding agents, autonomous agents, editors, SDKs, frameworks, partner platforms. Anthropic and OpenAI compatible." />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'BreadcrumbList',
-            itemListElement: [
-              {'@type': 'ListItem', position: 1, name: 'Home', item: 'https://antseed.com/'},
-              {'@type': 'ListItem', position: 2, name: 'Integrations', item: 'https://antseed.com/integrations/'},
-            ],
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(BREADCRUMB_LD)}</script>
       </Head>
 
       <PageHero
@@ -207,6 +205,7 @@ export default function ConnectHub(): JSX.Element {
         <div className={styles.searchRow}>
           <input
             type="search"
+            aria-label="Search integrations"
             placeholder="Search integrations…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}

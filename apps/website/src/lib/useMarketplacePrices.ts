@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react';
 import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
+import {createSharedFetch} from './sharedFetch';
 
 /**
  * Live marketplace showcase for the homepage pricing card. No curated
@@ -68,6 +69,17 @@ interface Offering {
   sellerAddress: string;
   inputUsdPerMillion: number | null;
   sellerOnChainReputationScore: number | null;
+}
+
+/** An offering that counts: priced, and from a seller with on-chain reputation. */
+type ProvenOffering = Offering & {inputUsdPerMillion: number};
+
+function isProven(o: Offering): o is ProvenOffering {
+  return (
+    typeof o.inputUsdPerMillion === 'number' &&
+    o.inputUsdPerMillion >= 0 &&
+    (o.sellerOnChainReputationScore ?? 0) > 0
+  );
 }
 
 interface OpenRouterModel {
@@ -140,15 +152,9 @@ function buildCandidates(
   popularity: PopularityMap,
 ): Candidate[] {
   // Proven, priced offerings grouped by normalized service id.
-  const groups = new Map<string, Offering[]>();
+  const groups = new Map<string, ProvenOffering[]>();
   for (const o of offerings) {
-    if (
-      typeof o.inputUsdPerMillion !== 'number' ||
-      o.inputUsdPerMillion < 0 ||
-      (o.sellerOnChainReputationScore ?? 0) <= 0
-    ) {
-      continue;
-    }
+    if (!isProven(o)) continue;
     const key = normalizeService(o.service);
     const group = groups.get(key);
     if (group) group.push(o);
@@ -168,7 +174,7 @@ function buildCandidates(
     if (!group) continue;
     const weekly = popularity[model.canonicalSlug] ?? 0;
     if (haveRankings && weekly < MIN_WEEKLY_TOKENS) continue;
-    const price = Math.min(...group.map(o => o.inputUsdPerMillion!));
+    const price = Math.min(...group.map(o => o.inputUsdPerMillion));
     if (price >= model.officialUsd) continue;
     const save =
       price === 0 ? 100 : Math.min(99, Math.max(1, Math.round((1 - price / model.officialUsd) * 100)));
@@ -319,6 +325,15 @@ async function fetchMarket(signal: AbortSignal): Promise<CachedMarket | null> {
   return {offerings, models, popularity};
 }
 
+/* One in-flight fetch shared by every mounted hook, so several cards on one
+   page (the hero picks call useMarketplacePicks three times) hit the three
+   APIs once. */
+const subscribeMarketFetch = createSharedFetch(async signal => {
+  const result = await fetchMarket(signal);
+  if (result) writeCache(result);
+  return result;
+}, 8000);
+
 /** Shared market fetch (session-cached) behind the showcase and pick hooks. */
 function useMarket(): CachedMarket | null {
   const [market, setMarket] = useState<CachedMarket | null>(null);
@@ -331,21 +346,13 @@ function useMarket(): CachedMarket | null {
       return undefined;
     }
     let cancelled = false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    fetchMarket(controller.signal)
-      .then(result => {
-        if (cancelled || !result) return;
-        writeCache(result);
-        setMarket(result);
-      })
-      .catch(() => {
-        /* offline / API down — keep the fallback snapshot */
-      })
-      .finally(() => clearTimeout(timeout));
+    const {promise, unsubscribe} = subscribeMarketFetch();
+    promise.then(result => {
+      if (!cancelled && result) setMarket(result);
+    });
     return () => {
       cancelled = true;
-      controller.abort();
+      unsubscribe();
     };
   }, []);
 
@@ -375,13 +382,7 @@ export function useMarketplacePicks(picks: ModelPick[]): ShowcaseRow[] {
   const byService = new Map<string, number>();
   if (market) {
     for (const o of market.offerings) {
-      if (
-        typeof o.inputUsdPerMillion !== 'number' ||
-        o.inputUsdPerMillion < 0 ||
-        (o.sellerOnChainReputationScore ?? 0) <= 0
-      ) {
-        continue;
-      }
+      if (!isProven(o)) continue;
       const key = normalizeService(o.service);
       const prev = byService.get(key);
       if (prev === undefined || o.inputUsdPerMillion < prev) byService.set(key, o.inputUsdPerMillion);

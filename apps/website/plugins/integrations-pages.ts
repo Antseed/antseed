@@ -162,7 +162,7 @@ function renderIntegrationMarkdown(i: Integration): string {
     lines.push(htmlToMarkdown(p));
     lines.push('');
   }
-  if (i.prereqs && i.prereqs.length) {
+  if (i.prereqs?.length) {
     lines.push('**Prerequisites**');
     lines.push('');
     for (const p of i.prereqs) lines.push(`- ${p}`);
@@ -188,13 +188,13 @@ function renderIntegrationMarkdown(i: Integration): string {
     }
     lines.push('');
   }
-  if (i.test && i.test.length) {
+  if (i.test?.length) {
     lines.push('**Test it**');
     lines.push('');
     for (const s of i.test) lines.push(renderStep(s));
     lines.push('');
   }
-  if (i.troubleshooting && i.troubleshooting.length) {
+  if (i.troubleshooting?.length) {
     lines.push('**Troubleshooting**');
     lines.push('');
     for (const t of i.troubleshooting) {
@@ -202,7 +202,7 @@ function renderIntegrationMarkdown(i: Integration): string {
     }
     lines.push('');
   }
-  if (i.caveats && i.caveats.length) {
+  if (i.caveats?.length) {
     lines.push('**Caveats**');
     lines.push('');
     for (const c of i.caveats) lines.push(`- ${c}`);
@@ -210,7 +210,7 @@ function renderIntegrationMarkdown(i: Integration): string {
   }
   lines.push(renderWireFormatBlock(i));
   lines.push('');
-  if (i.links && i.links.length) {
+  if (i.links?.length) {
     lines.push('**Links**');
     lines.push('');
     for (const l of i.links) lines.push(`- [${l.label}](${l.href})`);

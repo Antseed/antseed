@@ -107,9 +107,6 @@ const config: Config = {
     // here rather than in deploy config, and the site works without anyone
     // setting an env var. GTM_CONTAINER_ID still overrides it for staging or a
     // throwaway test container. Set it to an empty string to disable GTM.
-    //
-    // GA4 (G-DF97Q4KV2X) is configured as a tag *inside* this container, not
-    // loaded here, so there is one tag on the page and no double-counting.
     ...gtmPlugin,
     [
       '@docusaurus/plugin-client-redirects',

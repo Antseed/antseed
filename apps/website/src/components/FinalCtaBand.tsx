@@ -1,14 +1,14 @@
+import type {ReactNode} from 'react';
 import styles from '../pages/index.module.css';
 import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
 import {AllVersionsLink} from '../lib/AllVersionsLink';
 import {useMobileGetStarted} from '../lib/useMobileGetStarted';
-import type {ReactNode} from 'react';
 import {Button, Reveal, ArrowRight} from './ui';
 
 /** The ink closing band from the homepage, shared with /network. */
 export function FinalCtaBand({
-  title = 'Every model. No middleman. No account.',
-  sub = 'Free models to start. Pay per request for the rest, with no usage limits.',
+  title = 'Run your agents on your terms',
+  sub = 'Every model, no middleman. Anonymous and always on.',
   caption,
   secondary,
   versionsLink = true,

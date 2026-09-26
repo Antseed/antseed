@@ -1,4 +1,3 @@
-import React from 'react';
 
 /**
  * Step 3 illustration ("Pick your model") for the homepage steps section.

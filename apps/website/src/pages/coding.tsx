@@ -6,8 +6,8 @@ import styles from './agents.module.css';
 import own from './coding.module.css';
 import {Button, Faq, FinalCta, Reveal, Section, SectionHeader, ArrowRight} from '../components/ui';
 import {CodingHeroArt} from '../components/CodingHeroArt';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
+import {DownloadButton} from '../components/DownloadButton';
+import {faqJsonLd} from '../lib/faqJsonLd';
 import {PricingBlock} from '../components/PricingBlock';
 import {LogoBar, SquareGlyph, PiGlyph, type LogoItem} from '../components/AgentsLogoBar';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
@@ -37,17 +37,6 @@ const CONNECT_CARDS: ConnectCard[] = [
   {name: 'OpenCode', glyph: SquareGlyph, to: '/integrations/opencode'},
   {name: 'Pi', glyph: PiGlyph, to: '/integrations/pi'},
 ];
-
-function DownloadButton({size = 'lg'}: {size?: 'md' | 'lg'}) {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
-  return (
-    <Button href={download.href} size={size} className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download the AI VPN</span>
-      <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
-    </Button>
-  );
-}
 
 function CodingHero() {
   return (
@@ -202,6 +191,8 @@ const CODING_FAQ = [
   },
 ];
 
+const CODING_FAQ_LD = faqJsonLd(CODING_FAQ);
+
 function CodingFaq() {
   return (
     <Section tone="tinted">
@@ -224,17 +215,7 @@ export default function CodingPage(): JSX.Element {
         <meta property="og:title" content={TITLE} />
         <meta property="og:description" content={DESCRIPTION} />
         <link rel="canonical" href="https://antseed.com/coding/" />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'FAQPage',
-            mainEntity: CODING_FAQ.map(({q, a}) => ({
-              '@type': 'Question',
-              name: q,
-              acceptedAnswer: {'@type': 'Answer', text: a.replace(/<[^>]+>/g, '')},
-            })),
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(CODING_FAQ_LD)}</script>
       </Head>
       <CodingHero />
       <LogoBar items={CODING_APPS} ariaLabel="Coding apps that work with Antseed" />

@@ -22,7 +22,9 @@ function keystrokeDelay(ch: string) {
   return 5 + Math.random() * 10;
 }
 
-function Cursor({style}: {style?: CSSProperties} = {}) {
+const commandText = (tokens: TToken[]) => tokens.map((t) => t.text).join('');
+
+function Cursor({style}: {style?: CSSProperties}) {
   return <span className={styles.tCursor} style={style} aria-hidden="true" />;
 }
 
@@ -68,7 +70,7 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
     if (reduced || typeof IntersectionObserver === 'undefined') {
       setBlockIndex(blocks.length - 1);
       setPhase('done');
-      setTyped(blocks[blocks.length - 1].tokens.reduce((n, t) => n + t.text.length, 0));
+      setTyped(commandText(blocks[blocks.length - 1].tokens).length);
       return undefined;
     }
 
@@ -81,12 +83,12 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
       });
     }
 
-    async function typeOut(length: number, onTick: (n: number) => void, text: (i: number) => string) {
-      for (let i = 1; i <= length; i++) {
+    async function typeOut(text: string) {
+      for (let i = 1; i <= text.length; i++) {
         if (cancelled) return;
-        await sleep(keystrokeDelay(text(i - 1)));
+        await sleep(keystrokeDelay(text[i - 1]));
         if (cancelled) return;
-        onTick(i);
+        setTyped(i);
       }
     }
 
@@ -97,13 +99,12 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
         setPhase('comment');
         setTyped(0);
         const {comment, tokens} = blocks[b];
-        await typeOut(comment.length, setTyped, (i) => comment[i]);
+        await typeOut(comment);
         if (cancelled) return;
         await sleep(60);
         setPhase('command');
         setTyped(0);
-        const commandText = tokens.map((t) => t.text).join('');
-        await typeOut(commandText.length, setTyped, (i) => commandText[i]);
+        await typeOut(commandText(tokens));
         if (cancelled) return;
         await sleep(150);
       }
@@ -143,14 +144,17 @@ function TerminalCard({blocks}: {blocks: TBlock[]}) {
         <span className={styles.terminalTagline}>ONE ENDPOINT · EVERY TOOL</span>
       </div>
       {blocks.map((block, i) => {
-        const commandLen = block.tokens.reduce((n, t) => n + t.text.length, 0);
         const isCurrent = i === blockIndex && phase !== 'done';
-        const commentDone = i < blockIndex || phase === 'done' || (i === blockIndex && phase === 'command');
-        const commandDone = i < blockIndex || phase === 'done';
-        const commentTyped = commentDone ? block.comment.length : isCurrent && phase === 'comment' ? typed : 0;
-        const commandTyped = commandDone ? commandLen : isCurrent && phase === 'command' ? typed : 0;
         const showCommentCursor = isCurrent && phase === 'comment';
         const showCommandCursor = isCurrent && phase === 'command';
+        const commentDone = i < blockIndex || phase === 'done' || showCommandCursor;
+        const commandDone = i < blockIndex || phase === 'done';
+        let commentTyped = 0;
+        if (commentDone) commentTyped = block.comment.length;
+        else if (showCommentCursor) commentTyped = typed;
+        let commandTyped = 0;
+        if (commandDone) commandTyped = commandText(block.tokens).length;
+        else if (showCommandCursor) commandTyped = typed;
         const commentHidden = block.comment.slice(commentTyped);
         return (
           <div className={styles.terminalBlock} key={i}>
