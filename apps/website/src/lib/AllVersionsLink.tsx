@@ -52,11 +52,15 @@ function AllVersionsModal({onClose}: {onClose: () => void}) {
       if (e.key === 'Escape') onClose();
     };
     document.addEventListener('keydown', onKey);
-    const previousOverflow = document.body.style.overflow;
-    document.body.style.overflow = 'hidden';
+    // Lock scrolling on the root element, not <body>: body is sized to the
+    // viewport, so `overflow: hidden` there collapses the document and jumps
+    // the page to the top. The root keeps its height and scroll position.
+    const root = document.documentElement;
+    const previousOverflow = root.style.overflow;
+    root.style.overflow = 'hidden';
     return () => {
       document.removeEventListener('keydown', onKey);
-      document.body.style.overflow = previousOverflow;
+      root.style.overflow = previousOverflow;
     };
   }, [onClose]);
 
