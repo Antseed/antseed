@@ -7,6 +7,21 @@ const schema: RoutingPreferenceSchema = {
 };
 
 describe('generic router enum preferences', () => {
+  it('preserves router titles and descriptions without renaming wire keys', () => {
+    const titled = { ...schema, properties: { policy: { ...schema.properties.policy!, title: 'Routing policy', description: 'Choose how requests are routed.' } } };
+    const metadata = createRoutingServiceMetadata(titled);
+    expect(() => validateRoutingServiceMetadata(metadata)).not.toThrow();
+    expect(metadata.preferencesSchema).toEqual(titled);
+    expect(resolveRoutingPreferences(titled, { policy: 'cost' })).toEqual({ policy: 'cost' });
+    expect(metadata.preferencesSchemaHash).not.toBe(createRoutingServiceMetadata(schema).preferencesSchemaHash);
+    metadata.preferencesSchema.properties.policy!.title = 'Changed title';
+    expect(() => validateRoutingServiceMetadata(metadata)).toThrow('hash mismatch');
+  });
+
+  it.each(['', '  ', 5, null, {}])('rejects invalid titles %j', title => {
+    expect(() => validateRoutingPreferenceSchema({ ...schema, properties: { policy: { ...schema.properties.policy, title } } })).toThrow('title');
+  });
+
   it('uses router-defined defaults and choices without modifying caller data', () => {
     const values = {};
     expect(resolveRoutingPreferences(schema, values)).toEqual({ policy: 'quality' });

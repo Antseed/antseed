@@ -1,4 +1,8 @@
+import { assertRoutingPreferences } from '@antseed/node';
+
 export const LEVANTO_ROUTING_PATH = '/_antseed/levanto-route';
+export const MAX_ROUTING_CANDIDATES = 512;
+export type AllowedRoutingCandidate = { peerId: string; provider: string; serviceId: string };
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -13,13 +17,26 @@ function peerId(value: unknown): boolean {
 }
 
 export function validateRoutingRequest(input: unknown): asserts input is Record<string, unknown> {
-  if (!object(input) || input.v !== 1 || ![1, 3, 5, 7, 9].includes(input.cqt as number)
+  if (!object(input) || input.v !== 1
     || typeof input.inputMessage !== 'string' || !input.inputMessage.trim()
     || !Number.isSafeInteger(input.promptTokens) || (input.promptTokens as number) < 0
     || !Array.isArray(input.expectedCachedTokens) || !object(input.constraints)) {
     throw new Error('Invalid Levanto routing request');
   }
-  if (Object.keys(input).some(key => !['v', 'cqt', 'inputMessage', 'promptTokens', 'expectedCachedTokens', 'constraints', 'service'].includes(key))) throw new Error('Unsupported routing request field');
+  assertRoutingPreferences(input.preferences);
+  if (Object.keys(input).some(key => !['v', 'preferences', 'inputMessage', 'promptTokens', 'expectedCachedTokens', 'constraints', 'service', 'catalogRevision'].includes(key))) throw new Error('Unsupported routing request field');
+  if (Object.keys(input.constraints).some(key => !['allowedCandidates', 'allowedPeerIds', 'blockedPeerIds', 'maxInputUsdPerMillion', 'minTrustScore'].includes(key))) throw new Error('Unsupported routing constraint');
+  if (input.catalogRevision !== undefined && (typeof input.catalogRevision !== 'string' || !input.catalogRevision || input.catalogRevision.length > 128)) throw new Error('Invalid catalog revision');
+  const candidates = input.constraints.allowedCandidates;
+  if (!Array.isArray(candidates) || !candidates.length || candidates.length > MAX_ROUTING_CANDIDATES) throw new Error('Invalid allowed candidates');
+  const keys = new Set<string>();
+  for (const candidate of candidates) {
+    if (!object(candidate) || Object.keys(candidate).some(key => !['peerId', 'provider', 'serviceId'].includes(key))
+      || !peerId(candidate.peerId) || !identifier(candidate.provider) || !identifier(candidate.serviceId)) throw new Error('Invalid allowed candidate');
+    const key = JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId]);
+    if (keys.has(key)) throw new Error('Duplicate allowed candidate');
+    keys.add(key);
+  }
   for (const entry of input.expectedCachedTokens) {
     if (!object(entry) || typeof entry.model !== 'string' || !entry.model || !peerId(entry.peer)
       || !Number.isSafeInteger(entry.tokens) || (entry.tokens as number) < 0) throw new Error('Invalid cached-token estimate');
@@ -33,14 +50,19 @@ export function validateRoutingRequest(input: unknown): asserts input is Record<
   }
 }
 
-export function validateRoutingResponse(input: unknown, request: unknown): Array<{ model: string; peer: string }> {
+function identifier(value: unknown): value is string {
+  return typeof value === 'string' && value.length > 0 && value === value.trim()
+    && new TextEncoder().encode(value).length <= 64 && !/[\u0000-\u001f\u007f*]/.test(value);
+}
+
+export function validateRoutingResponse(input: unknown, request: unknown): Array<{ model: string; peer: string; provider: string }> {
   validateRoutingRequest(request);
-  if (!object(input) || input.v !== 1 || input.error !== undefined || input.renewalDue !== undefined
+  if (!object(input) || input.v !== 1 || input.catalogRevision !== request.catalogRevision || input.error !== undefined || input.renewalDue !== undefined
     || typeof input.router !== 'string' || !input.router || !Array.isArray(input.ranked) || !input.ranked.length || input.ranked.length > 512) {
     throw new Error('Invalid Levanto routing response; per-response backend required');
   }
   const constraints = request.constraints as Record<string, unknown>;
-  const accepted: Array<{ model: string; peer: string }> = [];
+  const accepted: Array<{ model: string; peer: string; provider: string }> = [];
   for (const entry of input.ranked) {
     if (!object(entry) || typeof entry.model !== 'string' || !entry.model || !peerId(entry.peer) || entry.inference !== undefined
       || !object(entry.estimate) || !object(entry.price)
@@ -53,7 +75,9 @@ export function validateRoutingResponse(input: unknown, request: unknown): Array
       || (typeof constraints.maxInputUsdPerMillion === 'number' && (entry.price.inUsdPerM as number) > constraints.maxInputUsdPerMillion)) {
       continue;
     }
-    accepted.push({ model: entry.model as string, peer: entry.peer as string });
+    if (!identifier(entry.provider) || !(constraints.allowedCandidates as AllowedRoutingCandidate[]).some(candidate =>
+      candidate.peerId === entry.peer && candidate.provider === entry.provider && candidate.serviceId === entry.model)) throw new Error('Router returned a destination outside allowed candidates');
+    accepted.push({ model: entry.model as string, peer: entry.peer as string, provider: entry.provider });
   }
   if (!accepted.length) throw new Error('No valid recommendations satisfy routing constraints');
   return accepted;

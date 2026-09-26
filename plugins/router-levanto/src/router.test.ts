@@ -1,7 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import type { PeerInfo, RouteRecommendation, RouteSelectionContext, SerializedHttpRequest } from '@antseed/node';
+import type { PeerInfo, RouteRecommendation, RoutingCatalogV1, RoutingPreferenceSchema, RouteSelectionContext, SerializedHttpRequest } from '@antseed/node';
 import { completedRequestPrice } from '@antseed/node';
 import { LevantoRoutingAdapter } from './router.js';
+
+const emptySchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false };
+function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema = emptySchema, options: { title?: string } = {}): RoutingCatalogV1 {
+  const content = { version: 1 as const, preferencesSchema, ...options, models };
+  return { ...content, revision: `rev-${JSON.stringify(content).length}-${models.length}` };
+}
 
 const sellerId = 'a'.repeat(40);
 const inferenceId = 'b'.repeat(40);
@@ -13,9 +19,9 @@ function providers(priceMicroUsdc = '1000'): NonNullable<PeerInfo['metadata']>['
   }];
 }
 const peer = { peerId: sellerId, metadata: { version: 12, peerId: sellerId, providers: providers() } } as PeerInfo;
-const recommendation: RouteRecommendation = { serviceId: 'model-a', peerId: inferenceId };
+const recommendation: RouteRecommendation = { serviceId: 'model-a', peerId: inferenceId, provider: 'openai' };
 const result = {
-  v: 1, router: 'levanto', ranked: [{ model: 'model-a', peer: inferenceId,
+  v: 1, router: 'levanto', ranked: [{ model: 'model-a', peer: inferenceId, provider: 'openai',
     estimate: { costUsd: 0.1, inputTokens: 4, cachedInputTokens: 0, outputTokens: 10 },
     price: { inUsdPerM: 1, outUsdPerM: 2, cachedInUsdPerM: 0 } }],
 };
@@ -28,7 +34,8 @@ function request(text = 'Help me', model = 'levanto-auto'): SerializedHttpReques
 function setup() {
   const accepted = vi.fn(() => true);
   const sendRequest = vi.fn<RouteSelectionContext['sendRequest']>(async (_peer, request, options) => {
-    const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) };
+    const payload = JSON.parse(new TextDecoder().decode(request.body));
+    const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify({ ...result, catalogRevision: payload.catalogRevision })) };
     if (!options.acceptResponse?.(response)) throw new Error('Not accepted');
     return response;
   });
@@ -42,6 +49,87 @@ function setup() {
 }
 
 describe('Levanto buyer adapter', () => {
+  it('invalidates a same-turn cached recommendation when the catalog or exact candidates change', async () => {
+    const state = setup();
+    state.context.catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]);
+    await state.adapter.selectRoute(request(), [peer], state.context);
+    await state.adapter.selectRoute(request(), [peer], state.context);
+    expect(state.sendRequest).toHaveBeenCalledTimes(1);
+    state.context.catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }, { provider: 'openai', serviceId: 'model-b' }]);
+    await state.adapter.selectRoute(request(), [peer], state.context);
+    expect(state.sendRequest).toHaveBeenCalledTimes(2);
+    state.context.candidates.push({ ...state.context.candidates[0]!, serviceId: 'model-b' });
+    await state.adapter.selectRoute(request(), [peer], state.context);
+    expect(state.sendRequest).toHaveBeenCalledTimes(3);
+  });
+
+  it('sends exact constraints in v1 even when no catalog is advertised', async () => {
+    const state = setup();
+    await state.adapter.selectRoute(request(), [peer], state.context);
+    const payload = JSON.parse(new TextDecoder().decode(state.sendRequest.mock.calls[0]![1].body));
+    expect(payload.v).toBe(1);
+    expect(payload.constraints.allowedCandidates).toEqual([{ peerId: inferenceId, provider: 'openai', serviceId: 'model-a' }]);
+    expect(payload.catalogRevision).toBeUndefined();
+  });
+
+  it('sends v1 exact allowed candidates and the plugin catalog revision', async () => {
+    const state = setup();
+    const catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]);
+    state.context.catalog = catalog;
+    state.context.candidates = [...state.context.candidates, { ...state.context.candidates[0]!, provider: 'excluded' }];
+    state.sendRequest.mockImplementation(async (_peer, request, options) => {
+      const payload = JSON.parse(new TextDecoder().decode(request.body));
+      expect(payload).toMatchObject({ v: 1, catalogRevision: catalog.revision,
+        constraints: { allowedCandidates: [{ peerId: inferenceId, provider: 'openai', serviceId: 'model-a' }] } });
+      const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify({
+        ...result, catalogRevision: catalog.revision,
+      })) };
+      if (!options.acceptResponse?.(response)) throw new Error('Not accepted');
+      return response;
+    });
+    expect(await state.adapter.selectRoute(request(), [peer], state.context)).toEqual([{ ...recommendation, provider: 'openai' }]);
+    state.context.candidates = [{ ...state.context.candidates[0]!, serviceId: 'model-b' }];
+    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('No eligible');
+    expect(state.sendRequest).toHaveBeenCalledTimes(1);
+  });
+  it('catalog errors and unsupported-only catalogs fail before purchasing a recommendation', async () => {
+    const state = setup();
+    state.context.catalog = createRoutingCatalog([]);
+    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('No eligible');
+    state.context.catalog = { ...createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]), revision: '' };
+    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('Invalid routing catalog');
+    expect(state.sendRequest).not.toHaveBeenCalled();
+  });
+  it('fetches the catalog from the router HTTP API for the exact service', async () => {
+    const catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], undefined, { title: 'Auto Router' });
+    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
+      const parsed = new URL(String(url));
+      return parsed.searchParams.get('service') === 'levanto-route' ? Response.json(catalog) : new Response('{}', { status: 404 });
+    });
+    const adapter = new LevantoRoutingAdapter({ routingPeerUrl: 'http://router.test:9000/', fetchImpl: fetchImpl as typeof fetch });
+    const target = { peerId: sellerId, provider: 'levanto', serviceId: 'levanto-route' };
+    expect(await adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).toEqual(catalog);
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe('http://router.test:9000/_antseed/route/catalog?provider=levanto&service=levanto-route');
+    expect(await adapter.getCatalog({ ...target, serviceId: 'other' }, [peer], AbortSignal.timeout(1000))).toBeUndefined();
+    fetchImpl.mockResolvedValueOnce(Response.json({ ...catalog, models: [{ provider: 'openai' }] }));
+    await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('Invalid routing catalog');
+    fetchImpl.mockResolvedValueOnce(new Response('down', { status: 503 }));
+    await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('503');
+  });
+  it.each([undefined, '203.0.113.5:6882', '[2001:db8::1]:6882'])('does not derive a catalog URL from the announced address %s', async (publicAddress) => {
+    const fetchImpl = vi.fn();
+    const adapter = new LevantoRoutingAdapter({ fetchImpl: fetchImpl as typeof fetch });
+    expect(await adapter.getCatalog({ peerId: sellerId, provider: 'levanto', serviceId: 'levanto-route' }, [{ ...peer, publicAddress }], AbortSignal.timeout(1000))).toBeUndefined();
+    expect(fetchImpl).not.toHaveBeenCalled();
+  });
+  it.each(['Help through Responses', [{ role: 'user', content: [{ type: 'input_text', text: 'Help through Responses' }] }]])('routes Responses input without altering the downstream request', async (input) => {
+    const state = setup();
+    const responseRequest = { ...request(), path: '/v1/responses', body: new TextEncoder().encode(JSON.stringify({ model: 'antseed', input })) };
+    const before = structuredClone(responseRequest);
+    expect(await state.adapter.selectRoute(responseRequest, [peer], state.context)).toEqual([recommendation]);
+    expect(JSON.parse(new TextDecoder().decode(state.sendRequest.mock.calls[0]![1].body)).inputMessage).toBe('Help through Responses');
+    expect(responseRequest).toEqual(before);
+  });
   it('translates Levanto rankings and requires host acceptance before payment', async () => {
     const state = setup();
     expect(await state.adapter.selectRoute(request(), [peer], state.context)).toEqual([recommendation]);
@@ -52,7 +140,7 @@ describe('Levanto buyer adapter', () => {
     expect(options.unitBilling).toEqual(offer);
     expect(options.maxFeeMicroUsdc).toBe('1000');
     expect(JSON.parse(new TextDecoder().decode(serviceRequest.body))).toMatchObject({
-      v: 1, cqt: 5, inputMessage: 'Help me', service: 'levanto-route', constraints: { allowedPeerIds: [inferenceId] },
+      v: 1, preferences: {}, inputMessage: 'Help me', service: 'levanto-route', constraints: { allowedPeerIds: [inferenceId] },
     });
   });
 
@@ -135,14 +223,19 @@ describe('Levanto buyer adapter', () => {
 
   it('uses live enum preferences and invalidates an unchanged-turn decision', async () => {
     const state = setup();
-    await state.adapter.selectRoute(request(), [peer], state.context);
-    state.context.preferences = { cqt: '9' };
-    await state.adapter.selectRoute(request(), [peer], state.context);
+    const advertised = peer;
+    state.context.catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], {
+      type: 'object', additionalProperties: false, properties: { strategy: { type: 'string', enum: ['balanced', 'fast'], default: 'balanced' } },
+    });
+    await state.adapter.selectRoute(request(), [advertised], state.context);
+    state.context.preferences = { strategy: 'fast' };
+    await state.adapter.selectRoute(request(), [advertised], state.context);
     expect(state.sendRequest).toHaveBeenCalledTimes(2);
     const payload = JSON.parse(new TextDecoder().decode(state.sendRequest.mock.calls[1]![1].body));
-    expect(payload.cqt).toBe(9);
-    state.context.preferences = { cqt: '2' };
-    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('enum');
+    expect(payload.preferences).toEqual({ strategy: 'fast' });
+    expect(payload.cqt).toBeUndefined();
+    state.context.preferences = { strategy: 'unknown' };
+    await expect(state.adapter.selectRoute(request(), [advertised], state.context)).rejects.toThrow('enum');
     expect(state.sendRequest).toHaveBeenCalledTimes(2);
   });
 
@@ -169,7 +262,7 @@ describe('Levanto buyer adapter', () => {
     state.sendRequest.mockImplementation(async (_peer, serviceRequest, options) => {
       const entry = result.ranked[0]!;
       const body = { ...result, ranked: [
-        { ...entry, peer: 'c'.repeat(40) }, { ...entry, model: 'too-expensive' },
+        { ...entry, peer: 'c'.repeat(40) }, { ...entry, model: 'too-expensive', price: {} },
         { ...entry, model: 'model-b' }, { ...entry, inference: { reasoningEffort: 'unsupported' } }, entry,
       ] };
       const response = { requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)) };
@@ -177,7 +270,7 @@ describe('Levanto buyer adapter', () => {
       return response;
     });
     expect(await state.adapter.selectRoute(request(), [peer], state.context)).toEqual([
-      { serviceId: 'model-b', peerId: inferenceId }, recommendation,
+      { serviceId: 'model-b', peerId: inferenceId, provider: 'openai' }, recommendation,
     ]);
   });
 

@@ -1,8 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PeerInfo, Router, SerializedHttpRequest } from '@antseed/node'
-import { eligibleRouterCandidates, executeRouterSelection, resolveRouterRecommendation, resolveRouterRecommendations } from './router-execution.js'
-import { createRoutingServiceMetadata } from '@antseed/node'
+import type { PeerInfo, RouteSelectionContext, Router, SerializedHttpRequest } from '@antseed/node'
+import { eligibleRouterCandidates, executeRouterSelection, resolveRouterRecommendation, resolveRouterRecommendations, RoutingCatalogCache } from './router-execution.js'
+import { createRoutingServiceMetadata, type RoutingCatalogV1, type RoutingPreferenceSchema } from '@antseed/node'
+
+function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false }): RoutingCatalogV1 {
+  const content = { version: 1 as const, preferencesSchema, models }
+  return { ...content, revision: `rev-${JSON.stringify(content).length}-${models.length}` }
+}
 
 const peer = {
   peerId: 'a'.repeat(40) as PeerInfo['peerId'], providers: ['openai'], lastSeen: Date.now(), reputationScore: 90,
@@ -43,6 +48,97 @@ test('generic preferences are validated before invoking a router', async () => {
   assert.equal(calls, 0)
   await executeRouterSelection({ ...args, selection: { kind: 'router', preferences: { policy: 'quality' } } })
   assert.equal(calls, 1)
+})
+
+test('plugin catalog enum schema overrides adapter defaults, restricts candidates and revalidates before purchase', async () => {
+  const schema = { type: 'object' as const, additionalProperties: false as const, required: ['region'], properties: {
+    region: { type: 'string' as const, enum: ['eu', 'us'] },
+    strategy: { type: 'string' as const, enum: ['fast', 'balanced'], default: 'balanced' },
+  } }
+  let catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], schema)
+  let catalogCalls = 0
+  let calls = 0
+  const adapter = { routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
+    async getCatalog() { catalogCalls++; return catalog },
+    async selectRoute(_request: SerializedHttpRequest, _peers: PeerInfo[], context: RouteSelectionContext) {
+      calls++
+      assert.deepEqual(context.preferences, { region: 'eu', strategy: 'balanced' })
+      assert.equal(context.preferencesSchemaHash, createRoutingServiceMetadata(context.catalog!.preferencesSchema).preferencesSchemaHash)
+      assert.deepEqual(context.candidates.map(candidate => candidate.serviceId), ['model-a'])
+      return [{ serviceId: 'model-a' }]
+    },
+  }
+  const router: Router = { selectPeer: () => null, onResult: () => {}, getModelRouterAdapter: () => adapter }
+  const service = { peerId: peer.peerId, provider: 'routing-vendor', serviceId: 'route' }
+  const available = [candidates()[0]!, { ...candidates()[0]!, serviceId: 'model-b' }]
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request,
+    peers: [peer], candidates: available, conversationKey: null, signal: new AbortController().signal }
+  const invalidPreferences: Array<Record<string, string>> = [{}, { region: 'elsewhere' }, { region: 'eu', unsupported: 'value' }]
+  for (const preferences of invalidPreferences) {
+    await assert.rejects(executeRouterSelection({ ...args, selection: { kind: 'router', service, preferences } }))
+  }
+  assert.equal(calls, 0)
+  const catalogs = new RoutingCatalogCache()
+  await executeRouterSelection({ ...args, catalogs, selection: { kind: 'router', service, preferences: { region: 'eu' } } })
+  await executeRouterSelection({ ...args, catalogs, selection: { kind: 'router', service, preferences: { region: 'eu' } } })
+  assert.equal(calls, 2)
+  const cachedCalls = catalogCalls
+  catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], {
+    ...schema, properties: { ...schema.properties, region: { type: 'string', enum: ['us'] } },
+  })
+  await executeRouterSelection({ ...args, catalogs, selection: { kind: 'router', service, preferences: { region: 'eu' } } })
+  assert.equal(catalogCalls, cachedCalls)
+  await assert.rejects(executeRouterSelection({ ...args, selection: { kind: 'router', service, preferences: { region: 'eu' } } }), /enum/)
+  assert.equal(calls, 3)
+  catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-z' }], { type: 'object', properties: {}, additionalProperties: false })
+  await assert.rejects(executeRouterSelection({ ...args, selection: { kind: 'router', service } }), /supported by this router/)
+  assert.equal(calls, 3)
+})
+
+test('a failed recommendation invalidates the cached plugin catalog', async () => {
+  let catalogCalls = 0
+  let fail = true
+  const adapter = { routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
+    async getCatalog() { catalogCalls++; return createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]) },
+    async selectRoute() { if (fail) throw new Error('Router model catalog changed'); return [{ serviceId: 'model-a' }] },
+  }
+  const router: Router = { selectPeer: () => null, onResult: () => {}, getModelRouterAdapter: () => adapter }
+  const catalogs = new RoutingCatalogCache()
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request, catalogs,
+    peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal,
+    selection: { kind: 'router' as const, service: { peerId: peer.peerId, provider: 'routing-vendor', serviceId: 'route' } } }
+  await assert.rejects(executeRouterSelection(args), /catalog changed/)
+  fail = false
+  await executeRouterSelection(args)
+  assert.equal(catalogCalls, 2)
+})
+
+test('model allowlists restrict adapter candidates, acceptance, and returned fallback destinations', async () => {
+  const first = candidates()[0]!
+  const available = [first, { ...first, serviceId: 'model-b' }, { ...first, provider: 'other' }]
+  const allowedModels = [{ provider: 'openai', serviceId: 'model-a' }]
+  let calls = 0
+  let forbiddenOnly = false
+  const router: Router = {
+    selectPeer: () => null, onResult: () => {},
+    async selectRoute(_request, _peers, context) {
+      calls++
+      assert.deepEqual(context.candidates.map(({ provider, serviceId }) => ({ provider, serviceId })), allowedModels)
+      assert.equal(context.acceptRecommendations([{ serviceId: 'model-b' }]), false)
+      return forbiddenOnly ? [{ serviceId: 'model-b' }] : [{ serviceId: 'model-b' }, { serviceId: 'model-a' }]
+    },
+  }
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request,
+    peers: [peer], candidates: available, conversationKey: null, signal: new AbortController().signal }
+  const result = await executeRouterSelection({ ...args, selection: { kind: 'router', allowedModels } })
+  assert.deepEqual(result.recommendations.map(route => route.serviceId), ['model-a'])
+  forbiddenOnly = true
+  await assert.rejects(executeRouterSelection({ ...args, selection: { kind: 'router', allowedModels } }), /no eligible recommendation/)
+  const before = calls
+  for (const blocked of [[], [{ provider: 'missing', serviceId: 'model-a' }]]) {
+    await assert.rejects(executeRouterSelection({ ...args, selection: { kind: 'router', allowedModels: blocked } }), /model allowlist/)
+  }
+  assert.equal(calls, before)
 })
 
 test('routing purchases cannot substitute a different routing-service peer', async () => {
@@ -120,6 +216,15 @@ test('an exact peer retains its provider choices without becoming a model-only r
     { serviceId: first.serviceId, peerId: first.peerId, candidate: first },
     { serviceId: second.serviceId, peerId: second.peerId, candidate: second },
   ])
+})
+
+test('an exact recommendation cannot switch providers on the same peer and model', () => {
+  const first = candidates()[0]!
+  const second = { ...first, provider: 'other-provider' }
+  assert.deepEqual(resolveRouterRecommendations([{ serviceId: first.serviceId, peerId: first.peerId, provider: second.provider }], [first, second]), [
+    { serviceId: second.serviceId, peerId: second.peerId, candidate: second },
+  ])
+  assert.deepEqual(resolveRouterRecommendations([{ serviceId: first.serviceId, peerId: first.peerId, provider: 'missing-provider' }], [first, second]), [])
 })
 
 test('a plugin cannot change fallback destinations after response acceptance', async () => {

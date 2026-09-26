@@ -18,6 +18,16 @@ function adapter(): ModelRouterAdapter {
 }
 
 describe('ModelRouterRegistry', () => {
+  it('rejects partial cached metadata until signed provider announcements are rediscovered', () => {
+    const registry = new ModelRouterRegistry()
+    const levanto = adapter()
+    registry.register('levanto-routing', levanto)
+    const cached = { ...peer, metadata: { capabilities: ['transport.webrtc.v1'] } } as PeerInfo
+    expect(() => registry.resolve(target, [cached])).toThrow('Selected router metadata is not available yet')
+    cached.metadata = structuredClone(peer.metadata)
+    expect(registry.resolve(target, [cached])).toBe(levanto)
+  })
+
   it('selects by the exact peer, provider, service and advertised protocol', () => {
     const registry = new ModelRouterRegistry()
     const levanto = adapter()

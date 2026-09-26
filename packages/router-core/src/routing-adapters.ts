@@ -12,6 +12,9 @@ export class ModelRouterRegistry {
 
   resolve(target: RoutingServiceTarget, peers: PeerInfo[]): ModelRouterAdapter {
     const peer = peers.find(candidate => candidate.peerId === target.peerId)
+    if (peer && !Array.isArray(peer.metadata?.providers)) {
+      throw new Error('Selected router metadata is not available yet. Wait for discovery or restart the router.')
+    }
     const providers = peer?.metadata?.providers.filter(provider => provider.provider === target.provider && provider.services.includes(target.serviceId)) ?? []
     if (providers.length !== 1) throw new Error('Selected routing service is not advertised by the selected peer')
     const protocols = [...new Set(providers[0]!.serviceApiProtocols?.[target.serviceId] ?? [])]

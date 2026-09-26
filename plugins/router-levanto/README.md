@@ -44,9 +44,10 @@ there is no separate seller-peer setting or cheapest-peer default.
 The advertised `levanto-routing` protocol identifies compatible services, rather
 than a hardcoded provider name. The remaining plugin settings are the existing
 local-router policy settings. Routing services stay out of the inference-model
-catalog; this change does not add a desktop picker.
+catalog; clients render router-advertised settings from the plugin-provided
+catalog schema.
 
-In router mode, messages-style requests using `model: "antseed"` or
+In router mode, requests using `model: "antseed"` or
 `model: "levanto-auto"` use the selected router, ignoring an old fixed-model
 default. System-proxy-marked connected-app requests also use the selected mode,
 not their connect-time model. Explicit client model choices and user conversation
@@ -58,8 +59,10 @@ Choose model mode to stop using the router:
 { "kind": "model", "model": "your-model" }
 ```
 
-The buyer plugin requires `messages` containing user text. Responses API `input`
-is not supported by this adapter. Failures do not silently switch routers.
+The buyer plugin accepts user text from `messages` or Responses API `input`
+(a string or message array). Downstream inference still uses the normal API
+adaptation pipeline. Requests without usable user text fail explicitly.
+Failures do not silently switch routers.
 
 ## Live selection and generic preferences
 
@@ -106,9 +109,14 @@ input, cached-input, and output tokens. Recommendation purchases do not add an
 extra conversation request count. A recommendation reporting zero tokens adds
 no tokens; token usage is not suppressed just because it came from a router.
 
-Preference schemas are defined directly in each installed model-router adapter
-through `ModelRouterAdapter.routingMetadata`; no HTTP metadata endpoint or new
-desktop controls are included. For Levanto, the schema is:
+Preference schemas come from the service catalog's `preferencesSchema`, which the
+adapter's `getCatalog()` fetches from the router API (`GET /_antseed/route/catalog`,
+base URL explicitly configured through `LEVANTO_ROUTING_PEER_URL`). No HTTP address
+or port is inferred from peer discovery. Without a configured URL, `getCatalog()`
+returns `undefined` without making an HTTP request; supported models are unknown
+and the adapter's fallback settings schema is empty. The same transport can serve
+different routing services with different settings. The buyer validates the exact selected service's schema.
+For example, a CQT field:
 
 ```json
 {
@@ -128,15 +136,20 @@ desktop controls are included. For Levanto, the schema is:
 The shared enum validation/hash machinery follows the former routing PRs 3/5:
 router-defined flat string choices, optional defaults/descriptions/required fields,
 unknown-value rejection, and a 16 KiB schema/value bound. It is not a global CQT
-enum. `ModelRouterAdapter.routingMetadata` supplies the selected adapter's descriptor;
-`RouteSelectionContext` carries current effective preferences, its schema hash,
-and the selected service. Levanto converts the string choice to its numeric
-backend `cqt`. `LEVANTO_CQT` is replaced by these live preferences.
+enum. `RouteSelectionContext` carries current effective preferences, their schema
+hash and the selected service. Routing v1 sends a generic `preferences` object
+with string values, not a top-level numeric `cqt`. A seller integrating Levanto's
+private API can translate its own `preferences.cqt` to that backend's format.
 
-This descriptor comes from the installed plugin, not unsigned seller HTTP data.
-This change does not reintroduce metadata v13 or claim remote schema negotiation.
-The Levanto wire request retains its existing fields; no new backend schema is
-required for enum preferences or exact-candidate filtering.
+Schemas are bound to the catalog and its revision, an opaque string chosen by
+the router and echoed as `catalogRevision`. Defaults and
+choices are validated before a routing purchase and again seller-side. Changed
+or removed choices fail validation rather than being silently replaced. Required
+fields without defaults require an explicit choice; optional fields can be unset.
+No free text, numbers, booleans or nested fields are supported.
+Without a catalog, the adapter descriptor remains the buyer's fallback;
+the built-in adapter has no settings. A different wire protocol still needs a
+registered adapter, but no client-specific settings code.
 
 ## Registering another routing adapter
 
@@ -170,7 +183,7 @@ discovery or installation of arbitrary npm plugins. For built-in integrations,
 add a default registration alongside Levanto in the local router factory.
 
 The buyer validates live selections and resolves preferences using the selected
-adapter's schema, and resolves it again from current peers before execution.
+service's catalog schema (or adapter fallback), and resolves it again from current peers before execution.
 Selections loaded before discovery are structurally checked immediately; their
 adapter/schema is checked before any routing purchase. In model mode the local
 router has no selected routing schema. Inference usage observations are shared
@@ -232,14 +245,28 @@ No additional desktop controls are included.
 ## Recommendation filtering
 
 The buyer's existing price, trust, peer-policy, availability, protocol and required
-parameter checks produce exact eligible model/peer/provider candidates. The plugin
-continues to send only their eligible peer IDs in `constraints.allowedPeerIds`.
+parameter checks produce exact eligible model/peer/provider candidates. A plugin-provided
+supported-model catalog further limits these candidates. The v1 plugin always
+sends `constraints.allowedCandidates` with exact `{ peerId, provider, serviceId }`
+tuples, plus `catalogRevision` when a catalog is available. A response must
+echo any supplied revision and include the exact provider on every accepted destination.
+Excluded tuples fail before inference and response acceptance. Catalog changes
+(409) and empty intersections (422) never trigger a retry without constraints.
 
-The response must have a valid v1 envelope and at most 512 ranked entries.
+The response must use `v: 1` and have at most 512 ranked entries.
 Malformed or unsupported entries, disallowed peers, and ineligible model/peer
 combinations are removed individually. Remaining entries keep their original
 order. A peer having one eligible model does not make its other models eligible.
 An invalid envelope or no usable destination fails before response acceptance.
+
+There is one in-review v1 contract, without version negotiation. The earlier peer-only
+draft is intentionally unsupported. Routers without a catalog still receive exact
+constraints, but their supported models are unknown. An invalid or expired catalog
+is an error, not permission to omit it. Clients must not present the network-wide
+model list as that router's supported-model list.
+
+Levanto's external backend must implement the catalog API and this revised
+contract before release.
 Unsupported inference overrides are rejected as a whole candidate, not stripped.
 The backend's predicted prices are not authoritative inference prices.
 
@@ -296,6 +323,11 @@ automatically increase the buyer's authorization. See
 The generic seller handler counts successful provider responses without checking
 Levanto's payload schema. If a provider returns HTTP success with an invalid
 payload, the buyer rejects it and will not authorize the seller's charge.
+The seller can then refuse subsequent purchases on that channel with HTTP 402
+because its completed-work total exceeds the buyer's authorized total. The
+buyer reports a payment error; the user can select a model or another router. There is no automatic disputed-charge authorization, refund, or channel
+recovery. Providers must validate successful responses before returning them;
+this behavior is a paid-rollout acceptance gate, not just a transient retry.
 
 The endpoint and `v: 1` request/response bodies identify the routing format;
 there is no separate execution-contract setting. Completed-request pricing uses
@@ -309,12 +341,12 @@ upgraded buyers for all their services. Buyers and sellers must both upgrade to 
 completed-request billing.
 
 The external seller must implement the advertised Levanto routing API and
-accept `POST /_antseed/levanto-route` with `service: "levanto-route"`, `v`, numeric `cqt`,
+accept `POST /_antseed/levanto-route` with `service: "levanto-route"`, `v`, string-valued `preferences`,
 `inputMessage`, `promptTokens`, `expectedCachedTokens`, and `constraints`.
 The seller's handler must accept this API path;
 the buyer does not retry the former remote `/_antseed/route` path.
-Success responses contain `v: 1`, a nonempty `router` identifier and `ranked`
-entries with `model`, `peer`, `estimate`, and `price`. Day-pass renewal responses
+Success responses contain `v: 1`, a nonempty `router` identifier, any supplied
+`catalogRevision` and `ranked` entries with `model`, `peer`, `provider`, `estimate`, and `price`. Day-pass renewal responses
 are not accepted by this per-response contract.
 
 `service` identifies the advertised AntSeed offering that the seller dispatches

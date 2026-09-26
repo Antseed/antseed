@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
-import test, { type TestContext } from 'node:test'
+import test, { after, type TestContext } from 'node:test'
 import localPlugin from '@antseed/router-local'
 import {
   ANTSEED_BUYER_FAULT_ERROR_CODE,
@@ -15,6 +17,8 @@ import {
   buyerFault,
   computeTrustScore,
   createRoutingServiceMetadata,
+  type RoutingCatalogV1,
+  type RoutingPreferenceSchema,
   type ModelRoutingPreferences,
   type Router,
   type ModelRouterAdapter,
@@ -24,6 +28,11 @@ import {
   type PeerInfo,
   type SerializedHttpResponse,
 } from '@antseed/node'
+
+function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false }): RoutingCatalogV1 {
+  const content = { version: 1 as const, preferencesSchema, models }
+  return { ...content, revision: `rev-${JSON.stringify(content).length}-${models.length}` }
+}
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'
@@ -68,7 +77,18 @@ test('the local router switches between a model and Levanto without replacing th
       } } },
     }],
   } as NonNullable<PeerInfo['metadata']>
-  const router = await localPlugin.createRouter({})
+  const routingCatalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], {
+    type: 'object', additionalProperties: false, properties: { cqt: { type: 'string', enum: ['1', '3', '5', '7', '9'], default: '5' } },
+  })
+  const catalogRequests: string[] = []
+  const catalogServer = createServer((request, response) => {
+    catalogRequests.push(request.url ?? '')
+    response.setHeader('content-type', 'application/json')
+    response.end(JSON.stringify(routingCatalog))
+  })
+  await new Promise<void>(resolve => catalogServer.listen(0, '127.0.0.1', resolve))
+  after(() => new Promise<void>(resolve => catalogServer.close(() => resolve())))
+  const router = await localPlugin.createRouter({ LEVANTO_ROUTING_PEER_URL: `http://127.0.0.1:${(catalogServer.address() as AddressInfo).port}` })
   const peers = [inferencePeer, routingPeer]
   const proxy = makeBuyerProxyWithPeers(peers, peers, router)
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -82,10 +102,13 @@ test('the local router switches between a model and Levanto without replacing th
       assert.equal(options.maxFeeMicroUsdc, '1000')
       assert.equal(options.unitBilling?.service, 'levanto-route')
       const payload = JSON.parse(Buffer.from(request.body).toString())
-      assert.equal(payload.cqt, 9)
+      assert.deepEqual(payload.preferences, { cqt: '9' })
       assert.equal(payload.service, 'levanto-route')
+      assert.equal(payload.v, 1)
+      assert.ok(payload.constraints.allowedCandidates.some((candidate: { peerId: string; provider: string; serviceId: string }) =>
+        candidate.peerId === inferencePeer.peerId && candidate.provider === 'openai' && candidate.serviceId === 'model-a'))
       const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from(JSON.stringify({
-        v: 1, router: 'levanto', ranked: [{ model: 'model-a', peer: inferencePeer.peerId,
+        v: 1, catalogRevision: payload.catalogRevision, router: 'levanto', ranked: [{ model: 'model-a', peer: inferencePeer.peerId, provider: 'openai',
           estimate: { costUsd: 0.1, inputTokens: 4, cachedInputTokens: 0, outputTokens: 10 },
           price: { inUsdPerM: 1, outUsdPerM: 2, cachedInUsdPerM: 0 },
         }],
@@ -102,12 +125,14 @@ test('the local router switches between a model and Levanto without replacing th
   assert.equal((await setModel()).statusCode, 200)
   assert.equal((await infer()).statusCode, 200)
   assert.equal(requests.length, 1)
-  const selection = chatRouterSelection('d', '9')
+  const selection = { ...chatRouterSelection('d', '9'), service: { peerId: routingPeer.peerId, provider: 'levanto', serviceId: 'levanto-route' } }
   assert.equal((await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: { selection } }))).statusCode, 200)
   const routed = await infer()
   assert.equal(routed.statusCode, 200, routed.body)
   assert.deepEqual(requests.map(request => request.path), ['/v1/chat/completions', '/_antseed/levanto-route', '/v1/chat/completions'])
   assert.notEqual(requests[1]!.requestId, requests[2]!.requestId)
+  assert.equal(JSON.parse(Buffer.from(requests[1]!.body).toString()).catalogRevision, routingCatalog.revision)
+  assert.ok(catalogRequests.length >= 1 && catalogRequests.every(url => url === '/_antseed/route/catalog?provider=levanto&service=levanto-route'))
   assert.equal((await infer('model-a')).statusCode, 200)
   assert.equal((await infer(`${inferencePeer.peerId}@model-a`)).statusCode, 200)
   assert.equal((await setModel()).statusCode, 200)
@@ -126,6 +151,23 @@ test('local routing stays in model mode by default and rejects unadvertised rout
   const selected = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: { selection: chatRouterSelection('d', '5') } }))
   assert.equal(selected.statusCode, 400)
   assert.match(selected.body, /not advertised/)
+})
+
+test('restored router peers without signed announcements return a discovery error, not a filter crash', async () => {
+  const selection = chatRouterSelection('d', '5')
+  const peers = parsePersistedPeers({ discoveredPeers: [{ peerId: 'd'.repeat(40), providers: ['levanto'],
+    capabilities: ['transport.webrtc.v1'], lastSeen: Date.now() }] })
+  assert.deepEqual(Object.keys(peers[0]!.metadata!), ['capabilities'])
+  const router = await localPlugin.createRouter({})
+  const proxy = makeBuyerProxyWithPeers(peers, peers, router)
+  ;(proxy as any)._mergeStateFile = async () => { throw new Error('Failed validation must not persist a route') }
+  ;(proxy as any)._node.sendRequest = () => { throw new Error('No purchase should be dispatched') }
+  const selected = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: { selection } }))
+  assert.equal(selected.statusCode, 400)
+  assert.match(JSON.parse(selected.body).error, /Selected router metadata is not available yet/)
+  assert.doesNotMatch(selected.body, /filter|TypeError/)
+  const current = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/route' }))
+  assert.deepEqual(JSON.parse(current.body).selection, { kind: 'model', model: null })
 })
 
 test('registered routing protocols select their own adapter and preference schema through the local router', async (testContext) => {
@@ -175,7 +217,7 @@ test('registered routing protocols select their own adapter and preference schem
   assert.deepEqual(contexts[0]!.preferences, { policy: 'quality' })
   assert.equal(contexts[0]!.preferencesSchemaHash, adapter.routingMetadata.preferencesSchemaHash)
   assert.deepEqual(contexts[0]!.routingService, target)
-  assert.equal((await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: { selection: chatRouterSelection('d', '9') } }))).statusCode, 200)
+  assert.equal((await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: { selection: { ...chatRouterSelection('d', '9'), preferences: {} } } }))).statusCode, 200)
   store.touch({ tool: 'vpr', sessionKey: 'adapter-chat' })
   const selectChat = (preferences: Record<string, string>) => invokeProxy(proxy, makeProxyRequest({
     path: '/_antseed/conversations/update', body: { id: 'vpr:adapter-chat', routingSelection: { kind: 'router', service: target, preferences } },

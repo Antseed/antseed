@@ -4,6 +4,7 @@ export type RoutingPreferences = Record<string, string>;
 export type RoutingPreferenceField = {
   type: 'string';
   enum: string[];
+  title?: string;
   description?: string;
   default?: string;
 };
@@ -54,10 +55,11 @@ export function validateRoutingPreferenceSchema(value: unknown): asserts value i
     || Object.keys(value).some(key => !['type', 'properties', 'additionalProperties', 'required'].includes(key))) throw new Error('Routing preferences require a flat object schema with additionalProperties: false');
   for (const [key, field] of Object.entries(value.properties)) {
     if (!key.trim() || forbiddenKeys.has(key) || !object(field) || field.type !== 'string'
-      || Object.keys(field).some(name => !['type', 'enum', 'description', 'default'].includes(name))
+      || Object.keys(field).some(name => !['type', 'enum', 'title', 'description', 'default'].includes(name))
       || !Array.isArray(field.enum) || field.enum.length === 0
       || field.enum.some(choice => typeof choice !== 'string' || !choice.trim())
       || new Set(field.enum).size !== field.enum.length) throw new Error('preferences.' + key + ': expected unique nonempty string choices');
+    if (own(field, 'title') && (typeof field.title !== 'string' || !field.title.trim())) throw new Error('Preference title must be a nonempty string');
     if (own(field, 'description') && typeof field.description !== 'string') throw new Error('Preference description must be a string');
     if (own(field, 'default') && !field.enum.includes(field.default)) throw new Error('Preference default must be an enum choice');
   }

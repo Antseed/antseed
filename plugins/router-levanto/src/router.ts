@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
-import type { PeerInfo, RouteRecommendation, RouteSelectionContext, ModelRouterAdapter, RoutingUsageObservation, SerializedHttpRequest } from '@antseed/node';
-import { completedRequestPrice, resolveServiceBillingOffer, canonicalRoutingJson, createRoutingServiceMetadata, resolveRoutingPreferences } from '@antseed/node';
+import type { PeerInfo, RouteRecommendation, RouteSelectionContext, ModelRouterAdapter, RoutingCatalogV1, RoutingServiceTarget, RoutingUsageObservation, SerializedHttpRequest } from '@antseed/node';
+import { completedRequestPrice, resolveServiceBillingOffer, canonicalRoutingJson, createRoutingServiceMetadata, resolveRoutingPreferences, validateRoutingCatalog } from '@antseed/node';
 import { LEVANTO_ROUTING_PATH, validateRoutingRequest, validateRoutingResponse } from './validation.js';
 import { CacheObservations } from './cache-observations.js';
 
@@ -8,13 +8,36 @@ type CachedRoute = { text: string; fingerprint: string; routes: RouteRecommendat
 
 export const levantoRoutingMetadata = createRoutingServiceMetadata({
   type: 'object', additionalProperties: false,
-  properties: { cqt: { type: 'string', enum: ['1', '3', '5', '7', '9'], default: '5', description: 'Cost/quality preference' } },
+  properties: {},
 });
+
+export const LEVANTO_CATALOG_PATH = '/_antseed/route/catalog';
+
+export type LevantoRoutingAdapterOptions = {
+  routingPeerUrl?: string;
+  fetchImpl?: typeof fetch;
+};
 
 export class LevantoRoutingAdapter implements ModelRouterAdapter {
   readonly routingMetadata = structuredClone(levantoRoutingMetadata);
   private readonly conversations = new Map<string, CachedRoute>();
   readonly observations = new CacheObservations();
+
+  constructor(private readonly options: LevantoRoutingAdapterOptions = {}) {}
+
+  async getCatalog(target: RoutingServiceTarget, _peers: PeerInfo[], signal: AbortSignal): Promise<RoutingCatalogV1 | undefined> {
+    const base = this.options.routingPeerUrl?.trim().replace(/\/+$/, '');
+    if (!base) return undefined;
+    const url = new URL(`${base}${LEVANTO_CATALOG_PATH}`);
+    url.searchParams.set('provider', target.provider);
+    url.searchParams.set('service', target.serviceId);
+    const response = await (this.options.fetchImpl ?? fetch)(url, { headers: { accept: 'application/json' }, signal });
+    if (response.status === 404) return undefined;
+    if (!response.ok) throw new Error(`Router catalog unavailable (${response.status})`);
+    const catalog: unknown = await response.json();
+    validateRoutingCatalog(catalog);
+    return catalog;
+  }
 
   recordUsage(observation: RoutingUsageObservation): void {
     this.observations.record(observation);
@@ -24,18 +47,26 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
     const body = JSON.parse(new TextDecoder().decode(request.body)) as Record<string, unknown>;
     if (body.model !== 'levanto-auto' && body.model !== 'antseed') return null;
     context.signal.throwIfAborted();
-    const preferences = resolveRoutingPreferences(levantoRoutingMetadata.preferencesSchema, context.preferences ?? {});
-    if (context.preferencesSchemaHash !== undefined && context.preferencesSchemaHash !== levantoRoutingMetadata.preferencesSchemaHash) throw new Error('Routing preferences schema changed');
     const target = context.routingService;
     if (!target) throw new Error('Select a Levanto routing-service peer');
-    const fingerprint = canonicalRoutingJson({ target, preferences, schema: levantoRoutingMetadata.preferencesSchemaHash });
-    const messages = Array.isArray(body.messages) ? body.messages : [];
+    const catalog = context.catalog;
+    if (catalog) validateRoutingCatalog(catalog);
+    const metadata = catalog ? createRoutingServiceMetadata(catalog.preferencesSchema) : this.routingMetadata;
+    const preferences = resolveRoutingPreferences(metadata.preferencesSchema, context.preferences ?? {});
+    if (context.preferencesSchemaHash !== undefined && context.preferencesSchemaHash !== metadata.preferencesSchemaHash) throw new Error('Routing preferences schema changed');
+    const eligible = context.candidates.filter(candidate => !catalog || catalog.models.some(model =>
+      model.provider === candidate.provider && model.serviceId === candidate.serviceId));
+    const allowedCandidates = [...new Map(eligible.map(({ peerId, provider, serviceId }) =>
+      [JSON.stringify([peerId, provider, serviceId]), { peerId, provider, serviceId }])).values()];
+    const fingerprint = canonicalRoutingJson({ target, preferences, schema: metadata.preferencesSchemaHash,
+      catalogRevision: catalog?.revision ?? null, allowedCandidates });
+    const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : [];
     const latestUser = [...messages].reverse().find(message => message && message.role === 'user');
-    const content: unknown = latestUser?.content;
+    const content: unknown = latestUser?.content ?? (typeof body.input === 'string' ? body.input : undefined);
     const text = typeof content === 'string' ? content : Array.isArray(content)
       ? content.map(block => typeof block?.text === 'string' ? block.text : '').join('\n') : '';
-    if (!text.trim()) throw new Error('Levanto routing requires a messages request with user text');
-    if (!context.candidates.length) throw new Error('No eligible inference candidates');
+    if (!text.trim()) throw new Error('Levanto routing requires user text in messages or Responses input');
+    if (!eligible.length) throw new Error('No eligible inference candidates supported by this router');
     const cached = context.conversationKey ? this.conversations.get(context.conversationKey) : undefined;
     if (cached?.text === text && cached.fingerprint === fingerprint && context.acceptRecommendations(cached.routes)) return structuredClone(cached.routes);
     if (context.conversationKey) this.conversations.delete(context.conversationKey);
@@ -54,9 +85,11 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
     const inputMessage = text.length > 8192 ? text.slice(0, 4096) + text.slice(-4096) : text;
     const promptTokens = Math.ceil(text.length / 4);
     const payload = {
-      v: 1, cqt: Number(preferences.cqt), inputMessage, promptTokens,
-      expectedCachedTokens: this.observations.estimates(context.conversationKey, context.candidates, promptTokens),
-      constraints: { allowedPeerIds: [...new Set(context.candidates.map(candidate => candidate.peerId))] },
+      v: 1, preferences, inputMessage, promptTokens,
+      ...(catalog ? { catalogRevision: catalog.revision } : {}),
+      expectedCachedTokens: this.observations.estimates(context.conversationKey, eligible, promptTokens),
+      constraints: { allowedPeerIds: [...new Set(eligible.map(candidate => candidate.peerId))],
+        allowedCandidates },
     };
     validateRoutingRequest(payload);
     let recommendations: RouteRecommendation[] | undefined;
@@ -71,8 +104,9 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
       acceptResponse: response => {
         const parsed: unknown = JSON.parse(new TextDecoder().decode(response.body));
         const ranked = validateRoutingResponse(parsed, payload);
-        const routes = ranked.filter(entry => context.candidates.some(candidate => candidate.peerId === entry.peer && candidate.serviceId === entry.model))
-          .map(entry => ({ serviceId: entry.model, peerId: entry.peer }));
+        const routes = ranked.filter(entry => eligible.some(candidate => candidate.peerId === entry.peer && candidate.serviceId === entry.model
+          && entry.provider === candidate.provider))
+          .map(entry => ({ serviceId: entry.model, peerId: entry.peer, provider: entry.provider }));
         if (!routes.length) return false;
         if (!context.acceptRecommendations(routes)) return false;
         recommendations = routes;
@@ -80,6 +114,9 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
       },
     });
     context.signal.throwIfAborted();
+    if (response.statusCode === 409) throw new Error('Router model catalog changed. Retry to use the latest catalog.');
+    if (response.statusCode === 422) throw new Error('Router cannot rank any allowed candidate. Update the allowed models or choose another router.');
+    if (response.statusCode === 402) throw new Error('Routing payment could not be completed. The channel may have unpaid or disputed work. Select a model or another router; no unaccepted response will be authorized.');
     if (response.statusCode < 200 || response.statusCode >= 300 || !recommendations) throw new Error(`Levanto routing failed (${response.statusCode})`);
     if (context.conversationKey) {
       this.conversations.set(context.conversationKey, { text, fingerprint, routes: structuredClone(recommendations) });

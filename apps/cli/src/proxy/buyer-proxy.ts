@@ -94,7 +94,7 @@ import {
   type ConversationIdentity,
 } from './conversation-identity.js'
 import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
-import { eligibleRouterCandidates, executeRouterSelection, requestForRouterCandidate, type ExecutionCandidate } from './router-execution.js'
+import { eligibleRouterCandidates, executeRouterSelection, requestForRouterCandidate, routingMetadataForService, RoutingCatalogCache, type ExecutionCandidate } from './router-execution.js'
 import { recordRouterUsage } from './routing-usage.js'
 import type { DepositWatcher } from './deposit-watcher.js'
 import {
@@ -814,6 +814,7 @@ export class BuyerProxy {
    * Per-chat selections and explicit request pins can override this default.
    */
   private _routingSelection: RoutingSelection = { kind: 'model', model: null }
+  private readonly _routingCatalogs = new RoutingCatalogCache()
   private _conversations!: ConversationStore
   /**
    * Wall-clock of the last model-request activity (dispatch or streamed
@@ -1114,7 +1115,7 @@ export class BuyerProxy {
     }
   }
 
-  private _validateRoutingSelection(value: unknown, peers?: PeerInfo[]): asserts value is RoutingSelection {
+  private _validateModelRoutingSelection(value: unknown): asserts value is RoutingSelection {
     if (!isRoutingSelection(value)) throw new Error('Invalid routing selection')
     if (value.kind === 'model' && value.model !== null && !isValidRoutedModelTarget(value.model)) throw new Error('Invalid model selection')
     if (value.kind === 'router') {
@@ -1122,18 +1123,23 @@ export class BuyerProxy {
       if (!router?.selectRoute && !router?.getModelRouterAdapter) throw new Error('The loaded router does not support routing-service selection')
       if (router.getModelRouterAdapter) {
         if (!value.service) throw new Error('Select an exact routing-service target')
-        if (!peers) return
+        return
       }
-      const metadata = router.getModelRouterAdapter ? router.getModelRouterAdapter(value.service!, peers!).routingMetadata : router.routingMetadata
+      const metadata = routingMetadataForService(router)
       if (metadata) validateRoutingServiceMetadata(metadata)
       resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, value.preferences ?? {})
     }
   }
 
   private async _validateRoutingService(value: RoutingSelection): Promise<void> {
-    if (value.kind === 'router' && this._node.router?.getModelRouterAdapter) {
-      this._validateRoutingSelection(value, await this._getPeers())
-    }
+    const router = this._node.router
+    if (value.kind !== 'router' || !router?.getModelRouterAdapter || !value.service) return
+    const peers = await this._getPeers()
+    const adapter = router.getModelRouterAdapter(value.service, peers)
+    const { catalog } = await this._routingCatalogs.get(adapter, value.service, peers)
+    const metadata = routingMetadataForService(adapter, catalog)
+    if (metadata) validateRoutingServiceMetadata(metadata)
+    resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, value.preferences ?? {})
   }
 
   private _setRoutingSelection(value: RoutingSelection): void {
@@ -1163,7 +1169,7 @@ export class BuyerProxy {
         : parsed.selection
       if (selection !== undefined) {
         // Validate saved JSON before passing it to the typed setter.
-        this._validateRoutingSelection(selection)
+        this._validateModelRoutingSelection(selection)
         this._setRoutingSelection(selection)
         // Persist the conversion once; an existing selection always takes precedence.
         if (migrateLegacyModel) await this._mergeStateFile({ selection })
@@ -1846,7 +1852,7 @@ export class BuyerProxy {
         const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
         if (!body || typeof body !== 'object' || Array.isArray(body)) throw new Error('Invalid route selection')
         const selection = body.selection
-        this._validateRoutingSelection(selection)
+        this._validateModelRoutingSelection(selection)
         await this._validateRoutingService(selection)
         this._setRoutingSelection(selection)
       } catch (error) {
@@ -1928,7 +1934,7 @@ export class BuyerProxy {
         try {
           if ('pinnedModel' in parsed) throw new Error('Update routingSelection or pinnedModel, not both')
           if (parsed.routingSelection !== null) {
-            this._validateRoutingSelection(parsed.routingSelection)
+            this._validateModelRoutingSelection(parsed.routingSelection)
             await this._validateRoutingService(parsed.routingSelection)
             if (parsed.routingSelection.kind !== 'router' || !parsed.routingSelection.service) {
               throw new Error('Conversation routing requires a router and an exact routing-service target')
@@ -2474,7 +2480,7 @@ export class BuyerProxy {
       // Actual inference is dispatched below; stop waiting here on disconnect or after two minutes.
       routerSelection = await executeRouterSelection({
         node: this._node, router: selectedRouter, request: serializedReq, peers: routingPeers, candidates,
-        conversationKey: routingConversationKey, selection,
+        conversationKey: routingConversationKey, selection, catalogs: this._routingCatalogs,
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
           // Register the recommendation's separate billing ID before it is sent.
