@@ -10,6 +10,7 @@ import {faqJsonLd} from '../lib/faqJsonLd';
 import {PricingBlock} from '../components/PricingBlock';
 import {AgentsLogoBar, SquareGlyph, PiGlyph} from '../components/AgentsLogoBar';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
+import {PrivacyPanel} from '../components/PrivacyPanel';
 import {SkillChip} from '../components/SkillChip';
 
 const TITLE = 'Run AI agents for a fraction of the price | Antseed';
@@ -223,6 +224,22 @@ const AGENT_FAQ = [
 
 const AGENT_FAQ_LD = faqJsonLd(AGENT_FAQ);
 
+function AgentPrivacy() {
+  return (
+    <PrivacyPanel
+      title="Your agent runs without a name."
+      anonymous={{
+        text: 'No signup, no email, no platform key. The agent pays per request from a wallet, so the provider never learns whose agent it is.',
+        to: '/privacy',
+      }}
+      privateCard={{
+        text: 'Require TEE verification when you start its endpoint and the agent only talks to verified providers. Its prompts and tool calls run in a secure enclave, hidden even from the provider.',
+        to: '/docs/guides/verify-tee',
+      }}
+    />
+  );
+}
+
 function AgentFaq() {
   return (
     <Section tone="tinted">
@@ -254,6 +271,7 @@ export default function AgentsPage(): JSX.Element {
       <ConnectAgents />
       <PointAtLocalhost />
       <WhatTheSkillDoes />
+      <AgentPrivacy />
       <AgentFaq />
       <FinalCta title="Run your agents on your terms." sub="Give your agent the skill, or download the AI VPN and connect it yourself.">
         <DownloadButton variant="white" />

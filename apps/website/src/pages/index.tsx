@@ -106,7 +106,7 @@ function PricingSection() {
    PRIVATE BY DESIGN — the Anonymous / Private cards, shared with /privacy.
    ============================================================ */
 function PrivateByDesign() {
-  return <PrivacyPanel title="So private, we have no idea who you are." />;
+  return <PrivacyPanel title="Private by design." />;
 }
 
 /* ============================================================

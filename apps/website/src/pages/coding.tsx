@@ -11,6 +11,7 @@ import {faqJsonLd} from '../lib/faqJsonLd';
 import {PricingBlock} from '../components/PricingBlock';
 import {LogoBar, SquareGlyph, PiGlyph, type LogoItem} from '../components/AgentsLogoBar';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
+import {PrivacyPanel} from '../components/PrivacyPanel';
 import {ConnectSwitchArt} from '../components/ConnectSwitchArt';
 import {Cursor} from '@lobehub/icons';
 
@@ -193,6 +194,22 @@ const CODING_FAQ = [
 
 const CODING_FAQ_LD = faqJsonLd(CODING_FAQ);
 
+function CodingPrivacy() {
+  return (
+    <PrivacyPanel
+      title="Your code stays yours."
+      anonymous={{
+        text: 'Your coding app talks to localhost. There is no account or API key on file, so no one can tie a session to you.',
+        to: '/privacy',
+      }}
+      privateCard={{
+        text: 'Working on something you cannot share? Route to a TEE-verified provider and your source is processed inside a secure enclave the provider cannot read.',
+        to: '/docs/guides/verify-tee',
+      }}
+    />
+  );
+}
+
 function CodingFaq() {
   return (
     <Section tone="tinted">
@@ -222,6 +239,7 @@ export default function CodingPage(): JSX.Element {
       <CodingPricing />
       <ConnectApps />
       <PointAtLocalhost />
+      <CodingPrivacy />
       <CodingFaq />
       <FinalCta title="Code on your terms.">
         <DownloadButton />
