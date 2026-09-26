@@ -10,7 +10,7 @@ export class ViewCache {
 
   constructor(private readonly ttlMs = DEFAULT_TTL_MS) {}
 
-  read<T>(key: string, load: () => Promise<T>, ttlMs = this.ttlMs): Promise<T> {
+  read<T>(key: string, load: () => Promise<T>, ttlMs = this.ttlMs, shouldCache: (value: T) => boolean = () => true): Promise<T> {
     const hit = this.entries.get(key);
     if (hit && Date.now() - hit.at < ttlMs) return Promise.resolve(hit.value as T);
     const running = this.inflight.get(key);
@@ -20,7 +20,13 @@ export class ViewCache {
     this.inflight.set(key, task);
     // Settle in the first continuation so a caller awaiting `task` never sees a stale in-flight entry.
     const settle = () => { if (this.inflight.get(key) === task) this.inflight.delete(key); };
-    task.then((value) => { if (generation === this.generation) this.entries.set(key, { at: Date.now(), value }); settle(); }, settle);
+    task.then((value) => {
+      if (generation === this.generation) {
+        if (shouldCache(value)) this.entries.set(key, { at: Date.now(), value });
+        else this.entries.delete(key);
+      }
+      settle();
+    }, settle);
     return task;
   }
 

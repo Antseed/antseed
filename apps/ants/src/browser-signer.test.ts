@@ -1,12 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
 import { type Provider, type TransactionResponse } from 'ethers';
 import { BrowserSigning } from './browser-signer.js';
+import { WALLET_ERRORS } from './wallet-errors.js';
 const from = '0x0000000000000000000000000000000000000001';
 const to = '0x0000000000000000000000000000000000000002';
 const hash = `0x${'ab'.repeat(32)}`;
 function fixture(overrides: object = {}) {
   const tx = { from, to, chainId: 31337n, data: '0x1234', value: 2n, nonce: 4, hash, ...overrides } as TransactionResponse;
-  const provider = { call: vi.fn(async () => '0x'), getTransactionCount: async () => 4, getNetwork: async () => ({ chainId: 31337n }), getTransaction: async () => tx, waitForTransaction: async () => ({ status: 1 }) } as unknown as Provider;
+  const provider = { call: vi.fn(async () => '0x'), getTransactionCount: async () => 4, getNetwork: async () => ({ chainId: 31337n }), getTransaction: async () => tx, waitForTransaction: async () => ({ status: 1, logs: [] }), getCode: async () => '0x' } as unknown as Provider;
   const bridge = new BrowserSigning(31337);
   return { bridge, signer: bridge.signer(from, provider), provider, tx };
 }
@@ -29,6 +30,26 @@ describe('browser signer', () => {
       await rejected;
     });
   }
+  it('accepts an EIP-7702 smart account routing the call through its delegation framework', async () => {
+    const delegationManager = '0x0000000000000000000000000000000000000003';
+    const { bridge, signer, provider, tx } = fixture({ to: delegationManager, data: '0xcef6d209' });
+    provider.getCode = vi.fn(async () => '0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b');
+    provider.waitForTransaction = vi.fn(async () => ({ status: 1, logs: [{ address: delegationManager }, { address: to }] })) as never;
+    const sent = signer.sendTransaction({ to, data: '0x1234', value: 2n });
+    await vi.waitFor(() => expect(bridge.request).not.toBeNull());
+    await bridge.complete(bridge.request!.id, hash);
+    expect(await sent).toBe(tx);
+  });
+  it('rejects a delegated account transaction that never reached the reviewed contract', async () => {
+    const { bridge, signer, provider } = fixture({ to: '0x0000000000000000000000000000000000000003', data: '0xcef6d209' });
+    provider.getCode = vi.fn(async () => '0xef010063c0c19a282a1b52b07dd5a65b58948a07dae32b');
+    provider.waitForTransaction = vi.fn(async () => ({ status: 1, logs: [{ address: '0x0000000000000000000000000000000000000003' }] })) as never;
+    const sent = signer.sendTransaction({ to, data: '0x1234', value: 2n });
+    const rejected = expect(sent).rejects.toThrow('does not match');
+    await vi.waitFor(() => expect(bridge.request).not.toBeNull());
+    await bridge.complete(bridge.request!.id, hash);
+    await rejected;
+  });
   it('cancels unsigned work and invalidates old signer references', async () => {
     const { bridge, signer } = fixture();
     const sent = signer.sendTransaction({ to });
@@ -98,11 +119,11 @@ it('keeps polling through an ethers TIMEOUT and tolerates a lagging endpoint on 
 it('rejects a wallet cancellation after the prompt was opened so a reloaded tab is not stuck', async () => {
   const { bridge, signer } = fixture();
   const sent = signer.sendTransaction({ to, data: '0x1234', value: 2n });
-  const rejected = expect(sent).rejects.toThrow('rejected or failed');
+  const rejected = expect(sent).rejects.toThrow(WALLET_ERRORS.rejected);
   await vi.waitFor(() => expect(bridge.request).not.toBeNull());
   const id = bridge.request!.id;
   bridge.begin(id);
-  await bridge.complete(id, undefined, 'Cancelled');
+  await bridge.complete(id, undefined, WALLET_ERRORS.rejected);
   await rejected;
   expect(bridge.request).toBeNull();
 });

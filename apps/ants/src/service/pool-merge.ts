@@ -9,8 +9,8 @@ export interface MergeInput {
   sellerEpochs: Map<string, IndexedSellerEpoch[]>;
   /** Epochs to show volume for, current first. */
   epochs: number[];
-  /** Your open positions per agent and their live power this epoch. */
-  own: Map<number, { positionIds: number[]; power: bigint; stake: bigint }>;
+  /** Your open positions per agent: live power this epoch, stake counting now, and stake pending activation. */
+  own: Map<number, { positionIds: number[]; power: bigint; stake: bigint; pending: bigint }>;
 }
 
 function bps(part: bigint, whole: bigint): number {
@@ -61,6 +61,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       stakers: pool.stakers ?? null,
       stakeable: pool.registered,
       activeStake: pool.activeStake,
+      pendingStake: pool.pendingStake,
       weight: pool.weight,
       powerShareBps: pool.powerShareBps || bps(weight, totalPower),
       securityShareBps: Number(pool.securityShareBps),
@@ -73,6 +74,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       lastEpochRewardPer1kPower: pool.lastRewardPer1kPower,
       projectedRewardPer1kPower: pool.projectedRewardPer1kPower,
       yourStake: (mine?.stake ?? 0n).toString(),
+      yourPendingStake: (mine?.pending ?? 0n).toString(),
       yourPower: (mine?.power ?? 0n).toString(),
       yourPoolShareBps: bps(mine?.power ?? 0n, weight),
       yourPositionIds: mine?.positionIds ?? [],
@@ -91,6 +93,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       hasPool: false,
       stakeable: false,
       activeStake: (mine?.stake ?? 0n).toString(),
+      pendingStake: (mine?.pending ?? 0n).toString(),
       weight: '0',
       powerShareBps: 0,
       securityShareBps: 0,
@@ -103,6 +106,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       lastEpochRewardPer1kPower: null,
       projectedRewardPer1kPower: null,
       yourStake: (mine?.stake ?? 0n).toString(),
+      yourPendingStake: (mine?.pending ?? 0n).toString(),
       yourPower: (mine?.power ?? 0n).toString(),
       yourPoolShareBps: 0,
       yourPositionIds: mine?.positionIds ?? [],

@@ -15,7 +15,7 @@ describe('last-epoch model usage', () => {
     usage: [{ serviceId: 'model', name: 'Test Model', requests: '3', inputTokens: '20', outputTokens: '10', volumeUsdc: '1500000' }],
   };
   const render = (view: SellerModelsView) => {
-    vi.mocked(usePageData).mockReturnValue({ data: view, error: null, loading: false, reconciling: false, updatedAt: 1, refresh: vi.fn() });
+    vi.mocked(usePageData).mockReturnValue({ data: view, error: null, loading: false, reconciling: false, partial: false, updatedAt: 1, refresh: vi.fn() });
     return renderToStaticMarkup(createElement(SellerModels, { address: '0x0000000000000000000000000000000000000001' }));
   };
   it('keeps the epoch and totals without the period and explanatory copy', () => {

@@ -13,6 +13,8 @@ const THROTTLE_COOLDOWN_MS = 20_000;
 /** Pace calls before an endpoint throttles to limit bursts against public gateways. */
 const PACED_CALLS_PER_SECOND = 8;
 const RATE_LIMIT_CODE = -32005;
+/** Deployed contract code does not change; Multicall3 is probed on every batched read. */
+const CODE_CACHE_MS = 10 * 60_000;
 
 interface Endpoint {
   url: string;
@@ -34,6 +36,7 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
   private readonly transport: RpcTransport;
   private readonly now: () => number;
   private readonly inflightReads = new Map<string, Promise<JsonRpcResult[]>>();
+  private readonly codeCache = new Map<string, { result: string; at: number }>();
 
   constructor(urls: string[], evmChainId?: number, options: { transport?: RpcTransport; now?: () => number } = {}) {
     if (urls.length === 0) throw new Error('At least one RPC endpoint is required.');
@@ -60,6 +63,9 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
     if (Array.isArray(payload) || !['eth_call', 'eth_getCode', 'eth_getBalance'].includes(payload.method)) {
       return this.sendPayload(payload);
     }
+    const codeAddress = payload.method === 'eth_getCode' && Array.isArray(payload.params) && typeof payload.params[0] === 'string' ? payload.params[0].toLowerCase() : null;
+    const cachedCode = codeAddress ? this.codeCache.get(codeAddress) : undefined;
+    if (cachedCode && this.now() - cachedCode.at < CODE_CACHE_MS) return [{ id: payload.id, result: cachedCode.result }];
     const key = JSON.stringify([payload.method, payload.params]);
     let pending = this.inflightReads.get(key);
     if (!pending) {
@@ -67,7 +73,11 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
       this.inflightReads.set(key, pending);
     }
     try {
-      return (await pending).map(result => ({ ...result, id: payload.id }));
+      const results = (await pending).map(result => ({ ...result, id: payload.id }));
+      const code = results[0] && 'result' in results[0] ? results[0].result : undefined;
+      // Only deployed code is remembered: an account may still gain EIP-7702 delegation later.
+      if (codeAddress && typeof code === 'string' && code !== '0x') this.codeCache.set(codeAddress, { result: code, at: this.now() });
+      return results;
     } finally {
       if (this.inflightReads.get(key) === pending) this.inflightReads.delete(key);
     }

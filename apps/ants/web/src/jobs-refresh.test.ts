@@ -60,4 +60,10 @@ describe('transaction-confirmed refresh signals', () => {
     ingest([done], false);
     expect(mocks.invalidate).not.toHaveBeenCalled();
   });
+
+  it('does not announce old failures discovered after initial loading', () => {
+    ingest([], true);
+    ingest([{ ...pending, status: 'failed', error: 'Old restaking failure' }], false);
+    expect(mocks.invalidate).not.toHaveBeenCalled();
+  });
 });

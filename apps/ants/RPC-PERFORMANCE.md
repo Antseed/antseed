@@ -42,6 +42,24 @@ benefit depends on the timing and overlap of actual view requests.
 
 ## Failure behavior
 
+- Explorer REST reads keep the request pending through at most two attempts:
+  eight seconds per attempt, a 750ms minimum delay, and an 18-second budget per
+  resource read (not for the entire dashboard, which also performs chain reads).
+  Network failures, timeouts, HTTP 408/429 and 5xx responses qualify for retry.
+  `Retry-After` is honored when another full attempt fits within the budget;
+  otherwise the failure is returned. Other 4xx responses and invalid JSON are
+  not retried. Transaction submissions are unaffected.
+- Cacheable identical explorer REST reads share an in-flight promise even past
+  the cache TTL. Freshness begins at completion, and invalidated reads cannot
+  repopulate the cache for another wallet.
+- The seller list stays loading during active reads and automatic recovery.
+  Existing rows remain visible as previously loaded data. Only after failure
+  does the page offer **Try again** and explain whether the displayed list is
+  stale or limited to the wallet's own pools. Temporary chain-only results are
+  not cached as fresh by the API or any frontend pool consumer; returning to
+  the page revalidates them. An intentionally unconfigured explorer remains a
+  supported chain-only mode, without automatic recovery or a retry prompt.
+
 - A failed Multicall deployment probe propagates its error; it does not trigger
   individual-call fallback. Only a successful empty-code response selects that
   fallback, whose concurrency is bounded.
@@ -59,48 +77,76 @@ benefit depends on the timing and overlap of actual view requests.
 
 ## Validation
 
+### Network snapshot
+
+`GET /api/network` reads a coherent block-pinned snapshot. The main Network page
+and modern Overview share its in-flight request and 20-second result cache;
+wallet reads remain separate. Epoch boundaries and context invalidation expire
+live results. Immutable gate timing/schedule constants are cached separately by
+context and chain configuration. Mutable configuration is read at the snapshot
+block, including next-epoch settings and gate budgets. Budgets come from the
+reward contracts, not a reimplementation of their dynamic formulas.
+
+The snapshot verifies controller/gate/pool/accounting connections and registry
+activation. Missing reads stay unavailable. Overview hides an incomplete network
+summary instead of substituting mixed indexed and live numbers. The page retains
+the previous snapshot with a stale warning on refresh errors. Visible Network
+pages refresh every 60 seconds, at the estimated epoch boundary, on visibility
+restoration, and after action invalidation; the countdown itself makes no RPCs.
+
+Measured on the local Anvil fork (block 51,304,816, without endpoint failures):
+
+| Read | Transport requests |
+| --- | ---: |
+| Previous uncached emissions service, including stack discovery and legacy details | 35 `eth_call` requests |
+| New cold network snapshot | 1 block read + 1 code probe + 2 Multicalls = 4 |
+| New expired/invalidated snapshot with immutable metadata cached | 1 block read + 1 code probe + 1 Multicall = 3 |
+| Shared snapshot cache hit | 0 |
+
+These are network/emissions-read counts, not whole-dashboard totals. Wallet
+reads, startup endpoint selection, retry/fallback requests, and expanded history
+are outside the new snapshot counts. Multicall still executes each underlying
+getter; providers without Multicall fall back to bounded individual calls.
+Legacy emissions, verification, and usage history mount only when expanded.
+
+Regression checks:
+
+```sh
+pnpm --dir apps/ants exec vitest run src/service/network.test.ts src/service/overview-reads.test.ts web/src/network-page.test.ts
+```
+
 ### Antscan display migration
 
-The overview, positions and pools views share a 15-second cached Antscan GraphQL
-snapshot for the connected wallet and current/previous epochs. A small response
-fits in one HTTP request; each collection is paginated in groups of 100, with
-only unfinished collections included in subsequent requests. This is additional
-to the existing cached REST requests for the seller directory, volume history
-and pool summary. Participation details are fetched only when opening a pool.
+Position status, personal pool totals, and staking rewards share Antscan's
+paginated `include=rewards` response, cached for 15 seconds. Live status and
+reward freshness are validated independently. With Antscan configured, failed
+position reads surface an error rather than falling back to per-position RPC
+calls; unavailable rewards remain `null`, not zero. Explicitly unconfigured local
+setups retain chain reads. Transaction preparation and authorization remain live.
 
-With a healthy, complete snapshot:
+Post-transaction read barriers return HTTP 202 with `state: "syncing"` rather
+than a display error. The dashboard retains the last successful snapshot with an
+"Updating…" label and re-reads every three seconds while the tab is visible,
+until Antscan catches up; no manual refresh is required.
+Positions show an empty-wallet message only after a successful, current read.
+Pool and seller-detail reads are not blocked by a wallet barrier: public
+statistics still load (falling back to chain reads for network totals), while
+the response sets `walletSyncing` and omits the wallet's own pool figures. The
+dashboard labels those figures "Updating…", re-reads them on the same schedule,
+and does not cache the response.
 
-- Overview removes three contract getters: network active stake, network power
-  and the staker epoch budget (14 → 11 subcalls in the integration fixture).
-- Display position enumeration and record reads move to Antscan. The max-lock
-  display flag also moves, reducing status getters for an open position from
-  three to two. Locally tracked changes override indexed records with live reads.
-- Historical pool principal, power, usage, settled emissions and APY inputs no
-  longer generate RPC calls. Unsettled yield estimates use the indexed budget
-  and weighted usage from the same completed epoch. The pool fixture makes only
-  four subcalls: two wallet stake/power reads and two lock-configuration reads;
-  registration checks are separately mocked in this fixture and remain live.
-- Current network totals and wallet position grouping use the same snapshot.
+Pool statistics use a separate, wallet-independent GraphQL snapshot of current
+and previous epochs, also cached for 15 seconds. It does not fetch wallet
+positions again. Epoch and pool collections paginate in groups of 100, requesting
+only unfinished collections. The snapshot must match the chain/current epoch
+and be no older than 120 seconds. Duplicate records, broken pagination and
+changing checkpoints are rejected. Each caller still checks its session's
+post-transaction block marker before using the shared statistics.
 
-These remove underlying contract execution, not just HTTP overhead. They do not
-imply a whole-dashboard percentage improvement: exact reward previews still read
-positions and reward algorithm inputs on chain. Wallet balances, wallet aggregate
-totals, allowances/permissions, registration, withdrawal eligibility, penalty
-quotes and all transaction paths remain live. The earlier batching benchmark
-above measures a different scope and must not be added to these savings.
-
-The snapshot must match the chain and current epoch, have a checkpoint no older
-than 120 seconds, and contain valid complete rows. Old event timestamps alone
-do not imply stale data. Pagination rejects duplicate records, missing/repeated
-cursors, partial responses and checkpoint changes rather than publishing an
-incomplete wallet. Under a moving checkpoint, a paginated read can conservatively
-fall back; a later refresh retries. Actions invalidate the cached snapshot.
-
-On unavailable/stale snapshots, wallet records/status and current network totals
-fall back to chain reads with source warnings. Historical yields remain unknown
-(not zero), without a per-pool historical RPC fallback storm. With no configured
-indexer, the existing chain-only mode remains available. Missing current pool
-rows explicitly warn that summary statistics may lag.
+Unavailable pool snapshots can fall back to live current network totals;
+historical yields stay unknown without per-pool historical RPC fallback.
+Modern Overview uses the separate live network snapshot described above.
+These read reductions do not establish a whole-dashboard performance percentage.
 
 ### Commands
 

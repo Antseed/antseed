@@ -14,6 +14,7 @@ import {
   DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD,
   DEFAULT_GAS_CHECK_INTERVAL_MS,
   DEFAULT_MIN_GAS_BALANCE_WEI,
+  SellerFreeTierLimiter,
   formatEther,
   parseEther,
   type Provider,
@@ -625,6 +626,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
       console.log(chalk.dim(`  reserve floor: ${effectiveSellerConfig.reserveFloor}`))
       console.log(chalk.dim(`  max concurrent buyers: ${effectiveSellerConfig.maxConcurrentBuyers}`))
+      if (effectiveSellerConfig.freeTier) {
+        console.log(chalk.dim(`  free tier: ${new SellerFreeTierLimiter(effectiveSellerConfig.freeTier).describe()}`))
+      } else {
+        console.log(chalk.dim('  free tier: unlimited for fully zero-priced services'))
+      }
       if (healthCheckEnabled) {
         const intervalMs = healthCheckCfg?.intervalMs ?? DEFAULT_HEALTH_CHECK_INTERVAL_MS
         const failureThreshold = healthCheckCfg?.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD
@@ -704,6 +710,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(dhtPort ? { dhtPort } : {}),
         ...(signalingPort ? { signalingPort } : {}),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
+        ...(effectiveSellerConfig.freeTier ? { freeTier: effectiveSellerConfig.freeTier } : {}),
         payments: {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,

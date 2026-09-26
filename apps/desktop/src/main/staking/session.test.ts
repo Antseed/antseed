@@ -13,6 +13,7 @@ function fixture() {
       get busy() { return state.busy; },
       pauseWrites() { if (state.busy) throw new Error('busy'); events.push(`pause ${id}`); },
       async open() { events.push(`open ${id}`); },
+      async copyLink(page = 'stake') { events.push(`copy ${id} ${page}`); },
       async close() { events.push(`close ${id}`); },
     };
   });
@@ -54,7 +55,7 @@ test('a slow startup finishes before config reset and shutdown prevents another 
   const events: string[] = [];
   const manager = new StakingSessionManager(async () => {
     await ready;
-    return { busy: false, pauseWrites() { events.push('pause'); }, async open() { events.push('open'); }, async close() { events.push('close'); } };
+    return { busy: false, pauseWrites() { events.push('pause'); }, async open() { events.push('open'); }, async copyLink() {}, async close() { events.push('close'); } };
   });
   const opening = manager.open();
   const reset = manager.reset(async () => { events.push('config'); });
@@ -69,7 +70,7 @@ test('startup failure is retryable and failed identity import leaves no stale se
   let attempts = 0;
   const manager = new StakingSessionManager(async () => {
     if (++attempts === 1) throw new Error('wallet unavailable');
-    return { busy: false, pauseWrites() {}, async open() {}, async close() {} };
+    return { busy: false, pauseWrites() {}, async open() {}, async copyLink() {}, async close() {} };
   });
   await assert.rejects(manager.open(), /wallet unavailable/);
   await manager.open();
@@ -87,7 +88,7 @@ test('quitting during startup closes the created session without showing a windo
   const manager = new StakingSessionManager(async () => {
     started();
     await ready;
-    return { busy: false, pauseWrites() {}, async open() { events.push('open'); }, async close() { events.push('close'); } };
+    return { busy: false, pauseWrites() {}, async open() { events.push('open'); }, async copyLink() {}, async close() { events.push('close'); } };
   });
   const opening = manager.open();
   await starting;
@@ -104,7 +105,7 @@ test('both destinations share one session and keep their intended route and toke
   const pages: string[] = [];
   const manager = new StakingSessionManager(async () => {
     creates++;
-    return { busy: false, pauseWrites() {}, async close() {}, async open(page = 'stake') { pages.push(page); } };
+    return { busy: false, pauseWrites() {}, async close() {}, async copyLink() {}, async open(page = 'stake') { pages.push(page); } };
   });
   await manager.open('rewards'); await manager.open('stake'); await manager.open();
   assert.equal(creates, 1);
@@ -115,4 +116,38 @@ test('both destinations share one session and keep their intended route and toke
     assert.equal(params.get('token'), 'session'); assert.equal(params.get('page'), page);
     assert.equal(url.origin, 'http://127.0.0.1:3119');
   }
+});
+
+test('copy starts a session without opening a browser and shares it with later launches', async () => {
+  const { manager, events } = fixture();
+  await Promise.all([manager.copyLink('rewards'), manager.copyLink()]);
+  assert.deepEqual(events, ['create 1', 'copy 1 rewards', 'copy 1 stake']);
+  await manager.open('stake');
+  assert.deepEqual(events, ['create 1', 'copy 1 rewards', 'copy 1 stake', 'open 1']);
+});
+
+test('copy after an identity change uses a fresh session and cannot run after shutdown', async () => {
+  const { manager, events } = fixture();
+  await manager.copyLink('rewards');
+  await Promise.all([
+    manager.reset(async () => { events.push('import'); }),
+    manager.copyLink('stake'),
+  ]);
+  assert.deepEqual(events, ['create 1', 'copy 1 rewards', 'pause 1', 'close 1', 'import', 'create 2', 'copy 2 stake']);
+  await manager.stop();
+  await assert.rejects(manager.copyLink(), /shutting down/);
+});
+
+test('copy failures propagate and remain retryable', async () => {
+  let copies = 0;
+  const manager = new StakingSessionManager(async () => ({
+    busy: false,
+    pauseWrites() {},
+    async open() { assert.fail('copy must not open a browser'); },
+    async copyLink() { if (++copies === 1) throw new Error('clipboard unavailable'); },
+    async close() {},
+  }));
+  await assert.rejects(manager.copyLink('rewards'), /clipboard unavailable/);
+  await manager.copyLink('rewards');
+  assert.equal(copies, 2);
 });

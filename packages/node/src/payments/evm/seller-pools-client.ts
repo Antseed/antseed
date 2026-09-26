@@ -142,7 +142,8 @@ export class SellerPoolsClient extends BaseEvmClient {
       return { id, owner: result[0], agentId: Number(result[1]), amount: result[2], weightAmount: result[3], stakeStartEpoch: Number(result[4]), stakeEndEpoch: Number(result[5]), closedAtEpoch: Number(result[6]), withdrawn: result[7] };
     });
   }
-  async positionStatusesBatch(positions: SellerPoolPosition[], currentEpoch: number): Promise<Array<{ withdrawableEpoch: number; maxLocked: boolean; slashBps: number | null }>> {
+  /** `maxLockedNext` is the max-lock state from the next epoch, where enable/disable changes take effect. */
+  async positionStatusesBatch(positions: SellerPoolPosition[], currentEpoch: number): Promise<Array<{ withdrawableEpoch: number; maxLocked: boolean; maxLockedNext: boolean; slashBps: number | null }>> {
     const requests: MulticallRequest[] = [];
     const add = (method: string, args: number[]): number => {
       requests.push({ target: this.contractAddress, iface: SELLER_POOLS_IFACE, method, args });
@@ -153,16 +154,18 @@ export class SellerPoolsClient extends BaseEvmClient {
       return {
         withdrawable: add('positionWithdrawableEpoch', [position.id]),
         maxLock: open ? add('positionMaxLockPowerAtEpoch', [position.id, Math.max(currentEpoch, position.stakeStartEpoch)]) : null,
+        maxLockNext: open ? add('positionMaxLockPowerAtEpoch', [position.id, Math.max(currentEpoch + 1, position.stakeStartEpoch)]) : null,
         slash: open ? add('earlyExitSlashBps', [position.id]) : null,
       };
     });
     const results = await multicallRead(this.provider, requests);
     const read = (index: number): bigint => requiredRead(results, index, requests[index]!.method)[0] as bigint;
-    return indices.map(({ withdrawable, maxLock, slash }) => {
+    return indices.map(({ withdrawable, maxLock, maxLockNext, slash }) => {
       const withdrawableEpoch = Number(read(withdrawable));
       return {
         withdrawableEpoch,
         maxLocked: maxLock !== null && read(maxLock) !== 0n,
+        maxLockedNext: maxLockNext !== null && read(maxLockNext) !== 0n,
         slashBps: slash !== null && currentEpoch >= withdrawableEpoch ? Number(read(slash)) : null,
       };
     });

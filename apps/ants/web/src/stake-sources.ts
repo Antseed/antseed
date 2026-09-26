@@ -10,7 +10,12 @@ export interface StakeSource {
   positionId?: number;
 }
 
-/** Legacy/locked rewards deliberately have no direct staking route. */
+/**
+ * Sources an ANTS stake can come from. Legacy/locked rewards deliberately have
+ * no direct staking route. The wallet balance is only offered while the wallet
+ * can transfer ANTS: with transfers restricted, staking happens from rewards
+ * alone, so the wallet is not listed at all rather than shown disabled.
+ */
 export function stakeSources(rewards: RewardsView | null, balance: string, canTransfer: boolean): StakeSource[] {
   const sources: StakeSource[] = [];
   if (rewards) {
@@ -20,7 +25,7 @@ export function stakeSources(rewards: RewardsView | null, balance: string, canTr
       if (BigInt(position.amount) > 0n) sources.push({ id: `staker:${position.id}`, kind: 'staker', label: `Staking rewards · position #${position.id}`, amount: position.amount, available: true, agentId: position.agentId, positionId: position.id });
     }
   }
-  sources.push({ id: 'wallet', kind: 'wallet', label: 'Wallet balance', amount: balance, available: canTransfer });
+  if (canTransfer) sources.push({ id: 'wallet', kind: 'wallet', label: 'Wallet balance', amount: balance, available: true });
   return sources;
 }
 

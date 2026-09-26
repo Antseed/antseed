@@ -12,6 +12,7 @@ export interface StakingSession {
   readonly busy: boolean;
   pauseWrites(): void;
   open(page?: StakingPage): Promise<void>;
+  copyLink(page?: StakingPage): Promise<void>;
   close(): Promise<void>;
 }
 
@@ -34,6 +35,14 @@ export class StakingSessionManager {
   }
 
   open(page?: StakingPage): Promise<void> {
+    return this.withSession((session) => session.open(page));
+  }
+
+  copyLink(page?: StakingPage): Promise<void> {
+    return this.withSession((session) => session.copyLink(page));
+  }
+
+  private withSession(action: (session: StakingSession) => Promise<void>): Promise<void> {
     return this.run(async () => {
       if (this.stopping) throw new Error('VPR is shutting down.');
       if (!this.session) {
@@ -44,7 +53,7 @@ export class StakingSessionManager {
         }
         this.session = session;
       }
-      await this.session.open(page);
+      await action(this.session);
     });
   }
 

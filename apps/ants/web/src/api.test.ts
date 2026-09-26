@@ -4,6 +4,11 @@ import { api, ApiError } from './api';
 afterEach(() => vi.unstubAllGlobals());
 
 describe('seller model API failures', () => {
+  it('recognizes indexer syncing without interpreting it as a failed request', async () => {
+    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, state: 'syncing' }), { status: 202 })));
+    await expect(api.positions()).rejects.toMatchObject({ name: 'IndexerSyncingError' });
+  });
+
   it('explains a missing backend route instead of blaming Antscan', async () => {
     vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(JSON.stringify({ ok: false, error: 'Not found' }), { status: 404 })));
     await expect(api.sellerModels('0x0000000000000000000000000000000000000001')).rejects.toMatchObject({

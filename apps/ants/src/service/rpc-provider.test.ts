@@ -36,6 +36,21 @@ describe('RotatingJsonRpcProvider', () => {
     provider.destroy();
   });
 
+  it('remembers deployed contract code but never an empty account', async () => {
+    const transport = vi.fn(async (_url: string, body: string) => {
+      const { id, params } = JSON.parse(body);
+      return ok(id, params[0] === '0xcontract' ? '0x6001' : '0x');
+    });
+    const provider = new RotatingJsonRpcProvider(['https://a'], 8453, { transport });
+    const code = (address: string, id: number) => provider._send({ jsonrpc: '2.0', id, method: 'eth_getCode', params: [address, 'latest'] });
+    expect((await code('0xcontract', 1))[0]!.result).toBe('0x6001');
+    expect((await code('0xcontract', 2))[0]).toEqual({ id: 2, result: '0x6001' });
+    expect(transport).toHaveBeenCalledTimes(1);
+    await code('0xaccount', 3); await code('0xaccount', 4);
+    expect(transport).toHaveBeenCalledTimes(3);
+    provider.destroy();
+  });
+
   it('does not coalesce different blocks, callers, or transactions', async () => {
     const transport = vi.fn(async (_url: string, body: string) => ok(JSON.parse(body).id, '0x1'));
     const provider = new RotatingJsonRpcProvider(['https://a'], 8453, { transport });

@@ -783,7 +783,7 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderRootPage() {
     return (
-      <VprPage title="Help & Support" backFallback="home">
+      <VprPage title="Help & Support" backFallback="credits">
       <div className={styles.stack}>
 
         <div className={styles.section}>

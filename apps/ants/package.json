@@ -1,6 +1,6 @@
 {
   "name": "@antseed/ants",
-  "version": "0.1.5",
+  "version": "0.1.7",
   "description": "ANTS staking dashboard and service layer for the AntSeed CLI",
   "files": [
     "dist"

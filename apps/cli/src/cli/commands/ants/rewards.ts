@@ -37,10 +37,12 @@ export function registerAntsRewardsCommand(antsCmd: Command): void {
       const view = await rewards(ctx);
       if (options.json) return printJson(view);
       console.log(chalk.bold('ANTS rewards\n'));
-      const line = (label: string, amount: string, note = '') => {
+      const line = (label: string, amount: string | null, note = '') => {
         console.log(`  ${label.padEnd(28)} ${chalk.green(ants(amount).padStart(24))}  ${chalk.dim(note)}`);
       };
       line('Staker pool rewards', view.staker.total, view.staker.positions.length ? `${view.staker.positions.length} position(s)` : '');
+      if (view.staker.source?.error) console.log(chalk.yellow(`    ${view.staker.source.error}`));
+      else if (view.staker.source?.indexedBlock !== undefined) console.log(chalk.dim(`    Antscan checkpoint: block ${view.staker.source.indexedBlock}; claims are verified live.`));
       line('Seller usage rewards', view.sellerUsage.total, view.sellerUsage.agentId ? `agent ${view.sellerUsage.agentId}` : 'no seller agent');
       line('Buyer usage rewards', view.buyerUsage.total, view.buyerUsage.operator && !view.buyerUsage.claimable ? `paid to operator ${view.buyerUsage.operator}` : '');
       line('Legacy seller emissions', view.legacy.seller, view.legacy.contract ?? '');

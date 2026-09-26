@@ -9,12 +9,63 @@ import type {
 import { runMigrations } from '../storage/migrate.js';
 import { meteringMigrations } from '../storage/migrations/metering/index.js';
 
+export type FreeTierLimitKind = 'address' | 'ip';
+
+export interface FreeTierConsumption {
+  allowed: boolean;
+  remaining: number;
+  retryAfterMs: number;
+  /** Which limit denied the request, or null when allowed. */
+  limitedBy: FreeTierLimitKind | null;
+}
+
+export interface FreeTierLimitCheck {
+  kind: FreeTierLimitKind;
+  limit: number;
+  /** Requests already recorded for this key inside the window. */
+  count: number;
+  /** Oldest recorded timestamp inside the window, or null when none. */
+  oldestTimestamp: number | null;
+}
+
+/**
+ * Decide whether one more request fits under every given limit.
+ * When several limits are exhausted, the longest retry wait is reported.
+ */
+export function evaluateFreeTierLimits(
+  checks: FreeTierLimitCheck[],
+  windowMs: number,
+  nowMs: number,
+): FreeTierConsumption {
+  let denied: FreeTierConsumption | null = null;
+  let remaining = Number.POSITIVE_INFINITY;
+  for (const check of checks) {
+    if (check.count >= check.limit) {
+      const retryAfterMs = check.oldestTimestamp === null
+        ? windowMs
+        : Math.max(1, check.oldestTimestamp + windowMs - nowMs);
+      if (!denied || retryAfterMs > denied.retryAfterMs) {
+        denied = { allowed: false, remaining: 0, retryAfterMs, limitedBy: check.kind };
+      }
+    }
+    remaining = Math.min(remaining, check.limit - check.count - 1);
+  }
+  if (denied) return denied;
+  return {
+    allowed: true,
+    remaining: Number.isFinite(remaining) ? remaining : 0,
+    retryAfterMs: 0,
+    limitedBy: null,
+  };
+}
+
 /**
  * SQLite storage for metering data.
  * All data is stored locally on the user's machine.
  */
 export class MeteringStorage {
   private readonly db: Database.Database;
+  private lastFreeTierPruneAt: number | null = null;
 
   /**
    * Open or create the SQLite database at the given path.
@@ -311,6 +362,61 @@ export class MeteringStorage {
     };
   }
 
+  /**
+   * Atomically consume one seller free-tier request in a sliding window.
+   * Each configured limit (buyer address, remote IP) is checked; the request
+   * is recorded only when every applicable limit still has headroom.
+   */
+  consumeFreeTierRequest(input: {
+    buyerAddress: string;
+    remoteIp: string | null;
+    service: string;
+    maxRequestsPerAddress: number | null;
+    maxRequestsPerIp: number | null;
+    windowMs: number;
+    nowMs?: number;
+  }): FreeTierConsumption {
+    const nowMs = input.nowMs ?? Date.now();
+    const windowStart = nowMs - input.windowMs;
+    const buyerAddress = input.buyerAddress.toLowerCase();
+    const remoteIp = input.remoteIp ?? '';
+    const pruneIntervalMs = Math.min(input.windowMs, 60 * 60_000);
+    if (
+      this.lastFreeTierPruneAt === null
+      || nowMs < this.lastFreeTierPruneAt
+      || nowMs - this.lastFreeTierPruneAt >= pruneIntervalMs
+    ) {
+      this.db.prepare('DELETE FROM free_tier_usage WHERE timestamp < ?').run(windowStart);
+      this.lastFreeTierPruneAt = nowMs;
+    }
+    const countUsage = (column: 'buyer_address' | 'remote_ip', key: string): { count: number; oldestTimestamp: number | null } => {
+      const row = this.db.prepare(`
+        SELECT COUNT(*) AS request_count, MIN(timestamp) AS oldest_timestamp
+        FROM free_tier_usage
+        WHERE ${column} = ? AND timestamp >= ?
+      `).get(key, windowStart) as { request_count: number; oldest_timestamp: number | null };
+      return { count: row.request_count, oldestTimestamp: row.oldest_timestamp };
+    };
+    const consume = this.db.transaction((): FreeTierConsumption => {
+      const checks: FreeTierLimitCheck[] = [];
+      if (input.maxRequestsPerAddress !== null) {
+        checks.push({ kind: 'address', limit: input.maxRequestsPerAddress, ...countUsage('buyer_address', buyerAddress) });
+      }
+      if (input.maxRequestsPerIp !== null && remoteIp !== '') {
+        checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countUsage('remote_ip', remoteIp) });
+      }
+      const decision = evaluateFreeTierLimits(checks, input.windowMs, nowMs);
+      if (decision.allowed) {
+        this.db.prepare(`
+          INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp)
+          VALUES (?, ?, ?, ?)
+        `).run(buyerAddress, remoteIp, input.service, nowMs);
+      }
+      return decision;
+    });
+    return consume();
+  }
+
   /** Get aggregated metering stats for a specific seller peer. */
   getEventStatsByPeer(sellerPeerId: string): {
     totalRequests: number;
@@ -363,6 +469,7 @@ export class MeteringStorage {
     receiptsDeleted: number;
     verificationsDeleted: number;
     sessionsDeleted: number;
+    freeTierUsageDeleted: number;
   } {
     const deleteEvents = this.db.prepare(
       'DELETE FROM metering_events WHERE timestamp < ?'
@@ -376,17 +483,22 @@ export class MeteringStorage {
     const deleteSessions = this.db.prepare(
       'DELETE FROM sessions WHERE started_at < ?'
     );
+    const deleteFreeTierUsage = this.db.prepare(
+      'DELETE FROM free_tier_usage WHERE timestamp < ?'
+    );
 
     const eventsResult = deleteEvents.run(timestampMs);
     const receiptsResult = deleteReceipts.run(timestampMs);
     const verificationsResult = deleteVerifications.run(timestampMs);
     const sessionsResult = deleteSessions.run(timestampMs);
+    const freeTierUsageResult = deleteFreeTierUsage.run(timestampMs);
 
     return {
       eventsDeleted: eventsResult.changes,
       receiptsDeleted: receiptsResult.changes,
       verificationsDeleted: verificationsResult.changes,
       sessionsDeleted: sessionsResult.changes,
+      freeTierUsageDeleted: freeTierUsageResult.changes,
     };
   }
 

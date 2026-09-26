@@ -6,19 +6,24 @@ import { LockSlider } from './components/LockSlider';
 import { RewardsPage } from './pages/Rewards';
 import { SellerPage } from './pages/Seller';
 import { StakePage } from './pages/Stake';
+import { PositionsPage } from './pages/Positions';
+import { AddressesPage } from './pages/Addresses';
+import { Layout } from './components/Layout';
+import { nearestIndex, slotIndex } from './components/chart-hover';
+import { parseRoute } from './router';
 import { StakeForm } from './components/StakeForm';
 import { poolName, poolLabel, PoolsTable, PoolDrawer, sortPoolsByMetric } from './components/Pools';
 import { formatYieldPercent, poolApyRange, poolApyEstimates } from './pool-yield';
 import type { PoolView, PoolsView, RewardsView, SellerView } from '../../src/api-types';
 
-const state = vi.hoisted(() => ({ data: { 'positions:current': { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } } as Record<string, unknown>, keys: [] as Array<string | null>, loadingPools: false }));
+const state = vi.hoisted(() => ({ data: { 'positions:current': { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } } as Record<string, unknown>, keys: [] as Array<string | null>, loadingPools: false, partialPools: false, reconcilingPools: false, poolsError: null as string | null }));
 vi.mock('@antseed/ui', async original => ({
   ...await original<typeof import('@antseed/ui')>(),
   Modal: ({ children, title, subtitle, isOpen }: { children: ReactNode; title: ReactNode; subtitle?: ReactNode; isOpen: boolean }) => isOpen ? createElement('section', { role: 'dialog' }, createElement('h2', null, title), subtitle, children) : null,
 }));
-vi.mock('./data', () => ({ usePageData: (key: string | null) => { state.keys.push(key); return { data: key ? state.data[key] ?? null : null, error: null, loading: key === 'pools' && state.loadingPools, refresh: () => {} }; } }));
-vi.mock('./wallet', () => ({ BuyerWalletAction: () => createElement('button', null, 'Connect wallet') }));
-vi.mock('./jobs', () => ({ useJobs: () => ({ running: false, start: () => {} }) }));
+vi.mock('./data', () => ({ usePageData: (key: string | null) => { state.keys.push(key); return { data: key ? state.data[key] ?? null : null, error: key === 'pools' ? state.poolsError : null, loading: key === 'pools' && state.loadingPools, partial: key === 'pools' && state.partialPools, reconciling: key === 'pools' && state.reconcilingPools, refresh: () => {} }; } }));
+vi.mock('./jobs', () => ({ useJobs: () => ({ running: false, start: () => {}, toasts: [], dismissToast: () => {}, drawerOpen: false, setDrawerOpen: () => {} }) }));
+vi.mock('./wallet', () => ({ BuyerWalletAction: () => createElement('button', null, 'Connect wallet'), WalletControls: () => createElement('button', null, 'Wallet') }));
 
 const context = {
   config: { address: '0x0000000000000000000000000000000000000001', buyerAddress: '0x0000000000000000000000000000000000000002', chainId: 'base-mainnet', evmChainId: 8453, readOnly: true },
@@ -31,6 +36,78 @@ function render(child: ReturnType<typeof createElement>): string {
 }
 
 describe('staking dashboard displays', () => {
+  it('keeps partial-result warnings hidden during recovery and shows retry only once loading finishes', () => {
+    const previousPools = state.data.pools;
+    state.data.pools = { source: 'chain', sourceError: 'Explorer timeout', pools: [], networkVolumes: [], currentEpoch: 22 };
+    state.partialPools = true;
+    state.loadingPools = true;
+    try {
+      const loading = render(createElement(StakePage));
+      expect(loading).toContain('Updating sellers…');
+      expect(loading).not.toContain('Could not load');
+      expect(loading).not.toContain('Try again');
+      state.loadingPools = false;
+      const exhausted = render(createElement(StakePage));
+      expect(exhausted).toContain('Could not load the full seller list');
+      expect(exhausted).toContain('Only pools you stake in are shown');
+      expect(exhausted).toContain('Try again');
+      expect(exhausted).toContain('You have no staked pools to show');
+      expect(exhausted).not.toContain('No sellers are ready');
+      state.data.pools = { ...state.data.pools as object, source: 'indexer', sourceError: null };
+      const retained = render(createElement(StakePage));
+      expect(retained).toContain('statistics may be out of date');
+      state.partialPools = false;
+      const recovered = render(createElement(StakePage));
+      expect(recovered).not.toContain('Could not load');
+      expect(recovered).not.toContain('Try again');
+    } finally { state.data.pools = previousPools; state.partialPools = false; state.loadingPools = false; }
+  });
+
+  it('does not report no staked pools in chain-only mode while your stake syncs', () => {
+    const previousPools = state.data.pools;
+    state.data.pools = { source: 'chain', sourceError: null, walletSyncing: true, pools: [], networkVolumes: [], currentEpoch: 22 };
+    state.reconcilingPools = true;
+    try {
+      const html = render(createElement(StakePage));
+      expect(html).toContain('Updating your stake…');
+      expect(html).not.toContain('You have no staked pools');
+    } finally { state.data.pools = previousPools; state.reconcilingPools = false; }
+  });
+
+  it('does not suggest retry for intentionally unconfigured explorers', () => {
+    const previousPools = state.data.pools;
+    state.data.pools = { source: 'chain', sourceError: null, pools: [], networkVolumes: [], currentEpoch: 22 };
+    try {
+      const html = render(createElement(StakePage));
+      expect(html).toContain('No explorer configured');
+      expect(html).not.toContain('Try again');
+      expect(html).not.toContain('Could not load');
+    } finally { state.data.pools = previousPools; }
+  });
+
+  it('does not present a failed read as an empty seller network', () => {
+    const previousPools = state.data.pools;
+    state.data.pools = null;
+    state.poolsError = 'RPC unavailable';
+    try {
+      const html = render(createElement(StakePage));
+      expect(html).toContain('RPC unavailable');
+      expect(html).not.toContain('No sellers are ready');
+    } finally { state.data.pools = previousPools; state.poolsError = null; }
+  });
+  it('shows protocol addresses without the environment section', () => {
+    const previousOverview = state.data.overview;
+    const contractAddress = '0x0000000000000000000000000000000000000042';
+    state.data.overview = { addresses: { ANTSToken: contractAddress }, rpcUrl: 'http://127.0.0.1:54304' };
+    try {
+      const html = render(createElement(AddressesPage));
+      expect(html).toContain('Protocol contracts');
+      expect(html).toContain('ANTSToken');
+      expect(html).toContain(contractAddress);
+      for (const label of ['Environment', 'EVM chain id', 'RPC URL', 'Wallet', 'Data dir', 'Mode']) expect(html).not.toContain(label);
+      expect(html).not.toContain('http://127.0.0.1:54304');
+    } finally { state.data.overview = previousOverview; }
+  });
   it('omits the explorer loading message while seller statistics load', () => {
     const previousPools = state.data.pools;
     state.data.pools = null;
@@ -38,6 +115,9 @@ describe('staking dashboard displays', () => {
     try {
       const html = render(createElement(StakePage));
       expect(html).toContain('Sellers');
+      expect(html).toContain('Loading sellers…');
+      expect(html).not.toContain('status-line');
+      expect(html).not.toContain('0 sellers');
       expect(html).not.toContain('Loading pool statistics from the explorer');
     } finally { state.data.pools = previousPools; state.loadingPools = false; }
   });
@@ -173,11 +253,16 @@ describe('staking dashboard displays', () => {
     context.config.browserWallet = true;
     state.keys = [];
     try {
-      const html = render(createElement(StakePage));
-    expect(state.keys).toContain('pools');
-    expect(state.keys).not.toContain('pool-stakers');
+      const sellers = render(createElement(StakePage));
+      expect(state.keys).toContain('pools');
+      expect(state.keys).not.toContain('pool-stakers');
       expect(state.keys).not.toContain('positions:current');
       expect(state.keys).toContain('rewards');
+      // The market page is sellers only; wallet tiles and positions live on their own page.
+      expect(sellers).not.toContain('Buyer rewards');
+      expect(sellers).not.toContain('Connect a wallet to see your positions.');
+      const html = render(createElement(PositionsPage));
+      expect(state.keys).not.toContain('positions:current');
       expect(html).toContain('Buyer rewards');
       expect(html).not.toContain('Connect a wallet to view rewards.');
       expect(html).toContain('Connect a wallet to see your positions.');
@@ -199,7 +284,7 @@ describe('staking dashboard displays', () => {
     } as unknown as RewardsView;
     state.keys = [];
     try {
-      const stake = render(createElement(StakePage));
+      const stake = render(createElement(PositionsPage));
       expect(stake).toContain('Buyer rewards');
       expect(stake).toContain('View buyer rewards');
       expect(stake).toContain('12');
@@ -208,7 +293,7 @@ describe('staking dashboard displays', () => {
       expect(html).toContain('Connect the authorized wallet');
       expect(html).toContain(context.config.buyerAddress);
       expect(html).toContain('Legacy buyer rewards');
-      const claimButtons = (html.match(/<button[^>]*>.*?<\/button>/g) ?? []).filter(button => button.includes('>Claim to wallet</span>'));
+      const claimButtons = (html.match(/<button[^>]*>.*?<\/button>/g) ?? []).filter(button => button.includes('>Connect wallet</span>'));
       expect(claimButtons).toHaveLength(2);
       for (const button of claimButtons) expect(button).toContain('disabled=""');
       expect(state.keys).not.toContain('positions:current');
@@ -227,9 +312,20 @@ describe('staking dashboard displays', () => {
       const html = render(createElement(RewardsPage));
       expect(html).toContain('Authorize wallet ↗');
       expect(html).toContain('Authorize a wallet to claim or stake');
-      const claim = html.match(/<button[^>]*>.*?Claim to wallet.*?<\/button>/)?.[0];
+      const claim = html.match(/<button[^>]*>.*?Connect wallet<\/span>.*?<\/button>/)?.[0];
       expect(claim).toContain('disabled=""');
     } finally { state.data.rewards = previousData; context.config = previousConfig; }
+  });
+
+  it('keeps remembered positions viewable after disconnect without enabling signing', () => {
+    const previousConfig = context.config;
+    context.config = { ...context.config, browserWallet: true, readOnly: true, walletAddress: context.config.address };
+    state.keys = [];
+    try {
+      const html = render(createElement(PositionsPage));
+      expect(state.keys).toContain('positions:current');
+      expect(html).not.toContain('Connect a wallet to see your positions.');
+    } finally { context.config = previousConfig; }
   });
 
   it('uses the activation epoch for new locks and the existing end for extensions', () => {
@@ -299,8 +395,8 @@ describe('staking dashboard displays', () => {
     const html = render(createElement(PoolsTable, { pools: [], currentEpoch: 25, loading: false, onOpen: () => {}, onStake: () => {} }));
     expect(html).toContain('aria-sort="descending"');
     expect(html).toContain('Sort by APY, ascending');
-    expect(html).toContain('Total active stake (ANTS)');
-    expect(html).not.toContain('Stakers');
+    expect(html).toContain('Sort by TVL, descending');
+    expect(html).toContain('Total active stake in this pool (ANTS).');
     expect(html).not.toContain('APY range:');
     expect(html).not.toContain('<select');
     expect(html).not.toContain('Estimated APY');
@@ -314,8 +410,8 @@ describe('staking dashboard displays', () => {
     const html = render(createElement(PoolsTable, { pools: [pool], currentEpoch: 25, loading: false, onOpen: () => {}, onStake: () => {} }));
     expect(html).toContain('123');
     expect(html).not.toContain('999');
-    expect(html).toContain('Total active stake (ANTS)');
-    expect(html).not.toContain('Stakers');
+    expect(html).toContain('Sort by TVL, descending');
+    expect(html).toContain('sparkline--empty');
   });
 
   it('displays a single lock-dependent range with an unsettled-reward label in the table and drawer', () => {
@@ -392,7 +488,7 @@ describe('staking dashboard displays', () => {
       expect(chartEpochs(refreshed)).toEqual(chartEpochs(initial));
       expect(refreshed).toContain('21.42 USDC');
       expect(refreshed).toContain('0 USDC');
-      expect(refreshed).toContain('Seller settled volume · completed epochs');
+      expect(refreshed).toContain('Settled volume · completed epochs');
       expect(refreshed).toContain('Includes legacy seller activity.');
       expect(refreshed).not.toContain('View epoch data');
       expect(refreshed.includes('Showing previously loaded history.')).toBe(status !== 'available');
@@ -436,27 +532,111 @@ describe('reward staking modal', () => {
     sellerUsage: { total: '0', claimable: false, agentId: 0 },
     staker: { total: '0', positions: [] },
   } as unknown as RewardsView;
+  it.each([1, 52])('shows the APY for the selected amount at a %s-epoch lock', minStakeEpochs => {
+    const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: false } } } as AppValue;
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, { value: app }, createElement(StakeForm, {
+      config: { minStakeEpochs, maxStakeEpochs: 104, restakedRewardWeightBonusBps: 0, stakeActivationDelay: 1, minEarlyExitSlashBps: 500, maxSlashBps: 5000, moveWeightPenaltyBps: 0 },
+      pools: [{ agentId: 42, yield: { epoch: 20, startsAt: 0, endsAt: 604800, status: 'settled', reward: '1000000000000000000', power: '10000000000000000000000', minLockEpochs: 1, maxLockEpochs: 104 } }] as PoolView[],
+      rewards: rewardData,
+    })));
+    const expected = formatYieldPercent(Math.expm1(Math.log1p(minStakeEpochs / (10000 + 5 * minStakeEpochs)) * (365 / 7)) * 100);
+    expect(html).toContain(`Estimated APY <strong class="mono">${expected}</strong>`);
+    expect(html).toContain('aria-label="About estimated APY"');
+    expect(html).toContain('aria-label="About staking and early withdrawal"');
+    expect(html).not.toContain('Based on');
+    expect(html).not.toContain('compounding is not automatic');
+    expect(html).not.toContain('Longer locks earn more staking power');
+    expect(html).not.toContain('Stakes all eligible rewards from this source');
+  });
+  it('shows seller names without agent IDs and keeps an ID fallback for unnamed pools', () => {
+    const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: false } } } as AppValue;
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, { value: app }, createElement(StakeForm, {
+      config: null, pools: [{ agentId: 42, profile: { name: ' Alpha ' } }, { agentId: 43 }] as PoolView[], rewards: rewardData,
+    })));
+    expect(html).toContain('<option value="42" selected="">Alpha</option>');
+    expect(html).toContain('<option value="43">Agent ID 43</option>');
+    expect(html).not.toContain('agent 42');
+    expect(html).not.toContain('Fixed seller pool');
+  });
+  it.each([
+    { kind: 'seller', lockedPool: false }, { kind: 'staker', lockedPool: false },
+    { kind: 'seller', lockedPool: true }, { kind: 'staker', lockedPool: true },
+  ])('keeps source-bound rewards in a fixed seller dropdown outside the seller sheet: %j', ({ kind, lockedPool }) => {
+    const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: false } } } as AppValue;
+    const rewards = {
+      ...rewardData,
+      buyerUsage: { ...rewardData.buyerUsage, total: '0' },
+      sellerUsage: { ...rewardData.sellerUsage, total: kind === 'seller' ? '1000000000000000000' : '0', agentId: 42, claimable: true },
+      staker: { total: '1000000000000000000', positions: kind === 'staker' ? [{ id: 25, agentId: 42, amount: '1000000000000000000', closed: false }] : [] },
+    } as RewardsView;
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, { value: app }, createElement(StakeForm, {
+      config: null, pools: [{ agentId: 42, profile: { name: 'Alpha' } }] as PoolView[], rewards, lockedPool, defaultAgentId: 42,
+    })));
+    expect(html).not.toContain('stake-destination');
+    expect(html).not.toContain('Destination:');
+    expect(html.match(/<select\b/g)).toHaveLength(lockedPool ? 1 : 2);
+    if (lockedPool) expect(html).not.toContain('value="42"');
+    else {
+      expect(html).toMatch(/<select[^>]*disabled=""[^>]*><option value="42" selected="">Alpha<\/option><\/select>/);
+      expect(html).toContain('These rewards can only be staked into this seller pool.');
+    }
+    expect(html).not.toContain('agent 42');
+  });
   it('enables direct rewards while disabling restricted wallet balance', () => {
     const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: false } } } as AppValue;
     const html = renderToStaticMarkup(createElement(AppContext.Provider, {value: app}, createElement(StakeForm, {
       config: null, pools: [{ agentId: 42, name: 'Test pool' } as unknown as PoolView], balance: '1000000000000000000', rewards: rewardData,
     })));
-    expect(html).toContain('Unclaimed buyer rewards · 5 ANTS');
-    expect(html).toContain('Wallet balance · 1 ANTS (transfers restricted)');
-    expect(html).toContain('Stake rewards directly without claiming to your wallet.');
+    expect(html).toContain('Unclaimed buyer rewards');
+    expect(html).toContain('<option value="buyer" selected="">Unclaimed buyer rewards · 5 ANTS</option>');
+    expect(html).not.toContain('role="radiogroup"');
+    expect(html).toContain('AI buying rewards. Choose any seller; no claim needed.');
+    // The restricted wallet balance is not offered at all, not merely disabled.
+    expect(html).not.toContain('Wallet balance');
+    expect(html).not.toContain('transfers restricted');
+    expect(html).toContain('Rewards only: wallet ANTS transfers are disabled.');
     expect(html).not.toContain('Projected APY');
+    expect(html).toContain('Estimated APY <strong class="mono">—</strong>');
     expect(html).not.toContain('Estimated first-epoch reward');
     expect(html).not.toContain('New stakes are unavailable');
-    expect(html).toMatch(/<option(?=[^>]*disabled="")(?=[^>]*value="wallet")[^>]*>/);
     expect(html).toMatch(/<button[^>]*type="submit"[^>]*>Stake rewards/);
     expect(html).not.toContain('Review stake');
+  });
+  it('offers the wallet balance once transfers are enabled', () => {
+    const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: true } } } as AppValue;
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, {value: app}, createElement(StakeForm, {
+      config: null, pools: [{ agentId: 42 } as PoolView], balance: '1000000000000000000', rewards: rewardData,
+    })));
+    expect(html).toContain('Wallet balance');
+    expect(html).toContain('<option value="wallet">Wallet balance · 1 ANTS</option>');
+    expect(html).not.toContain('Rewards only: wallet ANTS transfers are disabled.');
+  });
+  it('explains the empty state under transfer restrictions instead of showing a disabled wallet row', () => {
+    const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: false } } } as AppValue;
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, {value: app}, createElement(StakeForm, {
+      config: null, pools: [{ agentId: 42 } as PoolView], balance: '1000000000000000000', rewards: { ...rewardData, buyerUsage: { total: '0', claimable: true } } as RewardsView,
+    })));
+    expect(html).toContain('Nothing to stake yet');
+    expect(html).toContain('staking from the wallet balance is unavailable');
+    expect(html).not.toContain('type="submit"');
+    expect(html).not.toContain('Wallet balance');
+  });
+  it('hides staking sources until a browser wallet is connected', () => {
+    const app = { ...context, config: { ...context.config, browserWallet: true, readOnly: true }, overview: { ...context.overview, wallet: { eth: '0', canTransfer: false } } } as AppValue;
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, {value: app}, createElement(StakeForm, {
+      config: null, pools: [{ agentId: 42 } as PoolView], balance: '0', rewards: rewardData,
+    })));
+    expect(html).toContain('Connect your wallet to see what you can stake.');
+    expect(html).not.toContain('Nothing to stake yet');
+    expect(html).not.toContain('Unclaimed buyer rewards');
   });
   it('does not enable rewards belonging to another authorized wallet', () => {
     const app = { ...context, config: { ...context.config, readOnly: false }, overview: { ...context.overview, wallet: { eth: '1000000', canTransfer: false } } } as AppValue;
     const html = renderToStaticMarkup(createElement(AppContext.Provider, {value: app}, createElement(StakeForm, {
       config: null, pools: [{ agentId: 42 } as PoolView], rewards: {...rewardData, buyerUsage: {...rewardData.buyerUsage, claimable: false}},
     })));
-    expect(html).toContain('Close this form and use the wallet button above to switch to the authorized wallet for these rewards.');
+    expect(html).toContain('Use the wallet button above to switch to the authorized wallet for these rewards.');
+    expect(html).toContain('Unclaimed buyer rewards · other wallet');
     expect(html).not.toContain('>Connect wallet</button>');
     expect(html).toMatch(/<button[^>]*type="submit"[^>]*disabled=""/);
   });
@@ -474,5 +654,86 @@ describe('seller pool names', () => {
       const pool = {agentId: 42, seller: '0x123', profile: {name}} as PoolView;
       expect(poolLabel(pool)).toBe('Seller pool #42');
     }
+  });
+});
+
+describe('sidebar shell and pending stake', () => {
+  const sellerPool = (overrides: Partial<PoolView>): PoolView => ({
+    agentId: 7, seller: '0x00000000000000000000000000000000000000aa', profile: { name: 'Vault seller', providers: [], modelsServed: null, uniqueBuyers: null, requestCount: null, lifetimeVolumeUsdc: null, ghostRate: null, lastSettledAt: null },
+    hasPool: true, stakeable: true, activeStake: '1000000000000000000000', weight: '1', powerShareBps: 100, securityShareBps: 0, volumes: [], volumeStatus: 'available',
+    usagePoints: '0', weightedUsagePoints: '0', lastEpochUsagePoints: '0', lastEpochEmission: null, lastEpochEmissionSettled: false, lastEpochRewardPer1kPower: null, projectedRewardPer1kPower: null,
+    yourStake: '0', yourPendingStake: '0', yourPower: '0', yourPoolShareBps: 0, yourPositionIds: [], ...overrides,
+  });
+  it('renders a left rail with grouped navigation, the active page marked, and the wallet at the bottom', () => {
+    const html = render(createElement(Layout, { page: 'positions', updatedAt: null, loading: false, children: createElement('p', null, 'page body') }));
+    expect(html).toContain('class="sidebar"');
+    expect(html).not.toContain('class="topbar"');
+    expect(html).toMatch(/<a href="#\/positions" class="sidenav-item active" aria-current="page">/);
+    expect(html).toMatch(/<a href="#\/stake" class="sidenav-item">/);
+    for (const label of ['Market', 'You', 'Protocol', 'Sellers', 'My positions', 'Rewards', 'Seller', 'Network', 'Addresses']) expect(html).toContain(label);
+    expect(html.indexOf('sidebar-foot')).toBeGreaterThan(html.indexOf('class="sidenav"'));
+    expect(html).toContain('page body');
+  });
+  it('routes the positions page directly and keeps old hashes redirecting', () => {
+    expect(parseRoute('#/positions')).toMatchObject({ page: 'positions', redirected: false });
+    expect(parseRoute('#/pools')).toMatchObject({ page: 'stake', redirected: true });
+    expect(parseRoute('#/rewards')).toMatchObject({ page: 'rewards', redirected: false });
+  });
+  it('shows pending stake in the sellers table and counts it as yours', () => {
+    const pending = sellerPool({ yourPendingStake: '250000000000000000000', pendingStake: '400000000000000000000' });
+    const html = render(createElement(PoolsTable, { pools: [pending], currentEpoch: 22, loading: false, onOpen: () => {}, onStake: () => {} }));
+    expect(html).toContain('pending activation');
+    expect(html).toContain('<span class="cell-stack pending-amount">250');
+    expect(html).toContain('+400');
+    expect(html).toContain('my pools · 1');
+    const mixed = render(createElement(PoolsTable, { pools: [sellerPool({ yourStake: '100000000000000000000', yourPendingStake: '5000000000000000000', yourPoolShareBps: 1000 })], currentEpoch: 22, loading: false, onOpen: () => {}, onStake: () => {} }));
+    expect(mixed).toContain('+5');
+    expect(mixed).not.toContain('of pool');
+  });
+  it('keeps the seller list visible while your stake waits for Antscan', () => {
+    const previousPools = state.data.pools;
+    state.data.pools = { source: 'indexer', sourceError: null, walletSyncing: true, pools: [sellerPool({ yourStake: '100000000000000000000', yourPositionIds: [1] })], networkVolumes: [], currentEpoch: 22 };
+    state.reconcilingPools = true;
+    try {
+      const html = render(createElement(StakePage));
+      expect(html).toContain('Updating your stake…');
+      expect(html).not.toContain('>Refresh<');
+      expect(html).toContain('Vault seller');
+      expect(html).not.toContain('>100<');
+      expect(html).toContain('Updating…');
+      expect(html).not.toContain('my pools');
+      expect(html).not.toContain('No sellers are ready');
+    } finally { state.data.pools = previousPools; state.reconcilingPools = false; }
+  });
+
+  it('hides your seller-sheet figures while they wait for Antscan', () => {
+    const view = { currentEpoch: 22, networkVolumes: [], explorer: null, walletSyncing: true } as unknown as PoolsView;
+    const html = render(createElement(PoolDrawer, { pool: sellerPool({ yourStake: '0', yourPendingStake: '5000000000000000000' }), view, onClose: () => {} }));
+    expect(html).toContain('Waiting for Antscan to include your latest transaction');
+    expect(html).not.toContain('Pending stake starts earning');
+  });
+  it('lists pending stake in the seller sheet and links to the positions page', () => {
+    const view = { currentEpoch: 22, networkVolumes: [], explorer: null } as unknown as PoolsView;
+    const html = render(createElement(PoolDrawer, { pool: sellerPool({ yourStake: '100000000000000000000', yourPendingStake: '5000000000000000000', pendingStake: '9000000000000000000' }), view, onClose: () => {} }));
+    expect(html).toContain('Pending activation');
+    expect(html).toContain('+9');
+    expect(html).toContain('href="#/positions"');
+  });
+  it('resolves hover slots and nearest points for chart tooltips', () => {
+    expect(slotIndex(59, 60, 20, 5)).toBeNull();
+    expect(slotIndex(60, 60, 20, 5)).toBe(0);
+    expect(slotIndex(99.9, 60, 20, 5)).toBe(1);
+    expect(slotIndex(160, 60, 20, 5)).toBeNull();
+    expect(slotIndex(70, 60, 0, 5)).toBeNull();
+    expect(nearestIndex(12, [0, 10, 20])).toBe(1);
+    expect(nearestIndex(-100, [0, 10, 20])).toBe(0);
+    expect(nearestIndex(5, [])).toBeNull();
+    expect(nearestIndex(5, [Number.POSITIVE_INFINITY, 4])).toBe(1);
+  });
+  it('gives sparklines a hover readout only when point labels are supplied', () => {
+    const pool = sellerPool({ volumes: [{ epoch: 21, usdc: '2000000' }, { epoch: 20, usdc: '1000000' }, { epoch: 19, usdc: '500000' }] });
+    const html = render(createElement(PoolsTable, { pools: [pool], currentEpoch: 22, loading: false, onOpen: () => {}, onStake: () => {} }));
+    expect(html).toContain('class="sparkline-wrap"');
+    expect(html).not.toContain('chart-tip');
   });
 });

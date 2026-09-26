@@ -11,10 +11,15 @@ const rewards = {
 } as RewardsView;
 
 describe('stake sources under transfer restrictions', () => {
-  it('offers direct rewards including closed-position rewards, without offering legacy rewards', () => {
+  it('offers direct rewards including closed-position rewards, without legacy rewards or the restricted wallet', () => {
     const sources = stakeSources(rewards, '600', false);
-    expect(sources.map(s => [s.id, s.available])).toEqual([['buyer', true], ['seller', true], ['staker:7', true], ['wallet', false]]);
-    expect(sources.map(s => s.amount)).toEqual(['100', '200', '300', '600']);
+    expect(sources.map(s => [s.id, s.available])).toEqual([['buyer', true], ['seller', true], ['staker:7', true]]);
+    expect(sources.map(s => s.amount)).toEqual(['100', '200', '300']);
+  });
+  it('lists the wallet last once transfers are enabled', () => {
+    const sources = stakeSources(rewards, '600', true);
+    expect(sources.map(s => [s.id, s.available])).toEqual([['buyer', true], ['seller', true], ['staker:7', true], ['wallet', true]]);
+    expect(sources.at(-1)?.amount).toBe('600');
   });
   it('routes buyer rewards to the selected pool without a wallet transfer', () => {
     expect(stakeSourceRequest(stakeSources(rewards, '0', false)[0]!, 99, '100', 4)).toEqual({path: '/api/rewards/stake-usage', body: { side: 'buyer', stakeAgentId: 99, epochs: 4 }});
@@ -25,10 +30,10 @@ describe('stake sources under transfer restrictions', () => {
     expect(stakeSourceRequest(sources[2]!, 43, '300', 4)).toEqual({path: '/api/rewards/restake', body: {positionIds: [7], epochs: 4}});
     expect(() => stakeSourceRequest(sources[1]!, 99, '200', 4)).toThrow('source pool');
   });
-  it('blocks unauthorized buyer rewards and restricted wallet tokens', () => {
+  it('blocks unauthorized buyer rewards and never lists restricted wallet tokens', () => {
     const sources = stakeSources({...rewards, buyerUsage: {...rewards.buyerUsage, claimable: false}}, '100', false);
     expect(() => stakeSourceRequest(sources[0]!, 99, '100', 4)).toThrow('unavailable');
-    expect(() => stakeSourceRequest(sources.at(-1)!, 99, '100', 4)).toThrow('unavailable');
+    expect(sources.some(s => s.kind === 'wallet')).toBe(false);
   });
   it('preserves wallet staking when transfers are permitted', () => {
     const source = stakeSources(null, '100', true)[0]!;

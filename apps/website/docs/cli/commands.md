@@ -77,6 +77,7 @@ antseed buyer deposit                       Show funding address + QR; incoming 
 antseed buyer sweep                   Gaslessly sweep hot-wallet USDC into deposits (fixed relay fee)
 antseed buyer deposit --onchain <usdc>  Direct on-chain deposit from the hot wallet (requires ETH for gas)
 antseed buyer withdraw <amount>       Withdraw USDC from deposits
+antseed buyer set-authorized-wallet   Connect and authorize an external wallet (`--self` for the buyer wallet)
 antseed buyer activity                Activity summary: tokens, spend history, savings, channels, claimable ANTS
 antseed buyer balance                 Check wallet and deposit balance
 antseed network browse                Browse peers, models, and pricing (same catalog as /v1/models)

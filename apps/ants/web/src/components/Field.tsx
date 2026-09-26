@@ -27,8 +27,10 @@ type SelectProps = SelectHTMLAttributes<HTMLSelectElement>;
 export function Select({ className, children, ...rest }: SelectProps) {
   const classes = ['field__input', className ?? ''].filter(Boolean).join(' ');
   return (
-    <select className={classes} {...rest}>
-      {children}
-    </select>
+    <span className="select-wrap">
+      <select className={classes} {...rest}>
+        {children}
+      </select>
+    </span>
   );
 }

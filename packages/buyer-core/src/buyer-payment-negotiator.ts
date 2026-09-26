@@ -1262,7 +1262,7 @@ export class BuyerPaymentNegotiator {
     if (hasPendingReserve) {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
     }
-    if (minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+    if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
       const cumulativeBefore = this._bpm.getCumulativeAmount(peer.peerId);
       await this._bpm.extendCurrentSpendingAuth(
         peer.peerId,

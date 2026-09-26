@@ -5,6 +5,7 @@ import { createPortal } from 'react-dom';
 import { useApp } from '../app-context';
 import { describeError } from '../format';
 import { useJobs } from '../jobs';
+import { useWalletReadiness } from '../wallet-readiness';
 
 export type Summary = Array<[string, ReactNode]>;
 
@@ -108,19 +109,25 @@ export interface ActionButtonProps {
 }
 
 /** Hook describing why actions are blocked (read-only wallet or a job already running). */
-export function useActionBlock(): { blocked: boolean; reason: string | undefined } {
-  const { config: { readOnly }, overview, overviewError } = useApp();
+export function useActionBlock(buyerAction = false): { blocked: boolean; reason: string | undefined; label?: string } {
+  const { config: { readOnly, selectedAddress, walletAddress, browserWallet }, overview, overviewError } = useApp();
   const { running } = useJobs();
+  const readiness = useWalletReadiness();
+  if (browserWallet && !readiness) return { blocked: true, label: 'Connect wallet', reason: 'Connect wallet before submitting a transaction.' };
+  if (readiness?.reason) return { blocked: true, reason: readiness.reason, label: readiness.label };
   if (readOnly) return { blocked: true, reason: 'Read-only mode: no wallet is available to sign.' };
+  if (selectedAddress && !buyerAction && selectedAddress.toLowerCase() !== walletAddress?.toLowerCase()) return { blocked: true, reason: `Connect the selected account wallet ${selectedAddress} for seller and staking actions.` };
   if (!overview || overviewError) return { blocked: true, reason: 'Wallet information is unavailable. Refresh before sending a transaction.' };
-  if (BigInt(overview.wallet.eth) === 0n) return { blocked: true, reason: 'This wallet needs ETH on the selected network for transaction fees.' };
+  if (BigInt(overview.wallet.signingWalletEth ?? overview.wallet.eth) === 0n) return { blocked: true, reason: 'The signing wallet needs ETH on the selected network for transaction fees.' };
   if (running) return { blocked: true, reason: 'Another action is still running.' };
   return { blocked: false, reason: undefined };
 }
 
 export function ActionButton(props: ActionButtonProps) {
   const jobs = useJobs();
-  const block = useActionBlock();
+  const body = props.body as { scope?: string; side?: string } | null;
+  const buyerAction = (props.path === '/api/rewards/claim' && body?.scope === 'buyer') || (props.path === '/api/rewards/stake-usage' && body?.side === 'buyer');
+  const block = useActionBlock(buyerAction);
   const [open, setOpen] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
@@ -153,7 +160,7 @@ export function ActionButton(props: ActionButtonProps) {
       setOpen(false);
       props.onStarted?.();
     } catch (err) {
-      setError(describeError(err));
+      jobs.pushToast({ tone: 'danger', title: `${props.title ?? props.label} failed`, body: describeError(err), sticky: true });
     } finally {
       submitting.current = false;
       if (skipConfirmation && parentBusy) parentBusy.current = false;
@@ -167,7 +174,7 @@ export function ActionButton(props: ActionButtonProps) {
     <div className="action">
       {!open ? <span className="btn-wrap" title={reason}>
         <Button variant={variant} size={props.size === 'sm' ? 'sm' : 'md'} onClick={onClick} disabled={blocked || busy || (skipConfirmation && props.confirmDisabled)}>
-          {busy && skipConfirmation ? 'Sending…' : props.label}
+          {busy && skipConfirmation ? 'Sending…' : block.label ?? props.label}
         </Button>
       </span> : null}
       {error && !open ? <div className="error-text">{error}</div> : null}
@@ -175,7 +182,7 @@ export function ActionButton(props: ActionButtonProps) {
         <Confirm
           title={props.title ?? props.label}
           summary={props.summary}
-          confirmLabel={props.confirmLabel ?? props.label}
+          confirmLabel={block.label ?? props.confirmLabel ?? props.label}
           danger={props.variant === 'danger'}
           disabled={blocked || props.confirmDisabled}
           busy={busy}

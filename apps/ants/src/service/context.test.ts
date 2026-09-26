@@ -90,6 +90,17 @@ describe('AntsContext.stack', () => {
     expect(await ctx.stack()).not.toBe(first);
   });
 
+  it('keeps the resolved stack and protocol memos across wallet-only invalidation', async () => {
+    const ctx = new FakeContext(chain, { emissions: chain.emissionsContractAddress!, staking: chain.stakingContractAddress! });
+    const first = await ctx.stack();
+    ctx.memoSet('eligibility', { stakeable: true }, 60_000);
+    ctx.invalidate({ walletOnly: true });
+    expect(await ctx.stack()).toBe(first);
+    expect(ctx.memoGet('eligibility')).toEqual({ stakeable: true });
+    ctx.invalidate();
+    expect(ctx.memoGet('eligibility')).toBeUndefined();
+  });
+
   it('invalidates in-flight RPC sharing when the wallet or action state changes', () => {
     const ctx = new AntsContext({ chain, address: '0x0' });
     const provider = ctx.provider();

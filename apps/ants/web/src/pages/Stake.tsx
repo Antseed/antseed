@@ -1,19 +1,17 @@
 import { Alert, Button } from '../components/ui';
 import { Modal } from '@antseed/ui';
 import { useMemo, useRef, useState } from 'react';
-import type { OverviewView, PoolView } from '../../../src/api-types';
+import type { OverviewView, PoolView, PoolsView } from '../../../src/api-types';
 import { api } from '../api';
 import { useConfig } from '../app-context';
-import { ErrorBox, Skeleton } from '../components/Feedback';
+import { ErrorBox } from '../components/Feedback';
 import { Panel } from '../components/Panel';
 import { PoolDrawer, PoolsTable, sortPools } from '../components/Pools';
-import { PositionsCard } from '../components/Positions';
 import { StakeForm } from '../components/StakeForm';
-import { StatTile, Tiles } from '../components/StatTile';
 import { usePageData } from '../data';
-import { epochStartAt, formatAnts, formatBps, formatDuration, formatInt, formatUtc, shortAddress } from '../format';
+import { poolDataOptions } from '../pool-data';
+import { epochStartAt, formatAnts, formatDuration, formatInt, formatUsdcCompact, formatUtc, shortAddress } from '../format';
 import { useNow } from '../hooks';
-import { href } from '../router';
 
 export function StakePage() {
   const config = useConfig();
@@ -22,7 +20,7 @@ export function StakePage() {
   const overview = usePageData('overview', api.overview);
   const positions = usePageData(walletReady ? 'positions:current' : null, api.positions);
   const rewards = usePageData('rewards', api.rewards, 5 * 60_000);
-  const pools = usePageData('pools', api.pools, 5 * 60_000);
+  const pools = usePageData('pools', api.pools, 5 * 60_000, poolDataOptions);
   const data = overview.data;
   const buyerOperator = rewards.data?.buyerUsage.operator;
   const wrongBuyerWallet = walletReady && !!buyerOperator && buyerOperator.toLowerCase() !== config.address.toLowerCase()
@@ -42,11 +40,14 @@ export function StakePage() {
     });
   };
   const sortedPools = useMemo(() => sortPools(pools.data?.pools ?? []), [pools.data]);
-  const openPool = openPoolId !== null ? (sortedPools.find((p) => p.agentId === openPoolId) ?? null) : null;
-  const stakeInto = (pool: PoolView) => {
-    stakeTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
-    setOpenPoolId(null);
-    setStakeTarget(pool.agentId);
+  // Keep the open sheet mounted while the pool list refetches; a reload must not flash the page behind it.
+  const lastOpen = useRef<{ pool: PoolView; view: PoolsView } | null>(null);
+  const listedPool = openPoolId !== null ? sortedPools.find((p) => p.agentId === openPoolId) : undefined;
+  if (listedPool && pools.data) lastOpen.current = { pool: listedPool, view: pools.data };
+  const open = openPoolId !== null && lastOpen.current?.pool.agentId === openPoolId ? lastOpen.current : null;
+  const openSeller = (pool: PoolView) => {
+    poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null;
+    setOpenPoolId(pool.agentId);
   };
   const closeStake = () => {
     setStakeTarget(undefined);
@@ -55,6 +56,13 @@ export function StakePage() {
       if (trigger?.isConnected) trigger.focus({ preventScroll: true });
       else document.querySelector<HTMLButtonElement>('[data-stake-trigger]')?.focus({ preventScroll: true });
     });
+  };
+  const stakePanel = {
+    config: positions.data?.config ?? null,
+    balance: data?.wallet.ants,
+    rewards: rewards.data,
+    rewardsError: rewards.error,
+    walletReady,
   };
 
   return (
@@ -66,7 +74,6 @@ export function StakePage() {
       ) : null}
       {overview.error && !data ? <ErrorBox error={overview.error} onRetry={overview.refresh} /> : null}
       {overview.error && data ? <div className="status-line">Refresh failed: {overview.error}</div> : null}
-      {!data && overview.loading ? <Skeleton rows={4} /> : null}
       {data && data.phase !== 'active' ? <PhaseBanner data={data} /> : null}
       {notices.length > 0 ? (
         <Alert tone="info">
@@ -78,74 +85,43 @@ export function StakePage() {
         </Alert>
       ) : null}
 
-      <Tiles>
-        <StatTile
-          label="ANTS balance"
-          value={data ? formatAnts(data.wallet.ants, 4) : '…'}
-          unit="ANTS"
-          loading={!data}
-          sub={data ? (data.wallet.transfersEnabled ? 'transfers enabled' : data.wallet.whitelisted ? 'transfers off · whitelisted' : 'transfers off') : undefined}
-        />
-        <StatTile
-          label="Your total staked"
-          value={data ? formatAnts(data.wallet.totalActiveStake) : '…'}
-          unit="ANTS"
-          loading={!data}
-          sub={data ? `${formatInt(data.wallet.positionCount)} position${data.wallet.positionCount === 1 ? '' : 's'}` : undefined}
-        />
-        <StatTile
-          label="Your power"
-          value={pools.data ? formatAnts(pools.data.yourTotalPower) : pools.error ? '—' : '…'}
-          loading={pools.loading && !pools.data}
-          sub={pools.data ? `${formatBps(pools.data.yourNetworkShareBps)} of all pools` : pools.error ? <span className="danger">{pools.error}</span> : 'scanning pools…'}
-        />
-        <StatTile
-          label={walletReady ? "Claimable rewards" : "Buyer rewards"}
-          value={rewards.data ? formatAnts(rewards.data.total) : rewards.error ? '—' : '…'}
-          unit="ANTS"
-          loading={rewards.loading && !rewards.data}
-          sub={
-            rewards.error ? (
-              <span className="danger">
-                {rewards.error}{' '}
-                <button className="link-button" onClick={rewards.refresh} type="button">
-                  retry
-                </button>
-              </span>
-            ) : rewards.data ? (
-              <a href={href('rewards')}>{walletReady ? 'Stake rewards or claim →' : 'View buyer rewards →'}</a>
-            ) : (
-              'loading from chain…'
-            )
-          }
-        />
-      </Tiles>
-
-      <PositionsCard pools={sortedPools} enabled={walletReady} />
+      {pools.data ? <NetworkTicker view={pools.data} /> : null}
 
       <Panel
         title="Sellers"
         className="pools-card"
         actions={
           <Button data-stake-trigger variant="primary" size="sm" onClick={(event) => { stakeTrigger.current = event.currentTarget; setStakeTarget(null); }} disabled={!pools.data}>
-            Stake ANTS
+            Stake rewards
           </Button>
         }
       >
         {pools.error && !pools.data ? <ErrorBox error={pools.error} onRetry={pools.refresh} /> : null}
-        {pools.error && pools.data ? <div className="status-line">Refresh failed: {pools.error}</div> : null}
-        {pools.data?.source === 'chain' ? (
-          <div className="status-line">
-            Pool statistics are unavailable{pools.data.sourceError ? ` (${pools.data.sourceError})` : ' (no explorer configured)'}; only pools you stake in are listed, read live from the chain.
+        {pools.loading ? <p className="hint" role="status">{pools.data ? 'Updating sellers… Showing previously loaded data.' : 'Loading sellers…'}</p> : null}
+        {!pools.loading && pools.reconciling ? <p className="hint" role="status">Updating your stake… Waiting for Antscan to include your latest transaction.</p> : null}
+        {!pools.loading && (pools.partial || (pools.error && pools.data)) ? (
+          <div className={pools.error ? 'status-line' : 'status-line status-line--muted'} role="status">
+            {pools.error ? `Could not update sellers: ${pools.error}. ` : 'Could not load the full seller list. '}
+            {pools.error || pools.data?.source === 'indexer' ? 'Showing previously loaded data; statistics may be out of date.' : 'Only pools you stake in are shown, read live from the chain.'}
+            {' '}<Button variant="outline" size="sm" onClick={pools.refresh}>Try again</Button>
           </div>
         ) : null}
-        <PoolsTable pools={sortedPools} currentEpoch={pools.data?.currentEpoch ?? 0} loading={pools.loading && !pools.data} onOpen={(pool) => { poolTrigger.current = document.activeElement instanceof HTMLElement ? document.activeElement : null; setOpenPoolId(pool.agentId); }} onStake={stakeInto} />
+        {!pools.loading && pools.data?.source === 'chain' && !pools.partial && !pools.error ? (
+          <div className="status-line status-line--muted">
+            No explorer configured. Only pools you stake in are listed, read live from the chain.
+          </div>
+        ) : null}
+        {!pools.loading && pools.data?.source === 'chain' && sortedPools.length === 0 ? (
+          pools.reconciling ? null : <p className="hint">You have no staked pools to show.</p>
+        ) : pools.data || pools.loading ? (
+          <PoolsTable pools={sortedPools} currentEpoch={pools.data?.currentEpoch ?? 0} loading={pools.loading && !pools.data} walletSyncing={pools.reconciling} onOpen={openSeller} onStake={openSeller} />
+        ) : null}
       </Panel>
 
       {stakeTarget !== undefined && pools.data ? (
         <Modal
           isOpen
-          title="Stake ANTS"
+          title="Stake rewards"
           size="lg"
           overlayClassName="ants-stake-overlay"
           onClose={() => { if (!stakeBusy) closeStake(); }}
@@ -166,8 +142,24 @@ export function StakePage() {
         </Modal>
       ) : null}
 
-      {openPool && pools.data ? <PoolDrawer pool={openPool} view={pools.data} onClose={closePool} /> : null}
+      {open ? <PoolDrawer pool={open.pool} view={open.view} onClose={closePool} stake={stakePanel} /> : null}
     </>
+  );
+}
+
+/** One hairline strip of network-wide figures so a staker can size a pool against the whole. */
+export function NetworkTicker({ view }: { view: PoolsView }) {
+  const lastVolume = view.networkVolumes.find((row) => row.epoch === view.currentEpoch - 1);
+  const stakeable = view.pools.filter((pool) => pool.stakeable).length;
+  return (
+    <div className="ticker" role="list" aria-label="Network">
+      <div className="ticker-item" role="listitem"><span className="ticker-label">Total staked</span><span className="ticker-value">{formatAnts(view.totalActiveStake)}<small>ANTS</small></span></div>
+      <div className="ticker-item" role="listitem"><span className="ticker-label">Total power</span><span className="ticker-value">{formatAnts(view.totalPowerWeight)}</span></div>
+      <div className="ticker-item" role="listitem"><span className="ticker-label">Staker budget · epoch</span><span className="ticker-value">{formatAnts(view.stakerBudget)}<small>ANTS</small></span></div>
+      <div className="ticker-item" role="listitem"><span className="ticker-label">Network volume · last epoch</span><span className="ticker-value">{lastVolume ? formatUsdcCompact(lastVolume.usdc) : '—'}<small>USDC</small></span></div>
+      <div className="ticker-item" role="listitem"><span className="ticker-label">Sellers</span><span className="ticker-value">{formatInt(stakeable)}<small>stakeable</small></span></div>
+      <div className="ticker-item" role="listitem"><span className="ticker-label">Epoch</span><span className="ticker-value">{view.currentEpoch}<small>{view.source === 'indexer' ? 'indexed' : 'chain'}</small></span></div>
+    </div>
   );
 }
 

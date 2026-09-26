@@ -11,13 +11,20 @@ const identity = '0x0000000000000000000000000000000000000002';
 const source = '0x0000000000000000000000000000000000000003';
 const owner = '0x0000000000000000000000000000000000000004';
 const provider = { getBlockNumber: vi.fn(async () => 123) };
-const ctx = {
-  requirePools: () => ({ contractAddress: poolsAddress, provider }),
-  chain: { sellerRegistryAddress: '0x0000000000000000000000000000000000000099' },
-} as unknown as AntsContext;
+let ctx: AntsContext;
+function makeCtx(): AntsContext {
+  const memos = new Map<string, unknown>();
+  return {
+    requirePools: () => ({ contractAddress: poolsAddress, provider }),
+    chain: { sellerRegistryAddress: '0x0000000000000000000000000000000000000099' },
+    memoGet: (key: string) => memos.get(key),
+    memoSet: (key: string, value: unknown) => { memos.set(key, value); return value; },
+  } as unknown as AntsContext;
+}
 
 beforeEach(() => {
   vi.clearAllMocks();
+  ctx = makeCtx();
   vi.mocked(multicallRead).mockImplementation(async (_provider, requests) => requests.map(request => {
     if (request.method === 'identityRegistry') return [identity];
     if (request.method === 'stakingSource') return [source];
@@ -70,6 +77,16 @@ describe('contract-aligned staking eligibility', () => {
   it('reports an unconfigured source instead of trusting the configured registry address', async () => {
     vi.mocked(multicallRead).mockResolvedValueOnce([[identity], [ZeroAddress]]);
     await expect(stakeEligibility(ctx, [59096])).rejects.toThrow('staking source is unavailable');
+  });
+
+  it('serves repeated agents from the cache until a transaction invalidates it', async () => {
+    await stakeEligibility(ctx, [59096]);
+    expect((await stakeEligibility(ctx, [59096, 60570])).size).toBe(2);
+    const calls = vi.mocked(multicallRead).mock.calls;
+    expect(calls).toHaveLength(6);
+    expect(calls[4]![1].map(request => request.args)).toEqual([[60570]]);
+    expect(await stakeEligibility(ctx, [59096, 60570])).toEqual(new Map([[59096, { owner, stakeable: true }], [60570, { owner, stakeable: false }]]));
+    expect(vi.mocked(multicallRead).mock.calls).toHaveLength(6);
   });
 
   it('propagates RPC failures and makes no calls for an empty list', async () => {
