@@ -1,7 +1,7 @@
 /**
  * Single source of truth for Antseed integration entries.
  *
- * Both `/integrations` (the public hub) and `/skill.md` (the agent-readable
+ * Both `/integrations` (the public hub) and `/llms-connect.txt` (the crawler-readable
  * guide) are generated from this file. The desktop app's "External clients"
  * view should also migrate to this list — see TODO in
  * apps/desktop/src/renderer/ui/components/views/ExternalClientsView.tsx.
@@ -134,7 +134,7 @@ export type Integration = {
   caveats?: string[];
   /** External links: upstream docs, our skill, partner page. */
   links?: { label: string; href: string }[];
-  /** Agent-friendly machine summary used by /skill.md. */
+  /** Agent-friendly machine summary used by /llms-connect.txt. */
   agentSummary?: string;
 };
 

@@ -710,7 +710,6 @@ export default function IntegrationPage({integration}: {integration: Integration
       title={titleText}
       description={`Connect ${i.name} to the Antseed peer-to-peer inference network. ${metaOneLiner}`}>
       <Head>
-        <link rel="alternate" type="text/markdown" href="/skill.md" title="Agent-readable integration guide" />
         <meta property="og:title" content={pageTitle} />
         <meta property="og:description" content={metaOneLiner} />
         <script type="application/ld+json">{JSON.stringify(breadcrumbLd)}</script>
@@ -847,8 +846,7 @@ export default function IntegrationPage({integration}: {integration: Integration
             <h3>For agents</h3>
             <p><Ticks>{i.agentSummary}</Ticks></p>
             <p>
-              Full machine-readable catalog of every Antseed integration:{' '}
-              <a href="/skill.md">/skill.md</a>
+              Give your agent the skill: <code>gh skill install Antseed/antseed join-buyer</code>
             </p>
           </aside>
         )}

@@ -13,7 +13,6 @@ const SANS = "'General Sans', 'Geist Variable', system-ui, sans-serif";
 const svgProps = {
   viewBox: '0 0 300 130',
   width: '100%',
-  height: '100%',
   role: 'img' as const,
   focusable: 'false' as const,
   'aria-hidden': true,

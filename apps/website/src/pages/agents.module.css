@@ -222,14 +222,22 @@
     padding-top: 32px;
   }
   .heroInner {
-    grid-template-columns: 1fr;
+    grid-template-columns: minmax(0, 1fr);
     row-gap: 32px;
   }
   .heroCopy {
     align-items: center;
+    min-width: 0;
+    max-width: 100%;
+  }
+  .heroCopy > * {
+    max-width: 100%;
   }
   .heroTitle {
     max-width: none;
+  }
+  .heroCtas > * {
+    max-width: 100%;
   }
   .heroCtas {
     justify-content: center;
@@ -251,4 +259,153 @@
   background: none;
   border: none;
   padding: 0;
+}
+
+/* "What the skill does" — four numbered steps (agents page) */
+.skillSteps {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(0, 1fr));
+  gap: 16px;
+  margin: 40px 0 32px;
+}
+.skillStep {
+  padding: 24px 20px;
+  background: var(--as-soil-1);
+  border: 1px solid var(--as-line);
+  border-radius: 20px;
+}
+.skillStepNum {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 28px;
+  height: 28px;
+  border-radius: 50%;
+  background: var(--as-ink);
+  color: #fff;
+  font-family: var(--as-font-data);
+  font-size: 12px;
+  font-weight: 600;
+  margin-bottom: 14px;
+}
+.skillStep h3 {
+  font-family: var(--as-font-display);
+  font-size: 20px;
+  line-height: 26px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 6px;
+  color: var(--as-heading);
+}
+.skillStep p {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--as-text-2);
+  margin: 0;
+}
+@media (max-width: 996px) {
+  .skillSteps { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+}
+@media (max-width: 560px) {
+  .skillSteps { grid-template-columns: 1fr; }
+}
+
+/* "What a provider sees" — three-row table (privacy page). Every rule
+   resets Infima's table defaults (cell borders, striped rows, thead rule)
+   explicitly, so only the row dividers we draw are visible. */
+.seesWrap {
+  margin-top: 40px;
+  overflow-x: auto;
+  border: 1px solid var(--as-line);
+  border-radius: 20px;
+  background: var(--as-soil-1);
+}
+.seesTable {
+  display: table;
+  width: 100%;
+  min-width: 640px;
+  margin: 0;
+  border-collapse: collapse;
+  border: 0;
+  font-size: 14px;
+  line-height: 22px;
+}
+.seesTable > thead > tr,
+.seesTable > tbody > tr,
+.seesTable > tbody > tr:nth-child(2n) {
+  background: transparent;
+  border: 0;
+}
+.seesTable th,
+.seesTable td {
+  padding: 18px 20px;
+  text-align: left;
+  vertical-align: top;
+  border: 0;
+  border-bottom: 1px solid var(--as-line);
+  background: transparent;
+}
+.seesTable > tbody > tr:last-child > th,
+.seesTable > tbody > tr:last-child > td { border-bottom: 0; }
+.seesTable > thead th {
+  font-family: var(--as-font-data);
+  font-weight: 500;
+  font-size: 11px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--as-text-2);
+  background: var(--as-soil-0);
+}
+.seesTable > tbody th {
+  font-weight: 600;
+  color: var(--as-heading);
+  white-space: nowrap;
+}
+.seesTable td { color: var(--as-text-2); font-weight: 500; }
+.seesTable td.seesGood { color: var(--as-green-deep); }
+.seesNote {
+  margin: 20px 0 0;
+  font-size: 13px;
+  line-height: 20px;
+  color: var(--as-text-2);
+}
+@media (max-width: 700px) {
+  /* One card per row: the column header becomes a label above each cell. */
+  .seesWrap { overflow: visible; border: 0; background: none; }
+  .seesTable { min-width: 0; display: block; }
+  .seesTable thead { display: none; }
+  .seesTable tbody { display: grid; gap: 12px; }
+  .seesTable > tbody > tr,
+  .seesTable > tbody > tr:nth-child(2n) {
+    display: block;
+    background: var(--as-soil-1);
+    border: 1px solid var(--as-line);
+    border-radius: 16px;
+    padding: 6px 16px 14px;
+  }
+  .seesTable th,
+  .seesTable td {
+    display: block;
+    padding: 10px 0;
+    border: 0;
+    border-bottom: 1px solid var(--as-line);
+  }
+  .seesTable tbody th {
+    font-family: var(--as-font-display);
+    font-size: 18px;
+    padding: 12px 0 6px;
+    white-space: normal;
+  }
+  .seesTable td::before {
+    content: attr(data-col);
+    display: block;
+    font-family: var(--as-font-data);
+    font-size: 11px;
+    letter-spacing: 0.08em;
+    text-transform: uppercase;
+    color: var(--as-text-2);
+    margin-bottom: 4px;
+  }
+  .seesTable > tbody > tr > td:last-child { border-bottom: 0; }
 }

@@ -213,3 +213,8 @@
 /* reduced motion: static end state */
 .reduced .packetA, .reduced .packetB { display: none; }
 .reduced .seesVal { opacity: 1; }
+
+/* Phones: the readout line is longer than the card; let it wrap. */
+@media (max-width: 480px) {
+  .sees { white-space: normal; flex-wrap: wrap; text-align: center; font-size: 11px; gap: 6px 10px; padding: 0 8px; }
+}

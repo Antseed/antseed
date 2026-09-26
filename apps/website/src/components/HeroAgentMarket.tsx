@@ -80,7 +80,7 @@ export function HeroAgentMarket({active}: {active: boolean}) {
   const agent = AGENTS[on % AGENTS.length];
   return (
     <div className={`${ag.card} ${!active ? ag.paused : ''}`}>
-      <div className={ag.top}><span><i /> Connect your agents.</span><small className={styles.live}><i />LIVE PRICES</small></div>
+      <div className={ag.top}><span><i /> Your agent sets itself up.</span><small className={styles.live}><i />LIVE PRICES</small></div>
       <div className={`${ag.scene} ${styles.scene}`}>
         {rows.map((row, i) => {
           const a = AGENTS[i % AGENTS.length];

@@ -258,7 +258,7 @@ const config: Config = {
         {to: '/providers', label: 'Providers', position: 'left'},
         {
           href: 'https://antseedstats.com/network',
-          label: 'Prices',
+          label: 'Live prices',
           position: 'left',
           target: '_blank',
           rel: 'noopener noreferrer',
@@ -295,7 +295,7 @@ const config: Config = {
           // straight to the installer for the visitor's OS/arch, falling back
           // to the releases page when detection fails.
           type: 'custom-download',
-          label: 'Download AI VPN',
+          label: 'Download the AI VPN',
           position: 'right',
           className: 'header-download-link',
         },

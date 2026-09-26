@@ -1,12 +1,12 @@
 import {useEffect, useRef, useState, type MutableRefObject, type RefObject, type ReactNode} from 'react';
 import styles from '../pages/index.module.css';
 import cli from './HeroCliVisual.module.css';
-import {CommandChip} from './CommandChip';
 import ag from './HeroAgentVisual.module.css';
 import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
 import {AllVersionsLink} from '../lib/AllVersionsLink';
 import {useMobileGetStarted} from '../lib/useMobileGetStarted';
 import {useNetworkStats} from '../lib/useNetworkStats';
+import {SkillChip} from './SkillChip';
 import {Button, ArrowRight} from './ui';
 import Link from '@docusaurus/Link';
 import {HeroDemo, DEMO_BEATS, DEMO_TOTAL_FRAMES} from './HeroDemo';
@@ -436,8 +436,8 @@ export function DownloadCta({
         <>
           <div className={styles.ctaRow}>
             <Button href={download.href} osIcons size={size} className="vprBtn" onClick={onGetStarted}>
-              <span className="vprLabelDesktop">Download AI VPN</span>
-              <span className="vprLabelMobile">Get Started<ArrowRight /></span>
+              <span className="vprLabelDesktop">Download the AI VPN</span>
+              <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
             </Button>
             <AllVersionsLink />
           </div>
@@ -458,14 +458,14 @@ export function DownloadCta({
 }
 
 /* Hero use switch — three ways in. The desktop app is the default; the CLI
-   and agent paths reuse the commands documented in
-   docs/guides/using-the-api.md and skills/join-buyer/SKILL.md. */
+   path reuses the commands documented in docs/guides/using-the-api.md and
+   the agent path installs skills/join-buyer (also served at /skill.md). */
 export type HeroUse = 'app' | 'cli' | 'agent';
 
 const HERO_USES: {id: HeroUse; label: string}[] = [
-  {id: 'app', label: 'Download the app'},
-  {id: 'cli', label: 'Use it from the CLI'},
-  {id: 'agent', label: 'Use it from an agent'},
+  {id: 'app', label: 'Download the AI VPN'},
+  {id: 'cli', label: 'Install the CLI'},
+  {id: 'agent', label: 'For agents'},
 ];
 
 type HeroTermToken = {text: string; cls?: 'tGreen' | 'tOrange' | 'tYellow' | 'tPurple' | 'tBlue' | 'tWhite' | 'tComment'};
@@ -500,8 +500,6 @@ const HERO_CLI_STEPS = [
     cmd({text: 'antseed', cls: 'tPurple'}, sp, {text: 'buyer deposit', cls: 'tBlue'}),
   ]},
 ];
-
-const JOIN_BUYER_SKILL_URL = 'https://github.com/AntSeed/antseed/tree/main/skills/join-buyer';
 
 function useCopy(text: string) {
   const [copied, setCopied] = useState(false);
@@ -558,7 +556,7 @@ function HeroTerminal({lines, footer}: {lines: HeroTermLine[]; footer?: ReactNod
           <i style={{background: '#F59E0B'}} />
           <i style={{background: '#676663'}} />
         </span>
-        <span className={styles.terminalStatus}>Use it from the CLI</span>
+        <span className={styles.terminalStatus}>Antseed CLI</span>
         <CopyButton text={script} label="Copy all" />
       </div>
       <pre className={styles.heroTerminalBody}>
@@ -628,7 +626,7 @@ export function HeroCliVisual({active = true}: {active?: boolean}) {
         <div className={cli.terminal}>
           <div className={cli.bar}>
             <span className={cli.dots}><i style={{background: '#EF4444'}} /><i style={{background: '#F59E0B'}} /><i style={{background: '#676663'}} /></span>
-            <span className={cli.barTitle}>Use it from the CLI</span>
+            <span className={cli.barTitle}>Antseed CLI</span>
             <button type="button" className={cli.copy} onClick={all.copy} aria-live="polite">{all.copied ? 'Copied' : 'Copy commands'}</button>
           </div>
           <pre className={cli.body}>
@@ -676,12 +674,12 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
           <DownloadCta caption="No signup required" />
         </div>
         <div className={styles.heroCtaPane} aria-hidden={use !== 'cli'} inert={use !== 'cli'} data-active={use === 'cli'}>
-          <Button to="/docs/guides/using-the-api" size="lg" arrow>Set up the CLI</Button>
-          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Mac, Windows, Linux, or your server.</span>
+          <Button to="/docs/install" size="lg" arrow>Install the CLI</Button>
+          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Mac, Windows, Linux, or your server. No account.</span>
         </div>
         <div className={styles.heroCtaPane} aria-hidden={use !== 'agent'} inert={use !== 'agent'} data-active={use === 'agent'}>
-          <CommandChip command="gh skill install AntSeed/antseed join-buyer" />
-          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Install one skill. Let your agent take it from here.</span>
+          <SkillChip />
+          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Give your agent the skill. It takes it from there.</span>
         </div>
       </div>
     </div>

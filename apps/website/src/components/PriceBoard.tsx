@@ -73,7 +73,7 @@ export function PriceBoard({count = 4, delay = 120}: {count?: number; delay?: nu
           target="_blank"
           rel="noopener noreferrer">
           <span className={styles.signalDots} aria-hidden="true"><i /><i /><i /></span>
-          Live Marketplace
+          Live prices
           <span className={styles.priceLiveArrow}><ArrowRight /></span>
         </a>
       </div>

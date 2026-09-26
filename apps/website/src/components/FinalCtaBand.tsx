@@ -7,8 +7,8 @@ import {Button, Reveal, ArrowRight} from './ui';
 
 /** The ink closing band from the homepage, shared with /network. */
 export function FinalCtaBand({
-  title = 'Run your agents on your terms',
-  sub = 'Every model, no middleman. Anonymous and always on.',
+  title = 'Every model. No middleman. No account.',
+  sub = 'Free models to start. Pay per request for the rest, with no usage limits.',
   caption,
   secondary,
   versionsLink = true,
@@ -48,8 +48,8 @@ function FinalCtaButton() {
   const onGetStarted = useMobileGetStarted();
   return (
     <Button href={download.href} variant="white" size="lg" osIcons className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download AI VPN</span>
-      <span className="vprLabelMobile">Get Started<ArrowRight /></span>
+      <span className="vprLabelDesktop">Download the AI VPN</span>
+      <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
     </Button>
   );
 }
