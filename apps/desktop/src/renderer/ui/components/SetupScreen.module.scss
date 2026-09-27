@@ -219,6 +219,58 @@
   text-align: center;
 }
 
+.referralCard {
+  width: min(360px, calc(100vw - 48px));
+  margin-top: 16px;
+  padding: 14px;
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  background: var(--bg-card);
+  color: var(--text-primary);
+  text-align: left;
+
+  p {
+    margin: 7px 0 0;
+    color: var(--text-secondary);
+    font-size: 12px;
+    line-height: 1.45;
+  }
+}
+
+.referralActions {
+  display: flex;
+  justify-content: flex-end;
+  gap: 8px;
+  margin-top: 12px;
+
+  button {
+    border: 1px solid var(--border);
+    border-radius: 9px;
+    padding: 7px 10px;
+    background: var(--bg-primary);
+    color: var(--text-secondary);
+    cursor: pointer;
+  }
+
+  button:disabled {
+    opacity: 0.55;
+    cursor: default;
+  }
+}
+
+.referralActions .referralConfirm {
+  border-color: var(--accent-green);
+  background: var(--accent-green);
+  color: #07130d;
+  font-weight: 600;
+}
+
+.referralWarning {
+  margin-top: 10px;
+  color: var(--warning, #d99532);
+  font-size: 12px;
+}
+
 /* ------------------------------------------------------------------ */
 /*  Network trouble hint                                               */
 /* ------------------------------------------------------------------ */

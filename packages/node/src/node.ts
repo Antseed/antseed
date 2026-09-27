@@ -54,6 +54,7 @@ import { PaymentMux } from "./p2p/payment-mux.js";
 import { SweepMux } from "./p2p/sweep-mux.js";
 import { VerificationMux } from "./verification/verification-mux.js";
 import { DepositRelayer } from "./payments/deposit-relayer.js";
+import type { UsageAttribution } from "./payments/evm/signatures.js";
 import {
   CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
@@ -213,6 +214,14 @@ export interface NodePaymentsConfig {
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
   depositRelayAddress?: string;
+  /** Deployed AntseedReferrals contract address (Foundation-funded referral rewards). */
+  referralsAddress?: string;
+  /**
+   * Buyer-side attribution appended to every signed SpendingAuth / FreeUsage
+   * metadata blob: the referrer wallet (bound on-chain by AntseedStats on the
+   * buyer's first settlement) and the bytes32 client id of this software.
+   */
+  attribution?: UsageAttribution;
 }
 
 export interface NodeRelayerConfig {
@@ -1784,6 +1793,7 @@ export class AntseedNode extends EventEmitter {
           maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
           maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+          ...(payments.attribution ? { attribution: payments.attribution } : {}),
           dataDir: paymentsDir,
         };
         this._buyerPaymentManager = new BuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore, this._sellerAddressResolver ?? undefined);
@@ -2050,6 +2060,7 @@ export class AntseedNode extends EventEmitter {
             freeUsageContractAddress: freeUsageConfig.freeUsageContractAddress,
             defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900,
             disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+            ...(payments.attribution ? { attribution: payments.attribution } : {}),
           },
           this._sellerAddressResolver ?? undefined,
           this._channelStore ?? undefined,
@@ -2324,6 +2335,16 @@ export class AntseedNode extends EventEmitter {
    * 'confirmed' ends the round. Progress still arrives as 'sweep:receipt'
    * events, and the wire protocol is unchanged — relayers need no upgrade.
    */
+  /**
+   * Update the referrer / client attribution appended to every buyer-signed
+   * settlement metadata blob (see NodePaymentsConfig.attribution). Takes
+   * effect on the next signed auth; nothing on-chain is touched here.
+   */
+  setBuyerAttribution(attribution: UsageAttribution | undefined): void {
+    this._buyerPaymentManager?.setAttribution(attribution);
+    this._buyerFreeUsageManager?.setAttribution(attribution);
+  }
+
   async dispatchSweepRequest(
     payload: SweepRequestPayload,
     opts?: { perPeerTimeoutMs?: number },

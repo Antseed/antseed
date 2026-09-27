@@ -11,6 +11,7 @@ import {
   overview, positions, stake, move, split, merge, extend, maxLock, previewWithdraw, withdraw,
   rewards, claim, restake, stakeUsageRewards, compound, poolsView, singlePool, usage, emissions,
   verification, proofStatus, submitProof, seller, registerBinding, claimStarter,
+  referral, claimReferralRewards,
 } from './service/index.js';
 import type {
   StakeRequest, MoveRequest, SplitRequest, MergeRequest, ExtendRequest, MaxLockRequest, WithdrawRequest,
@@ -82,6 +83,7 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   app.get<{ Querystring: { seller?: string } }>('/api/verification', (request, reply) => respond(reply, () => cached(`verification:${(request.query.seller ?? '').toLowerCase()}`, () => verification(ctx, request.query.seller || undefined))));
   app.get<{ Params: { proofId: string } }>('/api/verification/proofs/:proofId', (request, reply) => respond(reply, () => proofStatus(ctx, request.params.proofId)));
   app.get('/api/seller', (_request, reply) => respond(reply, () => cached('seller', () => seller(ctx))));
+  app.get('/api/referrals', (_request, reply) => respond(reply, () => cached('referrals', () => referral(ctx))));
   app.post<{ Body: { positionIds: number[] } }>('/api/positions/withdraw/preview', (request, reply) => respond(reply, () => previewWithdraw(ctx, request.body?.positionIds ?? [])));
 
   // Browser sessions share one journal across wallets; show each wallet only its own actions.
@@ -143,4 +145,5 @@ export function registerRoutes(app: FastifyInstance, context: RouteContext): voi
   action<SubmitProofRequest>('/api/verification/submit', 'verify-submit', (body, report) => submitProof(ctx, body.artifact, report));
   action<{ agentId?: number }>('/api/seller/register', 'seller-register', (body, report) => registerBinding(ctx, body?.agentId, report));
   action<Record<string, never>>('/api/seller/claim-starter', 'claim-starter', (_body, report) => claimStarter(ctx, report));
+  action<Record<string, never>>('/api/referrals/claim', 'referral-claim', (_body, report) => claimReferralRewards(ctx, report));
 }

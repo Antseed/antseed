@@ -1,5 +1,12 @@
 export type RuntimeMode = 'connect' | 'system-proxy' | 'tunnel';
 
+export type ReferralSetupStatus = {
+  state: 'none' | 'candidate' | 'declined' | 'accepted' | 'bound' | 'error';
+  referrer?: string;
+  confidence?: 'probable' | 'low';
+  error?: string;
+};
+
 export type RuntimeProcessState = {
   mode: RuntimeMode;
   running: boolean;
@@ -398,6 +405,9 @@ export type DesktopBridge = {
   onFullscreenChange?: (handler: (isFullscreen: boolean) => void) => () => void;
   onWindowFocusChange?: (handler: (isFocused: boolean) => void) => () => void;
   getAppSetupStatus?: () => Promise<{ needed: boolean; complete: boolean }>;
+  referralGetStatus?: () => Promise<ReferralSetupStatus>;
+  referralAccept?: (referrer: string) => Promise<ReferralSetupStatus>;
+  referralDecline?: () => Promise<ReferralSetupStatus>;
   getTelemetryStatus?: () => Promise<import('../../shared/telemetry.js').TelemetryStatus>;
   getTeeStatus?: () => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
   checkSellerTee?: (peerId: string) => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;

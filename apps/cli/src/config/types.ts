@@ -221,6 +221,12 @@ export interface BuyerCLIConfig {
   autoSweep?: boolean;
   /** Buyer-side response-auth evidence sampling settings. */
   verification?: BuyerVerificationConfig;
+  /**
+   * Client label appended (as bytes32) to every buyer-signed settlement
+   * metadata blob for on-chain client attribution / builder incentives.
+   * Default: "antseed-cli" (Desktop sets "antseed-desktop").
+   */
+  clientId?: string;
 }
 
 /**
@@ -306,6 +312,8 @@ export interface PaymentsCLIConfig {
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */
     depositRelayAddress?: string;
+    /** Deployed AntseedReferrals contract address (referral rewards). */
+    referralsAddress?: string;
     /** Default lock amount per session in human-readable USDC (e.g. "1" = 1 USDC) */
     defaultLockAmountUSDC?: string;
   };

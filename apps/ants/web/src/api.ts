@@ -8,6 +8,7 @@ import type {
   PositionsView,
   ProofStatusView,
   RewardsView,
+  ReferralView,
   SellerView,
   SellerModelsView,
   UsageView,
@@ -133,6 +134,7 @@ export const api = {
   overview: () => get<OverviewView>('/api/overview'),
   positions: () => get<PositionsView>('/api/positions'),
   rewards: () => get<RewardsView>('/api/rewards'),
+  referral: () => get<ReferralView>('/api/referrals'),
   pools: () => get<PoolsView>('/api/pools'),
   sellerModels: async (address: string) => {
     try {

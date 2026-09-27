@@ -1,4 +1,18 @@
-import { type AbstractSigner, type TypedDataDomain, AbiCoder, hexlify, id, keccak256, randomBytes } from 'ethers';
+import {
+  type AbstractSigner,
+  type TypedDataDomain,
+  AbiCoder,
+  ZeroAddress,
+  ZeroHash,
+  decodeBytes32String,
+  encodeBytes32String,
+  getAddress,
+  hexlify,
+  id,
+  keccak256,
+  randomBytes,
+  toBeHex,
+} from 'ethers';
 
 // =========================================================================
 // EIP-712 Types — AntSeed SpendingAuth (cumulative payment authorization)
@@ -147,6 +161,80 @@ export interface ReceiveAuthorizationMessage {
  * specific service.
  */
 
+/**
+ * Buyer-side usage attribution, appended to both SpendingAuth and FreeUsage
+ * metadata as two extra ABI words after the services array:
+ *
+ *   ..., ServiceTotal[] services, address referrer, bytes32 clientId
+ *
+ * Appending keeps every existing decoder working (see
+ * `decodeMetadataAttribution`). AntseedStats reads the tail and forwards the
+ * referrer to AntseedReferrals on the buyer's first settlement, so the binding
+ * is buyer-signed via metadataHash, covers free usage, and costs no extra
+ * transaction.
+ *
+ * - referrer: wallet that referred this buyer (zero when none).
+ * - clientId: bytes32 label of the client software that produced the usage
+ *   (e.g. "antseed-desktop"), the input for builder incentives.
+ */
+export interface UsageAttribution {
+  referrer?: string;
+  clientId?: string;
+}
+
+/** Encode a short client label (<= 31 ASCII chars) as a bytes32 clientId. */
+export function clientIdFromLabel(label: string): string {
+  return encodeBytes32String(label.trim().slice(0, 31));
+}
+
+/** Human label for a bytes32 clientId; hex when it is not a padded string. */
+export function clientIdLabel(clientId: string): string {
+  try {
+    return decodeBytes32String(clientId);
+  } catch {
+    return clientId;
+  }
+}
+
+const ATTRIBUTION_ABI_TYPES = ['address', 'bytes32'];
+
+/**
+ * ABI types and values for a metadata blob's optional attribution tail.
+ * Returns empty arrays when nothing is set, so the encoding is unchanged.
+ */
+function attributionTail(attribution: UsageAttribution | undefined): { types: string[]; values: string[] } {
+  const referrer = attribution?.referrer ? getAddress(attribution.referrer) : ZeroAddress;
+  const clientId = attribution?.clientId ?? ZeroHash;
+  if (!/^0x[0-9a-fA-F]{64}$/.test(clientId)) throw new Error('clientId must be a bytes32 hex string');
+  if (referrer === ZeroAddress && clientId === ZeroHash) return { types: [], values: [] };
+  return { types: ATTRIBUTION_ABI_TYPES, values: [referrer, clientId] };
+}
+
+/**
+ * Decode the optional attribution tail from encoded SpendingAuth or FreeUsage
+ * metadata. Returns null when the metadata carries no tail.
+ *
+ * The tail grows the ABI head by exactly two words, so its presence shows in
+ * the services-array offset: `(staticWords + 1) * 32` without a tail,
+ * `(staticWords + 3) * 32` with one. Offsets are absolute, which is why
+ * decoders that stop at the services array are unaffected.
+ */
+export function decodeMetadataAttribution(encoded: string): { referrer: string; clientId: string } | null {
+  const coder = AbiCoder.defaultAbiCoder();
+  const [version] = coder.decode(['uint256'], encoded) as unknown as [bigint];
+  // v3 metadata carries five static words (adds cumulativeOutputImages); v1/v2 carry four.
+  const staticWords = version === METADATA_VERSION ? 5 : 4;
+  const headWords = staticWords + 3;
+  if ((encoded.length - 2) / 64 < headWords) return null;
+  const head = coder.decode(Array(headWords).fill('uint256'), encoded) as unknown as bigint[];
+  const servicesOffset = head[staticWords]!;
+  if (servicesOffset !== BigInt(headWords * 32)) return null;
+  return {
+    referrer: getAddress(toBeHex(head[staticWords + 1]!, 20)),
+    clientId: toBeHex(head[staticWords + 2]!, 32),
+  };
+}
+
 export interface SpendingAuthMetadata {
   cumulativeInputTokens: bigint;
   cumulativeOutputTokens: bigint;
@@ -154,6 +242,8 @@ export interface SpendingAuthMetadata {
   /** Optional so FreeUsageMetadata-shaped objects remain assignable; encodes as 0. */
   cumulativeOutputImages?: bigint;
   services?: SpendingAuthServiceMetadata[];
+  /** Optional referrer / client attribution tail; omitted when unset. */
+  attribution?: UsageAttribution;
 }
 
 export interface SpendingAuthServiceMetadata {
@@ -187,8 +277,9 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
   const services = [...(metadata.services ?? [])].sort((a, b) =>
     a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
   );
+  const tail = attributionTail(metadata.attribution);
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE, ...tail.types],
     [
       METADATA_VERSION,
       metadata.cumulativeInputTokens,
@@ -196,6 +287,7 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
       metadata.cumulativeRequestCount,
       metadata.cumulativeOutputImages ?? 0n,
       services,
+      ...tail.values,
     ],
   );
 }
@@ -289,6 +381,8 @@ export interface FreeUsageMetadata {
   cumulativeOutputTokens: bigint;
   cumulativeRequestCount: bigint;
   services?: SpendingAuthServiceMetadata[];
+  /** Optional referrer / client attribution tail; omitted when unset. */
+  attribution?: UsageAttribution;
 }
 
 export type FreeUsageServiceMetadata = SpendingAuthServiceMetadata;
@@ -300,14 +394,16 @@ export function encodeFreeUsageMetadata(metadata: FreeUsageMetadata): string {
   const services = [...(metadata.services ?? [])].sort((a, b) =>
     a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
   );
+  const tail = attributionTail(metadata.attribution);
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE_V2],
+    ['uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE_V2, ...tail.types],
     [
       FREE_USAGE_METADATA_VERSION,
       metadata.cumulativeInputTokens,
       metadata.cumulativeOutputTokens,
       metadata.cumulativeRequestCount,
       services,
+      ...tail.values,
     ],
   );
 }

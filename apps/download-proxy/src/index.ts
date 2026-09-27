@@ -23,6 +23,7 @@
 import {matchAsset, parseTarget} from './assets';
 import {getLatestRelease} from './release';
 import {trackedStream} from './stream';
+import {matchReferral, recordReferralDownload, type ReferralAttributionEnv} from './referrals';
 import {
   deliverEvent,
   endEvent,
@@ -36,7 +37,7 @@ import {
   type GaIds,
 } from './events';
 
-export interface Env {
+export interface Env extends ReferralAttributionEnv {
   GITHUB_REPO: string;
   GA4_MEASUREMENT_ID?: string;
   GITHUB_TOKEN?: string;
@@ -70,6 +71,9 @@ export default {
     }
 
     const url = new URL(request.url);
+    if (url.pathname === '/referral/match') {
+      return matchReferral(request, env);
+    }
     if (url.pathname === '/' || url.pathname === '/vpr' || url.pathname === '/vpr/') {
       return Response.redirect(releasesUrl, 302);
     }
@@ -144,6 +148,7 @@ export default {
     // reported, so GA counts downloads rather than requests.
     const role = segmentRole(origin.status, origin.headers.get('content-range'));
     if (role.first) {
+      ctx.waitUntil(recordReferralDownload(request, env, url.searchParams.get('ref')));
       emit(env, ctx, startEvent(downloadCtx), gaIds);
     }
     const {readable, done} = trackedStream(origin.body, contentLength);

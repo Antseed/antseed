@@ -5,8 +5,13 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Wallet, verifyTypedData } from 'ethers';
+import { AbiCoder, Wallet, ZeroHash, getAddress, verifyTypedData } from 'ethers';
 import {
+  clientIdFromLabel,
+  clientIdLabel,
+  decodeMetadataAttribution,
+  encodeFreeUsageMetadata,
+  encodeMetadata,
   SPENDING_AUTH_TYPES,
   RESERVE_AUTH_TYPES,
   ZERO_METADATA_HASH,
@@ -100,5 +105,59 @@ describe('connection auth signing', () => {
     const sig = signUtf8(wallet, payload);
     expect(verifyUtf8(peerId, payload, sig)).toBe(true);
     expect(verifyUtf8(peerId, payload + 'tampered', sig)).toBe(false);
+  });
+});
+
+describe('metadata attribution tail', () => {
+  const referrer = '0x' + '11'.repeat(20);
+  const clientId = clientIdFromLabel('antseed-desktop');
+  const base = {
+    cumulativeInputTokens: 100n,
+    cumulativeOutputTokens: 40n,
+    cumulativeRequestCount: 2n,
+    cumulativeOutputImages: 1n,
+    services: [{
+      serviceId: '0x' + 'ab'.repeat(32),
+      cumulativeAmount: 5n,
+      cumulativeInputTokens: 100n,
+      cumulativeCachedInputTokens: 10n,
+      cumulativeOutputTokens: 40n,
+      cumulativeRequestCount: 2n,
+      cumulativeOutputImages: 1n,
+    }],
+  };
+
+  it('is omitted when no attribution is set', () => {
+    expect(encodeMetadata(base)).toBe(encodeMetadata({ ...base, attribution: {} }));
+    expect(decodeMetadataAttribution(encodeMetadata(base))).toBeNull();
+    expect(decodeMetadataAttribution(encodeFreeUsageMetadata(base))).toBeNull();
+  });
+
+  it('round-trips on SpendingAuth metadata without disturbing legacy decoders', () => {
+    const encoded = encodeMetadata({ ...base, attribution: { referrer, clientId } });
+    expect(decodeMetadataAttribution(encoded)).toEqual({ referrer: getAddress(referrer), clientId });
+    expect(clientIdLabel(clientId)).toBe('antseed-desktop');
+    const coder = AbiCoder.defaultAbiCoder();
+    const legacy = coder.decode(['uint256', 'uint256', 'uint256', 'uint256'], encoded);
+    expect(legacy.map(String)).toEqual(['3', '100', '40', '2']);
+    const v3 = coder.decode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256',
+        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]'],
+      encoded,
+    );
+    expect(v3[5].length).toBe(1);
+    expect(String(v3[5][0].cumulativeCachedInputTokens)).toBe('10');
+  });
+
+  it('round-trips on FreeUsage metadata and tolerates a referrer-only tail', () => {
+    const encoded = encodeFreeUsageMetadata({ ...base, attribution: { referrer } });
+    expect(decodeMetadataAttribution(encoded)).toEqual({ referrer: getAddress(referrer), clientId: ZeroHash });
+    const coder = AbiCoder.defaultAbiCoder();
+    const legacy = coder.decode(
+      ['uint256', 'uint256', 'uint256', 'uint256',
+        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount)[]'],
+      encoded,
+    );
+    expect(legacy.map((v) => (Array.isArray(v) ? v.length : String(v)))).toEqual(['1', '100', '40', '2', 1]);
   });
 });

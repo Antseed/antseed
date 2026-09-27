@@ -24,12 +24,25 @@ GA4 event) and "user actually received the installer".
 | Route | Behavior |
 | --- | --- |
 | `GET /vpr/<platform>-<arch>` | Streams the latest matching installer. Platforms: `mac` (.dmg), `win` (.exe), `linux` (.AppImage); arch `arm64` \| `x64`. |
+| `GET /referral/match` | Returns a short-lived, probabilistic referral candidate for the caller's network when referral attribution is configured. |
 | `GET /` and unresolvable targets | 302 to the GitHub releases page. |
 
 "Latest" is resolved from the GitHub API and cached at the edge for 5
 minutes, so a fresh release is picked up within minutes with one API call per
 burst. Range requests are forwarded (resumed and segmented downloads work);
 events from a 206 response are flagged `partial=1` in telemetry.
+
+## Referral attribution
+
+Referral download URLs may include `?ref=<wallet>`. When the
+`REFERRAL_ATTRIBUTION` KV binding and `REFERRAL_HASH_SECRET` Worker secret are
+configured, the Worker stores the referrer wallet for 48 hours under an HMAC-derived
+network key. Raw IP addresses are never written to KV or logs. Shared networks
+that downloaded multiple referral links return the newest candidate with low confidence
+so Desktop setup can ask the user to verify it explicitly.
+
+Create the KV namespace with Wrangler and uncomment the `kv_namespaces` block
+in `wrangler.toml` before deploying the feature.
 
 ## Telemetry
 

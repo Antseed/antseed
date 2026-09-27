@@ -7,10 +7,11 @@ import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, ReferralsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
+import { readReferralState, referralStateMtimeMs, resolveBuyerAttribution, syncReferralState } from '../../referral-state.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -290,8 +291,25 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         channelsContractAddress: cryptoOverrides?.channelsContractAddress,
         freeUsageContractAddress: cryptoOverrides?.freeUsageContractAddress,
         usdcContractAddress: cryptoOverrides?.usdcContractAddress,
+        referralsAddress: cryptoOverrides?.referralsAddress,
       })
       const settlementEnabled = settlementEnv ?? true
+
+      // Referrer / client attribution appended to every buyer-signed
+      // settlement metadata blob. AntseedStats binds the referrer on-chain at
+      // the first settlement (paid or free); the daemon only has to carry it.
+      const referralsClient = chainConfig.referralsAddress
+        ? new ReferralsClient({
+            rpcUrl: chainConfig.rpcUrl,
+            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+            contractAddress: chainConfig.referralsAddress,
+            evmChainId: chainConfig.evmChainId,
+          })
+        : null
+      const initialAttribution = resolveBuyerAttribution({
+        referralState: await readReferralState(globalOpts.dataDir),
+        clientLabel: effectiveBuyerConfig.clientId,
+      })
 
       // Advisory only: a transient RPC failure at launch must not disable
       // payments for the whole session. Buyer payments sign off-chain, and the
@@ -325,6 +343,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // without them the usage, stake and wash parts of the score stay null.
           ...(chainConfig.stakingContractAddress ? { stakingAddress: chainConfig.stakingContractAddress } : {}),
           ...(chainConfig.identityRegistryAddress ? { identityRegistryAddress: chainConfig.identityRegistryAddress } : {}),
+          ...(chainConfig.referralsAddress ? { referralsAddress: chainConfig.referralsAddress } : {}),
+          attribution: initialAttribution,
           ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
           ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
           ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
@@ -404,6 +424,30 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       } catch (err) {
         nodeSpinner.fail(chalk.red(`Failed to connect: ${(err as Error).message}`))
         process.exit(1)
+      }
+
+      // Keep the signed attribution in step with referral.json (Desktop
+      // writes it when the user confirms an inviter, possibly after the daemon
+      // started) and drop the referrer once the chain shows it bound.
+      let attributionTimer: NodeJS.Timeout | null = null
+      if (paymentsConfig?.enabled) {
+        const buyerAddress = node.identity!.wallet.address
+        let lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
+        let lastReferrer = initialAttribution.referrer
+        const refreshAttribution = async (force: boolean) => {
+          if (!force && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
+          const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralsClient)
+          lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
+          const attribution = resolveBuyerAttribution({ referralState, clientLabel: effectiveBuyerConfig.clientId })
+          if (attribution.referrer && attribution.referrer !== lastReferrer) {
+            console.log(chalk.dim(`Referral: carrying inviter ${attribution.referrer.slice(0, 10)}… until the first settlement binds it on-chain.`))
+          }
+          lastReferrer = attribution.referrer
+          node.setBuyerAttribution(attribution)
+        }
+        void refreshAttribution(true).catch(() => {})
+        attributionTimer = setInterval(() => { void refreshAttribution(false).catch(() => {}) }, 60_000)
+        attributionTimer.unref()
       }
 
       if (paymentsConfig?.enabled) {
@@ -561,6 +605,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       setupShutdownHandler(async () => {
         nodeSpinner.start('Shutting down...')
+        if (attributionTimer) clearInterval(attributionTimer)
         depositWatcher?.stop()
         if (ownsProxyListener) await proxy.stop()
         await node.stop()

@@ -93,6 +93,7 @@ let cachedCryptoConfig: {
   recognizedUsageEffectiveEpoch?: number;
   antsTokenAddress?: string;
   depositRelayAddress?: string;
+  referralsAddress?: string;
 } | null = null;
 
 // Cached on-chain clients for the rewards summary — invalidated together with
@@ -138,6 +139,7 @@ export async function loadCachedCryptoConfig(): Promise<typeof cachedCryptoConfi
       : {}),
     ...(cc.antsTokenAddress ? { antsTokenAddress: cc.antsTokenAddress } : {}),
     ...(cc.depositRelayAddress ? { depositRelayAddress: cc.depositRelayAddress } : {}),
+    ...(cc.referralsAddress ? { referralsAddress: cc.referralsAddress } : {}),
   };
   return cachedCryptoConfig;
 }

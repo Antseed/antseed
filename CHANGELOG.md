@@ -27,6 +27,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Referrals: buyer-signed on-chain referral binding and Foundation-funded rewards. The buyer appends `referrer` and `clientId` words to the settlement metadata it already signs (SpendingAuth and FreeUsage), `AntseedStats` decodes them and binds the referrer through the new `AntseedReferrals` contract on the buyer's first settlement, including during free usage; referrers earn 2% of referred buyers' finalized ANTS usage rewards, accrued and claimed from the ANTS dashboard. Download links carry `?ref=<wallet>`, the download proxy keeps a 48-hour HMAC-keyed network match, and Desktop asks for explicit confirmation during first-run setup. `AntseedStats` also aggregates per-client usage for future builder incentives; the CLI reports `antseed-cli` and Desktop `antseed-desktop` (`buyer.clientId` / `ANTSEED_CLIENT_ID`). Requires a new `AntseedStats` deployment and `payments.crypto.referralsAddress`.
+
 - Website: added lANTS Market to the ecosystem page — a community-built board and USDC market for lANTS staking positions on Antseed, with a card and onchain preview. No other copy or layout changes.
 - Website: blog post "Introducing ANTS Staking" (`/blog/ants-staking`) covering the ways to earn ANTS as a buyer, provider, or staker, how to compare providers, staking positions, and how to open the dashboard with `antseed ants`.
 

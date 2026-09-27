@@ -386,6 +386,18 @@ export interface SellerView {
   } | null;
 }
 
+export interface ReferralView {
+  available: boolean;
+  /** Share link: antseed.com/?ref=<wallet>. */
+  referralUrl: string | null;
+  /** ANTS already credited to this wallet (base units). */
+  claimable: string;
+  /** Referred buyers still owed accrual for at least one finalized epoch. */
+  pendingAccruals: number;
+  referredCount: number;
+  rateBps: number;
+}
+
 export interface JobStep { at: number; label: string; hash?: string; }
 export interface JobView {
   id: string;

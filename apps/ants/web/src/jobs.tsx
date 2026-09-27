@@ -79,6 +79,7 @@ const TITLES: Record<string, string> = {
   'verify-submit': 'Submit proof',
   'seller-register': 'Register seller',
   'claim-starter': 'Claim starter',
+  'referral-claim': 'Claim referral rewards',
 };
 
 /** Human title for a job kind ("stake" → "Stake"); unknown kinds are capitalised. */
