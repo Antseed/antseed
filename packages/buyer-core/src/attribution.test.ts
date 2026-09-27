@@ -1,9 +1,9 @@
 import { describe, expect, it } from 'vitest';
-import { clientIdFromLabel, decodeMetadataAttribution, encodeMetadata, ZERO_METADATA } from '@antseed/protocol/signatures';
+import { clientIdFromAgentId, decodeMetadataAttribution, encodeMetadata, ZERO_METADATA } from '@antseed/protocol/signatures';
 import { advanceUsageMetadata } from './channel-usage-accounting.js';
 
 describe('usage attribution through metadata advancement', () => {
-  const attribution = { referrer: `0x${'11'.repeat(20)}`, clientId: clientIdFromLabel('antseed-desktop') };
+  const attribution = { referrer: `0x${'11'.repeat(20)}`, clientId: clientIdFromAgentId(42) };
   const delta = { amount: 10n, inputTokens: 5n, cachedInputTokens: 0n, outputTokens: 3n, requests: 1n, outputImages: 0n };
 
   it('carries attribution from the previous metadata into the advanced one', () => {

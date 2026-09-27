@@ -70,6 +70,12 @@ export interface ChainConfig {
   depositRelayAddress?: string;
   /** AntseedReferrals contract: Foundation-funded referral rewards (bindings land via AntseedStats). */
   referralsAddress?: string;
+  /**
+   * ERC-8004 agent ids registered for the first-party clients. Buyers append
+   * their client's id to signed settlement metadata so AntseedClientUsage can
+   * credit recognized usage per client. Unset → no client attribution.
+   */
+  clientAgentIds?: { cli?: number; desktop?: number };
 }
 
 /**

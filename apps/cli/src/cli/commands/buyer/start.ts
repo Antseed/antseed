@@ -306,9 +306,13 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
             evmChainId: chainConfig.evmChainId,
           })
         : null
+      const attributionOptions = {
+        clientAgentId: effectiveBuyerConfig.clientAgentId,
+        clientAgentIds: chainConfig.clientAgentIds,
+      }
       const initialAttribution = resolveBuyerAttribution({
         referralState: await readReferralState(globalOpts.dataDir),
-        clientLabel: effectiveBuyerConfig.clientId,
+        ...attributionOptions,
       })
 
       // Advisory only: a transient RPC failure at launch must not disable
@@ -438,7 +442,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           if (!force && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
           const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralsClient)
           lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-          const attribution = resolveBuyerAttribution({ referralState, clientLabel: effectiveBuyerConfig.clientId })
+          const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
           if (attribution.referrer && attribution.referrer !== lastReferrer) {
             console.log(chalk.dim(`Referral: carrying inviter ${attribution.referrer.slice(0, 10)}… until the first settlement binds it on-chain.`))
           }

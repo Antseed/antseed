@@ -25,7 +25,7 @@ interface IAntseedReferralDeposits {
  * @notice Foundation-funded rewards for wallets that refer active buyers.
  *
  *         Binding: the buyer appends the referrer wallet to the metadata it
- *         signs for every settlement (SpendingAuth / FreeUsageAuth). AntseedStats
+ *         signs for every settlement (SpendingAuth / FreeUsageAuth). AntseedStatsV2
  *         decodes that tail and calls `bindReferral` on the buyer's first
  *         settlement, so the binding is buyer-signed, gasless for the buyer,
  *         and lands before any recognized usage — including during free usage.

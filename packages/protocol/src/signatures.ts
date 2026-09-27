@@ -4,8 +4,6 @@ import {
   AbiCoder,
   ZeroAddress,
   ZeroHash,
-  decodeBytes32String,
-  encodeBytes32String,
   getAddress,
   hexlify,
   id,
@@ -174,26 +172,25 @@ export interface ReceiveAuthorizationMessage {
  * transaction.
  *
  * - referrer: wallet that referred this buyer (zero when none).
- * - clientId: bytes32 label of the client software that produced the usage
- *   (e.g. "antseed-desktop"), the input for builder incentives.
+ * - clientId: ERC-8004 agent id (as bytes32) of the client software that
+ *   produced the usage. AntseedClientUsage credits the buyer's recognized
+ *   points to it; rewards go to the agent's owner.
  */
 export interface UsageAttribution {
   referrer?: string;
   clientId?: string;
 }
 
-/** Encode a short client label (<= 31 ASCII chars) as a bytes32 clientId. */
-export function clientIdFromLabel(label: string): string {
-  return encodeBytes32String(label.trim().slice(0, 31));
+/** Encode an ERC-8004 agent id as the bytes32 clientId word. */
+export function clientIdFromAgentId(agentId: bigint | number): string {
+  const id = BigInt(agentId);
+  if (id <= 0n) throw new Error('client agent id must be positive');
+  return toBeHex(id, 32);
 }
 
-/** Human label for a bytes32 clientId; hex when it is not a padded string. */
-export function clientIdLabel(clientId: string): string {
-  try {
-    return decodeBytes32String(clientId);
-  } catch {
-    return clientId;
-  }
+/** ERC-8004 agent id carried by a bytes32 clientId (0n when unset). */
+export function clientAgentId(clientId: string): bigint {
+  return BigInt(clientId);
 }
 
 const ATTRIBUTION_ABI_TYPES = ['address', 'bytes32'];

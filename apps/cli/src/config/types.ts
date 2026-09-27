@@ -222,11 +222,12 @@ export interface BuyerCLIConfig {
   /** Buyer-side response-auth evidence sampling settings. */
   verification?: BuyerVerificationConfig;
   /**
-   * Client label appended (as bytes32) to every buyer-signed settlement
-   * metadata blob for on-chain client attribution / builder incentives.
-   * Default: "antseed-cli" (Desktop sets "antseed-desktop").
+   * ERC-8004 agent id of the client software running this buyer, appended to
+   * every buyer-signed settlement metadata blob so AntseedClientUsage credits
+   * recognized usage to it. Defaults to the chain-config id for the CLI
+   * (Desktop sets its own via ANTSEED_CLIENT_KIND=desktop).
    */
-  clientId?: string;
+  clientAgentId?: number;
 }
 
 /**

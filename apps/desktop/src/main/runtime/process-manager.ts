@@ -59,8 +59,8 @@ const DEFAULT_CONNECT_DATA_DIR = join(homedir(), '.antseed');
 const LEGACY_DESKTOP_DATA_ROOT = join(homedir(), '.antseed-desktop');
 const LEGACY_DESKTOP_CONNECT_DATA_DIR = join(LEGACY_DESKTOP_DATA_ROOT, 'connect');
 const CONNECT_DATA_DIR_ENV = 'ANTSEED_DESKTOP_CONNECT_DATA_DIR';
-/** bytes32 label recorded on-chain for usage produced by this app. */
-export const DESKTOP_CLIENT_ID = 'antseed-desktop';
+/** Client kind the CLI maps to Desktop's registered client agent id. */
+export const DESKTOP_CLIENT_KIND = 'desktop';
 
 function normalizeRouterIdentifier(value: string | undefined): string {
   const raw = (value ?? 'local').trim().toLowerCase();
@@ -328,9 +328,10 @@ export function buildCliChildEnv(
   } else {
     childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'] = '1';
   }
-  // Client attribution label the buyer appends to signed settlement metadata.
-  if (!childEnv['ANTSEED_CLIENT_ID']?.trim()) {
-    childEnv['ANTSEED_CLIENT_ID'] = DESKTOP_CLIENT_ID;
+  // Lets the CLI pick Desktop's ERC-8004 client agent id from chain config for
+  // the attribution it appends to signed settlement metadata.
+  if (!childEnv['ANTSEED_CLIENT_KIND']?.trim()) {
+    childEnv['ANTSEED_CLIENT_KIND'] = DESKTOP_CLIENT_KIND;
   }
   return childEnv;
 }

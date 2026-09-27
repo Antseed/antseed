@@ -3,7 +3,6 @@ import test from 'node:test';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { decodeBytes32String } from 'ethers';
 import {
   pendingReferrer,
   readReferralState,
@@ -34,15 +33,21 @@ test('only accepted referrals are carried as pending referrers', () => {
   assert.equal(pendingReferrer(null), null);
 });
 
-test('buyer attribution resolves the client label from env, config, then default', () => {
-  const fromEnv = resolveBuyerAttribution({ referralState: null, clientLabel: 'custom', env: { ANTSEED_CLIENT_ID: 'antseed-desktop' } });
-  assert.equal(decodeBytes32String(fromEnv.clientId), 'antseed-desktop');
+test('buyer attribution resolves the client agent id from env, config, then chain config', () => {
+  const chain = { cli: 11, desktop: 12 };
+  const fromEnv = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: { ANTSEED_CLIENT_AGENT_ID: '7' } });
+  assert.equal(BigInt(fromEnv.clientId!), 7n);
   assert.equal(fromEnv.referrer, undefined);
 
-  const fromConfig = resolveBuyerAttribution({ referralState: { state: 'accepted', referrer: REFERRER }, clientLabel: 'custom', env: {} });
-  assert.equal(decodeBytes32String(fromConfig.clientId), 'custom');
+  const fromConfig = resolveBuyerAttribution({ referralState: { state: 'accepted', referrer: REFERRER }, clientAgentId: 5, clientAgentIds: chain, env: {} });
+  assert.equal(BigInt(fromConfig.clientId!), 5n);
   assert.equal(fromConfig.referrer, REFERRER);
 
-  const fallback = resolveBuyerAttribution({ referralState: null, env: {} });
-  assert.equal(decodeBytes32String(fallback.clientId), 'antseed-cli');
+  const cli = resolveBuyerAttribution({ referralState: null, clientAgentIds: chain, env: {} });
+  assert.equal(BigInt(cli.clientId!), 11n);
+  const desktop = resolveBuyerAttribution({ referralState: null, clientAgentIds: chain, env: { ANTSEED_CLIENT_KIND: 'desktop' } });
+  assert.equal(BigInt(desktop.clientId!), 12n);
+
+  const none = resolveBuyerAttribution({ referralState: null, env: {} });
+  assert.equal(none.clientId, undefined);
 });

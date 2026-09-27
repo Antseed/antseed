@@ -7,8 +7,8 @@
 import { describe, it, expect } from 'vitest';
 import { AbiCoder, Wallet, ZeroHash, getAddress, verifyTypedData } from 'ethers';
 import {
-  clientIdFromLabel,
-  clientIdLabel,
+  clientAgentId,
+  clientIdFromAgentId,
   decodeMetadataAttribution,
   encodeFreeUsageMetadata,
   encodeMetadata,
@@ -110,7 +110,7 @@ describe('connection auth signing', () => {
 
 describe('metadata attribution tail', () => {
   const referrer = '0x' + '11'.repeat(20);
-  const clientId = clientIdFromLabel('antseed-desktop');
+  const clientId = clientIdFromAgentId(42);
   const base = {
     cumulativeInputTokens: 100n,
     cumulativeOutputTokens: 40n,
@@ -136,7 +136,7 @@ describe('metadata attribution tail', () => {
   it('round-trips on SpendingAuth metadata without disturbing legacy decoders', () => {
     const encoded = encodeMetadata({ ...base, attribution: { referrer, clientId } });
     expect(decodeMetadataAttribution(encoded)).toEqual({ referrer: getAddress(referrer), clientId });
-    expect(clientIdLabel(clientId)).toBe('antseed-desktop');
+    expect(clientAgentId(clientId)).toBe(42n);
     const coder = AbiCoder.defaultAbiCoder();
     const legacy = coder.decode(['uint256', 'uint256', 'uint256', 'uint256'], encoded);
     expect(legacy.map(String)).toEqual(['3', '100', '40', '2']);

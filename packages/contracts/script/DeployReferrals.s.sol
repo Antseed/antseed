@@ -15,14 +15,14 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  *   USAGE_ACCOUNTING
  *   USAGE_REWARDS
  *   ANTSEED_DEPOSITS
- *   ANTSEED_STATS          — the AntseedStats deployment that forwards bindings
+ *   ANTSEED_STATS          — the AntseedStatsV2 deployment that forwards bindings
  *
  * Usage:
  *   cd packages/contracts
  *   source .env
  *   forge script script/DeployReferrals.s.sol --rpc-url $BASE_MAINNET_RPC_URL --broadcast --verify --via-ir
  *
- * Afterwards (owner of AntseedStats):
+ * Afterwards (owner of AntseedStatsV2):
  *   cast send $ANTSEED_STATS "setReferrals(address)" <referrals>
  * then fund the contract with Foundation ANTS via `fund(uint256)` and set
  * payments.crypto.referralsAddress in chain config.
@@ -42,6 +42,6 @@ contract DeployReferrals is Script {
 
         console.log("AntseedReferrals:", address(referrals));
         console.log("Referral rate (bps):", referrals.REFERRAL_RATE_BPS());
-        console.log("Next: AntseedStats.setReferrals(referrals), fund() with Foundation ANTS, set payments.crypto.referralsAddress.");
+        console.log("Next: AntseedStatsV2.setReferrals(referrals), fund() with Foundation ANTS, set payments.crypto.referralsAddress.");
     }
 }
