@@ -15,7 +15,8 @@ const REFERRALS_ABI = [
   'function nextAccrualEpoch(address buyer) external view returns (uint256)',
   'function claimable(address referrer) external view returns (uint256)',
   'function referredCount(address referrer) external view returns (uint256)',
-  'function unallocated() external view returns (uint256)',
+  'function payableAmount(address referrer) external view returns (uint256)',
+  'function claimableEpochs(address referrer) external view returns (uint256[])',
   'function REFERRAL_RATE_BPS() external view returns (uint32)',
   'function usageAccounting() external view returns (address)',
   'function accrue(address buyer, uint256 throughEpoch) external',
@@ -53,8 +54,9 @@ export class ReferralsClient extends BaseEvmClient {
     return Number(await this.contract().getFunction('referredCount')(referrer));
   }
 
-  unallocated(): Promise<bigint> {
-    return this.contract().getFunction('unallocated')();
+  /** Portion of `claimable` the epoch buckets can pay right now. */
+  payableAmount(referrer: string): Promise<bigint> {
+    return this.contract().getFunction('payableAmount')(referrer);
   }
 
   async referralRateBps(): Promise<number> {

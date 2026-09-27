@@ -2,10 +2,10 @@
 pragma solidity ^0.8.24;
 
 import "@openzeppelin/contracts/access/Ownable2Step.sol";
-import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
-import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+
+import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 
 interface IAntseedReferralUsageAccounting {
     function currentEpoch() external view returns (uint256);
@@ -22,7 +22,9 @@ interface IAntseedReferralDeposits {
 
 /**
  * @title AntseedReferrals
- * @notice Foundation-funded rewards for wallets that refer active buyers.
+ * @notice Emission-funded rewards for wallets that refer active buyers. An
+ *         AntseedEmissionsGate controller: each epoch's payouts are minted
+ *         from this controller's bucket for that epoch.
  *
  *         Binding: the buyer appends the referrer wallet to the metadata it
  *         signs for every settlement (SpendingAuth / FreeUsageAuth). AntseedStatsV2
@@ -32,32 +34,44 @@ interface IAntseedReferralDeposits {
  *         Only the configured binder (Stats) may bind; the first binding is
  *         immutable.
  *
- *         Rewards: for each finalized epoch, the referrer earns
+ *         Rewards: for each finalized epoch, the referrer is entitled to
  *         REFERRAL_RATE_BPS of the referred buyer's usage reward
- *         (`AntseedUsageRewards.pendingBuyerReward`), paid from ANTS the
- *         Foundation deposits here. Accrual is permissionless and idempotent.
+ *         (`AntseedUsageRewards.pendingBuyerReward`). Accrual is permissionless
+ *         and idempotent and records entitlements per epoch; `claim` mints
+ *         them from the matching epoch buckets, paying as much of each
+ *         epoch's entitlement as that bucket still allows. Entitlements the
+ *         bucket cannot cover stay recorded and are paid if budget appears.
  */
 contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard {
-    using SafeERC20 for IERC20;
-
     uint32 public constant BPS_DENOMINATOR = 10_000;
     uint32 public constant REFERRAL_RATE_BPS = 200;
     uint256 public constant MAX_EPOCHS_PER_ACCRUAL = 52;
+    uint256 public constant MAX_EPOCHS_PER_CLAIM = 52;
 
-    IERC20 public immutable ants;
+    IAntseedEmissionsGate public immutable emissionsGate;
     IAntseedReferralUsageAccounting public immutable usageAccounting;
     IAntseedReferralUsageRewards public immutable usageRewards;
     IAntseedReferralDeposits public immutable deposits;
 
-    /// @notice Contract allowed to submit bindings (AntseedStats).
+    /// @notice Contract allowed to submit bindings (AntseedStatsV2).
     address public binder;
-    uint256 public totalClaimable;
 
     mapping(address buyer => address referrer) public referrerOf;
     mapping(address buyer => uint256 epoch) public boundAtEpoch;
     mapping(address buyer => uint256 epoch) public nextAccrualEpoch;
-    mapping(address referrer => uint256 amount) public claimable;
     mapping(address referrer => uint256 count) public referredCount;
+
+    /// @notice Entitlement not yet minted, per referrer and epoch.
+    mapping(address referrer => mapping(uint256 epoch => uint256 amount)) public claimableByEpoch;
+    /// @notice Sum of `claimableByEpoch` over all epochs.
+    mapping(address referrer => uint256 amount) public claimable;
+    /// @notice Epochs with an entitlement ever recorded for the referrer (claim iterates these).
+    mapping(address referrer => uint256[] epochs) private _claimableEpochs;
+    mapping(address referrer => mapping(uint256 epoch => bool listed)) private _epochListed;
+    /// @notice Total entitlement recorded per epoch, for bucket sizing.
+    mapping(uint256 epoch => uint256 amount) public epochEntitled;
+    /// @notice Total minted per epoch through this controller.
+    mapping(uint256 epoch => uint256 amount) public epochMinted;
 
     event ReferralBound(address indexed buyer, address indexed referrer, uint256 epoch);
     event ReferralAccrued(
@@ -67,13 +81,10 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard {
         uint256 buyerReward,
         uint256 referralReward
     );
-    event ReferralClaimed(address indexed referrer, uint256 amount);
-    event Funded(address indexed funder, uint256 amount);
-    event ExcessWithdrawn(address indexed to, uint256 amount);
+    event ReferralClaimed(address indexed referrer, uint256 indexed epoch, uint256 amount);
     event BinderUpdated(address indexed binder);
 
     error InvalidAddress();
-    error InvalidAmount();
     error NotBinder();
     error ReferralAlreadyBound();
     error ReferralNotBound();
@@ -81,17 +92,20 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard {
     error SelfReferral();
     error EpochNotFinalized();
     error AccrualRangeTooLarge();
-    error InsufficientFunding();
     error NothingToClaim();
 
-    constructor(address _ants, address _usageAccounting, address _usageRewards, address _deposits, address _binder)
-        Ownable(msg.sender)
-    {
+    constructor(
+        address _emissionsGate,
+        address _usageAccounting,
+        address _usageRewards,
+        address _deposits,
+        address _binder
+    ) Ownable(msg.sender) {
         if (
-            _ants == address(0) || _usageAccounting == address(0) || _usageRewards == address(0)
+            _emissionsGate == address(0) || _usageAccounting == address(0) || _usageRewards == address(0)
                 || _deposits == address(0)
         ) revert InvalidAddress();
-        ants = IERC20(_ants);
+        emissionsGate = IAntseedEmissionsGate(_emissionsGate);
         usageAccounting = IAntseedReferralUsageAccounting(_usageAccounting);
         usageRewards = IAntseedReferralUsageRewards(_usageRewards);
         deposits = IAntseedReferralDeposits(_deposits);
@@ -100,7 +114,7 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ─── Binding ─────────────────────────────────────────────────────
 
-    /// @notice Bind `buyer` to `referrer`. Called by AntseedStats from the
+    /// @notice Bind `buyer` to `referrer`. Called by AntseedStatsV2 from the
     ///         buyer's first attributed settlement; the referrer value was
     ///         signed by the buyer via metadataHash.
     function bindReferral(address buyer, address referrer) external whenNotPaused {
@@ -125,10 +139,9 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard {
 
     // ─── Accrual ─────────────────────────────────────────────────────
 
-    /// @notice Credit the referrer for every finalized epoch up to
-    ///         `throughEpoch`. Permissionless; no-op for epochs already
-    ///         accrued. Reverts (without advancing) when underfunded so the
-    ///         Foundation can top up and retry.
+    /// @notice Record the referrer's entitlement for every finalized epoch up
+    ///         to `throughEpoch`. Permissionless; no-op for epochs already
+    ///         accrued.
     function accrue(address buyer, uint256 throughEpoch) external whenNotPaused {
         address referrer = referrerOf[buyer];
         if (referrer == address(0)) revert ReferralNotBound();
@@ -146,51 +159,88 @@ contract AntseedReferrals is Ownable2Step, Pausable, ReentrancyGuard {
         // operator accrues nothing.
         bool selfReferred = referrer == deposits.getOperator(buyer);
 
-        uint256 available = ants.balanceOf(address(this)) - totalClaimable;
         for (; epoch <= throughEpoch; epoch++) {
             uint256 buyerReward = usageRewards.pendingBuyerReward(buyer, epoch);
             uint256 referralReward = selfReferred ? 0 : (buyerReward * REFERRAL_RATE_BPS) / BPS_DENOMINATOR;
-            if (referralReward > available) revert InsufficientFunding();
             if (referralReward != 0) {
+                claimableByEpoch[referrer][epoch] += referralReward;
                 claimable[referrer] += referralReward;
-                totalClaimable += referralReward;
-                available -= referralReward;
+                epochEntitled[epoch] += referralReward;
+                if (!_epochListed[referrer][epoch]) {
+                    _epochListed[referrer][epoch] = true;
+                    _claimableEpochs[referrer].push(epoch);
+                }
             }
             emit ReferralAccrued(buyer, referrer, epoch, buyerReward, referralReward);
         }
         nextAccrualEpoch[buyer] = throughEpoch + 1;
     }
 
-    // ─── Claims & funding ────────────────────────────────────────────
+    // ─── Claims ──────────────────────────────────────────────────────
 
+    /// @notice Mint every payable entitlement to the caller, each epoch from
+    ///         its own bucket. Reverts only when nothing could be paid.
     function claim() external nonReentrant whenNotPaused {
-        uint256 amount = claimable[msg.sender];
-        if (amount == 0) revert NothingToClaim();
-        claimable[msg.sender] = 0;
-        totalClaimable -= amount;
-        ants.safeTransfer(msg.sender, amount);
-
-        emit ReferralClaimed(msg.sender, amount);
+        uint256[] storage epochs = _claimableEpochs[msg.sender];
+        uint256 paidTotal;
+        uint256 count = epochs.length;
+        uint256 checked;
+        for (uint256 i = count; i > 0 && checked < MAX_EPOCHS_PER_CLAIM; i--) {
+            checked++;
+            uint256 epoch = epochs[i - 1];
+            uint256 paid = _payEpoch(msg.sender, epoch);
+            paidTotal += paid;
+            // Fully paid epochs leave the list (swap-remove keeps it short).
+            if (claimableByEpoch[msg.sender][epoch] == 0) {
+                _epochListed[msg.sender][epoch] = false;
+                epochs[i - 1] = epochs[epochs.length - 1];
+                epochs.pop();
+            }
+        }
+        if (paidTotal == 0) revert NothingToClaim();
     }
 
-    function fund(uint256 amount) external nonReentrant {
-        if (amount == 0) revert InvalidAmount();
-        ants.safeTransferFrom(msg.sender, address(this), amount);
-        emit Funded(msg.sender, amount);
+    /// @notice Mint the caller's entitlement for one epoch.
+    function claimEpoch(uint256 epoch) external nonReentrant whenNotPaused {
+        if (_payEpoch(msg.sender, epoch) == 0) revert NothingToClaim();
     }
 
-    /// @notice ANTS not yet promised to any referrer.
-    function unallocated() public view returns (uint256) {
-        return ants.balanceOf(address(this)) - totalClaimable;
+    /// @notice How much of the referrer's entitlement the buckets can pay right now.
+    function payableAmount(address referrer) external view returns (uint256 total) {
+        uint256[] storage epochs = _claimableEpochs[referrer];
+        for (uint256 i = 0; i < epochs.length; i++) {
+            total += _payableForEpoch(referrer, epochs[i]);
+        }
     }
 
-    /// @notice Return unallocated ANTS to the Foundation. Never touches
-    ///         amounts already credited to referrers.
-    function withdrawExcess(address to, uint256 amount) external onlyOwner nonReentrant {
-        if (to == address(0)) revert InvalidAddress();
-        if (amount == 0 || amount > unallocated()) revert InvalidAmount();
-        ants.safeTransfer(to, amount);
-        emit ExcessWithdrawn(to, amount);
+    function claimableEpochs(address referrer) external view returns (uint256[] memory) {
+        return _claimableEpochs[referrer];
+    }
+
+    /// @notice Bucket budget for an epoch not yet minted by this controller.
+    function remainingEpochBudget(uint256 epoch) public view returns (uint256) {
+        uint256 budget = emissionsGate.controllerEpochBudget(address(this), epoch);
+        uint256 minted = epochMinted[epoch];
+        return budget > minted ? budget - minted : 0;
+    }
+
+    // ─── Internal ────────────────────────────────────────────────────
+
+    function _payableForEpoch(address referrer, uint256 epoch) internal view returns (uint256) {
+        uint256 entitlement = claimableByEpoch[referrer][epoch];
+        if (entitlement == 0 || epoch >= emissionsGate.currentEpoch()) return 0;
+        uint256 remaining = remainingEpochBudget(epoch);
+        return entitlement < remaining ? entitlement : remaining;
+    }
+
+    function _payEpoch(address referrer, uint256 epoch) internal returns (uint256 amount) {
+        amount = _payableForEpoch(referrer, epoch);
+        if (amount == 0) return 0;
+        claimableByEpoch[referrer][epoch] -= amount;
+        claimable[referrer] -= amount;
+        epochMinted[epoch] += amount;
+        emissionsGate.claim(epoch, referrer, amount);
+        emit ReferralClaimed(referrer, epoch, amount);
     }
 
     // ─── Admin ───────────────────────────────────────────────────────

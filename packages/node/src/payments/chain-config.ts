@@ -68,7 +68,7 @@ export interface ChainConfig {
   explorerApiUrl?: string;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
-  /** AntseedReferrals contract: Foundation-funded referral rewards (bindings land via AntseedStats). */
+  /** AntseedReferrals contract: emission-funded referral rewards (bindings land via AntseedStatsV2). */
   referralsAddress?: string;
   /**
    * ERC-8004 agent ids registered for the first-party clients. Buyers append

@@ -83,7 +83,7 @@ function ReferralConfirmation({
       <strong>Were you invited by {shortReferrer}?</strong>
       <p>
         This wallet shared the download link on your network. If you confirm, your inviter earns 2% of
-        the ANTS you earn from usage, paid by the Foundation. It costs you nothing and is recorded
+        the ANTS you earn from usage, paid from network emissions. It costs you nothing and is recorded
         with your first request.
       </p>
       {status.confidence === 'low' ? (

@@ -1,6 +1,6 @@
 import { Button, Card } from '../components/ui';
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import type { ClaimRequest, PoolView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
+import type { ClaimRequest, PoolView, ReferralView, RestakeRequest, RewardBucket, RewardsView, StakeUsageRequest } from '../../../src/api-types';
 import { request, api } from '../api';
 import { BuyerWalletAction } from '../wallet';
 import { useConfig, useEpochInfo } from '../app-context';
@@ -41,10 +41,15 @@ export function RewardsPage() {
   );
 }
 
-function accrualNote(pendingAccruals: number): string {
-  if (pendingAccruals === 0) return 'Accrues once a week as referred buyers\u2019 usage rewards finalize.';
-  const buyers = pendingAccruals === 1 ? '1 referred buyer has' : `${pendingAccruals} referred buyers have`;
-  return `${buyers} finalized weeks waiting to be accrued; claiming accrues them first.`;
+function accrualNote(view: ReferralView): string {
+  if (view.pendingAccruals > 0) {
+    const buyers = view.pendingAccruals === 1 ? '1 referred buyer has' : `${view.pendingAccruals} referred buyers have`;
+    return `${buyers} finalized weeks waiting to be accrued; claiming accrues them first.`;
+  }
+  if (!isZero(view.claimable) && isZero(view.payable)) {
+    return 'Recorded, waiting for emission budget in the referral bucket.';
+  }
+  return 'Accrues once a week as referred buyers\u2019 usage rewards finalize.';
 }
 
 function ReferralRewardsCard() {
@@ -56,7 +61,7 @@ function ReferralRewardsCard() {
   return (
     <Card className="hero" aria-label="Referral rewards">
       <div className="tile-label">Referral rewards</div>
-      <p className="hint">Invite friends with your wallet link. Once they start using AntSeed, you earn {rate}% of the ANTS their usage earns, funded by the Foundation.</p>
+      <p className="hint">Invite friends with your wallet link. Once they start using AntSeed, you earn {rate}% of the ANTS their usage earns, paid from network emissions.</p>
       {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
       {view ? <>
         <div className="hero-value"><RewardAmount>{formatAnts(view.claimable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
@@ -64,12 +69,12 @@ function ReferralRewardsCard() {
           <BucketRow visible name="Your referral link" amount={view.referredCount.toString()} amountDetail={view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}
             note={<span className="mono" style={{ wordBreak: 'break-all' }}>{view.referralUrl}</span>}
             actions={<Button variant="outline" size="sm" onClick={() => { void navigator.clipboard?.writeText(view.referralUrl ?? ''); }}>Copy link</Button>} />
-          <BucketRow visible name="Claimable" amount={view.claimable}
-            note={accrualNote(view.pendingAccruals)}
+          <BucketRow visible name="Referral rewards" amount={view.payable} amountDetail={`${formatAnts(view.claimable, 4)} ANTS recorded`}
+            note={accrualNote(view)}
             actions={<ActionButton label="Claim" title="Claim referral rewards" path="/api/referrals/claim" body={{}}
-              disabled={dashboard.readOnly || (isZero(view.claimable) && view.pendingAccruals === 0)}
+              disabled={dashboard.readOnly || (isZero(view.payable) && view.pendingAccruals === 0)}
               disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
-              summary={[['Claimable now', `${formatAnts(view.claimable, 4)} ANTS`], ['Epochs to accrue', String(view.pendingAccruals)]]} />} />
+              summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Recorded', `${formatAnts(view.claimable, 4)} ANTS`], ['Buyers to accrue', String(view.pendingAccruals)]]} />} />
         </div>
       </> : null}
     </Card>

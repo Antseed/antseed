@@ -2,17 +2,9 @@
 pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
-import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 
 import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
-
-contract ReferralToken is ERC20 {
-    constructor() ERC20("ANTS", "ANTS") { }
-
-    function mint(address to, uint256 amount) external {
-        _mint(to, amount);
-    }
-}
+import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
 
 contract ReferralUsageAccountingMock {
     uint256 public currentEpoch = 10;
@@ -62,38 +54,78 @@ contract AntseedReferralsTest is Test {
     address private binder = address(0x57A75);
     address private stranger = address(0xBEEF);
 
-    ReferralToken private ants;
+    EmissionsGateMock private gate;
     ReferralUsageAccountingMock private accounting;
     ReferralUsageRewardsMock private rewards;
     ReferralDepositsMock private deposits;
     AntseedReferrals private referrals;
 
     function setUp() public {
-        ants = new ReferralToken();
+        gate = new EmissionsGateMock();
         accounting = new ReferralUsageAccountingMock();
         rewards = new ReferralUsageRewardsMock();
         deposits = new ReferralDepositsMock();
-        referrals = new AntseedReferrals(address(ants), address(accounting), address(rewards), address(deposits), binder);
+        referrals = new AntseedReferrals(address(gate), address(accounting), address(rewards), address(deposits), binder);
     }
 
-    function test_bindAndAccrueTwoPercentOfBuyerRewards() public {
+    function _advance(uint256 epoch) private {
+        accounting.setCurrentEpoch(epoch);
+        gate.setCurrentEpoch(epoch);
+    }
+
+    function test_bindAccrueAndClaimTwoPercentFromEpochBuckets() public {
         _bind(referrer);
         assertEq(referrals.referredCount(referrer), 1);
         rewards.setReward(buyer, 10, 100 ether);
         rewards.setReward(buyer, 11, 25 ether);
-        accounting.setCurrentEpoch(12);
+        _advance(12);
+        gate.setBudget(address(referrals), 10, 5 ether);
+        gate.setBudget(address(referrals), 11, 5 ether);
 
-        _fund(10 ether);
         referrals.accrue(buyer, 11);
-
         assertEq(referrals.claimable(referrer), 2.5 ether);
+        assertEq(referrals.claimableByEpoch(referrer, 10), 2 ether);
+        assertEq(referrals.epochEntitled(11), 0.5 ether);
         assertEq(referrals.nextAccrualEpoch(buyer), 12);
-        assertEq(referrals.unallocated(), 7.5 ether);
+        assertEq(referrals.payableAmount(referrer), 2.5 ether);
 
         vm.prank(referrer);
         referrals.claim();
-        assertEq(ants.balanceOf(referrer), 2.5 ether);
-        assertEq(referrals.totalClaimable(), 0);
+        assertEq(gate.balanceOf(referrer), 2.5 ether);
+        assertEq(referrals.claimable(referrer), 0);
+        assertEq(referrals.epochMinted(10), 2 ether);
+        assertEq(referrals.claimableEpochs(referrer).length, 0);
+
+        vm.prank(referrer);
+        vm.expectRevert(AntseedReferrals.NothingToClaim.selector);
+        referrals.claim();
+    }
+
+    function test_claimPaysWhatTheBucketAllowsAndKeepsTheRest() public {
+        _bind(referrer);
+        rewards.setReward(buyer, 10, 100 ether); // entitlement 2 ether
+        _advance(11);
+        gate.setBudget(address(referrals), 10, 1.5 ether);
+        referrals.accrue(buyer, 10);
+
+        assertEq(referrals.payableAmount(referrer), 1.5 ether);
+        vm.prank(referrer);
+        referrals.claim();
+        assertEq(gate.balanceOf(referrer), 1.5 ether);
+        assertEq(referrals.claimable(referrer), 0.5 ether);
+        assertEq(referrals.claimableEpochs(referrer).length, 1);
+
+        // No bucket at all (controller not registered yet): nothing payable, entitlement kept.
+        gate.setBudget(address(referrals), 10, 1.5 ether);
+        vm.prank(referrer);
+        vm.expectRevert(AntseedReferrals.NothingToClaim.selector);
+        referrals.claim();
+
+        gate.setBudget(address(referrals), 10, 2 ether);
+        vm.prank(referrer);
+        referrals.claimEpoch(10);
+        assertEq(gate.balanceOf(referrer), 2 ether);
+        assertEq(referrals.claimable(referrer), 0);
     }
 
     function test_onlyBinderCanBind() public {
@@ -135,29 +167,17 @@ contract AntseedReferralsTest is Test {
         _bind(referrer);
         deposits.setOperator(buyer, referrer); // operator authorized after the first settlement
         rewards.setReward(buyer, 10, 100 ether);
-        accounting.setCurrentEpoch(11);
-        _fund(10 ether);
+        _advance(11);
 
         referrals.accrue(buyer, 10);
         assertEq(referrals.claimable(referrer), 0);
         assertEq(referrals.nextAccrualEpoch(buyer), 11);
     }
 
-    function test_accrualDoesNotAdvanceWhenUnderfunded() public {
-        _bind(referrer);
-        rewards.setReward(buyer, 10, 100 ether);
-        accounting.setCurrentEpoch(11);
-
-        vm.expectRevert(AntseedReferrals.InsufficientFunding.selector);
-        referrals.accrue(buyer, 10);
-        assertEq(referrals.nextAccrualEpoch(buyer), 10);
-    }
-
     function test_accrualRejectsUnfinalizedEpochAndIsIdempotent() public {
         _bind(referrer);
         rewards.setReward(buyer, 10, 100 ether);
-        accounting.setCurrentEpoch(11);
-        _fund(10 ether);
+        _advance(11);
 
         vm.expectRevert(AntseedReferrals.EpochNotFinalized.selector);
         referrals.accrue(buyer, 11);
@@ -165,34 +185,11 @@ contract AntseedReferralsTest is Test {
         referrals.accrue(buyer, 10);
         referrals.accrue(buyer, 10); // no-op
         assertEq(referrals.claimable(referrer), 2 ether);
-    }
-
-    function test_withdrawExcessNeverTouchesClaimable() public {
-        _bind(referrer);
-        rewards.setReward(buyer, 10, 100 ether);
-        accounting.setCurrentEpoch(11);
-        _fund(10 ether);
-        referrals.accrue(buyer, 10); // 2 ether promised
-
-        vm.expectRevert(AntseedReferrals.InvalidAmount.selector);
-        referrals.withdrawExcess(address(this), 8 ether + 1);
-
-        referrals.withdrawExcess(address(this), 8 ether);
-        assertEq(ants.balanceOf(address(referrals)), 2 ether);
-
-        vm.prank(stranger);
-        vm.expectRevert();
-        referrals.withdrawExcess(stranger, 1);
+        assertEq(referrals.claimableEpochs(referrer).length, 1);
     }
 
     function _bind(address referralWallet) private {
         vm.prank(binder);
         referrals.bindReferral(buyer, referralWallet);
-    }
-
-    function _fund(uint256 amount) private {
-        ants.mint(address(this), amount);
-        ants.approve(address(referrals), amount);
-        referrals.fund(amount);
     }
 }

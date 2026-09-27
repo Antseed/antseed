@@ -6,10 +6,11 @@ const REFERRAL_LINK_BASE = 'https://antseed.com/?ref=';
 
 export async function referral(ctx: AntsContext): Promise<ReferralView> {
   const client = ctx.referrals();
-  if (!client) return { available: false, referralUrl: null, claimable: '0', pendingAccruals: 0, referredCount: 0, rateBps: 200 };
+  if (!client) return { available: false, referralUrl: null, claimable: '0', payable: '0', pendingAccruals: 0, referredCount: 0, rateBps: 200 };
   const fromBlock = ctx.chain.recognizedUsage?.deploymentBlock ?? 0;
-  const [amount, rateBps, referredCount, accruable] = await Promise.all([
+  const [amount, payable, rateBps, referredCount, accruable] = await Promise.all([
     client.claimable(ctx.address),
+    client.payableAmount(ctx.address),
     client.referralRateBps(),
     client.referredCount(ctx.address),
     client.accruableBuyers(ctx.address, fromBlock).catch(() => []),
@@ -18,6 +19,7 @@ export async function referral(ctx: AntsContext): Promise<ReferralView> {
     available: true,
     referralUrl: `${REFERRAL_LINK_BASE}${encodeURIComponent(ctx.address)}`,
     claimable: amount.toString(),
+    payable: payable.toString(),
     pendingAccruals: accruable.length,
     referredCount,
     rateBps,
@@ -43,10 +45,10 @@ export async function claimReferralRewards(
     const hash = await client.accrue(signer, entry.buyer, entry.throughEpoch);
     await report('Referral epoch accrued', hash);
   }
-  const amount = await client.claimable(ctx.address);
+  const amount = await client.payableAmount(ctx.address);
   if (amount === 0n) {
-    if (accruable.length === 0) throw new Error('No referral rewards to claim.');
-    await report('No claimable referral rewards after accrual');
+    if (accruable.length === 0) throw new Error('No referral rewards can be paid from the emission buckets yet.');
+    await report('No payable referral rewards after accrual');
     return { hash: null, accrued: accruable.length };
   }
   await report('Claiming referral rewards');

@@ -214,7 +214,7 @@ export interface NodePaymentsConfig {
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
   depositRelayAddress?: string;
-  /** Deployed AntseedReferrals contract address (Foundation-funded referral rewards). */
+  /** Deployed AntseedReferrals contract address (emission-funded referral rewards). */
   referralsAddress?: string;
   /**
    * Buyer-side attribution appended to every signed SpendingAuth / FreeUsage
