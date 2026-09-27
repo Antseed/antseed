@@ -12,20 +12,20 @@ import {AgentsArt, CodingToolsArt, AnonymityArt} from './WhoCardArt';
 const WHO_CARDS = [
   {
     title: 'Who run agents',
-    body: 'Hermes, OpenClaw, Codex, OpenCode, or your own. Point them at the AI VPN or the CLI, pick free or frontier models, and let them run.',
-    link: {to: '/docs/guides/agents', label: 'Connect agents'},
+    body: 'Hermes, OpenClaw, Codex, OpenCode, or your own. Your agent reads one skill, installs Antseed itself, and runs on free or frontier models.',
+    link: {to: '/agents', label: 'For agents'},
     art: <AgentsArt />,
   },
   {
     title: 'Who hate usage limits',
-    body: 'No more hourly, weekly, or monthly caps. Connect the AI VPN to your desktop app, keep it going as long as you want, and pay a fraction of the cost.',
-    link: {to: '/docs/guides/vpr', label: 'AI VPN desktop guide'},
+    body: 'No hourly, weekly, or monthly caps. Point Claude Code, Codex, or Cursor at your local endpoint and keep going for a fraction of the plan price.',
+    link: {to: '/coding', label: 'For coding apps'},
     art: <CodingToolsArt />,
   },
   {
     title: 'Who want privacy',
-    body: "There's no account and no email, so your identity is never part of your request. Pick a TEE provider, so your prompts can stay private too.",
-    link: {to: '/docs/guides/verify-tee', label: "Verify a provider's TEE"},
+    body: 'No account and no email, so your identity is never part of the request. Pick a TEE provider and your prompt stays private too.',
+    link: {to: '/privacy', label: 'For privacy'},
     art: <AnonymityArt />,
   },
 ];

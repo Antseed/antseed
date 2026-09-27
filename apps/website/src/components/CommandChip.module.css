@@ -80,16 +80,38 @@
   box-sizing: border-box;
 }
 
+.chip { min-width: 0; }
+.cmd { min-width: 0; }
+
 @media (max-width: 480px) {
+  /* Wrap the command instead of clipping it: it has to stay copyable and
+     readable on a phone. */
   .chip {
     font-size: 12px;
     gap: 8px;
-    padding: 0 12px 0 14px;
-    height: 46px;
+    padding: 12px 12px 12px 14px;
+    height: auto;
+    min-height: 46px;
+    white-space: normal;
+    text-align: left;
+    border-radius: 18px;
+    width: 100%;
   }
   .cmd {
-    overflow: hidden;
-    text-overflow: ellipsis;
-    min-width: 0;
+    flex: 1;
+    overflow-wrap: anywhere;
+    line-height: 18px;
   }
+  .icon { flex-shrink: 0; }
 }
+
+/* On the ink closing bands */
+.dark {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+.dark:hover { border-color: rgba(255, 255, 255, 0.4); }
+.dark .prompt { color: #5bdbab; }
+.dark .icon { color: rgba(255, 255, 255, 0.7); }
+.dark.copied .icon { color: #5bdbab; }

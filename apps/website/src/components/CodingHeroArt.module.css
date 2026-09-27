@@ -252,3 +252,12 @@
   font-weight: 600;
   border-color: rgba(16, 185, 129, 0.35);
 }
+
+/* Phones: the rows have a fixed-width name, a stream of dots and a nowrap
+   status label. Let the middle shrink so "KEEP GOING" stays inside the pill. */
+@media (max-width: 480px) {
+  .row { gap: 8px; padding: 10px 12px; }
+  .name { min-width: 0; font-size: 14px; }
+  .bar, .stream { min-width: 0; flex: 1 1 40px; overflow: hidden; }
+  .status { min-width: 0; font-size: 10px; letter-spacing: 0.04em; }
+}

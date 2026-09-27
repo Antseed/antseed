@@ -5,7 +5,7 @@ description: Set up an Antseed buyer on the user's machine through the local buy
 
 # Join Antseed as a Buyer
 
-Set the user up to consume AI models from the Antseed peer-to-peer network. The result is a local HTTP proxy at `http://localhost:8377` that speaks the OpenAI and Anthropic API formats. Any tool, SDK, or agent that can change its base URL works unchanged.
+Set the user up to consume AI models from the Antseed peer-to-peer network. This file is also served at https://antseed.com/skill.md. Per-tool setup pages live at https://antseed.com/integrations. The result is a local HTTP proxy at `http://localhost:8377` that speaks the OpenAI and Anthropic API formats. Any tool, SDK, or agent that can change its base URL works unchanged.
 
 ## Picture
 

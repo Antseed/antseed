@@ -297,8 +297,11 @@
   color: var(--as-heading);
 }
 
-.useSwitchBtnActive,
-.useSwitchBtnActive:hover {
+/* Higher specificity than .useSwitchBtn: the production minifier reorders
+   equal-specificity rules, which let `background: none` cancel the active
+   state. */
+.useSwitchBtn.useSwitchBtnActive,
+.useSwitchBtn.useSwitchBtnActive:hover {
   background: var(--as-ink);
   color: #FFFFFF;
 }
@@ -528,6 +531,8 @@
 .heroCtaStack {
   display: grid;
   width: 100%;
+  min-width: 0;
+  max-width: 100%;
 }
 .heroCtaPane {
   grid-area: 1 / 1;
@@ -535,6 +540,8 @@
   flex-direction: column;
   align-items: center;
   gap: 8px;
+  min-width: 0;
+  max-width: 100%;
   visibility: hidden;
   opacity: 0;
   pointer-events: none;
@@ -558,10 +565,19 @@
   .heroCtaPane { align-items: flex-start; }
 }
 @media (max-width: 996px) {
-  .heroSplit .heroCopy { width: 100%; }
+  /* Flatten the copy column so the tabs and CTA can sit below the animation:
+     title, subtitle, animation, tabs, CTA, stats. */
+  .heroSplit .heroCopy { display: contents; }
+  .heroSplit .heroCopy > .heroTitle { order: 1; }
+  .heroSplit .heroCopy > .heroSubStatic { order: 2; }
+  .heroSplit .heroVisualStack { order: 3; }
+  .heroSplit .heroCopy > .useSwitch { order: 4; margin: 28px 0 16px; }
+  .heroSplit .heroCopy > .ctaBlock { order: 5; width: 100%; }
+  .heroSplit .statsRow { order: 6; }
   .heroSplit .heroVisualStack {
+    width: 100%;
     max-width: 520px;
-    margin: 32px auto 0;
+    margin: 24px auto 0;
     transform: none;
   }
   .heroSplit .heroSubStatic { max-width: 40ch; margin-inline: auto; }
@@ -1377,13 +1393,18 @@
 .whoCard {
   display: flex;
   flex-direction: column;
+  min-width: 0;
   background: var(--as-soil-0);
   border-radius: 28px;
   padding: 24px 24px 20px;
 }
 
+/* The art's height comes from the SVG viewBox, not an aspect-ratio box:
+   WebKit resolves a percent-height SVG inside an aspect-ratio parent
+   cyclically and blows the card up to tens of thousands of pixels. */
 .whoArt {
-  aspect-ratio: 300 / 130;
+  width: 100%;
+  min-width: 0;
   background: #fff;
   border-radius: 16px;
   padding: 12px 8px;
@@ -1391,8 +1412,9 @@
 }
 
 .whoArt svg {
+  display: block;
   width: 100%;
-  height: 100%;
+  height: auto;
   overflow: visible;
 }
 
@@ -2514,4 +2536,50 @@
   .finalCta {
     padding: 80px 16px;
   }
+}
+
+/* ---------- Pillars strip (homepage) ---------- */
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 40px;
+}
+.pillar {
+  padding: 24px 20px;
+  background: var(--as-soil-1);
+  border: 1px solid var(--as-line);
+  border-radius: 20px;
+}
+.pillar h3 {
+  font-family: var(--as-font-display);
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: var(--as-heading);
+}
+.pillar p {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--as-text-2);
+  margin: 0;
+}
+.pillar a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--as-heading);
+  font-weight: 600;
+  text-decoration: none;
+}
+.pillar a:hover { text-decoration: underline; }
+@media (max-width: 996px) {
+  .pillars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pillar:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+  .pillars { grid-template-columns: 1fr; }
 }

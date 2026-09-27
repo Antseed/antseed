@@ -3,6 +3,7 @@ import ag from './HeroAgentVisual.module.css';
 import styles from './HeroAgentMarket.module.css';
 import {useMarketplacePicks, type ModelPick, type ShowcaseRow} from '../lib/useMarketplacePrices';
 import {VENDOR_GLYPHS} from './PriceBoard';
+import {SquareGlyph, PiGlyph} from './AgentsLogoBar';
 
 /**
  * Agent tab hero visual: coding agents routed to a curated set of models —
@@ -38,13 +39,6 @@ const CursorGlyph = (
 const DroidGlyph = (
   <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" aria-hidden="true"><ellipse cx="12" cy="12" rx="9" ry="3.5" /><ellipse cx="12" cy="12" rx="9" ry="3.5" transform="rotate(60 12 12)" /><ellipse cx="12" cy="12" rx="9" ry="3.5" transform="rotate(120 12 12)" /><circle cx="12" cy="12" r="1.4" fill="currentColor" /></svg>
 );
-const SquareGlyph = (
-  <svg viewBox="0 0 20 20" fill="currentColor" aria-hidden="true"><path fillRule="evenodd" clipRule="evenodd" d="M13 7H7v6h6V7zm3 9H4V4h12v12z" /></svg>
-);
-const PiGlyph = (
-  <svg viewBox="0 0 20 20" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" aria-hidden="true"><path d="M3.5 6h13" /><path d="M6.5 6v9" /><path d="M13.5 6v6.5c0 1.5.8 2.5 2 2.5" /></svg>
-);
-
 /* One coding agent per row, no repeats (the desktop app's Agents list). */
 const AGENTS: {name: string; logo?: string; glyph?: ReactNode}[] = [
   {name: 'OpenClaw', logo: '/logos/openclaw.svg'},
@@ -80,32 +74,44 @@ export function HeroAgentMarket({active}: {active: boolean}) {
   const agent = AGENTS[on % AGENTS.length];
   return (
     <div className={`${ag.card} ${!active ? ag.paused : ''}`}>
-      <div className={ag.top}><span><i /> Connect your agents.</span><small className={styles.live}><i />LIVE PRICES</small></div>
+      <div className={ag.top}>
+        <span><i /> Your agent sets itself up.</span>
+        <small className={styles.live}><i />LIVE PRICES</small>
+      </div>
       <div className={`${ag.scene} ${styles.scene}`}>
         {rows.map((row, i) => {
-          const a = AGENTS[i % AGENTS.length];
+          const rowAgent = AGENTS[i % AGENTS.length];
           const Glyph = VENDOR_GLYPHS[row.vendorKey];
-          const free = isFree(row);
+          const rowIsFree = isFree(row);
           return (
             <div key={row.model} className={`${styles.row} ${on === i ? styles.on : ''}`}>
-              <div className={styles.agent}>{a.logo ? <img src={a.logo} alt="" /> : a.glyph}<span>{a.name}</span></div>
+              <div className={styles.agent}>
+                {rowAgent.logo ? <img src={rowAgent.logo} alt="" /> : rowAgent.glyph}
+                <span>{rowAgent.name}</span>
+              </div>
               <div className={styles.arrow} aria-hidden="true" />
               <span className={styles.logo}>{Glyph ? <Glyph size={16} /> : null}</span>
               <span className={styles.name}>{row.model}</span>
               <span className={styles.price}>
-                {free ? (
+                {rowIsFree ? (
                   <span className={`${styles.pill} ${styles.free}`}>FREE</span>
                 ) : (
                   <span className={styles.pill}>{row.best}<small>/M</small></span>
                 )}
                 <span className={styles.was}>{row.official}</span>
-                {!free && <span className={styles.save}>{row.save} off</span>}
+                {!rowIsFree && <span className={styles.save}>{row.save} off</span>}
               </span>
             </div>
           );
         })}
       </div>
-      <div className={ag.activity}><span className={ag.indicator} /><span key={on} className={ag.activityText}>{agent.name} → {current?.model} · {current && isFree(current) ? 'free' : `saving ${current?.save}`}</span><span className={ag.steps}>{rows.map((_, i) => <i key={i} className={on === i ? ag.current : ''} />)}</span></div>
+      <div className={ag.activity}>
+        <span className={ag.indicator} />
+        <span key={on} className={ag.activityText}>{agent.name} → {current?.model} · {current && isFree(current) ? 'free' : `saving ${current?.save}`}</span>
+        <span className={ag.steps}>
+          {rows.map((_, i) => <i key={i} className={on === i ? ag.current : ''} />)}
+        </span>
+      </div>
     </div>
   );
 }

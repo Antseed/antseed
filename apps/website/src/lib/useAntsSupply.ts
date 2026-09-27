@@ -1,4 +1,5 @@
 import {useEffect, useState} from 'react';
+import {createSharedFetch} from './sharedFetch';
 import {ANTS_TOKEN_ADDRESS} from './useEpochCountdown';
 
 /**
@@ -43,39 +44,61 @@ async function call(data: string, signal: AbortSignal): Promise<string> {
   return json.result;
 }
 
+function readCache(): AntsSupply | null {
+  try {
+    const raw = sessionStorage.getItem(CACHE_KEY);
+    if (!raw) return null;
+    const cached = JSON.parse(raw) as AntsSupply & {at: number};
+    if (Date.now() - cached.at >= CACHE_TTL_MS) return null;
+    return {total: cached.total, burned: cached.burned};
+  } catch {
+    return null;
+  }
+}
+
+function writeCache(supply: AntsSupply): void {
+  try {
+    sessionStorage.setItem(CACHE_KEY, JSON.stringify({...supply, at: Date.now()}));
+  } catch {
+    /* storage full / disabled — just refetch next navigation */
+  }
+}
+
+async function fetchSupply(signal: AbortSignal): Promise<AntsSupply> {
+  const deadArg = DEAD.slice(2).toLowerCase().padStart(64, '0');
+  const [total, burned] = await Promise.all([
+    call(SEL_TOTAL_SUPPLY, signal),
+    call(SEL_BALANCE_OF + deadArg, signal),
+  ]);
+  return {total: toAnts(total), burned: toAnts(burned)};
+}
+
+/* One in-flight read shared by every mounted hook (the /ants-token page and
+   its hero panel both call this), so the two eth_calls go out once. */
+const subscribeSupplyFetch = createSharedFetch(async signal => {
+  const next = await fetchSupply(signal);
+  writeCache(next);
+  return next;
+});
+
 export function useAntsSupply(): AntsSupply | null {
   const [supply, setSupply] = useState<AntsSupply | null>(null);
 
   useEffect(() => {
-    try {
-      const raw = sessionStorage.getItem(CACHE_KEY);
-      if (raw) {
-        const cached = JSON.parse(raw) as AntsSupply & {at: number};
-        if (Date.now() - cached.at < CACHE_TTL_MS) {
-          setSupply({total: cached.total, burned: cached.burned});
-          return undefined;
-        }
-      }
-    } catch {
-      /* ignore cache errors */
+    const cached = readCache();
+    if (cached) {
+      setSupply(cached);
+      return undefined;
     }
-
-    const ctrl = new AbortController();
-    const deadArg = DEAD.slice(2).toLowerCase().padStart(64, '0');
-    Promise.all([call(SEL_TOTAL_SUPPLY, ctrl.signal), call(SEL_BALANCE_OF + deadArg, ctrl.signal)])
-      .then(([total, burned]) => {
-        const next = {total: toAnts(total), burned: toAnts(burned)};
-        setSupply(next);
-        try {
-          sessionStorage.setItem(CACHE_KEY, JSON.stringify({...next, at: Date.now()}));
-        } catch {
-          /* ignore */
-        }
-      })
-      .catch(() => {
-        /* leave null → caller falls back to the schedule */
-      });
-    return () => ctrl.abort();
+    let cancelled = false;
+    const {promise, unsubscribe} = subscribeSupplyFetch();
+    promise.then(next => {
+      if (!cancelled && next) setSupply(next);
+    });
+    return () => {
+      cancelled = true;
+      unsubscribe();
+    };
   }, []);
 
   return supply;

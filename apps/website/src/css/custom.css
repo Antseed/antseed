@@ -693,9 +693,11 @@ aside.theme-doc-sidebar-container {
   font-weight: 500;
 }
 
-/* Category heading labels — small, uppercase, muted */
+/* Category heading labels — small, uppercase, muted. Scoped to the docs
+   sidebar: the mobile navbar's "Use it for" dropdown also carries
+   .menu__link--sublist and must keep normal casing. */
 .theme-doc-sidebar-item-category > .menu__list-item-collapsible > .menu__link,
-.menu__link--sublist {
+.theme-doc-sidebar-menu .menu__link--sublist {
   font-size: 11px;
   font-weight: 500;
   text-transform: uppercase;
@@ -1874,4 +1876,14 @@ html[data-theme='dark'] .usecase:hover {
 /* mobile sidebar: rows stack as plain menu entries */
 .navbar-sidebar .usecase {
   padding: 8px 12px;
+}
+
+/* Laptop widths: the full navbar (two longer labels since the CTA pass) needs
+   tighter item padding between the mobile breakpoint and ~1180px, otherwise
+   the download pill clips at the right edge. */
+@media (min-width: 997px) and (max-width: 1180px) {
+  .navbar__brand { margin-right: 12px; }
+  .navbar__items .navbar__item.navbar__link,
+  .navbar__items .navbar__item.dropdown > .navbar__link { padding-inline: 8px; }
+  .navbar__items--right .header-download-link { padding-inline: 14px; }
 }

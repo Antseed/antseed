@@ -5,15 +5,18 @@ import {Button, Reveal, SectionHeader} from './ui';
 const OWNED_CARDS = [
   {
     title: 'Open source and onchain',
-    illo: <img src="/img/home/illo-best-prices.svg" alt="" aria-hidden="true" />,
+    body: 'Every layer is public code, and every payment settles in USDC on Base.',
+    illo: 'illo-best-prices',
   },
   {
-    title: 'Private by design',
-    illo: <img src="/img/home/illo-private-by-design.svg" alt="" aria-hidden="true" />,
+    title: 'Nothing in the middle',
+    body: 'Your device finds the provider, talks to it directly, and pays it directly.',
+    illo: 'illo-private-by-design',
   },
   {
     title: 'Distributed and always on',
-    illo: <img src="/img/home/illo-distributed-always-on.svg" alt="" aria-hidden="true" />,
+    body: 'Independent providers all over the world. If one goes down, your request moves on.',
+    illo: 'illo-distributed-always-on',
   },
 ];
 
@@ -29,19 +32,22 @@ export function OwnedByNoOne() {
                 Owned by no one. <span className={styles.titleAccent}>Available to everyone.</span>
               </>
             }
-            lead="With Antseed, there is no central server or company in the middle. It's decentralized and maintained by the Antseed Foundation."
+            lead="No central server and no company in the middle. Anyone can be a provider, and the Antseed Foundation maintains the open-source protocol."
           />
         </Reveal>
         <Reveal className={styles.buttonRow} delay={60}>
-          <Button to="/docs/overview" variant="ghost" arrow>About the network</Button>
+          <Button to="/network" variant="ghost" arrow>How the network works</Button>
         </Reveal>
         <div className={styles.cardGrid3}>
           {OWNED_CARDS.map((card, i) => (
             <Reveal key={card.title} className={styles.featureCard} delay={i * 100}>
-              <div className={styles.featureIlloWell}>{card.illo}</div>
+              <div className={styles.featureIlloWell}>
+                <img src={`/img/home/${card.illo}.svg`} alt="" aria-hidden="true" />
+              </div>
               <div className={styles.featureDivider} />
               <div className={styles.featureCopy}>
                 <h3>{card.title}</h3>
+                <p>{card.body}</p>
               </div>
             </Reveal>
           ))}

@@ -107,9 +107,6 @@ const config: Config = {
     // here rather than in deploy config, and the site works without anyone
     // setting an env var. GTM_CONTAINER_ID still overrides it for staging or a
     // throwaway test container. Set it to an empty string to disable GTM.
-    //
-    // GA4 (G-DF97Q4KV2X) is configured as a tag *inside* this container, not
-    // loaded here, so there is one tag on the page and no double-counting.
     ...gtmPlugin,
     [
       '@docusaurus/plugin-client-redirects',
@@ -258,7 +255,7 @@ const config: Config = {
         {to: '/providers', label: 'Providers', position: 'left'},
         {
           href: 'https://antseedstats.com/network',
-          label: 'Prices',
+          label: 'Live prices',
           position: 'left',
           target: '_blank',
           rel: 'noopener noreferrer',
@@ -295,7 +292,7 @@ const config: Config = {
           // straight to the installer for the visitor's OS/arch, falling back
           // to the releases page when detection fails.
           type: 'custom-download',
-          label: 'Download AI VPN',
+          label: 'Download the AI VPN',
           position: 'right',
           className: 'header-download-link',
         },

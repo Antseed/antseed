@@ -1,6 +1,7 @@
 import type {ReactNode} from 'react';
 import styles from '../pages/index.module.css';
 import own from './AgentsLogoBar.module.css';
+import {MarqueeBand} from './LogoMarquee';
 
 /**
  * Ink logo band for /agents — the same marquee as the homepage, but the
@@ -47,12 +48,5 @@ export function LogoBar({items, ariaLabel}: {items: LogoItem[]; ariaLabel: strin
       <span className={own.name}>{a.name}</span>
     </span>
   ));
-  return (
-    <section className={styles.marqueeBand} aria-label={ariaLabel}>
-      <div className={styles.marquee}>
-        <div className={styles.marqueeRun}>{run}</div>
-        <div className={styles.marqueeRun} aria-hidden="true">{run}</div>
-      </div>
-    </section>
-  );
+  return <MarqueeBand ariaLabel={ariaLabel} run={run} />;
 }

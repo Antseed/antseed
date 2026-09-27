@@ -1,62 +1,53 @@
-import type {ReactNode} from 'react';
+import type {CSSProperties, ReactNode} from 'react';
 import styles from '../pages/index.module.css';
-import {Button, Reveal, SectionHeader, ArrowRight} from './ui';
-import {PriceBoard} from './PriceBoard';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
+import {Button, Reveal, SectionHeader} from './ui';
+import {PriceBoard, LIVE_PRICES_URL} from './PriceBoard';
 
 /**
- * The homepage pricing section as a whole — drop-trail dots, two-line
- * title with the green second line, lead, download + live-pricing buttons,
- * the live price board and the settlement note. Shared with /agents so the
- * two sections stay identical; only the copy differs.
+ * The pricing section as a whole — drop-trail dots, two-line title with the
+ * green second line, lead, the "Live prices" button, the live price board
+ * and the settlement note. Shared by the homepage, /agents and /coding so
+ * the three stay identical; only the copy differs. The download button
+ * lives in the hero and the closing band, not here.
  */
 
-const DROP_TRAIL_DOTS = Array.from({length: 11}, (_, i) => 3 + i * 8);
+const DROP_TRAIL_DOT_COUNT = 11;
 const DROP_TRAIL_CYCLE = 1.6;
+
+/* One dot every 8px from y=3. The line asset fades in top-to-bottom
+   (transparent at y=3, solid at y=91), so each dot's peak brightness
+   follows that same ramp. */
+const DROP_TRAIL_DOT_STYLES: CSSProperties[] = Array.from({length: DROP_TRAIL_DOT_COUNT}, (_, i) => {
+  const top = 3 + i * 8;
+  return {
+    top,
+    animationDelay: `${i * (DROP_TRAIL_CYCLE / DROP_TRAIL_DOT_COUNT)}s`,
+    ['--dot-peak' as string]: 0.25 + 0.75 * ((top - 3) / 88),
+  };
+});
 
 export function PricingBlock({
   title,
   accent,
   lead,
-  downloadLabel = 'Download AI VPN',
   dropTrail = true,
-  osIcons = true,
 }: {
   /** first line of the title (ink) */
   title: ReactNode;
   /** second line of the title (green) */
   accent: ReactNode;
   lead: string;
-  downloadLabel?: string;
   /** the dotted line dropping in from the section above (homepage only) */
   dropTrail?: boolean;
-  /** Apple / Windows / Linux glyphs on the download pill */
-  osIcons?: boolean;
 }) {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
   return (
     <section className={styles.pricingSection}>
       {dropTrail && (
         <div className={styles.dropTrail} aria-hidden="true">
           <img src="/img/home/dots-down.svg" alt="" className={styles.dropTrailLine} />
-          {DROP_TRAIL_DOTS.map((top, i) => {
-            // Line asset fades in top-to-bottom (transparent at y=3, solid
-            // at y=91) — each dot's peak brightness follows that same ramp.
-            const peak = 0.25 + 0.75 * ((top - 3) / 88);
-            return (
-              <span
-                key={i}
-                className={styles.dropTrailDot}
-                style={{
-                  top,
-                  animationDelay: `${i * (DROP_TRAIL_CYCLE / DROP_TRAIL_DOTS.length)}s`,
-                  ['--dot-peak' as string]: peak,
-                }}
-              />
-            );
-          })}
+          {DROP_TRAIL_DOT_STYLES.map((style, i) => (
+            <span key={i} className={styles.dropTrailDot} style={style} />
+          ))}
         </div>
       )}
       <div className={styles.sectionInner}>
@@ -73,16 +64,12 @@ export function PricingBlock({
           />
         </Reveal>
         <Reveal className={styles.buttonRow} delay={60}>
-          <Button href={download.href} osIcons={osIcons} className="vprBtn" onClick={onGetStarted}>
-            <span className="vprLabelDesktop">{downloadLabel}</span>
-            <span className="vprLabelMobile">Get Started<ArrowRight /></span>
-          </Button>
-          <Button href="https://antseedstats.com/network" variant="ghost" arrow>See live pricing</Button>
+          <Button href={LIVE_PRICES_URL} variant="ghost" arrow>Live prices</Button>
         </Reveal>
         <PriceBoard />
         <Reveal className={styles.payNote} delay={160}>
           <img src="/img/home/icon-shield-sm.svg" alt="" width="24" height="24" />
-          You only pay for what you use. Settlement is direct, secure, and non-custodial.
+          You only pay for what you use. Settlement goes straight to the provider, in USDC on Base.
         </Reveal>
       </div>
     </section>

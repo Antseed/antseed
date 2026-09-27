@@ -6,9 +6,8 @@ const COLUMNS: {title: string; links: {label: string; to?: string; href?: string
   {
     title: 'Product',
     links: [
-      {label: 'Pricing ↗', href: 'https://antseedstats.com/network'},
+      {label: 'Live prices ↗', href: 'https://antseedstats.com/network'},
       {label: 'Integrations', to: '/integrations'},
-      {label: 'Providers', to: '/providers'},
       {label: 'Ecosystem', to: '/ecosystem'},
       {label: 'Docs', to: '/docs'},
       {label: 'Light Paper', to: '/docs/lightpaper'},
@@ -17,7 +16,7 @@ const COLUMNS: {title: string; links: {label: string; to?: string; href?: string
   {
     title: 'Network',
     links: [
-      {label: '$ANTS Token', to: '/ants-token'},
+      {label: 'How it works', to: '/network'},
       {label: 'vs OpenRouter', to: '/vs/openrouter'},
       {label: 'AntSeedStats ↗', href: 'https://antseedstats.com'},
       {label: 'AIPs ↗', href: 'https://aips.antseed.com'},

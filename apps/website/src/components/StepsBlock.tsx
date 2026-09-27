@@ -18,7 +18,7 @@ export function StepsBlock({
   title: ReactNode;
   lead: ReactNode;
   steps: Step[];
-  cta: ReactNode;
+  cta?: ReactNode;
 }) {
   return (
     <section className={styles.stepsSection}>
@@ -42,9 +42,11 @@ export function StepsBlock({
             </Reveal>
           ))}
         </div>
-        <Reveal className={styles.stepsCta} delay={140}>
-          {cta}
-        </Reveal>
+        {cta && (
+          <Reveal className={styles.stepsCta} delay={140}>
+            {cta}
+          </Reveal>
+        )}
       </div>
     </section>
   );

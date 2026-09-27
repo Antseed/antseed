@@ -1,8 +1,6 @@
 import {useEffect, useRef, useState, type JSX} from 'react';
 import Layout from '@theme/Layout';
 import styles from './ants-token.module.css';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
 import {Button, FinalCta, Reveal, Section, SectionHeader, StatTile} from '../components/ui';
 import {TokenHeroArt} from '../components/TokenHeroArt';
 import {useAntsSupply} from '../lib/useAntsSupply';
@@ -132,8 +130,6 @@ function VerifyReceipt() {
 
 /* ── MAIN PAGE ─────────────────────────────────────────────────── */
 export default function AntsToken(): JSX.Element {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
   const {epoch, timeLeft, started} = useEpochCountdown();
   const live = useAntsSupply();
 
@@ -167,11 +163,8 @@ export default function AntsToken(): JSX.Element {
               participation into reputation buyers can verify.
             </p>
             <div className={styles.heroCtas}>
-              <Button href={download.href} arrow onClick={onGetStarted}>
-                <span className="vprLabelDesktop">Download AI VPN</span>
-                <span className="vprLabelMobile">Get Started</span>
-              </Button>
-              <Button to="/docs/lightpaper" variant="ghost">Lightpaper</Button>
+              <Button to="/docs/lightpaper" arrow>Read the lightpaper</Button>
+              <Button to="/network" variant="ghost">How the network works</Button>
             </div>
           </div>
           <div className={styles.heroDemo}>
@@ -280,19 +273,15 @@ export default function AntsToken(): JSX.Element {
       {/* ── CLOSING CTA ── */}
       <FinalCta
         title="Help build the network"
-        sub="Download the AI VPN, use the network for real AI work, run a provider, and help improve the open-source protocol."
+        sub="Use the network for real AI work, run a provider, and help improve the open-source protocol."
         note={
           <>
-            <a href="/docs/lightpaper">Lightpaper</a>
-            <a href="/docs/payments">Payment protocol</a>
-            <a href={STATS_URL} target="_blank" rel="noopener noreferrer">Network dashboard</a>
+            <a href="/docs/lightpaper">Read the lightpaper</a>
+            <a href="/docs/payments">Read the payment protocol</a>
+            <a href={STATS_URL} target="_blank" rel="noopener noreferrer">Live prices</a>
           </>
         }>
-        <Button href={download.href} variant="white" size="lg" arrow onClick={onGetStarted}>
-          <span className="vprLabelDesktop">Download AI VPN</span>
-          <span className="vprLabelMobile">Get Started</span>
-        </Button>
-        <Button to="/providers" variant="light" size="lg">Become a provider</Button>
+        <Button to="/providers" variant="white" size="lg" arrow>Become a provider</Button>
       </FinalCta>
     </Layout>
   );

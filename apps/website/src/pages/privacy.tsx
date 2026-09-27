@@ -1,33 +1,18 @@
 import type {JSX} from 'react';
 import Head from '@docusaurus/Head';
+import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import styles from './agents.module.css';
-import {Button, Faq, FinalCta, Reveal, Section, ArrowRight} from '../components/ui';
+import {Button, Faq, FinalCta, Reveal, Section, SectionHeader, ArrowRight} from '../components/ui';
 import {PrivacyHeroArt} from '../components/PrivacyHeroArt';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
+import {DownloadButton} from '../components/DownloadButton';
+import {faqJsonLd} from '../lib/faqJsonLd';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
-import {StepsBlock, type Step} from '../components/StepsBlock';
-import {PickModelArt} from '../components/StepArt';
-import {CommandChip} from '../components/CommandChip';
 import {PrivacyPanel} from '../components/PrivacyPanel';
-import {WhoItsFor} from '../components/WhoItsFor';
-import {PricingBlock} from '../components/PricingBlock';
 
 const TITLE = 'Private AI: no account, no email, no one in the middle | Antseed';
 const DESCRIPTION =
   'Use AI without giving up who you are. No account, no email, requests route peer-to-peer, and a TEE-verified provider keeps even your prompt sealed.';
-
-function DownloadButton({size = 'lg'}: {size?: 'md' | 'lg'}) {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
-  return (
-    <Button href={download.href} size={size} className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download the AI VPN</span>
-      <span className="vprLabelMobile">Get Started<ArrowRight /></span>
-    </Button>
-  );
-}
 
 function PrivacyHero() {
   return (
@@ -43,9 +28,9 @@ function PrivacyHero() {
           </p>
           <div className={styles.heroCtas}>
             <DownloadButton />
-            <CommandChip command="npm install -g @antseed/cli" />
+            <Button to="/docs/install" size="lg" variant="ghost" arrow>Install the CLI</Button>
           </div>
-          <p className={styles.heroNote}>Free models to start.</p>
+          <p className={styles.heroNote}>Free models to start. Install, point your tool at it, done.</p>
         </div>
         <div className={styles.heroDemo}>
           <PrivacyHeroArt />
@@ -55,10 +40,63 @@ function PrivacyHero() {
   );
 }
 
+/* What a provider sees — the page's real differentiator, pulled from the
+   privacy answers in docs/faq.mdx. */
+const SEES_ROWS: {label: string; standard: string; tee: string; antseed: string}[] = [
+  {label: 'Who you are', standard: 'A peer id', tee: 'A peer id', antseed: 'Nothing'},
+  {label: 'Your prompt', standard: 'Just like any API', tee: 'Nothing', antseed: 'Nothing'},
+  {label: 'Your payment', standard: 'A wallet', tee: 'A wallet', antseed: 'Nothing'},
+];
+
+function WhatAProviderSees() {
+  return (
+    <Section tone="tinted" id="who-sees-what">
+      <Reveal>
+        <SectionHeader
+          title="What a provider sees."
+          lead="Who you are and what you asked are handled separately. Pick the provider that fits how sensitive the work is."
+        />
+      </Reveal>
+      <Reveal className={styles.seesWrap} delay={80}>
+        <table className={styles.seesTable}>
+          <thead>
+            <tr>
+              <th scope="col" aria-label="What"></th>
+              <th scope="col">Standard provider</th>
+              <th scope="col">TEE-verified provider</th>
+              <th scope="col">Antseed</th>
+            </tr>
+          </thead>
+          <tbody>
+            {SEES_ROWS.map((r) => (
+              <tr key={r.label}>
+                <th scope="row">{r.label}</th>
+                <td data-col="Standard provider">{r.standard}</td>
+                <td data-col="TEE-verified provider" className={styles.seesGood}>{r.tee}</td>
+                <td data-col="Antseed" className={styles.seesGood}>{r.antseed}</td>
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </Reveal>
+      <Reveal delay={140}>
+        <p className={styles.seesNote}>
+          Your device checks a provider&apos;s TEE against Intel&apos;s own certificate chain before
+          any payment, with no third party in between.{' '}
+          <Link to="/docs/guides/verify-tee" className={styles.setupLink}>
+            Read the TEE guide
+            <ArrowRight size={16} />
+          </Link>
+        </p>
+      </Reveal>
+    </Section>
+  );
+}
+
 const PRIVACY_POINTS = [
   {icon: 'pt-shield', text: 'Anonymous by default: no account, no email, no platform key.'},
   {icon: 'pt-route', text: 'Route by privacy: set a minimum trust score, prefer TEE-verified providers.'},
-  {icon: 'pt-tools', text: "Verify a provider's TEE on your own machine, against Intel's certificate chain. No special hardware needed."},
+  {icon: 'pt-tools', text: "Verify a provider's TEE on your own machine. No special hardware needed."},
   {icon: 'pt-wallet', text: 'Pay per request in USDC. No subscription tied to your name.'},
 ];
 
@@ -124,80 +162,22 @@ function StaysOnYourMachine() {
       title={<>Everything stays<br />on your machine.</>}
       lead={
         <>
-          The AI VPN runs on your computer. Your configuration, signing identity, connected-app
-          setup, and routing decisions never leave your device. Each request goes peer-to-peer over
-          an encrypted channel to the provider your policy picks, with no company in the middle.
+          The AI VPN runs on your computer. Your settings, your signing key, and every routing
+          decision stay on your device. Each request goes peer-to-peer over an encrypted
+          connection to the provider you picked.
         </>
       }
       points={PRIVACY_POINTS}
       blocks={PRIVACY_TERMINAL_BLOCKS}
-      ctaLabel="Verify a provider's TEE"
+      ctaLabel="Read the TEE guide"
       ctaTo="/docs/guides/verify-tee"
     />
   );
 }
 
-const PRIVACY_STEPS: Step[] = [
-  {
-    num: '1',
-    title: 'Download the AI VPN',
-    body: 'Open the AI VPN or run Antseed CLI. Your local proxy starts instantly – no account needed.',
-    illo: <img src="/img/home/illo-easy-setup.svg" alt="" aria-hidden="true" />,
-  },
-  {
-    num: '2',
-    title: 'Connect your favorite app',
-    body: 'Point Claude Code, Codex, Hermes, OpenClaw or any tool you already use at one local address.',
-    illo: <img src="/img/home/illo-tools-unchanged.svg" alt="" aria-hidden="true" />,
-  },
-  {
-    num: '3',
-    title: 'Pick your model',
-    body: 'Choose free or frontier models, from more than 700 models. Route to the cheapest verified provider or pin the one you want.',
-    illo: <PickModelArt />,
-  },
-];
-
-function PrivacyPricing() {
-  return (
-    <PricingBlock
-      title="The top AI models,"
-      accent="at a fraction of the cost."
-      lead="Antseed is a peer-to-peer open market, so competition between providers always pushes the cost down."
-      downloadLabel="Download the AI VPN"
-      dropTrail={false}
-      osIcons={false}
-    />
-  );
-}
-
-function PrivacySteps() {
-  return (
-    <StepsBlock
-      title="Think of it as a VPN for AI."
-      lead={
-        <>
-          You install it, point your tools at it, and from then on you&apos;ve got full access to the
-          open market.
-        </>
-      }
-      steps={PRIVACY_STEPS}
-      cta={
-        <div className={styles.stepsCtaRow}>
-          <DownloadButton size="md" />
-          <CommandChip command="npm install -g @antseed/cli" size="md" />
-        </div>
-      }
-    />
-  );
-}
-
-/* FAQ — answers follow the docs FAQ and the AI VPN guide, caveats included. */
+/* FAQ — the four questions only a privacy-minded visitor asks. The rest,
+   including what a passing TEE check proves, lives in /docs/faq. */
 const PRIVACY_FAQ = [
-  {
-    q: 'Is my data private on Antseed?',
-    a: 'Antseed is designed for anonymous access: no central account, no platform-issued API key, no centralized chat database. Requests route peer-to-peer, so a provider generally sees a peer or wallet rather than an identity, and TEE providers add hardware-backed confidentiality where available. It is not a promise that every piece of data is hidden from every participant: independent providers and supporting infrastructure may process the data needed to serve and settle a request, and public-chain activity is visible onchain.',
-  },
   {
     q: 'Can providers see my prompts?',
     a: 'Standard providers can. TEE-verified providers cannot, because the hardware prevents it even if the operator wanted to look. When you pay for a TEE-verified request you receive a cryptographic attestation proving the enclave was genuine. <a href="/docs/guides/verify-tee">How verification works →</a>',
@@ -211,18 +191,12 @@ const PRIVACY_FAQ = [
     a: 'The protocol creates no central request log. Independent providers, nodes, RPC providers, analytics tools, or other infrastructure may still log or observe data, and each provider has its own data handling practices. Prefer TEE-verified providers where stronger confidentiality matters.',
   },
   {
-    q: "How do I verify a provider's TEE?",
-    a: 'Your buyer node checks it on your machine, against Intel’s own certificate chain, with no third party in between and no special hardware on your side. The check happens after a provider is picked and before any payment, so attestation is free. Verification is on by default and best-effort; run <code>antseed buyer start --verifiers antseed-verifier --require-verifier</code> to refuse any provider that does not pass, and the request then fails with a 502 naming the failed claims instead of being quietly routed elsewhere. <code>antseed network browse</code> shows which providers advertise a verifier. <a href="/docs/guides/verify-tee">Verify a provider’s TEE →</a>',
-  },
-  {
-    q: 'What does a passing TEE check prove, and what does it not?',
-    a: 'It proves the provider node runs inside a genuine Intel TDX enclave, that the quote was minted fresh for your request and is bound to the exact peer you are paying, so replayed or borrowed quotes fail, and it can report whether the provider’s GPUs run NVIDIA Confidential Computing. It proves the environment, not the model: whether the model is what the provider claims is a separate check, done by fingerprinting. <a href="/blog/model-verification-fingerprint-swarm">How model verification works →</a>',
-  },
-  {
     q: 'Is paying anonymous too?',
-    a: 'There is no account to pay from. You can top up by card or Apple Pay in the AI VPN, or with USDC from the CLI. Settlement happens in USDC on Base, so payments are tied to a wallet, not to your name, and like any public chain that activity is visible onchain.',
+    a: 'There is no account to pay from. You can top up by card or Apple Pay in the AI VPN, or with USDC from the CLI. Settlement happens in USDC on Base, so payments are tied to a wallet, not to your name, and like any public chain that activity is visible onchain. <a href="/docs/faq">More questions in the FAQ →</a>',
   },
 ];
+
+const PRIVACY_FAQ_LD = faqJsonLd(PRIVACY_FAQ);
 
 function PrivacyFaq() {
   return (
@@ -246,27 +220,15 @@ export default function PrivacyPage(): JSX.Element {
         <meta property="og:title" content={TITLE} />
         <meta property="og:description" content={DESCRIPTION} />
         <link rel="canonical" href="https://antseed.com/privacy/" />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'FAQPage',
-            mainEntity: PRIVACY_FAQ.map(({q, a}) => ({
-              '@type': 'Question',
-              name: q,
-              acceptedAnswer: {'@type': 'Answer', text: a.replace(/<[^>]+>/g, '')},
-            })),
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(PRIVACY_FAQ_LD)}</script>
       </Head>
       <PrivacyHero />
       <PrivacyPanel title="Privacy by design" />
-      <PrivacyPricing />
-      <PrivacySteps />
+      <WhatAProviderSees />
       <StaysOnYourMachine />
-      <WhoItsFor />
       <PrivacyFaq />
       <FinalCta title="Privacy on your terms.">
-        <DownloadButton />
+        <DownloadButton variant="white" />
       </FinalCta>
     </Layout>
   );

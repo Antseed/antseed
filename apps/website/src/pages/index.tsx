@@ -1,35 +1,26 @@
-import {useEffect, useRef, useState, type MutableRefObject, type RefObject, type ReactNode, type CSSProperties, type JSX} from 'react';
+import {useEffect, useRef, useState, type ReactNode, type JSX} from 'react';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
 import styles from './index.module.css';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {AllVersionsLink} from '../lib/AllVersionsLink';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
-import {useNetworkStats} from '../lib/useNetworkStats';
 import {PickModelArt} from '../components/StepArt';
 import {PricingBlock} from '../components/PricingBlock';
-import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
 import {StepsBlock} from '../components/StepsBlock';
-import {PrivacyPanel} from '../components/PrivacyPanel';
 import {WhoItsFor} from '../components/WhoItsFor';
-import {Button, Faq, Reveal, SectionHeader, ArrowRight} from '../components/ui';
+import {PrivacyPanel} from '../components/PrivacyPanel';
+import {Faq, Reveal, SectionHeader, ArrowRight} from '../components/ui';
 import {HeroDemo} from '../components/HeroDemo';
-import {HeroDotCanvas, DownloadCta, HeroStatsRow, HeroUseCta, HeroUseSwitch, HeroCliVisual, StackedHero, type HeroUse} from '../components/HomeHero';
+import {HeroDotCanvas, HeroStatsRow, HeroUseCta, HeroUseSwitch, HeroCliVisual, type HeroUse} from '../components/HomeHero';
 import {HeroAgentMarket} from '../components/HeroAgentMarket';
 import {LogoMarquee} from '../components/LogoMarquee';
 import {OwnedByNoOne} from '../components/NetworkPanel';
 import {SellSection} from '../components/SellSection';
 import {HOME_FAQ} from '../components/homeFaq';
 import {FinalCtaBand} from '../components/FinalCtaBand';
+import {faqJsonLd} from '../lib/faqJsonLd';
 
-
-/* Layout experiment: 'stacked' is the shipped centred hero; 'split' puts the
-   copy on the left and the AI VPN demo (compact scene) on the right on wide
-   viewports, collapsing back to stacked under 997px. */
-const HERO_LAYOUT: 'stacked' | 'split' = 'split';
-
+/* Split hero: copy on the left and the AI VPN demo (compact scene) on the
+   right on wide viewports, collapsing to stacked under 997px. */
 function Hero() {
   const [use, setUse] = useState<HeroUse>('app');
   const [visualHeight, setVisualHeight] = useState(0);
@@ -57,9 +48,11 @@ function Hero() {
     return () => observer.disconnect();
   }, []);
 
-  if (HERO_LAYOUT !== 'split') {
-    return <StackedHero title="Run your agents on your terms" caption="Start for free. Keep using your tools." />;
-  }
+  const visuals: {view: HeroUse; content: ReactNode}[] = [
+    {view: 'app', content: <HeroDemo frameRef={frameRef} shutdownRef={shutdownRef} compact />},
+    {view: 'cli', content: <HeroCliVisual active={use === 'cli'} />},
+    {view: 'agent', content: <HeroAgentMarket active={use === 'agent'} />},
+  ];
 
   return (
     <header className={`${styles.hero} ${styles.heroSplit}`}>
@@ -80,15 +73,14 @@ function Hero() {
         </div>
         <div className={`${styles.demoFrame} ${styles.demoFrameSplit} ${styles.heroVisualStack}`} ref={demoRef}
           style={{minHeight: visualHeight || undefined}} id="hero-use-visual" role="tabpanel" aria-labelledby={`hero-tab-${use}`}>
-          <div className={`${styles.heroVisualLayer} ${use === 'app' ? styles.heroVisualActive : ''}`} data-view="app" inert={use !== 'app'} aria-hidden={use !== 'app'}>
-            <HeroDemo frameRef={frameRef} shutdownRef={shutdownRef} compact />
-          </div>
-          <div className={`${styles.heroVisualLayer} ${use === 'cli' ? styles.heroVisualActive : ''}`} data-view="cli" inert={use !== 'cli'} aria-hidden={use !== 'cli'}>
-            <HeroCliVisual active={use === 'cli'} />
-          </div>
-          <div className={`${styles.heroVisualLayer} ${use === 'agent' ? styles.heroVisualActive : ''}`} data-view="agent" inert={use !== 'agent'} aria-hidden={use !== 'agent'}>
-            <HeroAgentMarket active={use === 'agent'} />
-          </div>
+          {visuals.map(({view, content}) => {
+            const active = use === view;
+            return (
+              <div key={view} className={`${styles.heroVisualLayer} ${active ? styles.heroVisualActive : ''}`} data-view={view} inert={!active} aria-hidden={!active}>
+                {content}
+              </div>
+            );
+          })}
         </div>
         <HeroStatsRow />
       </div>
@@ -96,120 +88,87 @@ function Hero() {
   );
 }
 
-
 /* ============================================================
    PRICING — the same models, a fraction of the price
    ============================================================ */
-/* Drop-trail dots — spaced to match the dashed line asset's 8px pitch
-   (dots at y=3..91), each lighting up in sequence top-to-bottom. */
 function PricingSection() {
   return (
     <PricingBlock
       title="The top AI models,"
       accent="at a fraction of the cost."
-      lead="Antseed is a peer-to-peer open market, so competition between providers always pushes the cost down."
+      lead="It's an open market, so competition between providers pushes prices down."
     />
   );
 }
 
 /* ============================================================
-   PRIVATE BY DESIGN
+   PRIVATE BY DESIGN — the Anonymous / Private cards, shared with /privacy.
    ============================================================ */
 function PrivateByDesign() {
-  return <PrivacyPanel title="So private, we have no idea who you are." />;
+  return <PrivacyPanel title="Private by design." />;
 }
 
 /* ============================================================
-   WHO IT'S FOR — three personas, their problem in their words,
-   and what changes. Model count reuses the hero stat so the two
-   never drift apart.
+   PILLARS — the five things Antseed is, one line each. Replaces the
+   localhost terminal on the homepage; the audience pages carry the
+   long versions.
    ============================================================ */
-
-/* ============================================================
-   OWNED BY NO ONE — decentralization cards
-   ============================================================ */
-
-
-
-/* ============================================================
-   POINT YOUR TOOLS AT LOCALHOST — dark terminal section
-   ============================================================ */
-const HOME_POINTS = [
-  {icon: 'pt-tools', text: 'OpenAI and Anthropic compatible. Your SDKs and tools just work.'},
-  {icon: 'pt-shield', text: 'Fallback the moment a provider is slow, expensive, or down.'},
-  {icon: 'pt-route', text: 'Route by price, speed, reputation, or privacy.'},
-  {icon: 'pt-wallet', text: 'Pay per request, straight to the provider. No subscription.'},
-];
-
-/* Install → run → call. Commands mirror docs/guides/using-the-api.md
-   (Quick Start) so the site never drifts from the documented path. */
-const HOME_TERMINAL_BLOCKS: TBlock[] = [
+const PILLARS: {title: string; body: ReactNode}[] = [
   {
-    comment: '# 1. Install the CLI',
-    tokens: [
-      {text: '$ ', cls: 'tGreen'},
-      {text: 'npm', cls: 'tPurple'},
-      {text: ' '},
-      {text: 'install', cls: 'tBlue'},
-      {text: ' '},
-      {text: '-g', cls: 'tYellow'},
-      {text: ' '},
-      {text: '@antseed/cli', cls: 'tOrange'},
-    ],
+    title: 'Every model, lower prices',
+    body: 'Free and frontier models, routed to the cheapest verified provider.',
   },
   {
-    comment: '# 2. Start the buyer: your API endpoint, on your machine',
-    tokens: [
-      {text: '$ ', cls: 'tGreen'},
-      {text: 'antseed', cls: 'tPurple'},
-      {text: ' '},
-      {text: 'buyer start', cls: 'tBlue'},
-      {text: '\n'},
-      {text: 'Proxy listening on http://localhost:8377', cls: 'tComment'},
-    ],
+    title: 'Nothing changes in your tools',
+    body: (
+      <>
+        One local endpoint, OpenAI and Anthropic compatible.{' '}
+        <Link to="/docs/guides/using-the-api">Read the API guide<ArrowRight size={14} /></Link>
+      </>
+    ),
   },
   {
-    comment: '# 3. Call it like any OpenAI-compatible API',
-    tokens: [
-      {text: '$ ', cls: 'tGreen'},
-      {text: 'curl', cls: 'tPurple'},
-      {text: ' '},
-      {text: 'http://localhost:8377/v1/chat/completions', cls: 'tBlue'},
-      {text: ' \\\n  '},
-      {text: '-H', cls: 'tYellow'},
-      {text: ' '},
-      {text: '"Content-Type: application/json"', cls: 'tGreen'},
-      {text: ' \\\n  '},
-      {text: '-d', cls: 'tYellow'},
-      {text: " '{"},
-      {text: '"model"', cls: 'tBlue'},
-      {text: ': '},
-      {text: '"deepseek-v4-flash"', cls: 'tOrange'},
-      {text: ',\n    '},
-      {text: '"messages"', cls: 'tBlue'},
-      {text: ': [{'},
-      {text: '"role"', cls: 'tBlue'},
-      {text: ': '},
-      {text: '"user"', cls: 'tGreen'},
-      {text: ', '},
-      {text: '"content"', cls: 'tBlue'},
-      {text: ': '},
-      {text: '"Hello"', cls: 'tGreen'},
-      {text: "}]}'"},
-    ],
+    title: 'No account',
+    body: 'Nobody knows who you are. A TEE provider cannot even read your prompt.',
+  },
+  {
+    title: 'No usage limits',
+    body: 'Pay per request. Never a cap, never a window.',
+  },
+  {
+    title: 'Owned by no one',
+    body: 'Peer to peer, open source, settled in USDC on Base.',
   },
 ];
+
+function PillarsSection() {
+  return (
+    <section className={`${styles.section} ${styles.sectionTinted}`}>
+      <div className={styles.sectionInner}>
+        <Reveal>
+          <SectionHeader title="What you get." />
+        </Reveal>
+        <div className={styles.pillars}>
+          {PILLARS.map((p, i) => (
+            <Reveal key={p.title} className={styles.pillar} delay={i * 60}>
+              <h3>{p.title}</h3>
+              <p>{p.body}</p>
+            </Reveal>
+          ))}
+        </div>
+      </div>
+    </section>
+  );
+}
 
 /* ============================================================
    3 STEPS
    ============================================================ */
-/* The provider count streams from Antscan via useNetworkStats, same source as
-   the hero stat, so step 2 tracks the network instead of drifting. */
 const STEPS = [
   {
     num: '1',
     title: 'Download the AI VPN',
-    body: 'Run it on Mac, Windows, or Linux. No account needed.',
+    body: 'Run it on Mac, Windows, or Linux. No account needed. Prefer a terminal? Install the CLI instead.',
     illo: <img src="/img/home/illo-easy-setup.svg" alt="" aria-hidden="true" />,
   },
   {
@@ -237,20 +196,13 @@ function StepsSection() {
         </>
       }
       steps={STEPS}
-      cta={<DownloadCta size="md" versionsLink={false} />}
     />
   );
 }
 
 /* ============================================================
-   ANYONE CAN SELL INTELLIGENCE
-   ============================================================ */
-
-
-/* ============================================================
    FAQ — fair questions
    ============================================================ */
-
 function FAQSection() {
   return (
     <section className={`${styles.section} ${styles.sectionTinted}`}>
@@ -267,53 +219,37 @@ function FAQSection() {
 }
 
 /* ============================================================
-   FINAL CTA
-   ============================================================ */
-
-
-/* ============================================================
    PAGE
    ============================================================ */
+const FAQ_LD = faqJsonLd(HOME_FAQ);
+
+// Standalone Organization entity. The SoftwareApplication block in
+// docusaurus.config.ts references the org as `creator`; this declares it in
+// its own right so the brand resolves as an entity.
+const ORG_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'Organization',
+  name: 'Antseed',
+  url: 'https://antseed.com/',
+  logo: 'https://antseed.com/logo.svg',
+  description:
+    'Antseed is a decentralized peer-to-peer marketplace for AI inference. Providers compete on price to run any AI model, with no central account.',
+  sameAs: [
+    'https://github.com/AntSeed/antseed',
+    'https://x.com/antseed',
+    'https://t.me/antseed',
+  ],
+};
+
+const HOME_TITLE = 'Antseed | The Open Market for AI Inference';
+const HOME_DESCRIPTION =
+  'Run your agents on free models or access paid models at lower prices, with full control over your usage and privacy.';
+
 export default function Home(): JSX.Element {
-  const {siteConfig} = useDocusaurusContext();
-
-  const faqLd = {
-    '@context': 'https://schema.org',
-    '@type': 'FAQPage',
-    mainEntity: HOME_FAQ.map(({q, a}) => ({
-      '@type': 'Question',
-      name: q,
-      acceptedAnswer: {
-        '@type': 'Answer',
-        text: a.replace(/<[^>]*>/g, '').trim(),
-      },
-    })),
-  };
-
-  // Standalone Organization entity. The SoftwareApplication block in
-  // docusaurus.config.ts references the org as `creator`; this declares it in
-  // its own right so the brand resolves as an entity.
-  const orgLd = {
-    '@context': 'https://schema.org',
-    '@type': 'Organization',
-    name: 'Antseed',
-    url: 'https://antseed.com/',
-    logo: 'https://antseed.com/logo.svg',
-    description:
-      'Antseed is a decentralized peer-to-peer marketplace for AI inference. Providers compete on price to run any AI model, with no central account.',
-    sameAs: [
-      'https://github.com/AntSeed/antseed',
-      'https://x.com/antseed',
-      'https://t.me/antseed',
-    ],
-  };
-
   return (
-    <Layout
-      title={siteConfig.tagline}
-      description="Run your agents on your terms. Every model, no middleman. Anonymous, best price, works with the tools you already use. Owned by no one."
-      wrapperClassName="homepage-wrapper">
+    <Layout title={HOME_TITLE} description={HOME_DESCRIPTION} wrapperClassName="homepage-wrapper">
       <Head>
+        <title>{HOME_TITLE}</title>
         {/*
           Docusaurus derives og:title / og:description from the Layout title and
           description props above, which override the sitewide values in
@@ -325,40 +261,20 @@ export default function Home(): JSX.Element {
           rel=canonical and og:url need no declaration — Docusaurus already
           emits correct per-page values for both.
         */}
-        <meta property="og:title" content="Run your agents on your terms" />
-        <meta
-          property="og:description"
-          content="Antseed lets you run your agents on your terms. Every model, no middleman. Anonymous. Best price. Works with the tools you already use. Owned by no one. Available to everyone."
-        />
-        <script type="application/ld+json">{JSON.stringify(orgLd)}</script>
-        <script type="application/ld+json">{JSON.stringify(faqLd)}</script>
+        <meta property="og:title" content={HOME_TITLE} />
+        <meta property="og:description" content={HOME_DESCRIPTION} />
+        <script type="application/ld+json">{JSON.stringify(ORG_LD)}</script>
+        <script type="application/ld+json">{JSON.stringify(FAQ_LD)}</script>
       </Head>
 
       <Hero />
       <LogoMarquee />
       <PricingSection />
       <StepsSection />
-      <PrivateByDesign />
+      <PillarsSection />
       <WhoItsFor />
       <OwnedByNoOne />
-      <LocalhostSection
-        id="cli"
-        title={<>An AI API,<br />running on localhost.</>}
-        lead={
-          <>
-            Install the CLI and start the buyer, and you get OpenAI and Anthropic compatible
-            endpoints at <code className={styles.inlineCode}>localhost:8377</code>. Use them
-            exactly like a hosted API: same request shapes, same SDKs, same tools. Behind the
-            endpoint, each request is routed across the open market by price, latency,
-            reputation, capability, or privacy. The router runs on your computer, not on a hosted
-            service, so your requests never pass through anyone else&apos;s servers.
-          </>
-        }
-        points={HOME_POINTS}
-        blocks={HOME_TERMINAL_BLOCKS}
-        ctaLabel="Read the API guide"
-        ctaTo="/docs/guides/using-the-api"
-      />
+      <PrivateByDesign />
       <div className={styles.stepsSellWrap}>
         <SellSection />
       </div>

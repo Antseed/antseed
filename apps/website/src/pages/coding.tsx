@@ -6,14 +6,12 @@ import styles from './agents.module.css';
 import own from './coding.module.css';
 import {Button, Faq, FinalCta, Reveal, Section, SectionHeader, ArrowRight} from '../components/ui';
 import {CodingHeroArt} from '../components/CodingHeroArt';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
+import {DownloadButton} from '../components/DownloadButton';
+import {faqJsonLd} from '../lib/faqJsonLd';
 import {PricingBlock} from '../components/PricingBlock';
 import {LogoBar, SquareGlyph, PiGlyph, type LogoItem} from '../components/AgentsLogoBar';
 import {LocalhostSection, type TBlock} from '../components/LocalhostSection';
-import {StepsBlock, type Step} from '../components/StepsBlock';
-import {PickModelArt} from '../components/StepArt';
-import {CommandChip} from '../components/CommandChip';
+import {PrivacyPanel} from '../components/PrivacyPanel';
 import {ConnectSwitchArt} from '../components/ConnectSwitchArt';
 import {Cursor} from '@lobehub/icons';
 
@@ -41,17 +39,6 @@ const CONNECT_CARDS: ConnectCard[] = [
   {name: 'Pi', glyph: PiGlyph, to: '/integrations/pi'},
 ];
 
-function DownloadButton({size = 'lg'}: {size?: 'md' | 'lg'}) {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
-  return (
-    <Button href={download.href} size={size} className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download the AI VPN</span>
-      <span className="vprLabelMobile">Get Started<ArrowRight /></span>
-    </Button>
-  );
-}
-
 function CodingHero() {
   return (
     <header className={styles.hero}>
@@ -61,14 +48,14 @@ function CodingHero() {
             Coding, without the usage limits.
           </h1>
           <p className={styles.heroSub}>
-            Works with your favorite coding tools. Pay a fraction of the cost, with no hourly, weekly,
-            or monthly limits.
+            Keep Claude Code, Codex, Cursor, or OpenCode. Point it at your local endpoint and pay a
+            fraction of the plan price, with no hourly, weekly, or monthly limits.
           </p>
           <div className={styles.heroCtas}>
             <DownloadButton />
-            <CommandChip command="npm install -g @antseed/cli" />
+            <Button to="/docs/install" size="lg" variant="ghost" arrow>Install the CLI</Button>
           </div>
-          <p className={styles.heroNote}>Free models to start.</p>
+          <p className={styles.heroNote}>Free models to start. No account either way.</p>
         </div>
         <div className={styles.heroDemo}>
           <CodingHeroArt />
@@ -83,9 +70,7 @@ function CodingPricing() {
     <PricingBlock
       title="Frontier models,"
       accent="at a fraction of the plan price."
-      lead="Pay per request at the lowest market price – no usage limits or subscription commitments."
-      downloadLabel="Download the AI VPN"
-      osIcons={false}
+      lead="Pay per request at the lowest market price. No usage limits, no subscription."
     />
   );
 }
@@ -95,8 +80,8 @@ function ConnectApps() {
     <Section tone="tinted" id="connect">
       <Reveal>
         <SectionHeader
-          title="Connect your favorite coding app."
-          lead="One command wraps the tool with the right provider for that run. Everything else stays the way it was."
+          title="Works with the coding apps you already use."
+          lead="One command launches the tool through Antseed. Your projects, chats, and settings stay the way they were."
         />
       </Reveal>
       <div className={own.connectSplit}>
@@ -174,58 +159,14 @@ function PointAtLocalhost() {
       title={<>Point your tools<br />at localhost.</>}
       lead={
         <>
-          Antseed exposes an OpenAI- and Anthropic-compatible API on your computer at{' '}
-          <code className={styles.inlineCode}>localhost:8377</code>, so Claude Code, Codex, or
-          OpenCode connects with one command and keeps every project and chat. Each request routes
-          peer-to-peer to the provider your policy picks, with no company in the middle.
+          Your local endpoint at <code className={styles.inlineCode}>localhost:8377</code> speaks
+          the OpenAI and Anthropic APIs. One command launches your tool through it.
         </>
       }
       points={CODING_POINTS}
       blocks={CODING_TERMINAL_BLOCKS}
-      ctaLabel="Coding app guides"
+      ctaLabel="Browse the integrations"
       ctaTo="/integrations"
-    />
-  );
-}
-
-const CODING_STEPS: Step[] = [
-  {
-    num: '1',
-    title: 'Download the AI VPN',
-    body: 'Open the AI VPN or run Antseed CLI. Your local proxy starts instantly – no account needed.',
-    illo: <img src="/img/home/illo-easy-setup.svg" alt="" aria-hidden="true" />,
-  },
-  {
-    num: '2',
-    title: 'Connect your favorite app',
-    body: 'Point Claude Code, Codex, Hermes, OpenClaw or any tool you already use at one local address.',
-    illo: <img src="/img/home/illo-tools-unchanged.svg" alt="" aria-hidden="true" />,
-  },
-  {
-    num: '3',
-    title: 'Pick your model',
-    body: 'Choose free or frontier models, from more than 700 models. Route to the cheapest verified provider or pin the one you want.',
-    illo: <PickModelArt />,
-  },
-];
-
-function CodingSteps() {
-  return (
-    <StepsBlock
-      title="Think of it as a VPN for AI."
-      lead={
-        <>
-          You install it, point your tools at it, and from then on you&apos;ve got full access to the
-          open market.
-        </>
-      }
-      steps={CODING_STEPS}
-      cta={
-        <div className={styles.stepsCtaRow}>
-          <DownloadButton size="md" />
-          <CommandChip command="npm install -g @antseed/cli" size="md" />
-        </div>
-      }
     />
   );
 }
@@ -238,34 +179,36 @@ const CODING_FAQ = [
     a: 'No. Keep it if it earns its price. When the plan’s window runs out, launch the same tool through Antseed and keep working, then switch back whenever you like. Nothing about your projects or settings changes between the two.',
   },
   {
-    q: 'Are there usage limits?',
-    a: 'No five-hour window, no weekly or monthly cap. You pay per request from your credits and keep going as long as there are credits to spend. Top up in the AI VPN by card or Apple Pay, or with USDC from the CLI using <code>antseed buyer deposit</code>.',
-  },
-  {
     q: 'Is it the same model I get on the plan?',
     a: 'The live board lists what providers serve, including frontier models, each at the provider’s own price. Every response is signed by the provider and matched against the model’s fingerprint; providers who serve something else lose reputation and stop getting routed. <a href="/docs/guides/verify-tee">How verification works →</a>',
-  },
-  {
-    q: 'Do I need the desktop app, or is the CLI enough?',
-    a: 'The CLI is enough. <code>npm install -g @antseed/cli</code>, then <code>antseed buyer start</code> runs the proxy and <code>antseed claude</code>, <code>antseed codex</code>, or <code>antseed opencode</code> launch your tool through it. The AI VPN desktop app adds a model picker, an Apps view that launches installed tools, and card or Apple Pay top-ups. <a href="/docs/install#cli">Install the CLI →</a>',
   },
   {
     q: 'Does Cursor work?',
     a: "Yes, through a public endpoint. Some Cursor requests come from Cursor's own servers, which cannot reach your <code>localhost</code>, so publish an authenticated HTTPS endpoint from the AI VPN, then in Cursor's model settings paste the Antseed key as the OpenAI API key and the endpoint as the OpenAI base URL. <a href=\"/docs/guides/public-tunnels#use-it-with-cursor\">Cursor setup →</a>",
   },
   {
-    q: 'Does my tool need an API key?',
-    a: 'No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like <code>antseed</code>. The <code>antseed claude</code>, <code>codex</code>, and <code>opencode</code> wrappers set this for you.',
-  },
-  {
     q: 'How do I pick which model my tool uses?',
-    a: 'Leave it on auto and every request goes to the cheapest verified provider for the model your tool asks for. To pin a model for one run, pass <code>--model &lt;id&gt;</code> to the wrapper, using an id from <code>curl http://localhost:8377/v1/models</code>. To pin a specific provider, use <code>&lt;peerId&gt;@&lt;model&gt;</code>.',
-  },
-  {
-    q: 'Can a provider see my code?',
-    a: 'Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it. <a href="/docs/guides/verify-tee">Verify a provider’s TEE →</a>',
+    a: 'Leave it on auto and every request goes to the cheapest verified provider for the model your tool asks for. To pin a model for one run, pass <code>--model &lt;id&gt;</code> to the wrapper, using an id from <code>curl http://localhost:8377/v1/models</code>. To pin a specific provider, use <code>&lt;peerId&gt;@&lt;model&gt;</code>. <a href="/docs/faq">More questions in the FAQ →</a>',
   },
 ];
+
+const CODING_FAQ_LD = faqJsonLd(CODING_FAQ);
+
+function CodingPrivacy() {
+  return (
+    <PrivacyPanel
+      title="Your code stays yours."
+      anonymous={{
+        text: 'Your coding app talks to localhost. There is no account or API key on file, so no one can tie a session to you.',
+        to: '/privacy',
+      }}
+      privateCard={{
+        text: 'Working on something you cannot share? Route to a TEE-verified provider and your source is processed inside a secure enclave the provider cannot read.',
+        to: '/docs/guides/verify-tee',
+      }}
+    />
+  );
+}
 
 function CodingFaq() {
   return (
@@ -289,24 +232,14 @@ export default function CodingPage(): JSX.Element {
         <meta property="og:title" content={TITLE} />
         <meta property="og:description" content={DESCRIPTION} />
         <link rel="canonical" href="https://antseed.com/coding/" />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'FAQPage',
-            mainEntity: CODING_FAQ.map(({q, a}) => ({
-              '@type': 'Question',
-              name: q,
-              acceptedAnswer: {'@type': 'Answer', text: a.replace(/<[^>]+>/g, '')},
-            })),
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(CODING_FAQ_LD)}</script>
       </Head>
       <CodingHero />
       <LogoBar items={CODING_APPS} ariaLabel="Coding apps that work with Antseed" />
       <CodingPricing />
       <ConnectApps />
       <PointAtLocalhost />
-      <CodingSteps />
+      <CodingPrivacy />
       <CodingFaq />
       <FinalCta title="Code on your terms.">
         <DownloadButton />

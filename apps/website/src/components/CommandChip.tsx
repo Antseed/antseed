@@ -5,7 +5,7 @@ import styles from './CommandChip.module.css';
  * Inline shell command shown next to a CTA — mono pill with a copy button.
  * Clicking copies the command (without the "$") and flashes "Copied".
  */
-export function CommandChip({command, size = 'lg'}: {command: string; size?: 'md' | 'lg'}) {
+export function CommandChip({command, size = 'lg', dark = false}: {command: string; size?: 'md' | 'lg'; dark?: boolean}) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return undefined;
@@ -23,7 +23,7 @@ export function CommandChip({command, size = 'lg'}: {command: string; size?: 'md
   return (
     <button
       type="button"
-      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${copied ? styles.copied : ''}`}
+      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${copied ? styles.copied : ''}`}
       onClick={copy}
       aria-label={`Copy command: ${command}`}
       title="Copy to clipboard">

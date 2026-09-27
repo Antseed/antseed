@@ -7,7 +7,7 @@ Set up an Antseed buyer on the agent's machine: install the CLI, start the local
 With the [GitHub CLI](https://cli.github.com/) (v2.90.0+):
 
 ```bash
-gh skill install AntSeed/antseed join-buyer
+gh skill install Antseed/antseed join-buyer
 ```
 
 Add `--scope user` to install it for every project supported by your agent, or use `--agent <agent>` to target one agent.

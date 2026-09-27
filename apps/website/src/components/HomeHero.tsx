@@ -1,20 +1,18 @@
 import {useEffect, useRef, useState, type MutableRefObject, type RefObject, type ReactNode} from 'react';
 import styles from '../pages/index.module.css';
 import cli from './HeroCliVisual.module.css';
-import {CommandChip} from './CommandChip';
 import ag from './HeroAgentVisual.module.css';
 import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
 import {AllVersionsLink} from '../lib/AllVersionsLink';
 import {useMobileGetStarted} from '../lib/useMobileGetStarted';
 import {useNetworkStats} from '../lib/useNetworkStats';
+import {SkillChip} from './SkillChip';
 import {Button, ArrowRight} from './ui';
-import Link from '@docusaurus/Link';
-import {HeroDemo, DEMO_BEATS, DEMO_TOTAL_FRAMES} from './HeroDemo';
+import {DEMO_BEATS as BEATS, DEMO_TOTAL_FRAMES} from './HeroDemo';
 
 /**
- * Homepage hero building blocks, shared with /network: the count-up stats,
- * the ant dot canvas, the rotating subtitle, the download CTA, and the
- * original centred "stacked" hero composition.
+ * Homepage hero building blocks: the count-up stats, the ant dot canvas,
+ * the download CTA, the use switch (app / CLI / agent) and the CLI visual.
  */
 
 /* ============================================================
@@ -76,7 +74,6 @@ export function CountUp({value, duration = 1100}: {value: string; duration?: num
    surfaces the Antseed ant, in sync with the live demo timeline.
    Ported from the design prototype (Remotion beats at 30 fps).
    ============================================================ */
-const BEATS = DEMO_BEATS;
 const ANT_H = 800;
 const ANT_W = Math.round((15.2738 / 18) * ANT_H);
 const DOT_LIGHT = '213,217,215';
@@ -128,7 +125,13 @@ export function HeroDotCanvas({
     if (!host) return undefined;
 
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let color = isDarkTheme() ? DOT_DARK : DOT_LIGHT;
+    let color = DOT_LIGHT;
+    let baseRgb = parseRgb(color);
+    const applyTheme = () => {
+      color = isDarkTheme() ? DOT_DARK : DOT_LIGHT;
+      baseRgb = parseRgb(color);
+    };
+    applyTheme();
     let disposed = false;
     let width = 0;
     let height = 0;
@@ -173,11 +176,10 @@ export function HeroDotCanvas({
       // Ripple origin: the demo card (falls back to hero center).
       let originX = width / 2;
       let originY = 0.375 * height;
-      const origin = originRef.current;
+      const origin = originRef.current?.getBoundingClientRect();
       if (origin) {
-        const o = origin.getBoundingClientRect();
-        originX = o.left - rect.left + 0.5 * o.width;
-        originY = o.top - rect.top + 0.375 * o.height;
+        originX = origin.left - rect.left + 0.5 * origin.width;
+        originY = origin.top - rect.top + 0.375 * origin.height;
       }
       // Ant placement — scaled and centred on the demo in the split hero.
       let antScale = compact ? 0.5 : 1;
@@ -185,9 +187,8 @@ export function HeroDotCanvas({
       if (compact && origin) {
         // Size the ant to the demo box (card + "Finding best seller" pill) so
         // its top and bottom line up with the box, and centre it behind it.
-        const o = origin.getBoundingClientRect();
-        antScale = Math.min(0.75, o.height / ANT_H);
-        antCenterY = o.top - rect.top + 0.5 * o.height;
+        antScale = Math.min(0.75, origin.height / ANT_H);
+        antCenterY = origin.top - rect.top + 0.5 * origin.height;
       }
       const antLeft = originX - (ANT_W * antScale) / 2;
       const antTop = antCenterY - (ANT_H * antScale) / 2;
@@ -263,7 +264,6 @@ export function HeroDotCanvas({
 
     const drawFrame = (frame: number, shut: number) => {
       ctx.clearRect(0, 0, width, height);
-      const baseRgb = parseRgb(color);
       const shutT = shut > 0 ? (shut - BEATS.fadeOutStart) / (BEATS.fadeOutEnd - BEATS.fadeOutStart) : 0;
       for (const dot of dots) {
         const alpha =
@@ -287,7 +287,7 @@ export function HeroDotCanvas({
         if (pulse > 0.02) {
           const glowRadius = radius * (1 + 1.6 * pulse);
           ctx.beginPath();
-          ctx.fillStyle = `rgba(${SPARKLE_RGB[0]},${SPARKLE_RGB[1]},${SPARKLE_RGB[2]},${0.16 * pulse})`;
+          ctx.fillStyle = `rgba(${SPARKLE_RGB.join(',')},${0.16 * pulse})`;
           ctx.arc(dot.x, dot.y, glowRadius, 0, 2 * Math.PI);
           ctx.fill();
         }
@@ -295,9 +295,7 @@ export function HeroDotCanvas({
         ctx.beginPath();
         if (pulse > 0.02) {
           const sparkleT = pulse * 0.7;
-          const r = Math.round(baseRgb[0] + (SPARKLE_RGB[0] - baseRgb[0]) * sparkleT);
-          const g = Math.round(baseRgb[1] + (SPARKLE_RGB[1] - baseRgb[1]) * sparkleT);
-          const b = Math.round(baseRgb[2] + (SPARKLE_RGB[2] - baseRgb[2]) * sparkleT);
+          const [r, g, b] = baseRgb.map((c, i) => Math.round(c + (SPARKLE_RGB[i] - c) * sparkleT));
           ctx.fillStyle = `rgba(${r},${g},${b},${Math.min(1, 0.75 * alpha + 0.25 * pulse)})`;
         } else {
           ctx.fillStyle = `rgba(${color},${0.75 * alpha})`;
@@ -341,23 +339,39 @@ export function HeroDotCanvas({
       };
     }
 
+    // The frame clock lives in HeroDemo (frameRef), so pausing the draw loop
+    // while the hero is scrolled out of view costs nothing in sync.
     let raf = 0;
     const loop = () => {
       drawFrame(frameRef.current % DEMO_TOTAL_FRAMES, shutdownRef.current);
       raf = requestAnimationFrame(loop);
     };
-    raf = requestAnimationFrame(loop);
+    const startLoop = () => {
+      if (!raf) raf = requestAnimationFrame(loop);
+    };
+    const stopLoop = () => {
+      cancelAnimationFrame(raf);
+      raf = 0;
+    };
+    startLoop();
+    let visibility: IntersectionObserver | undefined;
+    if (typeof IntersectionObserver !== 'undefined') {
+      visibility = new IntersectionObserver(([entry]) => {
+        if (entry.isIntersecting) startLoop();
+        else stopLoop();
+      });
+      visibility.observe(host);
+    }
 
     const resize = new ResizeObserver(layout);
     resize.observe(host);
-    const themeWatch = new MutationObserver(() => {
-      color = isDarkTheme() ? DOT_DARK : DOT_LIGHT;
-    });
+    const themeWatch = new MutationObserver(applyTheme);
     themeWatch.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
 
     return () => {
       disposed = true;
-      cancelAnimationFrame(raf);
+      stopLoop();
+      visibility?.disconnect();
       resize.disconnect();
       themeWatch.disconnect();
     };
@@ -367,59 +381,9 @@ export function HeroDotCanvas({
 }
 
 /* ============================================================
-   ROTATING SUBTITLE — cycles hero phrases, then snaps back.
-   (From the hero prototype; the Figma frame shows the first.)
-   ============================================================ */
-const HERO_PHRASES = [
-  'Every AI model at a fraction of the regular cost.',
-  'No usage limits. No middleman. Always anonymous.',
-];
-
-export function RotatingSub({phrases = HERO_PHRASES}: {phrases?: string[]}) {
-  const loop = [...phrases, phrases[0]];
-  const [index, setIndex] = useState(0);
-  const [animated, setAnimated] = useState(true);
-
-  useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) return undefined;
-    const timer = setTimeout(() => {
-      setAnimated(true);
-      setIndex((i) => i + 1);
-    }, 2400);
-    return () => clearTimeout(timer);
-  }, [index]);
-
-  useEffect(() => {
-    if (index !== loop.length - 1) return undefined;
-    const timer = setTimeout(() => {
-      setAnimated(false);
-      setIndex(0);
-    }, 600);
-    return () => clearTimeout(timer);
-  }, [index]);
-
-  return (
-    <span className={styles.heroSub}>
-      <span
-        className={styles.heroSubTrack}
-        style={{
-          transform: `translateY(-${1.6 * index}em)`,
-          transition: animated ? 'transform 600ms cubic-bezier(0.65, 0, 0.35, 1)' : 'none',
-        }}>
-        {loop.map((phrase, i) => (
-          <span key={i} className={styles.heroSubLine}>
-            {phrase}
-          </span>
-        ))}
-      </span>
-    </span>
-  );
-}
-
-/* ============================================================
    HERO
    ============================================================ */
-export function DownloadCta({
+function DownloadCta({
   caption,
   size = 'lg',
   versionsLink = true,
@@ -436,8 +400,8 @@ export function DownloadCta({
         <>
           <div className={styles.ctaRow}>
             <Button href={download.href} osIcons size={size} className="vprBtn" onClick={onGetStarted}>
-              <span className="vprLabelDesktop">Download AI VPN</span>
-              <span className="vprLabelMobile">Get Started<ArrowRight /></span>
+              <span className="vprLabelDesktop">Download the AI VPN</span>
+              <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
             </Button>
             <AllVersionsLink />
           </div>
@@ -458,50 +422,15 @@ export function DownloadCta({
 }
 
 /* Hero use switch — three ways in. The desktop app is the default; the CLI
-   and agent paths reuse the commands documented in
-   docs/guides/using-the-api.md and skills/join-buyer/SKILL.md. */
+   path reuses the commands documented in docs/guides/using-the-api.md and
+   the agent path installs skills/join-buyer (also served at /skill.md). */
 export type HeroUse = 'app' | 'cli' | 'agent';
 
 const HERO_USES: {id: HeroUse; label: string}[] = [
-  {id: 'app', label: 'Download the app'},
-  {id: 'cli', label: 'Use it from the CLI'},
-  {id: 'agent', label: 'Use it from an agent'},
+  {id: 'app', label: 'Download the AI VPN'},
+  {id: 'cli', label: 'Install the CLI'},
+  {id: 'agent', label: 'Install the skill'},
 ];
-
-type HeroTermToken = {text: string; cls?: 'tGreen' | 'tOrange' | 'tYellow' | 'tPurple' | 'tBlue' | 'tWhite' | 'tComment'};
-type HeroTermLine = {kind: 'comment' | 'cmd' | 'out'; tokens: HeroTermToken[]};
-
-const cm = (text: string): HeroTermLine => ({kind: 'comment', tokens: [{text, cls: 'tComment'}]});
-const out = (text: string): HeroTermLine => ({kind: 'out', tokens: [{text, cls: 'tComment'}]});
-const cmd = (...tokens: HeroTermToken[]): HeroTermLine => ({kind: 'cmd', tokens});
-const sp = {text: ' '};
-
-/* Same palette as the TerminalCard in the localhost section: purple binary,
-   blue subcommand / URL, yellow flag, orange package / model, green string. */
-const HERO_CLI_LINES: HeroTermLine[] = [
-  cm('# Install the CLI'),
-  cmd({text: 'npm', cls: 'tPurple'}, sp, {text: 'install', cls: 'tBlue'}, sp, {text: '-g', cls: 'tYellow'}, sp, {text: '@antseed/cli', cls: 'tOrange'}),
-  cm('# Start your local endpoint'),
-  cmd({text: 'antseed', cls: 'tPurple'}, sp, {text: 'buyer start', cls: 'tBlue'}),
-  out('→ localhost:8377'),
-];
-
-const HERO_CLI_STEPS = [
-  {label: 'Connect', lines: HERO_CLI_LINES},
-  {label: 'Discover', lines: [
-    cm('# Find available models'),
-    cmd({text: 'curl', cls: 'tPurple'}, {text: ' -s \\\n  localhost:8377/v1/models', cls: 'tBlue'}),
-    cm('# One endpoint. Your choice.'),
-  ]},
-  {label: 'Track usage', lines: [
-    cm('# Inspect tokens and spend'),
-    cmd({text: 'antseed', cls: 'tPurple'}, sp, {text: 'buyer metering', cls: 'tBlue'}),
-    cm('# Fund access to paid models'),
-    cmd({text: 'antseed', cls: 'tPurple'}, sp, {text: 'buyer deposit', cls: 'tBlue'}),
-  ]},
-];
-
-const JOIN_BUYER_SKILL_URL = 'https://github.com/AntSeed/antseed/tree/main/skills/join-buyer';
 
 function useCopy(text: string) {
   const [copied, setCopied] = useState(false);
@@ -519,68 +448,6 @@ function useCopy(text: string) {
     }
   };
   return {copied, copy};
-}
-
-function CopyButton({text, label = 'Copy'}: {text: string; label?: string}) {
-  const {copied, copy} = useCopy(text);
-  return (
-    <button type="button" className={styles.useCopyBtn} onClick={copy} aria-live="polite">
-      {copied ? 'Copied' : label}
-    </button>
-  );
-}
-
-/** Typed terminal demo; copying always includes the complete command script. */
-function HeroTerminal({lines, footer}: {lines: HeroTermLine[]; footer?: ReactNode}) {
-  const total = lines.reduce((n, l) => n + l.tokens.reduce((s, t) => s + t.text.length, 0), 0);
-  const [visible, setVisible] = useState(0);
-  useEffect(() => {
-    if (window.matchMedia('(prefers-reduced-motion: reduce)').matches) {
-      setVisible(total);
-      return;
-    }
-    const timer = window.setInterval(() => setVisible(n => {
-      if (n >= total) window.clearInterval(timer);
-      return Math.min(total, n + 4);
-    }), 24);
-    return () => window.clearInterval(timer);
-  }, [total]);
-  let position = 0;
-  const script = HERO_CLI_STEPS.flatMap(step => step.lines)
-    .filter((l) => l.kind === 'cmd')
-    .map((l) => l.tokens.map((t) => t.text).join(''))
-    .join('\n');
-  return (
-    <div className={`${styles.terminal} ${styles.heroTerminal}`}>
-      <div className={styles.terminalBar}>
-        <span className={styles.tDots}>
-          <i style={{background: '#EF4444'}} />
-          <i style={{background: '#F59E0B'}} />
-          <i style={{background: '#676663'}} />
-        </span>
-        <span className={styles.terminalStatus}>Use it from the CLI</span>
-        <CopyButton text={script} label="Copy all" />
-      </div>
-      <pre className={styles.heroTerminalBody}>
-        {lines.map((l, i) => {
-          const start = position;
-          position += l.tokens.reduce((n, t) => n + t.text.length, 0);
-          if (visible <= start) return null;
-          let tokenPosition = start;
-          return <span key={i}>
-            {l.kind === 'cmd' && <span className={styles.tGreen}>$ </span>}
-            {l.tokens.map((t, j) => {
-              const count = Math.max(0, Math.min(t.text.length, visible - tokenPosition));
-              tokenPosition += t.text.length;
-              return <span key={j} className={t.cls ? styles[t.cls] : undefined}>{t.text.slice(0, count)}</span>;
-            })}
-            {'\n'}
-          </span>;
-        })}
-      </pre>
-      {footer}
-    </div>
-  );
 }
 
 function readUseParam(): HeroUse | null {
@@ -623,20 +490,40 @@ export function HeroCliVisual({active = true}: {active?: boolean}) {
   }, [active]);
   return (
     <div className={`${ag.card} ${!active ? ag.paused : ''}`}>
-      <div className={ag.top}><span><i /> Running on localhost.</span><small>:8377</small></div>
+      <div className={ag.top}>
+        <span><i /> Running on localhost.</span>
+        <small>:8377</small>
+      </div>
       <div className={`${ag.scene} ${cli.scene}`}>
         <div className={cli.terminal}>
           <div className={cli.bar}>
-            <span className={cli.dots}><i style={{background: '#EF4444'}} /><i style={{background: '#F59E0B'}} /><i style={{background: '#676663'}} /></span>
-            <span className={cli.barTitle}>Use it from the CLI</span>
-            <button type="button" className={cli.copy} onClick={all.copy} aria-live="polite">{all.copied ? 'Copied' : 'Copy commands'}</button>
+            <span className={cli.dots}>
+              <i style={{background: '#EF4444'}} />
+              <i style={{background: '#F59E0B'}} />
+              <i style={{background: '#676663'}} />
+            </span>
+            <span className={cli.barTitle}>Antseed CLI</span>
+            <button type="button" className={cli.copy} onClick={all.copy} aria-live="polite">
+              {all.copied ? 'Copied' : 'Copy commands'}
+            </button>
           </div>
           <pre className={cli.body}>
-            {CLI_LINES.map((line, i) => <span key={i}>{line.map((t, j) => <span key={j} className={cli[t.cls]}>{t.text}</span>)}{'\n'}</span>)}
+            {CLI_LINES.map((line, i) => (
+              <span key={i}>
+                {line.map((t, j) => <span key={j} className={cli[t.cls]}>{t.text}</span>)}
+                {'\n'}
+              </span>
+            ))}
           </pre>
         </div>
       </div>
-      <div className={ag.activity}><span className={ag.indicator} /><span key={step} className={ag.activityText}>{CLI_ACTIVITY[step]}</span><span className={ag.steps}>{CLI_ACTIVITY.map((_, i) => <i key={i} className={step === i ? ag.current : ''} />)}</span></div>
+      <div className={ag.activity}>
+        <span className={ag.indicator} />
+        <span key={step} className={ag.activityText}>{CLI_ACTIVITY[step]}</span>
+        <span className={ag.steps}>
+          {CLI_ACTIVITY.map((_, i) => <i key={i} className={step === i ? ag.current : ''} />)}
+        </span>
+      </div>
     </div>
   );
 }
@@ -661,6 +548,16 @@ export function HeroUseSwitch({use, setUse}: {use: HeroUse; setUse: (value: Hero
   );
 }
 
+/** One CTA pane per hero use; only the active one is visible and focusable. */
+function HeroCtaPane({id, use, children}: {id: HeroUse; use: HeroUse; children: ReactNode}) {
+  const active = use === id;
+  return (
+    <div className={styles.heroCtaPane} aria-hidden={!active} inert={!active} data-active={active}>
+      {children}
+    </div>
+  );
+}
+
 export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setUse: (value: HeroUse) => void; showSwitch?: boolean}) {
   // ?use=cli / ?use=agent preselects a path (docs and social links). Read after
   // mount so server and client render the same default.
@@ -672,17 +569,17 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
     <div className={styles.ctaBlock}>
       {showSwitch && <HeroUseSwitch use={use} setUse={setUse} />}
       <div className={styles.heroCtaStack}>
-        <div className={styles.heroCtaPane} aria-hidden={use !== 'app'} inert={use !== 'app'} data-active={use === 'app'}>
+        <HeroCtaPane id="app" use={use}>
           <DownloadCta caption="No signup required" />
-        </div>
-        <div className={styles.heroCtaPane} aria-hidden={use !== 'cli'} inert={use !== 'cli'} data-active={use === 'cli'}>
-          <Button to="/docs/guides/using-the-api" size="lg" arrow>Set up the CLI</Button>
-          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Mac, Windows, Linux, or your server.</span>
-        </div>
-        <div className={styles.heroCtaPane} aria-hidden={use !== 'agent'} inert={use !== 'agent'} data-active={use === 'agent'}>
-          <CommandChip command="gh skill install AntSeed/antseed join-buyer" />
-          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Install one skill. Let your agent take it from here.</span>
-        </div>
+        </HeroCtaPane>
+        <HeroCtaPane id="cli" use={use}>
+          <Button to="/docs/install" size="lg" arrow>Install the CLI</Button>
+          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Mac, Windows, Linux, or your server. No account.</span>
+        </HeroCtaPane>
+        <HeroCtaPane id="agent" use={use}>
+          <SkillChip />
+          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Give your agent the skill. It takes it from there.</span>
+        </HeroCtaPane>
       </div>
     </div>
   );
@@ -693,7 +590,7 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
    hand-maintained: the model directory lives in the network DHT and has
    no public API yet. */
 
-export const HERO_MODELS_STAT = {value: '700+', label: 'Models', accent: true};
+const HERO_MODELS_STAT = {value: '700+', label: 'Models', accent: true};
 
 /** Tokens / revenue / providers / models, streamed from Antscan. */
 export function HeroStatsRow() {
@@ -715,34 +612,5 @@ export function HeroStatsRow() {
         </div>
       ))}
     </dl>
-  );
-}
-
-/** The original centred hero: title, rotating line, CTA, full demo scene, stats. */
-export function StackedHero({
-  title,
-  phrases,
-  caption,
-}: {
-  title: ReactNode;
-  phrases?: string[];
-  caption?: string;
-}) {
-  const demoRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef(0);
-  const shutdownRef = useRef(0);
-  return (
-    <header className={styles.hero}>
-      <HeroDotCanvas frameRef={frameRef} shutdownRef={shutdownRef} originRef={demoRef} />
-      <div className={styles.heroInner}>
-        <h1 className={styles.heroTitle}>{title}</h1>
-        <RotatingSub phrases={phrases} />
-        <DownloadCta caption={caption} />
-        <div className={styles.demoFrame} ref={demoRef}>
-          <HeroDemo frameRef={frameRef} shutdownRef={shutdownRef} />
-        </div>
-        <HeroStatsRow />
-      </div>
-    </header>
   );
 }

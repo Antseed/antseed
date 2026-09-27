@@ -1,8 +1,8 @@
+import type {ReactNode} from 'react';
 import styles from '../pages/index.module.css';
 import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
 import {AllVersionsLink} from '../lib/AllVersionsLink';
 import {useMobileGetStarted} from '../lib/useMobileGetStarted';
-import type {ReactNode} from 'react';
 import {Button, Reveal, ArrowRight} from './ui';
 
 /** The ink closing band from the homepage, shared with /network. */
@@ -48,8 +48,8 @@ function FinalCtaButton() {
   const onGetStarted = useMobileGetStarted();
   return (
     <Button href={download.href} variant="white" size="lg" osIcons className="vprBtn" onClick={onGetStarted}>
-      <span className="vprLabelDesktop">Download AI VPN</span>
-      <span className="vprLabelMobile">Get Started<ArrowRight /></span>
+      <span className="vprLabelDesktop">Download the AI VPN</span>
+      <span className="vprLabelMobile">Get the AI VPN<ArrowRight /></span>
     </Button>
   );
 }
