@@ -14,7 +14,7 @@ The network uses the BitTorrent Mainline DHT (BEP 5) as a decentralised director
 
 ### Topic Hashing
 
-Sellers announce a small fixed set of topics on the DHT — one subnet, the wildcard, the per-peer topic, and any capability topics. Service-level topics were intentionally removed: the signed metadata document carries the full service catalog (`providers[].services`, pricing, categories, protocols), so service filtering is metadata-driven and the announce cycle stays O(1) in the seller's service count regardless of how many services a provider exposes.
+Sellers announce a small set of topics on the DHT: one subnet, the wildcard, the per-peer topic, and any configured capability topics. Service-level topics were intentionally removed: the signed metadata document carries the full service catalog (`providers[].services`, pricing, categories, protocols), so service filtering is metadata-driven and the announce cycle stays O(1) in the seller's service count regardless of how many services a provider exposes.
 
 ```
 ANTSEED_WILDCARD_TOPIC           = "antseed:*"
@@ -387,13 +387,16 @@ All peers returned by a DHT lookup are resolved in parallel, so a single slow or
 The `PeerLookup` class orchestrates the full discovery flow:
 
 1. Build lookup topic(s):
-   - all-peer lookup: `SHA1(subnetTopic(i))` for every subnet, plus `SHA1(ANTSEED_WILDCARD_TOPIC)` as a transition fallback
-   - service "lookup": there is no DHT-level service lookup. Service filtering happens against the signed metadata returned by `findAll()` — see `AntseedNode.discoverPeers(service)`.
+   - all-peer lookup: `SHA1(ANTSEED_WILDCARD_TOPIC)` first, then `SHA1(subnetTopic(i))` for each subnet sequentially
+   - service "lookup": there is no DHT-level service lookup. Service filtering happens against the signed metadata returned by `findAll()`. See `AntseedNode.discoverPeers(service)`.
    - capability lookup: `SHA1(capabilityTopic(capability[, name]))`
    - per-peer lookup (`findByPeerId`): `SHA1(peerTopic(peerId))`
 2. Query the DHT for the topic hash(es) to obtain `{host, port}` peer endpoints.
-   `DHTNode.lookupMany(hashes)` shares one temporary `peer` listener across all hashes so the 17-way subnet fan-out doesn't trip Node's default EventEmitter listener cap.
-   Per-infohash lookup failures are absorbed (return zero endpoints for that hash) so a misbehaving subnet does not abort the whole enumeration.
+   General enumeration calls `DHTNode.lookup()` for the wildcard, then each subnet
+   in sequence. A configured foreground budget limits how many subnets are
+   attempted; the next scan resumes from the rotating subnet cursor. Background
+   `findAllExhaustive()` completes a full sweep and can emit incremental results.
+   Endpoints are deduplicated by `host:port` before metadata resolution.
 3. For each peer (up to `maxResults`):
    a. Fetch metadata via the configured `MetadataResolver`.
    b. If `requireValidSignature` is `true`, verify the secp256k1 signature over the encoded body using ecrecover and compare the recovered address to the peer's `peerId`. Discard peers with invalid signatures.
@@ -424,7 +427,7 @@ The `PeerAnnouncer` class handles the seller-side announcement lifecycle:
 5. Sign the body with the seller's secp256k1 private key (via EIP-191 personal_sign).
 6. Announce DHT topics in parallel at the configured signaling port (constant in service count):
    - subnet topic (`subnetTopic(subnetOf(peerId))`)
-   - wildcard topic (`ANTSEED_WILDCARD_TOPIC`) — kept during the subnet rollout so older buyers still find this peer
+   - wildcard topic (`ANTSEED_WILDCARD_TOPIC`), kept during the subnet rollout so older buyers still find this peer
    - per-peer topic (`peerTopic(peerId)`)
    - capability topics when offerings are configured (one per offering plus one per unique capability name)
 

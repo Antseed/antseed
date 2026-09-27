@@ -1,71 +1,14 @@
-import {useState, useEffect, useRef, type JSX} from 'react';
+import {useEffect, useRef, useState, type JSX} from 'react';
 import Layout from '@theme/Layout';
 import styles from './ants-token.module.css';
-import {useLatestDesktopDownload} from '../lib/useLatestDesktopDownload';
-import {useMobileGetStarted} from '../lib/useMobileGetStarted';
-import {
-  Button,
-  FinalCta,
-  PageHero,
-  Reveal,
-  Section,
-  SectionHeader,
-  StatTile,
-} from '../components/ui';
+import {Button, FinalCta, Reveal, Section, SectionHeader, StatTile} from '../components/ui';
+import {TokenHeroArt} from '../components/TokenHeroArt';
+import {useAntsSupply} from '../lib/useAntsSupply';
+import {ANTS_BASESCAN_URL, INITIAL_EMISSION, MAX_SUPPLY, useEpochCountdown} from '../lib/useEpochCountdown';
 
 const STATS_URL = 'https://antseedstats.com/network';
-const ANTS_TOKEN_ADDRESS = '0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263';
-const ANTS_BASESCAN_URL = `https://basescan.org/token/${ANTS_TOKEN_ADDRESS}`;
 
-/* ── Epoch countdown ───────────────────────────────────────────── */
-const EPOCH_DURATION = 604_800; // 1 week in seconds
-
-// Genesis timestamp from AntseedEmissions contract on Base mainnet (block 44469557)
-// Read via: eth_call genesis() on 0xF13bE52c4A3afC6AE29536f073588d01A0564088
-const GENESIS: number = 1775728461; // 2026-04-09T09:54:21Z
-
-function useEpochCountdown() {
-  // Start with a deterministic value so SSR and the first client render match.
-  // The real `now` is filled in after mount to avoid React hydration mismatches.
-  const [now, setNow] = useState<number | null>(null);
-
-  useEffect(() => {
-    setNow(Math.floor(Date.now() / 1000));
-    const id = setInterval(() => setNow(Math.floor(Date.now() / 1000)), 1000);
-    return () => clearInterval(id);
-  }, []);
-
-  if (now === null) {
-    // Pre-hydration / SSR: render a stable placeholder identical on server and client.
-    return { epoch: 0, timeLeft: '-', started: false };
-  }
-
-  if (GENESIS === 0) {
-    return { epoch: 0, timeLeft: 'Not started', started: false };
-  }
-
-  const elapsed = now - GENESIS;
-  const epoch = Math.floor(elapsed / EPOCH_DURATION);
-  const epochEnd = GENESIS + (epoch + 1) * EPOCH_DURATION;
-  const remaining = Math.max(0, epochEnd - now);
-
-  const d = Math.floor(remaining / 86400);
-  const h = Math.floor((remaining % 86400) / 3600);
-  const m = Math.floor((remaining % 3600) / 60);
-  const s = remaining % 60;
-
-  const timeLeft = d > 0
-    ? `${d}d ${h}h ${m}m`
-    : h > 0
-      ? `${h}h ${m}m ${s}s`
-      : `${m}m ${s}s`;
-
-  return { epoch, timeLeft, started: true };
-}
-
-/* ── Token constants ───────────────────────────────────────────── */
-const MAX_SUPPLY = 1_040_000_000;
-const INITIAL_EMISSION = 5_000_000;
+const fmtM = (n: number) => `${(n / 1e6).toLocaleString('en-US', {maximumFractionDigits: 1})}M`;
 
 /* ── SUPPLY BAR ────────────────────────────────────────────────── */
 function SupplyBar({totalSupply}: {totalSupply: number}) {
@@ -76,7 +19,7 @@ function SupplyBar({totalSupply}: {totalSupply: number}) {
         <div className={styles.supplyBarFill} style={{width: `${Math.max(ratio, 0.3)}%`}} />
       </div>
       <div className={styles.supplyBarLabels}>
-        <span>{totalSupply === 0 ? '0' : `${(totalSupply / 1e6).toFixed(1)}M`} current supply</span>
+        <span>{totalSupply === 0 ? '0' : fmtM(totalSupply)} current supply</span>
         <span>{(MAX_SUPPLY / 1e6).toFixed(0)}M max</span>
       </div>
     </div>
@@ -112,7 +55,7 @@ function useInView(threshold = 0.35) {
   return {ref, inView};
 }
 
-/* ── SELLER POOLS — how recognition is weighted ────────────────── */
+/* ── PROVIDER POOLS — how recognition is weighted ──────────────── */
 function PoolWeightCard() {
   return (
     <div className={styles.poolCard}>
@@ -129,7 +72,7 @@ function PoolWeightCard() {
         <span className={styles.poolOp} aria-hidden="true">×</span>
         <div className={styles.poolTerm}>
           <strong>Stake weight</strong>
-          <em>ANTS locked behind the seller&apos;s identity</em>
+          <em>ANTS locked behind the provider&apos;s identity</em>
         </div>
         <span className={styles.poolOp} aria-hidden="true">=</span>
         <div className={`${styles.poolTerm} ${styles.poolTermResult}`}>
@@ -143,7 +86,7 @@ function PoolWeightCard() {
 
 /* ── VERIFICATIONS — ResponseAuth receipt visual ───────────────── */
 const RECEIPT_CHECKS = [
-  {label: 'signature', value: 'seller key'},
+  {label: 'signature', value: 'provider key'},
   {label: 'request hash', value: 'committed'},
   {label: 'response hash', value: 'committed'},
   {label: 'fingerprint', value: 'matches label'},
@@ -163,7 +106,7 @@ function VerifyReceipt() {
         <span className={styles.receiptTagline}>EVIDENCE · PER RESPONSE</span>
       </div>
       <div className={styles.receiptMeta}>
-        <span>seller</span>
+        <span>provider</span>
         <span>0x3fA4…9c2b</span>
       </div>
       <div className={styles.receiptMeta}>
@@ -171,10 +114,7 @@ function VerifyReceipt() {
         <span>#48219 · deepseek-v3</span>
       </div>
       {RECEIPT_CHECKS.map((row, i) => (
-        <div
-          key={row.label}
-          className={styles.receiptCheck}
-          style={{transitionDelay: `${250 + i * 180}ms`}}>
+        <div key={row.label} className={styles.receiptCheck} style={{transitionDelay: `${250 + i * 180}ms`}}>
           <span className={styles.receiptLabel}>{row.label}</span>
           <span className={styles.receiptValue}>{row.value}</span>
           <span className={styles.receiptOk} aria-hidden="true">✓</span>
@@ -190,43 +130,48 @@ function VerifyReceipt() {
 
 /* ── MAIN PAGE ─────────────────────────────────────────────────── */
 export default function AntsToken(): JSX.Element {
-  const download = useLatestDesktopDownload();
-  const onGetStarted = useMobileGetStarted();
-  const {epoch, timeLeft} = useEpochCountdown();
+  const {epoch, timeLeft, started} = useEpochCountdown();
+  const live = useAntsSupply();
 
-  const totalSupply = epoch * INITIAL_EMISSION;
+  // Real supply from the token contract on Base; the emission schedule until it loads.
+  const totalSupply = live ? live.total : epoch * INITIAL_EMISSION;
+  const supplyReady = started || live !== null;
 
   return (
     <Layout
       title="ANTS Token"
       description="ANTS is the native token of the Antseed network and its trust and reputation layer."
     >
-      <PageHero
-        accent="clay"
-        kicker={
-          <a href={ANTS_BASESCAN_URL} target="_blank" rel="noopener noreferrer" className={styles.heroKicker}>
-            $ANTS
-          </a>
-        }
-        title={
-          <>
-            The native token of<br />
-            <em>the Antseed network.</em>
-          </>
-        }
-        badge={
-          <span className={styles.statusPill}>
-            <span className={styles.statusDot} aria-hidden="true" />
-            Tokens restricted
-          </span>
-        }
-        lead="ANTS is the native token of Antseed and the trust and reputation layer of the network: real, payment-backed usage and locked ANTS behind seller identities turn open participation into reputation buyers can verify.">
-        <Button href={download.href} variant="clay" arrow onClick={onGetStarted}>
-          <span className="vprLabelDesktop">Download AI VPN</span>
-          <span className="vprLabelMobile">Get Started</span>
-        </Button>
-        <Button to="/docs/lightpaper" variant="ghost">Lightpaper</Button>
-      </PageHero>
+      {/* ── HERO: copy left, live supply panel right ── */}
+      <header className={styles.hero}>
+        <div className={styles.heroInner}>
+          <div className={styles.heroCopy}>
+            <a href={ANTS_BASESCAN_URL} target="_blank" rel="noopener noreferrer" className={styles.heroKicker}>
+              $ANTS
+            </a>
+            <h1 className={styles.heroTitle}>
+              The native token of<br />
+              <em>the Antseed network.</em>
+            </h1>
+            <span className={styles.statusPill}>
+              <span className={styles.statusDot} aria-hidden="true" />
+              Tokens restricted
+            </span>
+            <p className={styles.heroSub}>
+              ANTS is the native token of Antseed and the trust and reputation layer of the network:
+              real, payment-backed usage and locked ANTS behind provider identities turn open
+              participation into reputation buyers can verify.
+            </p>
+            <div className={styles.heroCtas}>
+              <Button to="/docs/lightpaper" arrow>Read the lightpaper</Button>
+              <Button to="/network" variant="ghost">How the network works</Button>
+            </div>
+          </div>
+          <div className={styles.heroDemo}>
+            <TokenHeroArt />
+          </div>
+        </div>
+      </header>
 
       {/* ── TOKEN OVERVIEW ── */}
       <Section tone="tinted">
@@ -236,35 +181,30 @@ export default function AntsToken(): JSX.Element {
             lead="1.04 billion hard cap. No minting beyond emissions. No admin mint function."
           />
         </Reveal>
-
         <Reveal>
           <SupplyBar totalSupply={totalSupply} />
         </Reveal>
-
         <Reveal className={styles.statsGrid} delay={80}>
-          <StatTile value={`${totalSupply / 1e6}M`} label="Current supply" />
-          <StatTile
-            value={`${Math.round((totalSupply / MAX_SUPPLY) * 10000) / 100}%`}
-            label="Available"
-          />
-          <StatTile value={`Epoch ${epoch}`} label="Current epoch" />
+          <StatTile value={supplyReady ? fmtM(totalSupply) : '–'} label="Current supply" />
+          <StatTile value={supplyReady ? `${Math.round((totalSupply / MAX_SUPPLY) * 10000) / 100}%` : '–'} label="Available" />
+          <StatTile value={started ? `Epoch ${epoch}` : '–'} label="Current epoch" />
           <StatTile value={timeLeft} label="Until next epoch" />
         </Reveal>
       </Section>
 
-      {/* ── SELLER POOLS ── */}
+      {/* ── PROVIDER POOLS ── */}
       <Section>
         <div className={styles.poolGrid}>
           <Reveal className={styles.splitCopy}>
-            <p className={styles.splitKicker}>Seller pools</p>
+            <p className={styles.splitKicker}>Provider pools</p>
             <h2 className={styles.splitTitle}>
               Not all volume<br />
               <em>counts the same.</em>
             </h2>
             <p className={styles.splitLead}>
-              Seller pools are the reputation layer of the network. Settled, buyer-authorized
+              Provider pools are the reputation layer of the network. Settled, buyer-authorized
               volume becomes recognized usage - and how much of it is recognized depends on the
-              ANTS locked behind the seller&apos;s identity.
+              ANTS locked behind the provider&apos;s identity.
             </p>
             <ul className={styles.splitPoints}>
               <li>
@@ -282,7 +222,7 @@ export default function AntsToken(): JSX.Element {
             </ul>
             <div className={styles.splitCta}>
               <Button to="/blog/seller-pools-reputation-tokenomics" variant="ghost" arrow>
-                How seller pools work
+                How provider pools work
               </Button>
             </div>
           </Reveal>
@@ -296,13 +236,13 @@ export default function AntsToken(): JSX.Element {
       <Section tone="ink" className={styles.verifySection}>
         <div className={styles.verifyGrid}>
           <Reveal className={`${styles.splitCopy} ${styles.verifyCopy}`}>
-            <p className={styles.splitKicker}>Verifications</p>
+            <p className={`${styles.splitKicker} ${styles.verifyKicker}`}>Verifications</p>
             <h2 className={`${styles.splitTitle} ${styles.verifyTitle}`}>
               Evidence,<br />not labels.
             </h2>
             <p className={`${styles.splitLead} ${styles.verifyLead}`}>
               A model name on an endpoint proves nothing. On Antseed, evidence travels with every
-              response - and verification decides how much a seller&apos;s usage is worth.
+              response - and verification decides how much a provider&apos;s usage is worth.
             </p>
             <ul className={`${styles.splitPoints} ${styles.verifyPoints}`}>
               <li>
@@ -315,7 +255,7 @@ export default function AntsToken(): JSX.Element {
               </li>
               <li>
                 <span className={styles.verifyMark} aria-hidden="true">✓</span>
-                <span><strong>Verification feeds policy:</strong> how much of a seller&apos;s settled volume is recognized can depend on how it verifies.</span>
+                <span><strong>Verification feeds policy:</strong> how much of a provider&apos;s settled volume is recognized can depend on how it verifies.</span>
               </li>
             </ul>
             <div className={styles.splitCta}>
@@ -333,19 +273,15 @@ export default function AntsToken(): JSX.Element {
       {/* ── CLOSING CTA ── */}
       <FinalCta
         title="Help build the network"
-        sub="Download the AI VPN, use the network for real AI work, run a provider, and help improve the open-source protocol."
+        sub="Use the network for real AI work, run a provider, and help improve the open-source protocol."
         note={
           <>
-            <a href="/docs/lightpaper">Lightpaper</a>
-            <a href="/docs/payments">Payment protocol</a>
-            <a href={STATS_URL} target="_blank" rel="noopener noreferrer">Network dashboard</a>
+            <a href="/docs/lightpaper">Read the lightpaper</a>
+            <a href="/docs/payments">Read the payment protocol</a>
+            <a href={STATS_URL} target="_blank" rel="noopener noreferrer">Live prices</a>
           </>
         }>
-        <Button href={download.href} variant="white" size="lg" arrow onClick={onGetStarted}>
-          <span className="vprLabelDesktop">Download AI VPN</span>
-          <span className="vprLabelMobile">Get Started</span>
-        </Button>
-        <Button to="/providers" variant="light" size="lg">Become a provider</Button>
+        <Button to="/providers" variant="white" size="lg" arrow>Become a provider</Button>
       </FinalCta>
     </Layout>
   );

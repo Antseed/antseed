@@ -1,7 +1,7 @@
 /**
  * Single source of truth for Antseed integration entries.
  *
- * Both `/integrations` (the public hub) and `/skill.md` (the agent-readable
+ * Both `/integrations` (the public hub) and `/llms-connect.txt` (the crawler-readable
  * guide) are generated from this file. The desktop app's "External clients"
  * view should also migrate to this list — see TODO in
  * apps/desktop/src/renderer/ui/components/views/ExternalClientsView.tsx.
@@ -134,7 +134,7 @@ export type Integration = {
   caveats?: string[];
   /** External links: upstream docs, our skill, partner page. */
   links?: { label: string; href: string }[];
-  /** Agent-friendly machine summary used by /skill.md. */
+  /** Agent-friendly machine summary used by /llms-connect.txt. */
   agentSummary?: string;
 };
 
@@ -1405,23 +1405,8 @@ export const FORMAT_LABELS: Record<IntegrationFormat, string> = {
   multi: 'Multi-format',
 };
 
-/** Short variants used on small surfaces like cards. */
-export const FORMAT_SHORT: Record<IntegrationFormat, string> = {
-  'anthropic-messages': 'Anthropic',
-  'openai-chat': 'OpenAI',
-  'openai-responses': 'OpenAI Resp',
-  multi: 'Multi',
-};
-
 export const STATUS_LABELS: Record<IntegrationStatus, string> = {
   verified: 'Verified',
   community: 'Community',
   'coming-soon': 'Coming soon',
 };
-
-export function bySlug(slug: string): Integration | undefined {
-  return integrations.find((i) => i.slug === slug);
-}
-
-export const ANT_PROXY_PORT = ANT_PORT;
-export const ANT_PROXY_URL = `http://localhost:${ANT_PORT}`;
