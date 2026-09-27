@@ -1,57 +1,116 @@
 /* ============================================================
-   $ANTS — page-specific pieces only. Rhythm and components come
-   from components/ui; clay is the accent here because this page
-   is economics (per the brand contract).
+   $ANTS — page-specific pieces. Rhythm, buttons, section headers
+   and the closing band come from components/ui and the homepage
+   stylesheet. Green is the site accent; the token page follows it.
    ============================================================ */
 
-/* ---------- hero extras ---------- */
+/* ---- hero: copy left, live ledger right (same grid as /agents) ---- */
+.hero {
+  position: relative;
+  overflow: hidden;
+  background: var(--as-soil-1);
+  padding: 138px 16px 145px;
+}
+
+.heroInner {
+  max-width: 1120px;
+  margin: 0 auto;
+  display: grid;
+  grid-template-columns: minmax(0, 1fr) clamp(360px, 44%, 520px);
+  column-gap: 48px;
+  align-items: center;
+}
+
+.heroCopy {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+}
+
 .heroKicker {
   font-family: var(--as-font-data);
   font-size: 12px;
+  line-height: 20px;
   font-weight: 500;
   letter-spacing: 0.14em;
-  color: var(--as-clay) !important;
+  text-transform: uppercase;
+  color: var(--as-green-deep) !important;
   text-decoration: none !important;
+  margin: 0 0 14px;
 }
 
 .heroKicker:hover {
   opacity: 0.72;
 }
 
+.heroTitle {
+  font-family: var(--as-font-display);
+  font-weight: 600;
+  font-size: clamp(36px, 3.6vw, 52px);
+  line-height: 1.1;
+  letter-spacing: -1px;
+  color: var(--as-heading);
+  margin: 0 0 16px;
+  max-width: 18ch;
+}
+
+.heroSub {
+  max-width: 46ch;
+  margin: 0 0 24px;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 500;
+  color: var(--as-text);
+}
+
+.heroCtas {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 12px;
+  align-items: center;
+}
+
+.heroTitle em {
+  font-style: normal;
+  color: var(--as-green-deep);
+}
+
 .statusPill {
   display: inline-flex;
   align-items: center;
   gap: 8px;
+  margin: 0 0 18px;
   padding: 4px 12px 4px 8px;
   border-radius: 999px;
-  background: var(--as-clay-dim);
+  background: rgba(16, 185, 129, 0.12);
   font-family: var(--as-font-data);
   font-size: 12px;
   line-height: 20px;
   font-weight: 500;
   letter-spacing: 0.08em;
   text-transform: uppercase;
-  color: var(--as-clay);
+  color: var(--as-green-deep);
 }
 
 .statusDot {
   width: 8px;
   height: 8px;
   border-radius: 50%;
-  background: var(--as-clay);
-  animation: pulseClay 2s ease-in-out infinite;
+  background: var(--as-green);
+  animation: pulseDot 2s ease-in-out infinite;
 }
 
-@keyframes pulseClay {
-  0%, 100% { box-shadow: 0 0 0 0 rgba(161, 98, 7, 0.3); }
-  50% { box-shadow: 0 0 0 5px rgba(161, 98, 7, 0); }
+@keyframes pulseDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }
 }
 
-@media (prefers-reduced-motion: reduce) {
-  .statusDot { animation: none; }
+.heroDemo {
+  justify-self: end;
+  width: 100%;
 }
 
-/* ---------- supply bar ---------- */
+/* ---- supply ---- */
 .supplyBar {
   max-width: 840px;
   margin: 0 auto 16px;
@@ -60,7 +119,7 @@
 .supplyBarTrack {
   height: 12px;
   border-radius: 999px;
-  background: var(--as-clay-dim);
+  background: var(--as-soil-1);
   overflow: hidden;
 }
 
@@ -68,7 +127,7 @@
   height: 100%;
   min-width: 4px;
   border-radius: 999px;
-  background: var(--as-clay);
+  background: var(--as-green);
   transition: width 0.6s var(--as-ease, ease);
 }
 
@@ -82,7 +141,6 @@
   color: var(--as-text-3);
 }
 
-/* ---------- grids ---------- */
 .statsGrid {
   display: grid;
   grid-template-columns: repeat(4, minmax(0, 1fr));
@@ -90,9 +148,7 @@
 }
 
 /* ============================================================
-   SPLIT SECTIONS — seller pools (light) / verifications (ink).
-   Copy column follows the homepage's sell/localhost voice:
-   kicker, left display title, lead, marked points, CTA.
+   SPLIT SECTIONS — provider pools (tinted) / verification (ink)
    ============================================================ */
 .poolGrid {
   display: grid;
@@ -108,7 +164,6 @@
   align-items: center;
 }
 
-/* Receipt sits left on desktop, below the copy when stacked. */
 .verifyCopy { order: 2; }
 .verifyCardCol { order: 1; }
 
@@ -122,7 +177,7 @@
   font-weight: 500;
   letter-spacing: 0.14em;
   text-transform: uppercase;
-  color: var(--as-clay);
+  color: var(--as-green-deep);
   margin: 0 0 12px;
 }
 
@@ -130,7 +185,7 @@
   font-family: var(--as-font-display);
   font-size: clamp(32px, 3.4vw, 44px);
   line-height: 1.125;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -1px;
   color: var(--as-heading);
   margin: 0 0 16px;
@@ -138,12 +193,12 @@
 
 .splitTitle em {
   font-style: normal;
-  color: var(--as-clay);
+  color: var(--as-green-deep);
 }
 
 .splitLead {
-  font-size: 14px;
-  line-height: 22px;
+  font-size: 15px;
+  line-height: 23px;
   font-weight: 500;
   color: var(--as-text-2);
   margin: 0 0 20px;
@@ -172,14 +227,13 @@
   font-weight: 600;
 }
 
-/* Clay dash marker — the greendots list line, in economics clay. */
 .splitMark {
   flex-shrink: 0;
   width: 30px;
   height: 6px;
   margin-top: 8px;
   border-radius: 3px;
-  background: repeating-linear-gradient(90deg, var(--as-clay) 0 6px, transparent 6px 10px);
+  background: repeating-linear-gradient(90deg, var(--as-green) 0 6px, transparent 6px 10px);
 }
 
 .splitCta {
@@ -187,11 +241,11 @@
   margin-top: 24px;
 }
 
-/* ---------- pool weight card ---------- */
+/* ---- pool weight card ---- */
 .poolCard {
   position: relative;
   background: var(--as-soil-0);
-  border-radius: 24px;
+  border-radius: 28px;
   padding: 24px;
   overflow: hidden;
 }
@@ -225,8 +279,8 @@
   font-weight: 500;
   letter-spacing: 0.1em;
   text-transform: uppercase;
-  color: var(--as-clay);
-  background: var(--as-clay-dim);
+  color: var(--as-green-deep);
+  background: rgba(16, 185, 129, 0.12);
   border-radius: 999px;
   padding: 4px 10px;
 }
@@ -251,7 +305,7 @@
   display: flex;
   flex-direction: column;
   gap: 2px;
-  background: var(--as-soil-2);
+  background: #fff;
   border: 1px solid var(--as-line);
   border-radius: 16px;
   padding: 16px;
@@ -274,24 +328,26 @@
 }
 
 .poolTermResult {
-  border-color: var(--as-clay);
+  border-color: var(--as-green);
 }
 
 .poolTermResult strong {
-  color: var(--as-clay);
+  color: var(--as-green-deep);
 }
 
-/* ---------- verifications (ink band) ---------- */
-/* Clay dot grid on the void — the darkSection motif, in this
-   page's economics accent. */
+/* ---- verification (ink band) ---- */
 .verifySection::before {
   content: '';
   position: absolute;
   inset: 0;
-  background-image: radial-gradient(var(--as-clay) 1px, transparent 1px);
+  background-image: radial-gradient(var(--as-green) 1px, transparent 1px);
   background-size: 11.34px 11.34px;
   opacity: 0.12;
   pointer-events: none;
+}
+
+.verifyKicker {
+  color: var(--as-live-bright);
 }
 
 .verifyTitle {
@@ -299,7 +355,7 @@
 }
 
 .verifyLead {
-  color: rgba(255, 255, 255, 0.55);
+  color: rgba(255, 255, 255, 0.6);
 }
 
 .verifyPoints li {
@@ -325,8 +381,7 @@
   font-size: 11px;
 }
 
-/* ---------- ResponseAuth receipt ---------- */
-/* Same shell as the homepage terminal: void-deep, hairline, r16. */
+/* ---- ResponseAuth receipt ---- */
 .receipt {
   background: var(--as-void-deep);
   border: 1px solid #676663;
@@ -436,7 +491,7 @@
 }
 
 .receiptResultValue {
-  color: var(--as-clay);
+  color: var(--as-live-bright);
   font-weight: 600;
 }
 
@@ -445,12 +500,39 @@
   .receiptResult {
     transition: none;
   }
+
+  .statusDot {
+    animation: none;
+  }
 }
 
 /* ============================================================
    RESPONSIVE
    ============================================================ */
 @media (max-width: 996px) {
+  .hero {
+    padding: 96px 16px 72px;
+  }
+
+  .heroInner {
+    grid-template-columns: 1fr;
+    row-gap: 40px;
+  }
+
+  .heroCopy {
+    align-items: center;
+    text-align: center;
+  }
+
+  .heroCtas {
+    justify-content: center;
+  }
+
+  .heroDemo {
+    justify-self: center;
+    max-width: 560px;
+  }
+
   .statsGrid {
     grid-template-columns: repeat(2, minmax(0, 1fr));
   }
@@ -474,6 +556,7 @@
   .receipt {
     max-width: 560px;
   }
+
 }
 
 @media (max-width: 640px) {
