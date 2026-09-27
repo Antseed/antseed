@@ -198,9 +198,9 @@ const config: Config = {
   themeConfig: {
     metadata: [
       {name: 'google-site-verification', content: '09pzs5Q9kHdpQSNSBpr0vNh9SMq-T8lzhBgH5Zgm6ug'},
-      {name: 'description', content: 'Run your agents on your terms. Every model, no middleman. Anonymous, best price, works with the tools you already use. Owned by no one.'},
+      {name: 'description', content: 'Run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
       {property: 'og:title', content: 'Run your agents on your terms'},
-      {property: 'og:description', content: 'Antseed lets you run your agents on your terms. Every model, no middleman. Anonymous. Best price. Works with the tools you already use. Owned by no one. Available to everyone.'},
+      {property: 'og:description', content: 'Antseed lets you run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
       {property: 'og:type', content: 'website'},
       {property: 'og:site_name', content: 'Antseed'},
       {name: 'twitter:card', content: 'summary_large_image'},
@@ -253,6 +253,7 @@ const config: Config = {
           ],
         },
         {to: '/providers', label: 'Providers', position: 'left'},
+        {to: '/ecosystem', label: 'Ecosystem', position: 'left'},
         {
           href: 'https://antseedstats.com/network',
           label: 'Live prices',

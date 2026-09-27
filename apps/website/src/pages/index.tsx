@@ -66,8 +66,7 @@ function Hero() {
             {' '}on your terms
           </h1>
           <p className={styles.heroSubStatic}>
-            An open market for AI inference – free models, lower prices on paid models, and control
-            over your usage and&nbsp;privacy.
+            Save on every AI model. No usage limits, no middleman, always&nbsp;anonymous.
           </p>
           <HeroUseCta use={use} setUse={setUse} showSwitch={false} />
         </div>
@@ -243,7 +242,7 @@ const ORG_LD = {
 
 const HOME_TITLE = 'Antseed | The Open Market for AI Inference';
 const HOME_DESCRIPTION =
-  'Run your agents on free models or access paid models at lower prices, with full control over your usage and privacy.';
+  'Run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.';
 
 export default function Home(): JSX.Element {
   return (
