@@ -390,14 +390,11 @@ export interface ReferralView {
   available: boolean;
   /** Share link: antseed.com/?ref=<wallet>. */
   referralUrl: string | null;
-  /** ANTS entitlement recorded for this wallet (base units). */
-  claimable: string;
-  /** Portion of `claimable` the epoch buckets can mint right now (base units). */
+  /** ANTS payable now across claimable epochs (base units). */
   payable: string;
-  /** Referred buyers still owed accrual for at least one finalized epoch. */
-  pendingAccruals: number;
+  /** Epochs with a payable reward, oldest first. */
+  claimableEpochs: number[];
   referredCount: number;
-  rateBps: number;
 }
 
 export interface JobStep { at: number; label: string; hash?: string; }

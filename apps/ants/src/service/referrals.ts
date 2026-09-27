@@ -6,53 +6,32 @@ const REFERRAL_LINK_BASE = 'https://antseed.com/?ref=';
 
 export async function referral(ctx: AntsContext): Promise<ReferralView> {
   const client = ctx.referrals();
-  if (!client) return { available: false, referralUrl: null, claimable: '0', payable: '0', pendingAccruals: 0, referredCount: 0, rateBps: 200 };
-  const fromBlock = ctx.chain.recognizedUsage?.deploymentBlock ?? 0;
-  const [amount, payable, rateBps, referredCount, accruable] = await Promise.all([
-    client.claimable(ctx.address),
-    client.payableAmount(ctx.address),
-    client.referralRateBps(),
+  if (!client) return { available: false, referralUrl: null, payable: '0', claimableEpochs: [], referredCount: 0 };
+  const [referredCount, pending] = await Promise.all([
     client.referredCount(ctx.address),
-    client.accruableBuyers(ctx.address, fromBlock).catch(() => []),
+    client.pendingRewards(ctx.address),
   ]);
   return {
     available: true,
     referralUrl: `${REFERRAL_LINK_BASE}${encodeURIComponent(ctx.address)}`,
-    claimable: amount.toString(),
-    payable: payable.toString(),
-    pendingAccruals: accruable.length,
+    payable: pending.reduce((sum, entry) => sum + entry.amount, 0n).toString(),
+    claimableEpochs: pending.map((entry) => entry.epoch),
     referredCount,
-    rateBps,
   };
 }
 
-/**
- * Accrue every finalized epoch for the wallet's referred buyers, then claim.
- * Accrual is permissionless and idempotent, so running it here means the
- * referrer never depends on a separate weekly job.
- */
+/** Claim every epoch with a payable referral reward for the dashboard wallet. */
 export async function claimReferralRewards(
   ctx: AntsContext,
   report: StepReporter = silentReporter,
-): Promise<{ hash: string | null; accrued: number }> {
+): Promise<{ hash: string; epochs: number[] }> {
   const client = ctx.referrals();
   if (!client) throw new Error('Referrals are not configured for this chain.');
-  const signer = ctx.requireSigner();
-  const fromBlock = ctx.chain.recognizedUsage?.deploymentBlock ?? 0;
-  const accruable = await client.accruableBuyers(ctx.address, fromBlock);
-  for (const [index, entry] of accruable.entries()) {
-    await report(`Accruing referral rewards (${index + 1}/${accruable.length})`);
-    const hash = await client.accrue(signer, entry.buyer, entry.throughEpoch);
-    await report('Referral epoch accrued', hash);
-  }
-  const amount = await client.payableAmount(ctx.address);
-  if (amount === 0n) {
-    if (accruable.length === 0) throw new Error('No referral rewards can be paid from the emission buckets yet.');
-    await report('No payable referral rewards after accrual');
-    return { hash: null, accrued: accruable.length };
-  }
-  await report('Claiming referral rewards');
-  const hash = await client.claim(signer);
+  const pending = await client.pendingRewards(ctx.address);
+  if (pending.length === 0) throw new Error('No referral rewards are payable yet.');
+  const epochs = pending.map((entry) => entry.epoch);
+  await report(`Claiming referral rewards for ${epochs.length} ${epochs.length === 1 ? 'epoch' : 'epochs'}`);
+  const hash = await client.claimEpochs(ctx.requireSigner(), ctx.address, epochs);
   await report('Referral rewards claimed', hash);
-  return { hash, accrued: accruable.length };
+  return { hash, epochs };
 }

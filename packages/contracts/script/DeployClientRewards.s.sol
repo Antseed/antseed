@@ -12,7 +12,7 @@ import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
  * Required env:
  *   DEPLOYER_PRIVATE_KEY
  *   EMISSIONS_GATE
- *   CLIENT_USAGE           — AntseedClientUsage ledger
+ *   ATTRIBUTION_USAGE      — AntseedAttributionUsage ledger
  *   IDENTITY_REGISTRY      — ERC-8004 IdentityRegistry
  *
  * The controller pays nothing until governance registers it as a gate minter
@@ -22,11 +22,11 @@ contract DeployClientRewards is Script {
     function run() external returns (AntseedClientRewards rewards) {
         uint256 deployerPrivateKey = vm.envUint("DEPLOYER_PRIVATE_KEY");
         address gate = vm.envAddress("EMISSIONS_GATE");
-        address clientUsage = vm.envAddress("CLIENT_USAGE");
+        address attributionUsage = vm.envAddress("ATTRIBUTION_USAGE");
         address identityRegistry = vm.envAddress("IDENTITY_REGISTRY");
 
         vm.startBroadcast(deployerPrivateKey);
-        rewards = new AntseedClientRewards(gate, clientUsage, identityRegistry);
+        rewards = new AntseedClientRewards(gate, attributionUsage, identityRegistry);
         vm.stopBroadcast();
 
         console.log("AntseedClientRewards:", address(rewards));

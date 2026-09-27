@@ -4,6 +4,7 @@ pragma solidity ^0.8.24;
 import "forge-std/Test.sol";
 
 import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
+import { AntseedEpochShareRewards } from "../emissions/AntseedEpochShareRewards.sol";
 import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
 
 contract ReferralUsageAccountingMock {
@@ -24,18 +25,6 @@ contract ReferralUsageAccountingMock {
     }
 }
 
-contract ReferralUsageRewardsMock {
-    mapping(address => mapping(uint256 => uint256)) public rewards;
-
-    function setReward(address buyer, uint256 epoch, uint256 amount) external {
-        rewards[buyer][epoch] = amount;
-    }
-
-    function pendingBuyerReward(address buyer, uint256 epoch) external view returns (uint256) {
-        return rewards[buyer][epoch];
-    }
-}
-
 contract ReferralDepositsMock {
     mapping(address => address) public operator;
 
@@ -48,84 +37,82 @@ contract ReferralDepositsMock {
     }
 }
 
+contract ReferrerLedgerMock {
+    mapping(uint256 => mapping(address => uint256)) public referrerEpochPoints;
+    mapping(uint256 => uint256) public totalReferrerPointsByEpoch;
+
+    function credit(uint256 epoch, address referrer, uint256 points) external {
+        referrerEpochPoints[epoch][referrer] += points;
+        totalReferrerPointsByEpoch[epoch] += points;
+    }
+}
+
 contract AntseedReferralsTest is Test {
     address private buyer = address(0xB0B);
     address private referrer = address(0xA11CE);
+    address private otherReferrer = address(0xA11CF);
     address private binder = address(0x57A75);
     address private stranger = address(0xBEEF);
 
     EmissionsGateMock private gate;
     ReferralUsageAccountingMock private accounting;
-    ReferralUsageRewardsMock private rewards;
     ReferralDepositsMock private deposits;
+    ReferrerLedgerMock private ledger;
     AntseedReferrals private referrals;
 
     function setUp() public {
         gate = new EmissionsGateMock();
         accounting = new ReferralUsageAccountingMock();
-        rewards = new ReferralUsageRewardsMock();
         deposits = new ReferralDepositsMock();
-        referrals = new AntseedReferrals(address(gate), address(accounting), address(rewards), address(deposits), binder);
+        ledger = new ReferrerLedgerMock();
+        referrals = new AntseedReferrals(address(gate), address(accounting), address(deposits), address(ledger), binder);
     }
 
-    function _advance(uint256 epoch) private {
-        accounting.setCurrentEpoch(epoch);
-        gate.setCurrentEpoch(epoch);
+    function test_loneReferrerTakesTheWholeBucketAndOthersDiluteIt() public {
+        ledger.credit(10, referrer, 30);
+        gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setCurrentEpoch(12); // finalized plus one grace epoch
+        assertEq(referrals.pendingReward(referrer, 10), 100 ether);
+
+        ledger.credit(11, referrer, 30);
+        ledger.credit(11, otherReferrer, 10);
+        gate.setBudget(address(referrals), 11, 100 ether);
+        gate.setCurrentEpoch(13);
+        assertEq(referrals.pendingReward(referrer, 11), 75 ether);
+        assertEq(referrals.pendingReward(otherReferrer, 11), 25 ether);
+
+        uint256[] memory epochs = new uint256[](2);
+        epochs[0] = 10;
+        epochs[1] = 11;
+        referrals.claimEpochs(referrer, epochs);
+        assertEq(gate.balanceOf(referrer), 175 ether);
+        assertTrue(referrals.claimed(10, referrer));
+
+        // Late ledger credits never change a frozen denominator.
+        ledger.credit(11, otherReferrer, 1000);
+        referrals.claim(otherReferrer, 11);
+        assertEq(gate.balanceOf(otherReferrer), 25 ether);
+
+        vm.expectRevert(AntseedEpochShareRewards.AlreadyClaimed.selector);
+        referrals.claim(referrer, 10);
+        vm.expectRevert(AntseedEpochShareRewards.NothingToClaim.selector);
+        referrals.claimEpochs(referrer, epochs);
     }
 
-    function test_bindAccrueAndClaimTwoPercentFromEpochBuckets() public {
-        _bind(referrer);
-        assertEq(referrals.referredCount(referrer), 1);
-        rewards.setReward(buyer, 10, 100 ether);
-        rewards.setReward(buyer, 11, 25 ether);
-        _advance(12);
+    function test_epochsNeedAGraceEpochAndABucket() public {
+        ledger.credit(10, referrer, 1);
+        gate.setCurrentEpoch(11);
+        assertFalse(referrals.isClaimable(10));
+        vm.expectRevert(AntseedEpochShareRewards.EpochNotClaimable.selector);
+        referrals.claim(referrer, 10);
+
+        gate.setCurrentEpoch(12);
+        vm.expectRevert(AntseedEpochShareRewards.NothingToClaim.selector);
+        referrals.claim(referrer, 10); // controller not registered as a minter: budget 0
+
         gate.setBudget(address(referrals), 10, 5 ether);
-        gate.setBudget(address(referrals), 11, 5 ether);
-
-        referrals.accrue(buyer, 11);
-        assertEq(referrals.claimable(referrer), 2.5 ether);
-        assertEq(referrals.claimableByEpoch(referrer, 10), 2 ether);
-        assertEq(referrals.epochEntitled(11), 0.5 ether);
-        assertEq(referrals.nextAccrualEpoch(buyer), 12);
-        assertEq(referrals.payableAmount(referrer), 2.5 ether);
-
-        vm.prank(referrer);
-        referrals.claim();
-        assertEq(gate.balanceOf(referrer), 2.5 ether);
-        assertEq(referrals.claimable(referrer), 0);
-        assertEq(referrals.epochMinted(10), 2 ether);
-        assertEq(referrals.claimableEpochs(referrer).length, 0);
-
-        vm.prank(referrer);
-        vm.expectRevert(AntseedReferrals.NothingToClaim.selector);
-        referrals.claim();
-    }
-
-    function test_claimPaysWhatTheBucketAllowsAndKeepsTheRest() public {
-        _bind(referrer);
-        rewards.setReward(buyer, 10, 100 ether); // entitlement 2 ether
-        _advance(11);
-        gate.setBudget(address(referrals), 10, 1.5 ether);
-        referrals.accrue(buyer, 10);
-
-        assertEq(referrals.payableAmount(referrer), 1.5 ether);
-        vm.prank(referrer);
-        referrals.claim();
-        assertEq(gate.balanceOf(referrer), 1.5 ether);
-        assertEq(referrals.claimable(referrer), 0.5 ether);
-        assertEq(referrals.claimableEpochs(referrer).length, 1);
-
-        // No bucket at all (controller not registered yet): nothing payable, entitlement kept.
-        gate.setBudget(address(referrals), 10, 1.5 ether);
-        vm.prank(referrer);
-        vm.expectRevert(AntseedReferrals.NothingToClaim.selector);
-        referrals.claim();
-
-        gate.setBudget(address(referrals), 10, 2 ether);
-        vm.prank(referrer);
-        referrals.claimEpoch(10);
-        assertEq(gate.balanceOf(referrer), 2 ether);
-        assertEq(referrals.claimable(referrer), 0);
+        referrals.claim(referrer, 10);
+        assertEq(gate.balanceOf(referrer), 5 ether);
     }
 
     function test_onlyBinderCanBind() public {
@@ -156,40 +143,13 @@ contract AntseedReferralsTest is Test {
         vm.expectRevert(AntseedReferrals.SelfReferral.selector);
         referrals.bindReferral(buyer, operator);
 
-        _bind(referrer);
+        vm.prank(binder);
+        referrals.bindReferral(buyer, referrer);
+        assertEq(referrals.referredCount(referrer), 1);
+        assertEq(referrals.boundAtEpoch(buyer), 10);
         vm.prank(binder);
         vm.expectRevert(AntseedReferrals.ReferralAlreadyBound.selector);
         referrals.bindReferral(buyer, stranger);
         assertEq(referrals.referrerOf(buyer), referrer);
-    }
-
-    function test_accrualSkipsRewardWhenReferrerBecomesOperator() public {
-        _bind(referrer);
-        deposits.setOperator(buyer, referrer); // operator authorized after the first settlement
-        rewards.setReward(buyer, 10, 100 ether);
-        _advance(11);
-
-        referrals.accrue(buyer, 10);
-        assertEq(referrals.claimable(referrer), 0);
-        assertEq(referrals.nextAccrualEpoch(buyer), 11);
-    }
-
-    function test_accrualRejectsUnfinalizedEpochAndIsIdempotent() public {
-        _bind(referrer);
-        rewards.setReward(buyer, 10, 100 ether);
-        _advance(11);
-
-        vm.expectRevert(AntseedReferrals.EpochNotFinalized.selector);
-        referrals.accrue(buyer, 11);
-
-        referrals.accrue(buyer, 10);
-        referrals.accrue(buyer, 10); // no-op
-        assertEq(referrals.claimable(referrer), 2 ether);
-        assertEq(referrals.claimableEpochs(referrer).length, 1);
-    }
-
-    function _bind(address referralWallet) private {
-        vm.prank(binder);
-        referrals.bindReferral(buyer, referralWallet);
     }
 }

@@ -16,8 +16,8 @@ import { AntseedStatsV2 } from "../stats/AntseedStatsV2.sol";
  *
  * Afterwards:
  *   AntseedRegistry.setStats(statsV2)            — Channels and FreeUsage resolve it live
- *   DeployReferrals / DeployClientUsage with ANTSEED_STATS=<statsV2>
- *   statsV2.setReferrals(...), statsV2.setClientUsage(...)
+ *   DeployAttributionUsage / DeployReferrals / DeployClientRewards with ANTSEED_STATS=<statsV2>
+ *   statsV2.setReferrals(...), statsV2.setAttributionUsage(...)
  *   chain-config statsContractAddress / statsDeployBlock; network-stats indexer
  *
  * Channels open across the cutover report their cumulative totals once as a
@@ -36,6 +36,6 @@ contract DeployStatsV2 is Script {
         vm.stopBroadcast();
 
         console.log("AntseedStatsV2:", address(stats));
-        console.log("Next: AntseedRegistry.setStats(statsV2), then deploy Referrals and ClientUsage against it.");
+        console.log("Next: AntseedRegistry.setStats(statsV2), then deploy AttributionUsage, Referrals and ClientRewards against it.");
     }
 }

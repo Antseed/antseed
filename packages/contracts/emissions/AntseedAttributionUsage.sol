@@ -7,16 +7,25 @@ import "@openzeppelin/contracts/utils/Pausable.sol";
 import {IAntseedUsageAccounting} from "../interfaces/IAntseedUsageAccounting.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 
-interface IAntseedClientUsageAccounting is IAntseedUsageAccounting {
+interface IAntseedAttributionUsageAccounting is IAntseedUsageAccounting {
     function firstRewardedEpoch() external view returns (uint256);
 }
 
+interface IAntseedAttributionReferrals {
+    function referrerOf(address buyer) external view returns (address);
+}
+
+interface IAntseedAttributionDeposits {
+    function getOperator(address buyer) external view returns (address);
+}
+
 /**
- * @title AntseedClientUsage
- * @notice Recognized usage per client, by epoch. The client is the software
- *         a buyer used (Desktop, CLI, a third-party app), identified by the
- *         ERC-8004 agent id it registered; rewards for an epoch go to that
- *         agent's owner.
+ * @title AntseedAttributionUsage
+ * @notice Recognized usage attributed per epoch to (a) the client software
+ *         that produced it and (b) the wallet that referred the buyer.
+ *         Clients are ERC-8004 agent ids; referrers are wallets bound in
+ *         AntseedReferrals. Reward controllers split their epoch buckets by
+ *         these points.
  *
  *         Points here are the same weighted points AntseedUsageAccounting
  *         records for the buyer — policy-scaled and pool-weighted, so wash
@@ -29,17 +38,18 @@ interface IAntseedClientUsageAccounting is IAntseedUsageAccounting {
  *         names the client that produced it. On each callback this contract
  *         reads the buyer's cumulative weighted points; the growth since the
  *         previous callback is exactly the points of the settlements in
- *         between, and they are credited to the client and epoch recorded at
- *         that previous callback. Then the cursor moves to the current client
- *         and epoch. A buyer's most recent settlement is credited at the
- *         buyer's next settlement, or by anyone via `flush`.
+ *         between. They are credited to the client and epoch recorded at that
+ *         previous callback, and to the buyer's referrer (fixed once bound)
+ *         for the same epoch. Then the cursor moves to the current client and
+ *         epoch. A buyer's most recent settlement is credited at the buyer's
+ *         next settlement, or by anyone via `flush`.
  *
  *         Invariant relied upon: AntseedChannels invokes the stats sink
  *         before `IAntseedEmissions.accrue*Points`. Settlements whose
  *         metadata carries no client id advance the cursor and land in the
- *         unattributed bucket, so they never leak to another client.
+ *         unattributed client bucket, so they never leak to another client.
  */
-contract AntseedClientUsage is Ownable2Step, Pausable {
+contract AntseedAttributionUsage is Ownable2Step, Pausable {
     /// @dev One slot per buyer: last observed cumulative weighted points, the
     ///      client of the most recent settlement, and the epoch it settled in.
     struct Cursor {
@@ -49,29 +59,44 @@ contract AntseedClientUsage is Ownable2Step, Pausable {
         bool initialized;
     }
 
-    IAntseedClientUsageAccounting public immutable usageAccounting;
+    IAntseedAttributionUsageAccounting public immutable usageAccounting;
     IERC8004Registry public immutable identityRegistry;
+    IAntseedAttributionDeposits public immutable deposits;
 
     /// @notice Contract allowed to report settlements (AntseedStatsV2).
     address public recorder;
+    /// @notice Referral bindings source (zero disables referrer credits).
+    IAntseedAttributionReferrals public referrals;
 
     mapping(address buyer => Cursor) private _cursors;
+
     mapping(uint256 epoch => mapping(uint256 clientAgentId => uint256 points)) public clientEpochPoints;
     mapping(uint256 epoch => uint256 points) public totalClientPointsByEpoch;
-    mapping(uint256 epoch => uint256 points) public unattributedPointsByEpoch;
+    mapping(uint256 epoch => uint256 points) public unattributedClientPointsByEpoch;
     mapping(uint256 clientAgentId => uint256 points) public clientTotalPoints;
 
+    mapping(uint256 epoch => mapping(address referrer => uint256 points)) public referrerEpochPoints;
+    mapping(uint256 epoch => uint256 points) public totalReferrerPointsByEpoch;
+    mapping(address referrer => uint256 points) public referrerTotalPoints;
+
     event ClientUsageCredited(uint256 indexed epoch, uint256 indexed clientAgentId, address indexed buyer, uint256 points);
-    event UnattributedUsage(uint256 indexed epoch, address indexed buyer, uint256 points);
+    event UnattributedClientUsage(uint256 indexed epoch, address indexed buyer, uint256 points);
+    event ReferrerUsageCredited(uint256 indexed epoch, address indexed referrer, address indexed buyer, uint256 points);
     event RecorderUpdated(address indexed recorder);
+    event ReferralsUpdated(address indexed referrals);
 
     error InvalidAddress();
     error NotRecorder();
 
-    constructor(address _usageAccounting, address _identityRegistry, address _recorder) Ownable(msg.sender) {
-        if (_usageAccounting == address(0) || _identityRegistry == address(0)) revert InvalidAddress();
-        usageAccounting = IAntseedClientUsageAccounting(_usageAccounting);
+    constructor(address _usageAccounting, address _identityRegistry, address _deposits, address _recorder)
+        Ownable(msg.sender)
+    {
+        if (_usageAccounting == address(0) || _identityRegistry == address(0) || _deposits == address(0)) {
+            revert InvalidAddress();
+        }
+        usageAccounting = IAntseedAttributionUsageAccounting(_usageAccounting);
         identityRegistry = IERC8004Registry(_identityRegistry);
+        deposits = IAntseedAttributionDeposits(_deposits);
         recorder = _recorder;
     }
 
@@ -87,8 +112,7 @@ contract AntseedClientUsage is Ownable2Step, Pausable {
         Cursor storage cursor = _cursors[buyer];
         _credit(buyer, cursor);
 
-        uint256 client = _registeredClient(clientAgentId);
-        cursor.clientAgentId = uint64(client);
+        cursor.clientAgentId = uint64(_registeredClient(clientAgentId));
         cursor.epoch = uint32(_accountingEpoch());
         cursor.initialized = true;
     }
@@ -109,9 +133,9 @@ contract AntseedClientUsage is Ownable2Step, Pausable {
         return identityRegistry.ownerOf(clientAgentId);
     }
 
-    /// @notice Weighted points recorded for the buyer but not yet credited to
-    ///         any client (the buyer's latest settlement), with the client and
-    ///         epoch they will be credited to.
+    /// @notice Weighted points recorded for the buyer but not yet credited
+    ///         (the buyer's latest settlement), with the client and epoch
+    ///         they will be credited to.
     function pendingCredit(address buyer) external view returns (uint256 points, uint256 clientAgentId, uint256 epoch) {
         Cursor storage cursor = _cursors[buyer];
         if (!cursor.initialized) return (0, 0, 0);
@@ -123,9 +147,9 @@ contract AntseedClientUsage is Ownable2Step, Pausable {
     // ─── Internal ────────────────────────────────────────────────────
 
     /// @dev Credit growth since the cursor's last observation to the cursor's
-    ///      client and epoch, then move the observation forward. The first
-    ///      observation only sets the baseline: usage before attribution
-    ///      existed is not credited to anyone.
+    ///      client and epoch and to the buyer's referrer, then move the
+    ///      observation forward. The first observation only sets the baseline:
+    ///      usage before attribution existed is not credited to anyone.
     function _credit(address buyer, Cursor storage cursor) internal {
         uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
         uint256 baseline = cursor.weightedPoints;
@@ -137,16 +161,34 @@ contract AntseedClientUsage is Ownable2Step, Pausable {
 
         uint256 delta = current - baseline;
         uint256 epoch = cursor.epoch;
-        uint256 client = cursor.clientAgentId;
+        _creditClient(buyer, cursor.clientAgentId, epoch, delta);
+        _creditReferrer(buyer, epoch, delta);
+    }
+
+    function _creditClient(address buyer, uint256 client, uint256 epoch, uint256 delta) internal {
         if (client == 0) {
-            unattributedPointsByEpoch[epoch] += delta;
-            emit UnattributedUsage(epoch, buyer, delta);
+            unattributedClientPointsByEpoch[epoch] += delta;
+            emit UnattributedClientUsage(epoch, buyer, delta);
             return;
         }
         clientEpochPoints[epoch][client] += delta;
         totalClientPointsByEpoch[epoch] += delta;
         clientTotalPoints[client] += delta;
         emit ClientUsageCredited(epoch, client, buyer, delta);
+    }
+
+    /// @dev A referrer who is the buyer's own operator earns nothing: the
+    ///      operator is usually unset when the binding lands, so the
+    ///      self-referral guard has to be re-applied here.
+    function _creditReferrer(address buyer, uint256 epoch, uint256 delta) internal {
+        IAntseedAttributionReferrals source = referrals;
+        if (address(source) == address(0)) return;
+        address referrer = source.referrerOf(buyer);
+        if (referrer == address(0) || referrer == deposits.getOperator(buyer)) return;
+        referrerEpochPoints[epoch][referrer] += delta;
+        totalReferrerPointsByEpoch[epoch] += delta;
+        referrerTotalPoints[referrer] += delta;
+        emit ReferrerUsageCredited(epoch, referrer, buyer, delta);
     }
 
     /// @dev Zero unless the agent id fits the cursor and has an owner.
@@ -171,6 +213,11 @@ contract AntseedClientUsage is Ownable2Step, Pausable {
     function setRecorder(address _recorder) external onlyOwner {
         recorder = _recorder;
         emit RecorderUpdated(_recorder);
+    }
+
+    function setReferrals(address _referrals) external onlyOwner {
+        referrals = IAntseedAttributionReferrals(_referrals);
+        emit ReferralsUpdated(_referrals);
     }
 
     function pause() external onlyOwner {

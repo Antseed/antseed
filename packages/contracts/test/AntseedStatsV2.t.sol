@@ -49,7 +49,7 @@ contract AntseedStatsV2Test is Test {
         clientUsage = new StatsClientUsageMock();
         stats.setWriter(writer, true);
         stats.setReferrals(address(binder));
-        stats.setClientUsage(address(clientUsage));
+        stats.setAttributionUsage(address(clientUsage));
     }
 
     /// v3 SpendingAuth metadata: 5 static words + services array (+ optional tail).
@@ -118,7 +118,7 @@ contract AntseedStatsV2Test is Test {
 
     function test_recordMetadata_unsetSinksAreNoops() public {
         stats.setReferrals(address(0));
-        stats.setClientUsage(address(0));
+        stats.setAttributionUsage(address(0));
         vm.prank(writer);
         stats.recordMetadata(agentId, buyer, bytes32("chan-1"), _v3(100, 40, 2, true));
         assertEq(binder.lastBuyer(), address(0));

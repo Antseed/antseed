@@ -9,7 +9,7 @@ interface IAntseedStatsReferralBinder {
     function bindReferral(address buyer, address referrer) external;
 }
 
-interface IAntseedStatsClientUsage {
+interface IAntseedStatsAttributionUsage {
     function record(address buyer, uint256 clientAgentId) external;
 }
 
@@ -27,9 +27,10 @@ interface IAntseedStatsClientUsage {
  *         covered by the buyer's SpendingAuth / FreeUsageAuth signature
  *         (metadataHash), so neither the seller nor a relayer can forge it.
  *         Stats forwards the referrer to AntseedReferrals (bound on the buyer's
- *         first settlement) and the client id to AntseedClientUsage, which
- *         credits the buyer's recognized points to that client. Both are best
- *         effort: a rejected forward never blocks settlement.
+ *         first settlement) and every settlement to AntseedAttributionUsage,
+ *         which credits the buyer's recognized points to the client that
+ *         produced it and to the buyer's referrer. Both are best effort: a
+ *         rejected forward never blocks settlement.
  */
 contract AntseedStatsV2 is IAntseedStats, Ownable {
 
@@ -51,8 +52,8 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     mapping(address => bool) public writers;
     /// @notice AntseedReferrals sink for buyer-signed referrer bindings (zero disables).
     address public referrals;
-    /// @notice AntseedClientUsage sink for per-client recognized usage (zero disables).
-    address public clientUsage;
+    /// @notice AntseedAttributionUsage ledger for per-client / per-referrer recognized usage (zero disables).
+    address public attributionUsage;
 
     mapping(uint256 => mapping(address => BuyerMetadataStats)) private _buyerMetadataStats;
     mapping(bytes32 => ChannelMetadataSnapshot) private _channelSnapshots;
@@ -70,7 +71,7 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     event ReferralForwarded(address indexed buyer, address indexed referrer, bool bound);
     event ClientForwarded(address indexed buyer, uint256 indexed clientAgentId, bool recorded);
     event ReferralsUpdated(address indexed referrals);
-    event ClientUsageUpdated(address indexed clientUsage);
+    event AttributionUsageUpdated(address indexed attributionUsage);
 
     // ─── Custom Errors ──────────────────────────────────────────────
     error InvalidAddress();
@@ -135,8 +136,8 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         );
 
         (address referrer, bytes32 clientId) = _decodeAttribution(metadata);
-        // Always forwarded, even with a zero client: the client ledger must
-        // see every settlement to keep its per-buyer cursor exact.
+        // Always forwarded, even with a zero client: the attribution ledger
+        // must see every settlement to keep its per-buyer cursor exact.
         _forwardClient(buyer, uint256(clientId));
         if (referrer != address(0)) {
             _forwardReferral(buyer, referrer);
@@ -186,12 +187,12 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         }
     }
 
-    /// @dev Best effort: the client ledger reads the buyer's recognized points
-    ///      and must never block settlement.
+    /// @dev Best effort: the attribution ledger reads the buyer's recognized
+    ///      points and must never block settlement.
     function _forwardClient(address buyer, uint256 clientAgentId) internal {
-        address sink = clientUsage;
+        address sink = attributionUsage;
         if (sink == address(0)) return;
-        try IAntseedStatsClientUsage(sink).record(buyer, clientAgentId) {
+        try IAntseedStatsAttributionUsage(sink).record(buyer, clientAgentId) {
             emit ClientForwarded(buyer, clientAgentId, true);
         } catch {
             emit ClientForwarded(buyer, clientAgentId, false);
@@ -210,9 +211,9 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         emit ReferralsUpdated(_referrals);
     }
 
-    /// @notice Point at the AntseedClientUsage contract (zero disables forwarding).
-    function setClientUsage(address _clientUsage) external onlyOwner {
-        clientUsage = _clientUsage;
-        emit ClientUsageUpdated(_clientUsage);
+    /// @notice Point at the AntseedAttributionUsage ledger (zero disables forwarding).
+    function setAttributionUsage(address _attributionUsage) external onlyOwner {
+        attributionUsage = _attributionUsage;
+        emit AttributionUsageUpdated(_attributionUsage);
     }
 }
