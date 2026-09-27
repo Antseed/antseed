@@ -15,7 +15,7 @@ type EcosystemProject = {
   color: string;
   colorSoft: string;
   logo?: string;
-  theme: 'stats' | 'scan' | 'diem' | 'market';
+  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants';
 };
 
 type Resource = {
@@ -89,17 +89,30 @@ const projects: EcosystemProject[] = [
     theme: 'scan',
   },
   {
+    name: 'antseedmarkets',
+    href: 'https://antseedmarkets.com',
+    category: 'lANTS marketplace',
+    oneLiner: "Trade lANTS with 0 fees, built on OpenSea's Seaport, Opensourced since day 1.",
+    description:
+      'Trade staked ANTS NFTs through a Seaport-based marketplace. Staked ANTS go to the buyer with specific terms such as locked period and staked Antseed seller.',
+    glyph: 'AM',
+    status: 'Live',
+    color: '#22c55e',
+    colorSoft: 'rgba(34, 197, 94, 0.2)',
+    theme: 'antseedmarkets',
+  },
+  {
     name: 'lANTS Market',
     href: 'https://lants.eth.limo',
-    category: 'Marketplace',
+    category: 'lANTS marketplace',
     oneLiner: 'A board and USDC market for lANTS staking positions on Antseed.',
     description:
-      'Browse every lANTS position — amount, lock, provider pool, weight, exit penalty, and pending reward — then list or buy it through a non-custodial, USDC-only contract priced per locked ANTS. Community-built, not an official Antseed product.',
+      'Browse every lANTS position — amount, lock, provider pool, weight, exit penalty, and pending reward — then list or buy it through a non-custodial, USDC-only contract priced per locked ANTS.',
     glyph: 'lA',
     status: 'Live',
     color: '#c2f04a',
     colorSoft: 'rgba(194, 240, 74, 0.18)',
-    theme: 'market',
+    theme: 'lants',
   },
 ];
 
@@ -139,6 +152,23 @@ function ResourceCard({resource}: {resource: Resource}) {
 }
 
 function ProductPreview({project}: {project: EcosystemProject}) {
+  if (project.theme === 'antseedmarkets') {
+    return (
+      <div className={`${styles.preview} ${styles.previewMarket}`}>
+        <div className={styles.previewTop}><span>antseedmarkets</span><i>Seaport</i></div>
+        <div className={styles.marketNft}>
+          <small>lANTS NFT</small>
+          <strong>Staking positions</strong>
+          <em>Listed through Seaport</em>
+        </div>
+        <div className={styles.marketRows}>
+          <span><b>Listed</b><em>OpenSea stack</em></span>
+          <span><b>Pool</b><em>Provider stake</em></span>
+        </div>
+      </div>
+    );
+  }
+
   if (project.theme === 'stats') {
     return (
       <div className={`${styles.preview} ${styles.previewStats}`}>
@@ -168,17 +198,17 @@ function ProductPreview({project}: {project: EcosystemProject}) {
     );
   }
 
-  if (project.theme === 'market') {
+  if (project.theme === 'lants') {
     return (
-      <div className={`${styles.preview} ${styles.previewStats}`}>
-        <div className={styles.previewTop}><span>lANTS Market</span><i>Base</i></div>
-        <div className={styles.statsGrid}>
-          <div><small>Settles in</small><strong>USDC</strong></div>
-          <div><small>Market fee</small><strong>1%</strong></div>
-          <div><small>Custody</small><strong>None</strong></div>
-          <div><small>License</small><strong>MIT</strong></div>
+      <div className={`${styles.preview} ${styles.previewBoard}`}>
+        <div className={styles.previewTop}><span>lANTS Market</span><i>Board</i></div>
+        <div className={styles.boardHead}><span>Position</span><span>Lock</span><span>Price</span></div>
+        <div className={styles.boardRows}>
+          <span><b>#1204</b><em>18 mo</em><strong>Buy</strong></span>
+          <span><b>#0987</b><em>12 mo</em><strong>Buy</strong></span>
+          <span><b>#0431</b><em>6 mo</em><strong>Buy</strong></span>
         </div>
-        <div className={styles.chartBars}><span /><span /><span /><span /><span /></div>
+        <div className={styles.boardFoot}><em>Non-custodial</em><em>Settles in USDC</em></div>
       </div>
     );
   }
