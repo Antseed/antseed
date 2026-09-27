@@ -15,7 +15,7 @@ type EcosystemProject = {
   color: string;
   colorSoft: string;
   logo?: string;
-  theme: 'stats' | 'scan' | 'diem';
+  theme: 'stats' | 'scan' | 'diem' | 'market';
 };
 
 type Resource = {
@@ -88,6 +88,19 @@ const projects: EcosystemProject[] = [
     logo: 'https://antscan.co/logos/antseed-public-ant.svg',
     theme: 'scan',
   },
+  {
+    name: 'lANTS Market',
+    href: 'https://lants.eth.limo',
+    category: 'Marketplace',
+    oneLiner: 'A board and USDC market for lANTS staking positions on Antseed.',
+    description:
+      'Browse every lANTS position — amount, lock, provider pool, weight, exit penalty, and pending reward — then list or buy it through a non-custodial, USDC-only contract priced per locked ANTS. Community-built, not an official Antseed product.',
+    glyph: 'lA',
+    status: 'Live',
+    color: '#c2f04a',
+    colorSoft: 'rgba(194, 240, 74, 0.18)',
+    theme: 'market',
+  },
 ];
 
 const pillars = [
@@ -151,6 +164,21 @@ function ProductPreview({project}: {project: EcosystemProject}) {
           <span><b>channel</b><em>0x058a…49f6</em></span>
           <span><b>epoch</b><em>#15</em></span>
         </div>
+      </div>
+    );
+  }
+
+  if (project.theme === 'market') {
+    return (
+      <div className={`${styles.preview} ${styles.previewStats}`}>
+        <div className={styles.previewTop}><span>lANTS Market</span><i>Base</i></div>
+        <div className={styles.statsGrid}>
+          <div><small>Settles in</small><strong>USDC</strong></div>
+          <div><small>Market fee</small><strong>1%</strong></div>
+          <div><small>Custody</small><strong>None</strong></div>
+          <div><small>License</small><strong>MIT</strong></div>
+        </div>
+        <div className={styles.chartBars}><span /><span /><span /><span /><span /></div>
       </div>
     );
   }
