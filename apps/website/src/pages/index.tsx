@@ -1,7 +1,6 @@
 import {useEffect, useRef, useState, type ReactNode, type JSX} from 'react';
 import Head from '@docusaurus/Head';
 import Link from '@docusaurus/Link';
-import useDocusaurusContext from '@docusaurus/useDocusaurusContext';
 import Layout from '@theme/Layout';
 import styles from './index.module.css';
 import {PickModelArt} from '../components/StepArt';
@@ -242,15 +241,15 @@ const ORG_LD = {
   ],
 };
 
-export default function Home(): JSX.Element {
-  const {siteConfig} = useDocusaurusContext();
+const HOME_TITLE = 'Antseed | The Open Market for AI Inference';
+const HOME_DESCRIPTION =
+  'Run your agents on free models or access paid models at lower prices, with full control over your usage and privacy.';
 
+export default function Home(): JSX.Element {
   return (
-    <Layout
-      title={siteConfig.tagline}
-      description="Run your agents on your terms. Every model, no middleman. Anonymous, best price, works with the tools you already use. Owned by no one."
-      wrapperClassName="homepage-wrapper">
+    <Layout title={HOME_TITLE} description={HOME_DESCRIPTION} wrapperClassName="homepage-wrapper">
       <Head>
+        <title>{HOME_TITLE}</title>
         {/*
           Docusaurus derives og:title / og:description from the Layout title and
           description props above, which override the sitewide values in
@@ -262,11 +261,8 @@ export default function Home(): JSX.Element {
           rel=canonical and og:url need no declaration — Docusaurus already
           emits correct per-page values for both.
         */}
-        <meta property="og:title" content="Run your agents on your terms" />
-        <meta
-          property="og:description"
-          content="Antseed lets you run your agents on your terms. Every model, no middleman. Anonymous. Best price. Works with the tools you already use. Owned by no one. Available to everyone."
-        />
+        <meta property="og:title" content={HOME_TITLE} />
+        <meta property="og:description" content={HOME_DESCRIPTION} />
         <script type="application/ld+json">{JSON.stringify(ORG_LD)}</script>
         <script type="application/ld+json">{JSON.stringify(FAQ_LD)}</script>
       </Head>
