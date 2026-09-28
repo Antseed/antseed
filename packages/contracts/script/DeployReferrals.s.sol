@@ -25,8 +25,11 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  * Afterwards:
  *   cast send $ANTSEED_STATS "setReferrals(address)" <referrals>       (Stats owner)
  *   cast send $ATTRIBUTION_USAGE "setReferrals(address)" <referrals>   (ledger owner)
- * then set payments.crypto.referralsAddress in chain config. The controller
- * pays nothing until governance registers it as a gate minter
+ * then record it as `contracts.referrals` in deployments/<network>/current.json
+ * so `scripts/generate-contract-chain-config.mjs` emits `referralsAddress` for
+ * every client; `payments.crypto.referralsAddress` in config.json overrides it
+ * per install (CLI and Desktop both read that key). The controller pays
+ * nothing until governance registers it as a gate minter
  * (`AntseedEmissionsGate.setMinter`) with its own minter id and share.
  */
 contract DeployReferrals is Script {

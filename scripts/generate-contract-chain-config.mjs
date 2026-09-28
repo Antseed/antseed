@@ -35,6 +35,7 @@ export const contractFields = {
   usageRewards: 'usageRewardsAddress',
   sellerPoolsRewards: 'sellerPoolsRewardsAddress',
   legacyEmissionsEscrow: 'legacyEmissionsEscrowAddress',
+  referrals: 'referralsAddress',
 };
 
 async function readDeployment(network) {
