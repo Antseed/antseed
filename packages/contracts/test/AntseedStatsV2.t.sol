@@ -107,6 +107,32 @@ contract AntseedStatsV2Test is Test {
         assertEq(buyerStats.totalInputTokens, 150);
     }
 
+    function test_recordMetadata_forwardsSettlementsItSkipsForStats() public {
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-1"), _v3(100, 50, 1, false));
+        assertEq(clientUsage.calls(), 1);
+
+        // Non-monotonic counters: no token delta, but Channels still accrues
+        // this settlement's points, so the ledger must move its cursor.
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-1"), _v3(90, 50, 2, true));
+        assertEq(clientUsage.calls(), 2);
+        assertEq(clientUsage.lastClient(), 42);
+        assertEq(binder.lastReferrer(), referrer);
+        IAntseedStats.BuyerMetadataStats memory buyerStats = stats.getBuyerMetadataStats(agentId, buyer);
+        assertEq(buyerStats.totalInputTokens, 100);
+        assertEq(buyerStats.totalRequestCount, 1);
+
+        // A blob too short for the legacy head is skipped for stats without
+        // reverting, and still reported to the ledger with a zero client.
+        vm.prank(writer);
+        stats.recordMetadata(agentId, buyer, bytes32("chan-2"), abi.encode(uint256(1), uint256(2), uint256(3)));
+        assertEq(clientUsage.calls(), 3);
+        assertEq(clientUsage.lastClient(), 0);
+        buyerStats = stats.getBuyerMetadataStats(agentId, buyer);
+        assertEq(buyerStats.totalInputTokens, 100);
+    }
+
     function test_recordMetadata_rejectedBindingDoesNotRevert() public {
         binder.setShouldRevert(true);
         vm.prank(writer);

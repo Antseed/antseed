@@ -100,6 +100,22 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         if (!writers[msg.sender]) revert NotAuthorized();
         if (buyer == address(0)) revert InvalidAddress();
 
+        // Attribution first, unconditionally: Channels accrues this
+        // settlement's points whatever the token counters say, so the ledger
+        // must see every settlement to keep its per-buyer cursor exact. A
+        // settlement skipped below for stats purposes would otherwise credit
+        // its points to the previous cursor's client and epoch. Forwarded
+        // even with a zero client for the same reason.
+        (address referrer, bytes32 clientId) = _decodeAttribution(metadata);
+        _forwardClient(buyer, uint256(clientId));
+        if (referrer != address(0)) {
+            _forwardReferral(buyer, referrer);
+        }
+
+        // Token stats: a blob too short for the four legacy head words is
+        // malformed for stats purposes (the writer's try/catch would swallow
+        // a revert here, but only after the forwards above have landed).
+        if (metadata.length < LEGACY_STATIC_WORDS * 32) return;
         (uint256 cumulativeInputTokens, uint256 cumulativeOutputTokens, uint256 cumulativeRequestCount) = _decodeMetadata(metadata);
 
         ChannelMetadataSnapshot storage snapshot = _channelSnapshots[channelId];
@@ -134,14 +150,6 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
             outputDelta,
             requestDelta
         );
-
-        (address referrer, bytes32 clientId) = _decodeAttribution(metadata);
-        // Always forwarded, even with a zero client: the attribution ledger
-        // must see every settlement to keep its per-buyer cursor exact.
-        _forwardClient(buyer, uint256(clientId));
-        if (referrer != address(0)) {
-            _forwardReferral(buyer, referrer);
-        }
     }
 
     // ─── Internal Helpers ───────────────────────────────────────────
