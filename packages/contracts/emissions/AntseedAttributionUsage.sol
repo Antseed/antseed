@@ -108,6 +108,11 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         if (_usageAccounting == address(0) || _identityRegistry == address(0) || _deposits == address(0)) {
             revert InvalidAddress();
         }
+        // `ownerOf` is wrapped in try/catch, but a call to an address without
+        // code succeeds with empty return data and the caller-side ABI decode
+        // then reverts outside the catch. That would make every `record` with
+        // a client id revert forever, so a mis-set registry must fail here.
+        if (_identityRegistry.code.length == 0) revert InvalidAddress();
         usageAccounting = IAntseedAttributionUsageAccounting(_usageAccounting);
         identityRegistry = IERC8004Registry(_identityRegistry);
         deposits = IAntseedAttributionDeposits(_deposits);

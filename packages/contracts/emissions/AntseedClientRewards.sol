@@ -34,6 +34,10 @@ contract AntseedClientRewards is AntseedEpochShareRewards {
         AntseedEpochShareRewards(_emissionsGate)
     {
         if (_attributionUsage == address(0) || _identityRegistry == address(0)) revert InvalidAddress();
+        // See AntseedAttributionUsage: a code-less registry would make the
+        // `ownerOf` try/catch in `_agentOwner` revert on decode, so every
+        // claim would fail against an immutable address.
+        if (_identityRegistry.code.length == 0) revert InvalidAddress();
         attributionUsage = IAntseedClientUsageLedger(_attributionUsage);
         identityRegistry = IERC8004Registry(_identityRegistry);
     }

@@ -40,6 +40,11 @@ contract AntseedClientRewardsTest is Test {
         cli = identity.register();
     }
 
+    function test_constructorRejectsACodelessIdentityRegistry() public {
+        vm.expectRevert(AntseedEpochShareRewards.InvalidAddress.selector);
+        new AntseedClientRewards(address(gate), address(ledger), address(0xDEAD));
+    }
+
     function test_splitsTheEpochBucketByRecognizedPointsAndPaysAgentOwners() public {
         ledger.credit(10, desktop, 75);
         ledger.credit(10, cli, 25);

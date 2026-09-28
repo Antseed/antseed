@@ -249,6 +249,11 @@ contract AntseedAttributionUsageTest is Test {
         assertEq(pending, 0);
     }
 
+    function test_constructorRejectsACodelessIdentityRegistry() public {
+        vm.expectRevert(AntseedAttributionUsage.InvalidAddress.selector);
+        new AntseedAttributionUsage(address(accounting), address(0xDEAD), address(deposits), stats);
+    }
+
     function test_onlyRecorderCanRecord() public {
         vm.expectRevert(AntseedAttributionUsage.NotRecorder.selector);
         ledger.record(buyer, desktop);
