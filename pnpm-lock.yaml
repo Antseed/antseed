@@ -108,6 +108,12 @@ importers:
       '@antseed/provider-core':
         specifier: workspace:*
         version: link:../../packages/provider-core
+      '@antseed/router-core':
+        specifier: workspace:*
+        version: link:../../packages/router-core
+      '@antseed/router-levanto':
+        specifier: workspace:*
+        version: link:../../plugins/router-levanto
       '@peculiar/x509':
         specifier: ^2.0.0
         version: 2.0.0
@@ -903,9 +909,6 @@ importers:
 
   plugins/router-local:
     dependencies:
-      '@antseed/router-levanto':
-        specifier: workspace:*
-        version: link:../router-levanto
       '@antseed/router-core':
         specifier: workspace:*
         version: link:../../packages/router-core

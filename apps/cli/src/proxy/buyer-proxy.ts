@@ -116,6 +116,7 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { loadConfig } from '../config/loader.js'
+import type { BuyerModelRouters } from './model-router-setup.js'
 
 // Re-export for backward compatibility (used by tests and other consumers)
 export { selectCandidatePeersForRouting, type CandidatePeerRouteSelection } from './routing.js'
@@ -136,6 +137,7 @@ const WATCHER_ABSENCE_ERRORS: Record<DepositWatcherAbsenceReason, string> = {
 }
 
 export interface BuyerProxyConfig {
+  modelRouters?: BuyerModelRouters
   port: number
   node: AntseedNode
   /** Data directory used to persist buyer.state.json (discovered peers, session peer pin). */
@@ -815,6 +817,7 @@ export class BuyerProxy {
    */
   private _routingSelection: RoutingSelection = { kind: 'model', model: null }
   private readonly _routingCatalogs = new RoutingCatalogCache()
+  private readonly _modelRouters: BuyerModelRouters | null
   private _conversations!: ConversationStore
   /**
    * Wall-clock of the last model-request activity (dispatch or streamed
@@ -876,6 +879,7 @@ export class BuyerProxy {
 
   constructor(config: BuyerProxyConfig) {
     this._node = config.node
+    this._modelRouters = config.modelRouters ?? null
     this._verifier = config.verifier
     this._teeVerification = new TeeVerification(config.verifier)
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
@@ -1119,23 +1123,17 @@ export class BuyerProxy {
     if (!isRoutingSelection(value)) throw new Error('Invalid routing selection')
     if (value.kind === 'model' && value.model !== null && !isValidRoutedModelTarget(value.model)) throw new Error('Invalid model selection')
     if (value.kind === 'router') {
-      const router = this._node.router
-      if (!router?.selectRoute && !router?.getModelRouterAdapter) throw new Error('The loaded router does not support routing-service selection')
-      if (router.getModelRouterAdapter) {
-        if (!value.service) throw new Error('Select an exact routing-service target')
-        return
-      }
-      const metadata = routingMetadataForService(router)
-      if (metadata) validateRoutingServiceMetadata(metadata)
-      resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, value.preferences ?? {})
+      if (!this._modelRouters) throw new Error('The buyer has no routing-service adapters configured')
+      if (!value.service) throw new Error('Select an exact routing-service target')
     }
   }
 
   private async _validateRoutingService(value: RoutingSelection): Promise<void> {
-    const router = this._node.router
-    if (value.kind !== 'router' || !router?.getModelRouterAdapter || !value.service) return
+    if (value.kind !== 'router') return
+    if (!this._modelRouters) throw new Error('The buyer has no routing-service adapters configured')
+    if (!value.service) throw new Error('Select an exact routing-service target')
     const peers = await this._getPeers()
-    const adapter = router.getModelRouterAdapter(value.service, peers)
+    const adapter = this._modelRouters.resolve(value.service, peers)
     const { catalog } = await this._routingCatalogs.get(adapter, value.service, peers)
     const metadata = routingMetadataForService(adapter, catalog)
     if (metadata) validateRoutingServiceMetadata(metadata)
@@ -2414,14 +2412,13 @@ export class BuyerProxy {
       if (!res.writableEnded) onClientAbort()
     })
     // Explicit model/seller choices bypass recommendations, even when the default is a router.
-    const selectedRouter = this._node.router
     // Replace a system-proxy connection's stale model with the automatic alias, unless this chat is pinned.
     if (selectionSnapshot.kind === 'router' && systemRoutedModel && storedConversation?.peerSource !== 'user') {
-      serializedReq = withRoutedModel(serializedReq, selectedRouter?.autoRouteServiceId ?? ROUTED_MODEL_ALIAS)
+      serializedReq = withRoutedModel(serializedReq, ROUTED_MODEL_ALIAS)
     }
     const rawService = extractRequestedService(serializedReq)
     const autoRequested = selectionSnapshot.kind === 'router'
-      && (rawService === selectedRouter?.autoRouteServiceId || rawService === ROUTED_MODEL_ALIAS)
+      && (rawService === 'levanto-auto' || rawService === ROUTED_MODEL_ALIAS)
     const chatModelPin = storedConversation?.peerSource === 'user' ? chatPinnedModel : null
     if (autoRequested && chatModelPin) {
       serializedReq = withRoutedModel(serializedReq, chatModelPin)
@@ -2458,7 +2455,8 @@ export class BuyerProxy {
     let trackedConversationId = storedConversation?.id ?? null
     let routerSelection: Awaited<ReturnType<typeof executeRouterSelection>>
     try {
-      if (!selectedRouter?.selectRoute && !selectedRouter?.getModelRouterAdapter) throw new Error('The loaded router does not support routing-service selection')
+      if (!this._modelRouters) throw new Error('The buyer has no routing-service adapters configured')
+      if (!selection.service) throw new Error('Select an exact routing-service target')
       // Track the chat before buying a recommendation, even if inference later fails.
       if (conversationIdentity?.isUserThread && trackedConversationKey
         && (storedConversation || !isTitleGenerationRequest(conversationBody))) {
@@ -2472,6 +2470,7 @@ export class BuyerProxy {
         this._trackRequestConversation(serializedReq.requestId, tracked.id)
       }
       const routingPeers = await this._getPeers({ forceRefresh: true })
+      const adapter = this._modelRouters.resolve(selection.service, routingPeers)
       // The adapter may recommend only destinations allowed by the buyer's existing policies.
       const candidates = eligibleRouterCandidates(serializedReq, routingPeers, requiredParameters, this._routingPreferences,
         (request, peer) => peerAllowedByPolicy(selectedRouter as BuyerPolicyRouter, request, peer)
@@ -2479,7 +2478,7 @@ export class BuyerProxy {
       // Ask the adapter for eligible destinations and prepare the inference request.
       // Actual inference is dispatched below; stop waiting here on disconnect or after two minutes.
       routerSelection = await executeRouterSelection({
-        node: this._node, router: selectedRouter, request: serializedReq, peers: routingPeers, candidates,
+        node: this._node, adapter, request: serializedReq, peers: routingPeers, candidates,
         conversationKey: routingConversationKey, selection, catalogs: this._routingCatalogs,
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
@@ -3431,7 +3430,7 @@ export class BuyerProxy {
           },
         }, { signal: requestSignal, pinned })
 
-        recordRouterUsage(router, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
+        recordRouterUsage(this._modelRouters, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
         responseForClient = adaptPeerResponse(responseForClient)
@@ -3523,7 +3522,7 @@ export class BuyerProxy {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
         }
 
-        recordRouterUsage(router, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
+        recordRouterUsage(this._modelRouters, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
 
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
         response = adaptPeerResponse(response)

@@ -1,4 +1,4 @@
-import { buildNetworkServiceOffers, isModelRouteEligible, normalizedModelReputationScore, rankModelRoutes, type AntseedNode, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type Router, type SerializedHttpRequest } from '@antseed/node'
+import { buildNetworkServiceOffers, isModelRouteEligible, normalizedModelReputationScore, rankModelRoutes, type AntseedNode, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
@@ -14,7 +14,7 @@ export class RoutingCatalogCache {
 
   constructor(private readonly ttlMs = 60_000) {}
 
-  async get(adapter: Pick<ModelRouterAdapter, 'getCatalog'> | Router, target: RoutingServiceTarget | undefined, peers: PeerInfo[]): Promise<{ catalog?: RoutingCatalogV1; expiresAt: number }> {
+  async get(adapter: Pick<ModelRouterAdapter, 'getCatalog'>, target: RoutingServiceTarget | undefined, peers: PeerInfo[]): Promise<{ catalog?: RoutingCatalogV1; expiresAt: number }> {
     const getCatalog = adapter.getCatalog
     if (!target || !getCatalog) return { expiresAt: Number.POSITIVE_INFINITY }
     const queryKey = routingCatalogKey(target)
@@ -47,7 +47,7 @@ function routingCatalogKey(target: RoutingServiceTarget) {
  */
 export type ExecutionCandidate = RouteCandidate & { peer: PeerInfo; effectiveReputationScore: number | null }
 
-export function routingMetadataForService(adapter: Pick<ModelRouterAdapter, 'routingMetadata'> | Router, catalog?: RoutingCatalogV1) {
+export function routingMetadataForService(adapter: Pick<ModelRouterAdapter, 'routingMetadata'>, catalog?: RoutingCatalogV1) {
   return catalog ? createRoutingServiceMetadata(catalog.preferencesSchema) : adapter.routingMetadata
 }
 
@@ -145,7 +145,7 @@ export function requestForRouterCandidate(request: SerializedHttpRequest, candid
  */
 export async function executeRouterSelection(args: {
   node: Pick<AntseedNode, 'sendRequest'>;
-  router: Router;
+  adapter: ModelRouterAdapter;
   request: SerializedHttpRequest;
   peers: PeerInfo[];
   candidates: ExecutionCandidate[];
@@ -155,16 +155,12 @@ export async function executeRouterSelection(args: {
   catalogs?: RoutingCatalogCache;
   onRoutingRequest?: (requestId: string) => void;
 }): Promise<{ request: SerializedHttpRequest; recommendations: ResolvedRouterRecommendation[] }> {
-  const { node, router, request, peers, conversationKey, signal } = args
+  const { node, adapter, request, peers, conversationKey, signal } = args
   const allowedModels = args.selection?.allowedModels
   let candidates = allowedModels === undefined ? args.candidates : args.candidates.filter(candidate =>
     allowedModels.some(model => model.provider === candidate.provider && model.serviceId === candidate.serviceId))
   if (!candidates.length && allowedModels !== undefined) throw new Error('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
-  // Resolve the adapter for the selected service, or use a router that implements selectRoute directly.
-  const routingService = args.selection?.service ?? router.defaultRoutingService
-  if (router.getModelRouterAdapter && !routingService) throw new Error('Select an exact routing-service target')
-  const adapter = router.getModelRouterAdapter ? router.getModelRouterAdapter(routingService!, peers) : router
-  if (!adapter.selectRoute) throw new Error('Selected router does not support model selection')
+  const routingService = args.selection?.service
   const catalogs = args.catalogs ?? new RoutingCatalogCache(0)
   const { catalog } = await catalogs.get(adapter, routingService, peers)
   if (catalog) {

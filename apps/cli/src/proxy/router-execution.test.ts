@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PeerInfo, RouteSelectionContext, Router, SerializedHttpRequest } from '@antseed/node'
+import type { PeerInfo, RouteSelectionContext, ModelRouterAdapter, SerializedHttpRequest } from '@antseed/node'
 import { eligibleRouterCandidates, executeRouterSelection, resolveRouterRecommendation, resolveRouterRecommendations, RoutingCatalogCache } from './router-execution.js'
 import { createRoutingServiceMetadata, type RoutingCatalogV1, type RoutingPreferenceSchema } from '@antseed/node'
 
@@ -29,12 +29,12 @@ test('recommendations resolve models or exact peers, never unsupported reasoning
   assert.equal(resolveRouterRecommendation([{ serviceId: 'missing' }, { serviceId: 'model-a' }], available)?.serviceId, 'model-a')
 })
 
-test('generic preferences are validated before invoking a router', async () => {
+test('generic preferences are validated before invoking an adapter', async () => {
   let calls = 0
   const metadata = createRoutingServiceMetadata({ type: 'object', additionalProperties: false,
     properties: { policy: { type: 'string', enum: ['cost', 'quality'], default: 'cost' } } })
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {}, routingMetadata: metadata,
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: metadata,
     async selectRoute(_request, _peers, context) {
       calls++
       assert.deepEqual(context.preferences, { policy: 'quality' })
@@ -42,7 +42,7 @@ test('generic preferences are validated before invoking a router', async () => {
       return [{ serviceId: 'model-a' }]
     },
   }
-  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request,
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, adapter, request,
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
   await assert.rejects(executeRouterSelection({ ...args, selection: { kind: 'router', preferences: { policy: 'invalid' } } }), /enum/)
   assert.equal(calls, 0)
@@ -68,10 +68,9 @@ test('plugin catalog enum schema overrides adapter defaults, restricts candidate
       return [{ serviceId: 'model-a' }]
     },
   }
-  const router: Router = { selectPeer: () => null, onResult: () => {}, getModelRouterAdapter: () => adapter }
   const service = { peerId: peer.peerId, provider: 'routing-vendor', serviceId: 'route' }
   const available = [candidates()[0]!, { ...candidates()[0]!, serviceId: 'model-b' }]
-  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request,
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, adapter, request,
     peers: [peer], candidates: available, conversationKey: null, signal: new AbortController().signal }
   const invalidPreferences: Array<Record<string, string>> = [{}, { region: 'elsewhere' }, { region: 'eu', unsupported: 'value' }]
   for (const preferences of invalidPreferences) {
@@ -102,9 +101,8 @@ test('a failed recommendation invalidates the cached plugin catalog', async () =
     async getCatalog() { catalogCalls++; return createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]) },
     async selectRoute() { if (fail) throw new Error('Router model catalog changed'); return [{ serviceId: 'model-a' }] },
   }
-  const router: Router = { selectPeer: () => null, onResult: () => {}, getModelRouterAdapter: () => adapter }
   const catalogs = new RoutingCatalogCache()
-  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request, catalogs,
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, adapter, request, catalogs,
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal,
     selection: { kind: 'router' as const, service: { peerId: peer.peerId, provider: 'routing-vendor', serviceId: 'route' } } }
   await assert.rejects(executeRouterSelection(args), /catalog changed/)
@@ -119,8 +117,8 @@ test('model allowlists restrict adapter candidates, acceptance, and returned fal
   const allowedModels = [{ provider: 'openai', serviceId: 'model-a' }]
   let calls = 0
   let forbiddenOnly = false
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {},
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
     async selectRoute(_request, _peers, context) {
       calls++
       assert.deepEqual(context.candidates.map(({ provider, serviceId }) => ({ provider, serviceId })), allowedModels)
@@ -128,7 +126,7 @@ test('model allowlists restrict adapter candidates, acceptance, and returned fal
       return forbiddenOnly ? [{ serviceId: 'model-b' }] : [{ serviceId: 'model-b' }, { serviceId: 'model-a' }]
     },
   }
-  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request,
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, adapter, request,
     peers: [peer], candidates: available, conversationKey: null, signal: new AbortController().signal }
   const result = await executeRouterSelection({ ...args, selection: { kind: 'router', allowedModels } })
   assert.deepEqual(result.recommendations.map(route => route.serviceId), ['model-a'])
@@ -143,15 +141,15 @@ test('model allowlists restrict adapter candidates, acceptance, and returned fal
 
 test('routing purchases cannot substitute a different routing-service peer', async () => {
   let sent = false
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {},
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, { ...request, requestId: 'routing-request' }, {})
       return [{ serviceId: 'model-a' }]
     },
   }
   await assert.rejects(executeRouterSelection({
-    node: { sendRequest: async () => { sent = true; throw new Error('must not send') } }, router, request,
+    node: { sendRequest: async () => { sent = true; throw new Error('must not send') } }, adapter, request,
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal,
     selection: { kind: 'router', service: { peerId: 'b'.repeat(40), provider: 'levanto', serviceId: 'levanto-route' } },
   }), /selected routing-service peer/)
@@ -168,8 +166,8 @@ test('candidate construction enforces buyer restrictions, capacity, and required
 })
 
 test('buyer handoff preserves inference payload and sets the resolved seller/provider', async () => {
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {},
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
     async selectRoute(_request, _peers, context) {
       const routes = [{ serviceId: 'model-a' }]
       assert.equal(context.acceptRecommendations(routes), true)
@@ -178,7 +176,7 @@ test('buyer handoff preserves inference payload and sets the resolved seller/pro
   }
   const result = await executeRouterSelection({
     node: { sendRequest: async () => { throw new Error('unexpected network request') } },
-    router, request, peers: [peer], candidates: candidates(), conversationKey: 'conversation', signal: new AbortController().signal,
+    adapter, request, peers: [peer], candidates: candidates(), conversationKey: 'conversation', signal: new AbortController().signal,
   })
   assert.equal(result.request.requestId, 'original')
   assert.equal(result.request.headers['x-antseed-pin-peer'], peer.peerId)
@@ -230,8 +228,8 @@ test('an exact recommendation cannot switch providers on the same peer and model
 test('a plugin cannot change fallback destinations after response acceptance', async () => {
   const available = candidates()
   available.push({ ...available[0]!, serviceId: 'model-b' })
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {},
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
     async selectRoute(_request, _peers, context) {
       assert.equal(context.acceptRecommendations([{ serviceId: 'model-a' }, { serviceId: 'model-b' }]), true)
       assert.equal(context.acceptRecommendations([{ serviceId: 'model-a' }]), false)
@@ -239,17 +237,17 @@ test('a plugin cannot change fallback destinations after response acceptance', a
     },
   }
   await assert.rejects(executeRouterSelection({
-    node: { sendRequest: async () => { throw new Error('unused') } }, router, request, peers: [peer],
+    node: { sendRequest: async () => { throw new Error('unused') } }, adapter, request, peers: [peer],
     candidates: available, conversationKey: null, signal: new AbortController().signal,
   }), /no eligible/)
 })
 
 test('explicit routing fails closed on decline and respects cancellation even if plugin ignores it', async () => {
-  const router: Router = { selectPeer: () => null, onResult: () => {}, selectRoute: async () => null }
-  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, router, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
+  const adapter: ModelRouterAdapter = { routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }), selectRoute: async () => null }
+  const args = { node: { sendRequest: async () => { throw new Error('unused') } }, adapter, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
   await assert.rejects(executeRouterSelection(args), /no eligible/)
   const abort = new AbortController()
-  router.selectRoute = () => new Promise(() => {})
+  adapter.selectRoute = () => new Promise(() => {})
   const pending = executeRouterSelection({ ...args, signal: abort.signal })
   abort.abort(new Error('client disconnected'))
   await assert.rejects(pending, /client disconnected/)
@@ -257,8 +255,8 @@ test('explicit routing fails closed on decline and respects cancellation even if
 
 test('routing purchases are registered before dispatch and retain their own immutable request ID', async () => {
   const tracked: string[] = []
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {},
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
     async selectRoute(_request, _peers, context) {
       const serviceRequest = { ...request, requestId: 'routing-purchase' }
       const pending = context.sendRequest(peer, serviceRequest, {})
@@ -273,21 +271,21 @@ test('routing purchases are registered before dispatch and retain their own immu
       await Promise.resolve()
       assert.equal(serviceRequest.requestId, 'routing-purchase')
       return { requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: new Uint8Array() }
-    } }, router, request, peers: [peer], candidates: candidates(), conversationKey: 'chat',
+    } }, adapter, request, peers: [peer], candidates: candidates(), conversationKey: 'chat',
     signal: new AbortController().signal, onRoutingRequest: requestId => tracked.push(requestId),
   })
 })
 
 test('routing purchases cannot reuse the parent inference request ID', async () => {
-  const router: Router = {
-    selectPeer: () => null, onResult: () => {},
+  const adapter: ModelRouterAdapter = {
+    routingMetadata: createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false }),
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, request, {})
       return [{ serviceId: 'model-a' }]
     },
   }
   await assert.rejects(executeRouterSelection({
-    node: { sendRequest: async () => { throw new Error('must not dispatch') } }, router, request,
+    node: { sendRequest: async () => { throw new Error('must not dispatch') } }, adapter, request,
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal,
   }), /distinct request ID/)
 })

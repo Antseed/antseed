@@ -1,7 +1,7 @@
 # Levanto buyer router
 
-`@antseed/router-levanto` is the buyer-only Levanto adapter used by the existing
-`local` router. It asks a selected AntSeed
+`@antseed/router-levanto` is the buyer-only Levanto adapter registered by CLI
+buyer startup, independently of the unchanged `local` router plugin. It asks a selected AntSeed
 routing-service peer for ranked recommendations, then uses normal AntSeed
 inference execution. Buyers select a routing service, not a different router plugin.
 
@@ -16,7 +16,8 @@ is not part of the buyer interface. Generic completed-request transport remains 
 
 ## Select the router
 
-Install the matching SDK/CLI and local router, which includes this adapter.
+Install the matching SDK/CLI and local router. The CLI includes this adapter;
+the local router does not depend on it.
 Once published:
 
 ```bash
@@ -153,7 +154,7 @@ registered adapter, but no client-specific settings code.
 
 ## Registering another routing adapter
 
-The local router uses `ModelRouterRegistry` from `@antseed/router-core` to
+Buyer startup uses `ModelRouterRegistry` from `@antseed/router-core` to
 resolve the exact selected peer/provider/service's advertised API protocol.
 Levanto is registered by default under `levanto-routing`; its provider name is
 not used to choose the adapter. Unknown protocols and ambiguous advertisements
@@ -166,21 +167,31 @@ Its request construction, response validation and any billing mode selection
 stay inside the adapter, while candidate eligibility and inference execution
 remain shared.
 
-Code integrating an additional adapter can pass it to the local plugin's `createRouter` method:
+Code integrating an additional adapter registers it with the buyer-owned registry:
 
 ```ts
-import localPlugin from '@antseed/router-local';
+import { ModelRouterRegistry } from '@antseed/router-core';
+import { LevantoRoutingAdapter } from '@antseed/router-levanto';
 
-const router = localPlugin.createRouter(config, {
-  'another-routing-protocol': anotherAdapter,
-});
+const modelRouters = new ModelRouterRegistry();
+modelRouters.register('levanto-routing', new LevantoRoutingAdapter({ routingPeerUrl }));
+modelRouters.register('another-routing-protocol', anotherAdapter);
 ```
 
 Here `anotherAdapter` is an instance implementing `ModelRouterAdapter`. The protocol
 must also be supported by discovery metadata; registering an adapter does not
 extend metadata's wire format. This is explicit code registration, not automatic
 discovery or installation of arbitrary npm plugins. For built-in integrations,
-add a default registration alongside Levanto in the local router factory.
+add a default registration alongside Levanto in the CLI's `createBuyerModelRouters`
+setup function and pass the registry as `BuyerProxyConfig.modelRouters`. Neither
+the local plugin's factory nor the SDK's existing `Router` interface needs adapter hooks.
+
+Registration creates local objects only; it does not contact a routing service or
+make a purchase. One registry is retained for the buyer's lifetime. The buyer reads
+`LEVANTO_ROUTING_PEER_URL` from its environment; a legacy `--instance` configuration
+value is retained as a fallback, with the environment taking precedence. A missing
+URL retains the adapter's existing unknown-catalog behavior. Proxies without an
+adapter registry can route models but reject routing-service selections explicitly.
 
 The buyer validates live selections and resolves preferences using the selected
 service's catalog schema (or adapter fallback), and resolves it again from current peers before execution.
@@ -279,7 +290,8 @@ Neither an unlisted inference destination nor another routing peer is substitute
 ## Cache observations
 
 After a successful completed inference, the host reports native input/cache usage
-through `Router.recordUsage`, before client-protocol conversion. Routing-service
+through the buyer-owned registry's `recordUsage`, before client-protocol conversion.
+Direct-model inference also supplies observations, without purchasing recommendations. Routing-service
 calls, failures, cancelled requests, estimated usage and unidentified conversations
 do not contribute observations. Streaming usage is recorded from the completed
 response, not once per chunk. Child conversations are separate from their parents.
