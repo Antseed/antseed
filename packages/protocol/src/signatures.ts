@@ -167,8 +167,9 @@ export interface ReceiveAuthorizationMessage {
  *
  * Appending keeps every existing decoder working (see
  * `decodeMetadataAttribution`). AntseedStats reads the tail and forwards the
- * referrer to AntseedReferrals on the buyer's first settlement, so the binding
- * is buyer-signed via metadataHash, covers free usage, and costs no extra
+ * referrer to AntseedReferrals on the first settlement that carries it (prior
+ * usage is fine: only usage after the binding is credited), so the binding is
+ * buyer-signed via metadataHash, covers free usage, and costs no extra
  * transaction.
  *
  * - referrer: wallet that referred this buyer (zero when none).

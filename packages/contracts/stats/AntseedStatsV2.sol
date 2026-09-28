@@ -27,7 +27,7 @@ interface IAntseedStatsAttributionUsage {
  *         covered by the buyer's SpendingAuth / FreeUsageAuth signature
  *         (metadataHash), so neither the seller nor a relayer can forge it.
  *         Stats forwards the referrer to AntseedReferrals (bound on the buyer's
- *         first settlement) and every settlement to AntseedAttributionUsage,
+ *         first settlement that carries it) and every settlement to AntseedAttributionUsage,
  *         which credits the buyer's recognized points to the client that
  *         produced it and to the buyer's referrer. Both are best effort: a
  *         rejected forward never blocks settlement.

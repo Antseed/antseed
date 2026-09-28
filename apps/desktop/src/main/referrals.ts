@@ -6,8 +6,8 @@
  * ask that endpoint for a candidate, show it to the user, and store their
  * answer in `<connect data dir>/referral.json`. The buyer daemon reads that
  * file and appends the accepted referrer to every settlement metadata blob it
- * signs; AntseedStats binds it on-chain at the first settlement. Nothing is
- * signed or sent on-chain from here.
+ * signs; AntseedStats binds it on-chain at the first settlement that carries
+ * it. Nothing is signed or sent on-chain from here.
  */
 import { mkdir, readFile, rename, writeFile } from 'node:fs/promises';
 import path from 'node:path';

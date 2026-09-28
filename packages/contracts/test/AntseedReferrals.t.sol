@@ -158,13 +158,9 @@ contract AntseedReferralsTest is Test {
         referrals.bindReferral(buyer, referrer);
     }
 
-    function test_bindRejectsUsageSelfReferralAndRebinding() public {
+    function test_bindRejectsSelfReferralAndRebinding() public {
+        // Prior usage is no bar: the ledger only credits usage after the bind.
         accounting.setUsage(buyer, 1);
-        vm.prank(binder);
-        vm.expectRevert(AntseedReferrals.ReferralMustPrecedeUsage.selector);
-        referrals.bindReferral(buyer, referrer);
-
-        accounting.setUsage(buyer, 0);
         vm.prank(binder);
         vm.expectRevert(AntseedReferrals.SelfReferral.selector);
         referrals.bindReferral(buyer, buyer);

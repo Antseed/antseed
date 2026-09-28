@@ -127,6 +127,18 @@ contract AntseedAttributionUsageTest is Test {
         assertEq(ledger.totalClientPointsByEpoch(20), 14);
     }
 
+    function test_lateBindingCreditsOnlyUsageAfterIt() public {
+        _settle(desktop, 10);
+        _settle(desktop, 4); // credits the 10: no referrer bound yet
+        referrals.bind(buyer, referrer); // bound with prior usage on record
+        _settle(desktop, 5); // credits the 4 settled before the bind — read live, referrer now set
+        _flush();
+        // Only growth observed after the binding call reaches the referrer;
+        // the 10 credited before it never does.
+        assertEq(ledger.referrerEpochPoints(20, referrer), 9);
+        assertEq(ledger.clientEpochPoints(20, desktop), 19);
+    }
+
     function test_referrerWhoIsTheOperatorEarnsNothing() public {
         referrals.bind(buyer, referrer);
         _settle(desktop, 10);

@@ -7,7 +7,7 @@ import { clientIdFromAgentId, type ReferralsClient } from '@antseed/node'
  * Referral state shared between Desktop (which asks the user to confirm the
  * inviter during first-run setup) and the buyer daemon (which appends the
  * confirmed referrer to the metadata it signs, so AntseedStats binds it on
- * the first settlement). Lives at `<dataDir>/referral.json`.
+ * the first settlement that carries it). Lives at `<dataDir>/referral.json`.
  *
  *   candidate → accepted → bound
  *             ↘ declined

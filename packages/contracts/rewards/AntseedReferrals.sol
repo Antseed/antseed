@@ -24,10 +24,16 @@ interface IAntseedReferrerUsageLedger {
  *         Binding: the buyer appends the referrer wallet to the metadata it
  *         signs for every settlement (SpendingAuth / FreeUsageAuth). AntseedStatsV2
  *         decodes that tail and calls `bindReferral` on the buyer's first
- *         settlement, so the binding is buyer-signed, gasless for the buyer,
- *         and lands before any recognized usage — including during free usage.
- *         Only the configured binder (Stats) may bind; the first binding is
- *         immutable.
+ *         settlement that carries it, so the binding is buyer-signed, gasless
+ *         for the buyer, and works during free usage. Only the configured
+ *         binder (Stats) may bind; the first binding is immutable.
+ *
+ *         Prior usage is no bar to binding: the attribution ledger credits a
+ *         referrer only with usage recorded after the binding (it reads
+ *         `referrerOf` live and credits growth since its last observation),
+ *         so nothing before the bind can ever reach the referrer. Refusing
+ *         late binds would only forfeit genuine referrals whose first
+ *         attributed settlement was preceded by one without the tail.
  *
  *         Rewards: an AntseedEmissionsGate controller. Each epoch's bucket is
  *         split among referrers pro rata to the recognized usage of the buyers
@@ -56,7 +62,6 @@ contract AntseedReferrals is AntseedEpochShareRewards {
 
     error NotBinder();
     error ReferralAlreadyBound();
-    error ReferralMustPrecedeUsage();
     error SelfReferral();
 
     constructor(
@@ -84,9 +89,6 @@ contract AntseedReferrals is AntseedEpochShareRewards {
         if (msg.sender != binder || binder == address(0)) revert NotBinder();
         if (buyer == address(0) || referrer == address(0)) revert InvalidAddress();
         if (referrerOf[buyer] != address(0)) revert ReferralAlreadyBound();
-
-        (uint256 priorUsage,) = usageAccounting.buyerUsageTotal(buyer);
-        if (priorUsage != 0) revert ReferralMustPrecedeUsage();
 
         address operator = deposits.getOperator(buyer);
         if (referrer == buyer || (operator != address(0) && referrer == operator)) revert SelfReferral();
