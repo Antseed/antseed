@@ -365,6 +365,7 @@ export class AntseedNode extends EventEmitter {
   private _freeUsageClient: FreeUsageClient | null = null;
   private _buyerFreeUsageManager: BuyerFreeUsageManager | null = null;
   private _sellerFreeUsageManager: SellerFreeUsageManager | null = null;
+  private _sellerFreeTierLimiter: SellerFreeTierLimiter | null = null;
   private _stakingClient: StakingClient | null = null;
   /** Batched reader for the on-chain inputs of the buyer trust score. */
   private _trustSignalsClient: TrustSignalsClient | null = null;
@@ -719,6 +720,7 @@ export class AntseedNode extends EventEmitter {
     this._freeUsageClient = null;
     this._buyerFreeUsageManager = null;
     this._sellerFreeUsageManager = null;
+    this._sellerFreeTierLimiter = null;
     this._stakingClient = null;
     this._trustSignalsClient = null;
     this._identityClient = null;
@@ -1570,6 +1572,9 @@ export class AntseedNode extends EventEmitter {
       },
     );
 
+    this._sellerFreeTierLimiter = this._config.freeTier
+      ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
+      : null;
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
 
@@ -1683,9 +1688,7 @@ export class AntseedNode extends EventEmitter {
       );
     }
 
-    const sellerFreeTierLimiter = this._config.freeTier
-      ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
-      : null;
+    const sellerFreeTierLimiter = this._sellerFreeTierLimiter;
     if (sellerFreeTierLimiter) {
       debugLog(`[Node] Seller free tier enabled: ${sellerFreeTierLimiter.describe()}`);
       if (!this._metering) {
@@ -1912,7 +1915,7 @@ export class AntseedNode extends EventEmitter {
     if (this._sellerFreeUsageManager) {
       const freeUsage = this._sellerFreeUsageManager;
       paymentMux.onFreeUsageOpen((payload) => {
-        freeUsage.handleOpen(buyerPeerId, payload, paymentMux);
+        freeUsage.handleOpen(buyerPeerId, payload, paymentMux, conn.remoteAddress ?? null);
       });
       paymentMux.onFreeUsageAuth((payload) => {
         freeUsage.handleAuth(buyerPeerId, payload, paymentMux);
@@ -2055,7 +2058,7 @@ export class AntseedNode extends EventEmitter {
           this._channelStore ?? undefined,
         );
         if (this._config.role === 'seller') {
-          this._sellerFreeUsageManager = new SellerFreeUsageManager(this._identity, freeUsageConfig);
+          this._sellerFreeUsageManager = new SellerFreeUsageManager(this._identity, freeUsageConfig, this._sellerFreeTierLimiter);
         }
       }
     }
