@@ -37,9 +37,15 @@ events from a 206 response are flagged `partial=1` in telemetry.
 Referral download URLs may include `?ref=<wallet>`. When the
 `REFERRAL_ATTRIBUTION` KV binding and `REFERRAL_HASH_SECRET` Worker secret are
 configured, the Worker stores the referrer wallet for 48 hours under an HMAC-derived
-network key. Raw IP addresses are never written to KV or logs. Shared networks
-that downloaded multiple referral links return the newest candidate with low confidence
-so Desktop setup can ask the user to verify it explicitly.
+network key once the installer's last byte has been delivered (a Range probe is
+not a download). Raw IP addresses are never written to KV or logs.
+
+The network address is a weak signal — an office, campus or carrier NAT shares
+one — so `/referral/match` is a hint, not attribution: each observation is
+handed out once (the first install to ask consumes it), shared networks that
+downloaded multiple referral links return the newest candidate with low
+confidence, and Desktop asks the user to confirm the wallet explicitly before
+anything is bound.
 
 Create the KV namespace with Wrangler and uncomment the `kv_namespaces` block
 in `wrangler.toml` before deploying the feature.

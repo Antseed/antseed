@@ -40,11 +40,19 @@
   }
 }
 
-.referralActions .referralConfirm {
-  border-color: var(--accent-green);
-  background: var(--accent-green);
-  color: #07130d;
+/* Declining is the safe default; confirming stays a deliberate, plain action. */
+.referralActions .referralDecline {
+  border-color: var(--text-secondary);
+  color: var(--text-primary);
   font-weight: 600;
+}
+
+.referralAddress {
+  font-family: var(--font-mono, ui-monospace, SFMono-Regular, Menlo, monospace);
+  font-size: 11px;
+  word-break: break-all;
+  user-select: all;
+  color: var(--text-primary) !important;
 }
 
 .referralWarning {

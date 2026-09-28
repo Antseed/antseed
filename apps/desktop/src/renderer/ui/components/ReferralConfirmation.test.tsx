@@ -18,9 +18,9 @@ function renderWith(referralSetup: ReturnType<typeof createInitialUiState>['refe
 test('renders the shared referral candidate from uiState', () => {
   const markup = renderWith({ state: 'candidate', referrer: REFERRER, confidence: 'probable' });
   assert.match(markup, new RegExp(`class="[^"]*${styles.referralCard}`));
-  assert.match(markup, /Were you invited by 0x1111…1111\?/);
+  assert.match(markup, new RegExp(REFERRER));
   assert.match(markup, />Not my inviter<\/button>/);
-  assert.match(markup, />Confirm referral<\/button>/);
+  assert.match(markup, />Yes, this is my inviter<\/button>/);
 });
 
 test('renders nothing once the question was answered', () => {

@@ -8,6 +8,7 @@ class MemoryStore {
   values = new Map<string, string>();
   get(key: string) { return Promise.resolve(this.values.get(key) ?? null); }
   put(key: string, value: string) { this.values.set(key, value); return Promise.resolve(); }
+  delete(key: string) { this.values.delete(key); return Promise.resolve(); }
 }
 
 function request(ip: string) {
@@ -31,6 +32,31 @@ describe('referral attribution', () => {
 
     const missed = await matchReferral(request('203.0.113.9'), env, 2_000);
     expect(await missed.json()).toEqual({ match: null });
+  });
+
+  it('hands a candidate out once, so a shared network cannot offer it to every install', async () => {
+    const store = new MemoryStore();
+    const env = { REFERRAL_ATTRIBUTION: store, REFERRAL_HASH_SECRET: 'test-secret' };
+    const sameNetwork = request('203.0.113.8');
+    await recordReferralDownload(sameNetwork, env, ALICE, 1_000);
+
+    const first = await matchReferral(sameNetwork, env, 2_000);
+    expect(await first.json()).toMatchObject({ match: { referrer: ALICE } });
+    const second = await matchReferral(sameNetwork, env, 3_000);
+    expect(await second.json()).toEqual({ match: null });
+    expect(store.values.size).toBe(0);
+  });
+
+  it('consumes only the newest observation on a shared network', async () => {
+    const store = new MemoryStore();
+    const env = { REFERRAL_ATTRIBUTION: store, REFERRAL_HASH_SECRET: 'test-secret' };
+    const sameNetwork = request('198.51.100.4');
+    await recordReferralDownload(sameNetwork, env, ALICE, 1_000);
+    await recordReferralDownload(sameNetwork, env, BOB, 2_000);
+
+    expect(await (await matchReferral(sameNetwork, env, 3_000)).json()).toMatchObject({ match: { referrer: BOB, confidence: 'low' } });
+    expect(await (await matchReferral(sameNetwork, env, 4_000)).json()).toMatchObject({ match: { referrer: ALICE, confidence: 'probable' } });
+    expect(await (await matchReferral(sameNetwork, env, 5_000)).json()).toEqual({ match: null });
   });
 
   it('lowers confidence when a shared network downloaded different referrals', async () => {

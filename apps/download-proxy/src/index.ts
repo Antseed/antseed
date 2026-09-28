@@ -148,12 +148,18 @@ export default {
     // reported, so GA counts downloads rather than requests.
     const role = segmentRole(origin.status, origin.headers.get('content-range'));
     if (role.first) {
-      ctx.waitUntil(recordReferralDownload(request, env, url.searchParams.get('ref')));
       emit(env, ctx, startEvent(downloadCtx), gaIds);
     }
+    const referrer = url.searchParams.get('ref');
     const {readable, done} = trackedStream(origin.body, contentLength);
     ctx.waitUntil(
       done.then(result => {
+        // A referral candidate is only remembered once the installer's last
+        // byte was delivered: a one-byte Range probe must not be enough to
+        // seed a network with an inviter.
+        if (role.final && result.completed && referrer) {
+          ctx.waitUntil(recordReferralDownload(request, env, referrer));
+        }
         if (!role.final) {
           const segment = segmentEvent(downloadCtx, result);
           console.log(JSON.stringify({event: segment.name, ...segment.params, attributed: gaIds.clientId ? 1 : 0}));

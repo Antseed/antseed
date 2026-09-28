@@ -1,6 +1,7 @@
 export interface ReferralAttributionStore {
   get(key: string): Promise<string | null>;
   put(key: string, value: string, options?: { expirationTtl?: number }): Promise<void>;
+  delete(key: string): Promise<void>;
 }
 
 export interface ReferralAttributionEnv {
@@ -74,6 +75,14 @@ export async function recordReferralDownload(
   );
 }
 
+/**
+ * Hand out the newest referrer observed for the caller's network, once. The
+ * network address is the only signal, so behind a shared egress (office,
+ * campus, carrier NAT) every fresh install would otherwise be offered the same
+ * inviter and could bind a stranger's usage to them for good. Consuming the
+ * observation limits one download link to one candidate; Desktop still asks
+ * the user to confirm, and treats the answer as pre-fill, not proof.
+ */
 export async function matchReferral(
   request: Request,
   env: ReferralAttributionEnv,
@@ -90,6 +99,17 @@ export async function matchReferral(
   const latest = record.observations[0];
   if (!latest) return new Response(JSON.stringify({ match: null }), { status: 200, headers });
   const distinctReferrers = new Set(record.observations.map(item => item.referrer)).size;
+
+  const remaining = record.observations.filter(item => item !== latest);
+  if (remaining.length === 0) {
+    await env.REFERRAL_ATTRIBUTION.delete(key);
+  } else {
+    await env.REFERRAL_ATTRIBUTION.put(
+      key,
+      JSON.stringify({ observations: remaining, expiresAt: record.expiresAt } satisfies ReferralRecord),
+      { expirationTtl: Math.max(60, Math.ceil((record.expiresAt - now) / 1000)) },
+    );
+  }
   return new Response(JSON.stringify({
     match: {
       referrer: latest.referrer,
