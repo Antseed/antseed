@@ -17,6 +17,9 @@ import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
  *         settlement or via `flush`), so an epoch becomes claimable only once
  *         a full further epoch has passed, and the epoch total is frozen at
  *         the first claim so every claimant is paid from the same denominator.
+ *         The ledger (`AntseedAttributionUsage.CREDIT_GRACE_EPOCHS`) stops
+ *         crediting an epoch at exactly that point, so a claimant's live
+ *         points can never grow against the frozen total.
  */
 abstract contract AntseedEpochShareRewards is Ownable2Step, Pausable, ReentrancyGuard {
     /// @notice Epochs that must fully elapse after `epoch` before it is claimable.

@@ -48,6 +48,13 @@ interface IAntseedAttributionDeposits {
  *         before `IAntseedEmissions.accrue*Points`. Settlements whose
  *         metadata carries no client id advance the cursor and land in the
  *         unattributed client bucket, so they never leak to another client.
+ *
+ *         Epoch finality: the reward controllers freeze an epoch's total at
+ *         its first claim and read each claimant's points live, so a credit
+ *         landing after that freeze would pay one claimant out of the others'
+ *         shares. Credits therefore only ever land in epochs the controllers
+ *         still treat as open (see `CREDIT_GRACE_EPOCHS`); anything observed
+ *         later rolls forward into the oldest open epoch.
  */
 contract AntseedAttributionUsage is Ownable2Step, Pausable {
     /// @dev One slot per buyer: last observed cumulative weighted points, the
@@ -58,6 +65,12 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         uint32 epoch;
         bool initialized;
     }
+
+    /// @notice Epochs that stay open for late credits after they end. Equals
+    ///         `AntseedEpochShareRewards.SETTLEMENT_GRACE_EPOCHS`: an epoch is
+    ///         claimable (and its total frozen) once this many further epochs
+    ///         have fully elapsed, so no credit may land there afterwards.
+    uint256 public constant CREDIT_GRACE_EPOCHS = 1;
 
     IAntseedAttributionUsageAccounting public immutable usageAccounting;
     IERC8004Registry public immutable identityRegistry;
@@ -135,13 +148,21 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
 
     /// @notice Weighted points recorded for the buyer but not yet credited
     ///         (the buyer's latest settlement), with the client and epoch
-    ///         they will be credited to.
+    ///         they would be credited to if flushed now.
     function pendingCredit(address buyer) external view returns (uint256 points, uint256 clientAgentId, uint256 epoch) {
         Cursor storage cursor = _cursors[buyer];
         if (!cursor.initialized) return (0, 0, 0);
         uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
         points = current > cursor.weightedPoints ? current - cursor.weightedPoints : 0;
-        return (points, cursor.clientAgentId, cursor.epoch);
+        return (points, cursor.clientAgentId, _creditEpoch(cursor.epoch));
+    }
+
+    /// @notice Oldest epoch that can still receive credits.
+    function oldestOpenEpoch() public view returns (uint256) {
+        uint256 current = usageAccounting.currentEpoch();
+        uint256 open = current > CREDIT_GRACE_EPOCHS ? current - CREDIT_GRACE_EPOCHS : 0;
+        uint256 first = usageAccounting.firstRewardedEpoch();
+        return open < first ? first : open;
     }
 
     // ─── Internal ────────────────────────────────────────────────────
@@ -160,9 +181,17 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         if (!cursor.initialized || current <= baseline) return;
 
         uint256 delta = current - baseline;
-        uint256 epoch = cursor.epoch;
+        uint256 epoch = _creditEpoch(cursor.epoch);
         _creditClient(buyer, cursor.clientAgentId, epoch, delta);
         _creditReferrer(buyer, epoch, delta);
+    }
+
+    /// @dev The cursor's epoch, unless the controllers already treat it as
+    ///      final: a trailing settlement flushed that late rolls forward into
+    ///      the oldest open epoch instead of moving a frozen denominator.
+    function _creditEpoch(uint256 cursorEpoch) internal view returns (uint256) {
+        uint256 open = oldestOpenEpoch();
+        return cursorEpoch < open ? open : cursorEpoch;
     }
 
     function _creditClient(address buyer, uint256 client, uint256 epoch, uint256 delta) internal {

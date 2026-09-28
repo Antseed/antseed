@@ -192,6 +192,35 @@ contract AntseedAttributionUsageTest is Test {
         assertEq(ledger.clientEpochPoints(18, desktop), 10);
     }
 
+    function test_lateCreditsRollForwardIntoTheOldestOpenEpoch() public {
+        referrals.bind(buyer, referrer);
+        _settle(desktop, 10); // settled in epoch 20, credited only at the next callback
+        accounting.setCurrentEpoch(23); // epoch 20 is claimable now: its totals are final
+        assertEq(ledger.oldestOpenEpoch(), 22);
+        (uint256 pending,, uint256 pendingEpoch) = ledger.pendingCredit(buyer);
+        assertEq(pending, 10);
+        assertEq(pendingEpoch, 22);
+
+        _flush();
+        assertEq(ledger.clientEpochPoints(20, desktop), 0);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 0);
+        assertEq(ledger.clientEpochPoints(22, desktop), 10);
+        assertEq(ledger.referrerEpochPoints(22, referrer), 10);
+
+        // Still-open epochs keep the settlement's own epoch.
+        _settle(desktop, 5); // epoch 23
+        accounting.setCurrentEpoch(24);
+        _flush();
+        assertEq(ledger.clientEpochPoints(23, desktop), 5);
+    }
+
+    function test_oldestOpenEpochNeverPrecedesTheFirstRewardedEpoch() public {
+        accounting.setCurrentEpoch(18);
+        assertEq(ledger.oldestOpenEpoch(), 18);
+        accounting.setCurrentEpoch(0);
+        assertEq(ledger.oldestOpenEpoch(), 18);
+    }
+
     function test_onlyRecorderCanRecord() public {
         vm.expectRevert(AntseedAttributionUsage.NotRecorder.selector);
         ledger.record(buyer, desktop);
