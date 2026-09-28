@@ -1,6 +1,12 @@
 import type { RendererUiState } from '../../core/state';
-import { notifyUiStateChanged } from '../../core/store';
-import type { DesktopBridge } from '../../types/bridge';
+import { getUiStateRef, notifyUiStateChanged } from '../../core/store';
+import type { DesktopBridge, ReferralSetupStatus } from '../../types/bridge';
+
+/** Record the user's answer (or a fresh status) so every view agrees. */
+export function setReferralSetupStatus(status: ReferralSetupStatus): void {
+  getUiStateRef().referralSetup = status;
+  notifyUiStateChanged();
+}
 
 type AppSetupModuleOptions = {
   uiState: RendererUiState;
@@ -25,6 +31,13 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
       void bridge.start?.({ mode: 'connect', router: 'local' }).catch(() => {});
     }
   });
+
+  // Ask once per launch whether a referral candidate is waiting. The main
+  // process persists the answer, so this is a no-op after the user decided.
+  void bridge.referralGetStatus?.().then((status) => {
+    uiState.referralSetup = status;
+    notifyUiStateChanged();
+  }).catch(() => {});
 
   const unsubStep = bridge.onAppSetupStep?.((data) => {
     uiState.appSetupStep = data.label;

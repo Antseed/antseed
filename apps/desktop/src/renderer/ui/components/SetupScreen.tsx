@@ -4,7 +4,7 @@ import { BrandIcon, type BrandKey } from './brand/BrandIcon';
 import { SetupAppPreview } from './SetupAppPreview';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
-import type { ReferralSetupStatus } from '../../types/bridge';
+import { ReferralConfirmation } from './ReferralConfirmation';
 import styles from './SetupScreen.module.scss';
 
 /** The long tail of first-run setup — catalog build plus the trust-gate wait
@@ -54,68 +54,7 @@ function StatItem({ value, label }: { value: number; label: string }) {
   );
 }
 
-function ReferralConfirmation({
-  status,
-  onChange,
-}: {
-  status: ReferralSetupStatus;
-  onChange: (status: ReferralSetupStatus) => void;
-}) {
-  const bridge = window.antseedDesktop;
-  const [busy, setBusy] = useState(false);
-  if ((status.state !== 'candidate' && status.state !== 'error') || !status.referrer) return null;
-  const referrer = status.referrer;
-  const shortReferrer = `${referrer.slice(0, 6)}…${referrer.slice(-4)}`;
-  const accept = bridge?.referralAccept;
-
-  const act = async (action: (() => Promise<ReferralSetupStatus>) | undefined) => {
-    if (!action) return;
-    setBusy(true);
-    try {
-      onChange(await action());
-    } finally {
-      setBusy(false);
-    }
-  };
-
-  return (
-    <section className={styles.referralCard} aria-label="Referral confirmation">
-      <strong>Were you invited by {shortReferrer}?</strong>
-      <p>
-        This wallet shared the download link on your network. If you confirm, your inviter earns 2% of
-        the ANTS you earn from usage, paid from network emissions. It costs you nothing and is recorded
-        with your first request.
-      </p>
-      {status.confidence === 'low' ? (
-        <p className={styles.referralWarning}>
-          More than one invite link was used from this network recently. Check the wallet carefully.
-        </p>
-      ) : null}
-      {status.state === 'error' ? (
-        <p className={styles.referralWarning} role="alert">{status.error}</p>
-      ) : null}
-      <div className={styles.referralActions}>
-        <button type="button" onClick={() => void act(bridge?.referralDecline)} disabled={busy}>Not my inviter</button>
-        <button
-          type="button"
-          className={styles.referralConfirm}
-          onClick={() => void act(accept ? () => accept(referrer) : undefined)}
-          disabled={busy}
-        >
-          {busy ? 'Confirming…' : 'Confirm referral'}
-        </button>
-      </div>
-    </section>
-  );
-}
-
 export function SetupScreen() {
-  const bridge = window.antseedDesktop;
-  const [referral, setReferral] = useState<ReferralSetupStatus>({ state: 'none' });
-  useEffect(() => {
-    void bridge?.referralGetStatus?.().then(setReferral).catch(() => {});
-  }, [bridge]);
-
   const snap = useUiSelector((state) => {
     // Live discovery tallies from the dashboard poll — these move while the
     // service catalog is still loading, so the wait shows real progress. A
@@ -237,7 +176,7 @@ export function SetupScreen() {
                 : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
             </p>
           )}
-          <ReferralConfirmation status={referral} onChange={setReferral} />
+          <ReferralConfirmation />
         </div>
 
         <div className={styles.footer}>

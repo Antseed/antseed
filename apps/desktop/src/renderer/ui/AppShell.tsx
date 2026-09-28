@@ -40,6 +40,9 @@ export function AppShell() {
     // is actually for. The provisional flag clears exactly when routing
     // confirms a free-backed default (or the user picks a model).
     freeDefaultReady: state.vprRouteSelection.model !== null && !state.vprDefaultModelProvisional,
+    // An unanswered referral question keeps setup open (up to the cap): the
+    // candidate is only offered once and a dismissed card is a lost binding.
+    referralPending: state.referralSetup.state === 'candidate',
   }), shallowEqual);
   const [activeView, setActiveView] = useState<ViewName>('home');
   const [setupVisible, setSetupVisible] = useState(false);
@@ -110,7 +113,7 @@ export function AppShell() {
     // trusted free seller (or none at all) must not lock the user out. The
     // Home "Finding free peers…" hint carries the search on from there. Only
     // an unfinished plugin install may exceed the cap.
-    if (hasServices && snap.freeDefaultReady) {
+    if (hasServices && snap.freeDefaultReady && !snap.referralPending) {
       const timer = setTimeout(() => {
         setSetupVisible(false);
         setSetupDismissed(true);
@@ -128,7 +131,7 @@ export function AppShell() {
       }, Math.max(0, SETUP_MAX_VISIBLE_MS - (Date.now() - shownAt)));
       return () => clearTimeout(timer);
     }
-  }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, hasServices, setupDismissed]);
+  }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, snap.referralPending, hasServices, setupDismissed]);
 
   const showSetup = setupVisible;
 
