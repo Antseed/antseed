@@ -3,6 +3,8 @@ pragma solidity ^0.8.24;
 
 import "forge-std/Test.sol";
 
+import { Pausable } from "@openzeppelin/contracts/utils/Pausable.sol";
+
 import { AntseedAttributionUsage } from "../emissions/AntseedAttributionUsage.sol";
 import { IAntseedUsageAccounting } from "../interfaces/IAntseedUsageAccounting.sol";
 import { MockERC8004Registry } from "./mocks/MockERC8004Registry.sol";
@@ -219,6 +221,32 @@ contract AntseedAttributionUsageTest is Test {
         assertEq(ledger.oldestOpenEpoch(), 18);
         accounting.setCurrentEpoch(0);
         assertEq(ledger.oldestOpenEpoch(), 18);
+    }
+
+    function test_pausedLedgerMovesTheCursorWithoutCrediting() public {
+        referrals.bind(buyer, referrer);
+        _settle(desktop, 10);
+        ledger.pause();
+
+        accounting.setCurrentEpoch(21);
+        vm.expectEmit(true, false, false, true);
+        emit AntseedAttributionUsage.UsageDroppedWhilePaused(buyer, 10);
+        _settle(cli, 500); // must not revert: Channels accrues either way
+        _settle(cli, 300);
+        vm.expectRevert(Pausable.EnforcedPause.selector);
+        _flush();
+
+        ledger.unpause();
+        accounting.setCurrentEpoch(22);
+        _settle(cli, 0);
+        // Only growth since the last (paused) observation is credited, to the
+        // client and epoch of that observation — never the pre-pause cursor.
+        assertEq(ledger.clientEpochPoints(20, desktop), 0);
+        assertEq(ledger.clientEpochPoints(21, cli), 300);
+        assertEq(ledger.referrerEpochPoints(20, referrer), 0);
+        assertEq(ledger.referrerEpochPoints(21, referrer), 300);
+        (uint256 pending,,) = ledger.pendingCredit(buyer);
+        assertEq(pending, 0);
     }
 
     function test_onlyRecorderCanRecord() public {

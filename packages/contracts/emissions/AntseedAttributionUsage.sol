@@ -95,6 +95,7 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     event ClientUsageCredited(uint256 indexed epoch, uint256 indexed clientAgentId, address indexed buyer, uint256 points);
     event UnattributedClientUsage(uint256 indexed epoch, address indexed buyer, uint256 points);
     event ReferrerUsageCredited(uint256 indexed epoch, address indexed referrer, address indexed buyer, uint256 points);
+    event UsageDroppedWhilePaused(address indexed buyer, uint256 points);
     event RecorderUpdated(address indexed recorder);
     event ReferralsUpdated(address indexed referrals);
 
@@ -118,12 +119,24 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     /// @notice Called by the recorder on every settlement, before the
     ///         accounting records it. `clientAgentId` is zero when the
     ///         buyer's metadata named no client, or an unregistered one.
-    function record(address buyer, uint256 clientAgentId) external whenNotPaused {
+    ///
+    ///         Never reverts for a pause: the recorder swallows reverts and
+    ///         the accounting keeps accruing regardless, so a skipped callback
+    ///         would leave the cursor stale and hand the whole backlog to that
+    ///         stale client and epoch on the next successful call. While
+    ///         paused the cursor still moves; the growth it passes over is
+    ///         dropped (attribution is off), not deferred.
+    function record(address buyer, uint256 clientAgentId) external {
         if (msg.sender != recorder || recorder == address(0)) revert NotRecorder();
         if (buyer == address(0)) revert InvalidAddress();
 
         Cursor storage cursor = _cursors[buyer];
-        _credit(buyer, cursor);
+        if (paused()) {
+            (uint256 baseline, uint256 current) = _observe(buyer, cursor);
+            if (cursor.initialized && current > baseline) emit UsageDroppedWhilePaused(buyer, current - baseline);
+        } else {
+            _credit(buyer, cursor);
+        }
 
         cursor.clientAgentId = uint64(_registeredClient(clientAgentId));
         cursor.epoch = uint32(_accountingEpoch());
@@ -172,18 +185,24 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     ///      observation forward. The first observation only sets the baseline:
     ///      usage before attribution existed is not credited to anyone.
     function _credit(address buyer, Cursor storage cursor) internal {
-        uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
-        uint256 baseline = cursor.weightedPoints;
-        // Cursor packs into uint128; the accounting's cumulative weighted points
-        // stay far below that, but never revert a settlement over it.
-        if (current > type(uint128).max) current = type(uint128).max;
-        cursor.weightedPoints = uint128(current);
+        (uint256 baseline, uint256 current) = _observe(buyer, cursor);
         if (!cursor.initialized || current <= baseline) return;
 
         uint256 delta = current - baseline;
         uint256 epoch = _creditEpoch(cursor.epoch);
         _creditClient(buyer, cursor.clientAgentId, epoch, delta);
         _creditReferrer(buyer, epoch, delta);
+    }
+
+    /// @dev Move the observation forward without crediting; returns the
+    ///      points observed before and after.
+    function _observe(address buyer, Cursor storage cursor) internal returns (uint256 baseline, uint256 current) {
+        current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
+        baseline = cursor.weightedPoints;
+        // Cursor packs into uint128; the accounting's cumulative weighted points
+        // stay far below that, but never revert a settlement over it.
+        if (current > type(uint128).max) current = type(uint128).max;
+        cursor.weightedPoints = uint128(current);
     }
 
     /// @dev The cursor's epoch, unless the controllers already treat it as
