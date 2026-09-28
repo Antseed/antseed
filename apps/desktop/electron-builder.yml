@@ -183,6 +183,9 @@ nsis:
   oneClick: false
   allowToChangeInstallationDirectory: true
   deleteAppDataOnUninstall: false
+  # Records the installer filename beside the app and pings the download
+  # proxy once the installer runs — install attribution, see the script.
+  include: build/installer.nsh
 
 linux:
   extraResources:
