@@ -1,6 +1,5 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
-import { buildRoutingServices } from './routing-services.js'
 import { RoutingCatalogCache } from './routing-catalog-cache.js'
 import { routingMetadataForService } from './router-execution.js'
 import { watchFile, unwatchFile } from 'node:fs'
@@ -1139,7 +1138,7 @@ export class BuyerProxy {
     if (value.kind !== 'router' || !router?.getModelRouterAdapter || !value.service) return
     const peers = await this._getPeers()
     const adapter = router.getModelRouterAdapter(value.service, peers)
-    const { catalog } = await this._routingCatalogs.get(adapter, value.service, peers, AbortSignal.timeout(10_000))
+    const { catalog } = await this._routingCatalogs.get(adapter, value.service, peers)
     const metadata = routingMetadataForService(adapter, catalog)
     if (metadata) validateRoutingServiceMetadata(metadata)
     resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, value.preferences ?? {})
@@ -1830,12 +1829,6 @@ export class BuyerProxy {
       this._rollbackPeerHealth([normalized], 'cleared by request')
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, peerId: normalized }))
-      return
-    }
-
-    if (path === '/_antseed/routing-services' && method === 'GET') {
-      res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, services: await buildRoutingServices(await this._getPeers(), this._node.router, this._routingCatalogs) }))
       return
     }
 

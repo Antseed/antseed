@@ -37,7 +37,7 @@ export type { Router, ModelRouterAdapter, RouteRecommendation, RouteCandidate, R
 export type { RoutingUsageObservation } from './interfaces/buyer-router.js';
 export * from './routing/selection.js';
 export { assertRoutingPreferences, canonicalRoutingJson, createRoutingServiceMetadata, resolveRoutingPreferences, validateRoutingPreferenceSchema, validateRoutingServiceMetadata, type RoutingPreferences, type RoutingPreferenceSchema, type RoutingServiceMetadataV1 } from '@antseed/protocol';
-export { createRoutingCatalog, validateRoutingCatalog, routingModelKey, type RoutingCatalogModel, type RoutingCatalogV1 } from '@antseed/protocol';
+export { validateRoutingCatalog, type RoutingCatalogV1 } from './routing/catalog.js';
 
 // Types (re-export everything)
 export * from './types/index.js';

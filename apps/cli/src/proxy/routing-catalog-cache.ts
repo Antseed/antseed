@@ -1,55 +1,38 @@
+import { QueryClient } from '@tanstack/query-core'
 import { validateRoutingCatalog, type ModelRouterAdapter, type PeerInfo, type Router, type RoutingCatalogV1, type RoutingServiceTarget } from '@antseed/node'
 
-export type RoutingCatalogResult = { catalog?: RoutingCatalogV1; expiresAt: number }
-
-type Entry = { expiresAt: number; result: Promise<RoutingCatalogResult> }
-
 const CATALOG_TIMEOUT_MS = 5_000
-const ERROR_TTL_MS = 5_000
 
-/** Short-lived cache for plugin-provided router catalogs, keyed by exact routing service. */
+/** Plugin-provided router catalogs, cached per exact routing service. */
 export class RoutingCatalogCache {
-  private readonly entries = new Map<string, Entry>()
+  private readonly queries = new QueryClient({
+    defaultOptions: { queries: { retry: false, networkMode: 'always', gcTime: Infinity, structuralSharing: false } },
+  })
 
-  constructor(private readonly ttlMs = 60_000, private readonly now: () => number = Date.now) {}
+  constructor(private readonly ttlMs = 60_000) {}
 
-  async get(adapter: Pick<ModelRouterAdapter, 'getCatalog'> | Router, target: RoutingServiceTarget | undefined, peers: PeerInfo[], signal?: AbortSignal): Promise<RoutingCatalogResult> {
+  async get(adapter: Pick<ModelRouterAdapter, 'getCatalog'> | Router, target: RoutingServiceTarget | undefined, peers: PeerInfo[]): Promise<{ catalog?: RoutingCatalogV1; expiresAt: number }> {
     const getCatalog = adapter.getCatalog
     if (!target || !getCatalog) return { expiresAt: Number.POSITIVE_INFINITY }
-    const key = JSON.stringify([target.peerId, target.provider, target.serviceId])
-    const cached = this.entries.get(key)
-    if (cached && cached.expiresAt > this.now()) return waitFor(cached.result, signal)
-    const entry: Entry = { expiresAt: this.now() + this.ttlMs, result: Promise.resolve({ expiresAt: 0 }) }
-    entry.result = (async () => {
-      const catalog = await getCatalog.call(adapter, structuredClone(target), structuredClone(peers), AbortSignal.timeout(CATALOG_TIMEOUT_MS))
-      if (catalog === undefined) return { expiresAt: entry.expiresAt }
-      validateRoutingCatalog(catalog)
-      return { catalog: structuredClone(catalog), expiresAt: entry.expiresAt }
-    })()
-    entry.result.catch(() => {
-      if (this.entries.get(key) === entry) entry.expiresAt = Math.min(entry.expiresAt, this.now() + ERROR_TTL_MS)
+    const queryKey = key(target)
+    const catalog = await this.queries.fetchQuery({
+      queryKey, staleTime: this.ttlMs,
+      queryFn: async () => {
+        const result = await getCatalog.call(adapter, structuredClone(target), structuredClone(peers), AbortSignal.timeout(CATALOG_TIMEOUT_MS))
+        if (result === undefined) return null
+        validateRoutingCatalog(result)
+        return structuredClone(result)
+      },
     })
-    this.entries.set(key, entry)
-    if (this.entries.size > 256) this.entries.delete(this.entries.keys().next().value!)
-    return waitFor(entry.result, signal)
+    const expiresAt = (this.queries.getQueryState(queryKey)?.dataUpdatedAt ?? Date.now()) + this.ttlMs
+    return catalog ? { catalog: structuredClone(catalog), expiresAt } : { expiresAt }
   }
 
   invalidate(target: RoutingServiceTarget): void {
-    this.entries.delete(JSON.stringify([target.peerId, target.provider, target.serviceId]))
+    this.queries.removeQueries({ queryKey: key(target), exact: true })
   }
 }
 
-async function waitFor<T>(promise: Promise<T>, signal?: AbortSignal): Promise<T> {
-  if (!signal) return structuredClone(await promise)
-  signal.throwIfAborted()
-  let onAbort = () => {}
-  const aborted = new Promise<never>((_resolve, reject) => {
-    onAbort = () => reject(signal.reason ?? new Error('Aborted'))
-    signal.addEventListener('abort', onAbort, { once: true })
-  })
-  try {
-    return structuredClone(await Promise.race([promise, aborted]))
-  } finally {
-    signal.removeEventListener('abort', onAbort)
-  }
+function key(target: RoutingServiceTarget) {
+  return ['routing-catalog', target.peerId, target.provider, target.serviceId] as const
 }

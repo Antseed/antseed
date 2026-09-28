@@ -26,7 +26,7 @@ export function validateRoutingRequest(input: unknown): asserts input is Record<
   assertRoutingPreferences(input.preferences);
   if (Object.keys(input).some(key => !['v', 'preferences', 'inputMessage', 'promptTokens', 'expectedCachedTokens', 'constraints', 'service', 'catalogRevision'].includes(key))) throw new Error('Unsupported routing request field');
   if (Object.keys(input.constraints).some(key => !['allowedCandidates', 'allowedPeerIds', 'blockedPeerIds', 'maxInputUsdPerMillion', 'minTrustScore'].includes(key))) throw new Error('Unsupported routing constraint');
-  if (input.catalogRevision !== undefined && (typeof input.catalogRevision !== 'string' || !/^0x[0-9a-f]{64}$/.test(input.catalogRevision))) throw new Error('Invalid catalog revision');
+  if (input.catalogRevision !== undefined && (typeof input.catalogRevision !== 'string' || !input.catalogRevision || input.catalogRevision.length > 128)) throw new Error('Invalid catalog revision');
   const candidates = input.constraints.allowedCandidates;
   if (!Array.isArray(candidates) || !candidates.length || candidates.length > MAX_ROUTING_CANDIDATES) throw new Error('Invalid allowed candidates');
   const keys = new Set<string>();

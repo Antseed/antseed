@@ -1,7 +1,8 @@
 import type { PeerInfo } from '../types/peer.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import type { RequestExecutionOptions } from '@antseed/buyer-core';
-import type { RoutingCatalogV1, RoutingPreferences, RoutingServiceMetadataV1 } from '@antseed/protocol';
+import type { RoutingPreferences, RoutingServiceMetadataV1 } from '@antseed/protocol';
+import type { RoutingCatalogV1 } from '../routing/catalog.js';
 import type { RoutingServiceTarget } from '../routing/selection.js';
 
 export type RouteRecommendation = {

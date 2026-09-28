@@ -131,7 +131,7 @@ export async function executeRouterSelection(args: {
   const adapter = router.getModelRouterAdapter ? router.getModelRouterAdapter(routingService!, peers) : router
   if (!adapter.selectRoute) throw new Error('Selected router does not support model selection')
   const catalogs = args.catalogs ?? new RoutingCatalogCache(0)
-  const { catalog } = await catalogs.get(adapter, routingService, peers, signal)
+  const { catalog } = await catalogs.get(adapter, routingService, peers)
   if (catalog) {
     candidates = candidates.filter(candidate => catalog.models.some(model => model.provider === candidate.provider && model.serviceId === candidate.serviceId))
     if (!candidates.length) throw new Error('No eligible allowed models are supported by this router')

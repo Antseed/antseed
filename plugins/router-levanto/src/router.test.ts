@@ -1,8 +1,13 @@
 import { describe, expect, it, vi } from 'vitest';
-import { createRoutingCatalog } from '@antseed/node';
-import type { PeerInfo, RouteRecommendation, RouteSelectionContext, SerializedHttpRequest } from '@antseed/node';
+import type { PeerInfo, RouteRecommendation, RoutingCatalogV1, RoutingPreferenceSchema, RouteSelectionContext, SerializedHttpRequest } from '@antseed/node';
 import { completedRequestPrice } from '@antseed/node';
 import { LevantoRoutingAdapter, levantoRoutingPeerUrl } from './router.js';
+
+const emptySchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false };
+function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema = emptySchema, options: { title?: string } = {}): RoutingCatalogV1 {
+  const content = { version: 1 as const, preferencesSchema, ...options, models };
+  return { ...content, revision: `rev-${JSON.stringify(content).length}-${models.length}` };
+}
 
 const sellerId = 'a'.repeat(40);
 const inferenceId = 'b'.repeat(40);
@@ -91,8 +96,8 @@ describe('Levanto buyer adapter', () => {
     const state = setup();
     state.context.catalog = createRoutingCatalog([]);
     await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('No eligible');
-    state.context.catalog = { ...createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]), revision: `0x${'0'.repeat(64)}` };
-    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('revision');
+    state.context.catalog = { ...createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]), revision: '' };
+    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('Invalid routing catalog');
     expect(state.sendRequest).not.toHaveBeenCalled();
   });
   it('fetches the catalog from the router HTTP API for the exact service', async () => {
@@ -106,8 +111,8 @@ describe('Levanto buyer adapter', () => {
     expect(await adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).toEqual(catalog);
     expect(String(fetchImpl.mock.calls[0]![0])).toBe('http://router.test:9000/_antseed/route/catalog?provider=levanto&service=levanto-route');
     expect(await adapter.getCatalog({ ...target, serviceId: 'other' }, [peer], AbortSignal.timeout(1000))).toBeUndefined();
-    fetchImpl.mockResolvedValueOnce(Response.json({ ...catalog, title: 'Changed' }));
-    await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('revision');
+    fetchImpl.mockResolvedValueOnce(Response.json({ ...catalog, models: [{ provider: 'openai' }] }));
+    await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('Invalid routing catalog');
     fetchImpl.mockResolvedValueOnce(new Response('down', { status: 503 }));
     await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('503');
   });

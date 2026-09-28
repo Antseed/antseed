@@ -17,7 +17,8 @@ import {
   buyerFault,
   computeTrustScore,
   createRoutingServiceMetadata,
-  createRoutingCatalog,
+  type RoutingCatalogV1,
+  type RoutingPreferenceSchema,
   type ModelRoutingPreferences,
   type Router,
   type ModelRouterAdapter,
@@ -27,6 +28,11 @@ import {
   type PeerInfo,
   type SerializedHttpResponse,
 } from '@antseed/node'
+
+function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false }): RoutingCatalogV1 {
+  const content = { version: 1 as const, preferencesSchema, models }
+  return { ...content, revision: `rev-${JSON.stringify(content).length}-${models.length}` }
+}
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
 import { ConversationStore } from './conversation-store.js'

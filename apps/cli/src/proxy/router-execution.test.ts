@@ -2,8 +2,13 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PeerInfo, RouteSelectionContext, Router, SerializedHttpRequest } from '@antseed/node'
 import { eligibleRouterCandidates, executeRouterSelection, resolveRouterRecommendation, resolveRouterRecommendations } from './router-execution.js'
-import { createRoutingServiceMetadata, createRoutingCatalog } from '@antseed/node'
+import { createRoutingServiceMetadata, type RoutingCatalogV1, type RoutingPreferenceSchema } from '@antseed/node'
 import { RoutingCatalogCache } from './routing-catalog-cache.js'
+
+function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false }): RoutingCatalogV1 {
+  const content = { version: 1 as const, preferencesSchema, models }
+  return { ...content, revision: `rev-${JSON.stringify(content).length}-${models.length}` }
+}
 
 const peer = {
   peerId: 'a'.repeat(40) as PeerInfo['peerId'], providers: ['openai'], lastSeen: Date.now(), reputationScore: 90,

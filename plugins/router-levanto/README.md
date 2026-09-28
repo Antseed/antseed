@@ -44,9 +44,8 @@ there is no separate seller-peer setting or cheapest-peer default.
 The advertised `levanto-routing` protocol identifies compatible services, rather
 than a hardcoded provider name. The remaining plugin settings are the existing
 local-router policy settings. Routing services stay out of the inference-model
-catalog. `GET /_antseed/routing-services` lists compatible offers with their
-exact provider/service/peer, completed-request price and plugin-provided catalog;
-clients render router-advertised settings from the catalog schema.
+catalog; clients render router-advertised settings from the plugin-provided
+catalog schema.
 
 In router mode, requests using `model: "antseed"` or
 `model: "levanto-auto"` use the selected router, ignoring an old fixed-model
@@ -113,8 +112,8 @@ no tokens; token usage is not suppressed just because it came from a router.
 Preference schemas come from the service catalog's `preferencesSchema`, which the
 adapter's `getCatalog()` fetches from the router API (`GET /_antseed/route/catalog`,
 base URL `LEVANTO_ROUTING_PEER_URL` or the routing peer's host on port 8787). The same transport can serve different routing services with
-different settings. The buyer validates the exact selected service's schema and
-exposes it through `GET /_antseed/routing-services`. For example, a CQT field:
+different settings. The buyer validates the exact selected service's schema.
+For example, a CQT field:
 
 ```json
 {
@@ -139,7 +138,8 @@ hash and the selected service. Routing v1 sends a generic `preferences` object
 with string values, not a top-level numeric `cqt`. A seller integrating Levanto's
 private API can translate its own `preferences.cqt` to that backend's format.
 
-Schemas are bound to the catalog and its content-hash revision. Defaults and
+Schemas are bound to the catalog and its revision, an opaque string chosen by
+the router and echoed as `catalogRevision`. Defaults and
 choices are validated before a routing purchase and again seller-side. Changed
 or removed choices fail validation rather than being silently replaced. Required
 fields without defaults require an explicit choice; optional fields can be unset.
@@ -262,9 +262,8 @@ constraints, but their supported models are unknown. An invalid or expired catal
 is an error, not permission to omit it. Clients must not present the network-wide
 model list as that router's supported-model list.
 
-See [the seller integration contract](../../docs/protocol/levanto-routing.md)
-for the catalog API, limits, v1 examples and rollout requirements. Levanto's
-external backend must implement this revised contract before release.
+Levanto's external backend must implement the catalog API and this revised
+contract before release.
 Unsupported inference overrides are rejected as a whole candidate, not stripped.
 The backend's predicted prices are not authoritative inference prices.
 
