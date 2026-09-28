@@ -90,14 +90,8 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'start your local LLM runtime (no API key required)';
     case 'typesafe':
       return 'export TYPESAFE_API_KEY=<key>';
-    case 'runway':
-      return 'export RUNWAY_API_KEY=<seller-api-key>; configure a seller-operated baseUrl';
     case 'veo':
       return 'export GEMINI_API_KEY=<seller-api-key>; configure a seller-operated baseUrl';
-    case 'minimax':
-      return 'export MINIMAX_API_KEY=<seller-api-key>; configure a seller-operated baseUrl';
-    case 'wan':
-      return 'export DASHSCOPE_API_KEY=<seller-api-key>; configure a seller-operated baseUrl';
     case 'seedance':
       return 'export ARK_API_KEY=<seller-api-key>';
     case 'venice':

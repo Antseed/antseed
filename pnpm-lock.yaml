@@ -826,22 +826,6 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
 
-  plugins/provider-minimax:
-    dependencies:
-      '@antseed/provider-core':
-        specifier: workspace:*
-        version: link:../../packages/provider-core
-    devDependencies:
-      '@antseed/node':
-        specifier: workspace:*
-        version: link:../../packages/node
-      typescript:
-        specifier: ^5.5.0
-        version: 5.9.3
-      vitest:
-        specifier: ^2.0.0
-        version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
-
   plugins/provider-openai:
     dependencies:
       '@antseed/provider-core':
@@ -859,22 +843,6 @@ importers:
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
 
   plugins/provider-openai-responses:
-    dependencies:
-      '@antseed/provider-core':
-        specifier: workspace:*
-        version: link:../../packages/provider-core
-    devDependencies:
-      '@antseed/node':
-        specifier: workspace:*
-        version: link:../../packages/node
-      typescript:
-        specifier: ^5.5.0
-        version: 5.9.3
-      vitest:
-        specifier: ^2.0.0
-        version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
-
-  plugins/provider-runway:
     dependencies:
       '@antseed/provider-core':
         specifier: workspace:*
@@ -946,22 +914,6 @@ importers:
       '@antseed/api-adapter':
         specifier: workspace:*
         version: link:../../packages/api-adapter
-      '@antseed/provider-core':
-        specifier: workspace:*
-        version: link:../../packages/provider-core
-    devDependencies:
-      '@antseed/node':
-        specifier: workspace:*
-        version: link:../../packages/node
-      typescript:
-        specifier: ^5.5.0
-        version: 5.9.3
-      vitest:
-        specifier: ^2.0.0
-        version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
-
-  plugins/provider-wan:
-    dependencies:
       '@antseed/provider-core':
         specifier: workspace:*
         version: link:../../packages/provider-core

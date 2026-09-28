@@ -19,11 +19,18 @@ it('registers the Venice plugin with the Venice API by default and advertises st
   expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ outputs: ['video'], videoDownload: 'video-stream-v1' });
 });
 
-it('relays queue byte-for-byte with seller auth', async () => {
+it.each([
+  {},
+  { image_url: 'https://media.example/start.png' },
+  { image_url: 'data:image/png;base64,aW1hZ2U=', end_image_url: 'https://media.example/end.png' },
+  { reference_image_urls: ['https://media.example/reference.png'] },
+  { video_url: 'https://media.example/input.mp4' },
+  { reference_video_urls: ['https://media.example/reference.mp4'] },
+])('relays queue media %j byte-for-byte with seller auth', async (media) => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
   vi.stubGlobal('fetch', fetchMock);
   const provider = await plugin.createProvider(config);
-  const body = Buffer.from(' {"model":"wan-2.5","prompt":"cat","duration":"5s"}\n');
+  const body = Buffer.from(` ${JSON.stringify({ model: 'wan-2.5', prompt: 'cat', duration: '5s', ...media })}\n`);
   const response = await provider.handleRequest({ requestId: 'q', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json', authorization: 'buyer-key' }, body });
   expect(response.statusCode).toBe(200);
   const [url, options] = fetchMock.mock.calls[0]!;

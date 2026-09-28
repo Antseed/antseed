@@ -4,8 +4,8 @@ import { validateUnitBillingUsage, type UnitBillingModelV1 } from '@antseed/prot
 
 const model: UnitBillingModelV1 = { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] };
 const response = (body: object, statusCode = 200) => ({ requestId: 'request', statusCode, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)) });
-function capture(path = '/v1/text_to_video', body: object = { model: 'gen4.5', duration: 8 }, method = 'POST') {
-  return captureUnitBillingContext({ sellerPeerId: 'a'.repeat(40), provider: 'runway', service: 'gen4.5', serviceApiProtocol: 'runway-video', request: { requestId: 'request', method, path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) } });
+function capture(path = '/api/v3/contents/generations/tasks', body: object = { model: 'seedance-2-0', duration: 8 }, method = 'POST') {
+  return captureUnitBillingContext({ sellerPeerId: 'a'.repeat(40), provider: 'seedance', service: 'seedance-2-0', serviceApiProtocol: 'seedance-video', request: { requestId: 'request', method, path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) } });
 }
 
 describe('acceptance-based video metering', () => {
@@ -13,13 +13,13 @@ describe('acceptance-based video metering', () => {
     const captured = capture();
     expect(computeFinalUnitBilling(model, captured.context, response({ id: 'task' }), captured.requestFacts).costUsdc).toBe(800000n);
     for (const method of ['GET', 'DELETE']) {
-      const followUp = capture('/v1/tasks/task', {}, method);
+      const followUp = capture('/api/v3/contents/generations/tasks/task', {}, method);
       expect(computeFinalUnitBilling(model, followUp.context, response({ id: 'task', status: 'SUCCEEDED' }), followUp.requestFacts).costUsdc).toBe(0n);
     }
   });
 
   it('rejects missing duration for per-second pricing and unmatched tiers before submission', () => {
-    const missing = capture('/v1/text_to_video', { model: 'gen4.5' });
+    const missing = capture('/api/v3/contents/generations/tasks', { model: 'seedance-2-0' });
     expect(() => estimateUnitRequestCost(model, missing)).toThrow(/duration/);
     const captured = capture();
     const tier: UnitBillingModelV1 = { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '1080p' } }] };
@@ -27,7 +27,7 @@ describe('acceptance-based video metering', () => {
   });
 
   it('allows fixed per-generation prices without duration', () => {
-    const captured = capture('/v1/text_to_video', { model: 'gen4.5' });
+    const captured = capture('/api/v3/contents/generations/tasks', { model: 'seedance-2-0' });
     const fixed: UnitBillingModelV1 = { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] };
     expect(computeFinalUnitBilling(fixed, captured.context, response({ id: 'task' }), captured.requestFacts).costUsdc).toBe(500000n);
   });

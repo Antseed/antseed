@@ -29,4 +29,6 @@ POST /api/v3/contents/generations/tasks
 - The account-wide task list is not relayed.
 - `callback_url` is forwarded to ModelArk unchanged, so ModelArk (not AntSeed) posts task updates to that URL.
 
+Image-to-video uses the same create endpoint with an `image_url` content item and `role: "first_frame"`. Last-frame, reference-image and reference-video inputs are forwarded unchanged where the selected model supports them. See [media-input examples and limitations](../../docs/protocol/spec/10-native-video.md#image-to-video-and-video-inputs).
+
 Per-second pricing needs an explicit positive `duration`; `duration: -1` and `frames` requests need `video_generations` pricing. See [native video integration](../../docs/protocol/spec/10-native-video.md) for billing, routing, ownership, and retry behavior.

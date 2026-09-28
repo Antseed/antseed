@@ -28,6 +28,20 @@ const DOMAIN_VERIFICATION_METHOD_IDS: Record<DomainVerificationMethod, number> =
 };
 const DOMAIN_VERIFICATION_METHODS_BY_ID: DomainVerificationMethod[] = ["dns-txt", "https-well-known"];
 const SERVICE_UNIT_BILLING_METADATA_VERSION = 11;
+const SERVICE_UNIT_BILLING_PROTOCOL_IDS: Record<ServiceApiProtocol, number> = {
+  "anthropic-messages": 0,
+  "openai-chat-completions": 1,
+  "openai-completions": 2,
+  "openai-responses": 3,
+  "openai-images": 4,
+  "typesafe-systemone": 5,
+  "veo-video": 7,
+  "seedance-video": 10,
+  "venice-video": 11,
+};
+const SERVICE_UNIT_BILLING_PROTOCOLS_BY_ID = new Map(
+  WELL_KNOWN_SERVICE_API_PROTOCOLS.map(protocol => [SERVICE_UNIT_BILLING_PROTOCOL_IDS[protocol], protocol]),
+);
 const SERVICE_CAPABILITIES_METADATA_VERSION = 12;
 const WIDE_SERVICE_COUNTS_METADATA_VERSION = 12;
 const UNIT_BILLING_UNITS_BY_ID: UnitBillingUnitV1[] = [...UNIT_BILLING_UNITS_V1];
@@ -430,13 +444,13 @@ function encodeServiceUnitBillingModels(
   }
   entries.sort(([serviceA, protocolA], [serviceB, protocolB]) =>
     serviceA === serviceB
-      ? WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocolA) - WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocolB)
+      ? SERVICE_UNIT_BILLING_PROTOCOL_IDS[protocolA] - SERVICE_UNIT_BILLING_PROTOCOL_IDS[protocolB]
       : serviceA.localeCompare(serviceB),
   );
   pushServiceEntryCount(parts, entries.length, hasWideServiceCounts);
   for (const [serviceName, protocol, model] of entries) {
     pushUtf8(parts, serviceName);
-    parts.push(new Uint8Array([WELL_KNOWN_SERVICE_API_PROTOCOLS.indexOf(protocol)]));
+    parts.push(new Uint8Array([SERVICE_UNIT_BILLING_PROTOCOL_IDS[protocol]]));
     parts.push(new Uint8Array([model.version]));
     parts.push(new Uint8Array([model.components.length]));
     for (const component of model.components) {
@@ -686,7 +700,7 @@ function decodeServiceUnitBillingModels(
     const [serviceName, serviceOffset] = readUtf8(data, offset, checkBounds);
     offset = serviceOffset;
     checkBounds(offset, 1, data.length);
-    const protocol = WELL_KNOWN_SERVICE_API_PROTOCOLS[data[offset]!];
+    const protocol = SERVICE_UNIT_BILLING_PROTOCOLS_BY_ID.get(data[offset]!);
     offset += 1;
     if (!protocol) {
       throw new Error("Unsupported service unit billing protocol id");

@@ -43,15 +43,30 @@ describe('encodeMetadata / decodeMetadata', () => {
   it('round-trips native video protocols and appended billing units without changing image IDs', () => {
     const metadata = makeMetadata();
     const provider = metadata.providers[0]!;
-    provider.serviceApiProtocols = { video: ['runway-video', 'veo-video'] };
+    provider.serviceApiProtocols = { video: ['seedance-video', 'veo-video'] };
     provider.serviceUnitBillingModels = { video: {
-      'runway-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] },
+      'seedance-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] },
       'veo-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.25 }] },
     } };
     const decoded = decodeMetadata(encodeMetadata(metadata));
     expect(decoded.providers[0]?.serviceApiProtocols).toEqual(provider.serviceApiProtocols);
     expect(decoded.providers[0]?.serviceUnitBillingModels).toEqual(provider.serviceUnitBillingModels);
   });
+  it.each([
+    ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
+    ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
+    ['veo-video', 7], ['seedance-video', 10], ['venice-video', 11],
+  ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
+    const metadata = makeMetadata();
+    const marker = 'billing-wire-id';
+    metadata.providers[0]!.serviceUnitBillingModels = { [marker]: { [protocol]: { version: 1, components: [] } } };
+    const bytes = Buffer.from(encodeMetadata(metadata));
+    const offset = bytes.indexOf(marker);
+    expect(offset).toBeGreaterThan(0);
+    expect(bytes[offset + marker.length]).toBe(wireId);
+    expect(decodeMetadata(bytes).providers[0]!.serviceUnitBillingModels).toEqual(metadata.providers[0]!.serviceUnitBillingModels);
+  });
+
   it('round-trips v12 catalogs with more than 255 service entries', () => {
     const services = Array.from({ length: 300 }, (_, index) => `service-${index}`);
     const servicePricing = Object.fromEntries(

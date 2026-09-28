@@ -13,11 +13,17 @@ it('registers the seedance seller endpoint plugin', async () => {
   expect(provider.serviceApiProtocols).toEqual({ video: ['seedance-video'] });
 });
 
-it('relays native Seedance creates byte-for-byte with seller auth', async () => {
+it.each([
+  [{ type: 'text', text: 'A cat' }],
+  [{ type: 'image_url', image_url: { url: 'https://media.example/start.png' }, role: 'first_frame' }],
+  [{ type: 'image_url', image_url: { url: 'data:image/png;base64,aW1hZ2U=' }, role: 'first_frame' }, { type: 'image_url', image_url: { url: 'https://media.example/end.png' }, role: 'last_frame' }],
+  [{ type: 'image_url', image_url: { url: 'https://media.example/reference.png' }, role: 'reference_image' }],
+  [{ type: 'video_url', video_url: { url: 'https://media.example/input.mp4' }, role: 'reference_video' }],
+].map(content => ({ content })))('relays native Seedance media $content byte-for-byte with seller auth', async ({ content }) => {
   const fetchMock = vi.fn().mockResolvedValue(new Response('{"id": "task"}', { status: 200 }));
   vi.stubGlobal('fetch', fetchMock);
   const provider = await plugin.createProvider(config);
-  const body = Buffer.from(' { "model": "video", "duration": 5 }\n');
+  const body = Buffer.from(` ${JSON.stringify({ model: 'video', duration: 5, content })}\n`);
   const response = await provider.handleRequest({ requestId: 'seedance', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', authorization: 'buyer-key', 'x-antseed-provider': 'seedance' }, body });
   expect(response.statusCode).toBe(200);
   const [url, options] = fetchMock.mock.calls[0]!;

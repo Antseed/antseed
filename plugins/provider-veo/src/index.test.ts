@@ -15,11 +15,17 @@ it('registers the veo seller endpoint plugin without job management', async () =
   expect(provider).not.toHaveProperty('videoAdapter');
 });
 
-it('supplies Veo auth without Runway headers while retaining native relay safeguards', async () => {
+it.each([
+  { prompt: 'cat' },
+  { prompt: 'cat', image: { bytesBase64Encoded: 'aW1hZ2U=', mimeType: 'image/png' } },
+  { prompt: 'cat', image: { inlineData: { data: 'aW1hZ2U=', mimeType: 'image/png' } }, lastFrame: { inlineData: { data: 'ZW5k', mimeType: 'image/png' } } },
+  { prompt: 'cat', referenceImages: [{ image: { bytesBase64Encoded: 'aW1hZ2U=', mimeType: 'image/png' }, referenceType: 'asset' }] },
+  { prompt: 'cat', video: { inlineData: { data: 'dmlkZW8=', mimeType: 'video/mp4' } } },
+])('preserves Veo media %j with seller auth and native relay safeguards', async (instance) => {
   const fetchMock = vi.fn().mockResolvedValue(new Response('{"name":"operations/task"}', { status: 200 }));
   vi.stubGlobal('fetch', fetchMock);
   const provider = await plugin.createProvider(config);
-  const body = Buffer.from(' { "model": "extension", "service": "extension", "instances": [{"prompt":"cat"}] }\n');
+  const body = Buffer.from(` ${JSON.stringify({ model: 'extension', service: 'extension', instances: [instance] })}\n`);
   const response = await provider.handleRequest({ requestId: 'veo', method: 'POST', path: '/v1beta/models/video:predictLongRunning', headers: { 'content-type': 'application/json', authorization: 'buyer-key', 'x-goog-api-key': 'buyer-key', 'x-antseed-provider': 'veo' }, body });
   expect(response.statusCode).toBe(200);
   expect(fetchMock).toHaveBeenCalledTimes(1);

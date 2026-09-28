@@ -1,6 +1,6 @@
 # Native video API integration
 
-AntSeed relays native Runway, Veo, MiniMax, Wan, Seedance, and Venice video requests to seller-operated APIs. Sellers own execution, storage, and refund policy. AntSeed does not cache artifacts.
+AntSeed relays native Veo, Seedance, and Venice video requests to seller-operated APIs. Models from other vendors can still be used through Venice; their separate native APIs are not supported. Sellers own execution, storage, and refund policy. AntSeed does not cache artifacts.
 
 Direct Gemini Veo downloads and finished Venice videos are streamed through the original seller; its API key never leaves the seller. Other providers and seller-hosted result URLs remain unchanged and must be accessible to buyers without seller credentials.
 
@@ -8,16 +8,9 @@ Direct Gemini Veo downloads and finished Venice videos are streamed through the 
 
 | Protocol | Method | Native path |
 | --- | --- | --- |
-| `runway-video` | POST | `/v1/text_to_video`, `/v1/image_to_video` |
-| `runway-video` | GET, DELETE | `/v1/tasks/{id}` |
 | `veo-video` | POST | `/v1beta/models/{model}:predictLongRunning` |
 | `veo-video` | GET | `/v1beta/{operation-name}` |
 | `veo-video` | GET | `/v1beta/{operation-name}/videos/{index}:download` (AntSeed endpoint) |
-| `minimax-video` | POST | `/v2/video_generation` |
-| `minimax-video` | GET | `/v2/query/video_generation/{task_id}` |
-| `minimax-video` | DELETE | `/v2/video_generation/{task_id}` |
-| `wan-video` | POST | `/api/v1/services/aigc/video-generation/video-synthesis` |
-| `wan-video` | GET | `/api/v1/tasks/{task_id}` |
 | `seedance-video` | POST | `/api/v3/contents/generations/tasks` |
 | `seedance-video` | GET, DELETE | `/api/v3/contents/generations/tasks/{id}` |
 | `venice-video` | POST | `/api/v1/video/queue` |
@@ -25,9 +18,76 @@ Direct Gemini Veo downloads and finished Venice videos are streamed through the 
 
 Veo uses the path model as the service; every other API uses the body `model`. Venice follow-ups carry `queue_id` in the JSON body instead of the path; the seller rebuilds them as `{model, queue_id}` (plus `delete_media_on_completion` on retrieve) from the owned job and routed service. `/api/v1/video/quote` is not relayed. Each API's paths, job ID field, and billing fields are declared in one table in `packages/api-adapter/src/native-video.ts`. Service names must equal seller model names. Request bodies are forwarded byte-for-byte, and chat aliases, pins, and model rewrites are not applied. Video services appear in `GET /v1/models?type=videos`.
 
+## Image-to-video and video inputs
+
+The create endpoints are not text-only. AntSeed forwards the native JSON body byte-for-byte, including images, reference frames and video inputs; it does not convert these requests into image-generation or chat requests. No separate image-to-video endpoint or AntSeed upload service is needed.
+
+Choose an upstream model that supports the requested input and advertise that exact model in the seller's allowed services and pricing. Upstream model-specific media constraints still apply. A text-only Venice model does not become image-capable just because `image_url` is present.
+
+### Venice
+
+Send this body to `POST /api/v1/video/queue`, replacing the model with an image-to-video model available to your seller:
+
+```json
+{
+  "model": "<image-to-video-model>",
+  "prompt": "Animate the scene with a slow camera pan",
+  "image_url": "https://media.example/start.png",
+  "duration": "5s",
+  "resolution": "720p"
+}
+```
+
+`image_url` also accepts an inline `data:image/png;base64,...` URL. Where supported by the model, `end_image_url` supplies a last frame and `reference_image_urls` supplies references. Video-input models use `video_url` or `reference_video_urls`. Poll/download with `/api/v1/video/retrieve` exactly as for text-to-video.
+
+### Seedance
+
+Send this body to `POST /api/v3/contents/generations/tasks` with a model available to your seller:
+
+```json
+{
+  "model": "<seedance-model>",
+  "content": [
+    { "type": "text", "text": "Animate the scene with a slow camera pan" },
+    { "type": "image_url", "image_url": { "url": "https://media.example/start.png" }, "role": "first_frame" }
+  ],
+  "duration": 5,
+  "resolution": "720p"
+}
+```
+
+Image URLs can also be inline data URLs. Models with the corresponding capability accept `last_frame` or `reference_image` roles. Native reference-video inputs use `{"type":"video_url","video_url":{"url":"https://media.example/input.mp4"},"role":"reference_video"}`. Poll the same task endpoint and download the returned `content.video_url`.
+
+### Veo
+
+Send this body to `POST /v1beta/models/<veo-model>:predictLongRunning`. This is the wire format produced by the Google JavaScript SDK's image converter, not its higher-level `imageBytes` argument:
+
+```json
+{
+  "instances": [{
+    "prompt": "Animate the scene with a slow camera pan",
+    "image": { "bytesBase64Encoded": "<base64-image-bytes>", "mimeType": "image/png" }
+  }],
+  "parameters": { "durationSeconds": 8 }
+}
+```
+
+AntSeed also preserves native `lastFrame`, `referenceImages`, and `video` fields, including the `inlineData` image/video representation in Google's REST examples. Veo's video extension is not a general guarantee that arbitrary videos can be edited. Model and input eligibility remain Google's responsibility. Poll and download through the same operation flow as text-to-video.
+
+### Media access and verification
+
+- URLs must be reachable by the upstream provider. A buyer's local file path, `localhost` URL, or private AntSeed download URL is not an upstream-accessible input. Use inline media or an upstream-accessible URL; AntSeed does not fetch arbitrary input URLs or upload local files for you.
+- Requests containing inline images automatically use chunked P2P uploads when needed. The seller's default upload-body limit is 64 MiB, counting the whole JSON body and base64 overhead; this is separate from the output-video download limit.
+- Existing seller-account-scoped media references are not automatically resolved or routed to their original seller. Download the media and supply an eligible inline input or accessible URL instead, subject to upstream restrictions. Seedance draft-task IDs use the existing ownership and seller-pinning flow.
+- Image-to-video has mocked buyer → seller → upstream → result-download tests for all three plugins, including large inline PNGs, WebRTC uploads, unchanged bodies, replay without duplicate charges, and free follow-ups. These tests do not validate a real upstream model's image quality or acceptance. Video-input fields have byte-preservation tests, not a live video-editing guarantee.
+
+Native field references: [Venice queue](https://docs.venice.ai/api-reference/endpoint/video/queue), [BytePlus create task](https://docs.byteplus.com/en/docs/ModelArk/1520757), [Google Veo](https://ai.google.dev/gemini-api/docs/veo), and [Google SDK converters](https://github.com/googleapis/js-genai/blob/main/src/converters/_models_converters.ts).
+
 ## Billing
 
-A create is charged when the seller returns an accepted job ID: Runway and Seedance `id`, Veo `name`, MiniMax `task_id`, Wan `output.task_id`, or Venice `queue_id`. Polling and cancellation are free. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`, Veo `parameters.durationSeconds`, Wan `parameters.duration`). Venice durations such as `"5s"` are read as seconds. Runway `auto`, Seedance `-1`, Seedance `frames`, and Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Veo reads `numberOfVideos` or `sampleCount`; every other API bills one video per create.
+Discovery billing entries retain their existing wire IDs: Veo `7`, Seedance `10`, and Venice `11`. IDs `6`, `8`, and `9` are unused; removing a provider must not renumber the remaining protocols.
+
+A create is charged when the seller returns an accepted job ID: Seedance `id`, Veo `name`, or Venice `queue_id`. Polling and cancellation are free. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration` or Veo `parameters.durationSeconds`). Venice durations such as `"5s"` are read as seconds. Seedance `-1`, Seedance `frames`, and Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Veo reads `numberOfVideos` or `sampleCount`; every other API bills one video per create.
 
 ## Routing and ownership
 

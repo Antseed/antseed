@@ -89,8 +89,8 @@ function makeSellerRequestHandler(
 
 it('meters native video acceptance once, preserves buyer ownership, and serves follow-ups without budget', async () => {
   const provider = makeProvider(0, 0, {
-    name: 'runway', services: ['gen4.5'], serviceApiProtocols: { 'gen4.5': ['runway-video'] },
-    serviceUnitBillingModels: { 'gen4.5': { 'runway-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
+    name: 'seedance', services: ['seedance-2-0'], serviceApiProtocols: { 'seedance-2-0': ['seedance-video'] },
+    serviceUnitBillingModels: { 'seedance-2-0': { 'seedance-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
   });
   const owners = new Map<string, string>();
   provider.handleRequest = vi.fn(async request => {
@@ -113,19 +113,19 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   const buyer = 'b'.repeat(40);
   const { mux } = handler.handleConnection(makeConn(frames), buyer, payment);
   const request = (method: string, path: string): SerializedHttpRequest => ({ requestId: `${method}-${frames.length}`, method, path,
-    headers: { 'content-type': 'application/json', 'x-antseed-service': 'gen4.5', 'X-Antseed-Buyer-Peer-Id': 'spoofed', 'x-antseed-buyer-peer-id': 'spoofed' }, body: Buffer.from(JSON.stringify(method === 'POST' ? { model: 'gen4.5', duration: 8 } : {})) });
-  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest(request('POST', '/v1/text_to_video')) });
+    headers: { 'content-type': 'application/json', 'x-antseed-service': 'seedance-2-0', 'X-Antseed-Buyer-Peer-Id': 'spoofed', 'x-antseed-buyer-peer-id': 'spoofed' }, body: Buffer.from(JSON.stringify(method === 'POST' ? { model: 'seedance-2-0', duration: 8 } : {})) });
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest(request('POST', '/api/v3/contents/generations/tasks')) });
   expect(recordSpend).toHaveBeenCalledWith('session-1', 800000n);
   expect(sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { video_seconds: '8' } } }));
   paid = false;
   for (const method of ['GET', 'GET', 'DELETE']) {
-    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: frames.length + 1, payload: encodeHttpRequest(request(method, '/v1/tasks/task')) });
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: frames.length + 1, payload: encodeHttpRequest(request(method, '/api/v3/contents/generations/tasks/task')) });
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
   }
   expect(recordSpend).toHaveBeenCalledTimes(1);
   expect(payment.sendPaymentRequired).not.toHaveBeenCalled();
   const other = handler.handleConnection(makeConn(frames), 'c'.repeat(40), payment);
-  await other.mux.handleFrame({ type: MessageType.HttpRequest, messageId: 10, payload: encodeHttpRequest(request('GET', '/v1/tasks/task')) });
+  await other.mux.handleFrame({ type: MessageType.HttpRequest, messageId: 10, payload: encodeHttpRequest(request('GET', '/api/v3/contents/generations/tasks/task')) });
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(404);
   expect(owners.get('task')).toBe(buyer);
   expect(provider.handleRequest).toHaveBeenCalledTimes(4);
@@ -166,8 +166,8 @@ describe('native video job ownership and idempotency', () => {
 
   function setup(dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db'), taskIds = ['task-1', 'task-2']) {
     const provider = makeProvider(0, 0, {
-      name: 'runway', services: ['gen4.5'], serviceApiProtocols: { 'gen4.5': ['runway-video'] },
-      serviceUnitBillingModels: { 'gen4.5': { 'runway-video': pricing } },
+      name: 'seedance', services: ['seedance-2-0'], serviceApiProtocols: { 'seedance-2-0': ['seedance-video'] },
+      serviceUnitBillingModels: { 'seedance-2-0': { 'seedance-video': pricing } },
     });
     const creates: string[] = [];
     provider.handleRequest = vi.fn(async request => {
@@ -189,11 +189,11 @@ describe('native video job ownership and idempotency', () => {
       const connection = connections.get(peer) ?? handler.handleConnection(makeConn(frames), peer, payment);
       connections.set(peer, connection);
       messageId += 1;
-      const request: SerializedHttpRequest = { requestId: `r-${messageId}`, method, path, headers: { 'content-type': 'application/json', 'x-antseed-service': 'gen4.5', ...headers }, body: Buffer.from(JSON.stringify(body)) };
+      const request: SerializedHttpRequest = { requestId: `r-${messageId}`, method, path, headers: { 'content-type': 'application/json', 'x-antseed-service': 'seedance-2-0', ...headers }, body: Buffer.from(JSON.stringify(body)) };
       await connection.mux.handleFrame({ type: MessageType.HttpRequest, messageId, payload: encodeHttpRequest(request) });
       return decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
     };
-    const create = (peer: string, headers: Record<string, string> = {}, body: object = { model: 'gen4.5', duration: 8 }) => send(peer, 'POST', '/v1/text_to_video', body, headers);
+    const create = (peer: string, headers: Record<string, string> = {}, body: object = { model: 'seedance-2-0', duration: 8 }) => send(peer, 'POST', '/api/v3/contents/generations/tasks', body, headers);
     return { provider, recordSpend, store, send, create, payment, dbPath };
   }
 
@@ -201,14 +201,14 @@ describe('native video job ownership and idempotency', () => {
     const { provider, send, create, store } = setup();
     expect((await create(buyer)).statusCode).toBe(200);
     for (const method of ['GET', 'DELETE']) {
-      const denied = await send(other, method, '/v1/tasks/task-1');
+      const denied = await send(other, method, '/api/v3/contents/generations/tasks/task-1');
       expect(denied.statusCode).toBe(404);
       expect(JSON.parse(new TextDecoder().decode(denied.body)).error.code).toBe('resource_not_found');
     }
-    expect((await send(other, 'GET', '/v1/tasks/unknown')).statusCode).toBe(404);
+    expect((await send(other, 'GET', '/api/v3/contents/generations/tasks/unknown')).statusCode).toBe(404);
     expect(provider.handleRequest).toHaveBeenCalledTimes(1);
-    expect((await send(buyer, 'GET', '/v1/tasks/task-1')).statusCode).toBe(200);
-    expect((await send(buyer, 'DELETE', '/v1/tasks/task-1')).statusCode).toBe(204);
+    expect((await send(buyer, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(200);
+    expect((await send(buyer, 'DELETE', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(204);
     store.close();
   });
 
@@ -217,8 +217,8 @@ describe('native video job ownership and idempotency', () => {
     await first.create(buyer);
     first.store.close();
     const restarted = setup(first.dbPath);
-    expect((await restarted.send(buyer, 'GET', '/v1/tasks/task-1')).statusCode).toBe(200);
-    expect((await restarted.send(other, 'GET', '/v1/tasks/task-1')).statusCode).toBe(404);
+    expect((await restarted.send(buyer, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(200);
+    expect((await restarted.send(other, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(404);
     restarted.store.close();
   });
 
@@ -308,19 +308,19 @@ describe('native video job ownership and idempotency', () => {
       expect((await create(buyer, key)).statusCode).toBe(400);
       expect(provider.handleRequest).toHaveBeenCalledTimes(2);
       expect(recordSpend.mock.calls.every(([, amount]) => amount === 0n)).toBe(true);
-      expect(store.getReplay(buyer, 'runway-video', 'rejected-key')).toBeNull();
+      expect(store.getReplay(buyer, 'seedance-video', 'rejected-key')).toBeNull();
     } finally {
       store.close();
     }
   });
 
   it('refuses video when ownership storage is unavailable', async () => {
-    const provider = makeProvider(0, 0, { name: 'runway', services: ['gen4.5'], serviceApiProtocols: { 'gen4.5': ['runway-video'] }, serviceUnitBillingModels: { 'gen4.5': { 'runway-video': pricing } } });
+    const provider = makeProvider(0, 0, { name: 'seedance', services: ['seedance-2-0'], serviceApiProtocols: { 'seedance-2-0': ['seedance-video'] }, serviceUnitBillingModels: { 'seedance-2-0': { 'seedance-video': pricing } } });
     provider.handleRequest = vi.fn(provider.handleRequest);
     const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: makeSpmMock(), channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false });
     const frames: Uint8Array[] = [];
     const { mux } = handler.handleConnection(makeConn(frames), buyer, { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
-    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'r', method: 'GET', path: '/v1/tasks/task', headers: { 'x-antseed-service': 'gen4.5' }, body: new Uint8Array() }) });
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'r', method: 'GET', path: '/api/v3/contents/generations/tasks/task', headers: { 'x-antseed-service': 'seedance-2-0' }, body: new Uint8Array() }) });
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(503);
     expect(provider.handleRequest).not.toHaveBeenCalled();
   });
@@ -543,11 +543,11 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(pricing).toEqual({ inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1 });
   });
 
-  it.each(['runway-video', 'veo-video'] as const)('never replaces an explicitly selected %s provider that lost its service', (protocol) => {
+  it.each(['seedance-video', 'veo-video'] as const)('never replaces an explicitly selected %s provider that lost its service', (protocol) => {
     const recorded = makeProvider(0, 0, { name: 'recorded', services: ['other'] });
     const replacement = makeProvider(0, 0, { name: 'replacement', services: ['video-model'], serviceApiProtocols: { 'video-model': [protocol] } });
     const handler = makeSellerRequestHandler({ providers: [recorded, replacement], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false });
-    const request: SerializedHttpRequest = { requestId: 'video', method: 'GET', path: protocol === 'runway-video' ? '/v1/tasks/job' : '/v1beta/operations/job', headers: { 'x-antseed-provider': 'recorded', 'x-antseed-service': 'video-model' }, body: new Uint8Array() };
+    const request: SerializedHttpRequest = { requestId: 'video', method: 'GET', path: protocol === 'seedance-video' ? '/api/v3/contents/generations/tasks/job' : '/v1beta/operations/job', headers: { 'x-antseed-provider': 'recorded', 'x-antseed-service': 'video-model' }, body: new Uint8Array() };
     expect(handler.matchProvider(request)).toBeUndefined();
     recorded.services = ['video-model'];
     expect(handler.matchProvider(request)).toBeUndefined();

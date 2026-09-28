@@ -45,12 +45,12 @@ describe('validateMetadata', () => {
   it('accepts native video unit pricing and video output capabilities', () => {
     const metadata = validMetadata();
     const provider = metadata.providers[0]!;
-    provider.provider = 'runway';
+    provider.provider = 'seedance';
     provider.services = ['video'];
-    provider.serviceApiProtocols = { video: ['runway-video', 'veo-video'] };
+    provider.serviceApiProtocols = { video: ['seedance-video', 'veo-video'] };
     provider.serviceCapabilities = { video: { inputs: ['text'], outputs: ['video'] } };
     provider.serviceUnitBillingModels = { video: {
-      'runway-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] },
+      'seedance-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] },
       'veo-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] },
     } };
     expect(validateMetadata(metadata)).toEqual([]);

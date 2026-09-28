@@ -28,7 +28,7 @@ test('Veo download URLs point to the local proxy without changing the signed ups
 
 test('video creates reuse a valid client idempotency key, generate one otherwise, and reject malformed keys', () => {
   const routes = new ResourceRoutes()
-  const create = { protocol: 'runway-video', action: 'create' } as const
+  const create = { protocol: 'seedance-video', action: 'create' } as const
   assert.deepEqual(prepareVideoRequest(create, { 'idempotency-key': 'client-1' }, routes), { headers: { 'idempotency-key': 'client-1', [VIDEO_IDEMPOTENCY_KEY_HEADER]: 'client-1' } })
   const generated = prepareVideoRequest(create, {}, routes)
   assert.ok('headers' in generated && generated.headers[VIDEO_IDEMPOTENCY_KEY_HEADER])
@@ -38,15 +38,15 @@ test('video creates reuse a valid client idempotency key, generate one otherwise
 
 test('video status and cancel pin the seller that accepted the job, and unknown jobs return 404', () => {
   const routes = new ResourceRoutes()
-  const accepted = response({ task_id: 'task-1' })
-  const create = { protocol: 'minimax-video', action: 'create' } as const
-  assert.equal(recordVideoAcceptance(create, { [VIDEO_IDEMPOTENCY_KEY_HEADER]: 'key' }, accepted, { peerId: seller, provider: 'minimax', service: 'MiniMax-H3' }, routes), true)
+  const accepted = response({ id: 'task-1' })
+  const create = { protocol: 'seedance-video', action: 'create' } as const
+  assert.equal(recordVideoAcceptance(create, { [VIDEO_IDEMPOTENCY_KEY_HEADER]: 'key' }, accepted, { peerId: seller, provider: 'seedance', service: 'seedance-2-0' }, routes), true)
   assert.equal(accepted.headers['x-antseed-seller-peer'], seller)
   assert.equal(accepted.headers[VIDEO_IDEMPOTENCY_KEY_HEADER], 'key')
 
-  const status = prepareVideoRequest({ protocol: 'minimax-video', action: 'status', resourceId: 'task-1' }, {}, routes)
-  assert.deepEqual(status, { headers: { 'x-antseed-pin-peer': seller, 'x-antseed-provider': 'minimax', 'x-antseed-service': 'MiniMax-H3' } })
-  const unknown = prepareVideoRequest({ protocol: 'minimax-video', action: 'status', resourceId: 'other' }, {}, routes)
+  const status = prepareVideoRequest({ protocol: 'seedance-video', action: 'status', resourceId: 'task-1' }, {}, routes)
+  assert.deepEqual(status, { headers: { 'x-antseed-pin-peer': seller, 'x-antseed-provider': 'seedance', 'x-antseed-service': 'seedance-2-0' } })
+  const unknown = prepareVideoRequest({ protocol: 'seedance-video', action: 'status', resourceId: 'other' }, {}, routes)
   assert.ok('error' in unknown && unknown.error.statusCode === 404)
 })
 
@@ -61,14 +61,14 @@ test('only accepted creates are recorded', () => {
 
 test('a create retry with the same key is pinned to the original seller, even after a restart', () => {
   const routes = new ResourceRoutes()
-  const create = { protocol: 'runway-video', action: 'create' } as const
+  const create = { protocol: 'seedance-video', action: 'create' } as const
   const headers = { [VIDEO_IDEMPOTENCY_KEY_HEADER]: 'retry-key' }
-  assert.equal(recordVideoCreateAttempt(create, headers, { peerId: seller.toUpperCase(), provider: 'runway', service: 'gen4.5' }, routes), true)
-  assert.equal(recordVideoCreateAttempt(create, {}, { peerId: seller, provider: 'runway', service: 'gen4.5' }, routes), false)
+  assert.equal(recordVideoCreateAttempt(create, headers, { peerId: seller.toUpperCase(), provider: 'seedance', service: 'seedance-2-0' }, routes), true)
+  assert.equal(recordVideoCreateAttempt(create, {}, { peerId: seller, provider: 'seedance', service: 'seedance-2-0' }, routes), false)
   const restarted = new ResourceRoutes()
   restarted.hydrate(routes.snapshot())
   assert.deepEqual(prepareVideoRequest(create, headers, restarted), {
-    headers: { ...headers, 'x-antseed-pin-peer': seller, 'x-antseed-provider': 'runway', 'x-antseed-service': 'gen4.5' },
+    headers: { ...headers, 'x-antseed-pin-peer': seller, 'x-antseed-provider': 'seedance', 'x-antseed-service': 'seedance-2-0' },
   })
   const fresh = prepareVideoRequest(create, { [VIDEO_IDEMPOTENCY_KEY_HEADER]: 'new-key' }, restarted)
   assert.ok('headers' in fresh && fresh.headers['x-antseed-pin-peer'] === undefined)

@@ -42,7 +42,6 @@ interface NativeVideoApi {
   referencedJobs?: (body: JsonObject) => unknown[];
   jobId: (body: JsonObject) => unknown;
   jobIdPattern: RegExp;
-  failedStatus?: (body: JsonObject) => unknown;
   fields: (body: JsonObject) => VideoRequestFields;
   /** Sentinel duration values meaning "let the model decide". */
   autoDuration?: unknown[];
@@ -53,7 +52,6 @@ interface NativeVideoApi {
 const ID = '[A-Za-z0-9_-]+';
 const SIMPLE_ID = /^[A-Za-z0-9_-]{1,256}$/;
 const VEO_OPERATION = new RegExp(`^(?:models/[A-Za-z0-9._-]+/)?operations/${ID}$`);
-const FAILED_STATUSES = ['FAILED', 'CANCELLED', 'CANCELED'];
 const VEO_DOWNLOAD = new RegExp(`^/v1beta/((?:models/[A-Za-z0-9._-]+/)?operations/${ID})/videos/([0-9]{1,3}):download$`);
 
 export function veoDownloadPath(operation: string, resultIndex: number): string {
@@ -69,16 +67,6 @@ function object(value: unknown): JsonObject {
 
 const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
   {
-    protocol: 'runway-video',
-    createPaths: /^\/v1\/(?:text|image)_to_video$/,
-    jobPaths: { GET: new RegExp(`^/v1/tasks/(${ID})$`), DELETE: new RegExp(`^/v1/tasks/(${ID})$`) },
-    jobId: body => body.id,
-    jobIdPattern: SIMPLE_ID,
-    failedStatus: body => body.status,
-    fields: body => ({ duration: body.duration, resolution: body.resolution }),
-    autoDuration: ['auto'],
-  },
-  {
     protocol: 'veo-video',
     createPaths: /^\/v1beta\/models\/([A-Za-z0-9._-]+):predictLongRunning$/,
     jobPaths: { GET: new RegExp(`^/v1beta/((?:models/[A-Za-z0-9._-]+/)?operations/${ID})$`) },
@@ -89,26 +77,6 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
       return { count: veoVideoCount(parameters), duration: parameters.durationSeconds, resolution: parameters.resolution };
     },
     resourceKey: resourceId => resourceId.replace(/^models\/[^/]+\//, ''),
-  },
-  {
-    protocol: 'minimax-video',
-    createPaths: /^\/v2\/video_generation$/,
-    jobPaths: { GET: new RegExp(`^/v2/query/video_generation/(${ID})$`), DELETE: new RegExp(`^/v2/video_generation/(${ID})$`) },
-    jobId: body => body.task_id,
-    jobIdPattern: SIMPLE_ID,
-    fields: body => ({ duration: body.duration, resolution: body.resolution }),
-  },
-  {
-    protocol: 'wan-video',
-    createPaths: /^\/api\/v1\/services\/aigc\/video-generation\/video-synthesis$/,
-    jobPaths: { GET: new RegExp(`^/api/v1/tasks/(${ID})$`) },
-    jobId: body => object(body.output).task_id,
-    jobIdPattern: SIMPLE_ID,
-    failedStatus: body => object(body.output).task_status,
-    fields: body => {
-      const parameters = object(body.parameters);
-      return { duration: parameters.duration, resolution: parameters.resolution ?? parameters.size };
-    },
   },
   {
     protocol: 'seedance-video',
@@ -182,7 +150,6 @@ export function nativeVideoAcceptance(protocol: NativeVideoProtocol, response: S
   const body = parseJsonObject(response.body);
   if (!body || body.error) return null;
   const entry = api(protocol);
-  if (FAILED_STATUSES.includes(String(entry.failedStatus?.(body) ?? '').toUpperCase())) return null;
   const resource = entry.jobId(body);
   return typeof resource === 'string' && resource.length <= 512 && entry.jobIdPattern.test(resource) ? resource : null;
 }
