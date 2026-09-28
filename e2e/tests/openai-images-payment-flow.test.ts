@@ -3,7 +3,7 @@ import OpenAI from 'openai';
 import { createServer as createNetServer } from 'node:net';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { execFile } from 'node:child_process';
-import { mkdtemp, rm, writeFile } from 'node:fs/promises';
+import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
 import { createHash, randomUUID } from 'node:crypto';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -15,10 +15,14 @@ import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
 import veoPlugin from '../../plugins/provider-veo/src/index.js';
 import venicePlugin from '../../plugins/provider-venice/src/index.js';
+import seedancePlugin from '../../plugins/provider-seedance/src/index.js';
+import { runLiveVeniceMatrix } from './helpers/live-venice-matrix.js';
 
 const execFileAsync = promisify(execFile);
 const liveVeoKey = process.env['ANTSEED_LIVE_VEO_KEY'];
 delete process.env['ANTSEED_LIVE_VEO_KEY'];
+const liveVeniceKey = process.env['ANTSEED_LIVE_VENICE_KEY'];
+delete process.env['ANTSEED_LIVE_VENICE_KEY'];
 
 // ─── Mock JSON-RPC server ────────────────────────────────────────────────────
 // Responds to ethers JsonRpcProvider calls so ChannelsClient.reserve(),
@@ -258,7 +262,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     rpcCallLog = [];
   }
 
-  async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType): Promise<{
+  async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType, resumeState?: string): Promise<{
     provider: ProviderType;
     port: number;
     discoveredSeller: PeerInfo;
@@ -266,6 +270,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     bootstrap = await createLocalBootstrap();
 
     sellerDataDir = await mkdtemp(join(tmpdir(), 'antseed-seller-images-pay-'));
+    if (resumeState) await cp(join(resumeState, 'seller'), sellerDataDir, { recursive: true });
     const imageProvider = provider ?? new MockOpenAIImageProvider() as unknown as ProviderType;
     sellerNode = new AntseedNode({
       role: 'seller',
@@ -281,6 +286,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     await sellerNode.start();
 
     buyerDataDir = await mkdtemp(join(tmpdir(), 'antseed-buyer-images-pay-'));
+    if (resumeState) await cp(join(resumeState, 'buyer'), buyerDataDir, { recursive: true });
     buyerNode = new AntseedNode({
       role: 'buyer',
       dataDir: buyerDataDir,
@@ -310,6 +316,15 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
 
     return { provider: imageProvider, port, discoveredSeller: discoveredSeller! };
   }
+
+  it.skipIf(process.env['ANTSEED_LIVE_VENICE'] !== '1')('generates a real Venice video matrix through buyer and seller', async () => {
+    if (!liveVeniceKey) throw new Error('ANTSEED_LIVE_VENICE_KEY is required');
+    await setupRpc();
+    await runLiveVeniceMatrix(liveVeniceKey, async (provider) => {
+      const network = await setupProxyNetwork(provider, process.env['ANTSEED_LIVE_VENICE_RESUME_STATE']);
+      return { ...network, buyer: buyerNode! };
+    });
+  }, 25 * 60_000);
 
   it.skipIf(process.env['ANTSEED_LIVE_VEO'] !== '1')('generates and downloads one real Veo video through buyer and seller', async () => {
     if (!liveVeoKey) throw new Error('ANTSEED_LIVE_VEO_KEY is required for the opt-in live test');
@@ -631,7 +646,9 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
 
-  it.each(['tcp-encrypted', 'webrtc'] as const)('runs a Venice queue, streamed retrieve and complete over %s with one charge', async transport => {
+  it.each([
+    ['tcp-encrypted', true], ['webrtc', true], ['tcp-encrypted', false], ['webrtc', false],
+  ] as const)('runs a Venice queue, streamed retrieve and complete over %s with content length %s and one charge', async (transport, hasContentLength) => {
     await setupRpc();
     const originalFetch = globalThis.fetch;
     const origin = 'https://api.venice.ai';
@@ -650,9 +667,12 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const body = JSON.parse(Buffer.from(init!.body as Uint8Array).toString());
       calls.push({ path, body });
       if (path === '/api/v1/video/queue') return Response.json({ model: body.model, queue_id: 'queue-1' });
-      if (path === '/api/v1/video/complete') return Response.json({ success: true });
+      if (path === '/api/v1/video/complete') {
+        expect(Object.keys(body).sort()).toEqual(['model', 'queue_id']);
+        return Response.json({ success: true });
+      }
       if (!ready) return Response.json({ status: 'PROCESSING', average_execution_time: 1000, execution_duration: 10 });
-      return new Response(video, { headers: { 'content-type': 'video/mp4', 'content-length': String(video.length) } });
+      return new Response(video, { headers: { 'content-type': 'video/mp4', ...(hasContentLength ? { 'content-length': String(video.length) } : {}) } });
     });
     try {
       const provider = await venicePlugin.createProvider({ VENICE_API_KEY: 'seller-secret', ANTSEED_ALLOWED_SERVICES: 'wan-2.5', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"wan-2.5":{"venice-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.01}]}}}' });
@@ -679,7 +699,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         expect(download.headers.get('content-type')).toBe('video/mp4');
         expect(Buffer.from(await download.arrayBuffer())).toEqual(video);
       }
-      const completed = await post('/api/v1/video/complete', { model: 'other', queue_id: 'queue-1' });
+      const completed = await post('/api/v1/video/complete', { model: 'other', queue_id: 'queue-1', delete_media_on_completion: false });
       expect(completed.status).toBe(200);
       expect(calls.at(-1)).toEqual({ path: '/api/v1/video/complete', body: { model: 'wan-2.5', queue_id: 'queue-1' } });
       expect((await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'unknown' })).status).toBe(404);
@@ -696,6 +716,60 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         const auths = (buyerNode as any)._verificationStorage.listResponseAuthsBySeller(discoveredSeller.peerId);
         expect(auths.filter((auth: any) => !auth.verified).map((auth: any) => auth.verificationError)).toEqual([]);
       });
+    } finally { vi.unstubAllGlobals(); }
+  }, 60_000);
+
+  it('runs Seedance draft and final tasks on the draft seller with per-task billing', async () => {
+    await setupRpc();
+    const originalFetch = globalThis.fetch;
+    const origin = 'https://ark.ap-southeast.bytepluses.com';
+    const calls: Array<{ method: string; path: string; body?: any }> = [];
+    let next = 0;
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input);
+      if (!url.startsWith(`${origin}/`)) {
+        const headers = new Headers(init?.headers);
+        headers.set('connection', 'close');
+        return originalFetch(input, { ...init, headers });
+      }
+      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ark-secret');
+      const path = new URL(url).pathname;
+      const method = init?.method ?? 'GET';
+      const raw = init?.body ? Buffer.from(init.body as Uint8Array).toString() : '';
+      calls.push({ method, path, ...(raw ? { body: JSON.parse(raw) } : {}) });
+      if (method === 'POST') return Response.json({ id: `cgt-${++next}` });
+      if (method === 'DELETE') return Response.json({});
+      return Response.json({ id: path.split('/').at(-1), status: 'succeeded', content: { video_url: 'https://seller-tos.example/video.mp4' }, usage: { completion_tokens: 1 } });
+    });
+    try {
+      const provider = await seedancePlugin.createProvider({ ARK_API_KEY: 'ark-secret', ANTSEED_ALLOWED_SERVICES: 'seedance-2-5', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"seedance-2-5":{"seedance-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.01}]}}}' });
+      const { port, discoveredSeller } = await setupProxyNetwork(provider);
+      const base = `http://127.0.0.1:${port}`;
+      const post = (body: object) => fetch(`${base}/api/v3/contents/generations/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'seedance-2-5', ...body }) });
+      const draft = await post({ content: [{ type: 'text', text: 'boat' }], draft: true, resolution: '480p', duration: 4 });
+      expect(draft.status).toBe(200);
+      expect((await draft.json()).id).toBe('cgt-1');
+      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(40_000n);
+      const final = await post({ content: [{ type: 'draft_task', draft_task: { id: 'cgt-1' } }], duration: 5 });
+      expect(final.status).toBe(200);
+      expect((await final.json()).id).toBe('cgt-2');
+      expect(calls[1]!.body.content[0]).toEqual({ type: 'draft_task', draft_task: { id: 'cgt-1' } });
+      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(90_000n);
+      const status = await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`);
+      expect((await status.json()).content.video_url).toBe('https://seller-tos.example/video.mp4');
+      expect((await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`, { method: 'DELETE' })).status).toBe(200);
+      expect((await post({ content: [{ type: 'draft_task', draft_task: { id: 'cgt-unknown' } }], duration: 5 })).status).toBe(404);
+      expect((await fetch(`${base}/api/v3/contents/generations/tasks?page_size=500`)).status).toBe(404);
+      const callsBefore = calls.length;
+      (sellerNode as any)._resourceOwnership.recordAcceptedCreate('seedance-video', 'cgt-foreign', '11'.repeat(20));
+      const stolen = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'foreign-draft', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'seedance' }, body: Buffer.from(JSON.stringify({ model: 'seedance-2-5', duration: 5, content: [{ type: 'draft_task', draft_task: { id: 'cgt-foreign' } }] })) }, { pinned: true });
+      expect(stolen.statusCode).toBe(404);
+      expect(calls.length).toBe(callsBefore);
+      expect(calls.map(call => `${call.method} ${call.path}`)).toEqual([
+        'POST /api/v3/contents/generations/tasks', 'POST /api/v3/contents/generations/tasks',
+        'GET /api/v3/contents/generations/tasks/cgt-2', 'DELETE /api/v3/contents/generations/tasks/cgt-2',
+      ]);
+      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(90_000n);
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
 

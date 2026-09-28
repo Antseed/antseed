@@ -35,6 +35,8 @@ A create is charged when the seller returns an accepted job ID: Runway and Seeda
 
 Venice `/api/v1/video/retrieve` is always sent as a streamed download to a seller advertising `videoDownload = "video-stream-v1"` (the Venice plugin always does). While the job runs the seller returns Venice's JSON status unchanged; once finished it streams the MP4 using the same flow as Veo below. Private Venice models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response, which is passed to the buyer unchanged. Venice bills some moderation rejections itself, so a create is still charged once accepted.
 
+Venice MP4 responses without `Content-Length` are staged in a seller-local private temporary file to determine the length required by response-auth v1, then streamed through the same authenticated P2P path. This uses one upstream fetch and bounded memory; the existing 4 GiB limit and two-download concurrency limit also apply during staging. Temporary files are removed on completion, cancellation or failure. Known-length responses do not use disk. No buyer-visible bytes arrive during staging, so the buyer's 60-second idle timeout can still cancel a slow preparation. The `delete_media_on_completion` field is only forwarded to retrieve, never to complete.
+
 ### Veo downloads
 
 For completed Veo operations, the buyer proxy replaces Google file URLs with local download URLs only when the selected provider and service advertise `serviceCapabilities[service].videoDownload = "video-stream-v1"` in signed metadata. This field is encoded in metadata v13 as a download-version byte before each service capability entry's presence byte (0 = absent, 1 = `video-stream-v1`). Sellers without download capabilities continue announcing v12. Missing or unknown capabilities leave upstream URLs unchanged; manually requesting a local download from an unsupported seller returns 501. The direct-Google Veo plugin advertises the capability automatically; custom `GEMINI_BASE_URL` origins do not.
@@ -54,6 +56,8 @@ Downloads and repeated downloads are free; they do not create a new job or chang
 The buyer proxy stores accepted job routes in `buyer.state.json` for 30 days, so status and cancel requests go back to the same seller, provider, and service. Unknown jobs return `404`.
 
 The seller node stores `(protocol, job ID) -> buyer peer ID` in `resources.db`. Status and cancel requests from another buyer return `404` before reaching the seller API. Video requests are refused if this storage is unavailable.
+
+Seedance creates can reference an earlier draft task (`content[].type = "draft_task"`, `draft_task.id`). The buyer proxy sends such a create to the seller that owns the draft, and returns `404 video_route_not_found` for unknown drafts or drafts owned by different sellers. The seller also rejects the create with `404` unless this buyer owns every referenced draft. The account-wide Seedance task list (`GET /api/v3/contents/generations/tasks`) is not relayed because it would expose other buyers' tasks.
 
 ## Duplicate charge protection
 

@@ -8,9 +8,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
-- Native Runway, Veo, MiniMax, Wan, and Seedance video relays for seller-operated APIs, with video discovery, acceptance-based billing, persistent job routing, seller-side job ownership, and idempotent create replay to prevent duplicate charges.
+- Native Runway, Veo, MiniMax, Wan, and Seedance (BytePlus ModelArk, including draft-to-final tasks) video relays for seller-operated APIs, with video discovery, acceptance-based billing, persistent job routing, seller-side job ownership, and idempotent create replay to prevent duplicate charges.
 - Direct Gemini Veo result downloads through the buyer proxy and original seller, with one ownership check, one status lookup and one streamed file fetch per download. Transfers use bounded P2P flow control, incremental response authentication, cancellation and a signed per-service download capability before rewriting URLs; seller API keys remain private. Video validation and buyer-budget failures now return client errors rather than misleading seller `502` errors.
 - `@antseed/provider-venice`: new seller plugin for Venice video generation (`venice-video`). Relays `/api/v1/video/queue` with acceptance billing (durations such as `"5s"` are supported), streams finished MP4s from `/api/v1/video/retrieve` through the seller, and relays `/api/v1/video/complete`. Configure with `VENICE_API_KEY` and an optional `VENICE_BASE_URL`.
+- Venice downloads without `Content-Length` now use a bounded, private temporary file before authenticated streaming instead of failing with `502`; temporary files are removed after completion or failure. Complete requests no longer forward the retrieve-only `delete_media_on_completion` flag. An opt-in, budget-checked live test covers real video generation through a local buyer and seller.
 - Streamed video downloads (Veo and Venice) now allow files up to 4 GiB and have no total time limit; they fail only after 60 seconds without progress. The download capability is named `video-stream-v1`.
 - Free video follow-up receipts remain verifiable after reconnecting even when the previous paid channel is no longer active; billable requests still require the expected payment channel.
 

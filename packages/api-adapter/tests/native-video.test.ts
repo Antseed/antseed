@@ -143,3 +143,30 @@ describe('Venice video API', () => {
     expect(nativeVideoAcceptance('venice-video', response({ error: 'INSUFFICIENT_BALANCE' }, 402))).toBeNull();
   });
 });
+
+describe('Seedance (BytePlus ModelArk) video API', () => {
+  const request = (path: string, body: object = {}, method = 'POST') => ({ requestId: 'request', method, path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) });
+  const create = (body: object) => request('/api/v3/contents/generations/tasks', { model: 'dreamina-seedance-2-0-260128', ...body });
+
+  it('routes create, retrieve and cancel/delete, and refuses the account-wide task list', () => {
+    expect(nativeVideoRoute(create({}))).toEqual({ protocol: 'seedance-video', action: 'create' });
+    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-2025abc', {}, 'GET'))).toEqual({ protocol: 'seedance-video', action: 'status', resourceId: 'cgt-2025abc' });
+    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-2025abc', {}, 'DELETE'))).toEqual({ protocol: 'seedance-video', action: 'cancel', resourceId: 'cgt-2025abc' });
+    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks?page_size=500', {}, 'GET'))).toBeNull();
+  });
+
+  it('bills documented durations and needs per-generation pricing for model-chosen lengths', () => {
+    expect(nativeVideoFacts(create({ duration: 12 }))?.duration).toBe(12);
+    expect(nativeVideoFacts(create({ duration: -1 }))?.duration).toBeUndefined();
+    expect(nativeVideoFacts(create({ frames: 57, duration: 5 }))?.duration).toBeUndefined();
+    expect(nativeVideoFacts(create({}))?.duration).toBeUndefined();
+    expect(nativeVideoFacts(create({ draft: true, service_tier: 'flex', priority: 9, generate_audio: false, resolution: '1080p' }))?.resolution).toBe('1080p');
+  });
+
+  it('exposes draft task references so the final video goes to the seller that owns the draft', () => {
+    const final = create({ content: [{ type: 'draft_task', draft_task: { id: 'cgt-draft' } }, { type: 'text', text: 'boat' }] });
+    expect(nativeVideoRoute(final)?.referencedResourceIds).toEqual(['cgt-draft']);
+    expect(nativeVideoRoute(create({ content: [{ type: 'draft_task', draft_task: { id: '../x' } }] }))?.referencedResourceIds).toEqual(['']);
+    expect(nativeVideoRoute(create({ content: [{ type: 'text', text: 'boat' }] }))?.referencedResourceIds).toBeUndefined();
+  });
+});

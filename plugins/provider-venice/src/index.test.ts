@@ -36,9 +36,17 @@ it('rebuilds complete bodies from the owned job and routed service', async () =>
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ success: true }));
   vi.stubGlobal('fetch', fetchMock);
   const provider = await plugin.createProvider(config);
-  const response = await provider.handleRequest(request('/api/v1/video/complete', { model: 'other', queue_id: 'queue-1', extra: 'x' }));
+  const response = await provider.handleRequest(request('/api/v1/video/complete', { model: 'other', queue_id: 'queue-1', extra: 'x', delete_media_on_completion: false }));
   expect(response.statusCode).toBe(200);
   expect(JSON.parse(Buffer.from(fetchMock.mock.calls[0]![1].body).toString())).toEqual({ model: 'wan-2.5', queue_id: 'queue-1' });
+});
+
+it('preserves a Venice cleanup rejection rather than claiming the media was deleted', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ error: 'Request ID is invalid.' }, { status: 400 })));
+  const provider = await plugin.createProvider(config);
+  const response = await provider.handleRequest(request('/api/v1/video/complete', { model: 'wan-2.5', queue_id: 'queue-1' }));
+  expect(response.statusCode).toBe(400);
+  expect(JSON.parse(Buffer.from(response.body).toString())).toEqual({ error: 'Request ID is invalid.' });
 });
 
 it('streams a finished MP4 in bounded chunks with one upstream call', async () => {

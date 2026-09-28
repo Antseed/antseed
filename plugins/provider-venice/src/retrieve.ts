@@ -1,6 +1,7 @@
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, type Provider, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node';
-import { streamVideoResponse, videoDownloadError, videoDownloadSignal } from '@antseed/provider-core';
+import { videoDownloadError, videoDownloadSignal } from '@antseed/provider-core';
+import { streamVeniceVideo } from './download.js';
 
 const MAX_STATUS_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
@@ -9,8 +10,7 @@ const MAX_ACTIVE_DOWNLOADS = 2;
  * The seller rebuilds follow-up bodies from the owned job and the routed
  * service, so a buyer cannot point `model` or other fields elsewhere.
  */
-function followUpBody(request: SerializedHttpRequest, service: string, queueId: string): Uint8Array {
-  const deleteMedia = parseJsonObject(request.body)?.delete_media_on_completion;
+function followUpBody(service: string, queueId: string, deleteMedia?: unknown): Uint8Array {
   return Buffer.from(JSON.stringify({ model: service, queue_id: queueId, ...(typeof deleteMedia === 'boolean' ? { delete_media_on_completion: deleteMedia } : {}) }));
 }
 
@@ -33,7 +33,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
     if (route?.action === 'download') return videoDownloadError(request, 400, 'unsupported_video_download', 'A streaming video download is required');
     if (route?.action !== 'cancel') return provider.handleRequest(request);
     if (!service || !route.resourceId) return videoDownloadError(request, 400, 'unsupported_video_request', 'Unsupported video service or queue_id');
-    return provider.handleRequest({ ...request, body: followUpBody(request, service, route.resourceId) });
+    return provider.handleRequest({ ...request, body: followUpBody(service, route.resourceId) });
   };
   return {
     ...provider,
@@ -51,7 +51,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
         const upstream = await fetch(retrieveUrl, {
           method: 'POST',
           headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', 'accept-encoding': 'identity' },
-          body: followUpBody(request, service, route.resourceId),
+          body: followUpBody(service, route.resourceId, parseJsonObject(request.body)?.delete_media_on_completion),
           redirect: 'error', signal: download.signal,
         });
         const contentType = upstream.headers.get('content-type')?.split(';')[0]?.trim();
@@ -62,7 +62,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
           }
           activeDownloads += 1;
           streaming = true;
-          try { return await streamVideoResponse(request, upstream, callbacks, download); }
+          try { return await streamVeniceVideo(request, upstream, callbacks, download); }
           finally { activeDownloads -= 1; }
         }
         const text = await upstream.text();

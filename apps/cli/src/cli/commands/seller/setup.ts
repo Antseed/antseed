@@ -99,7 +99,7 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
     case 'wan':
       return 'export DASHSCOPE_API_KEY=<seller-api-key>; configure a seller-operated baseUrl';
     case 'seedance':
-      return 'export ARK_API_KEY=<seller-api-key>; configure a seller-operated baseUrl';
+      return 'export ARK_API_KEY=<seller-api-key>';
     case 'venice':
       return 'export VENICE_API_KEY=<seller-api-key>';
     default:

@@ -7,7 +7,7 @@ const config = { ARK_BASE_URL: 'https://seller.example.test', ARK_API_KEY: 'key'
 
 it('registers the seedance seller endpoint plugin', async () => {
   expect(plugin.name).toBe('seedance');
-  expect(() => plugin.createProvider({ ...config, ARK_BASE_URL: '' })).toThrow(/seller-operated/);
+  expect(() => plugin.createProvider({ ...config, ARK_BASE_URL: 'ftp://seller.example.test' })).toThrow(/base URL/);
   expect(() => plugin.createProvider({ ...config, ARK_API_KEY: ' ' })).toThrow(/authentication/);
   const provider = await plugin.createProvider(config);
   expect(provider.serviceApiProtocols).toEqual({ video: ['seedance-video'] });
@@ -26,4 +26,13 @@ it('relays native Seedance creates byte-for-byte with seller auth', async () => 
   expect(options.headers['x-antseed-provider']).toBeUndefined();
   expect(Buffer.from(options.body)).toEqual(body);
   expect(options.redirect).toBe('error');
+});
+
+it('defaults to the BytePlus ModelArk endpoint', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(new Response('{"id": "cgt-1"}', { status: 200 }));
+  vi.stubGlobal('fetch', fetchMock);
+  const { ARK_BASE_URL: _url, ...rest } = config;
+  const provider = await plugin.createProvider(rest);
+  await provider.handleRequest({ requestId: 's', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"model":"video"}') });
+  expect(fetchMock.mock.calls[0]![0]).toBe('https://ark.ap-southeast.bytepluses.com/api/v3/contents/generations/tasks');
 });

@@ -43,7 +43,13 @@ export function prepareVideoRequest(
       return { error: { statusCode: 400, body: { error: { code: 'invalid_idempotency_key', message: 'Idempotency key must be 1-128 characters of [A-Za-z0-9._:-]' } } } }
     }
     const idempotencyKey = suppliedKey || randomUUID()
-    const previous = routes.resolve(route.protocol, createAttemptId(idempotencyKey))
+    // A create that builds on an earlier job (a Seedance draft) must go to the
+    // seller that ran it; the draft does not exist anywhere else.
+    const referenced = (route.referencedResourceIds ?? []).map(id => id ? routes.resolve(route.protocol, id) : null)
+    if (referenced.some(job => !job || job.sellerPeerId !== referenced[0]!.sellerPeerId)) {
+      return { error: { statusCode: 404, body: { error: { code: 'video_route_not_found', message: 'Unknown referenced video job' } } } }
+    }
+    const previous = routes.resolve(route.protocol, createAttemptId(idempotencyKey)) ?? referenced[0]
     return { headers: { ...headers, [VIDEO_IDEMPOTENCY_KEY_HEADER]: idempotencyKey, ...(previous ? pinHeaders(previous) : {}) } }
   }
   const job = route.resourceId ? routes.resolve(route.protocol, route.resourceId) : null

@@ -9,6 +9,8 @@ export interface NativeVideoRoute {
   resourceId?: string;
   model?: string;
   resultIndex?: number;
+  /** Earlier jobs a create builds on (Seedance draft tasks). Invalid IDs are kept as '' so ownership checks fail. */
+  referencedResourceIds?: string[];
 }
 
 type JsonObject = Record<string, unknown>;
@@ -36,6 +38,8 @@ interface NativeVideoApi {
    */
   bodyJobPaths?: { path: RegExp; action: 'download' | 'cancel' }[];
   bodyJobId?: (body: JsonObject) => unknown;
+  /** Earlier job IDs a create builds on; they only exist on the seller that ran them. */
+  referencedJobs?: (body: JsonObject) => unknown[];
   jobId: (body: JsonObject) => unknown;
   jobIdPattern: RegExp;
   failedStatus?: (body: JsonObject) => unknown;
@@ -112,6 +116,9 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
     jobPaths: { GET: new RegExp(`^/api/v3/contents/generations/tasks/(${ID})$`), DELETE: new RegExp(`^/api/v3/contents/generations/tasks/(${ID})$`) },
     jobId: body => body.id,
     jobIdPattern: SIMPLE_ID,
+    referencedJobs: body => (Array.isArray(body.content) ? body.content : [])
+      .filter(item => object(item).type === 'draft_task')
+      .map(item => object(object(item).draft_task).id),
     // `frames` overrides `duration`, so frame-based requests have no explicit seconds.
     fields: body => ({ duration: body.frames === undefined ? body.duration : undefined, resolution: body.resolution }),
     autoDuration: [-1, '-1'],
@@ -148,7 +155,15 @@ export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | '
   if (download) return { protocol: 'veo-video', action: 'download', resourceId: download[1]!, resultIndex: Number(download[2]) };
   for (const entry of NATIVE_VIDEO_APIS) {
     const create = request.method === 'POST' ? entry.createPaths.exec(path) : null;
-    if (create) return { protocol: entry.protocol, action: 'create', ...(create[1] ? { model: create[1] } : {}) };
+    if (create) {
+      const referenced = request.body && entry.referencedJobs ? entry.referencedJobs(parseJsonObject(request.body) ?? {}) : [];
+      const referencedResourceIds = referenced.map(id => typeof id === 'string' && entry.jobIdPattern.test(id) ? id : '');
+      return {
+        protocol: entry.protocol, action: 'create',
+        ...(create[1] ? { model: create[1] } : {}),
+        ...(referencedResourceIds.length ? { referencedResourceIds } : {}),
+      };
+    }
     const bodyJob = request.method === 'POST' ? entry.bodyJobPaths?.find(candidate => candidate.path.test(path)) : undefined;
     if (bodyJob) {
       const resourceId = request.body ? entry.bodyJobId!(parseJsonObject(request.body) ?? {}) : undefined;

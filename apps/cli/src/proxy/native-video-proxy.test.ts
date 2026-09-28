@@ -87,3 +87,15 @@ test('Venice retrieve and complete route by the body queue_id to the accepting s
     assert.ok('error' in unknown && unknown.error.statusCode === 404)
   }
 })
+
+test('a Seedance final video from a draft is pinned to the seller that ran the draft', () => {
+  const routes = new ResourceRoutes()
+  const info = { peerId: seller, provider: 'seedance', service: 'seedance-2-5' }
+  assert.equal(recordVideoAcceptance({ protocol: 'seedance-video', action: 'create' }, { [VIDEO_IDEMPOTENCY_KEY_HEADER]: 'k' }, response({ id: 'cgt-draft' }), info, routes), true)
+  const final = prepareVideoRequest({ protocol: 'seedance-video', action: 'create', referencedResourceIds: ['cgt-draft'] }, {}, routes)
+  assert.ok('headers' in final && final.headers['x-antseed-pin-peer'] === seller && final.headers['x-antseed-service'] === 'seedance-2-5')
+  for (const referencedResourceIds of [['cgt-other'], ['']]) {
+    const unknown = prepareVideoRequest({ protocol: 'seedance-video', action: 'create', referencedResourceIds }, {}, routes)
+    assert.ok('error' in unknown && unknown.error.statusCode === 404)
+  }
+})
