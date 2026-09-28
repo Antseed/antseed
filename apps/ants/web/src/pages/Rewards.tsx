@@ -12,7 +12,7 @@ import { LockSlider } from '../components/LockSlider';
 import { poolName } from '../components/Pools';
 import { usePageData } from '../data';
 import { poolDataOptions } from '../pool-data';
-import { formatAnts, isZero, sumBig, toBigInt } from '../format';
+import { formatAnts, formatInt, isZero, sumBig, toBigInt } from '../format';
 
 const RewardRefreshContext = createContext({ updating: false, stale: false });
 
@@ -55,7 +55,7 @@ function ReferralRewardsCard() {
       {view ? <>
         <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
         <div className="buckets">
-          <BucketRow visible name="Your referral link" amount={view.referredCount.toString()} amountDetail={view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}
+          <BucketRow visible name="Your referral link" amount={view.referredCount.toString()} amountKind="count" amountDetail={view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}
             note={<span className="mono" style={{ wordBreak: 'break-all' }}>{view.referralUrl}</span>}
             actions={<Button variant="outline" size="sm" onClick={() => { void navigator.clipboard?.writeText(view.referralUrl ?? ''); }}>Copy link</Button>} />
           <BucketRow visible name="Payable now" amount={view.payable}
@@ -226,7 +226,8 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
   );
 }
 
-function BucketRow({ visible, name, note, amount, amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountDetail?: string; actions: ReactNode }) {
+/** `amount` is an ANTS base-unit string by default; `amountKind="count"` renders a plain integer with no unit. */
+function BucketRow({ visible, name, note, amount, amountKind = 'ants', amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountKind?: 'ants' | 'count'; amountDetail?: string; actions: ReactNode }) {
   if (!visible) return null;
   return (
     <div className="bucket">
@@ -235,7 +236,9 @@ function BucketRow({ visible, name, note, amount, amountDetail, actions }: { vis
         {note ? <div className="bucket-note">{note}</div> : null}
       </div>
       <div className={`bucket-amount mono${amountDetail ? ' bucket-amount--detailed' : ''}`}>
-        <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>
+        {amountKind === 'count'
+          ? <span><RewardAmount>{formatInt(amount)}</RewardAmount></span>
+          : <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>}
         {amountDetail ? <span className="bucket-amount-detail"><RewardAmount>{amountDetail}</RewardAmount></span> : null}
       </div>
       <div className="bucket-actions">{actions}</div>
