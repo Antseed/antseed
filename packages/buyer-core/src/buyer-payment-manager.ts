@@ -17,7 +17,6 @@ import {
   encodeMetadata,
   OUTPUT_IMAGE_TOKEN_EQUIVALENT,
   ZERO_METADATA,
-  ZERO_METADATA_HASH,
   computeChannelId,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, ReserveAuthMessage, SpendingAuthMetadata, UsageAttribution } from '@antseed/protocol/signatures';
@@ -1022,11 +1021,13 @@ export class BuyerPaymentManager {
     };
     await this._commitAuthorization(session, initialMetadata);
 
-    // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig
+    // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig.
+    // The hash must cover the metadata actually sent: with attribution set the
+    // zero metadata carries a referrer / client tail, so it is not ZERO_METADATA_HASH.
     paymentMux.sendSpendingAuth({
       channelId,
       cumulativeAmount: '0',
-      metadataHash: ZERO_METADATA_HASH,
+      metadataHash: computeMetadataHash(initialMetadata),
       metadata: encodedInitialMetadata,
       spendingAuthSig: reserveAuthSig,
       reserveSalt: salt,
