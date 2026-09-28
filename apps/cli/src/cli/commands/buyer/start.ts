@@ -432,19 +432,25 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       // Keep the signed attribution in step with referral.json (Desktop
       // writes it when the user confirms an inviter, possibly after the daemon
-      // started) and drop the referrer once the chain shows it bound.
+      // started) and drop the referrer once the chain shows it bound. The
+      // file's mtime short-circuits the poll only while no referrer is being
+      // carried: binding happens on-chain without touching the file, and every
+      // settlement that still carries a bound referrer costs the seller a
+      // reverting bindReferral call.
       let attributionTimer: NodeJS.Timeout | null = null
       if (paymentsConfig?.enabled) {
         const buyerAddress = node.identity!.wallet.address
         let lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
         let lastReferrer = initialAttribution.referrer
         const refreshAttribution = async (force: boolean) => {
-          if (!force && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
+          if (!force && !lastReferrer && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
           const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralsClient)
           lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
           const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
           if (attribution.referrer && attribution.referrer !== lastReferrer) {
             console.log(chalk.dim(`Referral: carrying inviter ${attribution.referrer.slice(0, 10)}… until the first settlement binds it on-chain.`))
+          } else if (!attribution.referrer && lastReferrer) {
+            console.log(chalk.dim('Referral: inviter is bound on-chain; no longer carried in signed metadata.'))
           }
           lastReferrer = attribution.referrer
           node.setBuyerAttribution(attribution)
