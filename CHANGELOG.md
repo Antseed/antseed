@@ -92,6 +92,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Sellers: check configured free-tier address and IP quotas before opening free-usage channels on-chain, refusing exhausted quotas or accounting failures without spending opening gas. Admission checks do not consume request quota; sellers without configured limits remain unchanged. Fix in-memory accounting losing the first address count when creating an IP bucket.
 - ANTS dashboard: treat post-transaction indexer lag as a syncing state rather than a failed refresh. Retain reward and position snapshots with updating labels, preserve reconciliation across navigation, clear old wallet data on account changes, and prevent actions based on stale reward or position data. Keep the seller list and network statistics available while only your own stake figures wait for the indexer, and refresh waiting views automatically every few seconds until it catches up.
 - Desktop AI VPN: prevent the chat browser-preview button from overlapping Help, Settings, and the credit balance. Keep header controls readable in narrow windows, give message search its own row when needed, and truncate long page titles with the full title available on hover instead of squeezing the balance.
 - Desktop: replace the legacy VPR artwork in the chat welcome screen and title bar with a font-independent AI VPN SVG wordmark matching the original lettering, preserving the ant icon and installer/update compatibility.
