@@ -8,6 +8,47 @@ import type { DiscoverRow } from '../../core/state.js';
 
 const SEP = '\u0001';
 
+test('routing discovery errors are retained separately from route writes', async () => {
+  installDomTimers();
+  const uiState = createInitialUiState();
+  uiState.vprRouteError = 'Existing route write error';
+  initChatModule({ uiState, appendSystemLog: () => undefined, bridge: {
+    chatGetRoutingServices: async () => ({ ok: false, error: 'Buyer upgrade required' }),
+    chatAiListDiscoverRows: async () => ({ ok: true, data: [] }),
+  } });
+  await waitFor(() => uiState.vprRoutingServicesError === 'Buyer upgrade required');
+  assert.equal(uiState.vprRouteError, 'Existing route write error');
+  assert.deepEqual(uiState.vprRoutingServices, []);
+});
+
+test('successful routing discovery clears a previous discovery error', async () => {
+  installDomTimers();
+  const uiState = createInitialUiState();
+  uiState.vprRoutingServicesError = 'Previous failure';
+  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'levanto-route', label: 'Fake Levanto', priceMicroUsdc: '0' };
+  initChatModule({ uiState, appendSystemLog: () => undefined, bridge: {
+    chatGetRoutingServices: async () => ({ ok: true, services: [service] }),
+    chatAiListDiscoverRows: async () => ({ ok: true, data: [] }),
+  } });
+  await waitFor(() => uiState.vprRoutingServices.length === 1);
+  assert.equal(uiState.vprRoutingServicesError, null);
+});
+
+test('selecting a router alias for a chat does not post a transient model default', () => {
+  installDomTimers();
+  const uiState = createInitialUiState();
+  uiState.vprRouteHydrated = true;
+  uiState.vprRouteSelection = { model: null, mode: 'auto', peerId: null,
+    router: { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, preferences: { cqt: '5' } } };
+  const initial = uiState.vprRouteSelection;
+  const writes: unknown[] = [];
+  const api = initChatModule({ uiState, appendSystemLog: () => undefined,
+    bridge: { chatSetBuyerDefaultRoute: async (payload) => { writes.push(payload); return { ok: true }; } } });
+  api.handleServiceChange('antseed', undefined, false, 'auto');
+  assert.equal(uiState.vprRouteSelection, initial);
+  assert.deepEqual(writes, []);
+});
+
 function installDomTimers(): void {
   const g = globalThis as unknown as {
     window?: unknown;

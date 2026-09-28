@@ -1,0 +1,100 @@
+.view {
+  height: 100%;
+  min-height: 0;
+  overflow-y: auto;
+  overflow-x: clip;
+  padding: 8px 16px 24px;
+}
+
+.stack {
+  display: flex;
+  flex-direction: column;
+  gap: 12px;
+  width: 100%;
+  max-width: 392px;
+  margin: 0 auto;
+  min-width: 0;
+}
+
+.logo { flex-shrink: 0; }
+
+.stack > h2, .settings h3 { margin: 0; font-size: 14px; font-weight: 500; overflow-wrap: anywhere; }
+
+.pricing > div { grid-template-columns: minmax(0, 1fr); }
+
+.priceValue {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+}
+
+.priceInfo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  padding: 4px;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  color: var(--text-muted);
+  cursor: help;
+
+  &:hover { color: var(--text-primary); }
+  &:focus-visible { outline: 2px solid currentColor; outline-offset: 2px; }
+}
+
+.modelChoices { border: 0; padding: 0; margin: 0; min-width: 0; }
+
+.title {
+  margin: 0;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 600;
+  overflow-wrap: anywhere;
+}
+
+.hint {
+  margin: 0;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.settings, .modelHeading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  flex-wrap: wrap;
+  gap: 8px;
+
+  h2 { margin: 0; font-size: 14px; font-weight: 500; }
+}
+
+.settings {
+  padding: 8px 0 16px;
+  border-bottom: 1px solid var(--border);
+
+  button[aria-haspopup='listbox'] { max-width: 210px; }
+}
+
+.allModels {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12px;
+  cursor: pointer;
+  overflow-wrap: anywhere;
+
+  input { accent-color: var(--brand); flex-shrink: 0; }
+}
+
+.settingText {
+  flex: 1 1 180px;
+  min-width: 0;
+  overflow-wrap: anywhere;
+}
+
+.missing {
+  display: grid;
+  gap: 6px;
+}

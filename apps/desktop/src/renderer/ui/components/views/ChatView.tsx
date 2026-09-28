@@ -276,6 +276,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     discoverRows: state.discoverRows,
     vprModelCatalog: state.vprModelCatalog,
     vprRouteSelection: state.vprRouteSelection,
+    vprRouteError: state.vprRouteError,
     chatImageRouteSelection: state.chatImageRouteSelection,
   }), shallowEqual);
   const actions = useActions();
@@ -1171,11 +1172,13 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               kind={imageUiMode ? 'image' : 'text'}
               selectedProvider={selectedModelProvider}
               selectedServiceId={selectedModelServiceId}
+              routerActive={!!snap.vprRouteSelection.router && (!selectedModelServiceId || selectedModelServiceId === 'antseed' || selectedModelServiceId === 'levanto-auto')}
               fallbackLabel={currentServiceLabel}
               disabled={(snap.chatInputDisabled || snap.chatSending) && !imageRequestInProgress}
               onSelect={handleModelSwitch}
               onBrowseAll={() => onSelectView?.('explore')}
             />
+            {snap.vprRouteError && <p role="alert">{snap.vprRouteError}</p>}
           </div>
           {currentPeerNotFound && !imageMode && (
             <span className={styles.headerLabelGroup}>

@@ -1,4 +1,5 @@
 import '@antseed/ui/styles';
+import { selectVprRouter, updateVprRouterSettings } from './modules/routing/select-router';
 import { initChatModule } from './modules/chat/controller';
 import { initSettingsModule } from './modules/app/settings';
 import { initRuntimeModule } from './modules/app/runtime';
@@ -314,6 +315,7 @@ function actionSelectVprModel(provider: string, serviceId: string, peerId: strin
   // The text route is persisted and propagated to connected apps after the
   // corresponding chat option has been resolved above.
   uiState.vprRouteSelection = selection;
+  uiState.vprRouteHydrated = true;
   // An explicit pick ends the provisional-default window even when no chat
   // option resolved above (handleServiceChange, which also ends it, only runs
   // when one did) and even when the pick is the provisional model itself —
@@ -648,6 +650,12 @@ registerActions({
   clearPinnedPeer: () => { recordUserAction('route_mode_change', 'chat'); chatApi.clearPinnedPeer(); },
   selectVprModel: (provider, serviceId, peerId) => {
     actionSelectVprModel(provider, serviceId, peerId);
+  },
+  selectVprRouter: (service, preferences, forConversation = false, allowedModels) => {
+    selectVprRouter(bridge, uiState, chatApi, service, preferences, forConversation, allowedModels);
+  },
+  updateVprRouterSettings: (service, preferences, allowedModels) => {
+    updateVprRouterSettings(bridge, uiState, service, preferences, allowedModels);
   },
   clearVprPinnedPeer: () => {
     recordUserAction('route_mode_change', 'model');

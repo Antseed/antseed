@@ -309,7 +309,13 @@ const api = {
   chatAiSelectPeer(payload: { conversationId?: string | null; peerId?: string | null; service?: string | null; provider?: string | null; routeMode?: 'auto' | 'pinned' | null }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:ai-select-peer', payload);
   },
-  chatSetBuyerDefaultRoute(payload: { peerId?: string; service: string }): Promise<{ ok: boolean; error?: string }> {
+  chatGetRoutingServices(): Promise<{ ok: boolean; services?: import('../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }> {
+    return ipcRenderer.invoke('chat:get-routing-services');
+  },
+  chatGetBuyerDefaultRoute(): Promise<{ ok: boolean; selection?: import('../shared/routing-selection.js').DesktopRoutingSelection; error?: string }> {
+    return ipcRenderer.invoke('chat:get-buyer-default-route');
+  },
+  chatSetBuyerDefaultRoute(payload: { selection: import('../shared/routing-selection.js').DesktopRoutingSelection }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:set-buyer-default-route', payload);
   },
   chatSyncModelPicker(payload: unknown): Promise<{ ok: boolean }> {

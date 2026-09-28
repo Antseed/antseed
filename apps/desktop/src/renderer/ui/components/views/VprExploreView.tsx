@@ -31,7 +31,9 @@ import { findCatalogEntry, sortFreeModelsByPriority } from '../../../modules/cat
 import { availableModelFamilies } from '../../../modules/catalog/model-families';
 import { loadFavoriteModels } from '../../../modules/catalog/favorites';
 import { availableModelTags } from '../../../modules/catalog/model-metadata';
-import { setVprModelPageTarget } from '../../../modules/catalog/model-page-target';
+import { setVprModelPageTarget, setVprRouterPageTarget } from '../../../modules/catalog/model-page-target';
+import { routingServiceKey } from '../../../../shared/routing-selection';
+import { VprRouterRow } from '../vpr/VprRouterOptions';
 import { selectFavoriteVprCatalog } from '../../../modules/catalog/recommended';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
@@ -86,6 +88,8 @@ export function VprExploreView({ onSelectView }: Props) {
     discoverRows: state.vprRoutableRows,
     discoverRowsLoaded: state.chatDiscoverRowsLoaded,
     preferences: state.vprRoutingPreferences,
+    routers: state.vprRoutingServices,
+    routerError: state.vprRoutingServicesError,
   }), shallowEqual);
   const everFunded = useEverFunded();
   const [search, setSearch] = useRetainedState(exploreViewCache, 'search');
@@ -112,6 +116,7 @@ export function VprExploreView({ onSelectView }: Props) {
   const typeOptions = useMemo<readonly VprFilterOption<string>[]>(() => [
     { value: 'kind:text', label: 'Text', description: 'Chat and language models', icon: <FilterIconView icon={TextIcon} /> },
     { value: 'kind:image', label: 'Image', description: 'Image generation models', icon: <FilterIconView icon={Image01Icon} /> },
+    { value: 'kind:router', label: 'Router', description: 'Choose a model for each request', icon: <FilterIconView icon={HierarchyIcon} /> },
     { value: 'free', label: 'Free', description: 'Models with a free offer', icon: <FilterIconView icon={Dollar01Icon} /> },
     ...tags.map((modelTag) => ({
       value: `tag:${modelTag}`,
@@ -153,6 +158,13 @@ export function VprExploreView({ onSelectView }: Props) {
   ), [listInputs, displayCatalog]);
 
   const selectedModel = snap.selection.model;
+  const routers = snap.routers.filter((service) => {
+    const kinds = listInputs.types.filter((value) => value.startsWith('kind:'));
+    if (kinds.length && !kinds.includes('kind:router')) return false;
+    if (listInputs.types.some((value) => value.startsWith('tag:')) || listInputs.families.length || listInputs.teeFilter === 'tee') return false;
+    if (listInputs.types.includes('free') && Number(service.priceMicroUsdc) !== 0) return false;
+    return `${service.label} ${service.sellerName ?? ''} ${service.provider} ${service.serviceId} router`.toLowerCase().includes(listInputs.search.trim().toLowerCase());
+  });
   const selectedEntry = selectedModel
     ? findCatalogEntry(snap.catalog, selectedModel.provider, selectedModel.serviceId)
     : null;
@@ -239,7 +251,7 @@ export function VprExploreView({ onSelectView }: Props) {
           <VprSearch
             value={search}
             onChange={setSearch}
-            placeholder="Search models"
+            placeholder="Search models or routers"
           />
         )}
       >
@@ -274,9 +286,15 @@ export function VprExploreView({ onSelectView }: Props) {
 
         {teeFilter === 'tee' && <VprTeeNotice onClear={() => setTeeFilter('all')} />}
 
-        {listEntries.length > 0 ? (
+        {snap.routerError && <div className={styles.empty} role="alert">{snap.routerError}</div>}
+
+        {listEntries.length > 0 || routers.length > 0 ? (
           <VprModelRowList
             entries={listEntries}
+            additionalRowsLabel="Routers"
+            additionalRows={routers.map((service) => <VprRouterRow key={routingServiceKey(service)} service={service}
+              active={!!snap.selection.router && routingServiceKey(snap.selection.router.service) === routingServiceKey(service)}
+              onClick={() => { setVprRouterPageTarget(service); onSelectView?.('model'); }} />)}
             selectedProvider={selectedModel?.provider}
             selectedServiceId={selectedModel?.serviceId}
             favoriteKeys={favorites}

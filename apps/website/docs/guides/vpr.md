@@ -280,6 +280,57 @@ If no AI VPN route is selected, the `antseed` alias returns `no_default_route`. 
 
 See [Using the API](/docs/guides/using-the-api) for SDK configuration, format translation, response headers, routing overrides, errors, and tool-specific examples.
 
+## Delegate model selection to Levanto
+
+Open the Home or chat model picker and choose an offer marked **Router**.
+These are routing services, not inference models. Only peers advertising the
+`levanto-routing` protocol with `completed_requests` pricing appear here. The
+selection stores the exact peer, provider and service; Antseed does not replace
+it with a cheaper routing peer.
+
+The picker displays the routing fee per completed request, or just **Free** for
+a zero-fee router. Inference is billed
+separately by the recommended inference seller. Future purchases use the service's
+advertised price; there is no persistent routing-price ceiling. Open **Models** and
+click the router to view its target, pricing tile and **Router settings**. Each
+router publishes its own named text-enum settings, choices, descriptions and
+optional defaults. The app displays one dropdown per field, using the supplied
+values without inventing labels or hardcoding CQT. Required settings without a
+default need a choice before saving. Removed choices are shown for correction.
+Use the searchable **Allowed models** list to check which provider/model pairs
+the router may use, from its signed supported-model catalog. **All supported models**
+includes newly advertised supported models; a custom
+selection stays limited to the checked entries. Changes apply only when you
+press **Use** or **Save** at the top right, not while browsing. Selections persist
+across restarts. If no recommendation matches an eligible allowed model, the
+request fails rather than falling back to an excluded model. The allowlist is
+enforced by the buyer. Routers receive the exact eligible seller/provider/model
+list through the v1 interface and must respect it. There is no peer-only fallback.
+If a router does not publish a catalog, the app says its supported
+models are unknown rather than showing every network model as supported. Stale
+catalogs must be refreshed before routing; catalog changes never silently broaden
+an explicit selection or remove request constraints.
+Chat replies show a small indicator naming the model that actually answered.
+
+- Connected apps using the system proxy follow router mode, even if they were
+  connected with a fixed default model. Explicit model choices remain overrides.
+- API requests using `antseed` or `levanto-auto` delegate to the selected router.
+  Concrete models and explicit seller/model pins override it.
+- New desktop chats use the router. Existing fixed-model chats retain their
+  selection until you explicitly choose Levanto inside that chat's picker; doing
+  so clears the old chat pin before sending the next message.
+- Choosing a normal model exits router mode intentionally. Refreshing discovery
+  or reconnecting an app does not silently replace the selected router.
+- Telegram follows the router for new, unpinned chats. `/model` explains that
+  there is no fixed default model; choosing one exits router mode.
+
+If the selected router disappears, choose another router or a model. Antseed does
+not silently purchase from a different routing service. Invalid recommendations
+are rejected before inference and are not authorized for payment. With a paid
+router, a malformed successful response can leave the channel in a payment
+disagreement and block later purchases; retries do not automatically repair it.
+Select a model or another router and report the failure to the service operator.
+
 ## Troubleshooting
 
 ### No peers or models are listed

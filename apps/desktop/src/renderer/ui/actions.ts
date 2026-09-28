@@ -1,4 +1,5 @@
 import type { ConfigFormData, VprPeerListing, VprRoutingPreferences } from '../core/state';
+import type { RouterPreferences, RoutingServiceTarget, RouterAllowedModel } from '../../shared/routing-selection';
 import type { ChatPermissionMode, RawChatAttachment, ToolApprovalDecision } from '../types/bridge';
 
 export type AppActions = {
@@ -26,6 +27,8 @@ export type AppActions = {
   handleServiceBlur: () => void;
   clearPinnedPeer: () => void;
   selectVprModel: (provider: string, serviceId: string, peerId?: string | null) => void;
+  selectVprRouter: (service: RoutingServiceTarget, preferences?: RouterPreferences, forConversation?: boolean, allowedModels?: RouterAllowedModel[]) => void;
+  updateVprRouterSettings: (service: RoutingServiceTarget, preferences: RouterPreferences, allowedModels?: RouterAllowedModel[]) => void;
   clearVprPinnedPeer: () => void;
   /**
    * Remember (or forget, with null) a seller pin for a model without applying

@@ -266,6 +266,7 @@ export async function installPluginDependencies(packageSpecs: string[]): Promise
 async function removeDefaultRouterRuntimePackages(): Promise<void> {
   const packages = [
     '@antseed/router-local',
+    '@antseed/router-levanto',
     '@antseed/router-core',
     '@antseed/node',
     '@antseed/api-adapter',

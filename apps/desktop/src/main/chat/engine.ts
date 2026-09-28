@@ -1,4 +1,6 @@
 import { randomUUID } from 'node:crypto';
+import { writeBuyerRoute } from './buyer-route.js';
+import { isRoutingSelection } from '@antseed/node';
 import { readFile } from 'node:fs/promises';
 import { getNetworkStats } from '../runtime/fetch-network-stats.js';
 import { raceBudget } from './race-budget.js';
@@ -960,6 +962,18 @@ export function registerPiChatHandlers({
     const pinnedPeerId = routeMode === 'pinned' ? peerId : null;
 
     if (conversationId) {
+      if (!pinnedPeerId && (service === 'antseed' || service === 'levanto-auto')) {
+        try {
+          const port = await resolveProxyPort(configPath);
+          const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/conversations/update`, {
+            method: 'POST', headers: { 'content-type': 'application/json' }, signal: AbortSignal.timeout(5_000),
+            body: JSON.stringify({ id: `vpr:${conversationId}`, pinnedModel: null, peerSource: 'auto' }),
+          });
+          if (!response.ok && response.status !== 404) return { ok: false, error: 'Could not clear the previous conversation route' };
+        } catch (error) {
+          return { ok: false, error: asErrorMessage(error) };
+        }
+      }
       if (pinnedPeerId) {
         preferredPeerByConversationId.set(conversationId, pinnedPeerId);
         const peerLabel = lastServiceCatalogEntries.find((entry) => entry.peerId === pinnedPeerId)?.peerLabel;
@@ -999,34 +1013,44 @@ export function registerPiChatHandlers({
   // route the Telegram bridge reads) on the renderer's current AI VPN selection.
   // Best-effort: the buyer proxy may not be running yet — the renderer calls
   // this again on its catalog poll, so the route lands once the proxy is up.
-  let lastPostedDefaultRoute = '';
-  const setBuyerDefaultRoute = async (peerIdRaw: unknown, serviceRaw: unknown): Promise<{ ok: boolean; error?: string }> => {
-    const peerId = typeof peerIdRaw === 'string' ? peerIdRaw.trim() : '';
-    const service = typeof serviceRaw === 'string' ? serviceRaw.trim() : '';
-    if (!service) return { ok: false, error: 'service is required' };
-    const model = peerId ? `${peerId}@${service}` : service;
-    if (model === lastPostedDefaultRoute) return { ok: true };
+  const setBuyerDefaultRoute = async (selection: unknown): Promise<{ ok: boolean; error?: string }> => {
+    if (!isRoutingSelection(selection)) return { ok: false, error: 'Invalid routing selection' };
     try {
       const proxyPort = await resolveProxyPort(configPath);
-      const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/route`, {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model }),
-      });
-      const result = await response.json() as { ok?: boolean; error?: string };
-      if (result.ok) {
-        lastPostedDefaultRoute = model;
-        recordModelSelection(service, peerId || null);
-      }
-      return { ok: result.ok ?? false, error: result.error };
+      return await writeBuyerRoute(proxyPort, selection);
     } catch (err) {
       return { ok: false, error: asErrorMessage(err) };
     }
   };
 
-  ipcMain.handle('chat:set-buyer-default-route', async (_event, payload: { peerId?: unknown; service?: unknown }) => (
-    setBuyerDefaultRoute(payload?.peerId, payload?.service)
+  ipcMain.handle('chat:set-buyer-default-route', async (_event, payload: { selection?: unknown }) => (
+    setBuyerDefaultRoute(payload?.selection)
   ));
+
+  ipcMain.handle('chat:get-routing-services', async () => {
+    try {
+      const proxyPort = await resolveProxyPort(configPath);
+      const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/routing-services`, { signal: AbortSignal.timeout(5_000) });
+      if (response.status === 404) {
+        return { ok: false, error: `The buyer on port ${proxyPort} does not support routing services. Stop the older buyer in its owning app or terminal, then start this VPR buyer. Toggling a shared dev instance only reattaches to the old buyer.` };
+      }
+      if (!response.ok) throw new Error(`Routing discovery failed (${response.status})`);
+      return await response.json();
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
+    }
+  });
+
+  ipcMain.handle('chat:get-buyer-default-route', async () => {
+    try {
+      const proxyPort = await resolveProxyPort(configPath);
+      const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/route`, { signal: AbortSignal.timeout(5_000) });
+      if (!response.ok) throw new Error(`Read route failed (${response.status})`);
+      return await response.json();
+    } catch (error) {
+      return { ok: false, error: asErrorMessage(error) };
+    }
+  });
 
   ipcMain.handle('telemetry:first-model-shown', (_event, payload: unknown) => {
     const signal = payload as Partial<FirstModelShownSignal> | null;
@@ -1058,8 +1082,8 @@ export function registerPiChatHandlers({
     getModelPicker: () => modelPickerSnapshot,
     selectPeer: applyPeerSelection,
     setDefaultRoute: async (peerId, service, provider) => {
-      const result = await setBuyerDefaultRoute(peerId, service);
-      sendToRenderer('chat:default-route-changed', { peerId, service, provider: provider ?? null });
+      const result = await setBuyerDefaultRoute({ kind: 'model', model: peerId ? `${peerId}@${service}` : service });
+      if (result.ok) sendToRenderer('chat:default-route-changed', { peerId, service, provider: provider ?? null });
       return result;
     },
   };

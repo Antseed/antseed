@@ -44,8 +44,14 @@ there is no separate seller-peer setting or cheapest-peer default.
 The advertised `levanto-routing` protocol identifies compatible services, rather
 than a hardcoded provider name. The remaining plugin settings are the existing
 local-router policy settings. Routing services stay out of the inference-model
-catalog; clients render router-advertised settings from the plugin-provided
-catalog schema.
+catalog. Desktop exposes compatible offers as model-like rows marked **Router**
+in its pickers and Models page. The router detail page displays the exact
+provider/service/peer, completed-request price and router-advertised settings.
+Each string-enum field becomes a dropdown using the published values verbatim,
+with its optional description and default. Desktop does not hardcode CQT or
+invent labels such as “Balanced.” Selecting a model exits
+router mode; catalog refreshes do not. Selecting the router inside an existing
+chat clears that chat's model/seller pin before the next message.
 
 In router mode, requests using `model: "antseed"` or
 `model: "levanto-auto"` use the selected router, ignoring an old fixed-model
@@ -96,8 +102,8 @@ legacy `defaultRoutedModel` is converted and persisted once if `selection` is
 missing. An existing `selection` always wins, including an explicitly cleared
 default. The legacy key can remain in the file but is ignored after conversion.
 The old top-level `model` API field is no longer supported.
-Desktop/VPR and other model-only control clients need a follow-up update; this
-change intentionally does not preserve their old selection API.
+Desktop/VPR uses the selection-only API. Other control clients must migrate;
+the old top-level model API is not preserved.
 Selection changes apply to subsequent requests. In-flight requests retain their
 original selection and are not cancelled by model or chat selection changes.
 Client-disconnect cancellation remains in place. Explicit state selections
@@ -112,8 +118,9 @@ no tokens; token usage is not suppressed just because it came from a router.
 Preference schemas come from the service catalog's `preferencesSchema`, which the
 adapter's `getCatalog()` fetches from the router API (`GET /_antseed/route/catalog`,
 base URL `LEVANTO_ROUTING_PEER_URL` or the routing peer's host on port 8787). The same transport can serve different routing services with
-different settings. The buyer validates the exact selected service's schema.
-For example, a CQT field:
+different settings. The buyer validates the exact selected service's schema and
+exposes it through `GET /_antseed/routing-services`; desktop renders its fields.
+For example, the GesundAI development router advertises:
 
 ```json
 {
@@ -143,10 +150,10 @@ the router and echoed as `catalogRevision`. Defaults and
 choices are validated before a routing purchase and again seller-side. Changed
 or removed choices fail validation rather than being silently replaced. Required
 fields without defaults require an explicit choice; optional fields can be unset.
-No free text, numbers, booleans or nested fields are supported.
+No free text, numbers, booleans or nested fields are supported in this first UI.
 Without a catalog, the adapter descriptor remains the buyer's fallback;
-the built-in adapter has no settings. A different wire protocol still needs a
-registered adapter, but no client-specific settings code.
+the built-in adapter has no settings, and desktop invents none. A different wire
+protocol still needs a registered adapter, but not a bespoke desktop settings UI.
 
 ## Registering another routing adapter
 
@@ -259,11 +266,12 @@ An invalid envelope or no usable destination fails before response acceptance.
 There is one in-review v1 contract, without version negotiation. The earlier peer-only
 draft is intentionally unsupported. Routers without a catalog still receive exact
 constraints, but their supported models are unknown. An invalid or expired catalog
-is an error, not permission to omit it. Clients must not present the network-wide
+is an error, not permission to omit it. Desktop does not present the network-wide
 model list as that router's supported-model list.
 
-Levanto's external backend must implement the catalog API and this revised
-contract before release.
+See [the seller integration contract](../../docs/protocol/levanto-routing.md)
+for the catalog API, limits, v1 examples and rollout requirements. Levanto's
+external backend must implement this revised contract before release.
 Unsupported inference overrides are rejected as a whole candidate, not stripped.
 The backend's predicted prices are not authoritative inference prices.
 
@@ -322,9 +330,13 @@ Levanto's payload schema. If a provider returns HTTP success with an invalid
 payload, the buyer rejects it and will not authorize the seller's charge.
 The seller can then refuse subsequent purchases on that channel with HTTP 402
 because its completed-work total exceeds the buyer's authorized total. The
-buyer reports a payment error; the user can select a model or another router. There is no automatic disputed-charge authorization, refund, or channel
+desktop reports a payment error and lets the user select a model or another
+router. There is no automatic disputed-charge authorization, refund, or channel
 recovery. Providers must validate successful responses before returning them;
 this behavior is a paid-rollout acceptance gate, not just a transient retry.
+
+See `docs/levanto-vpr-release.md` for reproducible browser/P2P/Anvil verification
+and the remaining production release gates. The fake provider is test-only.
 
 The endpoint and `v: 1` request/response bodies identify the routing format;
 there is no separate execution-contract setting. Completed-request pricing uses

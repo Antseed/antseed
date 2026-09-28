@@ -1,8 +1,10 @@
 import type { VprPeerListing, VprRoutingPreferences, VprRouteSelection } from '../../core/state';
 import type { ModelRoutingPreferences } from '@antseed/node/model-routing';
+import { createDesktopRouterSelection, isDesktopRouterSelection, type DesktopRouterSelection, type RoutingServiceTarget } from '../../../shared/routing-selection';
 
 export const VPR_PREFERENCES_STORAGE_KEY = 'antseed.desktop.vpr.preferences';
 export const VPR_ROUTE_SELECTION_STORAGE_KEY = 'antseed.desktop.vpr.routeSelection';
+const VPR_ROUTER_SETTINGS_STORAGE_PREFIX = 'antseed.desktop.vpr.routerSettings.';
 const VPR_PREFERENCES_VERSION = 2;
 const ROUTING_PEER_ID_PATTERN = /^(?:0x)?[0-9a-f]{40}$/i;
 
@@ -161,6 +163,9 @@ export function loadVprRouteSelection(fallback: VprRouteSelection): VprRouteSele
   if (!isStoredObject(parsed)) {
     return fallback;
   }
+  if (isDesktopRouterSelection(parsed.router)) {
+    return { model: null, mode: 'auto', peerId: null, router: parsed.router };
+  }
   if (parsed.mode !== 'auto' && parsed.mode !== 'pinned-peer') {
     return fallback;
   }
@@ -177,4 +182,21 @@ export function saveVprRouteSelection(value: VprRouteSelection): void {
     return;
   }
   localStorage.setItem(VPR_ROUTE_SELECTION_STORAGE_KEY, JSON.stringify(value));
+}
+
+function routerSettingsStorageKey(service: RoutingServiceTarget): string {
+  return VPR_ROUTER_SETTINGS_STORAGE_PREFIX + JSON.stringify([service.peerId, service.provider, service.serviceId]);
+}
+
+export function loadVprRouterSettings(service: RoutingServiceTarget): DesktopRouterSelection | null {
+  const stored = loadJson(routerSettingsStorageKey(service));
+  if (!isDesktopRouterSelection(stored) || routerSettingsStorageKey(stored.service) !== routerSettingsStorageKey(service)) return null;
+  return stored;
+}
+
+export function saveVprRouterSettings(settings: DesktopRouterSelection): void {
+  if (!isDesktopRouterSelection(settings)) throw new Error('Invalid router settings');
+  if (typeof localStorage === 'undefined') return;
+  const stored = createDesktopRouterSelection(settings.service, settings.preferences, settings.allowedModels);
+  localStorage.setItem(routerSettingsStorageKey(settings.service), JSON.stringify(stored));
 }

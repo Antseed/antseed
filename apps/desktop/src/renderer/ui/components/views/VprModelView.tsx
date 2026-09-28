@@ -34,6 +34,7 @@ import { useRetainedState } from '../../hooks/useRetainedState';
 import { VprTeeFilter, VprTeeNotice } from '../vpr/VprTeeAvailability';
 import { VprTeeStatus } from '../vpr/VprTeeStatus';
 import { useTeeVerification, useTeeVisibleSellers } from '../../hooks/useTeeVerification';
+import { VprRouterView } from './VprRouterView';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -51,6 +52,11 @@ function priceTile(entry: { minInputUsdPerMillion: number | null; maxInputUsdPer
 }
 
 export function VprModelView({ onSelectView }: Props) {
+  const router = vprModelPageTarget()?.router;
+  return router ? <VprRouterView key={`${router.peerId}:${router.provider}:${router.serviceId}`} service={router} /> : <VprModelDetails onSelectView={onSelectView} />;
+}
+
+function VprModelDetails({ onSelectView }: Props) {
   const actions = useActions();
   const tee = useTeeVerification();
   const snap = useUiSelector((state) => ({

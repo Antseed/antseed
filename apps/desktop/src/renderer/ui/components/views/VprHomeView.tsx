@@ -1,4 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
+import { VprRouterOptions } from '../vpr/VprRouterOptions';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -71,6 +72,7 @@ export function VprHomeView({ onSelectView }: Props) {
   const snap = useUiSelector((state) => ({
     catalog: state.vprModelCatalog,
     selection: state.vprRouteSelection,
+    routeError: state.vprRouteError,
     modelPins: state.vprModelPins,
     discoverRows: state.vprRoutableRows,
     defaultProvisional: state.vprDefaultModelProvisional,
@@ -371,7 +373,7 @@ export function VprHomeView({ onSelectView }: Props) {
     onSelectView?.('chat');
   }
 
-  const defaultModelLabel = selectedEntry?.label
+  const defaultModelLabel = snap.selection.router ? 'Router · Auto model' : selectedEntry?.label
     ?? (selectedModel ? displayModelLabel(selectedModel.serviceId, selectedModel.label) : 'No model');
 
   /* Recent chats sample — full width, same rows as the floating pill; every
@@ -441,6 +443,7 @@ export function VprHomeView({ onSelectView }: Props) {
      standalone model card (connected-apps variant). */
   const modelMenu = modelMenuOpen ? (
         <div className={styles.modelMenu} role="listbox">
+          <VprRouterOptions onSelect={() => setModelMenuOpen(false)} />
           <VprModelRowList
             entries={dropdownEntries}
             selectedProvider={selectedModel?.provider}
@@ -639,6 +642,7 @@ export function VprHomeView({ onSelectView }: Props) {
                       <HugeiconsIcon icon={ArrowDown01Icon} size={18} strokeWidth={2} className={styles.modelPillChevron} />
                     </button>
                     {modelMenu}
+                    {snap.routeError && <p role="alert">{snap.routeError}</p>}
                   </div>
                   <button
                     type="submit"
@@ -668,8 +672,7 @@ export function VprHomeView({ onSelectView }: Props) {
                     <BrandIcon name={selectedModel.provider} hints={[selectedModel.label]} size={20} />
                   )}
                   <span className={styles.modelName}>
-                    {selectedEntry?.label
-                      ?? (selectedModel ? displayModelLabel(selectedModel.serviceId, selectedModel.label) : 'None selected')}
+                    {defaultModelLabel}
                   </span>
                   {modelIsFree && <span className={styles.freeTag}>Free</span>}
                   {/* First-use warm-up: the default is provisional while no
@@ -698,6 +701,7 @@ export function VprHomeView({ onSelectView }: Props) {
               <HugeiconsIcon icon={ArrowDown01Icon} size={24} strokeWidth={2} className={styles.modelCardChevron} />
             </button>
             {modelMenu}
+            {snap.routeError && <p role="alert">{snap.routeError}</p>}
           </div>
           )}
         </div>

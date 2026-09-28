@@ -297,10 +297,10 @@ function copyDepTree(name, parentSourceDir, parentDestDir, topDestRoot, visited)
   }
 }
 
-const runtimeRoots = ['@antseed/node', '@antseed/antseed-verifier'];
+const runtimeRoots = ['@antseed/node', '@antseed/antseed-verifier', '@antseed/router-local'];
 const visited = new Set();
 for (const packageName of runtimeRoots) {
-  const packageDir = WORKSPACE_PACKAGES[packageName]
+  const packageDir = (packageName === '@antseed/router-local' ? path.resolve(appDir, '../../plugins/router-local') : WORKSPACE_PACKAGES[packageName])
     ?? findPackageDirFromRequire(desktopRequire, packageName);
   if (!packageDir) {
     console.warn(`[prepare-dist] WARNING: could not locate ${packageName} — bundled runtime will be incomplete`);

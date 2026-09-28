@@ -58,6 +58,7 @@ export function resolveBuyerRouterName(options: { router?: string }): string {
 export function buildBuyerBootstrapEntries(
   configuredBootstrapNodes: string[] | undefined,
   localSeederDhtPort?: number,
+  devRoutingDhtPort?: string,
 ): string[] {
   const configured = Array.isArray(configuredBootstrapNodes)
     ? configuredBootstrapNodes.filter((entry) => typeof entry === 'string' && entry.trim().length > 0)
@@ -74,6 +75,13 @@ export function buildBuyerBootstrapEntries(
     }
   }
 
+  if (devRoutingDhtPort !== undefined) {
+    if (!/^\d+$/.test(devRoutingDhtPort) || Number(devRoutingDhtPort) < 1 || Number(devRoutingDhtPort) > 65535) {
+      throw new Error('ANTSEED_DEV_ROUTING_DHT_PORT must be a port between 1 and 65535')
+    }
+    const localRouter = `127.0.0.1:${Number(devRoutingDhtPort)}`
+    if (!entries.includes(localRouter)) entries.unshift(localRouter)
+  }
   return entries
 }
 
@@ -275,7 +283,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       const seederInfo = await getLocalSeederInfo(globalOpts.dataDir)
-      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort)
+      const allBootstrapEntries = buildBuyerBootstrapEntries(config.network?.bootstrapNodes, seederInfo?.dhtPort, process.env['ANTSEED_DEV_ROUTING_DHT_PORT'])
       const bootstrapNodes = toBootstrapConfig(parseBootstrapList(allBootstrapEntries))
 
       const nodeSpinner = ora('Connecting to P2P network...').start()
