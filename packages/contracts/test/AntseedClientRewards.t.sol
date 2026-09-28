@@ -65,6 +65,20 @@ contract AntseedClientRewardsTest is Test {
         rewards.claim(cli, 10);
     }
 
+    function test_reportsClaimsClaimantFirstAndSweepsEmptyEpochs() public {
+        ledger.credit(10, desktop, 1);
+        gate.setBudget(address(rewards), 10, 10 ether);
+        gate.setBudget(address(rewards), 11, 10 ether);
+        gate.setCurrentEpoch(13);
+        rewards.claim(desktop, 10);
+        assertTrue(rewards.claimed(desktop, 10));
+        assertFalse(rewards.claimed(cli, 10));
+
+        (uint256 burned, uint256 reserved) = rewards.settleEpochRemainder(11);
+        assertEq(burned + reserved, 10 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), reserved);
+    }
+
     function test_waitsOneGraceEpochBeforeAnEpochIsClaimable() public {
         ledger.credit(10, desktop, 1);
         gate.setBudget(address(rewards), 10, 10 ether);

@@ -53,7 +53,7 @@ contract AntseedClientRewards is AntseedEpochShareRewards {
         emit ClientRewardClaimed(epoch, clientAgentId, recipient, points, total, amount);
     }
 
-    function claimed(uint256 epoch, uint256 clientAgentId) external view returns (bool) {
+    function claimed(uint256 clientAgentId, uint256 epoch) external view returns (bool) {
         return _isClaimed(epoch, bytes32(clientAgentId));
     }
 

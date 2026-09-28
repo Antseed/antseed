@@ -31,8 +31,10 @@ abstract contract AntseedEpochShareRewards is Ownable2Step, Pausable, Reentrancy
     mapping(uint256 epoch => bool frozen) public epochFrozen;
     mapping(uint256 epoch => mapping(bytes32 key => bool claimed)) private _claimed;
     mapping(uint256 epoch => uint256 amount) public epochMinted;
+    mapping(uint256 epoch => bool settled) public epochRemainderSettled;
 
     event EpochTotalFrozen(uint256 indexed epoch, uint256 totalPoints);
+    event EpochRemainderSettled(uint256 indexed epoch, uint256 unallocatedAmount, uint256 burnedAmount, uint256 reserveAmount);
 
     error InvalidAddress();
     error EpochNotClaimable();
@@ -76,18 +78,53 @@ abstract contract AntseedEpochShareRewards is Ownable2Step, Pausable, Reentrancy
         if (_claimed[epoch][key]) revert AlreadyClaimed();
         if (recipient == address(0)) revert InvalidAddress();
 
-        if (!epochFrozen[epoch]) {
-            frozenTotalPoints[epoch] = _ledgerTotal(epoch);
-            epochFrozen[epoch] = true;
-            emit EpochTotalFrozen(epoch, frozenTotalPoints[epoch]);
-        }
-        total = frozenTotalPoints[epoch];
+        total = _freezeEpochTotal(epoch);
         amount = _share(epoch, points, total);
         if (amount == 0) revert NothingToClaim();
 
         _claimed[epoch][key] = true;
         epochMinted[epoch] += amount;
         emissionsGate.claim(epoch, recipient, amount);
+    }
+
+    /// @notice Route an epoch's bucket to the gate's burn / reserve split when
+    ///         nobody can ever claim it: the ledger recorded no points for the
+    ///         epoch, so every share is zero and the bucket would otherwise
+    ///         stay un-minted forever (the other controllers sweep the same
+    ///         way). Epochs with claimants keep their bucket for those claims.
+    ///         Permissionless; only claimable (hence final) epochs qualify.
+    function settleEpochRemainder(uint256 epoch)
+        external
+        nonReentrant
+        whenNotPaused
+        returns (uint256 burnedAmount, uint256 reserveAmount)
+    {
+        if (epochRemainderSettled[epoch]) revert AlreadyClaimed();
+        if (!isClaimable(epoch)) revert EpochNotClaimable();
+        if (_freezeEpochTotal(epoch) != 0) revert NothingToClaim();
+        uint256 budget = emissionsGate.controllerEpochBudget(address(this), epoch);
+        if (budget == 0) revert NothingToClaim();
+
+        epochRemainderSettled[epoch] = true;
+        (burnedAmount, reserveAmount) = emissionsGate.claimRemainder(epoch, _emissionsReserve(), budget);
+        emit EpochRemainderSettled(epoch, budget, burnedAmount, reserveAmount);
+    }
+
+    /// @dev Freeze the epoch's ledger total on first use. Kept as an explicit
+    ///      flag rather than `frozenTotalPoints != 0` so a frozen zero (an
+    ///      epoch settled as remainder) is distinguishable from unset.
+    function _freezeEpochTotal(uint256 epoch) internal returns (uint256 total) {
+        if (!epochFrozen[epoch]) {
+            frozenTotalPoints[epoch] = _ledgerTotal(epoch);
+            epochFrozen[epoch] = true;
+            emit EpochTotalFrozen(epoch, frozenTotalPoints[epoch]);
+        }
+        return frozenTotalPoints[epoch];
+    }
+
+    function _emissionsReserve() internal view returns (address reserve) {
+        reserve = emissionsGate.emissionsReserve();
+        if (reserve == address(0)) revert InvalidAddress();
     }
 
     function _isClaimed(uint256 epoch, bytes32 key) internal view returns (bool) {

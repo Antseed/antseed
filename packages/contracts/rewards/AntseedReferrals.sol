@@ -117,7 +117,7 @@ contract AntseedReferrals is AntseedEpochShareRewards {
         if (paid == 0) revert NothingToClaim();
     }
 
-    function claimed(uint256 epoch, address referrer) external view returns (bool) {
+    function claimed(address referrer, uint256 epoch) external view returns (bool) {
         return _isClaimed(epoch, _key(referrer));
     }
 

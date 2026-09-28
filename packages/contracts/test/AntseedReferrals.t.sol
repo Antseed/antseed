@@ -86,7 +86,7 @@ contract AntseedReferralsTest is Test {
         epochs[1] = 11;
         referrals.claimEpochs(referrer, epochs);
         assertEq(gate.balanceOf(referrer), 175 ether);
-        assertTrue(referrals.claimed(10, referrer));
+        assertTrue(referrals.claimed(referrer, 10));
 
         // Late ledger credits never change a frozen denominator.
         ledger.credit(11, otherReferrer, 1000);
@@ -113,6 +113,38 @@ contract AntseedReferralsTest is Test {
         gate.setBudget(address(referrals), 10, 5 ether);
         referrals.claim(referrer, 10);
         assertEq(gate.balanceOf(referrer), 5 ether);
+    }
+
+    function test_epochWithoutPointsIsSweptToBurnAndReserve() public {
+        gate.setBudget(address(referrals), 10, 100 ether);
+        gate.setCurrentEpoch(11);
+        vm.expectRevert(AntseedEpochShareRewards.EpochNotClaimable.selector);
+        referrals.settleEpochRemainder(10);
+
+        gate.setCurrentEpoch(12);
+        (uint256 burned, uint256 reserved) = referrals.settleEpochRemainder(10);
+        assertEq(burned, 30 ether);
+        assertEq(reserved, 70 ether);
+        assertEq(gate.balanceOf(gate.DEAD_ADDRESS()), 30 ether);
+        assertEq(gate.balanceOf(gate.emissionsReserve()), 70 ether);
+        assertTrue(referrals.epochFrozen(10));
+        assertEq(referrals.frozenTotalPoints(10), 0);
+        vm.expectRevert(AntseedEpochShareRewards.AlreadyClaimed.selector);
+        referrals.settleEpochRemainder(10);
+
+        // A late credit cannot resurrect the swept epoch: its total is frozen at zero.
+        ledger.credit(10, referrer, 5);
+        vm.expectRevert(AntseedEpochShareRewards.NothingToClaim.selector);
+        referrals.claim(referrer, 10);
+
+        // Epochs with claimants keep their bucket for them.
+        ledger.credit(11, referrer, 1);
+        gate.setBudget(address(referrals), 11, 100 ether);
+        gate.setCurrentEpoch(13);
+        vm.expectRevert(AntseedEpochShareRewards.NothingToClaim.selector);
+        referrals.settleEpochRemainder(11);
+        referrals.claim(referrer, 11);
+        assertEq(gate.balanceOf(referrer), 100 ether);
     }
 
     function test_onlyBinderCanBind() public {
