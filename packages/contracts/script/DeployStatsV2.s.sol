@@ -14,14 +14,21 @@ import { AntseedStatsV2 } from "../stats/AntseedStatsV2.sol";
  *   ANTSEED_CHANNELS
  *   ANTSEED_FREE_USAGE
  *
- * Afterwards:
- *   AntseedRegistry.setStats(statsV2)            — Channels and FreeUsage resolve it live
- *   DeployAttributionUsage / DeployReferrals / DeployClientRewards with ANTSEED_STATS=<statsV2>
- *   statsV2.setReferrals(...), statsV2.setAttributionUsage(...)
- *   chain-config statsContractAddress / statsDeployBlock; network-stats indexer
+ * Afterwards, in this order:
+ *   1. DeployAttributionUsage / DeployReferrals / DeployClientRewards with
+ *      ANTSEED_STATS=<statsV2>, then statsV2.setAttributionUsage(...) and
+ *      statsV2.setReferrals(...). Wire the sinks BEFORE re-pointing the
+ *      registry: settlements Stats forwards while a sink is still unset are
+ *      never attributed.
+ *   2. Record `contracts.stats` = statsV2 (with its deploymentBlock) in
+ *      deployments/<network>/current.json and regenerate chain config, so
+ *      statsContractAddress / statsDeployBlock move together.
+ *   3. AntseedRegistry.setStats(statsV2) — Channels and FreeUsage resolve it live.
  *
  * Channels open across the cutover report their cumulative totals once as a
- * first delta in the new contract.
+ * first delta in the new contract. The network-stats indexer nets that
+ * re-report against what it already indexed for the channel (no DB reset);
+ * any other consumer summing MetadataRecorded deltas must do the same.
  */
 contract DeployStatsV2 is Script {
     function run() external returns (AntseedStatsV2 stats) {
