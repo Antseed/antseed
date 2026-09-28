@@ -1,0 +1,171 @@
+---
+slug: uncensored-open-source-ai-peer-network
+title: "Run Uncensored Open-Source AI on a Peer Network"
+authors: [antseed]
+tags: [privacy, open-source, LLM, AI infrastructure, P2P, self-hosted]
+description: "Uncensored AI isn't a jailbreak — it's an open-weight model that never had a hosted vendor's refusal layer bolted on. Here's how to run or reach one on AntSeed."
+keywords: [uncensored ai, uncensored open source ai, run uncensored llm, uncensored ai model, local uncensored ai model, self-hosted uncensored ai, open weight ai no restrictions]
+image: /og-image.jpg
+date: 2026-08-19
+---
+
+import Head from '@docusaurus/Head';
+
+export const uncensoredFaqLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: [
+    {
+      '@type': 'Question',
+      name: 'Is running uncensored AI legal?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "Running an open-weight model with no built-in refusal layer is legal in most jurisdictions — it's the same act as running any other open-source software on your own hardware. What you do with the output is what the law actually cares about. Generating illegal content is illegal regardless of which model produced it.",
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What is the difference between uncensored and jailbroken?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "A jailbreak is a prompt trick used to talk a safety-tuned hosted model into ignoring its own rules, and it works unreliably at best. An uncensored model never had that refusal layer trained in, so there's nothing to trick — the base model just answers, the same way it would on any prompt.",
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Do I need my own hardware to run an uncensored model?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'No. You can run one yourself on a GPU you own via Ollama or llama.cpp, or you can reach a peer on the AntSeed network who is already running one and pay them per token. Both paths use the same protocol.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Can I sell access to my own uncensored model?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "Yes. AntSeed's local-model provider plugin announces whatever you're running as a paid or free service on the network. You set the price, including zero, and you remain responsible for what your service produces and how you describe it.",
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What is AntSeed responsible for on an uncensored service?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "The protocol itself: discovery, routing, and payment settlement between peers. AntSeed does not create, train, moderate, or review what any provider runs. Providers are responsible for their services, buyers are responsible for their prompts and how they use outputs, and illegal content is out of bounds for everyone regardless of which model produced it.",
+      },
+    },
+  ],
+};
+
+<Head>
+  <script type="application/ld+json">{JSON.stringify(uncensoredFaqLd)}</script>
+</Head>
+
+Uncensored AI gets talked about like it's a trick — a magic prompt that unlocks a hosted model's forbidden mode. It isn't. The actual uncensored models are open-weight releases and community fine-tunes that never had a hosted vendor's refusal layer trained into them in the first place. Nobody has to unlock anything, because nothing was locked. The real question isn't how to jailbreak a chatbot — it's how to reach the models that were never chat-productized to begin with, and a peer-to-peer network is a more direct answer to that than another hosted API.
+
+<!-- truncate -->
+
+## What "uncensored" actually means
+
+Every major hosted model — Claude, GPT, Gemini — goes through reinforcement learning from human feedback that trains it to refuse certain categories of request. That layer sits on top of the base model and is tuned to the vendor's own risk tolerance, applied identically to a novelist writing a villain's monologue and to someone with actually bad intent, because a hosted API has no way to tell the two apart at the prompt level.
+
+Open-weight models ship the base network without that layer, or with a much lighter one. Community fine-tunes go a step further and deliberately retrain over the refusal behavior — the well-known "Dolphin" line of fine-tunes is explicit about this, marketing itself as compliant with direct instructions rather than filtered through a safety persona. Techniques like abliteration do something more surgical: they identify the specific direction in the model's activation space responsible for refusal and remove it, leaving the rest of the model's behavior intact. None of this is a bypass. It's the model behaving exactly as its weights define, same as any other open-source software you run yourself.
+
+That's also where the legal line actually sits, and it's worth stating plainly rather than leaving it implied. Running a model with no refusal layer is not the same thing as having permission to produce anything. [AntSeed's terms of service](/terms-of-service) say this directly: the protocol doesn't moderate, train, or review what independent peers exchange, and "uncensored, minimally filtered, experimental" services are explicitly contemplated — but illegal content is out of bounds no matter which model produced it, full stop. A model with no filter doesn't change what's legal to generate. It changes who's making the editorial call — you, instead of a vendor's trust and safety team — for everything that was never illegal to begin with.
+
+## Why hosted APIs refuse things that were never illegal
+
+Most refused requests aren't illegal at all. Fiction with a genuinely villainous character. Harm-reduction drug information written for people who are going to use anyway and would rather not die of it. Historical atrocity discussed in the detail a historian would use. Security research that needs a working exploit description, not a sanitized summary. Medical questions a doctor would answer directly that a hosted model hedges into uselessness.
+
+None of that is against the law anywhere. It gets refused anyway because a hosted vendor's policy is written for the worst plausible interpretation of every prompt, applied at global scale, because the alternative is reviewing intent case by case — which doesn't scale and which a company selling API access to millions of unknown users can't realistically do. That's a rational policy for a company managing brand and legal risk across every user on earth. It's also why the refusal rate on legitimate requests stays stubbornly high no matter how carefully you phrase them.
+
+## Why a peer network changes the answer
+
+A hosted chat product sits between you and the model. Even when the underlying model is technically open-weight, the vendor serving it through a polished API has usually added its own moderation layer on top, because that's what makes it a product instead of raw software.
+
+AntSeed doesn't have a layer to add, because there's no product sitting between you and the peer serving the model. It's a discovery and payment protocol: a provider announces a service — a model name, a price, some freeform category tags they choose themselves — and a buyer routes to it directly. Nothing in the protocol inspects what a provider is running or what a buyer asks it. That's a direct consequence of the architecture, not a policy decision either way, and the [terms of service](/terms-of-service) says as much: AntSeed doesn't select, moderate, or approve what independent peers exchange.
+
+## Run your own uncensored model
+
+The most direct way onto the network is to run something yourself and put it up for other peers to use — or just to have a private, permanent endpoint of your own that nobody else touches.
+
+Install the CLI and the local-model plugin:
+
+```bash
+npm install -g @antseed/cli
+antseed plugin add @antseed/provider-local-llm
+```
+
+Pull whatever open-weight model or community fine-tune you want through Ollama, then announce it as a service:
+
+```bash
+# Ollama serving your model of choice on localhost:11434 (the default)
+antseed config seller add-service local-llm dolphin-mixtral:8x7b \
+  --input 0 --output 0 \
+  --categories chat,uncensored,creative
+```
+
+Categories are freeform tags a provider chooses — nothing enforces a fixed list, so `uncensored` is exactly as valid a tag as `chat` or `fast`. It's a description you're giving other peers, not a certification anyone checks.
+
+Start selling, or just keep it for yourself:
+
+```bash
+antseed seller start
+```
+
+Pricing defaults to zero because you're running your own hardware — charge for it if you want, or leave it free and simply have a model on the network that answers to a peer ID only you know.
+
+## Or reach one someone else is already running
+
+If you'd rather not run the hardware, [install the AntSeed CLI](/docs/install) and start a buyer instead:
+
+```bash
+antseed buyer start
+antseed network browse --service dolphin-mixtral
+```
+
+`network browse` lists every peer currently advertising a matching service, along with price and trust score. New and niche providers — which is most of what's running open-weight fine-tunes right now — often carry a low or unscored trust rating simply because they're new, not because anything's wrong. The buyer proxy's default minimum trust score is 60, which will filter them out silently; lower `buyer.routingPreferences.minTrustScore` in your config, or pin the peer directly, to actually see them:
+
+```bash
+curl http://localhost:8377/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "<peerId>@dolphin-mixtral",
+    "messages": [{"role": "user", "content": "..."}]
+  }'
+```
+
+The `<peerId>@model` prefix pins that exact seller regardless of routing preferences, which is the reliable way to reach a specific uncensored service once you've found one worth returning to.
+
+## Be honest about what "uncensored" doesn't mean
+
+Nobody certifies what a peer is actually running. A service tagged `uncensored` is a claim the provider made about their own setup, not something the network verified. Test the model yourself before you trust the label — ask it something you already know the answer to, and see whether it actually behaves the way the tag implies.
+
+The same lack of a middle layer that removes the refusal filter also removes any privacy guarantee. Nothing in the protocol logs, retains, or trains on what you send by default — but nothing stops a provider from doing exactly that either, and you have no way to verify it either way for a given peer. Don't send anything to an uncensored service you wouldn't be comfortable a stranger running unknown software could read, store, or reuse. That's the actual trade you're making, and it's a fair one for a lot of use cases — fiction, research, a direct answer instead of a hedge — as long as you're making it with your eyes open.
+
+## FAQ
+
+### Is running uncensored AI legal?
+
+Running an open-weight model with no built-in refusal layer is legal in most jurisdictions — it's the same act as running any other open-source software on your own hardware. What you do with the output is what the law actually cares about. Generating illegal content is illegal regardless of which model produced it.
+
+### What is the difference between uncensored and jailbroken?
+
+A jailbreak is a prompt trick used to talk a safety-tuned hosted model into ignoring its own rules, and it works unreliably at best. An uncensored model never had that refusal layer trained in, so there's nothing to trick — the base model just answers, the same way it would on any prompt.
+
+### Do I need my own hardware to run an uncensored model?
+
+No. You can run one yourself on a GPU you own via Ollama or llama.cpp, or you can reach a peer on the AntSeed network who is already running one and pay them per token. Both paths use the same protocol.
+
+### Can I sell access to my own uncensored model?
+
+Yes. AntSeed's local-model provider plugin announces whatever you're running as a paid or free service on the network. You set the price, including zero, and you remain responsible for what your service produces and how you describe it.
+
+### What is AntSeed responsible for on an uncensored service?
+
+The protocol itself: discovery, routing, and payment settlement between peers. AntSeed does not create, train, moderate, or review what any provider runs. Providers are responsible for their services, buyers are responsible for their prompts and how they use outputs, and illegal content is out of bounds for everyone regardless of which model produced it.
+
+---
+
+The refusal layer on a hosted model is a product decision, not a law. Strip it away by running the open weights directly, and what's left is the model itself, answering the question you actually asked. If that's the trade you want, [get started](/get-started) — set up a buyer, browse the network, or announce a model of your own.
