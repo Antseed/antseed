@@ -2,6 +2,7 @@ import { Interface, ZeroAddress } from 'ethers';
 import { multicallRead, type MulticallRequest } from '@antseed/node/payments';
 import type { AntsContext, ResolvedStack } from './context.js';
 import { displayData } from './display-snapshot.js';
+import { networkSnapshot } from './network.js';
 
 const ABI = new Interface([
   'function balanceOf(address) view returns (uint256)',
@@ -21,7 +22,13 @@ const ABI = new Interface([
 
 /** One Multicall for overview contract state; missing configured reads must not become zero balances. */
 export async function overviewReads(ctx: AntsContext, stack: ResolvedStack) {
-  const display = await displayData(ctx, stack);
+  const modern = !!ctx.chain.emissionsGateAddress;
+  let networkError: string | undefined;
+  const snapshot = modern ? await networkSnapshot(ctx).catch((error: unknown) => {
+    networkError = error instanceof Error ? error.message : String(error);
+    return null;
+  }) : null;
+  const display = modern ? { snapshot: null, source: { source: 'chain' as const, error: networkError } } : await displayData(ctx, stack);
   const network = display.snapshot?.epochs.find(row => row.epoch === stack.currentEpoch);
   const requests: MulticallRequest[] = [];
   const add = (target: string | undefined | null, method: string, args: unknown[] = []) => {
@@ -32,12 +39,12 @@ export async function overviewReads(ctx: AntsContext, stack: ResolvedStack) {
   const token = ctx.antsToken().contractAddress;
   const ids = {
     ants: add(token, 'balanceOf', [address]), transfers: add(token, 'transfersEnabled'), whitelist: add(token, 'transferWhitelist', [address]),
-    supply: add(token, 'totalSupply'), maxSupply: add(token, 'MAX_SUPPLY'),
+    supply: modern ? -1 : add(token, 'totalSupply'), maxSupply: modern ? -1 : add(token, 'MAX_SUPPLY'),
     stake: add(c.sellerPoolsAddress, 'stakerTotalActiveStake', [address]), count: add(c.sellerPoolsAddress, 'stakerPositionCount', [address]),
     agent: add(c.sellerRegistryAddress, 'getAgentId', [address]), legacyAgent: add(stack.legacyStaking, 'getAgentId', [address]),
-    networkStake: network ? -1 : add(c.sellerPoolsAddress, 'totalActiveStakeAtEpoch', [epoch]), networkWeight: network ? -1 : add(c.sellerPoolsAddress, 'totalPowerWeightAtEpoch', [epoch]),
-    emission: add(c.emissionsGateAddress, 'getEpochEmission', [epoch]), budget: network ? -1 : add(c.sellerPoolsRewardsAddress, 'stakerEpochBudget', [epoch]),
-    usage: add(c.usageRewardsAddress, 'usageEpochBudgets', [epoch]),
+    networkStake: modern || network ? -1 : add(c.sellerPoolsAddress, 'totalActiveStakeAtEpoch', [epoch]), networkWeight: modern || network ? -1 : add(c.sellerPoolsAddress, 'totalPowerWeightAtEpoch', [epoch]),
+    emission: modern ? -1 : add(c.emissionsGateAddress, 'getEpochEmission', [epoch]), budget: modern || network ? -1 : add(c.sellerPoolsRewardsAddress, 'stakerEpochBudget', [epoch]),
+    usage: modern ? -1 : add(c.usageRewardsAddress, 'usageEpochBudgets', [epoch]),
   };
   const [values, eth] = await Promise.all([multicallRead(ctx.provider(), requests), ctx.provider().getBalance(address)]);
   const read = (index: number, field = 0): unknown => {
@@ -47,11 +54,15 @@ export async function overviewReads(ctx: AntsContext, stack: ResolvedStack) {
     return value;
   };
   const big = (index: number, field = 0) => BigInt(read(index, field) as bigint);
+  const networkAvailable = !modern || !!snapshot && [snapshot.totalSupply, snapshot.maxSupply, snapshot.totalActiveStake, snapshot.totalPowerWeight, snapshot.emission, ...Object.values(snapshot.budgets)].every(value => value !== null);
   return {
     ants: big(ids.ants), eth, transfersEnabled: read(ids.transfers) === true, whitelisted: read(ids.whitelist) === true,
     totalActiveStake: big(ids.stake), positionCount: Number(big(ids.count)), registryAgentId: Number(big(ids.agent)), legacyAgentId: Number(big(ids.legacyAgent)),
-    totalSupply: big(ids.supply), maxSupply: big(ids.maxSupply), networkStake: network ? BigInt(network.totalActiveStake) : big(ids.networkStake), networkWeight: network ? BigInt(network.totalPowerWeight) : big(ids.networkWeight),
-    epochEmission: big(ids.emission), stakerBudget: network ? BigInt(network.stakerBudget) : big(ids.budget), usageBudgets: { buyer: big(ids.usage), seller: big(ids.usage, 1) },
-    networkSource: display.source,
+    totalSupply: modern ? BigInt(snapshot?.totalSupply ?? '0') : big(ids.supply), maxSupply: modern ? BigInt(snapshot?.maxSupply ?? '0') : big(ids.maxSupply),
+    networkStake: modern ? BigInt(snapshot?.totalActiveStake ?? '0') : network ? BigInt(network.totalActiveStake) : big(ids.networkStake), networkWeight: modern ? BigInt(snapshot?.totalPowerWeight ?? '0') : network ? BigInt(network.totalPowerWeight) : big(ids.networkWeight),
+    epochEmission: modern ? BigInt(snapshot?.emission ?? '0') : big(ids.emission), stakerBudget: modern ? BigInt(snapshot?.budgets.staker ?? '0') : network ? BigInt(network.stakerBudget) : big(ids.budget),
+    usageBudgets: modern ? { buyer: BigInt(snapshot?.budgets.buyer ?? '0'), seller: BigInt(snapshot?.budgets.seller ?? '0') } : { buyer: big(ids.usage), seller: big(ids.usage, 1) },
+    networkAvailable, networkEpoch: snapshot?.epoch,
+    networkSource: { ...display.source, error: networkError ?? (snapshot?.errors.length ? snapshot.errors.join(' ') : display.source.error) },
   };
 }

@@ -563,6 +563,7 @@ const api = {
   paymentsSignSpendingAuth: (params: unknown) => ipcRenderer.invoke('payments:sign-spending-auth', params),
   paymentsGetPeerInfo: (peerId: string) => ipcRenderer.invoke('payments:get-peer-info', peerId),
   stakingOpen: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:open', options),
+  stakingCopyLink: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:copyLink', options),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string; channelId?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),

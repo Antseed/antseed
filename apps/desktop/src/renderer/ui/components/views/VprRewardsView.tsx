@@ -56,14 +56,14 @@ export function VprRewardsView({ onSelectView }: Props) {
             </span>
           </div>
           <div className={styles.heroActions}>
-            <StakingButton page="rewards" className={styles.claimButton} disabled={!rewards?.available || !hasPending}>
-              Claim rewards ↗
-            </StakingButton>
             {rewards?.available && (
               <VprBadge tone={rewards.transfersEnabled ? 'green' : 'neutral'}>
                 {rewards.transfersEnabled ? 'Transfers live' : 'Transfers not enabled yet'}
               </VprBadge>
             )}
+            <StakingButton page="rewards" className={styles.claimButton} disabled={!rewards?.available || !hasPending} copyDisabled={!rewards?.available}>
+              Claim rewards ↗
+            </StakingButton>
           </div>
         </VprCard>
 
@@ -74,6 +74,8 @@ export function VprRewardsView({ onSelectView }: Props) {
           </span>
           <StakingButton className={styles.claimButton}>Manage staking ↗</StakingButton>
         </VprCard>
+
+        <span className={styles.errorNote}>Copy a link to use your wallet in another browser.</span>
 
         <VprCard className={styles.aboutCard}>
           <span className={styles.aboutTitle}>About $ANTS</span>

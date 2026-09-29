@@ -21,7 +21,8 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed seller pool withdraw <id...> [--accept-slashing]` | Withdraw positions, with a slashing estimate and confirmation for early exits |
 | `antseed seller rewards [claim]` | View or claim all seller rewards |
 | **ANTS staking** | |
-| `antseed ants` | Open the local ANTS staking dashboard (wallet-signed, `--port`, `--no-open`) |
+| `antseed ants` | Open the local ANTS staking dashboard; the connected browser wallet is the acting account (`--port`, `--no-open`) |
+| `antseed ants --address 0x...` | Pin the dashboard to one account. Transactions require that account's browser wallet, or its authorized operator for buyer actions. Does not use the local wallet. |
 | `antseed ants status` | Protocol phase, epoch countdown, balances, stake, claimable rewards |
 | `antseed ants stake <ants> --agent <id> --epochs <n>` | Stake ANTS into any registered seller pool |
 | `antseed ants positions` | List open lANTS positions with state, pending rewards, and exit slash |
@@ -42,6 +43,7 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer activity` | Activity summary: tokens, spend history, savings, channels, claimable ANTS |
 | `antseed buyer deposit --onchain <usdc>` | Direct on-chain deposit from the hot wallet (requires ETH for gas) |
 | `antseed buyer withdraw <amount>` | Withdraw USDC from deposits |
+| `antseed buyer set-authorized-wallet [--self]` | Authorize an external wallet in the browser, or authorize the buyer wallet itself |
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
 | **Session** | |
@@ -131,6 +133,16 @@ antseed config seller add-service openai gpt-image-1 \
 
 `--unit-billing-models` is currently consumed by the `openai` provider for `openai-images`. Seller startup warns when the selected plugin ignores it. Image services are skipped by periodic model health checks to avoid generating billable probe images.
 
+Services whose token and unit prices are all zero are unlimited unless the seller configures a persistent free tier, keyed by buyer address, remote IP, or both:
+
+```bash
+antseed config seller set freeTier.maxRequestsPerAddress 100
+antseed config seller set freeTier.maxRequestsPerIp 300
+antseed config seller set freeTier.windowMs 86400000
+```
+
+This allows each authenticated buyer address 100 requests, and each remote IP 300 requests, across all fully zero-priced services in a sliding 24-hour window. A request is served only while every configured limit still has headroom. Reconnects and seller restarts do not reset the counters. Exhausted buyers receive HTTP 429 with `free_tier_exhausted` and a `limitedBy` field (`address` or `ip`); paid services are unaffected. The address limit alone can be bypassed by creating another identity; the IP limit (IPv6 grouped by /64) closes that gap at the cost of sharing the allowance between users behind one NAT, so set it higher than the per-address limit.
+
 **Routers** select peers and proxy requests (consumer mode):
 
 ```bash
@@ -179,6 +191,11 @@ Pricing is configured in USD per 1M tokens with role-specific defaults and optio
   "seller": {
     "publicAddress": "peer.example.com:6882",
     "maxUploadBodyBytes": 134217728,
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "maxRequestsPerIp": 300,
+      "windowMs": 86400000
+    },
     "providers": {
       "anthropic": {
         "plugin": "anthropic",
@@ -265,6 +282,11 @@ antseed config seller set publicAddress "peer.example.com:6882"
 
 # Raise the seller per-request upload cap (bytes) for large Codex-style payloads
 antseed config seller set maxUploadBodyBytes 134217728
+
+# Cap zero-priced services per authenticated buyer address and per remote IP
+antseed config seller set freeTier.maxRequestsPerAddress 100
+antseed config seller set freeTier.maxRequestsPerIp 300
+antseed config seller set freeTier.windowMs 86400000
 
 # Buyer max pricing, DHT peer refresh cadence, and metadata fetch timeout
 antseed config buyer set maxPricing.defaults.inputUsdPerMillion 25
@@ -362,14 +384,45 @@ ANTS pool positions.
 ### ANTS Staking Dashboard and Commands
 
 `antseed ants` starts a local dashboard on `http://127.0.0.1:3119` and opens it
-in your browser. It signs with the node wallet in `--data-dir`, binds to
-localhost only, and requires the one-time session token embedded in the URL
+in your browser. Browse pools before connecting; once you connect a browser
+wallet it becomes the acting account for staking, positions and seller
+actions, and every transaction is approved in that wallet. The dashboard binds
+to localhost only and requires the one-time session token embedded in the URL
 it prints, so no other page can act with your wallet. Pass `--no-open` to
-print the URL only, or `--port` to change the port.
+print the URL only, or `--port` to change the port. Buyer rewards follow the
+connected wallet too: a wallet that is a buyer account in its own right sees
+its own usage and legacy buyer rewards. If the wallet is instead the on-chain
+authorized operator of the local identity's buyer account (the one in
+`--data-dir`), that buyer account's rewards are shown, and the existing
+payments flow can authorize such an operator.
+
+`antseed ants --address 0x...` pins the dashboard to one account instead.
+Seller and position actions then require that account's wallet, buyer reward
+actions require its current deposits operator, and switching browser wallets
+does not change the pinned account. It does not use the local wallet, load or
+create a local identity, or offer the local authorization flow. Buyer rewards
+and positions created by staking them belong to the authorized operator; pin
+the operator's address to manage those positions.
 
 Pool statistics, volume history, and closed positions come from the Antscan
-indexer (`payments.crypto.explorerApiUrl`); the chain is read only for your
-wallet's live state and when sending transactions.
+indexer (`payments.crypto.explorerApiUrl`). Positions, personal pool totals, and
+staking rewards share its paginated `/api/staking/positions?include=rewards`
+response, including closed positions with unclaimed rewards. Power and status
+are included by default; there is no separate live-mode request. Wallet totals
+are calculated across all pages rather than treating page totals as wallet totals.
+Claims and restaking still validate positions and amounts on-chain.
+
+The configured Antscan deployment must include Antscan PR #8 and complete its
+reward backfill. Stale or incomplete rewards appear as unavailable, not zero;
+JSON reward amounts can be `null`. Live-state failures do not discard usable
+indexed rewards. Position/personal-pool reads show an error instead of repeating
+per-position RPC calls when the configured indexer is unavailable. An explicitly
+unconfigured indexer retains direct chain reads for local setups.
+
+During a dashboard session, confirmed transactions temporarily block older
+position/reward snapshots until Antscan catches up. This marker is in memory,
+not saved to disk or shared with later CLI invocations. After a restart, indexed
+amounts remain estimates at the displayed source block, not transaction quotes.
 
 Everything the dashboard does is also a command under `antseed ants`, so the
 dashboard is optional:
@@ -494,6 +547,32 @@ Point your AI tools (Claude Code, Codex, etc.) at `http://localhost:8377` as the
 `antseed buyer deposit` prints your node's funding address and a QR code (an EIP-681 payment request any mobile wallet can scan). Send USDC on Base to that address from anywhere — an exchange withdrawal, another wallet, a card on-ramp. Incoming funds are swept into your deposits balance gaslessly: your node signs an EIP-3009 authorization and a permissionless relayer submits the transaction for a fixed ~$0.05 USDC fee, so the hot wallet never needs ETH. While watching, the command also serves the connected-wallet checkout page and prints its link (`http://127.0.0.1:3118?token=…`) for depositing from a browser-extension wallet instead.
 
 While `antseed buyer start` is running, this sweeping happens automatically in the background (disable with `buyer.autoSweep: false` in your config). `antseed buyer sweep` triggers the same gasless sweep manually, and `antseed buyer deposit --onchain <usdc>` remains for direct on-chain deposits from a hot wallet that holds ETH. (The `antseed payments` web portal is retired.)
+
+### Set an authorized wallet
+
+```bash
+# Recommended: open the secure local page, connect an external wallet,
+# and approve the transaction from that wallet.
+antseed buyer set-authorized-wallet
+
+# Print the secure local URL without opening the browser automatically.
+antseed buyer set-authorized-wallet --no-open
+
+# Alternatively, make the buyer hot wallet its own authorized wallet.
+antseed buyer set-authorized-wallet --self
+
+# Select the same buyer identity/config used for your deposits:
+antseed --data-dir ~/.antseed-buyer --config ~/.antseed-buyer/config.json buyer set-authorized-wallet
+```
+
+By default, the command opens the same **Set authorized wallet** browser flow used by AI VPN. The local buyer identity signs the deposits contract's EIP-712 authorization, then the connected external wallet submits `setOperator` and pays ETH gas. The CLI prints the localhost URL as a fallback and waits for confirmation before shutting down the local server. Use `--no-open` to print the URL without launching the browser.
+
+With `--self`, the CLI makes the buyer hot wallet its own authorized wallet. The buyer signs and submits the transaction, so it must have ETH on the configured chain. Both modes respect the selected data directory, identity environment override, and payment chain/contract configuration. The command does not accept an arbitrary address: connect an external wallet to prove control, or explicitly choose the buyer wallet with `--self`.
+
+**The authorized wallet gains control of withdrawals and future authorization transfers.** Choose a wallet you control. Initial authorization is only possible when no authorized wallet is set. Self-authorization sends no transaction when the buyer wallet is already authorized and rejects replacement of a different existing wallet. Changing it later requires an operator-transfer transaction from the current authorized wallet, not the buyer identity.
+
+`antseed buyer withdraw` still submits from the buyer identity. If you authorize an external wallet, withdraw from that wallet through AI VPN's payments UI (for the same buyer identity) or the deposits contract, not through the current CLI withdrawal command. To use CLI withdrawal, the buyer identity itself must be the authorized wallet. Setting an operator does not resolve other withdrawal constraints, such as reserved funds or insufficient available balance.
+
 
 ### Configuration
 

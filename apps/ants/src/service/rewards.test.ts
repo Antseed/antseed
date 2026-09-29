@@ -2,7 +2,7 @@ import { ZeroAddress } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import type { AntsContext } from './context.js';
 import { IndexerError } from './indexer.js';
-import { claim, compound, restake, rewards } from './rewards.js';
+import { claim, compound, restake, rewards, stakeUsageRewards } from './rewards.js';
 
 const address = '0x0000000000000000000000000000000000000001';
 const foreign = '0x0000000000000000000000000000000000000002';
@@ -46,6 +46,49 @@ function fixture(indexed = true) {
 }
 
 describe('closed-position rewards', () => {
+  function indexedFixture() {
+    const result = fixture();
+    const row = { id: 7, owner: address, agentId: 2, closedAtEpoch: 5, rewards: { status: 'available', pending: '99' } };
+    const source = { schemaVersion: 1, chainId: 8453, contracts: { sellerPools: address, sellerPoolsRewards: address }, indexedBlock: 100, indexedAt: Math.floor(Date.now() / 1000), stale: false, complete: true, historyComplete: true, historyFromBlock: 1 };
+    const rewardPositions = vi.fn(async () => ({ currentEpoch: 6, positions: [row], source }));
+    Object.assign(result.ctx, { chain: { evmChainId: 8453, sellerPoolsAddress: address, sellerPoolsRewardsAddress: address }, indexer: () => ({ rewardPositions, positions: async () => [row] }) });
+    return { ...result, rewardPositions, source };
+  }
+
+  it('reads outstanding indexed staker rewards without exact previews', async () => {
+    const { ctx, poolRewards, rewardPositions } = indexedFixture();
+    const preview = vi.spyOn(poolRewards, 'previewStakerRewards');
+    expect(await rewards(ctx)).toMatchObject({ staker: { total: '99', positions: [{ id: 7, amount: '99', closed: true }], source: { indexedBlock: 100 } } });
+    expect(rewardPositions).toHaveBeenCalledWith(address, false);
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('keeps buyer/seller buckets available when indexed staking rewards fail', async () => {
+    const { ctx, rewardPositions, poolRewards } = indexedFixture();
+    rewardPositions.mockRejectedValue(new Error('backfill incomplete'));
+    const preview = vi.spyOn(poolRewards, 'previewStakerRewards');
+    expect(await rewards(ctx)).toMatchObject({ total: null, staker: { total: null, source: { error: 'backfill incomplete' } }, sellerUsage: { total: '0' }, buyerUsage: { total: '0' } });
+    expect(preview).not.toHaveBeenCalled();
+  });
+
+  it('reports syncing instead of replacing previous rewards with unknown amounts after a transaction', async () => {
+    const { ctx, source } = indexedFixture();
+    Object.assign(ctx, { positionReadBarriers: new Map([[address, { block: source.indexedBlock + 1, at: 0 }]]) });
+    await expect(rewards(ctx)).rejects.toMatchObject({ name: 'IndexerSyncingError' });
+    source.indexedBlock++;
+    expect((await rewards(ctx)).staker.total).toBe('99');
+  });
+
+  it.each(['claim', 'restake'])('validates indexed candidates live for %s rather than trusting the displayed amount', async action => {
+    const { ctx, poolRewards, pools } = indexedFixture();
+    const preview = vi.spyOn(poolRewards, 'previewStakerRewards');
+    if (action === 'claim') await claim(ctx, { buckets: ['staker'] });
+    else await restake(ctx, { epochs: 3 });
+    expect(pools.positionsBatch).toHaveBeenCalledWith([7]);
+    expect(preview).toHaveBeenCalled();
+    expect(action === 'claim' ? poolRewards.claimStakerRewardsBatch : poolRewards.restakeStakerRewardsBatch).toHaveBeenCalled();
+  });
+
   it('preserves known rewards with an incomplete-history marker when the indexer is unreachable', async () => {
     const { ctx, pools } = fixture();
     pools.allStakerPositionIds = async () => [7];
@@ -142,7 +185,7 @@ describe('buyer rewards before browser wallet connection', () => {
       legacy: { seller: '0', buyer: '5000000000000000000', buyerClaimable: false },
       locked: { claimable: '0' },
     });
-    expect(f.participant).toHaveBeenCalledWith(address, 1);
+    expect(f.participant).toHaveBeenCalledWith(address, 2);
     expect(f.getOperator).toHaveBeenCalledWith(address);
     expect(f.buyerClaimed).toHaveBeenCalledWith(address, 22);
     expect(f.buyerReward).toHaveBeenCalledWith(address, 22);
@@ -150,9 +193,10 @@ describe('buyer rewards before browser wallet connection', () => {
     expect(f.walletRead).not.toHaveBeenCalled();
   });
 
-  it('keeps buyer reads tied to the buyer when a separate authorized wallet connects', async () => {
+  it.each([false, true])('keeps buyer reads tied to the buyer when a separate authorized wallet connects (selected=%s)', async selected => {
     const { ctx } = fixture(false);
-    ctx.address = foreign;
+    ctx.address = selected ? address : foreign;
+    if (selected) ctx.signer = { getAddress: async () => foreign } as never;
     ctx.stack = async () => ({ phase: 'active', currentEpoch: 23 }) as never;
     ctx.claimableEpochs = async () => ({ legacy: [], recognized: [22] }) as never;
     ctx.usageAccounting = () => ({ pendingEmissions: async () => ({ seller: 0n, buyer: 999n }) }) as never;
@@ -195,6 +239,31 @@ describe('explicit buyer and wallet claim scopes', () => {
     expect(f.oldBuyer).toHaveBeenCalledWith({}, address, [21]);
     expect(f.seller).not.toHaveBeenCalled();
     expect(f.poolRewards.claimStakerRewardsBatch).not.toHaveBeenCalled();
+  });
+  it('checks the browser signer, not the selected buyer address, for buyer claims', async () => {
+    const setup = claimFixture();
+    setup.ctx.address = address;
+    setup.ctx.signer = { getAddress: async () => foreign } as never;
+    const received = vi.fn(async () => 5n);
+    setup.ctx.antsToken = () => ({ receivedInTransaction: received }) as never;
+    expect((await claim(setup.ctx, { buckets: [], scope: 'buyer' })).transactions).toEqual(['buyer-current', 'buyer-legacy']);
+    expect(received).toHaveBeenCalledWith('buyer-current', foreign);
+    expect(setup.seller).not.toHaveBeenCalled();
+    setup.ctx.signer = { getAddress: async () => address } as never;
+    await expect(claim(setup.ctx, { buckets: [], scope: 'buyer' })).rejects.toThrow('authorized wallet');
+  });
+  it('stakes selected buyer rewards with its separate authorized operator', async () => {
+    const setup = claimFixture();
+    setup.ctx.address = address;
+    const signer = { getAddress: async () => foreign };
+    setup.ctx.signer = signer as never;
+    setup.ctx.requireSigner = () => signer as never;
+    const stakeBuyerReward = vi.fn(async () => 'buyer-stake');
+    setup.ctx.usageRewards = () => ({ buyerEpochClaimed: async () => false, pendingBuyerReward: async () => 5n, stakeBuyerReward }) as never;
+    expect((await stakeUsageRewards(setup.ctx, { side: 'buyer', stakeAgentId: 42, epochs: 4 })).transactions).toEqual(['buyer-stake']);
+    expect(stakeBuyerReward).toHaveBeenCalledWith(signer, address, 22, 42, 4);
+    setup.ctx.deposits = () => ({ getOperator: async () => address }) as never;
+    await expect(stakeUsageRewards(setup.ctx, { side: 'buyer', stakeAgentId: 42, epochs: 4 })).rejects.toThrow('deposits operator');
   });
   it.each(['buyer', 'legacy'] as const)('claims only the selected buyer source: %s', async (bucket) => {
     const setup = claimFixture();

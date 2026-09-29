@@ -1,6 +1,7 @@
 import { FetchRequest, JsonRpcProvider, ZeroAddress, type AbstractProvider, type AbstractSigner } from 'ethers';
 import { RotatingJsonRpcProvider } from './rpc-provider.js';
 import { createIndexer, type Indexer } from './indexer.js';
+import { invalidateNetwork } from './network.js';
 import {
   ANTSTokenClient,
   DepositsClient,
@@ -101,8 +102,10 @@ export class MissingContractError extends Error {
 export class AntsContext {
   chain: AntsChainConfig;
   address: string;
-  readonly buyerAddress: string;
+  /** The buyer account whose usage rewards are shown; a browser session re-resolves it per connected wallet. */
+  buyerAddress: string;
   readonly localPositionIds = new Map<number, string>();
+  readonly positionReadBarriers = new Map<string, { block: number; at: number }>();
   signer: AbstractSigner | undefined;
   private readonly stackTtlMs: number;
   private stackCache: ResolvedStack | null = null;
@@ -120,7 +123,7 @@ export class AntsContext {
     this.address = options.address;
     this.buyerAddress = options.buyerAddress ?? options.address;
     this.signer = options.signer;
-    this.stackTtlMs = options.stackTtlMs ?? 15_000;
+    this.stackTtlMs = options.stackTtlMs ?? 60_000;
     this.probeRpc = options.probeRpc ?? probeRpcEndpoint;
   }
 
@@ -303,12 +306,35 @@ export class AntsContext {
     return Object.fromEntries(entries.filter((entry): entry is [string, string] => !!entry[1]));
   }
 
-  invalidate(): void {
-    this.stackGeneration++;
-    this.stackCache = null;
-    this.stackInflight = null;
+  /**
+   * Drop cached reads. A wallet-only invalidation (connect, disconnect, focus refresh) keeps
+   * protocol-level caches that no wallet change can affect: the resolved stack, network
+   * snapshot and staking eligibility; those refresh on their own TTLs or after a transaction.
+   */
+  invalidate(options: { walletOnly?: boolean } = {}): void {
+    if (!options.walletOnly) {
+      invalidateNetwork(this);
+      this.stackGeneration++;
+      this.stackCache = null;
+      this.stackInflight = null;
+      this.memos.clear();
+    }
     this.sharedProvider?.invalidateReads();
     this.indexerClient?.invalidate?.();
+  }
+
+  private readonly memos = new Map<string, { value: unknown; at: number; ttl: number }>();
+
+  /** A protocol-level value cached for `ttlMs`, or undefined when missing or expired. */
+  memoGet<T>(key: string): T | undefined {
+    const entry = this.memos.get(key);
+    if (!entry || Date.now() - entry.at >= entry.ttl) return undefined;
+    return entry.value as T;
+  }
+
+  memoSet<T>(key: string, value: T, ttlMs: number): T {
+    this.memos.set(key, { value, at: Date.now(), ttl: ttlMs });
+    return value;
   }
 
   /** Determine which protocol phase the chain is in and where legacy claims live. */

@@ -44,6 +44,7 @@ async function individualStatuses(client: SellerPoolsClient, positions: SellerPo
     return {
       withdrawableEpoch,
       maxLocked: open ? await client.isMaxLocked(position.id, Math.max(epoch, position.stakeStartEpoch)) : false,
+      maxLockedNext: open ? await client.isMaxLocked(position.id, Math.max(epoch + 1, position.stakeStartEpoch)) : false,
       slashBps: open && epoch >= withdrawableEpoch ? await client.earlyExitSlashBps(position.id) : null,
     };
   }));
@@ -52,8 +53,9 @@ async function individualStatuses(client: SellerPoolsClient, positions: SellerPo
 describe('seller pool read batching', () => {
   it.each([
     { count: 0, before: 7, after: 2 },
-    { count: 20, before: 87, after: 6 },
-    { count: 100, before: 407, after: 10 },
+    { count: 20, before: 107, after: 6 },
+    // Four status reads per open position (withdrawable, max lock now and next epoch, slash) push 100 positions over one multicall chunk.
+    { count: 100, before: 507, after: 11 },
   ])('preserves values for $count positions while reducing RPC calls from $before to $after', async ({ count, before, after }) => {
     const { client, call, getCode, provider } = fixture();
     const ids = Array.from({ length: count }, (_, index) => index + 1);

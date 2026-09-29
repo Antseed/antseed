@@ -4,7 +4,7 @@ import { beforeEach, describe, expect, it, vi } from 'vitest';
 import type { PoolConfigView, PoolView, PositionView } from '../../src/api-types';
 import type { ActionButtonProps } from './components/Confirm';
 import { LockSlider } from './components/LockSlider';
-import { RowActionPanel } from './components/Positions';
+import { mergeEligibility, RowActionPanel } from './components/Positions';
 import { epochStartAt, formatUtc } from './format';
 
 const mocks = vi.hoisted(() => ({ epoch: vi.fn(), action: vi.fn(), withdrawal: vi.fn() }));
@@ -24,7 +24,7 @@ const dateAt = (value: number) => formatUtc(epochStartAt(value, epoch.genesis, e
 function render(stakeEndEpoch = 40, maxStakeEpochs = 104, kind: 'move' | 'extend' | 'withdraw' = 'extend') {
   return renderToStaticMarkup(createElement(RowActionPanel, {
     kind,
-    position: { id: 30, agentId: 86940, amount: '200000000000000000000', stakeEndEpoch, epochsRemaining: 12, maxLocked: false } as PositionView,
+    position: { id: 30, agentId: 86940, amount: '200000000000000000000', stakeStartEpoch: 18, stakeEndEpoch, closedAtEpoch: 0, withdrawn: false, state: stakeEndEpoch <= epoch.current ? 'matured' : 'active', epochsRemaining: 12, maxLocked: false, maxLockedNext: false } as PositionView,
     config: { maxStakeEpochs, moveWeightPenaltyBps: 0 } as PoolConfigView,
     onClose: vi.fn(),
   }));
@@ -72,8 +72,7 @@ describe('single-position move', () => {
 
   it.each([
     { maxLocked: true },
-    { changePending: true },
-    { state: 'matured' as const },
+    { state: 'matured' as const, stakeEndEpoch: 28 },
     { withdrawn: true },
     { closedAtEpoch: 28 },
   ])('preserves move restrictions for %j', overrides => {
@@ -86,6 +85,12 @@ describe('single-position move', () => {
     const { html, action } = renderMove({}, false);
     expect(html).toContain('No other seller to move to');
     expect(action.validate?.()).toBe('Choose a target seller.');
+  });
+
+  it('allows moving before activation and after scheduling max-lock disable', () => {
+    expect(renderMove({ changePending: true, state: 'pending', stakeStartEpoch: 29 }).action.disabled).toBe(false);
+    mocks.action.mockClear();
+    expect(renderMove({ maxLocked: true, maxLockedNext: false }).action.disabled).toBe(false);
   });
 });
 
@@ -120,10 +125,12 @@ describe('extend position layout', () => {
     expect(mocks.action.mock.calls[0]![0].body).toEqual({ positionId: 30, epochs: 1 });
   });
 
-  it('extends matured positions from the effective epoch', () => {
+  it('does not offer to revive an expired lock with an extension', () => {
     const html = render(20);
     expect(html).toContain(dateAt(20));
-    expect(html).toContain(dateAt(30));
+    expect(html).not.toContain(dateAt(30));
+    expect(mocks.action.mock.calls[0]![0].disabled).toBe(true);
+    expect(mocks.action.mock.calls[0]![0].validate()).toContain('remaining lock');
   });
 
   it('does not invent dates when epoch information is unavailable', () => {
@@ -148,5 +155,61 @@ describe('extend position layout', () => {
     expect(compact).not.toContain('· unlocks');
     expect(compact).toContain(`<span class="mono">${value}</span>`);
     expect(compact).toContain(`aria-valuenow="${value}"`);
+  });
+});
+
+describe('pending position action forms', () => {
+  const pendingPosition = {
+    id: 28, agentId: 1, owner: '0x0000000000000000000000000000000000000001',
+    amount: '50000000000000000000', weightAmount: '50000000000000000000',
+    stakeStartEpoch: 29, stakeEndEpoch: 130, closedAtEpoch: 0, withdrawn: false,
+    state: 'pending', changePending: true, withdrawableEpoch: 29,
+    maxLocked: false, maxLockedNext: false, epochsRemaining: 101,
+  } as PositionView;
+
+  function renderAction(kind: 'max-lock' | 'split' | 'extend' | 'withdraw', overrides: Partial<PositionView> = {}) {
+    mocks.action.mockClear();
+    const html = renderToStaticMarkup(createElement(RowActionPanel, {
+      kind, position: { ...pendingPosition, ...overrides }, config: { maxStakeEpochs: 104 } as PoolConfigView, pools: [], onClose: vi.fn(),
+    }));
+    return { html, action: mocks.action.mock.calls[0]?.[0] as ActionButtonProps | undefined };
+  }
+
+  it.each(['max-lock', 'split', 'extend'] as const)('allows %s on a next-epoch split replacement', kind => {
+    const { action } = renderAction(kind);
+    expect(action?.disabled).toBe(false);
+  });
+
+  it('blocks premature max lock but lets a delayed position be extended', () => {
+    expect(renderAction('max-lock', { stakeStartEpoch: 31 }).action?.disabled).toBe(true);
+    expect(renderAction('extend', { stakeStartEpoch: 31 }).action?.disabled).toBe(false);
+  });
+
+  it('allows reversing a pending max-lock activation and warns that the old lock is not restored', () => {
+    const { html, action } = renderAction('max-lock', { maxLockedNext: true });
+    expect(action?.label).toBe('Disable max lock');
+    expect(action?.disabled).toBe(false);
+    expect(html).toContain('104-epoch countdown');
+    expect(renderAction('max-lock').html).toContain('does not restore the original shorter lock');
+  });
+
+  it('allows extension after scheduled disable but not scheduled enable', () => {
+    expect(renderAction('extend', { maxLocked: true, maxLockedNext: false }).action?.disabled).toBe(false);
+    expect(renderAction('extend', { maxLockedNext: true }).action?.disabled).toBe(true);
+  });
+
+  it('retains the withdrawal activation warning', () => {
+    expect(renderAction('withdraw').html).toContain('Withdrawals are blocked until activation epoch 29');
+  });
+
+  it('allows pending merges, but retains duplicate, closed, effective lock and end checks', () => {
+    const other = { ...pendingPosition, id: 29 };
+    expect(mergeEligibility([pendingPosition, other], 28)).toBeNull();
+    expect(mergeEligibility([{ ...pendingPosition, maxLocked: true, maxLockedNext: false }, other], 28)).toBeNull();
+    expect(mergeEligibility([pendingPosition, pendingPosition], 28)).toContain('only once');
+    expect(mergeEligibility([pendingPosition, { ...other, maxLockedNext: true }], 28)).toContain('Disable maximum lock');
+    expect(mergeEligibility([pendingPosition, { ...other, closedAtEpoch: 29 }], 28)).toContain('closed');
+    expect(mergeEligibility([pendingPosition, { ...other, stakeEndEpoch: 131 }], 28)).toContain('same unlock epoch');
+    expect(mergeEligibility([pendingPosition, { ...other, agentId: 2 }], 28)).toContain('same seller');
   });
 });

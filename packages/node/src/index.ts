@@ -136,6 +136,7 @@ export {
   type NetworkServiceOffer,
 } from './discovery/service-catalog.js';
 export { MeteringStorage } from './metering/storage.js';
+export type { FreeTierConsumption } from './metering/storage.js';
 export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
@@ -249,6 +250,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';

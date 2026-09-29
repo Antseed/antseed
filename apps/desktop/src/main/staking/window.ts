@@ -1,4 +1,4 @@
-import { shell, type BrowserWindow } from 'electron';
+import { clipboard, shell, type BrowserWindow } from 'electron';
 import { access } from 'node:fs/promises';
 import { fileURLToPath } from 'node:url';
 import { createAntsServer, type AntsServerOptions } from '@antseed/ants';
@@ -16,6 +16,7 @@ export async function createStakingWindowSession(
     get busy() { return server.busy; },
     pauseWrites: () => server.pauseWrites(),
     async open(page) { await shell.openExternal(stakingLaunchUrl(server.url, page)); },
+    async copyLink(page) { clipboard.writeText(stakingLaunchUrl(server.url, page)); },
     async close() { await server.close(); },
   };
 }

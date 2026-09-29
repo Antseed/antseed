@@ -1,5 +1,7 @@
 import { ZeroAddress } from 'ethers';
 import { claimEpochRewards, pendingEpochRewards, previewPoolRewards, type SellerPoolsClient, type SellerPoolsRewardsClient } from '@antseed/node/payments';
+import { indexedWalletRewards } from './indexed-wallet.js';
+import { IndexerSyncingError } from '../read-state.js';
 import type { AbstractSigner } from 'ethers';
 import type { AntsContext } from './context.js';
 import { closedPositionIds } from './positions.js';
@@ -27,14 +29,16 @@ async function agentIdOf(ctx: AntsContext): Promise<number> {
 }
 
 /** Recognized epochs in which this wallet has indexed buyer or seller points; all of them without an indexer. */
-async function usageEpochsOf(ctx: AntsContext, recognized: number[]): Promise<number[]> {
+async function usageEpochsOf(ctx: AntsContext, recognized: number[], currentEpoch: number): Promise<number[]> {
   const indexer = ctx.indexer();
   if (!indexer || recognized.length === 0) return recognized;
+  // The indexer counts epochs back from the current one, so the window must reach the earliest recognized epoch.
+  const window = currentEpoch - Math.min(...recognized) + 1;
   try {
     const participant = sameAddress(ctx.address, ZeroAddress)
       ? { seller: [], buyer: [] }
-      : await indexer.participant(ctx.address, recognized.length);
-    const buyer = ctx.address.toLowerCase() === ctx.buyerAddress.toLowerCase() ? participant : await indexer.participant(ctx.buyerAddress, recognized.length);
+      : await indexer.participant(ctx.address, window);
+    const buyer = ctx.address.toLowerCase() === ctx.buyerAddress.toLowerCase() ? participant : await indexer.participant(ctx.buyerAddress, window);
     const active = new Set([...participant.seller.map((row) => row.epoch), ...buyer.buyer.map((row) => row.epoch)]);
     return recognized.filter((epoch) => active.has(epoch));
   } catch (error) {
@@ -64,12 +68,29 @@ export async function rewards(ctx: AntsContext): Promise<RewardsView> {
   const walletConnected = !sameAddress(ctx.address, ZeroAddress);
   const agentId = walletConnected ? await agentIdOf(ctx) : 0;
 
-  // An unreachable indexer degrades to chain reads plus verified local history;
-  // `historySource` tells the UI that closed-position rewards may be missing.
-  const closed = walletConnected ? await closedPositionIds(ctx) : { ids: [], source: undefined };
-  const stakerPositions = walletConnected && pools && poolRewards
-    ? await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds: closed.ids })
-    : [];
+  // Indexed reward failures stay unavailable; the no-indexer path retains live previews.
+  let historySource: RewardsView['historySource'];
+  let stakerSource: RewardsView['staker']['source'];
+  let stakerPositions: Array<{ id: number; agentId: number; amount: bigint; closedAtEpoch: number }> = [];
+  let stakerAvailable = true;
+  if (walletConnected && pools && poolRewards) {
+    if (ctx.indexer()?.rewardPositions) {
+      try {
+        const snapshot = await indexedWalletRewards(ctx, stack.currentEpoch);
+        historySource = 'indexer';
+        stakerSource = { indexedBlock: snapshot.source.indexedBlock, indexedAt: snapshot.source.indexedAt };
+        stakerPositions = snapshot.positions.map(row => ({ id: row.id, agentId: row.agentId, amount: BigInt(row.rewards.pending!), closedAtEpoch: row.closedAtEpoch }));
+      } catch (error) {
+        if (error instanceof IndexerSyncingError) throw error;
+        stakerAvailable = false;
+        stakerSource = { error: error instanceof Error ? error.message : String(error) };
+      }
+    } else {
+      const closed = await closedPositionIds(ctx);
+      historySource = closed.source;
+      stakerPositions = await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds: closed.ids });
+    }
+  }
   const stakerTotal = stakerPositions.reduce((sum, position) => sum + position.amount, 0n);
 
   const sellerEpochs: EpochAmount[] = [];
@@ -83,7 +104,7 @@ export async function rewards(ctx: AntsContext): Promise<RewardsView> {
     sellerTotal = pending;
     // Only epochs where this wallet actually earned points are checked per
     // epoch; the indexer knows which, so the loop stays bounded.
-    const candidates = await usageEpochsOf(ctx, epochs.recognized);
+    const candidates = await usageEpochsOf(ctx, epochs.recognized, stack.currentEpoch);
     if (usageRewards && candidates.length <= MAX_EPOCH_BREAKDOWN) {
       const breakdown = await Promise.all(candidates.map(async (epoch) => {
         const [sellerClaimed, buyerClaimed] = await Promise.all([
@@ -109,6 +130,7 @@ export async function rewards(ctx: AntsContext): Promise<RewardsView> {
     }
   }
   const operator = await buyerOperator(ctx);
+  const walletAddress = ctx.signer ? await ctx.signer.getAddress() : ctx.address;
 
   let legacySeller = 0n;
   let legacyBuyer = 0n;
@@ -132,24 +154,36 @@ export async function rewards(ctx: AntsContext): Promise<RewardsView> {
   return toJson({
     scope: walletConnected ? 'all' : 'buyer',
     currentEpoch: stack.currentEpoch,
-    historySource: closed.source,
+    historySource,
     firstRewardedEpoch: stack.effectiveEpoch,
     staker: {
-      total: stakerTotal.toString(),
+      total: stakerAvailable ? stakerTotal.toString() : null,
+      ...(stakerSource ? { source: stakerSource } : {}),
       positions: stakerPositions.filter((position) => position.amount > 0n).map((position) => ({ id: position.id, agentId: position.agentId, amount: position.amount.toString(), closed: position.closedAtEpoch !== 0 })),
     },
     sellerUsage: { total: sellerTotal.toString(), agentId, epochs: sellerEpochs, claimable: stack.phase === 'active' && agentId !== 0 },
     buyerUsage: {
       total: buyerTotal.toString(), epochs: buyerEpochs, operator,
-      claimable: stack.phase === 'active' && sameAddress(operator, ctx.address), recipient: operator,
+      claimable: stack.phase === 'active' && sameAddress(operator, walletAddress), recipient: operator,
     },
-    legacy: { seller: legacySeller.toString(), buyer: legacyBuyer.toString(), contract: stack.legacyEmissions, buyerClaimable: sameAddress(operator, ctx.address), sellerPayout },
+    legacy: { seller: legacySeller.toString(), buyer: legacyBuyer.toString(), contract: stack.legacyEmissions, buyerClaimable: sameAddress(operator, walletAddress), sellerPayout },
     locked: {
       locked: lockedInfo.locked.toString(), claimable: lockedInfo.claimable.toString(),
       policy: sameAddress(lockedInfo.policy, ZeroAddress) ? null : lockedInfo.policy, pool: stack.lockedRewardsPool,
     },
-    total: total.toString(),
+    total: stakerAvailable ? total.toString() : null,
   });
+}
+
+async function rewardCandidateIds(ctx: AntsContext): Promise<number[]> {
+  if (ctx.indexer()?.rewardPositions) {
+    try {
+      const snapshot = await indexedWalletRewards(ctx, (await ctx.stack()).currentEpoch, true);
+      const local = [...ctx.localPositionIds].filter(([, owner]) => owner.toLowerCase() === ctx.address.toLowerCase()).map(([id]) => id);
+      return [...new Set([...snapshot.positions.map(row => row.id), ...local])];
+    } catch {}
+  }
+  return (await closedPositionIds(ctx)).ids;
 }
 
 /** Bring every pool's reward index up to the epoch the given positions need before claiming or restaking. */
@@ -180,12 +214,13 @@ export interface ClaimResult { claimed: string; transactions: string[]; buckets:
 
 export async function claim(ctx: AntsContext, request: ClaimRequest, report: StepReporter = silentReporter): Promise<ClaimResult> {
   const signer = ctx.requireSigner();
+  const walletAddress = ctx.signer ? await ctx.signer.getAddress() : ctx.address;
   const stack = await ctx.stack();
   const epochs = await ctx.claimableEpochs();
-  const recipient = request.recipient ?? ctx.address;
+  const recipient = request.recipient ?? (request.scope === 'buyer' ? walletAddress : ctx.address);
   if (!/^0x[0-9a-fA-F]{40}$/.test(recipient)) throw new Error('Recipient must be an address.');
   if (request.scope !== undefined && request.scope !== 'buyer' && request.scope !== 'wallet') throw new Error('Unknown reward scope.');
-  if (request.scope === 'buyer' && !sameAddress(await buyerOperator(ctx), ctx.address)) {
+  if (request.scope === 'buyer' && !sameAddress(await buyerOperator(ctx), walletAddress)) {
     throw new Error(`Connect the authorized wallet for buyer ${ctx.buyerAddress}.`);
   }
   const requested = request.buckets.length > 0 ? request.buckets : (['staker', 'seller', 'buyer', 'legacy', 'locked'] as RewardBucket[]);
@@ -209,8 +244,8 @@ export async function claim(ctx: AntsContext, request: ClaimRequest, report: Ste
     const pools = ctx.pools();
     const poolRewards = ctx.poolRewards();
     if (pools && poolRewards) {
-      const closed = await closedPositionIds(ctx);
-      const pending = (await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds: closed.ids })).filter((position) => position.amount > 0n);
+      const includeIds = await rewardCandidateIds(ctx);
+      const pending = (await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds })).filter((position) => position.amount > 0n);
       if (pending.length > 0) {
         await preparePoolIndexes(pools, poolRewards, signer, pending, report);
         const ids: number[] = [];
@@ -238,7 +273,7 @@ export async function claim(ctx: AntsContext, request: ClaimRequest, report: Ste
     const usageRewards = ctx.usageRewards();
     if (usageRewards) {
       const operator = await buyerOperator(ctx);
-      if (!sameAddress(operator, ctx.address)) {
+      if (!sameAddress(operator, walletAddress)) {
         if (buckets.length === 1) throw new Error(`Connect the authorized wallet for buyer ${ctx.buyerAddress}. Current operator: ${operator ?? 'not configured'}.`);
         await report(`Buyer usage rewards are paid to the deposits operator ${operator}; claim them from that wallet.`);
       } else {
@@ -259,7 +294,7 @@ export async function claim(ctx: AntsContext, request: ClaimRequest, report: Ste
         async (batch) => (await legacy.pendingEmissions(ctx.address, batch)).seller,
         async (batch) => { await report(`Claiming legacy seller emissions for epochs ${batch[0]}…${batch[batch.length - 1]}`); return legacy.claimSellerEmissions(signer, batch); },
         async (hash) => record(hash, 'Legacy seller emissions claimed'));
-      if (request.scope !== 'wallet' && sameAddress(await buyerOperator(ctx), ctx.address)) await claimEpochRewards(epochs.legacy,
+      if (request.scope !== 'wallet' && sameAddress(await buyerOperator(ctx), walletAddress)) await claimEpochRewards(epochs.legacy,
         async (batch) => (await legacy.pendingEmissions(ctx.buyerAddress, batch)).buyer,
         async (batch) => { await report(`Claiming legacy buyer emissions for epochs ${batch[0]}…${batch[batch.length - 1]}`); return legacy.claimBuyerEmissions(signer, ctx.buyerAddress, batch); },
         async (hash) => record(hash, 'Legacy buyer emissions claimed'));
@@ -290,7 +325,7 @@ export async function restake(ctx: AntsContext, request: RestakeRequest, report:
   const config = await pools.poolConfig();
   const epochs = assertEpochs(request.epochs, config.minStakeEpochs, config.maxStakeEpochs);
   const requested = request.positionIds && request.positionIds.length > 0 ? assertPositiveIds(request.positionIds) : null;
-  const includeIds = requested ?? (await closedPositionIds(ctx)).ids;
+  const includeIds = requested ?? await rewardCandidateIds(ctx);
   const pending = (await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds }))
     .filter((position) => position.amount > 0n && (!requested || requested.includes(position.id)));
   if (pending.length === 0) throw new Error('No staker rewards to restake.');
@@ -339,7 +374,7 @@ export async function stakeUsageRewards(ctx: AntsContext, request: StakeUsageReq
   } else {
     const stakeAgentId = assertAgentId(request.stakeAgentId);
     const operator = await buyerOperator(ctx);
-    if (!sameAddress(operator, ctx.address)) throw new Error(`Buyer usage rewards belong to the deposits operator ${operator}; stake them from that wallet.`);
+    if (!sameAddress(operator, ctx.signer ? await ctx.signer.getAddress() : ctx.address)) throw new Error(`Buyer usage rewards belong to the deposits operator ${operator}; stake them from that wallet.`);
     for (const epoch of claimable.recognized) {
       if (await usageRewards.buyerEpochClaimed(ctx.buyerAddress, epoch)) continue;
       if (await usageRewards.pendingBuyerReward(ctx.buyerAddress, epoch) === 0n) continue;
@@ -399,7 +434,7 @@ export async function compound(ctx: AntsContext, request: CompoundRequest, repor
       }
     }
     const operator = await buyerOperator(ctx);
-    if (request.includeBuyer !== false && sameAddress(operator, ctx.address)) {
+    if (request.includeBuyer !== false && sameAddress(operator, ctx.signer ? await ctx.signer.getAddress() : ctx.address)) {
       const stakeAgentId = request.stakeAgentId ?? targetAgentId ?? agentId;
       if (stakeAgentId) {
         try {

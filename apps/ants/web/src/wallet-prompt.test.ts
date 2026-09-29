@@ -26,7 +26,7 @@ describe('automatic wallet prompts', () => {
 
   it.each([
     ['another tab', { locallyStartedJobIds: new Set(['other-job']) }],
-    ['a reload', { locallyStartedJobIds: new Set<string>() }],
+    ['a tab without restored ownership', { locallyStartedJobIds: new Set<string>() }],
     ['an older backend', { transaction: { ...transaction, jobId: undefined } }],
     ['an opened prompt', { transaction: { ...transaction, approvalStarted: true } }],
     ['a broadcast transaction', { transaction: { ...transaction, submittedHash: '0xabc' } }],
@@ -54,5 +54,11 @@ describe('automatic wallet prompts', () => {
     expect(gate.claim(context)).toBe(true);
     expect(gate.claim({ ...context, busy: true })).toBe(false);
     expect(gate.claim({ ...context, busy: false })).toBe(false);
+  });
+
+  it('automatically resumes an unopened request when the tab restores its job ownership', () => {
+    const restored = { ...context, locallyStartedJobIds: new Set(['job-1']) };
+    expect(new WalletPromptGate().claim(restored)).toBe(true);
+    expect(new WalletPromptGate().claim({ ...restored, transaction: { ...transaction, approvalStarted: true } })).toBe(false);
   });
 });

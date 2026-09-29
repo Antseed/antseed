@@ -1,12 +1,88 @@
 import { describe, expect, it } from 'vitest';
-import type { PoolYield } from '../../src/api-types';
-import { formatYieldPercent, poolApyRange, poolApyEstimates } from './pool-yield';
+import type { PoolView, PoolYield, PositionView } from '../../src/api-types';
+import { formatYieldPercent, poolApyRange, poolApyEstimates, positionApy, stakeApy } from './pool-yield';
 
 const unit = 10n ** 18n;
 const history: PoolYield = {
   epoch: 20, startsAt: 0, endsAt: 604800, status: 'settled', apr: 0, apy: 0,
   reward: (100n * unit).toString(), power: (10000n * unit).toString(), minLockEpochs: 1, maxLockEpochs: 104,
 };
+
+describe('selected stake APY', () => {
+  it('uses the selected amount and lock, including the added pool power', () => {
+    const amount = (1000n * unit).toString();
+    expect(stakeApy(history, 1, amount)).toBeCloseTo(((1 + 100 / 11000) ** (365 / 7) - 1) * 100);
+    expect(stakeApy(history, 52, amount)).toBeCloseTo(((1 + 100 * 52 / 62000) ** (365 / 7) - 1) * 100);
+    expect(stakeApy(history, 52, amount)).toBeGreaterThan(stakeApy(history, 1, amount)!);
+    expect(stakeApy(history, 52, (10000n * unit).toString())).toBeLessThan(stakeApy(history, 52, amount)!);
+  });
+
+  it('includes an applicable weight bonus without increasing principal', () => {
+    const apy = stakeApy(history, 52, (1000n * unit).toString(), 1000);
+    expect(apy).toBeCloseTo(((1 + (100 * 57200 / 67200) / 1000) ** (365 / 7) - 1) * 100);
+    expect(apy).toBeGreaterThan(stakeApy(history, 52, (1000n * unit).toString())!);
+  });
+
+  it('keeps missing inputs distinct from a genuine zero yield', () => {
+    expect(stakeApy(undefined, 52, unit.toString())).toBeNull();
+    expect(stakeApy({ ...history, reward: '0' }, 52, unit.toString())).toBe(0);
+    for (const amount of ['', '0', '-1', 'bad']) expect(stakeApy(history, 52, amount)).toBeNull();
+    for (const epochs of [0, 105, 1.5, NaN]) expect(stakeApy(history, epochs, unit.toString())).toBeNull();
+    expect(stakeApy(history, 52, unit.toString(), -1)).toBeNull();
+  });
+});
+
+describe('existing position APY', () => {
+  const units = (amount: number) => (BigInt(amount) * unit).toString();
+  const position = {
+    id: 1, agentId: 42, amount: units(100), weightAmount: units(100), power: units(200),
+    stakeStartEpoch: 20, stakeEndEpoch: 30, closedAtEpoch: 0, withdrawn: false,
+    state: 'active', maxLocked: false, maxLockedNext: false,
+  } as PositionView;
+  const pool = { agentId: 42, weight: units(1000), yield: { ...history, reward: units(10) } } as PoolView;
+  const annual = (rate: number) => Math.expm1(Math.log1p(rate) * (365 / 7)) * 100;
+
+  it('does not add an active position to pool power a second time', () => {
+    expect(positionApy(position, pool, 25, 104)).toBeCloseTo(annual(10 * 200 / 1000 / 100));
+  });
+
+  it('adds pending activation power, not its zero current power', () => {
+    const pending = { ...position, state: 'pending' as const, stakeStartEpoch: 26, power: '0', nextPower: units(300) };
+    expect(positionApy(pending, pool, 25, 104)).toBeCloseTo(annual(10 * 300 / 1300 / 100));
+  });
+
+  it('derives later activation power with the existing weight bonus when next-epoch power is zero', () => {
+    const pending = { ...position, state: 'pending' as const, stakeStartEpoch: 28, weightAmount: units(120), power: '0', nextPower: '0' };
+    expect(positionApy(pending, pool, 25, 104)).toBeCloseTo(annual(10 * 240 / 1240 / 100));
+  });
+
+  it('uses maximum-lock power for pending max locks rather than the old end date', () => {
+    const pending = { ...position, state: 'pending' as const, stakeStartEpoch: 26, maxLockedNext: true, power: '0' };
+    expect(positionApy(pending, pool, 25, 104)).toBeCloseTo(annual(10 * 10400 / 11400 / 100));
+    expect(positionApy(pending, pool, 25)).toBeNull();
+  });
+
+  it('uses current on-chain power even if max lock changes next epoch', () => {
+    expect(positionApy({ ...position, maxLocked: true, maxLockedNext: false }, pool, 25, 104)).toEqual(positionApy(position, pool, 25, 104));
+    expect(positionApy({ ...position, maxLockedNext: true }, pool, 25, 104)).toEqual(positionApy(position, pool, 25, 104));
+  });
+
+  it('distinguishes zero rewards from missing or inconsistent data', () => {
+    expect(positionApy(position, { ...pool, yield: { ...pool.yield!, reward: '0' } }, 25, 104)).toBe(0);
+    expect(positionApy(position, { ...pool, yield: undefined }, 25, 104)).toBeNull();
+    expect(positionApy(position, { ...pool, weight: units(100) }, 25, 104)).toBeNull();
+    expect(positionApy(position, { ...pool, agentId: 43 }, 25, 104)).toBeNull();
+    expect(positionApy(position, pool, undefined, 104)).toBeNull();
+    expect(positionApy({ ...position, amount: 'bad' }, pool, 25, 104)).toBeNull();
+  });
+
+  it.each([
+    { closedAtEpoch: 26 }, { withdrawn: true }, { state: 'closed' as const },
+    { state: 'withdrawn' as const }, { state: 'matured' as const },
+  ])('does not show ongoing yield for closed or expired positions: %j', changes => {
+    expect(positionApy({ ...position, ...changes }, pool, 25, 104)).toBeNull();
+  });
+});
 
 describe('pool APY lock range', () => {
   it('shows four requested lock durations without inventing a one-day weekly lock', () => {

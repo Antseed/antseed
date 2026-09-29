@@ -61,6 +61,17 @@ describe('parseServiceUnitBillingModelsJson', () => {
     }))).toThrow(/known service API protocol/);
   });
 
+  it('rejects units that are not registered for the protocol', () => {
+    expect(() => parseServiceUnitBillingModelsJson(JSON.stringify({
+      'gpt-image-1': {
+        'openai-images': {
+          version: 1,
+          components: [{ unit: 'video_seconds', priceUsd: 0.1 }],
+        },
+      },
+    }))).toThrow(/video billing is not implemented/);
+  });
+
   it('accepts known service API protocol keys', () => {
     expect(parseServiceUnitBillingModelsJson(JSON.stringify({
       'gpt-image-1': {

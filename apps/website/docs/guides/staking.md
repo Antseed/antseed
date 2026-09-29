@@ -21,14 +21,24 @@ tooling.
 antseed ants                # start on http://127.0.0.1:3119 and open the browser
 antseed ants --no-open      # print the URL only
 antseed ants --port 4000    # use another port
+antseed ants --address 0x…  # pin the dashboard to one account
 ```
 
 The dashboard opens in your system browser. Browse pools before connecting, then
-connect a wallet to approve transactions. The dashboard cannot sign transactions
+connect a wallet to approve transactions; the connected wallet is the account
+whose positions and rewards you manage. The dashboard cannot sign transactions
 with the local identity key. Terminal commands still use that local identity.
-The originating CLI/VPR buyer account remains separate: buyer usage rewards require
-its on-chain authorized wallet, even when that differs from the buyer address.
-If no wallet is authorized, use the existing payments authorization flow.
+Buyer rewards follow the wallet too: a wallet that is a buyer account in its
+own right sees its own usage and legacy buyer rewards. If the wallet is the
+on-chain authorized operator of the local identity's buyer account, that buyer
+account's rewards are shown instead. If no wallet is authorized for the local
+buyer account, use the existing payments authorization flow.
+
+`--address 0x...` pins the dashboard to an explicit account without loading or
+using the local wallet. Seller and position actions then require that account's
+wallet, buyer reward actions require its authorized operator, and switching
+browser wallets does not change the pinned account. Pinned accounts must be
+authorized separately.
 The dashboard binds to localhost and the URL carries a per-session authorization token. Keep
 that URL private: possession of the token allows access to the local API.
 Read-only data refreshes on its own; any

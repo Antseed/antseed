@@ -161,7 +161,13 @@ AntseedPositionInit           Starter-position grants
 Looking for the pre-migration contracts or older rewards?
 See [Legacy emissions and claims](./legacy-emissions.md).
 
-Network fees are set to 4% of settlement and flow to the Protocol Reserve, not to a company. The Protocol Reserve is intended to support long-term network sustainability, trust, utility, and alignment.
+The source contract initializes `PLATFORM_FEE_BPS` to 200 (2%). The Channels owner
+can change it through `setPlatformFeeBps`, up to the source-defined maximum of
+1000 basis points (10%). Read the deployed contract for the active setting;
+source defaults do not establish the current onchain fee. Each settlement charges
+the fee on the newly settled delta, using integer division in USDC base units.
+Deposits sends the fee to the configured Protocol Reserve and the remainder to
+the seller. If no reserve address is configured, Deposits waives the fee.
 
 ### Emissions
 

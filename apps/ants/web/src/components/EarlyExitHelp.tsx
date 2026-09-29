@@ -1,10 +1,14 @@
-import { useEffect, useId, useRef, useState } from 'react';
+import { useEffect, useId, useRef, useState, type ReactNode } from 'react';
 import { createPortal } from 'react-dom';
 
-const explanation = 'Withdrawing before your lock ends permanently burns part of your staked ANTS (your principal). The percentage depends on the lock time remaining when the withdrawal takes effect, within the configured minimum and maximum. Once the lock has ended, this penalty is zero. The withdrawal preview shows exactly how much is burned and how much you receive. Rewards are claimed separately.';
+const explanation = 'Early withdrawal permanently burns some principal, based on the remaining lock and configured limits. No penalty after expiry. Preview shows the exact burn and payout. Claim rewards separately.';
 
 /** Shared help for early-exit amounts and percentages. Portal avoids clipping in tables and modals. */
 export function EarlyExitHelp() {
+  return <InfoHelp label="About the early-exit penalty">{explanation}</InfoHelp>;
+}
+
+export function InfoHelp({ label, children, symbol = '?' }: { label: string; children: ReactNode; symbol?: '?' | 'i' }) {
   const id = useId();
   const hideTimer = useRef<ReturnType<typeof setTimeout>>();
   const keepOpen = () => { clearTimeout(hideTimer.current); };
@@ -35,11 +39,11 @@ export function EarlyExitHelp() {
     };
   }, [placement]);
   return <span className="early-exit-help">
-    <button ref={trigger} type="button" className="early-exit-help__trigger" aria-label="About the early-exit penalty" aria-describedby={placement ? id : undefined}
-      onMouseEnter={show} onMouseLeave={hideSoon} onFocus={show} onBlur={() => setPlacement(null)} onClick={show}>?</button>
+    <button ref={trigger} type="button" className="early-exit-help__trigger" aria-label={label} aria-describedby={placement ? id : undefined}
+      onMouseEnter={show} onMouseLeave={hideSoon} onFocus={show} onBlur={() => setPlacement(null)} onClick={show}>{symbol}</button>
     {placement && createPortal(<span id={id} role="tooltip" className="early-exit-help__tooltip" onMouseEnter={keepOpen} onMouseLeave={hideSoon}
       style={{ left: placement.left, top: placement.top, transform: placement.above ? 'translateY(-100%)' : undefined }}>
-      {explanation}
+      {children}
     </span>, document.body)}
   </span>;
 }

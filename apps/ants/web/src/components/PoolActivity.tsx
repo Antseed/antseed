@@ -1,4 +1,6 @@
 import { useEffect, useId, useRef, useState } from 'react';
+import { ChartTooltip, type TooltipRow } from './ChartTooltip';
+import { nearestIndex, useChartHover } from './chart-hover';
 import type { EpochVolume, SellerModelsView } from '../../../src/api-types';
 import { api } from '../api';
 import { usePageData } from '../data';
@@ -53,11 +55,22 @@ function EpochChart({ points }: { points: ReturnType<typeof activityPoints> }) {
   };
   const tickCount = width < 500 ? 3 : 6;
   const tickStride = Math.max(1, Math.ceil((points.length - 1) / (tickCount - 1)));
+  const svgRef = useRef<SVGSVGElement | null>(null);
+  const xs = points.map(point => coordinateX(point.epoch));
+  const { hover, onPointerMove, onPointerLeave, setHover, clientPoint } = useChartHover(svgRef, width, 270, (x) => nearestIndex(x, xs));
+  const hovered = hover !== null ? points[hover.index] ?? null : null;
+  const hoverRows: TooltipRow[] = [];
+  if (hovered) {
+    if (hovered.volume !== null) hoverRows.push({ name: 'Settled volume', value: `${formatUsdc(String(hovered.volume))} USDC`, color: 'var(--pc-accent)' });
+    if (hovered.network !== null) hoverRows.push({ name: 'Network volume', value: `${formatUsdc(String(hovered.network))} USDC`, color: 'var(--pc-sub)' });
+    if (hovered.share !== null) hoverRows.push({ name: 'Network share', value: formatBps(Number(hovered.share)), color: 'var(--pc-blue)' });
+  }
   return <div className="pool-chart">
     <div className="pool-chart-legend"><h4><span className="pool-chart-dot" />Settled volume · left axis</h4><h4 className="pool-chart--share"><span className="pool-chart-dot" />Network volume share · right axis</h4></div>
     <div ref={plot} className="pool-chart-plot">
-      {values.length ? <svg viewBox={`0 0 ${width} 270`} role="img" aria-labelledby={titleId}>
-        <title id={titleId}>Settled volume and network volume share by completed epoch. USDC on the left axis; 0–100% on the right axis. Hover or focus a point for its value.</title>
+      {values.length ? <svg ref={svgRef} viewBox={`0 0 ${width} 270`} role="img" aria-labelledby={titleId} onPointerMove={onPointerMove} onPointerLeave={onPointerLeave}>
+        <title id={titleId}>Settled volume and network volume share by completed epoch. USDC on the left axis; 0–100% on the right axis. Hover anywhere over the chart for that epoch's values.</title>
+        {hovered ? <line x1={coordinateX(hovered.epoch)} x2={coordinateX(hovered.epoch)} y1={38} y2={218} className="chart-crosshair" aria-hidden="true" /> : null}
         <text x={left} y="16" className="pool-chart-axis-volume">USDC</text><text x={right} y="16" textAnchor="end" className="pool-chart-axis-share">Share · %</text>
         {[0, 1, 2, 3, 4].map(tick => <g key={tick}>
           <line x1={left} x2={right} y1={38 + tick * 45} y2={38 + tick * 45} className="pool-chart-grid" />
@@ -66,16 +79,17 @@ function EpochChart({ points }: { points: ReturnType<typeof activityPoints> }) {
         </g>)}
         {series.map(line => <g key={line.key} className={line.key === 'share' ? 'pool-chart--share' : undefined}>
           {points.some(point => point[line.key] !== null) && <path d={pathFor(line.key, line.scale)} className="pool-chart-line" data-series={line.key} />}
-          {points.map(point => {
+          {points.map((point, index) => {
             const value = point[line.key];
             if (value === null) return null;
             const label = `${line.name}, epoch ${point.epoch}: ${line.format(value)}`;
-            return <circle key={point.epoch} cx={coordinateX(point.epoch)} cy={coordinateY(value, line.scale)} r="4" tabIndex={0} role="img" aria-label={label}><title>{label}</title></circle>;
+            return <circle key={point.epoch} cx={coordinateX(point.epoch)} cy={coordinateY(value, line.scale)} r={hovered === point ? 5.5 : 4} tabIndex={0} role="img" aria-label={label} onFocus={() => setHover({ index })} onBlur={onPointerLeave}><title>{label}</title></circle>;
           })}
         </g>)}
         {points.filter((_, index) => index % tickStride === 0 || index === points.length - 1).map(point => <text key={point.epoch} x={coordinateX(point.epoch)} y="242" textAnchor="middle">{point.epoch}</text>)}
         <text x={width / 2} y="265" textAnchor="middle">Epoch</text>
       </svg> : <div className="pool-chart-empty">Settlement volume unavailable for completed epochs.</div>}
+      {hovered && hoverRows.length > 0 ? <ChartTooltip {...clientPoint(coordinateX(hovered.epoch), 38)} title={`Epoch ${hovered.epoch}`} rows={hoverRows} /> : null}
     </div>
     {values.length > 0 && !shareAvailable && <p className="hint">Network share unavailable for these epochs.</p>}
   </div>;

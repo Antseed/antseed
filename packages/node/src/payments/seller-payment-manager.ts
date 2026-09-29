@@ -108,6 +108,7 @@ export class SellerPaymentManager {
    * lets timeout cleanup distinguish restart-only zero-auth zombies.
    */
   private readonly _activeBuyers = new Set<string>();
+  private readonly _buyerDisconnectMarkers = new Map<string, object>();
 
   /** Channels restored from disk before the buyer has proven it reconnected. */
   private readonly _hydratedChannelIds = new Set<string>();
@@ -321,6 +322,8 @@ export class SellerPaymentManager {
     const current = this._channelStore.getActiveChannelByPeer(peerId, CHANNEL_ROLE.SELLER);
     if (!current || current.sessionId === channelId) {
       this._activeBuyers.delete(peerId);
+      if (current) this._buyerDisconnectMarkers.set(peerId, {});
+      else this._buyerDisconnectMarkers.delete(peerId);
     }
   }
 
@@ -455,11 +458,12 @@ export class SellerPaymentManager {
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
+    const disconnectMarker = this._buyerDisconnectMarkers.get(buyerPeerId);
     // Per-buyer mutex: serialize concurrent auths for the same buyer
     const existing = this._buyerLocks.get(buyerPeerId);
     let result: 'accepted' | 'reserved' | 'rejected' = 'rejected';
     const lock = (existing ?? Promise.resolve()).then(async () => {
-      result = await this._handleSpendingAuthInner(buyerPeerId, payload, paymentMux);
+      result = await this._handleSpendingAuthInner(buyerPeerId, payload, paymentMux, disconnectMarker);
     });
     this._buyerLocks.set(buyerPeerId, lock.catch(() => {}));
     await lock;
@@ -482,6 +486,7 @@ export class SellerPaymentManager {
     buyerPeerId: string,
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
+    disconnectMarker: object | undefined,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
     const buyerEvmAddr = peerIdToAddress(buyerPeerId);
     try {
@@ -714,8 +719,14 @@ export class SellerPaymentManager {
           );
           return 'rejected';
         }
+        const requiresReactivation = !this._activeBuyers.has(buyerPeerId) || this._hydratedChannelIds.has(channelId);
         if (cumulativeAmount === existingCumulative) {
+          if (requiresReactivation
+            && !await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
+            return 'rejected';
+          }
           debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
+          this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
           return 'accepted';
         }
 
@@ -745,7 +756,6 @@ export class SellerPaymentManager {
         }
 
         // Update tracking
-        this._hydratedChannelIds.delete(channelId);
         this._acceptedCumulative.set(channelId, cumulativeAmount);
         this._latestAuth.set(channelId, {
           spendingAuthSig: payload.spendingAuthSig,
@@ -775,12 +785,59 @@ export class SellerPaymentManager {
           await this._retryPendingTopUp(buyerPeerId, channelId, pendingTopUp, retrySettleAmount, retryMetadata, retrySig);
         }
 
+        if (requiresReactivation
+          && await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
+          this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
+        }
         return 'accepted';
       }
     } catch (err) {
       debugWarn(`[SellerPayment] Failed to process SpendingAuth: ${err instanceof Error ? err.message : err}`);
       return 'rejected';
     }
+  }
+
+  private _canAcknowledgeRetainedChannel(buyerPeerId: string, channelId: string, disconnectMarker: object | undefined): boolean {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    return session?.sessionId === channelId
+      && this._acceptedCumulative.has(channelId)
+      && !this._closingChannels.has(channelId)
+      && !this._blockedChannels.has(channelId)
+      && this._buyerDisconnectMarkers.get(buyerPeerId) === disconnectMarker;
+  }
+
+  private async _validateRetainedChannel(
+    buyerPeerId: string,
+    channelId: string,
+    cumulativeAmount: bigint,
+    disconnectMarker: object | undefined,
+  ): Promise<boolean> {
+    if (!this._canAcknowledgeRetainedChannel(buyerPeerId, channelId, disconnectMarker)) return false;
+    try {
+      const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+      const { seller } = await this._resolvedAddresses!;
+      return state.exists && state.status === 'active'
+        && matchesChannelParties(state.channel, peerIdToAddress(buyerPeerId), seller)
+        && (state.channel.closeRequestedAt === 0n || this._serveWhileClosePending)
+        && cumulativeAmount >= state.channel.settled
+        && cumulativeAmount <= state.channel.deposit
+        && this._canAcknowledgeRetainedChannel(buyerPeerId, channelId, disconnectMarker);
+    } catch (err) {
+      debugWarn(`[SellerPayment] Retained channel validation failed: ${this._formatError(err)}`);
+      return false;
+    }
+  }
+
+  private _acknowledgeRetainedChannel(
+    buyerPeerId: string,
+    channelId: string,
+    paymentMux: PaymentMux,
+    disconnectMarker: object | undefined,
+  ): void {
+    if (!this._canAcknowledgeRetainedChannel(buyerPeerId, channelId, disconnectMarker)) return;
+    this._hydratedChannelIds.delete(channelId);
+    this._activeBuyers.add(buyerPeerId);
+    paymentMux.sendAuthAck({ channelId });
   }
 
   /**
@@ -1261,6 +1318,7 @@ export class SellerPaymentManager {
   onBuyerDisconnect(buyerPeerId: string): void {
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
     if (!session) return;
+    this._buyerDisconnectMarkers.set(buyerPeerId, {});
 
     const settleOnDisconnect = this._config.settleOnDisconnect ?? true;
 

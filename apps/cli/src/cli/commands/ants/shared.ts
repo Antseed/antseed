@@ -14,12 +14,14 @@ export interface AntsCommandContext {
   configPath: string;
 }
 
-/** Build the ANTS service context from the CLI config and the node identity wallet. */
-export async function loadAntsContext(command: Command): Promise<AntsCommandContext> {
+/** Build the ANTS service context from the CLI config and the node identity wallet, or for an explicit external account without a signer. */
+export async function loadAntsContext(command: Command, options: { address?: string } = {}): Promise<AntsCommandContext> {
   const global = getGlobalOptions(command);
   const config = await loadConfig(global.config);
   const chain = requireCryptoConfig(config) as unknown as AntsChainConfig;
-  const { wallet, address } = await loadCryptoContext(global.dataDir);
+  const identity = options.address ? undefined : await loadCryptoContext(global.dataDir);
+  const wallet = identity?.wallet;
+  const address = options.address ?? wallet!.address;
   const ctx = new AntsContext({ chain, address, signer: wallet });
   await ctx.selectRpc();
   return { ctx, chain: ctx.chain, dataDir: global.dataDir, configPath: global.config };
@@ -29,7 +31,7 @@ export function printJson(value: unknown): void {
   console.log(JSON.stringify(value, jsonReplacer, 2));
 }
 
-export function ants(baseUnits: string | bigint, digits = 4): string {
+export function ants(baseUnits: string | bigint | null, digits = 4): string {
   return `${formatAnts(baseUnits, digits)} ANTS`;
 }
 

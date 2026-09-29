@@ -21,7 +21,7 @@ it('standalone payments explain how to open rewards without retaining a second c
   const { server, headers } = await setup();
   const result = await server.inject({ method: 'POST', url: '/api/pay/open-rewards', headers });
   expect(result.statusCode).toBe(409);
-  expect(result.json().error).toContain('antseed ants');
+  expect(result.json().error).toContain('antseed ants,');
 });
 it('launcher failures are reported and can be retried', async () => {
   const open = vi.fn().mockRejectedValueOnce(new Error('Dashboard unavailable')).mockResolvedValue(undefined);

@@ -3,7 +3,7 @@ import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
 import { ActionButton, ActionDialog, type ActionButtonProps } from './components/Confirm';
 
-const mocks = vi.hoisted(() => ({ app: vi.fn(), jobs: vi.fn(), start: vi.fn(), button: vi.fn(), close: undefined as (() => void) | undefined }));
+const mocks = vi.hoisted(() => ({ app: vi.fn(), jobs: vi.fn(), start: vi.fn(), pushToast: vi.fn(), button: vi.fn(), close: undefined as (() => void) | undefined }));
 vi.mock('./app-context', () => ({ useApp: mocks.app }));
 vi.mock('./jobs', () => ({ useJobs: mocks.jobs }));
 vi.mock('./components/ui', async original => ({
@@ -34,11 +34,35 @@ beforeEach(() => {
   vi.clearAllMocks();
   mocks.close = undefined;
   mocks.app.mockReturnValue({ config: { readOnly: false }, overview: { wallet: { eth: '1' } } });
-  mocks.jobs.mockReturnValue({ start: mocks.start, running: false });
+  mocks.jobs.mockReturnValue({ start: mocks.start, pushToast: mocks.pushToast, running: false });
   mocks.start.mockResolvedValue({ id: 'move-job' });
 });
 
 describe('direct action submission', () => {
+  it('blocks seller and position actions when the selected buyer is managed by a separate operator', async () => {
+    mocks.app.mockReturnValue({ config: { readOnly: false, selectedAddress: '0xaaa', walletAddress: '0xbbb' }, overview: { wallet: { eth: '0', signingWalletEth: '1' } } });
+    const { button } = renderButton();
+    expect(button.disabled).toBe(true);
+    await button.onClick();
+    expect(mocks.start).not.toHaveBeenCalled();
+  });
+
+  it.each([
+    { path: '/api/rewards/claim', body: { scope: 'buyer', buckets: ['buyer'] } },
+    { path: '/api/rewards/stake-usage', body: { side: 'buyer', stakeAgentId: 42, epochs: 4 } },
+  ])('allows buyer actions using the operator gas balance: $path', async request => {
+    mocks.app.mockReturnValue({ config: { readOnly: false, selectedAddress: '0xaaa', walletAddress: '0xbbb' }, overview: { wallet: { eth: '0', signingWalletEth: '1' } } });
+    const { button } = renderButton(request);
+    expect(button.disabled).toBeFalsy();
+    await button.onClick();
+    expect(mocks.start).toHaveBeenCalledWith(request.path, request.body);
+  });
+
+  it('blocks a buyer action when the signing wallet has no gas even if the selected buyer does', async () => {
+    mocks.app.mockReturnValue({ config: { readOnly: false, selectedAddress: '0xaaa', walletAddress: '0xbbb' }, overview: { wallet: { eth: '1', signingWalletEth: '0' } } });
+    expect(renderButton({ path: '/api/rewards/claim', body: { scope: 'buyer' } }).button.disabled).toBe(true);
+  });
+
   it('starts one move job directly without an intermediate confirmation', async () => {
     const onStarted = vi.fn();
     const { html, button } = renderButton({ onStarted });
@@ -104,6 +128,7 @@ describe('direct action submission', () => {
     await button.onClick();
     expect(mocks.start).toHaveBeenCalledOnce();
     expect(onStarted).not.toHaveBeenCalled();
+    expect(mocks.pushToast).toHaveBeenCalledWith({ tone: 'danger', title: 'Move allocation failed', body: 'Request failed', sticky: true });
     await button.onClick();
     expect(mocks.start).toHaveBeenCalledTimes(2);
     expect(onStarted).toHaveBeenCalledOnce();

@@ -25,7 +25,7 @@ export function SellerPage() {
     return (
       <Panel title="Open your seller dashboard">
         <p className="muted">
-          Open this dashboard from your seller’s CLI with <code>antseed ants</code>, then connect the wallet registered to your seller.
+          Open this dashboard with <code>antseed ants --address 0x...</code> using your seller’s address, then connect that seller’s wallet.
         </p>
       </Panel>
     );

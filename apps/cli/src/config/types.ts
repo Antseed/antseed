@@ -130,6 +130,15 @@ export interface SellerGasCheckCLIConfig {
   minBalanceEth?: number;
 }
 
+export interface SellerFreeTierCLIConfig {
+  /** Maximum zero-priced requests accepted from one buyer address per window. */
+  maxRequestsPerAddress?: number;
+  /** Maximum zero-priced requests accepted from one remote IP per window (IPv6 grouped by /64). */
+  maxRequestsPerIp?: number;
+  /** Sliding-window duration in milliseconds. Default: 86400000 (24 hours). */
+  windowMs?: number;
+}
+
 /**
  * Seller-specific configuration within the Antseed config.
  */
@@ -177,6 +186,8 @@ export interface SellerCLIConfig {
    * advertising until it is funded again. Set `enabled: false` to opt out.
    */
   gasCheck?: SellerGasCheckCLIConfig;
+  /** Optional persistent per-address request limit for zero-priced services. */
+  freeTier?: SellerFreeTierCLIConfig;
 }
 
 /**

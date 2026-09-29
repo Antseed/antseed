@@ -4,9 +4,10 @@ import { registerRoutes } from './routes.js';
 import { JobRunner } from './jobs.js';
 import { ViewCache } from './view-cache.js';
 import type { AntsContext } from './service/context.js';
+import { IndexerSyncingError } from './read-state.js';
 
 const service = vi.hoisted(() => ({
-  previewWithdraw: vi.fn(), registerBinding: vi.fn(), rewards: vi.fn(),
+  previewWithdraw: vi.fn(), registerBinding: vi.fn(), rewards: vi.fn(), poolsView: vi.fn(),
 }));
 vi.mock('./service/index.js', async (original) => ({
   ...await original<typeof import('./service/index.js')>(), ...service,
@@ -17,7 +18,7 @@ function setup(readOnly = false, chainOverrides: Partial<AntsContext['chain']> =
   const app = Fastify();
   apps.push(app);
   const ctx = { signer: readOnly ? undefined : {}, address: '0x123', chain: { chainId: 'base-local', evmChainId: 31337, ...chainOverrides }, invalidate: vi.fn() } as unknown as AntsContext;
-  registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly, dataDir: null });
+  registerRoutes(app, { ctx, jobs: new JobRunner(), views: new ViewCache(), readOnly, dataDir: null, originBuyer: ctx.buyerAddress });
   return app;
 }
 
@@ -28,6 +29,53 @@ afterEach(async () => {
 });
 
 describe('dashboard API', () => {
+  it('does not cache temporary partial pool results', async () => {
+    const app = setup(true);
+    service.poolsView.mockResolvedValueOnce({ source: 'chain', sourceError: 'Explorer unreachable', pools: [] })
+      .mockResolvedValue({ source: 'indexer', sourceError: null, pools: [{ agentId: 7 }] });
+    expect((await app.inject('/api/pools')).json().data.source).toBe('chain');
+    expect((await app.inject('/api/pools')).json().data.source).toBe('indexer');
+    await app.inject('/api/pools');
+    expect(service.poolsView).toHaveBeenCalledTimes(2);
+  });
+
+  it('serves public pool data while wallet figures sync without caching it', async () => {
+    const app = setup(true);
+    service.poolsView.mockResolvedValueOnce({ source: 'indexer', sourceError: null, walletSyncing: true, pools: [{ agentId: 7 }] })
+      .mockResolvedValue({ source: 'indexer', sourceError: null, walletSyncing: false, pools: [{ agentId: 7 }] });
+    const syncing = await app.inject('/api/pools');
+    expect(syncing.statusCode).toBe(200);
+    expect(syncing.json().data).toMatchObject({ walletSyncing: true, pools: [{ agentId: 7 }] });
+    expect((await app.inject('/api/pools')).json().data.walletSyncing).toBe(false);
+    await app.inject('/api/pools');
+    expect(service.poolsView).toHaveBeenCalledTimes(2);
+  });
+
+  it('caches intentional chain-only mode without an explorer error', async () => {
+    const app = setup(true);
+    service.poolsView.mockResolvedValue({ source: 'chain', sourceError: null, pools: [] });
+    await app.inject('/api/pools');
+    await app.inject('/api/pools');
+    expect(service.poolsView).toHaveBeenCalledTimes(1);
+  });
+  it('returns a structured pending response for indexer lag without caching it', async () => {
+    const app = setup(true);
+    service.rewards.mockRejectedValueOnce(new IndexerSyncingError()).mockResolvedValueOnce({ total: '10' });
+    const pending = await app.inject('/api/rewards');
+    expect(pending.statusCode).toBe(202);
+    expect(pending.json()).toEqual({ ok: false, state: 'syncing' });
+    expect((await app.inject('/api/rewards')).json()).toEqual({ ok: true, data: { total: '10' } });
+    expect(service.rewards).toHaveBeenCalledTimes(2);
+  });
+
+  it('keeps real read failures separate from indexer lag', async () => {
+    const app = setup(true);
+    service.rewards.mockRejectedValueOnce(new Error('Wrong chain'));
+    const response = await app.inject('/api/rewards');
+    expect(response.statusCode).toBe(400);
+    expect(response.json()).toEqual({ ok: false, error: 'Wrong chain' });
+  });
+
   it.each(['https://antscan.co', ''])('uses the configured explorer for models: %s', async explorerApiUrl => {
     const fetchImpl = vi.fn(async () => new Response('', { status: 503 }));
     vi.stubGlobal('fetch', fetchImpl);

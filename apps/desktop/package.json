@@ -1,7 +1,7 @@
 {
   "name": "@antseed/desktop",
   "productName": "Antseed AI VPN",
-  "version": "0.2.44",
+  "version": "0.2.49",
   "private": true,
   "description": "Desktop app for Antseed",
   "author": "Antseed <hello@antseed.com>",
@@ -33,13 +33,13 @@
     "start": "electron .",
     "start:debug": "cross-env ANTSEED_DESKTOP_DEBUG=1 electron . --debug-runtime",
     "prepare-dist": "node ./scripts/prepare-dist.mjs",
-    "dist": "npm run build && npm run prepare-dist && electron-builder",
+    "dist": "npm run build && npm run prepare-dist && node scripts/dist.mjs",
     "dist:mac": "npm run build && node scripts/release-mac.mjs --no-publish",
     "release:mac": "npm run build && node scripts/release-mac.mjs",
     "dist:win": "npm run build && npm run prepare-dist && electron-builder --win",
     "release:win": "npm run build && npm run prepare-dist && node scripts/release-win.mjs",
-    "dist:linux": "npm run build && npm run prepare-dist && electron-builder --linux",
-    "release:linux": "npm run build && npm run prepare-dist && electron-builder --linux --publish always"
+    "dist:linux": "npm run build && npm run prepare-dist && electron-builder --config electron-builder.linux.cjs --linux",
+    "release:linux": "npm run build && npm run prepare-dist && electron-builder --config electron-builder.linux.cjs --linux --publish always"
   },
   "dependencies": {
     "@antseed/antseed-verifier": "workspace:*",

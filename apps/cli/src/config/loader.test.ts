@@ -719,6 +719,36 @@ test('loadConfig rejects invalid seller gasCheck minBalanceEth', async () => {
   );
 });
 
+test('loadConfig preserves seller freeTier setting', async () => {
+  await withTempConfig(
+    JSON.stringify({
+      seller: {
+        freeTier: { maxRequestsPerAddress: 100, maxRequestsPerIp: 300, windowMs: 86_400_000 },
+      },
+    }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.freeTier, { maxRequestsPerAddress: 100, maxRequestsPerIp: 300, windowMs: 86_400_000 });
+    }
+  );
+});
+
+test('loadConfig rejects invalid seller freeTier limits', async () => {
+  for (const freeTier of [
+    { maxRequestsPerAddress: 0 },
+    { maxRequestsPerIp: 0 },
+    { windowMs: 86_400_000 },
+    { maxRequestsPerAddress: 10, windowMs: 999 },
+  ]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { freeTier } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.freeTier/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller agentDir setting', async () => {
   await withTempConfig(
     JSON.stringify({

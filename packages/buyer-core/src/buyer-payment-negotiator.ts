@@ -728,7 +728,7 @@ export class BuyerPaymentNegotiator {
       try {
         unitBilling = computeFinalUnitBilling(unitModel, billingEntry.context, response, requestFacts);
       } catch (err) {
-        const observed = extractUnitResponseUsage(response, requestFacts);
+        const observed = extractUnitResponseUsage(response, requestFacts, billingEntry.context.serviceApiProtocol);
         if (requestId) {
           this._bpm.recordObservedUnitUsage(requestId, observed.usage);
         }
@@ -1262,7 +1262,7 @@ export class BuyerPaymentNegotiator {
     if (hasPendingReserve) {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
     }
-    if (minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+    if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
       const cumulativeBefore = this._bpm.getCumulativeAmount(peer.peerId);
       await this._bpm.extendCurrentSpendingAuth(
         peer.peerId,

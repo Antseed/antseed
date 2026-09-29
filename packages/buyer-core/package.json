@@ -1,6 +1,6 @@
 {
   "name": "@antseed/buyer-core",
-  "version": "0.1.11",
+  "version": "0.1.12",
   "description": "Transport-agnostic AntSeed buyer machinery: request handling, payment negotiation, channel accounting. Portable — no Node-only dependencies",
   "type": "module",
   "files": [

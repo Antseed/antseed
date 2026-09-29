@@ -5,14 +5,14 @@
    =================================================================== */
 
 .page-header {
+  container: chat-header / inline-size;
+  position: relative;
+  z-index: 20;
   background: var(--chat-header-bg);
-  /* Extra right padding clears the shell's floating credits pill. */
-  padding: 6px 110px 0px 16px;
-  /* Constant height regardless of which controls are shown (6px padding +
-     36px model-dropdown trigger + 6px + border) — the search-only mode swaps
-     in a shorter bar and must not shrink the header. */
+  padding: 6px 16px;
   min-height: 49px;
   display: flex;
+  flex-wrap: wrap;
   justify-content: space-between;
   align-items: center;
   gap: 10px;
@@ -27,6 +27,7 @@
 
 .page-header-left {
   display: flex;
+  flex: 1 1 200px;
   align-items: center;
   gap: 8px;
   min-width: 0;
@@ -101,10 +102,12 @@
 
 .page-header-right {
   display: flex;
+  flex: 0 1 auto;
   align-items: center;
   justify-content: flex-end;
   gap: 8px;
   min-width: 0;
+  max-width: 100%;
 }
 
 /* Thin layout with the message search open: search is the only header
@@ -163,6 +166,7 @@
 
 .message-search-bar {
   display: inline-flex;
+  flex: 0 1 auto;
   align-items: center;
   gap: 5px;
   min-width: 0;
@@ -181,7 +185,7 @@
 
 .message-search-input {
   width: min(220px, 24vw);
-  min-width: 96px;
+  min-width: 0;
   border: 0;
   outline: none;
   background: transparent;
@@ -195,6 +199,7 @@
 }
 
 .message-search-count {
+  flex-shrink: 0;
   min-width: 42px;
   font-size: 11px;
   color: var(--text-muted);
@@ -204,10 +209,25 @@
 }
 
 .message-search-button {
+  flex-shrink: 0;
   width: 22px;
   height: 22px;
   padding: 0;
   border-radius: 6px;
+}
+
+@container chat-header (max-width: 540px) {
+  .page-header-right-searching {
+    flex-wrap: wrap;
+
+    .message-search-bar {
+      flex: 1 0 100%;
+    }
+
+    .message-search-input {
+      flex: 1 1 auto;
+    }
+  }
 }
 
 .chat-routed-label {

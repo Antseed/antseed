@@ -21,8 +21,26 @@ function requiredAddress(value: unknown, field: string): string {
   return value.toLowerCase();
 }
 
+/** Ownership and registration change rarely; a transaction from this dashboard clears the cache. */
+const ELIGIBILITY_TTL_MS = 10 * 60_000;
+const memoKey = (agentId: number) => `stake-eligibility:${agentId}`;
+
 export async function stakeEligibility(ctx: AntsContext, agentIds: number[]): Promise<Map<number, StakeEligibility>> {
-  const ids = [...new Set(agentIds)];
+  const result = new Map<number, StakeEligibility>();
+  const missing: number[] = [];
+  for (const agentId of new Set(agentIds)) {
+    const cached = ctx.memoGet?.<StakeEligibility>(memoKey(agentId));
+    if (cached) result.set(agentId, cached);
+    else missing.push(agentId);
+  }
+  for (const [agentId, eligibility] of await readEligibility(ctx, missing)) {
+    ctx.memoSet?.(memoKey(agentId), eligibility, ELIGIBILITY_TTL_MS);
+    result.set(agentId, eligibility);
+  }
+  return result;
+}
+
+async function readEligibility(ctx: AntsContext, ids: number[]): Promise<Map<number, StakeEligibility>> {
   if (ids.length === 0) return new Map();
   const pools = ctx.requirePools();
   const blockTag = await pools.provider.getBlockNumber();

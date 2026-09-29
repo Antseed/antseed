@@ -63,6 +63,60 @@ beforeEach(() => {
 });
 
 describe('reward row actions and confirmations', () => {
+  it('omits the buyer action row when no authorization or connection action is available', () => {
+    state.rewards!.scope = 'buyer';
+    state.rewards!.buyerUsage.operator = null;
+    expect(render()).not.toContain('class="hero-actions"');
+  });
+
+  it('keeps the buyer authorization action when available', () => {
+    state.rewards!.scope = 'buyer';
+    state.rewards!.buyerUsage.operator = null;
+    const authorizationContext = { ...context, config: { ...context.config, canAuthorize: true } };
+    const html = renderToStaticMarkup(createElement(AppContext.Provider, { value: authorizationContext }, createElement(RewardsPage)));
+    expect(html).toContain('class="hero-actions"');
+    expect(html).toContain('Authorize wallet');
+  });
+
+  it('shows seller names in the staking dropdown and falls back to agent IDs when names are missing', () => {
+    state.pools = [
+      { agentId: 42, profile: { name: ' Seller Alpha ' } },
+      { agentId: 43, profile: { name: 'Seller Beta' } },
+      { agentId: 44, profile: { name: ' ' } },
+    ] as PoolView[];
+    render();
+    const stake = action('Stake current buyer rewards');
+    const controls = renderToStaticMarkup(createElement(AppContext.Provider, { value: context }, stake.children));
+    const options = [...controls.matchAll(/<option\b([^>]*)>(.*?)<\/option>/g)];
+    expect(options.map(option => option[2])).toEqual(['Seller Alpha', 'Seller Beta', 'Agent ID 44']);
+    expect(options.map(option => option[1])).toEqual([
+      expect.stringContaining('value="42"'),
+      expect.stringContaining('value="43"'),
+      expect.stringContaining('value="44"'),
+    ]);
+    expect(stake.body).toMatchObject({ side: 'buyer', stakeAgentId: 42 });
+  });
+
+  it('uses the connected operator rather than the selected buyer to enable buyer rewards', () => {
+    const selectedContext = { ...context, config: { ...context.config, address: buyer, selectedAddress: buyer, walletAddress: wallet } };
+    renderToStaticMarkup(createElement(AppContext.Provider, { value: selectedContext }, createElement(RewardsPage)));
+    expect(action('Claim current buyer rewards').disabled).toBe(false);
+    expect(action('Claim legacy buyer rewards').disabled).toBe(false);
+  });
+  it('shows unavailable staking rewards without a false zero or disabling buyer claims', () => {
+    state.rewards!.staker = { total: null, positions: [], source: { error: 'Antscan snapshot is incomplete' } };
+    state.rewards!.total = null;
+    const html = render();
+    expect(html).toContain('Staking rewards unavailable: Antscan snapshot is incomplete');
+    expect(html).not.toContain('Nothing to claim yet');
+    expect(state.actions.some(entry => entry.title === 'Stake position rewards')).toBe(false);
+    expect(action('Claim current buyer rewards').disabled).toBe(false);
+  });
+
+  it('labels the staking reward checkpoint and retains live transaction validation', () => {
+    state.rewards!.staker.source = { indexedBlock: 123 };
+    expect(render()).toContain('Estimated by Antscan at block 123. Claims and restaking are checked live.');
+  });
   it('shows reward destinations by seller name and sums rewards within each pool', () => {
     state.pools = [
       { agentId: 42, profile: { name: 'Seller Alpha' } },
@@ -99,17 +153,16 @@ describe('reward row actions and confirmations', () => {
     expect(html).toContain('class="hero-value">1,250<span');
     expect(action('Claim current buyer rewards').disabled).toBe(false);
   });
-  it('animates amount placeholders without an updating bar and keeps action labels unchanged', () => {
-    state.rewardsLoading = true;
+  it.each([true, false])('keeps amounts visible and marks them updating until reconciliation completes (loading: %s)', loading => {
+    state.rewardsLoading = loading;
     state.reconciling = true;
     const html = render();
-    expect(html).not.toContain('Updating');
-    expect(html).not.toContain('reward-refresh-state');
-    expect(html.match(/class="skeleton reward-amount-loading"/g)).toHaveLength(11);
-    expect(html).toContain('role="status" aria-label="Refreshing amount" aria-busy="true"');
-    expect(html).toContain('<span aria-hidden="true">1,250</span>');
-    expect(html).toContain('<span aria-hidden="true">100</span>');
-    expect(html).toContain('<span aria-hidden="true">850</span>');
+    expect(html).toContain('Updating…');
+    expect(html).not.toContain('reward-amount-loading');
+    expect(html).not.toContain('Rewards could not be refreshed');
+    expect(html).toContain('<span class="muted" aria-busy="true">1,250</span>');
+    expect(html).toContain('<span class="muted" aria-busy="true">100</span>');
+    expect(html).toContain('<span class="muted" aria-busy="true">850</span>');
     expect(html).not.toContain('skel-list');
     expect(state.actions.length).toBeGreaterThan(0);
     for (const entry of state.actions) {
@@ -150,7 +203,8 @@ describe('reward row actions and confirmations', () => {
     expect(state.actions.every(entry => entry.disabled)).toBe(true);
     state.rewardsLoading = true;
     const retrying = render();
-    expect(retrying).toContain('skeleton reward-amount-loading');
+    expect(retrying).toContain('Updating…');
+    expect(retrying).not.toContain('skeleton reward-amount-loading');
     expect(retrying).not.toContain('Updating rewards…');
     expect(retrying).not.toContain('Out of date');
     expect(retrying).not.toContain('Rewards could not be refreshed');

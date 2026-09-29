@@ -132,11 +132,15 @@ createServer(async (req, res) => {
     const response = await fetch(new URL(req.url, upstream.origin), { method: req.method, headers, ...(body.length ? {body} : {}) });
     res.statusCode = response.status;
     for (const [key, value] of response.headers) if (!['content-length', 'content-encoding', 'transfer-encoding'].includes(key)) res.setHeader(key, value);
-    // Local display metadata only: seeded sellers have no production indexer profiles.
-    // Balances, positions, yields and all transactions remain unchanged Anvil data.
     if (req.url?.split('?')[0] === '/api/pools' && response.ok) {
       const result = await response.json();
-      const names = new Map([[scenario.agentId, 'Anvil Seller Alpha'], [scenario.otherAgentId, 'Anvil Seller Beta']]);
+      const additionalSellers = scenario.additionalSellers ?? [];
+      if (result.ok && Array.isArray(result.data?.pools)) {
+        const missing = additionalSellers.filter(seller => !result.data.pools.some(pool => pool.agentId === seller.agentId));
+        const additionalPools = await Promise.all(missing.map(seller => api(`pools/${seller.agentId}`)));
+        result.data.pools.push(...additionalPools);
+      }
+      const names = new Map([[scenario.agentId, 'Anvil Seller Alpha'], [scenario.otherAgentId, 'Anvil Seller Beta'], ...additionalSellers.map(seller => [seller.agentId, seller.name])]);
       for (const pool of result.data?.pools ?? []) {
         const name = names.get(pool.agentId);
         if (name && !pool.profile?.name) pool.profile = { providers: [], modelsServed: null, uniqueBuyers: null, requestCount: null, lifetimeVolumeUsdc: null, ghostRate: null, lastSettledAt: null, ...(pool.profile ?? {}), name };

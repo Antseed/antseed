@@ -28,6 +28,7 @@ export interface WalletSummary {
   address: string;
   ants: string;
   eth: string;
+  signingWalletEth?: string;
   transfersEnabled: boolean;
   whitelisted: boolean;
   canTransfer: boolean;
@@ -80,12 +81,16 @@ export interface PositionView {
   withdrawableEpoch: number;
   changePending: boolean;
   maxLocked: boolean;
+  /** Max-lock state from the next epoch; differs from `maxLocked` while an enable/disable is pending. */
+  maxLockedNext: boolean;
   /** On-chain early-exit slash for a withdrawal now; null while a change is pending (projected value is in `projectedSlashBps`). */
   slashBps: number | null;
   projectedSlashBps: number;
   slashedAmount: string;
   returnedAmount: string;
-  pendingReward: string;
+  pendingReward: string | null;
+  power?: string | null;
+  nextPower?: string | null;
   epochsRemaining: number;
 }
 
@@ -102,12 +107,12 @@ export interface PoolConfigView {
 export type DataSource = 'indexer' | 'chain' | 'local';
 
 export interface PositionsView {
+  rewardSource?: { indexedBlock?: number; indexedAt?: number; error?: string };
   displaySource?: DisplaySource;
   currentEpoch: number;
   config: PoolConfigView;
-  /** Indexed position records when fresh, otherwise chain records; rewards and withdrawal checks remain live. */
   positions: PositionView[];
-  totals: { activeStake: string; pendingRewards: string; open: number };
+  totals: { activeStake: string; pendingStake: string; pendingRewards: string | null; open: number };
   /** Where closed positions came from; 'chain' means only open positions are listed. */
   historySource: DataSource;
 }
@@ -125,12 +130,12 @@ export interface RewardsView {
   historySource?: DataSource;
   currentEpoch: number;
   firstRewardedEpoch: number | null;
-  staker: { total: string; positions: Array<{ id: number; agentId: number; amount: string; closed: boolean }>; };
+  staker: { total: string | null; positions: Array<{ id: number; agentId: number; amount: string; closed: boolean }>; source?: { indexedBlock?: number; indexedAt?: number; error?: string }; };
   sellerUsage: { total: string; agentId: number; epochs: EpochAmount[]; claimable: boolean };
   buyerUsage: { total: string; epochs: EpochAmount[]; operator: string | null; claimable: boolean; recipient: string | null };
   legacy: { seller: string; buyer: string; contract: string | null; buyerClaimable: boolean; sellerPayout?: LegacySellerPayout };
   locked: { locked: string; claimable: string; policy: string | null; pool: string | null };
-  total: string;
+  total: string | null;
 }
 
 /** One epoch's settled USDC volume for a seller (6 decimals). */
@@ -174,8 +179,22 @@ export interface PoolYield {
   apy: number | null;
   status: 'settled' | 'estimated' | 'unavailable';
 }
+/** One indexed epoch of a seller pool: stake, power, settled volume and the staker emission it earned. */
+export interface PoolEpochPoint {
+  epoch: number;
+  activeStake: string;
+  weight: string;
+  volumeUsdc: string;
+  requests: string;
+  /** Staker emission for the epoch; settled once a claim finalises it, otherwise the indexer's running figure. */
+  emission: string;
+  settled: boolean;
+}
+
 export interface PoolView {
   displaySource?: DisplaySource;
+  /** Per-epoch history (oldest first) for charts; present on the single-pool endpoint when the indexer is reachable. */
+  history?: PoolEpochPoint[];
   openPositions?: number;
   totalPositions?: number;
   stakers?: number | null;
@@ -206,7 +225,11 @@ export interface PoolView {
   lastEpochRewardPer1kPower: string | null;
   /** Projected staker ANTS per 1,000 units of pool power this epoch from current usage. */
   projectedRewardPer1kPower: string | null;
+  /** Stake in open positions that activates at a later epoch (indexer-sourced; absent from chain-only rows). */
+  pendingStake?: string;
   yourStake: string;
+  /** Your stake in this pool whose activation epoch is still ahead. */
+  yourPendingStake: string;
   /** Your power in this pool this epoch (sum of your positions' weight). */
   yourPower: string;
   /** Your power as a share of the pool's power. */
@@ -226,6 +249,10 @@ export interface PoolsView {
   yourTotalPower: string;
   /** Your power as a share of all pools' power. */
   yourNetworkShareBps: number;
+  /** Your stake across pools that activates at a later epoch. */
+  yourPendingStake: string;
+  /** Antscan has not caught up with your latest transaction; your personal pool figures are omitted until it does. */
+  walletSyncing?: boolean;
   explorer: string | null;
   /** 'indexer' = full pool statistics from the explorer; 'chain' = only the pools this wallet stakes in, read live. */
   source: DataSource;
@@ -260,6 +287,50 @@ export interface UsageView {
 
 /** `shareBps` is a share of the epoch emission in `EmissionsView.shareDenominator` units (100,000 = 100%). */
 export interface MinterView { name: string; id: string; controller: string; shareBps: number; editable: boolean; epochBudget: string; }
+
+export interface NetworkStakerConfig {
+  minShareBps: number;
+  maxShareBps: number;
+  stakeShareTarget: string;
+}
+
+export interface NetworkUsageConfig {
+  buyerMinShareBps: number;
+  buyerMaxShareBps: number;
+  sellerMinShareBps: number;
+  sellerMaxShareBps: number;
+  volumeShareTarget: string;
+}
+
+export interface NetworkSnapshot {
+  chainId: string;
+  evmChainId: number;
+  blockNumber: number;
+  blockTimestamp: number;
+  fetchedAt: number;
+  activation: 'active' | 'not-active' | 'unverified';
+  epoch: EpochInfo;
+  shareDenominator: number;
+  initialEmission: string;
+  halvingInterval: number;
+  emission: string | null;
+  nextEmission: string | null;
+  cumulativeScheduled: string | null;
+  totalSupply: string | null;
+  maxSupply: string | null;
+  totalActiveStake: string | null;
+  totalPowerWeight: string | null;
+  usageVolume: string | null;
+  buckets: Array<{ name: string; id: string; controller: string | null; budget: string | null; nextBudget: string | null }>;
+  budgets: { staker: string | null; buyer: string | null; seller: string | null };
+  stakerConfig: NetworkStakerConfig | null;
+  nextStakerConfig: NetworkStakerConfig | null;
+  scaledStakeTarget: string | null;
+  usageConfig: NetworkUsageConfig | null;
+  nextUsageConfig: NetworkUsageConfig | null;
+  contracts: Record<string, string>;
+  errors: string[];
+}
 
 export interface EmissionsView {
   currentEpoch: number;

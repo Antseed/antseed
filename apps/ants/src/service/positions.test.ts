@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { AntsContext } from './context.js';
-import { move, positions, stake } from './positions.js';
+import { extend, maxLock, merge, move, positions, previewWithdraw, split, stake, withdraw } from './positions.js';
 import { stakeEligibility } from './stake-eligibility.js';
 
 vi.mock('./stake-eligibility.js', () => ({ stakeEligibility: vi.fn() }));
@@ -13,6 +13,8 @@ function fixture() {
     positionsBatch: vi.fn(async (ids: number[]) => ids.map(id => ({ id, owner: address, agentId: 1, amount: 100n, weightAmount: 100n, stakeStartEpoch: 1, stakeEndEpoch: 5, closedAtEpoch: 0, withdrawn: false }))),
     positionWithdrawableEpoch: vi.fn(async () => 1),
     isMaxLocked: vi.fn(async () => false),
+    currentEpoch: vi.fn(async () => 2),
+    positionPowerSegmentAt: vi.fn(async (_id: number, _epoch: number) => ({ normalEndEpoch: 5, maxLockPower: 0n, nextChangeEpoch: 0 })),
     moveStake: vi.fn(async () => 'single-hash'),
     moveStakes: vi.fn(async () => 'batch-hash'),
     splitStake: vi.fn(),
@@ -50,7 +52,7 @@ describe('position display reads', () => {
     expect(pools.isMaxLocked).not.toHaveBeenCalled();
     expect(rewards).toHaveBeenCalledWith([7]);
     expect(result.positions[0]).toMatchObject({ id: 7, slashedAmount: '10', returnedAmount: '90', pendingReward: '15', changePending: false, maxLocked: false });
-    expect(result.totals).toEqual({ activeStake: '100', pendingRewards: '15', open: 1 });
+    expect(result.totals).toEqual({ activeStake: '100', pendingStake: '0', pendingRewards: '15', open: 1 });
   });
 
   it('does not present failed status or reward reads as zero balances', async () => {
@@ -127,12 +129,140 @@ describe('whole-position moves', () => {
     expect(pools.splitStake).not.toHaveBeenCalled();
   });
 
-  it('still rejects pending changes and maximum-locked positions', async () => {
+  it('accepts pending activation but still rejects effective maximum lock', async () => {
     const { ctx, pools } = fixture();
     pools.positionWithdrawableEpoch.mockResolvedValueOnce(3);
-    await expect(move(ctx, { positionIds: [7], toAgentId: 2 })).rejects.toThrow('changed this epoch');
-    pools.isMaxLocked.mockResolvedValueOnce(true);
+    await expect(move(ctx, { positionIds: [7], toAgentId: 2 })).resolves.toEqual({ hash: 'single-hash' });
+    expect(pools.positionWithdrawableEpoch).not.toHaveBeenCalled();
+    pools.moveStake.mockClear();
+    pools.positionPowerSegmentAt.mockResolvedValueOnce({ normalEndEpoch: 0, maxLockPower: 100n, nextChangeEpoch: 0 });
     await expect(move(ctx, { positionIds: [7], toAgentId: 2 })).rejects.toThrow('Disable maximum lock');
     expect(pools.moveStake).not.toHaveBeenCalled();
+  });
+});
+
+describe('same-epoch position actions', () => {
+  function pendingFixture() {
+    const { ctx, pools, signer, address } = fixture();
+    pools.positionsBatch.mockImplementation(async ids => ids.map(id => ({ id, owner: address, agentId: 1, amount: 100n * 10n ** 18n, weightAmount: 100n * 10n ** 18n, stakeStartEpoch: 3, stakeEndEpoch: 107, closedAtEpoch: 0, withdrawn: false })));
+    pools.positionWithdrawableEpoch.mockResolvedValue(3);
+    pools.positionPowerSegmentAt.mockResolvedValue({ normalEndEpoch: 107, maxLockPower: 0n, nextChangeEpoch: 0 });
+    const writes = {
+      mergeStakes: vi.fn(async () => 'merge-hash'),
+      enableMaxLock: vi.fn(async () => 'enable-hash'),
+      disableMaxLock: vi.fn(async () => 'disable-hash'),
+      extendLock: vi.fn(async () => 'extend-hash'),
+      withdrawStakes: vi.fn(),
+    };
+    Object.assign(pools, writes, { contractAddress: address, poolConfig: async () => ({ maxStakeEpochs: 104 }) });
+    pools.splitStake.mockResolvedValue('split-hash');
+    const call = vi.fn(async (_request: unknown) => '0x');
+    Object.assign(ctx, { provider: () => ({ call }) });
+    return { ctx, pools, signer, call, writes };
+  }
+
+  it('enables max lock and chains another split on pending replacements', async () => {
+    const { ctx, pools, signer, writes } = pendingFixture();
+    await expect(maxLock(ctx, { positionId: 7, enable: true })).resolves.toEqual({ hash: 'enable-hash' });
+    expect(writes.enableMaxLock).toHaveBeenCalledWith(signer, 7);
+    await expect(split(ctx, { positionId: 8, amount: '50' })).resolves.toEqual({ hash: 'split-hash' });
+    expect(pools.splitStake).toHaveBeenCalledWith(signer, 8, 50n * 10n ** 18n);
+    expect(pools.positionPowerSegmentAt).toHaveBeenCalledWith(7, 3);
+    expect(pools.positionWithdrawableEpoch).not.toHaveBeenCalled();
+  });
+
+  it('disables a scheduled max lock at the next epoch', async () => {
+    const { ctx, pools, writes } = pendingFixture();
+    pools.positionPowerSegmentAt.mockResolvedValue({ normalEndEpoch: 0, maxLockPower: 10400n, nextChangeEpoch: 0 });
+    await expect(maxLock(ctx, { positionId: 7, enable: false })).resolves.toEqual({ hash: 'disable-hash' });
+    expect(writes.disableMaxLock).toHaveBeenCalledOnce();
+  });
+
+  it('simulates full merge compatibility before asking the wallet', async () => {
+    const { ctx, call, writes, pools } = pendingFixture();
+    await expect(merge(ctx, { positionIds: [7, 8] })).resolves.toEqual({ hash: 'merge-hash' });
+    expect(call).toHaveBeenCalledWith(expect.objectContaining({ from: ctx.address, to: ctx.address, data: expect.stringMatching(/^0x/) }));
+    expect(call.mock.invocationCallOrder[0]).toBeLessThan(writes.mergeStakes.mock.invocationCallOrder[0]!);
+    expect(pools.positionWithdrawableEpoch).not.toHaveBeenCalled();
+  });
+
+  it('rejects incompatible underlying starts even when displayed ends match', async () => {
+    const { ctx, call, writes } = pendingFixture();
+    call.mockRejectedValueOnce(Object.assign(new Error('InvalidValue: different normal start checkpoints'), { code: 'CALL_EXCEPTION' }));
+    await expect(merge(ctx, { positionIds: [7, 8] })).rejects.toThrow('same effective lock start and end');
+    expect(writes.mergeStakes).not.toHaveBeenCalled();
+  });
+
+  it('does not misreport an RPC failure as incompatible lock terms', async () => {
+    const { ctx, call, writes } = pendingFixture();
+    call.mockRejectedValueOnce(new Error('RPC unavailable'));
+    await expect(merge(ctx, { positionIds: [7, 8] })).rejects.toThrow('reliable RPC result');
+    expect(writes.mergeStakes).not.toHaveBeenCalled();
+  });
+
+  it('uses the latest activation for all merge sources', async () => {
+    const { ctx, pools } = pendingFixture();
+    const base = await pools.positionsBatch([7, 8]);
+    pools.positionsBatch.mockResolvedValueOnce(base.map(position => ({ ...position, stakeStartEpoch: position.id === 8 ? 5 : 3 })));
+    await merge(ctx, { positionIds: [7, 8] });
+    expect(pools.positionPowerSegmentAt).toHaveBeenCalledWith(7, 5);
+    expect(pools.positionPowerSegmentAt).toHaveBeenCalledWith(8, 5);
+  });
+
+  it('does not schedule max lock before a delayed activation', async () => {
+    const { ctx, pools, writes } = pendingFixture();
+    const base = await pools.positionsBatch([7]);
+    pools.positionsBatch.mockResolvedValueOnce(base.map(position => ({ ...position, stakeStartEpoch: 5 })));
+    await expect(maxLock(ctx, { positionId: 7, enable: true })).rejects.toThrow('activation epoch 5');
+    expect(writes.enableMaxLock).not.toHaveBeenCalled();
+  });
+
+  it('preserves withdrawal blocking before replacement activation', async () => {
+    const { ctx, call, writes } = pendingFixture();
+    await expect(previewWithdraw(ctx, [7])).rejects.toThrow('changed this epoch');
+    await expect(withdraw(ctx, { positionIds: [7], acceptSlashing: true })).rejects.toThrow('changed this epoch');
+    expect(call).not.toHaveBeenCalled();
+    expect(writes.withdrawStakes).not.toHaveBeenCalled();
+  });
+
+  it('preserves the contract withdrawal barrier for a scheduled lock change', async () => {
+    const { ctx, pools, call, writes } = pendingFixture();
+    pools.positionWithdrawableEpoch.mockResolvedValue(0);
+    Object.assign(pools, { earlyExitSlashBps: async () => 0 });
+    Object.assign(ctx, { poolRewards: () => null, antsToken: () => ({ canTransfer: async () => true }) });
+    call.mockRejectedValue(new Error('PositionChangePending'));
+    await expect(withdraw(ctx, { positionIds: [7], acceptSlashing: true })).rejects.toThrow('Withdrawal cannot execute: PositionChangePending');
+    expect(writes.withdrawStakes).not.toHaveBeenCalled();
+  });
+
+  it('extends from the effective checkpoint and caps at the contract maximum', async () => {
+    const { ctx, pools, writes, signer } = pendingFixture();
+    pools.positionPowerSegmentAt.mockResolvedValue({ normalEndEpoch: 100, maxLockPower: 0n, nextChangeEpoch: 0 });
+    const report = vi.fn();
+    await expect(extend(ctx, { positionId: 7, epochs: 20 }, report)).resolves.toEqual({ hash: 'extend-hash' });
+    expect(writes.extendLock).toHaveBeenCalledWith(signer, 7, 20);
+    expect(report).toHaveBeenCalledWith('Extending position 7 by 7 epoch(s) to epoch 107');
+  });
+
+  it('rejects expired and already maximum extensions before submission', async () => {
+    const { ctx, pools, writes } = pendingFixture();
+    await expect(extend(ctx, { positionId: 7, epochs: 1 })).rejects.toThrow('maximum lock');
+    pools.positionPowerSegmentAt.mockResolvedValue({ normalEndEpoch: 3, maxLockPower: 0n, nextChangeEpoch: 0 });
+    await expect(extend(ctx, { positionId: 7, epochs: 1 })).rejects.toThrow('remaining lock');
+    expect(writes.extendLock).not.toHaveBeenCalled();
+  });
+
+  it('keeps invalid split amounts, dust weights, ownership and closed-position checks', async () => {
+    const { ctx, pools } = pendingFixture();
+    await expect(split(ctx, { positionId: 7, amount: '100' })).rejects.toThrow('below');
+    await expect(split(ctx, { positionId: 7, amount: '-1' })).rejects.toThrow();
+    const base = await pools.positionsBatch([7]);
+    pools.positionsBatch.mockResolvedValueOnce(base.map(position => ({ ...position, weightAmount: 1n })));
+    await expect(split(ctx, { positionId: 7, amount: '50' })).rejects.toThrow('non-zero weight');
+    pools.positionsBatch.mockResolvedValueOnce(base.map(position => ({ ...position, closedAtEpoch: 3 })));
+    await expect(split(ctx, { positionId: 7, amount: '50' })).rejects.toThrow('closed');
+    pools.positionsBatch.mockResolvedValueOnce(base.map(position => ({ ...position, owner: '0x0000000000000000000000000000000000000002' })));
+    await expect(split(ctx, { positionId: 7, amount: '50' })).rejects.toThrow();
+    expect(pools.splitStake).not.toHaveBeenCalled();
   });
 });
