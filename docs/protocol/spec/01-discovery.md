@@ -167,6 +167,8 @@ Per provider (repeated providerCount times):
   Per unit billing entry:
     [service][protocolId:1][modelVersion:1][componentCount:1][components...]
     Components encode unit id, float32 USD price, and optional match key/value pairs.
+    Unit ids are stable: output_images=0, completed_requests=1, video_generations=2, video_seconds=3.
+    protocolId is the protocol's index in the append-only WELL_KNOWN_SERVICE_API_PROTOCOLS list.
   [serviceCapabilityEntryCount : 2 bytes uint16 ]    // v12+
   Per capability entry:
     [service][presenceBits:1][optional uint32 token limits][optional input bitset:1][optional output bitset:1][boolean value bits:1][optional supported parameters]

@@ -721,7 +721,7 @@ export class BuyerPaymentNegotiator {
       try {
         unitBilling = computeFinalUnitBilling(unitModel, billingEntry.context, response, requestFacts);
       } catch (err) {
-        const observed = extractUnitResponseUsage(response, requestFacts);
+        const observed = extractUnitResponseUsage(response, requestFacts, billingEntry.context.serviceApiProtocol);
         if (requestId) {
           this._bpm.recordObservedUnitUsage(requestId, observed.usage);
         }

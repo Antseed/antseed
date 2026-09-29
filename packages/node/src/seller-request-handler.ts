@@ -27,7 +27,7 @@ import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload } from './verification/response-auth.js';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
-import { captureUnitBillingContext, computeFinalUnitBilling, evaluateUnitBilling, isFreeUnitBillingModel } from './billing/unit.js';
+import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel } from './billing/unit.js';
 import type { ImageRequestFacts } from '@antseed/api-adapter';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import {
@@ -911,13 +911,8 @@ export class SellerRequestHandler {
     requestBilling: SellerBillingContext,
     model: UnitBillingModelV1,
   ): { cost: bigint; inputTokens: number; maxOutputTokens: number } {
-    const usage: UnitBillingUsage = {
-      units: {
-        output_images: Math.floor(requestBilling.requestUsage.units.output_images ?? 0),
-      },
-    };
     return {
-      cost: evaluateUnitBilling(model, requestBilling.context, usage),
+      cost: estimateUnitRequestCost(model, requestBilling.context, requestBilling.requestUsage),
       inputTokens: 0,
       maxOutputTokens: 0,
     };

@@ -2,6 +2,9 @@ import type { ServiceApiProtocol } from './service-api.js';
 
 export const UNIT_BILLING_UNITS_V1 = [
   'output_images',
+  'completed_requests',
+  'video_generations',
+  'video_seconds',
 ] as const;
 
 export const UNIT_BILLING_MATCH_KEYS_V1 = [
@@ -47,6 +50,13 @@ export interface UnitBillingContext {
   attributes?: Partial<Record<UnitBillingMatchKeyV1, string>>;
   unitLimits?: Partial<Record<UnitBillingUnitV1, number>>;
 }
+
+export const UNIT_BILLING_UNIT_IDS_V1 = {
+  output_images: 0,
+  completed_requests: 1,
+  video_generations: 2,
+  video_seconds: 3,
+} as const satisfies Record<UnitBillingUnitV1, number>;
 
 export const GENERATED_IMAGE_OUTPUT_UNIT_V1 = 'output_images' satisfies UnitBillingUnitV1;
 
@@ -253,10 +263,12 @@ function componentMatchesContext(component: UnitBillingComponentV1, context: Uni
 }
 
 function validateUsageWithinRequestLimits(usage: UnitBillingUsage, context: UnitBillingContext): void {
-  const outputImageLimit = context.unitLimits?.output_images;
-  const outputImages = usage.units.output_images;
-  if (outputImageLimit !== undefined && outputImages !== undefined && outputImages > outputImageLimit) {
-    throw new Error(`Seller reported output_images=${outputImages} but request allowed ${outputImageLimit}`);
+  for (const unit of UNIT_BILLING_UNITS_V1) {
+    const limit = context.unitLimits?.[unit];
+    const count = usage.units[unit];
+    if (limit !== undefined && count !== undefined && count > limit) {
+      throw new Error(`Seller reported ${unit}=${count} but request allowed ${limit}`);
+    }
   }
 }
 

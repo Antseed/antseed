@@ -40,6 +40,7 @@ import {
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { ImageRequestFacts } from '@antseed/api-adapter';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
+import { isUnitBilledProtocol } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
@@ -1505,7 +1506,7 @@ export class BuyerPaymentManager {
       }
     } else if (payload.lastRequestCost) {
       const sellerCost = BigInt(payload.lastRequestCost);
-      if (sellerCost > 0n && unitBillingModel && buyerBillingContext?.serviceApiProtocol === 'openai-images') {
+      if (sellerCost > 0n && unitBillingModel && isUnitBilledProtocol(buyerBillingContext?.serviceApiProtocol)) {
         debugWarn(
           `[BuyerPayment] NeedAuth rejected: positive unit cost omitted verifiable billingUsage`,
         );
@@ -1532,7 +1533,7 @@ export class BuyerPaymentManager {
           : sellerIn);
         const buyerEstimate = computeCostUsdc(Number(freshIn), Number(sellerOut), pricing, Number(sellerCached));
         const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costTolerance));
-        if (buyerEstimate <= 0n && sellerCost > 0n && buyerBillingContext?.serviceApiProtocol === 'openai-images') {
+        if (buyerEstimate <= 0n && sellerCost > 0n && isUnitBilledProtocol(buyerBillingContext?.serviceApiProtocol)) {
           debugWarn(
             `[BuyerPayment] NeedAuth rejected: positive unit cost recomputed to zero`,
           );
