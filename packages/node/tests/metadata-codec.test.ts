@@ -198,6 +198,35 @@ describe('encodeMetadata / decodeMetadata', () => {
     expect(decoded.providers[0]!.serviceApiProtocols?.['claude-3-opus']).toEqual(['anthropic-messages', 'openai-chat-completions']);
   });
 
+  it('encodes billing units by their canonical positions', () => {
+    const units = ['output_images', 'completed_requests', 'video_generations', 'video_seconds'] as const;
+    const encodedIds = units.map((unit) => {
+      const metadata = makeMetadata({
+        version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+        providers: [{
+          provider: 'future',
+          services: ['svc'],
+          defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+          serviceUnitBillingModels: {
+            svc: { 'openai-images': { version: 1, components: [{ unit, priceUsd: 0.25 }] } },
+          },
+          maxConcurrency: 1,
+          currentLoad: 0,
+        }],
+      });
+      const encoded = encodeMetadata(metadata);
+      expect(decodeMetadata(encoded).providers[0]!.serviceUnitBillingModels?.svc?.['openai-images']?.components[0]?.unit).toBe(unit);
+      const entryPrefix = [3, 115, 118, 99, 4, 1, 1];
+      const entryOffset = encoded.findIndex((_, index) => (
+        entryPrefix.every((byte, relativeIndex) => encoded[index + relativeIndex] === byte)
+      ));
+      expect(entryOffset).toBeGreaterThanOrEqual(0);
+      return encoded[entryOffset + entryPrefix.length];
+    });
+
+    expect(encodedIds).toEqual([0, 1, 2, 3]);
+  });
+
   it('round-trips v11 service unit billing models and signs billing bytes', () => {
     const original = makeMetadata({
       version: SERVICE_UNIT_BILLING_METADATA_VERSION,
