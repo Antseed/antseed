@@ -106,7 +106,7 @@ describe('explicit completed-request buyer requests', () => {
     };
     await expect(state.handler.sendRequest(seller, {
       ...request,
-      path: '/_antseed/levanto-route',
+      path: '/v1/levanto-route',
       headers: { ...request.headers, 'content-type': 'application/json' },
     })).rejects.toThrow('explicit offer and response acceptance');
     expect(state.mux.sendProxyRequest).not.toHaveBeenCalled();

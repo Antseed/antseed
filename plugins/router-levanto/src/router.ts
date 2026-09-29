@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto';
 import type { PeerInfo, RouteRecommendation, RouteSelectionContext, ModelRouterAdapter, RoutingCatalogV1, RoutingServiceTarget, RoutingUsageObservation, SerializedHttpRequest } from '@antseed/node';
-import { completedRequestPrice, resolveServiceBillingOffer, canonicalRoutingJson, createRoutingServiceMetadata, resolveRoutingPreferences, validateRoutingCatalog } from '@antseed/node';
+import { completedRequestPrice, resolveServiceBillingOffer, canonicalRoutingJson, createRoutingServiceMetadata } from '@antseed/node';
 import { LEVANTO_ROUTING_PATH, validateRoutingRequest, validateRoutingResponse } from './validation.js';
 import { CacheObservations } from './cache-observations.js';
 
@@ -11,7 +11,7 @@ export const levantoRoutingMetadata = createRoutingServiceMetadata({
   properties: {},
 });
 
-export const LEVANTO_CATALOG_PATH = '/_antseed/route/catalog';
+export const LEVANTO_CATALOG_PATH = '/v1/levanto-route/catalog';
 
 export type LevantoRoutingAdapterOptions = {
   routingPeerUrl?: string;
@@ -34,9 +34,7 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
     const response = await (this.options.fetchImpl ?? fetch)(url, { headers: { accept: 'application/json' }, signal });
     if (response.status === 404) return undefined;
     if (!response.ok) throw new Error(`Router catalog unavailable (${response.status})`);
-    const catalog: unknown = await response.json();
-    validateRoutingCatalog(catalog);
-    return catalog;
+    return await response.json() as RoutingCatalogV1;
   }
 
   recordUsage(observation: RoutingUsageObservation): void {
@@ -50,15 +48,12 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
     const target = context.routingService;
     if (!target) throw new Error('Select a Levanto routing-service peer');
     const catalog = context.catalog;
-    if (catalog) validateRoutingCatalog(catalog);
-    const metadata = catalog ? createRoutingServiceMetadata(catalog.preferencesSchema) : this.routingMetadata;
-    const preferences = resolveRoutingPreferences(metadata.preferencesSchema, context.preferences ?? {});
-    if (context.preferencesSchemaHash !== undefined && context.preferencesSchemaHash !== metadata.preferencesSchemaHash) throw new Error('Routing preferences schema changed');
+    const preferences = context.preferences ?? {};
     const eligible = context.candidates.filter(candidate => !catalog || catalog.models.some(model =>
       model.provider === candidate.provider && model.serviceId === candidate.serviceId));
     const allowedCandidates = [...new Map(eligible.map(({ peerId, provider, serviceId }) =>
       [JSON.stringify([peerId, provider, serviceId]), { peerId, provider, serviceId }])).values()];
-    const fingerprint = canonicalRoutingJson({ target, preferences, schema: metadata.preferencesSchemaHash,
+    const fingerprint = canonicalRoutingJson({ target, preferences, schema: context.preferencesSchemaHash ?? null,
       catalogRevision: catalog?.revision ?? null, allowedCandidates });
     const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : [];
     const latestUser = [...messages].reverse().find(message => message && message.role === 'user');
@@ -71,17 +66,12 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
     if (cached?.text === text && cached.fingerprint === fingerprint && context.acceptRecommendations(cached.routes)) return structuredClone(cached.routes);
     if (context.conversationKey) this.conversations.delete(context.conversationKey);
 
-    const candidates = peers.flatMap(peer => {
-      if (peer.peerId !== target.peerId) return [];
-      if (!peer.metadata) return [];
-      try {
-        const offer = resolveServiceBillingOffer(peer.metadata.providers, target.provider, target.serviceId);
-        return offer.serviceApiProtocol === 'levanto-routing'
-          ? [{ peer, offer }] : [];
-      } catch { return []; }
-    });
-    const selected = candidates[0];
-    if (!selected) throw new Error('No compatible Levanto completed-request service');
+    const routingPeer = peers.find(peer => peer.peerId === target.peerId);
+    let offer;
+    try {
+      offer = routingPeer?.metadata && resolveServiceBillingOffer(routingPeer.metadata.providers, target.provider, target.serviceId);
+    } catch {}
+    if (!routingPeer || offer?.serviceApiProtocol !== 'levanto-routing') throw new Error('No compatible Levanto completed-request service');
     const inputMessage = text.length > 8192 ? text.slice(0, 4096) + text.slice(-4096) : text;
     const promptTokens = Math.ceil(text.length / 4);
     const payload = {
@@ -93,14 +83,14 @@ export class LevantoRoutingAdapter implements ModelRouterAdapter {
     };
     validateRoutingRequest(payload);
     let recommendations: RouteRecommendation[] | undefined;
-    const response = await context.sendRequest(selected.peer, {
+    const response = await context.sendRequest(routingPeer, {
       requestId: randomUUID(), method: 'POST', path: LEVANTO_ROUTING_PATH,
       headers: {
         'content-type': 'application/json',
       },
-      body: new TextEncoder().encode(JSON.stringify({ ...payload, service: selected.offer.service })),
+      body: new TextEncoder().encode(JSON.stringify({ ...payload, service: offer.service })),
     }, {
-      signal: context.signal, unitBilling: selected.offer, maxFeeMicroUsdc: completedRequestPrice(selected.offer.unitModel).toString(),
+      signal: context.signal, unitBilling: offer, maxFeeMicroUsdc: completedRequestPrice(offer.unitModel).toString(),
       acceptResponse: response => {
         const parsed: unknown = JSON.parse(new TextDecoder().decode(response.body));
         const ranked = validateRoutingResponse(parsed, payload);

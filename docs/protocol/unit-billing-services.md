@@ -32,7 +32,7 @@ pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
 ```
 
 There is no `serviceExecution` map or separate execution-contract configuration.
-The Levanto buyer plugin validates its `POST /_antseed/levanto-route` body and
+The Levanto buyer plugin validates its `POST /v1/levanto-route` body and
 the response, including `v: 1`, before accepting recommendations. The shared API
 adapter only identifies the protocol. Providers are responsible for validating
 their own API requests and returning non-success responses for rejected work;

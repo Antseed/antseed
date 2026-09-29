@@ -150,7 +150,7 @@ function parseSseEvents(sseText: string): Array<{ event: string | null; data: st
 
 describe('detectRequestServiceApiProtocol', () => {
   it('identifies Levanto independently from TypeSafe and the local routing endpoint', () => {
-    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/_antseed/levanto-route', headers: {} }))).toBe('levanto-routing');
+    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/levanto-route', headers: {} }))).toBe('levanto-routing');
     expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/systemone', headers: {} }))).toBe('typesafe-systemone');
     expect(detectRequestServiceApiProtocol(makeRequest({ path: '/_antseed/route', headers: {} }))).toBeNull();
     expect(selectTargetProtocolForRequest('levanto-routing', ['levanto-routing'])).toEqual({ targetProtocol: 'levanto-routing', requiresTransform: false });

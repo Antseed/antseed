@@ -40,7 +40,7 @@ test('explicit buyer catalog configuration is used only when a catalog is reques
   const fetchMock = context.mock.method(globalThis, 'fetch', async (input: URL | string) => {
     const url = new URL(input)
     assert.equal(url.origin, 'https://catalog.example')
-    assert.equal(url.pathname, '/_antseed/route/catalog')
+    assert.equal(url.pathname, '/v1/levanto-route/catalog')
     assert.equal(url.searchParams.get('provider'), target.provider)
     assert.equal(url.searchParams.get('service'), target.serviceId)
     return Response.json(catalog)

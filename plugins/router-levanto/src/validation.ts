@@ -1,6 +1,6 @@
 import { assertRoutingPreferences } from '@antseed/node';
 
-export const LEVANTO_ROUTING_PATH = '/_antseed/levanto-route';
+export const LEVANTO_ROUTING_PATH = '/v1/levanto-route';
 export const MAX_ROUTING_CANDIDATES = 512;
 export type AllowedRoutingCandidate = { peerId: string; provider: string; serviceId: string };
 

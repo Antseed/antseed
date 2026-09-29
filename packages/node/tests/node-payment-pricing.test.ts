@@ -31,7 +31,7 @@ describe('completed-request seller payments', () => {
     const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
     const send = async (requestId = 'fixed', patch: Partial<SerializedHttpRequest> = {}) => {
       await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
-        requestId, method: 'POST', path: '/_antseed/levanto-route',
+        requestId, method: 'POST', path: '/v1/levanto-route',
         headers: { 'content-type': 'application/json', 'x-antseed-provider': 'levanto' },
         body: new TextEncoder().encode(JSON.stringify(body)), ...patch,
       }) });

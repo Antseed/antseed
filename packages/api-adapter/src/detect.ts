@@ -40,7 +40,7 @@ export function detectRequestServiceApiProtocol(
   if (normalizedPath.startsWith('/v1/systemone')) {
     return 'typesafe-systemone';
   }
-  if (normalizedPath === '/_antseed/levanto-route') {
+  if (normalizedPath === '/v1/levanto-route') {
     return 'levanto-routing';
   }
 

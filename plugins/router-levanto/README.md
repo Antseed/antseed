@@ -5,7 +5,7 @@ buyer startup, independently of the unchanged `local` router plugin. It asks a s
 routing-service peer for ranked recommendations, then uses normal AntSeed
 inference execution. Buyers select a routing service, not a different router plugin.
 
-The remote recommendation endpoint is `POST /_antseed/levanto-route`. This is
+The remote recommendation endpoint is `POST /v1/levanto-route`. This is
 separate from the generic local `/_antseed/route` control API, which changes the
 buyer's selection rather than purchasing a recommendation.
 
@@ -111,7 +111,7 @@ extra conversation request count. A recommendation reporting zero tokens adds
 no tokens; token usage is not suppressed just because it came from a router.
 
 Preference schemas come from the service catalog's `preferencesSchema`, which the
-adapter's `getCatalog()` fetches from the router API (`GET /_antseed/route/catalog`,
+adapter's `getCatalog()` fetches from the router API (`GET /v1/levanto-route/catalog`,
 base URL explicitly configured through `LEVANTO_ROUTING_PEER_URL`). No HTTP address
 or port is inferred from peer discovery. Without a configured URL, `getCatalog()`
 returns `undefined` without making an HTTP request; supported models are unknown
@@ -353,7 +353,7 @@ upgraded buyers for all their services. Buyers and sellers must both upgrade to 
 completed-request billing.
 
 The external seller must implement the advertised Levanto routing API and
-accept `POST /_antseed/levanto-route` with `service: "levanto-route"`, `v`, string-valued `preferences`,
+accept `POST /v1/levanto-route` with `service: "levanto-route"`, `v`, string-valued `preferences`,
 `inputMessage`, `promptTokens`, `expectedCachedTokens`, and `constraints`.
 The seller's handler must accept this API path;
 the buyer does not retry the former remote `/_antseed/route` path.

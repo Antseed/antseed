@@ -92,12 +92,10 @@ describe('Levanto buyer adapter', () => {
     await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('No eligible');
     expect(state.sendRequest).toHaveBeenCalledTimes(1);
   });
-  it('catalog errors and unsupported-only catalogs fail before purchasing a recommendation', async () => {
+  it('unsupported-only catalogs fail before purchasing a recommendation', async () => {
     const state = setup();
     state.context.catalog = createRoutingCatalog([]);
     await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('No eligible');
-    state.context.catalog = { ...createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]), revision: '' };
-    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('Invalid routing catalog');
     expect(state.sendRequest).not.toHaveBeenCalled();
   });
   it('fetches the catalog from the router HTTP API for the exact service', async () => {
@@ -109,10 +107,8 @@ describe('Levanto buyer adapter', () => {
     const adapter = new LevantoRoutingAdapter({ routingPeerUrl: 'http://router.test:9000/', fetchImpl: fetchImpl as typeof fetch });
     const target = { peerId: sellerId, provider: 'levanto', serviceId: 'levanto-route' };
     expect(await adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).toEqual(catalog);
-    expect(String(fetchImpl.mock.calls[0]![0])).toBe('http://router.test:9000/_antseed/route/catalog?provider=levanto&service=levanto-route');
+    expect(String(fetchImpl.mock.calls[0]![0])).toBe('http://router.test:9000/v1/levanto-route/catalog?provider=levanto&service=levanto-route');
     expect(await adapter.getCatalog({ ...target, serviceId: 'other' }, [peer], AbortSignal.timeout(1000))).toBeUndefined();
-    fetchImpl.mockResolvedValueOnce(Response.json({ ...catalog, models: [{ provider: 'openai' }] }));
-    await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('Invalid routing catalog');
     fetchImpl.mockResolvedValueOnce(new Response('down', { status: 503 }));
     await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('503');
   });
@@ -135,7 +131,7 @@ describe('Levanto buyer adapter', () => {
     expect(await state.adapter.selectRoute(request(), [peer], state.context)).toEqual([recommendation]);
     expect(state.accepted).toHaveBeenCalledWith([recommendation]);
     const [, serviceRequest, options] = state.sendRequest.mock.calls[0]!;
-    expect(serviceRequest.path).toBe('/_antseed/levanto-route');
+    expect(serviceRequest.path).toBe('/v1/levanto-route');
     expect(serviceRequest.requestId).not.toBe('inference');
     expect(options.unitBilling).toEqual(offer);
     expect(options.maxFeeMicroUsdc).toBe('1000');
@@ -221,7 +217,7 @@ describe('Levanto buyer adapter', () => {
     expect(state.sendRequest).toHaveBeenCalledTimes(1);
   });
 
-  it('uses live enum preferences and invalidates an unchanged-turn decision', async () => {
+  it('sends live preferences and invalidates an unchanged-turn decision', async () => {
     const state = setup();
     const advertised = peer;
     state.context.catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], {
@@ -234,16 +230,6 @@ describe('Levanto buyer adapter', () => {
     const payload = JSON.parse(new TextDecoder().decode(state.sendRequest.mock.calls[1]![1].body));
     expect(payload.preferences).toEqual({ strategy: 'fast' });
     expect(payload.cqt).toBeUndefined();
-    state.context.preferences = { strategy: 'unknown' };
-    await expect(state.adapter.selectRoute(request(), [advertised], state.context)).rejects.toThrow('enum');
-    expect(state.sendRequest).toHaveBeenCalledTimes(2);
-  });
-
-  it('fails closed on a changed schema before any routing call', async () => {
-    const state = setup();
-    state.context.preferencesSchemaHash = 'old';
-    await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('schema changed');
-    expect(state.sendRequest).not.toHaveBeenCalled();
   });
 
   it('does not replace the selected routing peer with a cheaper peer', async () => {
