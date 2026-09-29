@@ -2,7 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 
 test('native video runtime configuration maps each seller endpoint to its own plugin credentials', () => {
-  for (const [plugin, prefix] of [['seedance', 'ARK'], ['veo', 'GEMINI'], ['venice', 'VENICE']] as const) {
+  for (const [plugin, prefix] of [['seedance', 'ARK'], ['venice', 'VENICE']] as const) {
     const config = createDefaultConfig();
     const protocol = `${plugin}-video` as const;
     config.seller.providers = { video: { plugin, baseUrl: 'https://seller.example.test', apiKeyEnv: 'TEST_VIDEO_KEY', services: { model: { unitBillingModels: { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } } };

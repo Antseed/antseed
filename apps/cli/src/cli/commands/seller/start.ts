@@ -317,7 +317,6 @@ export function buildSellerPluginRuntimeEnv(
     ? 'LOCAL_LLM'
     : pluginPackage === '@antseed/provider-typesafe'
       ? 'TYPESAFE'
-      : pluginPackage === '@antseed/provider-veo' ? 'GEMINI'
       : pluginPackage === '@antseed/provider-seedance' ? 'ARK'
       : pluginPackage === '@antseed/provider-venice' ? 'VENICE'
       : 'OPENAI'

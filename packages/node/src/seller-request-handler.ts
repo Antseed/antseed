@@ -29,7 +29,7 @@ import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@an
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
-import { nativeVideoAcceptance, nativeVideoResourceKey, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
+import { nativeVideoAcceptance, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
 import type { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import {
@@ -813,11 +813,11 @@ export class SellerRequestHandler {
     const buyer = buyerPeerId.toLowerCase();
     try {
       if (route.action !== 'create') {
-        if (route.resourceId && store.getOwner(route.protocol, nativeVideoResourceKey(route.protocol, route.resourceId)) === buyer) return false;
+        if (route.resourceId && store.getOwner(route.protocol, route.resourceId) === buyer) return false;
         this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Video job not found');
         return true;
       }
-      const referencesOwned = (route.referencedResourceIds ?? []).every(id => id && store.getOwner(route.protocol, nativeVideoResourceKey(route.protocol, id)) === buyer);
+      const referencesOwned = (route.referencedResourceIds ?? []).every(id => id && store.getOwner(route.protocol, id) === buyer);
       if (!referencesOwned) {
         this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Referenced video job not found');
         return true;
@@ -853,7 +853,7 @@ export class SellerRequestHandler {
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(
         route.protocol,
-        nativeVideoResourceKey(route.protocol, resourceId),
+        resourceId,
         buyerPeerId.toLowerCase(),
         idempotencyKey,
         { statusCode: response.statusCode, headers: response.headers, body: response.body ?? new Uint8Array(0) },

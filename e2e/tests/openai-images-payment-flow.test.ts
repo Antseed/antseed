@@ -14,14 +14,11 @@ import { ANTSEED_UPLOAD_THRESHOLD_BYTES } from '../../packages/protocol/src/http
 import type { NodePaymentsConfig, PeerInfo, Provider } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
-import veoPlugin from '../../plugins/provider-veo/src/index.js';
 import venicePlugin from '../../plugins/provider-venice/src/index.js';
 import seedancePlugin from '../../plugins/provider-seedance/src/index.js';
 import { runLiveVeniceMatrix } from './helpers/live-venice-matrix.js';
 
 const execFileAsync = promisify(execFile);
-const liveVeoKey = process.env['ANTSEED_LIVE_VEO_KEY'];
-delete process.env['ANTSEED_LIVE_VEO_KEY'];
 const liveVeniceKey = process.env['ANTSEED_LIVE_VENICE_KEY'];
 delete process.env['ANTSEED_LIVE_VENICE_KEY'];
 
@@ -349,329 +346,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     });
   }, 25 * 60_000);
 
-  it.skipIf(process.env['ANTSEED_LIVE_VEO'] !== '1')('generates and downloads one real Veo video through buyer and seller', async () => {
-    if (!liveVeoKey) throw new Error('ANTSEED_LIVE_VEO_KEY is required for the opt-in live test');
-    await setupRpc();
-    const originalFetch = globalThis.fetch;
-    const origin = 'https://generativelanguage.googleapis.com';
-    const model = 'veo-3.1-lite-generate-preview';
-    const reuseOperation = process.env['ANTSEED_LIVE_VEO_OPERATION'];
-    const reportPath = join(tmpdir(), 'antseed-veo-stream-live-report.json');
-    const report: Record<string, unknown> = { model, durationSeconds: 4, resolution: '720p', chain: 'mocked', createMode: reuseOperation ? 'reused-operation acceptance fixture' : 'real', startedAt: new Date().toISOString(), checks: [] };
-    const saveReport = () => writeFile(reportPath, JSON.stringify(report, null, 2).replaceAll(liveVeoKey, '[redacted]'), { mode: 0o600 });
-    const checks = report.checks as string[];
-    const upstreamDownloads: Array<{ bytes: number; ended: boolean; cancelled: boolean; length: string | null; status: number }> = [];
-    let upstreamPosts = 0;
-    let upstreamCalls = 0;
-    let rogue: AntseedNode | undefined;
-    let rogueDir: string | undefined;
-    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const url = String(input);
-      if (!url.startsWith(`${origin}/`)) {
-        const headers = new Headers(init?.headers);
-        headers.set('connection', 'close');
-        expect(headers.has('x-goog-api-key')).toBe(false);
-        return originalFetch(input, { ...init, headers });
-      }
-      upstreamCalls += 1;
-      if (init?.method === 'POST' && reuseOperation) return Response.json({ name: reuseOperation });
-      if (init?.method === 'POST') upstreamPosts += 1;
-      expect(new Headers(init?.headers).get('x-goog-api-key') === liveVeoKey).toBe(true);
-      let response: Response;
-      try { response = await originalFetch(input, init); }
-      catch (error) {
-        report.upstreamError = { message: String(error), cause: String((error as Error).cause) };
-        throw error;
-      }
-      if (init?.method === 'POST') {
-        report.upstreamPostStatus = response.status;
-        report.upstreamPostBody = await response.clone().json();
-        await saveReport();
-      }
-      if (!new URL(url).pathname.startsWith('/v1beta/files/') || !response.body) return response;
-      expect(new Headers(init?.headers).has('range')).toBe(false);
-      const entry = { bytes: 0, ended: false, cancelled: false, length: response.headers.get('content-length'), status: response.status };
-      upstreamDownloads.push(entry);
-      const reader = response.body.getReader();
-      return new Response(new ReadableStream<Uint8Array>({
-        async pull(controller) {
-          try {
-            const chunk = await reader.read();
-            if (chunk.done) { entry.ended = true; controller.close(); }
-            else { entry.bytes += chunk.value.length; controller.enqueue(chunk.value); }
-          } catch (error) { controller.error(error); }
-        },
-        async cancel() { entry.cancelled = true; await reader.cancel(); },
-      }, { highWaterMark: 0 }), { status: response.status, headers: response.headers });
-    });
-    try {
-      const provider = await veoPlugin.createProvider({ GEMINI_BASE_URL: origin, GEMINI_API_KEY: liveVeoKey!, ANTSEED_ALLOWED_SERVICES: model, ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [model]: { 'veo-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } } }) });
-      const { port, discoveredSeller } = await setupProxyNetwork(provider);
-      const base = `http://127.0.0.1:${port}`;
-      const headers = { 'content-type': 'application/json', 'x-antseed-idempotency-key': `live-${randomUUID()}` };
-      const body = JSON.stringify({ instances: [{ prompt: 'A paper boat floats.' }], parameters: { durationSeconds: 4, resolution: '720p', sampleCount: 1 } });
-      const createUrl = `${base}/v1beta/models/${model}:predictLongRunning`;
-      if (process.env['ANTSEED_LIVE_VEO_PROBE'] === '1') {
-        const invalid = await fetch(createUrl, { method: 'POST', headers, body: JSON.stringify({ parameters: { durationSeconds: 4 } }) });
-        report.probeStatus = invalid.status;
-        report.probeBody = await invalid.json();
-        expect(invalid.status).toBe(400);
-        report.result = 'probe passed without generating';
-        return;
-      }
-      const created = await fetch(createUrl, { method: 'POST', headers, body });
-      report.createStatus = created.status;
-      if (created.status !== 200) report.createBody = await created.clone().json();
-      expect(created.status).toBe(200);
-      const accepted = await created.json();
-      expect(typeof accepted.name).toBe('string');
-      report.operation = accepted.name;
-      await saveReport();
-      checks.push(reuseOperation ? 'reused existing Google operation with an acceptance fixture' : 'real generation accepted through buyer and seller');
-      const replay = await fetch(createUrl, { method: 'POST', headers, body });
-      expect(replay.status).toBe(200);
-      expect((await replay.json()).name).toBe(accepted.name);
-      expect(upstreamPosts).toBe(reuseOperation ? 0 : 1);
-      checks.push('idempotent replay does not submit another Google job');
-      let status: any;
-      const deadline = Date.now() + 5 * 60_000;
-      do {
-        const poll = await fetch(`${base}/v1beta/${accepted.name}`);
-        expect(poll.status).toBe(200);
-        status = await poll.json();
-        if (status.done) break;
-        await new Promise(resolve => setTimeout(resolve, 5_000));
-      } while (Date.now() < deadline);
-      expect(status.done).toBe(true);
-      expect(status.error).toBeUndefined();
-      const uri = status.response.generateVideoResponse.generatedSamples[0].video.uri;
-      expect(uri.startsWith(`${base}/`)).toBe(true);
-      expect(JSON.stringify(status).includes(liveVeoKey!)).toBe(false);
-      checks.push('completed Google URI rewritten without exposing the seller key');
-      const manager = (buyerNode as any)._connectionManager;
-      const digests: string[] = [];
-      for (const transport of ['tcp-encrypted', 'webrtc']) {
-        if (transport === 'webrtc') {
-          const createConnection = manager.createConnection.bind(manager);
-          manager.createConnection = (config: any) => createConnection({ ...config, remoteCapabilities: config.remoteCapabilities.filter((capability: string) => capability !== 'transport.tcp-enc.v1') });
-          manager.closeConnection(discoveredSeller.peerId);
-          (sellerNode as any)._connectionManager.closeConnection(buyerNode!.peerId);
-          await new Promise(resolve => setTimeout(resolve, 200));
-        }
-        const callsBefore = upstreamCalls;
-        const download = await fetch(uri);
-        expect(download.status).toBe(200);
-        const reader = download.body!.getReader();
-        const first = await reader.read();
-        expect(first.value!.length).toBeGreaterThan(0);
-        expect(upstreamDownloads.at(-1)!.ended).toBe(false);
-        const chunks = [Buffer.from(first.value!)];
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          chunks.push(Buffer.from(chunk.value));
-        }
-        const bytes = Buffer.concat(chunks);
-        expect(bytes.subarray(4, 8).toString()).toBe('ftyp');
-        expect(bytes.length).toBe(Number(upstreamDownloads.at(-1)!.length));
-        expect(upstreamCalls - callsBefore).toBe(2);
-        expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe(transport);
-        digests.push(createHash('sha256').update(bytes).digest('hex'));
-        report.videoBytes = bytes.length;
-        if (transport === 'tcp-encrypted') await writeFile(join(tmpdir(), 'antseed-veo-stream-live.mp4'), bytes, { mode: 0o600 });
-        checks.push(`complete MP4 and visible progress over ${transport}; one status lookup and one file fetch`);
-      }
-      expect(digests[0]).toBe(digests[1]);
-      report.sha256 = digests[0];
-      const cancelled = await fetch(uri);
-      expect(cancelled.status).toBe(200);
-      const cancelledReader = cancelled.body!.getReader();
-      await cancelledReader.read();
-      await cancelledReader.cancel();
-      await vi.waitFor(() => expect(upstreamDownloads.at(-1)!.cancelled).toBe(true), { timeout: 10_000 });
-      expect(upstreamDownloads.at(-1)!.ended).toBe(false);
-      expect(upstreamDownloads.at(-1)!.bytes).toBeLessThan(Number(upstreamDownloads.at(-1)!.length));
-      checks.push('client disconnect cancels Google before the entire video is read');
-      const missing = await fetch(`${base}/v1beta/${accepted.name}/videos/999:download`);
-      expect(missing.status).toBe(404);
-      await missing.arrayBuffer();
-      checks.push('missing video result returns 404');
-      rogueDir = await mkdtemp(join(tmpdir(), 'antseed-live-nonowner-'));
-      rogue = new AntseedNode({ role: 'buyer', dataDir: rogueDir, dhtPort: 0, bootstrapNodes: bootstrap!.bootstrapConfig, allowPrivateIPs: true, noOfficialBootstrap: true, payments: { ...makePaymentsConfig(rpcUrl), enabled: false } });
-      await rogue.start();
-      const beforeDenied = upstreamCalls;
-      const denied = await rogue.sendRequest(discoveredSeller, { requestId: randomUUID(), method: 'GET', path: `/v1beta/${accepted.name}/videos/0:download`, headers: { 'x-antseed-service': model, 'x-antseed-provider': 'veo', 'x-antseed-video-download': 'video-stream-v1' }, body: new Uint8Array() }, { pinned: true });
-      expect(denied.statusCode).toBe(404);
-      expect(upstreamCalls).toBe(beforeDenied);
-      checks.push('different buyer denied access to this actual job before any Google request');
-      const malformed = await fetch(createUrl, { method: 'POST', headers: { 'content-type': 'application/json' }, body: '{}' });
-      report.malformedStatus = malformed.status;
-      expect(malformed.status).toBe(400);
-      await malformed.arrayBuffer();
-      expect(upstreamPosts).toBe(reuseOperation ? 0 : 1);
-      checks.push('malformed create rejected locally without another generation');
-      await vi.waitFor(() => {
-        expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(40_000n);
-        const auths = (buyerNode as any)._verificationStorage.listResponseAuthsBySeller(discoveredSeller.peerId);
-        expect(auths.length).toBeGreaterThanOrEqual(4);
-        expect(auths.filter((auth: any) => !auth.verified).map((auth: any) => auth.verificationError)).toEqual([]);
-      }, { timeout: 10_000 });
-      checks.push('verified response signatures and unchanged acceptance-only mocked-chain billing');
-      report.result = 'passed';
-    } catch (error) {
-      report.result = 'failed';
-      report.error = String(error).replaceAll(liveVeoKey!, '[redacted]');
-      throw error;
-    } finally {
-      report.upstreamPosts = upstreamPosts;
-      report.downloads = upstreamDownloads;
-      report.finishedAt = new Date().toISOString();
-      await saveReport();
-      console.log(`Live Veo report: ${reportPath}`);
-      if (rogue) await rogue.stop();
-      if (rogueDir) await rm(rogueDir, { recursive: true, force: true });
-      vi.unstubAllGlobals();
-    }
-  }, 10 * 60_000);
-
-  it.each(['tcp-encrypted', 'webrtc'] as const)('downloads a completed Gemini image-to-video job over %s without exposing seller credentials or charging twice', async transport => {
-    await setupRpc();
-    const originalFetch = globalThis.fetch;
-    const video = Buffer.alloc(3 * 1024 * 1024 + 17, 42);
-    const origin = 'https://generativelanguage.googleapis.com';
-    const operation = 'models/veo/operations/job';
-    const createBody = JSON.stringify({ instances: [{ prompt: 'boat', image: { bytesBase64Encoded: largeVideoInputImage(), mimeType: 'image/png' } }], parameters: { durationSeconds: 4 } });
-    expect(Buffer.byteLength(createBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);
-    let submissions = 0;
-    let downloads = 0;
-    let statusLookups = 0;
-    let mode: 'normal' | 'pause' | 'missing' | 'oversize' | 'short' | 'long' = 'normal';
-    let upstreamCancelled = false;
-    let upstreamFinished = false;
-    let release!: () => void;
-    let progressGate = new Promise<void>(resolve => { release = resolve; });
-    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const url = String(input);
-      if (!url.startsWith(`${origin}/`)) {
-        const headers = new Headers(init?.headers);
-        headers.set('connection', 'close');
-        return originalFetch(input, { ...init, headers }).catch(error => { throw new Error(`Local video request failed (${mode}): ${url}`, { cause: error }); });
-      }
-      expect(new Headers(init?.headers).get('x-goog-api-key')).toBe('seller-secret');
-      if (init?.method === 'POST') {
-        submissions += 1;
-        expect(Buffer.from(init.body as Uint8Array).toString()).toBe(createBody);
-        return Response.json({ name: operation });
-      }
-      if (url === `${origin}/v1beta/${operation}`) {
-        statusLookups += 1;
-        return Response.json({ name: operation, done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri: `${origin}/v1beta/files/file:download?alt=media` } }] } } });
-      }
-      expect(url).toBe(`${origin}/v1beta/files/file:download?alt=media`);
-      downloads += 1;
-      expect(new Headers(init?.headers).has('range')).toBe(false);
-      const currentMode = mode;
-      let offset = 0;
-      const body = new ReadableStream<Uint8Array>({
-        start(controller) {
-          init!.signal!.addEventListener('abort', () => {
-            upstreamCancelled = true;
-            controller.error(new Error('Google download aborted'));
-          }, { once: true });
-        },
-        async pull(controller) {
-          if ((currentMode === 'pause' && offset >= video.length / 2) || (downloads === 1 && offset > 0)) await progressGate;
-          if (offset >= video.length) { upstreamFinished = true; controller.close(); return; }
-          controller.enqueue(video.subarray(offset, offset + 65536));
-          offset += 65536;
-        },
-        cancel() { upstreamCancelled = true; },
-      });
-      const headers: Record<string, string> = { 'content-type': 'video/mp4' };
-      if (currentMode !== 'missing') headers['content-length'] = String(currentMode === 'oversize' ? 2 ** 32 : video.length + (currentMode === 'short' ? -1 : currentMode === 'long' ? 1 : 0));
-      return new Response(body, { headers });
-    });
-    try {
-      const provider = await veoPlugin.createProvider({ GEMINI_BASE_URL: origin, GEMINI_API_KEY: 'seller-secret', ANTSEED_ALLOWED_SERVICES: 'veo', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"veo":{"veo-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.01}]}}}' });
-      const { port, discoveredSeller } = await setupProxyNetwork(provider);
-      const manager = (buyerNode as any)._connectionManager;
-      if (transport === 'webrtc') {
-        expect(manager._transportMode).toBe('webrtc');
-        const createConnection = manager.createConnection.bind(manager);
-        manager.createConnection = (config: any) => createConnection({ ...config, remoteCapabilities: config.remoteCapabilities.filter((capability: string) => capability !== 'transport.tcp-enc.v1') });
-      }
-      const base = `http://127.0.0.1:${port}`;
-      const created = await fetch(`${base}/v1beta/models/veo:predictLongRunning`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: createBody });
-      expect(created.status).toBe(200);
-      expect((await created.json()).name).toBe(operation);
-      const poll = await fetch(`${base}/v1beta/${operation}`);
-      const status = await poll.json();
-      const uri = status.response.generateVideoResponse.generatedSamples[0].video.uri;
-      expect(uri).toBe(`${base}/v1beta/${operation}/videos/0:download`);
-      expect(JSON.stringify(status)).not.toContain('seller-secret');
-      expect(discoveredSeller.providerServiceCapabilities?.veo?.services.veo?.videoDownload).toBe('video-stream-v1');
-      for (let attempt = 0; attempt < 2; attempt += 1) {
-        const lookupsBefore = statusLookups;
-        const download = await fetch(uri);
-        expect(download.status).toBe(200);
-        expect(download.headers.get('content-type')).toBe('video/mp4');
-        const reader = download.body!.getReader();
-        const first = await reader.read();
-        expect(first.value!.length).toBeGreaterThan(0);
-        if (attempt === 0) { expect(upstreamFinished).toBe(false); release(); }
-        const chunks = [Buffer.from(first.value!)];
-        while (true) {
-          const chunk = await reader.read();
-          if (chunk.done) break;
-          chunks.push(Buffer.from(chunk.value));
-        }
-        expect(Buffer.concat(chunks)).toEqual(video);
-        expect(statusLookups - lookupsBefore).toBe(1);
-      }
-      expect(downloads).toBe(2);
-      await vi.waitFor(() => {
-        const auths = (buyerNode as any)._verificationStorage.listResponseAuthsBySeller(discoveredSeller.peerId);
-        expect(auths.length).toBeGreaterThanOrEqual(4);
-        expect(auths.filter((auth: any) => !auth.verified).map((auth: any) => ({ requestId: auth.requestId, error: auth.verificationError }))).toEqual([]);
-      });
-      mode = 'pause';
-      upstreamCancelled = false;
-      upstreamFinished = false;
-      progressGate = new Promise<void>(resolve => { release = resolve; });
-      const cancelledDownload = await fetch(uri);
-      const cancelledReader = cancelledDownload.body!.getReader();
-      let receivedBeforeCancel = 0;
-      while (receivedBeforeCancel < video.length / 2) {
-        const chunk = await cancelledReader.read();
-        expect(chunk.done).toBe(false);
-        receivedBeforeCancel += chunk.value!.length;
-      }
-      expect(upstreamFinished).toBe(false);
-      await cancelledReader.cancel();
-      await vi.waitFor(() => expect(upstreamCancelled).toBe(true));
-      release();
-      for (const invalid of ['missing', 'oversize', 'short', 'long'] as const) {
-        mode = invalid;
-        if (invalid === 'missing' || invalid === 'oversize') {
-          const result = await fetch(uri);
-          expect(result.status).toBe(invalid === 'oversize' ? 413 : 502);
-          await result.arrayBuffer();
-        } else {
-          await expect((async () => { const result = await fetch(uri); await result.arrayBuffer(); })()).rejects.toThrow();
-        }
-      }
-      const beforeDenied = statusLookups;
-      (sellerNode as any)._resourceOwnership.recordAcceptedCreate('veo-video', 'operations/someone-elses-job', '11'.repeat(20));
-      const denied = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'non-owner', method: 'GET', path: '/v1beta/models/veo/operations/someone-elses-job/videos/0:download', headers: { 'x-antseed-service': 'veo', 'x-antseed-provider': 'veo', 'x-antseed-video-download': 'video-stream-v1' }, body: new Uint8Array() }, { pinned: true });
-      expect(denied.statusCode).toBe(404);
-      expect(statusLookups).toBe(beforeDenied);
-      expect(submissions).toBe(1);
-      expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe(transport);
-      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(40_000n);
-      expect((await fetch(`${base}/v1beta/operations/unknown/videos/0:download`)).status).toBe(404);
-    } finally { vi.unstubAllGlobals(); }
-  }, 60_000);
-
   it.each([
     ['tcp-encrypted', true, 'text'], ['webrtc', true, 'image'], ['tcp-encrypted', false, 'image'], ['webrtc', false, 'text'],
   ] as const)('runs a Venice queue, streamed retrieve and complete over %s with content length %s and %s input and one charge', async (transport, hasContentLength, inputKind) => {
@@ -807,37 +481,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
 
-  it('preserves Google URLs for an older seller without the download capability', async () => {
-    await setupRpc();
-    const origin = 'https://generativelanguage.googleapis.com';
-    const operation = 'models/veo/operations/legacy';
-    const uri = `${origin}/v1beta/files/file:download?alt=media`;
-    const originalFetch = globalThis.fetch;
-    let googleCalls = 0;
-    vi.stubGlobal('fetch', (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      if (!String(input).startsWith(origin)) return originalFetch(input, init);
-      googleCalls += 1;
-      return Promise.resolve(Response.json(init?.method === 'POST' ? { name: operation } : { name: operation, done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri } }] } } }));
-    });
-    try {
-      const provider = await veoPlugin.createProvider({ GEMINI_BASE_URL: origin, GEMINI_API_KEY: 'seller-secret', ANTSEED_ALLOWED_SERVICES: 'veo', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"veo":{"veo-video":{"version":1,"components":[]}}}' });
-      delete provider.serviceCapabilities!.veo!.videoDownload;
-      const { port, discoveredSeller } = await setupProxyNetwork(provider);
-      expect(discoveredSeller.metadata?.version).toBe(12);
-      const base = `http://127.0.0.1:${port}`;
-      const created = await fetch(`${base}/v1beta/models/veo:predictLongRunning`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ instances: [{ prompt: 'boat' }], parameters: { durationSeconds: 4 } }) });
-      expect(created.status).toBe(200);
-      await created.arrayBuffer();
-      const status = await (await fetch(`${base}/v1beta/${operation}`)).json();
-      expect(status.response.generateVideoResponse.generatedSamples[0].video.uri).toBe(uri);
-      const callsBefore = googleCalls;
-      const refused = await fetch(`${base}/v1beta/${operation}/videos/0:download`);
-      expect(refused.status).toBe(501);
-      await refused.arrayBuffer();
-      expect(googleCalls).toBe(callsBefore);
-    } finally { vi.unstubAllGlobals(); }
-  }, 30_000);
-
   it('negotiates payment and records image usage for images.generate', async () => {
     await setupRpc();
     const { provider, port, discoveredSeller } = await setupProxyNetwork();
@@ -938,10 +581,10 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     expect(buyerNode!.buyerPaymentManager?.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
   }, 30_000);
 
-  for (const name of ['seedance', 'veo'] as const) {
+  for (const name of ['seedance'] as const) {
     it.each(['text', 'image'] as const)(`relays seller-operated ${name} %s-to-video jobs with acceptance billing and free follow-ups`, async (inputKind) => {
       await setupRpc();
-      const protocol = name === 'seedance' ? 'seedance-video' : 'veo-video';
+      const protocol = 'seedance-video';
       const owners = new Map<string, string>();
       let submissions = 0;
       let lastSubmission: unknown;
@@ -968,17 +611,15 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         if (owners.get('job') !== buyer) { response.writeHead(403); response.end(); return; }
         const address = sellerApi.address() as { port: number };
         const uri = `http://127.0.0.1:${address.port}/result`;
-        const body = name === 'seedance'
-          ? { id: 'job', ...(request.method === 'POST' ? {} : { status: 'succeeded', content: { video_url: uri } }) }
-          : { name: 'models/video-model/operations/job', ...(request.method === 'POST' ? {} : { done: true, response: { generateVideoResponse: { generatedSamples: [{ video: { uri } }] } } }) };
+        const body = { id: 'job', ...(request.method === 'POST' ? {} : { status: 'succeeded', content: { video_url: uri } }) };
         response.writeHead(200, { 'content-type': 'application/json' });
         response.end(JSON.stringify(body));
       });
       await new Promise<void>(resolve => sellerApi.listen(0, '127.0.0.1', resolve));
       try {
         const address = sellerApi.address() as { port: number };
-        const provider = await (name === 'seedance' ? seedancePlugin : veoPlugin).createProvider({
-          ...(name === 'seedance' ? { ARK_BASE_URL: `http://127.0.0.1:${address.port}`, ARK_API_KEY: 'endpoint-secret' } : { GEMINI_BASE_URL: `http://127.0.0.1:${address.port}`, GEMINI_API_KEY: 'endpoint-secret' }),
+        const provider = await seedancePlugin.createProvider({
+          ARK_BASE_URL: `http://127.0.0.1:${address.port}`, ARK_API_KEY: 'endpoint-secret',
           ANTSEED_ALLOWED_SERVICES: 'video-model',
           ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ 'video-model': { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } } }),
         });
@@ -989,29 +630,28 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
           manager.createConnection = (config: any) => createConnection({ ...config, remoteCapabilities: config.remoteCapabilities.filter((capability: string) => capability !== 'transport.tcp-enc.v1') });
         }
         const image = inputKind === 'image' ? largeVideoInputImage() : undefined;
-        const body = name === 'seedance' ? { model: 'video-model', service: 'extension', content: [{ type: 'text', text: '猫' }, ...(image ? [{ type: 'image_url', image_url: { url: `data:image/png;base64,${image}` }, role: 'first_frame' }] : [])], duration: 8, custom: { enabled: true } }
-          : { model: 'extension-model', service: 'extension-service', instances: [{ prompt: '猫', ...(image ? { image: { bytesBase64Encoded: image, mimeType: 'image/png' } } : {}) }], parameters: { durationSeconds: '8', numberOfVideos: 1 }, custom: [1, null] };
-        const path = name === 'seedance' ? '/api/v3/contents/generations/tasks' : '/v1beta/models/video-model:predictLongRunning';
+        const body = { model: 'video-model', service: 'extension', content: [{ type: 'text', text: '猫' }, ...(image ? [{ type: 'image_url', image_url: { url: `data:image/png;base64,${image}` }, role: 'first_frame' }] : [])], duration: 8, custom: { enabled: true } };
+        const path = '/api/v3/contents/generations/tasks';
         const rawBody = ` \n${JSON.stringify(body, null, 2)}\n`;
         if (image) expect(Buffer.byteLength(rawBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);
         const createOptions = { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-idempotency-key': `${name}-${inputKind}` }, body: rawBody };
         const created = await fetch(`http://127.0.0.1:${port}${path}`, createOptions);
         expect(created.status).toBe(200);
-        expect(await created.json()).toEqual(name === 'seedance' ? { id: 'job' } : { name: 'models/video-model/operations/job' });
+        expect(await created.json()).toEqual({ id: 'job' });
         const replay = await fetch(`http://127.0.0.1:${port}${path}`, createOptions);
         expect(replay.status).toBe(200);
-        expect(await replay.json()).toEqual(name === 'seedance' ? { id: 'job' } : { name: 'models/video-model/operations/job' });
+        expect(await replay.json()).toEqual({ id: 'job' });
         expect(lastSubmission).toEqual(body);
         expect(lastSubmissionBytes).toEqual(Buffer.from(rawBody));
         expect(submissions).toBe(1);
         if (image) expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe('webrtc');
         expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(80_000n);
-        const statusPath = name === 'seedance' ? '/api/v3/contents/generations/tasks/job' : '/v1beta/models/video-model/operations/job';
+        const statusPath = '/api/v3/contents/generations/tasks/job';
         for (let poll = 0; poll < 2; poll += 1) {
           const status = await fetch(`http://127.0.0.1:${port}${statusPath}`);
           expect(status.status).toBe(200);
           const result = await status.json() as any;
-          const uri = name === 'seedance' ? result.content.video_url : result.response.generateVideoResponse.generatedSamples[0].video.uri;
+          const uri = result.content.video_url;
           expect(await (await fetch(uri)).text()).toBe('mock-video');
         }
         expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(80_000n);

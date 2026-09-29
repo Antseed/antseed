@@ -4,8 +4,9 @@ import { createNativeVideoProvider, type NativeVideoProviderOptions } from './na
 afterEach(() => vi.unstubAllGlobals());
 
 describe('seller-operated native video relays', () => {
-  for (const name of ['seedance', 'veo'] as const) {
-    const protocol = name === 'seedance' ? 'seedance-video' : 'veo-video';
+  {
+    const name = 'seedance';
+    const protocol = 'seedance-video';
     const options: NativeVideoProviderOptions = {
       name: 'custom-video-seller', protocol,
       relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'seller-secret', extraHeaders: { 'x-seller-version': 'custom-v1' } },
@@ -25,12 +26,12 @@ describe('seller-operated native video relays', () => {
     });
 
     it(`${name} preserves native payloads and injects seller auth without exposing account endpoints`, async () => {
-      const body = name === 'seedance' ? { model: 'video-model', service: { extension: true }, content: [{ type: 'text', text: '猫' }], duration: 8, custom: [1, null, 'value'] } : { model: 'extension-model', service: 'extension-service', instances: [{ prompt: '猫' }], parameters: { durationSeconds: 8 }, custom: { enabled: true } };
-      const acceptance = name === 'seedance' ? { id: 'task' } : { name: 'operations/job' };
+      const body = { model: 'video-model', service: { extension: true }, content: [{ type: 'text', text: '猫' }], duration: 8, custom: [1, null, 'value'] };
+      const acceptance = { id: 'task' };
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(acceptance), { status: 200, headers: { 'content-type': 'application/json' } }));
       vi.stubGlobal('fetch', fetchMock);
       const provider = createNativeVideoProvider(options, config);
-      const request = { requestId: 'request', method: 'POST', path: name === 'seedance' ? '/api/v3/contents/generations/tasks' : '/v1beta/models/video-model:predictLongRunning', headers: { 'content-type': 'application/json', authorization: 'buyer-key', 'x-goog-api-key': 'buyer-key', 'x-antseed-buyer-peer-id': 'a'.repeat(40), 'x-antseed-provider': name }, body: new TextEncoder().encode(` \n${JSON.stringify(body, null, 2)}\n`) };
+      const request = { requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', authorization: 'buyer-key', 'x-goog-api-key': 'buyer-key', 'x-antseed-buyer-peer-id': 'a'.repeat(40), 'x-antseed-provider': name }, body: new TextEncoder().encode(` \n${JSON.stringify(body, null, 2)}\n`) };
       const result = await provider.handleRequest(request);
       expect(JSON.parse(new TextDecoder().decode(result.body))).toEqual(acceptance);
       const [url, fetchOptions] = fetchMock.mock.calls[0]!;
@@ -53,7 +54,7 @@ describe('seller-operated native video relays', () => {
       vi.stubGlobal('fetch', fetchMock);
       const provider = createNativeVideoProvider(options, config);
       for (const model of ['VIDEO-MODEL', ' video-model ', 'unavailable']) {
-        const request = { requestId: 'request', method: 'POST', path: name === 'seedance' ? '/api/v3/contents/generations/tasks' : `/v1beta/models/${model}:predictLongRunning`, headers: { 'content-type': 'application/json', 'x-antseed-service': 'video-model' }, body: Buffer.from(JSON.stringify({ model, service: 'video-model' })) };
+        const request = { requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video-model' }, body: Buffer.from(JSON.stringify({ model, service: 'video-model' })) };
         expect((await provider.handleRequest(request)).statusCode).toBe(400);
       }
       expect(fetchMock).not.toHaveBeenCalled();

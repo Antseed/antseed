@@ -46,11 +46,6 @@ describe('acceptance-based video metering', () => {
     expect(() => validateUnitBillingUsage(model, captured.context, { version: 1, units: { video_seconds: '9' } }, 900000n, 1, { units: { video_seconds: 8 } })).toThrow();
   });
 
-  it('multiplies Veo duration by requested video count', () => {
-    const captured = capture('/v1beta/models/veo:predictLongRunning', { instances: [{ prompt: 'cat' }], parameters: { durationSeconds: '8', numberOfVideos: 2 } });
-    expect(computeFinalUnitBilling(model, captured.context, response({ name: 'operations/job' }), captured.requestFacts).costUsdc).toBe(1600000n);
-  });
-
   it('charges nothing for a seller replay of an already-accepted create', () => {
     const captured = capture();
     const replay = { ...response({ id: 'task' }), headers: { 'x-antseed-idempotent-replay': 'true' } };
@@ -66,7 +61,7 @@ describe('unit billing adapters', () => {
     expect(isUnitBilledProtocol('seedance-video')).toBe(true);
     expect(isUnitBilledProtocol('openai-responses')).toBe(false);
     expect(validateUnitBillingModelForProtocolV1('openai-images', image)).toEqual([]);
-    expect(validateUnitBillingModelForProtocolV1('veo-video', model)).toEqual([]);
+    expect(validateUnitBillingModelForProtocolV1('venice-video', model)).toEqual([]);
     expect(validateUnitBillingModelForProtocolV1('openai-images', model)).toEqual(['video_seconds is not supported for openai-images']);
   });
 

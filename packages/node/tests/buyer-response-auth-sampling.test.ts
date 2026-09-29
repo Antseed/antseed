@@ -15,9 +15,9 @@ describe('BuyerRequestHandler response auth sampling', () => {
     const seller = identityFromPrivateKeyHex('11'.repeat(32));
     const buyer = identityFromPrivateKeyHex('22'.repeat(32));
     const peer = { peerId: seller.peerId, capabilities: [CONNECTION_CAPABILITY_RESPONSE_AUTH_V1] } as PeerInfo;
-    const request = { requestId: 'free-video-reconnect', method: 'GET', path: '/v1beta/operations/job/videos/0:download', headers: {}, body: new Uint8Array() };
+    const request = { requestId: 'free-video-reconnect', method: 'POST', path: '/api/v1/video/retrieve', headers: {}, body: new TextEncoder().encode('{"queue_id":"job"}') };
     const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: new Uint8Array([42]) };
-    const payload = createResponseAuthPayload({ request, response, buyerPeerId: buyer.peerId, sellerPeerId: seller.peerId, advertisedService: 'veo', provider: 'veo', responseStartedAt: 100, responseCompletedAt: 200, channelId: '0x' + '33'.repeat(32) }, seller.wallet);
+    const payload = createResponseAuthPayload({ request, response, buyerPeerId: buyer.peerId, sellerPeerId: seller.peerId, advertisedService: 'venice', provider: 'venice', responseStartedAt: 100, responseCompletedAt: 200, channelId: '0x' + '33'.repeat(32) }, seller.wallet);
     if (!scenario.validSignature) payload.signature = '00'.repeat(65);
     const maybeStoreResponseAuthSample = vi.fn(async () => null);
     const handler = new BuyerRequestHandler({}, {
@@ -25,7 +25,7 @@ describe('BuyerRequestHandler response auth sampling', () => {
       negotiator: { bpm: { getActiveSession: () => ({ sessionId: '0x' + '44'.repeat(32) }) } },
       verificationSampler: { maybeStoreResponseAuthSample },
     } as any);
-    (handler as any)._recordResponseAuth(peer, request, response, 'veo', { waitForResponseAuth: async () => payload }, scenario.free);
+    (handler as any)._recordResponseAuth(peer, request, response, 'venice', { waitForResponseAuth: async () => payload }, scenario.free);
     await vi.waitFor(() => expect(maybeStoreResponseAuthSample).toHaveBeenCalledOnce());
     expect(maybeStoreResponseAuthSample).toHaveBeenCalledWith(expect.objectContaining({ verified: scenario.error === null, verificationError: scenario.error }));
   });

@@ -224,7 +224,6 @@ function selectAdvertisedServiceByProtocol(
   for (const provider of candidates) {
     const offer = findAdvertisedServiceOffer(peer, provider, requestedService)
     if (!offer) continue
-    if (isNativeVideoProtocol(requestProtocol) && offer.serviceId !== requestedService) continue
     let supportedProtocols: ServiceApiProtocol[] = []
     if (offer.protocols.length > 0) {
       supportedProtocols = offer.protocols.filter((protocol): protocol is ServiceApiProtocol => (

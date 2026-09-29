@@ -133,15 +133,15 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
 });
 
 describe('native video job ownership and idempotency', () => {
-  it('authorizes Veo downloads against the operation owner without charging for bytes', async () => {
+  it('authorizes Venice downloads against the queue owner without charging for bytes', async () => {
     const provider = makeProvider(0, 0, {
-      name: 'veo', services: ['veo'], serviceApiProtocols: { veo: ['veo-video'] },
-      serviceUnitBillingModels: { veo: { 'veo-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
+      name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
     });
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 206, headers: { 'content-type': 'video/mp4' }, body: Buffer.from('video') }));
     const dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-video-download-')), 'resources.db');
     let store = new ResourceOwnershipStore(dbPath);
-    store.recordAcceptedCreate('veo-video', 'operations/job', 'b'.repeat(40));
+    store.recordAcceptedCreate('venice-video', 'job', 'b'.repeat(40));
     store.close();
     store = new ResourceOwnershipStore(dbPath);
     const recordSpend = vi.fn();
@@ -151,7 +151,7 @@ describe('native video job ownership and idempotency', () => {
         const frames: Uint8Array[] = [];
         const payment = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any;
         const { mux } = handler.handleConnection(makeConn(frames), buyer, payment);
-        const request = { requestId: buyer, method: 'GET', path: '/v1beta/models/veo/operations/job/videos/0:download', headers: { 'x-antseed-service': 'veo', range: 'bytes=0-65535' }, body: new Uint8Array() };
+        const request = { requestId: buyer, method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' }, body: new TextEncoder().encode(JSON.stringify({ model: 'video', queue_id: 'job' })) };
         await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest(request) });
         expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(buyer.startsWith('b') ? 206 : 404);
         expect(payment.sendNeedAuth).not.toHaveBeenCalled();
@@ -544,11 +544,11 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(pricing).toEqual({ inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1 });
   });
 
-  it.each(['seedance-video', 'veo-video'] as const)('never replaces an explicitly selected %s provider that lost its service', (protocol) => {
+  it.each(['seedance-video'] as const)('never replaces an explicitly selected %s provider that lost its service', (protocol) => {
     const recorded = makeProvider(0, 0, { name: 'recorded', services: ['other'] });
     const replacement = makeProvider(0, 0, { name: 'replacement', services: ['video-model'], serviceApiProtocols: { 'video-model': [protocol] } });
     const handler = makeSellerRequestHandler({ providers: [recorded, replacement], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false });
-    const request: SerializedHttpRequest = { requestId: 'video', method: 'GET', path: protocol === 'seedance-video' ? '/api/v3/contents/generations/tasks/job' : '/v1beta/operations/job', headers: { 'x-antseed-provider': 'recorded', 'x-antseed-service': 'video-model' }, body: new Uint8Array() };
+    const request: SerializedHttpRequest = { requestId: 'video', method: 'GET', path: '/api/v3/contents/generations/tasks/job', headers: { 'x-antseed-provider': 'recorded', 'x-antseed-service': 'video-model' }, body: new Uint8Array() };
     expect(handler.matchProvider(request)).toBeUndefined();
     recorded.services = ['video-model'];
     expect(handler.matchProvider(request)).toBeUndefined();

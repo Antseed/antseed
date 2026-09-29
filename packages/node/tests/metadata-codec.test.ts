@@ -88,10 +88,10 @@ describe('encodeMetadata / decodeMetadata', () => {
   it('round-trips native video protocols and appended billing units without changing image IDs', () => {
     const metadata = makeMetadata();
     const provider = metadata.providers[0]!;
-    provider.serviceApiProtocols = { video: ['seedance-video', 'veo-video'] };
+    provider.serviceApiProtocols = { video: ['seedance-video', 'venice-video'] };
     provider.serviceUnitBillingModels = { video: {
       'seedance-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] },
-      'veo-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.25 }] },
+      'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.25 }] },
     } };
     const decoded = decodeMetadata(encodeMetadata(metadata));
     expect(decoded.providers[0]?.serviceApiProtocols).toEqual(provider.serviceApiProtocols);
@@ -100,7 +100,7 @@ describe('encodeMetadata / decodeMetadata', () => {
   it.each([
     ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
     ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
-    ['veo-video', 7], ['seedance-video', 10], ['venice-video', 11],
+    ['seedance-video', 10], ['venice-video', 11],
   ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
     const metadata = makeMetadata();
     const marker = 'billing-wire-id';

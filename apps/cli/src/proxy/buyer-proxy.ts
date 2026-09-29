@@ -1,6 +1,6 @@
-import { nativeVideoOptionError, nativeVideoRoute } from '@antseed/api-adapter'
+import { nativeVideoRoute } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
-import { prepareVideoRequest, recordVideoAcceptance, recordVideoCreateAttempt, rewriteVideoDownloadUrls } from './native-video-proxy.js'
+import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
@@ -215,10 +215,6 @@ function isValidRoutedModelTarget(value: string): boolean {
 
 /** Returns `request` with its body's model field rewritten to `serviceId`, or unchanged if nothing rewrote. */
 function withRoutedModel(request: SerializedHttpRequest, serviceId: string): SerializedHttpRequest {
-  // Native video bodies are forwarded byte-for-byte and some APIs carry the
-  // model in the path, so the requested model is the only valid route target.
-  // Images go through the regular model rewrite like chat.
-  if (nativeVideoRoute(request)) return request;
   const rewritten = overrideRoutedModelInBody(request.body, request.headers, serviceId)
   return rewritten.overridden
     ? { ...request, body: rewritten.body, headers: rewritten.headers }
@@ -2334,9 +2330,7 @@ export class BuyerProxy {
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
     // substituted value. Tool configs written by the desktop carry the alias
     // so route changes apply to running sessions without config rewrites.
-    const aliasResult = nativeVideo
-      ? { body: serializedReq.body, headers: serializedReq.headers, aliasRequested: false, substituted: false }
-      : substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
+    const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
       res.writeHead(400, { 'content-type': 'application/json' })
@@ -2362,7 +2356,7 @@ export class BuyerProxy {
     // does for alias-carrying configs; otherwise pinning a chat in the
     // desktop silently does nothing for intercepted apps.
     let chatPinOverrideApplied = false
-    if (!nativeVideo && systemRoutedModel && !aliasResult.aliasRequested && chatPinnedModel) {
+    if (systemRoutedModel && !aliasResult.aliasRequested && chatPinnedModel) {
       const pinOverride = overrideRoutedModelInBody(serializedReq.body, serializedReq.headers, chatPinnedModel)
       if (pinOverride.overridden) {
         serializedReq = { ...serializedReq, body: pinOverride.body, headers: pinOverride.headers }
@@ -2421,9 +2415,7 @@ export class BuyerProxy {
       body: servicePinBody,
       headers: servicePinHeaders,
       pinnedPeerId: bodyPinnedPeer,
-    } = nativeVideo
-      ? { body: serializedReq.body, headers: serializedReq.headers, pinnedPeerId: null }
-      : rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
+    } = rewritePeerPinnedServiceInBody(serializedReq.body, serializedReq.headers)
     if (servicePinBody !== serializedReq.body) {
       serializedReq = { ...serializedReq, body: servicePinBody, headers: servicePinHeaders }
       if (bodyPinnedPeer) {
@@ -2506,7 +2498,6 @@ export class BuyerProxy {
 
       const router = this._node.router
       const policyRouter = router as BuyerPolicyRouter | null | undefined
-      let videoOptionError: string | null = null
       const routeCandidates = modelPeers
         .map((peer) => {
           const plan = modelPlans.get(peer.peerId)
@@ -2514,13 +2505,6 @@ export class BuyerProxy {
           if (!plan?.serviceId) return null
           const offer = findAdvertisedServiceOffer(peer, plan.provider, plan.serviceId)
           if (!offer) return null
-          const requestForPeer = withRoutedModel(serializedReq, plan.serviceId)
-          const optionError = nativeVideo ? nativeVideoOptionError(requestForPeer, offer.capabilities?.video) : null
-          if (optionError) {
-            videoOptionError ??= optionError
-            log(`Video option filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" ${optionError}`)
-            return null
-          }
           const missingRequired = plan.selection?.requiresTransform
             ? requiredParameters
             : findMissingRequiredParameters(
@@ -2536,13 +2520,13 @@ export class BuyerProxy {
             )
             return null
           }
-          const requestForPolicy = requestForPeer
-          if (!peerAllowedByPolicy(policyRouter, requestForPolicy, peer)) return null
+          const requestForPeer = withRoutedModel(serializedReq, plan.serviceId)
+          if (!peerAllowedByPolicy(policyRouter, requestForPeer, peer)) return null
           return {
             peer,
             peerId: peer.peerId,
             serviceId: plan.serviceId,
-            request: requestForPolicy,
+            request: requestForPeer,
             reputation: normalizedModelReputationScore(peer) ?? -1,
             hasCachedInputPricing: offer.cachedInputUsdPerMillion !== undefined,
             inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
@@ -2590,11 +2574,6 @@ export class BuyerProxy {
         }
       }
       if (candidates.length === 0) {
-        if (videoOptionError) {
-          res.writeHead(422, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ error: { type: 'unsupported_video_options', code: 'unsupported_video_options', message: videoOptionError } }))
-          return
-        }
         const capabilityRequired = requiredParameters.length > 0
         // The model exists on the network but only behind an API this
         // request does not speak (e.g. a decision model asked via chat).
@@ -3270,21 +3249,6 @@ export class BuyerProxy {
         return { done: true }
       } else {
         const videoRoute = nativeVideoRoute(requestForPeer)
-        if (videoRoute && recordVideoCreateAttempt(
-          videoRoute,
-          requestForPeer.headers,
-          { peerId: selectedPeer.peerId, provider: selectedRoutePlan.provider, service: requestedService },
-          this._resourceRoutes,
-        )) {
-          try {
-            await this._persistResourceRoutes()
-          } catch (error) {
-            console.error('[proxy] Video create route was not persisted:', error)
-            res.writeHead(503, { 'content-type': 'application/json' })
-            res.end(JSON.stringify({ error: { code: 'video_route_persistence_failed', message: 'Could not save the video create route; the request was not sent' } }))
-            return { done: true }
-          }
-        }
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: requestSignal,
           pinned,
@@ -3295,18 +3259,13 @@ export class BuyerProxy {
 
         if (videoRoute && recordVideoAcceptance(
           videoRoute,
-          requestForPeer.headers,
           upstreamResponse,
           { peerId: selectedPeer.peerId, provider: selectedRoutePlan.provider, service: requestedService },
           this._resourceRoutes,
         )) {
           await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
         }
-        const address = this._server?.address()
-        const port = typeof address === 'object' && address ? address.port : this._port
-        const downloadCapability = requestedService ? selectedPeer.providerServiceCapabilities?.[selectedRoutePlan.provider]?.services[requestedService]?.videoDownload : undefined
-        const videoResponse = videoRoute ? rewriteVideoDownloadUrls(videoRoute, upstreamResponse, `http://127.0.0.1:${port}`, downloadCapability) : upstreamResponse
-        let response = adaptBuyerFaultErrorResponse(videoResponse, requestProtocol)
+        let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
         response = adaptPeerResponse(response)
         if (
           adaptResponse

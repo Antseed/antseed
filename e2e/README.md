@@ -12,34 +12,6 @@ npm test          # Single run
 npm run test:watch  # Watch mode
 ```
 
-## Opt-in Live Veo Test
-
-The default suite uses mocked Google responses and never generates a paid video.
-To explicitly test real Gemini generation, run this from `e2e/` using the pinned
-Node.js version. The key is supplied only to the seller provider, not to buyer
-requests or persisted configuration:
-
-```bash
-read -rs ANTSEED_LIVE_VEO_KEY
-export ANTSEED_LIVE_VEO_KEY
-ANTSEED_LIVE_VEO=1 pnpm exec vitest run tests/openai-images-payment-flow.test.ts \
-  -t 'generates and downloads one real Veo' --poolOptions.forks.singleFork
-unset ANTSEED_LIVE_VEO_KEY
-```
-
-This submits one four-second 720p Veo 3.1 Lite generation and incurs Google's
-generation charge. It tests idempotent acceptance replay, real polling, TCP and
-WebRTC downloads, incremental progress, disconnect cancellation, another buyer's
-access denial, invalid requests, and receipt verification after reconnecting.
-Blockchain/RPC settlement is mocked, not a real-money settlement test.
-
-The test prints its report location in the system temporary directory and saves
-`antseed-veo-stream-live.mp4` there. To repeat follow-up checks without another
-generation, set `ANTSEED_LIVE_VEO_OPERATION` to that report's operation name. This
-mode recreates ownership via a mocked acceptance and explicitly labels the report
-as a reused-operation test; polling and downloads still contact Google. Setting
-`ANTSEED_LIVE_VEO_PROBE=1` instead sends only an invalid request, without generation.
-
 ## Local Blockchain Full Flow
 
 Run a complete local payment + networking flow (no external API keys):

@@ -7,8 +7,6 @@ export interface NativeVideoRoute {
   protocol: NativeVideoProtocol;
   action: 'create' | 'status' | 'cancel' | 'download';
   resourceId?: string;
-  model?: string;
-  resultIndex?: number;
   /** Earlier jobs a create builds on (Seedance draft tasks). Invalid IDs are kept as '' so ownership checks fail. */
   referencedResourceIds?: string[];
 }
@@ -16,7 +14,6 @@ export interface NativeVideoRoute {
 type JsonObject = Record<string, unknown>;
 
 interface VideoRequestFields {
-  count?: unknown;
   duration?: unknown;
   resolution?: unknown;
   aspectRatio?: unknown;
@@ -60,48 +57,15 @@ interface NativeVideoApi {
   inputs: (body: JsonObject) => VideoInputKind[];
   /** Sentinel duration values meaning "let the model decide". */
   autoDuration?: unknown[];
-  /** Maps equivalent job IDs to one ownership key. */
-  resourceKey?: (resourceId: string) => string;
 }
 
 const ID = '[A-Za-z0-9_-]+';
 const SIMPLE_ID = /^[A-Za-z0-9_-]{1,256}$/;
-const VEO_OPERATION = new RegExp(`^(?:models/[A-Za-z0-9._-]+/)?operations/${ID}$`);
-const VEO_DOWNLOAD = new RegExp(`^/v1beta/((?:models/[A-Za-z0-9._-]+/)?operations/${ID})/videos/([0-9]{1,3}):download$`);
-
-export function veoDownloadPath(operation: string, resultIndex: number): string {
-  if (!VEO_OPERATION.test(operation) || !Number.isInteger(resultIndex) || resultIndex < 0 || resultIndex > 999) {
-    throw new Error('Invalid video download');
-  }
-  return `/v1beta/${operation}/videos/${resultIndex}:download`;
-}
-
 function object(value: unknown): JsonObject {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
 }
 
 const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
-  {
-    protocol: 'veo-video',
-    createPaths: /^\/v1beta\/models\/([A-Za-z0-9._-]+):predictLongRunning$/,
-    jobPaths: { GET: new RegExp(`^/v1beta/((?:models/[A-Za-z0-9._-]+/)?operations/${ID})$`) },
-    jobId: body => body.name,
-    jobIdPattern: VEO_OPERATION,
-    fields: body => {
-      const parameters = object(body.parameters);
-      return { count: veoVideoCount(parameters), duration: parameters.durationSeconds, resolution: parameters.resolution, aspectRatio: parameters.aspectRatio, audio: parameters.generateAudio };
-    },
-    inputs: body => {
-      const instance = object(Array.isArray(body.instances) ? body.instances[0] : undefined);
-      return [
-        ...(instance.image ? ['first_frame' as const] : []),
-        ...(instance.lastFrame ? ['last_frame' as const] : []),
-        ...(Array.isArray(instance.referenceImages) && instance.referenceImages.length ? ['reference_image' as const] : []),
-        ...(instance.video ? ['video' as const] : []),
-      ];
-    },
-    resourceKey: resourceId => resourceId.replace(/^models\/[^/]+\//, ''),
-  },
   {
     protocol: 'seedance-video',
     createPaths: /^\/api\/v3\/contents\/generations\/tasks$/,
@@ -158,8 +122,6 @@ function api(protocol: NativeVideoProtocol): NativeVideoApi {
  */
 export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | 'method'> & { body?: Uint8Array }): NativeVideoRoute | null {
   const path = request.path.split('?')[0] ?? '';
-  const download = request.method === 'GET' ? VEO_DOWNLOAD.exec(path) : null;
-  if (download) return { protocol: 'veo-video', action: 'download', resourceId: download[1]!, resultIndex: Number(download[2]) };
   for (const entry of NATIVE_VIDEO_APIS) {
     const create = request.method === 'POST' ? entry.createPaths.exec(path) : null;
     if (create) {
@@ -167,7 +129,6 @@ export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | '
       const referencedResourceIds = referenced.map(id => typeof id === 'string' && entry.jobIdPattern.test(id) ? id : '');
       return {
         protocol: entry.protocol, action: 'create',
-        ...(create[1] ? { model: create[1] } : {}),
         ...(referencedResourceIds.length ? { referencedResourceIds } : {}),
       };
     }
@@ -193,13 +154,8 @@ export function nativeVideoAcceptance(protocol: NativeVideoProtocol, response: S
   return typeof resource === 'string' && resource.length <= 512 && entry.jobIdPattern.test(resource) ? resource : null;
 }
 
-export function nativeVideoResourceKey(protocol: NativeVideoProtocol, resourceId: string): string {
-  return api(protocol).resourceKey?.(resourceId) ?? resourceId;
-}
-
 export function requestService(request: SerializedHttpRequest): string | undefined {
   const route = nativeVideoRoute(request);
-  if (route?.model) return route.model;
   if (route && route.action !== 'create') {
     const header = Object.entries(request.headers).find(([key]) => key.toLowerCase() === 'x-antseed-service')?.[1];
     return header?.trim() || undefined;
@@ -229,9 +185,8 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
   if (!body) throw new Error('Video submission requires a JSON object');
   const entry = api(route.protocol);
   const fields = entry.fields(body);
-  const count = fields.count === undefined ? 1 : fields.count;
+  const count = 1;
   const duration = entry.autoDuration?.includes(fields.duration) ? undefined : positiveInteger(fields.duration);
-  if (typeof count !== 'number' || !Number.isSafeInteger(count) || count <= 0) throw new Error('Video sample count must be a positive integer');
   if (duration === null) throw new Error('Video duration must be a positive integer');
   if (duration !== undefined && !Number.isSafeInteger(duration * count)) throw new Error('Video quantity exceeds the safe integer limit');
   return {
@@ -282,15 +237,4 @@ function positiveInteger(value: unknown): number | undefined | null {
   if (value === undefined) return undefined;
   const parsed = typeof value === 'string' && /^[0-9]+$/.test(value.trim()) ? Number(value.trim()) : value;
   return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
-}
-
-/** Gemini API uses `numberOfVideos`; Vertex AI uses `sampleCount`. Both must agree when present. */
-function veoVideoCount(parameters: JsonObject): number {
-  const numberOfVideos = positiveInteger(parameters.numberOfVideos);
-  const sampleCount = positiveInteger(parameters.sampleCount);
-  if (numberOfVideos === null || sampleCount === null) return Number.NaN;
-  if (numberOfVideos !== undefined && sampleCount !== undefined && numberOfVideos !== sampleCount) {
-    throw new Error('Veo numberOfVideos and sampleCount disagree');
-  }
-  return numberOfVideos ?? sampleCount ?? 1;
 }

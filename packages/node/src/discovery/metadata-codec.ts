@@ -35,7 +35,6 @@ const SERVICE_UNIT_BILLING_PROTOCOL_IDS: Record<ServiceApiProtocol, number> = {
   "openai-responses": 3,
   "openai-images": 4,
   "typesafe-systemone": 5,
-  "veo-video": 7,
   "seedance-video": 10,
   "venice-video": 11,
 };

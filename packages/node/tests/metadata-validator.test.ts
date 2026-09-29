@@ -62,11 +62,11 @@ describe('validateMetadata', () => {
     const provider = metadata.providers[0]!;
     provider.provider = 'seedance';
     provider.services = ['video'];
-    provider.serviceApiProtocols = { video: ['seedance-video', 'veo-video'] };
+    provider.serviceApiProtocols = { video: ['seedance-video', 'venice-video'] };
     provider.serviceCapabilities = { video: { inputs: ['text'], outputs: ['video'] } };
     provider.serviceUnitBillingModels = { video: {
       'seedance-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] },
-      'veo-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] },
+      'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] },
     } };
     expect(validateMetadata(metadata)).toEqual([]);
   });

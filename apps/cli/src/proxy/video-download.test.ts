@@ -4,7 +4,7 @@ import { createServer } from 'node:http'
 import { downloadVideo } from './video-download.js'
 import type { RequestStreamCallbacks, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node'
 
-const request: SerializedHttpRequest = { requestId: 'download', method: 'GET', path: '/v1beta/operations/task/videos/0:download', headers: {}, body: new Uint8Array() }
+const request: SerializedHttpRequest = { requestId: 'download', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task"}') }
 const video = Buffer.alloc(3 * 1024 * 1024 + 17, 42)
 const start: SerializedHttpResponse = { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'video/mp4', 'content-length': String(video.length) }, body: new Uint8Array() }
 

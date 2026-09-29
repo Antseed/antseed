@@ -49,11 +49,11 @@ function makePeer(seed: string, providers: string[]): PeerInfo {
   }
 }
 
-for (const provider of ['seedance', 'veo'] as const) {
+for (const provider of ['seedance'] as const) {
   test(`native ${provider} routes concurrent jobs independently, persist before returning, and survive pin changes`, async () => {
-    const protocol = provider === 'seedance' ? 'seedance-video' : 'veo-video'
-    const resourceId = (suffix: string) => provider === 'seedance' ? `task-${suffix}` : `operations/task-${suffix}`
-    const statusPath = (suffix: string) => provider === 'seedance' ? `/api/v3/contents/generations/tasks/${resourceId(suffix)}` : `/v1beta/${resourceId(suffix)}`
+    const protocol = 'seedance-video'
+    const resourceId = (suffix: string) => `task-${suffix}`
+    const statusPath = (suffix: string) => `/api/v3/contents/generations/tasks/${resourceId(suffix)}`
     const directory = await mkdtemp(join(tmpdir(), 'native-video-routes-'))
     try {
       const peers = [makePeer('a', [provider]), makePeer('b', [provider])]
@@ -68,14 +68,13 @@ for (const provider of ['seedance', 'veo'] as const) {
       ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; method: string; path: string; headers: Record<string, string> }) => {
         calls.push({ peer: peer.peerId, path: request.path, service: request.headers['x-antseed-service'], provider: request.headers['x-antseed-provider'] })
         if (request.method === 'POST' && peer === peers[0]) await new Promise(resolve => setTimeout(resolve, 10))
-        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(provider === 'seedance' ? { id: resourceId(peer.peerId[0]!) } : { name: resourceId(peer.peerId[0]!) })) }
+        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id: resourceId(peer.peerId[0]!) })) }
       }
-      const submissions = await Promise.all([0, 1].map(index => invokeProxy(proxy, makeProxyRequest({ path: provider === 'seedance' ? '/api/v3/contents/generations/tasks' : `/v1beta/models/model-${index}:predictLongRunning`, body: provider === 'seedance' ? { model: `model-${index}`, duration: 8, content: [{ type: 'text', text: 'cat' }] } : { instances: [{ prompt: 'cat' }], parameters: { durationSeconds: 8 } } }))))
+      const submissions = await Promise.all([0, 1].map(index => invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: `model-${index}`, duration: 8, content: [{ type: 'text', text: 'cat' }] } }))))
       assert.deepEqual(submissions.map(result => result.statusCode), [200, 200])
       const state = JSON.parse(await readFile(join(directory, 'buyer.state.json'), 'utf8'))
       assert.equal(state.unrelated, 'preserved')
-      assert.equal(state.resourceRoutes.filter((route: { resourceId: string }) => !route.resourceId.startsWith('idempotency:')).length, 2)
-      assert.equal(state.resourceRoutes.filter((route: { resourceId: string }) => route.resourceId.startsWith('idempotency:')).length, 2)
+      assert.equal(state.resourceRoutes.length, 2)
       const restored = new ResourceRoutes()
       restored.hydrate(state.resourceRoutes)
       const restarted = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
@@ -103,85 +102,93 @@ for (const provider of ['seedance', 'veo'] as const) {
   })
 }
 
-test('native video preserves literal models and extension fields byte-for-byte despite global chat routing', async () => {
-  for (const provider of ['seedance', 'veo'] as const) {
-    for (const model of provider === 'seedance' ? ['antseed', `${'b'.repeat(40)}@video-model`] : ['antseed', 'video-model']) {
-      const peer = makePeer('a', [provider])
-      peer.providerServiceApiProtocols = { [provider]: { services: { [model]: [provider === 'seedance' ? 'seedance-video' : 'veo-video'] } } }
-      const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
-      ;(proxy as any)._defaultRoutedModel = `${'c'.repeat(40)}@chat-model`
+test('native video resolves antseed and peer-pinned models like images', async () => {
+  const cases = [
+    { provider: 'seedance', protocol: 'seedance-video', path: '/api/v3/contents/generations/tasks', acceptance: { id: 'task' } },
+    { provider: 'venice', protocol: 'venice-video', path: '/api/v1/video/queue', acceptance: { queue_id: 'queue' } },
+  ] as const
+  for (const { provider, protocol, path, acceptance } of cases) {
+    const peers = [makePeer('a', [provider]), makePeer('b', [provider])]
+    for (const peer of peers) peer.providerServiceApiProtocols = { [provider]: { services: { 'video-model': [protocol] } } }
+    for (const model of ['antseed', `${peers[1]!.peerId}@video-model`]) {
+      const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+      ;(proxy as any)._defaultRoutedModel = `${peers[1]!.peerId}@video-model`
       ;(proxy as any)._persistResourceRoutes = async () => {}
-      const rawBody = ` \n{ "model": ${JSON.stringify(provider === 'seedance' ? model : `${'b'.repeat(40)}@extension-model`)}, "service": "antseed", "duration": 8, "custom": {"value":1e2,"prompt":"猫"} }\n`
-      let forwarded = false
+      const sent: Array<{ peer: string; model: string; custom: unknown }> = []
       ;(proxy as any)._node.sendRequest = async (selected: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
-        forwarded = true
-        assert.equal(selected.peerId, peer.peerId)
-        assert.deepEqual(Buffer.from(request.body), Buffer.from(rawBody))
-        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(provider === 'seedance' ? { id: 'task' } : { name: 'operations/task' })) }
+        const body = JSON.parse(Buffer.from(request.body).toString())
+        sent.push({ peer: selected.peerId, model: body.model, custom: body.custom })
+        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(acceptance)) }
       }
-      const response = await invokeProxy(proxy, makeProxyRequest({ path: provider === 'seedance' ? '/api/v3/contents/generations/tasks' : `/v1beta/models/${model}:predictLongRunning`, rawBody, headers: { [SYSTEM_ROUTED_MODEL_HEADER]: '1' } }))
+      const response = await invokeProxy(proxy, makeProxyRequest({ path, body: { model, prompt: 'cat', duration: 5, custom: { prompt: '猫' } } }))
       assert.equal(response.statusCode, 200, response.body)
-      assert.equal(forwarded, true)
+      assert.deepEqual(sent, [{ peer: peers[1]!.peerId, model: 'video-model', custom: { prompt: '猫' } }])
     }
   }
 })
 
 test('native resource follow-ups fail when the recorded provider loses support instead of switching providers', async () => {
-  for (const provider of ['seedance', 'veo'] as const) {
-    const protocol = provider === 'seedance' ? 'seedance-video' : 'veo-video'
+  for (const provider of ['seedance'] as const) {
+    const protocol = 'seedance-video'
     const peer = makePeer('a', [provider, 'replacement'])
     peer.providerServiceApiProtocols = { [provider]: { services: { other: [protocol] } }, replacement: { services: { 'video-model': [protocol] } } }
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     ;(proxy as any)._persistResourceRoutes = async () => {}
-    const resourceId = provider === 'seedance' ? 'task' : 'operations/task'
+    const resourceId = 'task'
     ;(proxy as any)._resourceRoutes.record({ protocol, resourceId, sellerPeerId: peer.peerId, provider, service: 'video-model' })
     let calls = 0
     ;(proxy as any)._node.sendRequest = async () => { calls += 1; throw new Error('must not dispatch') }
-    const response = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: provider === 'seedance' ? `/api/v3/contents/generations/tasks/${resourceId}` : `/v1beta/${resourceId}`, body: {} }))
+    const response = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: `/api/v3/contents/generations/tasks/${resourceId}`, body: {} }))
     assert.ok(response.statusCode >= 400, response.body)
     assert.equal(calls, 0)
   }
 })
 
-test('native video creates are not retried automatically, and a client retry with the same key stays on the original seller', async () => {
+test('native video creates are not retried automatically and the proxy adds no idempotency key', async () => {
   const peers = [makePeer('a', ['seedance']), makePeer('b', ['seedance'])]
   for (const peer of peers) peer.providerServiceApiProtocols = { seedance: { services: { model: ['seedance-video'] } } }
   const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
-  const sent: Array<{ key: string; peer: string }> = []
-  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
-    sent.push({ key: request.headers['x-antseed-idempotency-key']!, peer: peer.peerId })
+  const sent: SerializedHttpRequest[] = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    sent.push(request)
     throw new Error('uncertain connection loss')
   }
-  const create = () => invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: 'model', duration: 8 }, headers: { 'idempotency-key': 'client-key-1' } }))
-  assert.ok((await create()).statusCode >= 400)
+  const result = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: 'model', duration: 8 } }))
+  assert.ok(result.statusCode >= 400)
   assert.equal(sent.length, 1)
-  for (let retry = 0; retry < 3; retry += 1) assert.ok((await create()).statusCode >= 400)
-  assert.deepEqual(sent.map(entry => entry.key), Array(4).fill('client-key-1'))
-  assert.deepEqual(new Set(sent.map(entry => entry.peer)), new Set([sent[0]!.peer]))
-
-  const invalid = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: 'model', duration: 8 }, headers: { 'x-antseed-idempotency-key': 'bad key!' } }))
-  assert.equal(invalid.statusCode, 400)
+  assert.equal(sent[0]!.headers['x-antseed-idempotency-key'], undefined)
+  assert.equal(sent[0]!.headers['x-antseed-pin-peer'], undefined)
 })
 
-test('native video creates skip sellers whose advertised options reject the request', async () => {
+test('native video options are validated by the seller without buyer filtering or retries', async () => {
   const peers = [makePeer('a', ['seedance']), makePeer('b', ['seedance'])]
   for (const peer of peers) peer.providerServiceApiProtocols = { seedance: { services: { model: ['seedance-video'] } } }
+  peers[0]!.reputationScore = 99
+  peers[1]!.reputationScore = 70
   peers[0]!.providerServiceCapabilities = { seedance: { services: { model: { video: { durationsSeconds: [5] } } } } }
-  peers[1]!.providerServiceCapabilities = { seedance: { services: { model: { video: { durationsSeconds: [5, 10] } } } } }
+  peers[1]!.providerServiceCapabilities = { seedance: { services: { model: { video: { durationsSeconds: [5, 10, 15] } } } } }
   const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
   ;(proxy as any)._persistResourceRoutes = async () => {}
   const selected: string[] = []
+  const forwarded: unknown[] = []
+  const sellerError = { error: { code: 'unsupported_video_options', message: 'Seller does not support this duration' } }
   ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
     selected.push(peer.peerId)
+    const body = JSON.parse(Buffer.from(request.body).toString())
+    forwarded.push(body)
+    if (body.duration === 15) {
+      return { requestId: request.requestId, statusCode: 422, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(sellerError)) }
+    }
     return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id: 'task' })) }
   }
   const create = (duration: number) => invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: 'model', duration } }))
   assert.equal((await create(10)).statusCode, 200)
-  assert.deepEqual(selected, [peers[1]!.peerId])
+  assert.deepEqual(selected, [peers[0]!.peerId])
   const rejected = await create(15)
   assert.equal(rejected.statusCode, 422, rejected.body)
-  assert.match(rejected.body, /unsupported_video_options/)
-  assert.equal(selected.length, 1)
+  assert.deepEqual(JSON.parse(rejected.body), sellerError)
+  assert.deepEqual(selected, [peers[0]!.peerId, peers[0]!.peerId])
+  assert.deepEqual(forwarded, [{ model: 'model', duration: 10 }, { model: 'model', duration: 15 }])
 })
 
 test('existing required CLI verification rejects a failed pin without payment/inference and auto falls back to a verified seller', async () => {
@@ -1526,11 +1533,11 @@ test('model-only routing does not fail over after a buyer-attributed failure', a
 
 test('video validation and buyer budget failures return client errors without penalizing sellers', async () => {
   for (const [code, status] of [['invalid-request', 400], ['buyer-budget-too-low', 422]] as const) {
-    const peer = makePeer('a', ['veo'])
-    peer.providerServiceApiProtocols = { veo: { services: { veo: ['veo-video'] } } }
+    const peer = makePeer('a', ['seedance'])
+    peer.providerServiceApiProtocols = { seedance: { services: { seedance: ['seedance-video'] } } }
     const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
     ;(proxy as any)._node.sendRequest = async () => { throw buyerFault('Invalid video request', code) }
-    const result = await invokeProxy(proxy, makeProxyRequest({ path: '/v1beta/models/veo:predictLongRunning', body: { instances: [{ prompt: 'boat' }] } }))
+    const result = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: 'seedance', content: [{ type: 'text', text: 'boat' }] } }))
     assert.equal(result.statusCode, status)
     assert.equal(JSON.parse(result.body).error.code, ANTSEED_BUYER_FAULT_ERROR_CODE)
     assert.equal((proxy as any)._peerHealth.get(peer.peerId)?.failureStreak ?? 0, 0)

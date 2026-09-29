@@ -258,8 +258,8 @@ export class ProxyMux {
           // Seller side: incoming request from buyer
           const request = decodeHttpRequest(frame.payload);
           if (request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION) {
-            // Downloads are a body-less GET (Veo) or a small JSON POST naming the job (Venice).
-            const validBody = request.method === 'GET' ? request.body.length === 0 : request.method === 'POST' && request.body.length <= 4096;
+            // Venice downloads are a small JSON POST naming the job.
+            const validBody = request.method === 'POST' && request.body.length <= 4096;
             if (!validBody || request.headers[ANTSEED_UPLOAD_CHUNK_HEADER]) throw new Error('Invalid download request');
             if (this._downloadControllers.has(request.requestId)) throw new Error('Duplicate download request');
             this._downloadControllers.set(request.requestId, new AbortController());
