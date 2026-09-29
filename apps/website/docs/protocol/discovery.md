@@ -16,20 +16,31 @@ Sellers announce multiple topic types. Each topic is SHA1-hashed for DHT lookup.
 
 | Topic Type | Plain Topic String | Key Normalization |
 |---|---|---|
-| Provider | `antseed:{provider}` | `trim + lowercase` |
-| Model (canonical) | `antseed:service:{model}` | `trim + lowercase` |
-| Model (search fallback) | `antseed:service-search:{model}` | `trim + lowercase`, then remove spaces, `-`, `_` (keep `.`) |
-| Capability | `antseed:{capability}` or `antseed:{capability}:{name}` | `trim + lowercase` |
+| Wildcard | `antseed:*` | Fixed topic; also supports older buyers |
+| Subnet | `antseed:subnet:{index}` | First byte of normalized peer ID modulo 16 |
+| Peer | `antseed:peer:{peerId}` | Lowercase hex without the `0x` prefix |
+| Optional capability | `antseed:{capability}` or `antseed:{capability}:{name}` | `trim + lowercase`; announced for configured offerings |
 
-`model-search` topics are announced only when the compact key differs from the canonical key.
+Each seller announces the wildcard, exactly one subnet topic, its per-peer topic,
+and any configured capability topics. There are no per-service, model-search, or
+provider-name topics. The signed metadata document carries the full service
+catalog, keeping the announcement count independent of the number of services.
 
-Example:
+### Enumeration and local service matching
 
-- `kimi 2.5` -> canonical `antseed:service:kimi 2.5`, search `antseed:service-search:kimi2.5`
-- `kimi-2.5` -> canonical `antseed:service:kimi-2.5`, search `antseed:service-search:kimi2.5`
-- `kimi_2.5` -> canonical `antseed:service:kimi_2.5`, search `antseed:service-search:kimi2.5`
+1. Query `SHA1("antseed:*")` to enumerate endpoints and warm the routing table.
+2. Query subnet topics sequentially, not in parallel. A foreground time budget
+   can limit the scan; subsequent scans rotate through the remaining subnets.
+   The background sweep completes all subnets and can emit incremental results.
+3. Deduplicate endpoints by `host:port` and fetch `GET /metadata` from each.
+4. Validate metadata schema, signature, and freshness. Deduplicate accepted
+   results by peer identity when constructing the buyer's peer list.
+5. Match the requested service against the metadata catalog locally, then apply
+   routing eligibility and ranking.
 
-Buyer model discovery queries canonical model topic first, then also queries `model-search` when keys differ.
+A known peer can be resolved directly through `antseed:peer:{peerId}`.
+Capability-specific lookup is also available separately. Neither requires
+reintroducing per-model announcements.
 
 ## Bootstrap Nodes
 
@@ -43,8 +54,9 @@ Buyer model discovery queries canonical model topic first, then also queries `mo
 | Parameter | Value |
 |---|---|
 | Port | 6881 |
-| Re-announce interval | 15 minutes |
-| Operation timeout | 10 seconds |
+| Re-announce interval | 5 minutes |
+| Operation timeout | 25 seconds |
+| Subnet count | 16 |
 
 ## Metadata Endpoint
 
@@ -135,7 +147,7 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
 
 Capability fields are optional; absence means unknown. `inputs` and `outputs` declare accepted and produced modalities (`text`, `image`, `audio`, `video`, `pdf`); `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, announced in code-unit sorted order). Unit-billing components may match `model`, `size`, `quality`, or `resolution`. Discovery only includes capability and billing entries for services currently advertised by the provider.
 
-Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged — the upstream provider remains the authority on which parameters it accepts.
+Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
 :::warning Metadata version compatibility
 Buyers reject metadata versions newer than they understand. A v10/v11 buyer therefore drops a v12 seller, while a v12 buyer continues to accept v10 and v11 sellers. Upgrade buyers before sellers using the [metadata v12 migration guide](/docs/guides/metadata-v12-upgrade).
@@ -145,7 +157,7 @@ Buyers reject metadata versions newer than they understand. A v10/v11 buyer ther
 
 `sellerContract` is optional. When present, buyers use the contract as the on-chain seller address and verify separately that the peer identity is an authorized operator of that contract.
 
-`verifications` is optional. It carries external ownership claims that are included in the signed metadata. Domain and GitHub proofs bind to `peerId` — not to `sellerContract` — because the peer identity is the key that signs discovery metadata and operates the node.
+`verifications` is optional. It carries external ownership claims that are included in the signed metadata. Domain and GitHub proofs bind to `peerId`, not to `sellerContract`, because the peer identity is the key that signs discovery metadata and operates the node.
 
 ## Domain and GitHub Verification Claims
 

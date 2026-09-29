@@ -137,6 +137,7 @@ export {
 export { MeteringStorage } from './metering/storage.js';
 export { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 export { IDEMPOTENCY_KEY_HEADER, IDEMPOTENT_REPLAY_HEADER } from './seller-request-handler.js';
+export type { FreeTierConsumption } from './metering/storage.js';
 export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
@@ -250,6 +251,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';

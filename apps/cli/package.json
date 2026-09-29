@@ -1,6 +1,6 @@
 {
   "name": "@antseed/cli",
-  "version": "0.1.161",
+  "version": "0.1.165",
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
   "files": [

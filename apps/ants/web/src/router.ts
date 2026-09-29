@@ -1,20 +1,19 @@
 import { useEffect, useState } from 'react';
 
-/** Top tab bar. `network` and `addresses` are real routes reached from the footer, not tabs. */
-export const TABS = [
-  { id: 'stake', label: 'Stake' },
-  { id: 'rewards', label: 'Rewards' },
-  { id: 'seller', label: 'Seller' },
+/** Sidebar navigation, grouped. `addresses` is a real route reached from the Network page. */
+export const NAV_GROUPS = [
+  { label: 'Market', items: [{ id: 'stake', label: 'Sellers' }] },
+  { label: 'You', items: [{ id: 'positions', label: 'My positions' }, { id: 'rewards', label: 'Rewards' }, { id: 'seller', label: 'Seller' }] },
+  { label: 'Protocol', items: [{ id: 'network', label: 'Network' }, { id: 'addresses', label: 'Addresses' }] },
 ] as const;
 
-export const PAGES = ['stake', 'rewards', 'seller', 'network', 'addresses'] as const;
+export const PAGES = ['stake', 'positions', 'rewards', 'seller', 'network', 'addresses'] as const;
 
 export type Page = (typeof PAGES)[number];
 
-/** Routes from the previous nine-item sidebar map onto the three tabs and the network route. */
+/** Routes from earlier sidebar layouts map onto the current pages. */
 const REDIRECTS: Record<string, Page> = {
   overview: 'stake',
-  positions: 'stake',
   pools: 'stake',
   usage: 'network',
   emissions: 'network',

@@ -87,6 +87,73 @@ Start app from built assets:
 npm run start
 ```
 
+## Linux installers
+
+`npm run dist:linux` and `npm run release:linux` use
+`electron-builder.linux.cjs`. The default `npm run dist` also selects this
+configuration on Linux. For direct electron-builder invocations, pass
+`--config electron-builder.linux.cjs --linux`.
+
+Linux packages keep the visible name **Antseed AI VPN** and branded download
+filenames, but use `antseed-ai-vpn` for the executable, desktop/icon identity,
+and `/opt/antseed-ai-vpn` installation directory. macOS and Windows retain
+their existing installation identities. The Debian package name remains
+`antseed-ai-vpn`, so existing installations upgrade rather than installing a
+second package.
+
+The Linux packing hook marks `chrome-sandbox` setuid before archiving. Debian
+configuration enforces `root:root` ownership and mode `4755`, independently
+of whether root can create user namespaces during installation. It does not
+disable Chromium sandboxing. Launch the installed application as a normal
+user, not root. Docker namespace restrictions can still prevent Chromium
+startup even with a correctly configured helper.
+
+### Recovering affected Debian installations
+
+The fixed package's `preinst` narrowly repairs the invalid
+`update-alternatives --remove 'AntSeed VPR' ...` command in the previous
+package's `postrm` before dpkg invokes it during an upgrade. This also permits
+reinstallation from the half-installed / reinstallation-required states
+caused by the 0.2.44 package. Other maintainer-script commands are preserved.
+New packages manage their own launcher symlink without `update-alternatives`.
+
+Install a fixed build directly with `sudo dpkg -i /path/to/fixed.deb`;
+`apt-get -f install` alone cannot repair the legacy script. This applies to
+builds containing this fix, not previously published affected installers.
+
+### Package regression tests
+
+`node --test scripts/linux-packaging.test.mjs` validates the real merged
+electron-builder configuration, generated desktop entry, maintainer-hook
+syntax, sandbox mode hook, and macOS/Windows identity compatibility.
+
+`scripts/linux/test-deb.sh FIXED.deb [LEGACY.deb]` performs destructive package
+lifecycle tests and refuses to run outside a root Docker container. It checks
+archive and installed sandbox ownership/mode, launcher and icon integration,
+fresh install, same-version upgrade, removal, purge, and preservation of an
+administrator-replaced launcher. Supplying the affected 0.2.44 archive also
+tests an ordinary upgrade and recovery from both broken dpkg states.
+
+For example, from this directory with amd64 artifacts:
+
+```bash
+fixed_deb=/absolute/path/to/fixed.deb
+legacy_deb=/absolute/path/to/Antseed-AI-VPN-0.2.44-amd64.deb
+docker run --rm --platform linux/amd64 \
+  --mount "type=bind,source=$fixed_deb,target=/fixed.deb,readonly" \
+  --mount "type=bind,source=$legacy_deb,target=/legacy.deb,readonly" \
+  --mount "type=bind,source=$PWD/scripts/linux/test-deb.sh,target=/test-deb.sh,readonly" \
+  ubuntu:24.04 bash -ec '
+    apt-get update
+    apt-get install -y /fixed.deb desktop-file-utils
+    dpkg --purge antseed-ai-vpn
+    bash /test-deb.sh /fixed.deb /legacy.deb
+  '
+```
+
+Use `linux/arm64` with matching arm64 artifacts. These lifecycle tests do not
+claim to verify a native graphical session or Ubuntu AppArmor policy.
+
 ## Notes
 
 - This is phase 1 desktop integration: it shells out to the existing `antseed` runtime for parity and reliability.

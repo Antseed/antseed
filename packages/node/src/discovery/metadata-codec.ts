@@ -13,7 +13,7 @@ import type {
 } from "../types/billing.js";
 import {
   UNIT_BILLING_MATCH_KEYS_V1,
-  UNIT_BILLING_UNITS_V1,
+  UNIT_BILLING_UNIT_IDS_V1,
 } from "../types/billing.js";
 
 const SERVICE_CATEGORIES_METADATA_VERSION = 3;
@@ -44,8 +44,9 @@ const SERVICE_UNIT_BILLING_PROTOCOLS_BY_ID = new Map(
 );
 const SERVICE_CAPABILITIES_METADATA_VERSION = 12;
 const WIDE_SERVICE_COUNTS_METADATA_VERSION = 12;
-const UNIT_BILLING_UNITS_BY_ID: UnitBillingUnitV1[] = [...UNIT_BILLING_UNITS_V1];
-const UNIT_BILLING_UNIT_IDS = new Map<UnitBillingUnitV1, number>(UNIT_BILLING_UNITS_BY_ID.map((unit, index) => [unit, index]));
+const UNIT_BILLING_UNITS_BY_ID = new Map<number, UnitBillingUnitV1>(
+  Object.entries(UNIT_BILLING_UNIT_IDS_V1).map(([unit, id]) => [id, unit as UnitBillingUnitV1]),
+);
 const UNIT_BILLING_MATCH_KEYS_BY_ID: UnitBillingMatchKeyV1[] = [...UNIT_BILLING_MATCH_KEYS_V1];
 const UNIT_BILLING_MATCH_KEY_IDS = new Map<UnitBillingMatchKeyV1, number>(UNIT_BILLING_MATCH_KEYS_BY_ID.map((key, index) => [key, index]));
 
@@ -454,7 +455,7 @@ function encodeServiceUnitBillingModels(
     parts.push(new Uint8Array([model.version]));
     parts.push(new Uint8Array([model.components.length]));
     for (const component of model.components) {
-      parts.push(new Uint8Array([UNIT_BILLING_UNIT_IDS.get(component.unit) ?? 255]));
+      parts.push(new Uint8Array([UNIT_BILLING_UNIT_IDS_V1[component.unit] ?? 255]));
       const priceBuf = new ArrayBuffer(4);
       new DataView(priceBuf).setFloat32(0, component.priceUsd, false);
       parts.push(new Uint8Array(priceBuf));
@@ -787,7 +788,7 @@ function decodeServiceUnitBillingModels(
     const components: UnitBillingComponentV1[] = [];
     for (let j = 0; j < componentCount; j += 1) {
       checkBounds(offset, 6, data.length);
-      const unit = UNIT_BILLING_UNITS_BY_ID[data[offset]!];
+      const unit = UNIT_BILLING_UNITS_BY_ID.get(data[offset]!);
       offset += 1;
       if (!unit) {
         throw new Error("Unsupported service unit billing component unit");

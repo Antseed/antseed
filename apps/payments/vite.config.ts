@@ -9,6 +9,7 @@ const paymentsProxyTarget = process.env['ANTSEED_PAYMENTS_PROXY_TARGET'] || `htt
 
 export default defineConfig({
   plugins: [react()],
+  resolve: { dedupe: ['react', 'react-dom'] },
   root: 'web',
   build: {
     outDir: path.resolve(__dirname, 'dist/web'),

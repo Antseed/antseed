@@ -27,7 +27,7 @@ The CLI checks `AntseedRegistry` to determine whether the recognized-usage upgra
 - An AI API key (Anthropic, OpenAI, Together AI, or a local model)
 - A secp256k1 private key (your node identity)
 - ETH on Base Mainnet for seller transaction fees; the cost varies with gas usage and network fees
-- Seller eligibility through the active staking registry; see [staking and starter positions](/docs/recognized-usage)
+- An on-chain seller registration (`antseed seller register`). Staking is optional; see [staking and starter positions](/docs/recognized-usage)
 
 ## 1. Install
 
@@ -202,8 +202,8 @@ Runtime precedence is: `--base-rpc-url` flag, then `ANTSEED_BASE_RPC_URL`, then 
 ## 5. Fund Your Wallet
 
 Your wallet address needs:
-- **ETH** for gas fees (register, stake, settle transactions)
-- **USDC** for staking (minimum $10)
+- **ETH** for gas fees (register, settle, and optional stake transactions)
+- **ANTS** only if you choose to stake
 
 Send both to the EVM address derived from your identity key. You can find your address with:
 
@@ -211,20 +211,17 @@ Send both to the EVM address derived from your identity key. You can find your a
 antseed seller status
 ```
 
-## 6. Register and Stake
+## 6. Register (Staking Optional)
 
 ```bash
 # Register your identity on-chain (ERC-8004)
 antseed seller register
 
-# Stake USDC before the recognized-usage upgrade (minimum $10)
-antseed seller legacy stake 10
-
 # Verify everything is ready
 antseed seller status
 ```
 
-On networks that have completed the recognized-usage cutover, use an ANTS seller pool instead of creating new legacy USDC stake:
+Staking is optional. The seller registry's minimum pool stake is currently 0, so a registered seller can start selling without staking. Stake ANTS into your seller pool to earn recognized-usage rewards:
 
 ```bash
 antseed seller register

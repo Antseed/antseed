@@ -23,6 +23,7 @@ function mockCtx(overrides: Partial<Parameters<typeof registerRoutes>[1]> = {}):
 
 afterEach(() => {
   vi.unstubAllGlobals();
+  vi.restoreAllMocks();
 });
 
 describe('GET /api/config', () => {
@@ -151,6 +152,92 @@ describe('GET /api/emissions/transfers-enabled', () => {
     const body = res.json();
     expect(body.enabled).toBe(false);
     expect(body.configured).toBe(false);
+    await app.close();
+  });
+});
+
+// The registry's emissions slot now holds UsageAccounting. Legacy ABI reads and
+// browser claim transactions must use the legacy reward contract instead.
+describe('recognized-usage contract selection', () => {
+  const usage = '0x' + '4'.repeat(40);
+  const gate = '0x' + '5'.repeat(40);
+  const v2 = '0x' + '6'.repeat(40);
+  const v1 = '0x' + '7'.repeat(40);
+  const chain = { ...mockCtx().chainConfig, emissionsContractAddress: usage, usageAccountingAddress: usage,
+    emissionsGateAddress: gate, legacyEmissionsContractAddress: v2, legacyEmissionsV1ContractAddress: v1 };
+
+  it('exposes the legacy V2 address used by the existing browser claim button', async () => {
+    const app = Fastify();
+    registerRoutes(app, mockCtx({ chainConfig: chain }));
+    expect((await app.inject('/api/config')).json().emissionsContractAddress).toBe(v2);
+    await app.close();
+  });
+
+  it('does not expose UsageAccounting as a claim target when legacy rewards are absent', async () => {
+    const app = Fastify();
+    registerRoutes(app, mockCtx({ chainConfig: { ...chain, legacyEmissionsContractAddress: undefined } }));
+    expect((await app.inject('/api/config')).json().emissionsContractAddress).toBeNull();
+    expect((await app.inject('/api/emissions/pending?address=0x' + '8'.repeat(40))).statusCode).toBe(503);
+    await app.close();
+  });
+
+  it('reads the current emission schedule from the gate, never the legacy ABI at UsageAccounting', async () => {
+    const { EmissionsClient, EmissionsGateClient } = await import('@antseed/node');
+    const oldRead = vi.spyOn(EmissionsClient.prototype, 'getEpochInfo').mockRejectedValue(new Error('Wrong emission schedule client'));
+    for (const [method, value] of [['currentEpoch', 25], ['epochDuration', 604800], ['genesis', 1000], ['halvingInterval', 52]] as const) {
+      vi.spyOn(EmissionsGateClient.prototype, method).mockImplementation(async function (this: { contractAddress: string }) {
+        expect(this.contractAddress).toBe(gate); return value;
+      });
+    }
+    vi.spyOn(EmissionsGateClient.prototype, 'currentEmissionRate').mockResolvedValue(100n);
+    const epochEmission = vi.spyOn(EmissionsGateClient.prototype, 'getEpochEmission').mockResolvedValue(200n);
+    const app = Fastify(); registerRoutes(app, mockCtx({ chainConfig: chain }));
+    const response = await app.inject('/api/emissions');
+    expect(response.statusCode).toBe(200);
+    expect(response.json()).toMatchObject({ currentEpoch: 25, currentRate: '100', epochEmission: '200', epochDuration: 604800 });
+    expect(oldRead).not.toHaveBeenCalled();
+    expect(epochEmission).toHaveBeenCalledWith(25);
+    await app.close();
+  });
+
+  it.each(['recognized', 'legacy'] as const)('reads legacy V2 rewards with %s configuration', async (mode) => {
+    const { EmissionsClient } = await import('@antseed/node');
+    const shares = { sellerSharePct: 50, buyerSharePct: 30, reserveSharePct: 10, teamSharePct: 10, maxSellerSharePct: 100, maxBuyerSharePct: 100, initialized: true };
+    const v1Reads: string[] = [];
+    vi.spyOn(EmissionsClient.prototype, 'getEpochInfo').mockImplementation(async function (this: { contractAddress: string }) {
+      expect(this.contractAddress).toBe(v2); return { epoch: 23, emission: 100n, epochDuration: 604800 };
+    });
+    vi.spyOn(EmissionsClient.prototype, 'getMigrationEpoch').mockImplementation(async function (this: { contractAddress: string }) {
+      expect(this.contractAddress).toBe(v2); return 22;
+    });
+    vi.spyOn(EmissionsClient.prototype, 'pendingEmissions').mockImplementation(async function (this: { contractAddress: string }) {
+      expect(this.contractAddress).toBe(v2); return { seller: 10n, buyer: 20n };
+    });
+    for (const method of ['userSellerPoints', 'userBuyerPoints', 'epochTotalSellerPoints', 'epochTotalBuyerPoints', 'getEpochEmission'] as const) {
+      vi.spyOn(EmissionsClient.prototype, method).mockImplementation(async function (this: { contractAddress: string }) {
+        expect([v1, v2]).toContain(this.contractAddress);
+        if (this.contractAddress === v1) v1Reads.push(method);
+        return 100n;
+      });
+    }
+    for (const method of ['sellerEpochClaimed', 'buyerEpochClaimed'] as const) {
+      vi.spyOn(EmissionsClient.prototype, method).mockImplementation(async function (this: { contractAddress: string }) {
+        expect([v1, v2]).toContain(this.contractAddress);
+        if (this.contractAddress === v1) v1Reads.push(method);
+        return false;
+      });
+    }
+    vi.spyOn(EmissionsClient.prototype, 'getEpochParams').mockResolvedValue(shares);
+    vi.spyOn(EmissionsClient.prototype, 'getShares').mockImplementation(async function (this: { contractAddress: string }) {
+      expect(this.contractAddress).toBe(v2); return shares;
+    });
+    const selected = mode === 'recognized' ? chain : { ...chain, emissionsGateAddress: undefined, emissionsContractAddress: v2, legacyEmissionsContractAddress: v1, legacyEmissionsV1ContractAddress: undefined };
+    const app = Fastify(); registerRoutes(app, mockCtx({ chainConfig: selected }));
+    const response = await app.inject('/api/emissions/pending?address=0x' + '8'.repeat(40) + '&epochs=3');
+    expect(response.statusCode).toBe(200);
+    expect(response.json().rows[0]).toMatchObject({ epoch: 21, protocol: 'legacy', seller: { amount: '10' }, buyer: { amount: '20' } });
+    expect(v1Reads).toEqual([]);
+    expect((await app.inject('/api/emissions/shares')).json()).toEqual(shares);
     await app.close();
   });
 });

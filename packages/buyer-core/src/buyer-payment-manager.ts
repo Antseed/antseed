@@ -40,11 +40,7 @@ import {
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
-import { isNativeVideoProtocol } from '@antseed/protocol/service-api';
-
-function isUnitBilledProtocol(protocol: string | undefined): boolean {
-  return protocol === 'openai-images' || isNativeVideoProtocol(protocol);
-}
+import { isUnitBilledProtocol } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */

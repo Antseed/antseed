@@ -253,6 +253,8 @@ describe('MeteringStorage — Pruning', () => {
     storage.insertVerification(makeVerification({ receiptId: 'new-v', verifiedAt: recent, disputed: true }));
     storage.upsertSession(makeSession({ sessionId: 'old-s', startedAt: old }));
     storage.upsertSession(makeSession({ sessionId: 'new-s', startedAt: recent }));
+    storage.consumeFreeTierRequest({ buyerAddress: '0x1', remoteIp: null, service: 'free', maxRequestsPerAddress: 10, maxRequestsPerIp: null, windowMs: 200000, nowMs: old });
+    storage.consumeFreeTierRequest({ buyerAddress: '0x1', remoteIp: null, service: 'free', maxRequestsPerAddress: 10, maxRequestsPerIp: null, windowMs: 200000, nowMs: recent });
 
     const cutoff = now - 50000;
     const result = storage.pruneOlderThan(cutoff);
@@ -261,6 +263,7 @@ describe('MeteringStorage — Pruning', () => {
     expect(result.receiptsDeleted).toBe(1);
     expect(result.verificationsDeleted).toBe(1);
     expect(result.sessionsDeleted).toBe(1);
+    expect(result.freeTierUsageDeleted).toBe(1);
 
     // Recent data should still exist
     expect(storage.getEventsByTimeRange(recent - 10, recent + 10)).toHaveLength(1);

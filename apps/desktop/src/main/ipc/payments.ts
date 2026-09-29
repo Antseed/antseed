@@ -1,3 +1,7 @@
+import { readBuyerRewardsSummary } from '../staking/buyer-rewards.js';
+import { resolveStakingChain } from '../staking/configuration.js';
+import { readConfig } from '../runtime/config-io.js';
+import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 /**
  * IPC surface for deposits, balances, channels and the wallet-signing pages.
  */
@@ -20,7 +24,6 @@ import {
   EMPTY_REWARDS_SUMMARY,
   MAX_SPENDING_AUTH_BASE_UNITS,
   fetchBuyerProxyJson,
-  formatAnts,
   loadBuyerChannels,
   normalizeBuyerUsageTotals,
   notePendingSpend,
@@ -29,12 +32,8 @@ import {
 import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
 import {
   type CreditsInfo,
-  getCachedAntsTokenClient,
-  getCachedEmissionsClient,
   loadCachedCryptoConfig,
   refreshCreditsInfo,
-  setCachedAntsTokenClient,
-  setCachedEmissionsClient,
 } from '../payments/credits.js';
 import {
   buildLocalBuyerSpendHistory,
@@ -65,10 +64,6 @@ import {
   refreshPeerCache,
 } from '../runtime/peer-cache.js';
 import {
-  ANTSTokenClient,
-  EmissionsClient,
-  UsageAccountingClient,
-  UsageRewardsClient,
   makeChannelsDomain,
   peerIdToAddress,
   signSpendingAuth,
@@ -87,6 +82,11 @@ export function registerPaymentsIpc(): void {
   ipcMain.handle('payments:open-pay-page', async (_event, opts: { kind?: PayPageKind; amountUsdc?: string; channelId?: string }) => {
     try {
       const kind: PayPageKind = opts?.kind && PAY_PAGE_KINDS.includes(opts.kind) ? opts.kind : 'deposit';
+      if (kind === 'claim') {
+        const { stakingSessions } = await import('../staking/portal.js');
+        await stakingSessions.open('rewards');
+        return { ok: true };
+      }
       await startPaymentsPortal();
       const token = getPaymentsPortalToken();
       const params = new URLSearchParams();
@@ -172,12 +172,15 @@ export function registerPaymentsIpc(): void {
       // canonical message below, proving the params came from this wallet.
       // The signed message carries the LOWERCASED address (the URL param stays
       // checksummed) — verified against the reference sig their page accepts.
+      // The header line is a wire-format constant that must match the page's
+      // `buildFundingMessage` byte for byte ("AntSeed Pay", capital S); it is
+      // not display copy and must not follow product-name renames.
       const payPage = payPageProvider(provider.id);
       if (payPage) {
         const cur = 'USD';
         const amountStr = hasAmount ? String(amount) : '';
         const message = [
-          'Antseed Pay',
+          'AntSeed Pay',
           `address: ${identity.wallet.address.toLowerCase()}`,
           `currency: ${cur}`,
           `amount: ${amountStr}`,
@@ -425,83 +428,9 @@ export function registerPaymentsIpc(): void {
     try {
       await ensureSecureIdentity();
       const identity = getSecureIdentity();
-      const cc = await loadCachedCryptoConfig();
-      if (!identity || !cc || (!cc.emissionsAddress && !cc.usageAccountingAddress)) {
-        return { ok: true, data: EMPTY_REWARDS_SUMMARY, error: null };
-      }
-
-      const clientConfig = {
-        rpcUrl: cc.rpcUrl,
-        ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
-        evmChainId: cc.chainId,
-      };
-      if (cc.antsTokenAddress && !getCachedAntsTokenClient()) {
-        setCachedAntsTokenClient(new ANTSTokenClient({
-          ...clientConfig,
-          contractAddress: cc.antsTokenAddress,
-        }));
-      }
-      const tokenClient = getCachedAntsTokenClient();
-      // transfersEnabled only depends on the token address — run it in parallel
-      // with the epoch + pending-emissions chain.
-      const [{ currentEpoch, pending }, transfersEnabled] = await Promise.all([
-        (async () => {
-          if (cc.usageAccountingAddress && cc.usageRewardsAddress && cc.recognizedUsageEffectiveEpoch !== undefined) {
-            const accounting = new UsageAccountingClient({ ...clientConfig, contractAddress: cc.usageAccountingAddress });
-            const rewards = new UsageRewardsClient({ ...clientConfig, contractAddress: cc.usageRewardsAddress });
-            const currentEpoch = await accounting.currentEpoch();
-            const recognizedEpochs = Array.from(
-              { length: Math.max(0, currentEpoch - cc.recognizedUsageEffectiveEpoch) },
-              (_, index) => cc.recognizedUsageEffectiveEpoch! + index,
-            );
-            let seller = 0n;
-            for (let offset = 0; offset < recognizedEpochs.length; offset += 32) {
-              seller += (await accounting.pendingEmissions(identity.wallet.address, recognizedEpochs.slice(offset, offset + 32))).seller;
-            }
-            let buyer = 0n;
-            for (const epoch of recognizedEpochs) buyer += await rewards.pendingBuyerReward(identity.wallet.address, epoch);
-
-            if (cc.legacyEmissionsAddress) {
-              let legacyClient = getCachedEmissionsClient();
-              if (!legacyClient) {
-                legacyClient = new EmissionsClient({ ...clientConfig, contractAddress: cc.legacyEmissionsAddress });
-                setCachedEmissionsClient(legacyClient);
-              }
-              const legacyEpochs = Array.from({ length: Math.min(currentEpoch, cc.recognizedUsageEffectiveEpoch) }, (_, epoch) => epoch);
-              for (let offset = 0; offset < legacyEpochs.length; offset += 32) {
-                const legacy = await legacyClient.pendingEmissions(identity.wallet.address, legacyEpochs.slice(offset, offset + 32));
-                seller += legacy.seller;
-                buyer += legacy.buyer;
-              }
-            }
-            return { currentEpoch, pending: { seller, buyer } };
-          }
-
-          let emissionsClient = getCachedEmissionsClient();
-          if (!emissionsClient) {
-            if (!cc.emissionsAddress) throw new Error('Emissions contract is not configured.');
-            emissionsClient = new EmissionsClient({ ...clientConfig, contractAddress: cc.emissionsAddress });
-            setCachedEmissionsClient(emissionsClient);
-          }
-          const info = await emissionsClient.getEpochInfo();
-          const startEpoch = Math.max(0, info.epoch - 9);
-          const epochs = Array.from({ length: info.epoch - startEpoch + 1 }, (_, index) => startEpoch + index);
-          return { currentEpoch: info.epoch, pending: await emissionsClient.pendingEmissions(identity.wallet.address, epochs) };
-        })(),
-        tokenClient ? tokenClient.transfersEnabled() : Promise.resolve(false),
-      ]);
-
-      return {
-        ok: true,
-        data: {
-          available: true,
-          pendingAnts: formatAnts(pending.seller + pending.buyer),
-          currentEpoch,
-          transfersEnabled,
-          error: null,
-        },
-        error: null,
-      };
+      if (!identity) return { ok: true, data: EMPTY_REWARDS_SUMMARY, error: null };
+      const chain = resolveStakingChain(await readConfig(ACTIVE_CONFIG_PATH));
+      return { ok: true, data: await readBuyerRewardsSummary(chain, identity.wallet.address), error: null };
     } catch (err) {
       return {
         ok: true,

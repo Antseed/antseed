@@ -1,3 +1,4 @@
+import { UNIT_BILLING_UNIT_IDS_V1 } from '../src/types/billing.js';
 import { describe, it, expect } from 'vitest';
 import { encodeMetadata, decodeMetadata, encodeMetadataForSigning } from '../src/discovery/metadata-codec.js';
 import { METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_UNIT_BILLING_METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
@@ -275,6 +276,35 @@ describe('encodeMetadata / decodeMetadata', () => {
     expect(decoded.publicAddress).toBe('peer.example.com:6882');
     expect(decoded.providers[0]!.serviceCategories?.['claude-3-opus']).toEqual(['coding', 'privacy']);
     expect(decoded.providers[0]!.serviceApiProtocols?.['claude-3-opus']).toEqual(['anthropic-messages', 'openai-chat-completions']);
+  });
+
+  it('encodes reserved billing unit ids explicitly', () => {
+    const units = ['output_images', 'completed_requests', 'video_generations', 'video_seconds'] as const;
+    const encodedIds = units.map((unit) => {
+      const metadata = makeMetadata({
+        version: SERVICE_UNIT_BILLING_METADATA_VERSION,
+        providers: [{
+          provider: 'future',
+          services: ['svc'],
+          defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+          serviceUnitBillingModels: {
+            svc: { 'openai-images': { version: 1, components: [{ unit, priceUsd: 0.25 }] } },
+          },
+          maxConcurrency: 1,
+          currentLoad: 0,
+        }],
+      });
+      const encoded = encodeMetadata(metadata);
+      expect(decodeMetadata(encoded).providers[0]!.serviceUnitBillingModels?.svc?.['openai-images']?.components[0]?.unit).toBe(unit);
+      const unitOffset = encoded.findIndex((byte, index) => (
+        byte === 1
+        && encoded[index + 1] === UNIT_BILLING_UNIT_IDS_V1[unit]
+        && encoded[index + 6] === 0
+      ));
+      return encoded[unitOffset + 1];
+    });
+
+    expect(encodedIds).toEqual([0, 1, 2, 3]);
   });
 
   it('round-trips v11 service unit billing models and signs billing bytes', () => {

@@ -147,6 +147,94 @@ export const faqLd = {
         text: "Buyers pre-deposit USDC into the on-chain AntseedDeposits contract. Each session is authorized by an EIP-712 ReserveAuth. The seller calls reserve() on AntseedChannels to lock funds. During the session, the buyer signs cumulative SpendingAuth messages. The seller calls close() with the latest SpendingAuth to settle. No invoicing, no monthly billing — automatic settlement per session.",
       },
     },
+    {
+      '@type': 'Question',
+      name: 'Are there usage limits on Antseed?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'No caps and no daily, weekly, or monthly quota. You pay per request from your credits and keep going as long as there are credits to spend. Top up in the AI VPN by card or Apple Pay, or with USDC from the CLI.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Do I need the AI VPN desktop app, or is the CLI enough?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'The CLI is enough: install it, start your local endpoint, and fund it with USDC when you want paid models. The AI VPN desktop app adds a model picker, an Apps view that launches installed tools, card and Apple Pay top-ups, and the Agents view for publishing an authenticated public endpoint.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Does my tool or agent need an API key?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like antseed. The antseed claude, codex, and opencode wrappers set this for you. Only a public endpoint you publish from the Agents view uses a real, generated key.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How does Antseed choose the provider for each request?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'By your routing policy: price plus trust, with a default minimum trust score of 60. Leave it on auto to hit the cheapest verified provider every time, or pin a provider with <peerId>@<model> in the model field, or from the CLI with antseed buyer connection set --peer <peerId>.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Can a provider see what I send?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: "How do I verify a provider's TEE?",
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "Your buyer node checks it on your machine, against Intel's own certificate chain, with no third party in between and no special hardware on your side. The check happens after a provider is picked and before any payment. Verification is on by default and best-effort; run antseed buyer start --verifiers antseed-verifier --require-verifier to refuse any provider that does not pass.",
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What does a passing TEE check prove, and what does it not?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: "It proves the provider node runs inside a genuine Intel TDX enclave, that the quote was minted fresh for your request and is bound to the exact peer you are paying, and it can report whether the provider's GPUs run NVIDIA Confidential Computing. It proves the environment, not the model: whether the model is what the provider claims is a separate check, done by fingerprinting.",
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How can a provider offer AI models below lab price?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Providers compete. Some run open models on their own hardware, some sell capacity they legitimately hold. Providers must build their own service on top of upstream APIs and comply with upstream terms.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Why would a provider use Antseed instead of building their own API?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Because distribution is the hard part. On Antseed a provider plugs into existing demand: buyers, discovery, reputation, and onchain settlement come with the network. No billing stack to build, no customers to acquire, no payment risk to carry.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What happens when LLMs become so good that anyone can do anything?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'When LLMs become dramatically more capable, costs collapse and more people can run capable models on their own hardware. Those people become Antseed providers, so the supply side grows. The value is in what you build on top: the skills, the workflows, the domain expertise, the agent orchestration.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: "Isn't this just like P2P file sharing? Netflix killed that.",
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Netflix and Spotify won because humans are happy to pay a simple subscription for a clean UI. Agents do not care about a UI, a brand, or a familiar platform. They need the service, the price, and the reliability, and on those axes an open P2P network with no middleman and no markup wins.',
+      },
+    },
   ],
 };
 
@@ -204,6 +292,18 @@ Standard providers can. TEE-verified providers cannot — the hardware prevents 
 
 Antseed the protocol does not create a central request log, but independent providers, nodes, interfaces, RPC providers, analytics tools, or other infrastructure may log or observe data. Each provider has its own data handling practices. Prefer TEE-verified providers where stronger confidentiality is required.
 
+### Can a provider see what I send?
+
+Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it. See the [privacy page](/privacy) for a side-by-side of what each kind of provider sees.
+
+### How do I verify a provider's TEE?
+
+Your buyer node checks it on your machine, against Intel's own certificate chain, with no third party in between and no special hardware on your side. The check happens after a provider is picked and before any payment, so attestation is free. Verification is on by default and best-effort; run `antseed buyer start --verifiers antseed-verifier --require-verifier` to refuse any provider that does not pass, and the request then fails with a 502 naming the failed claims instead of being quietly routed elsewhere. `antseed network browse` shows which providers advertise a verifier. See [Verify a provider's TEE](/docs/guides/verify-tee).
+
+### What does a passing TEE check prove, and what does it not?
+
+It proves the provider node runs inside a genuine Intel TDX enclave, that the quote was minted fresh for your request and is bound to the exact peer you are paying (so replayed or borrowed quotes fail), and it can report whether the provider's GPUs run NVIDIA Confidential Computing. It proves the environment, not the model: whether the model is what the provider claims is a separate check, done by fingerprinting. See [how model verification works](/blog/model-verification-fingerprint-swarm).
+
 ---
 
 ## Services & Availability
@@ -250,6 +350,22 @@ Yes. Antseed is OpenAI API-compatible. Point your tool at the Antseed endpoint a
 
 macOS (Apple Silicon and Intel), Windows, and Linux. The CLI runs anywhere Node.js runs.
 
+### Are there usage limits?
+
+No caps and no daily, weekly, or monthly quota. You pay per request from your credits and keep going as long as there are credits to spend. Top up in the AI VPN by card or Apple Pay, or with USDC from the CLI using `antseed buyer deposit`.
+
+### Do I need the AI VPN desktop app, or is the CLI enough?
+
+The CLI is enough. `npm install -g @antseed/cli`, then `antseed buyer start` runs your local endpoint and `antseed buyer deposit` funds it with USDC, on any machine. `antseed claude`, `antseed codex`, and `antseed opencode` launch those tools through it. The AI VPN desktop app adds a model picker, an Apps view that launches installed tools, card and Apple Pay top-ups, and the Agents view for publishing an authenticated public endpoint. See the [install guide](/docs/install).
+
+### Does my tool or agent need an API key?
+
+No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like `antseed`. The `antseed claude`, `codex`, and `opencode` wrappers set this for you. Only a public endpoint you publish from the AI VPN's Agents view uses a real, generated key.
+
+### How does Antseed choose the provider for each request?
+
+By your routing policy: price plus trust, with a default minimum trust score of `60`. Leave it on auto to hit the cheapest verified provider every time, or pin a provider with `<peerId>@<model>` in the model field, or from the CLI with `antseed buyer connection set --peer <peerId>`.
+
 ---
 
 ## Providers & Economics
@@ -279,12 +395,32 @@ they depend on recognized usage, seller-pool power, and the configured
 
 Network fees are set to 4% and may be directed to ecosystem mechanisms such as reserves, grants, incentives, buy-and-burn, or other community-approved uses. Any DIEM program/operator fee is governed by the separate DIEM Provider Capacity Program rules. No fee use, burn, distribution, token value, or return is promised.
 
+### How can a provider offer AI models below lab price?
+
+Providers compete. Some run open models on their own hardware, some sell capacity they legitimately hold. Providers must build their own service on top of upstream APIs and comply with upstream terms.
+
+### Why would a provider use Antseed instead of building their own API?
+
+Because distribution is the hard part. On Antseed a provider plugs into existing demand: buyers, discovery, reputation, and onchain settlement come with the network. No billing stack to build, no customers to acquire, no payment risk to carry. Serve a request, get paid, automatically.
+
 ### Are ANTS incentives guaranteed?
 
 No. Paying for service does not guarantee ANTS rewards. Missing pool power or a
 wash-trading flag can exclude usage from rewards. If you stake ANTS, withdrawing
 before the lock ends also incurs a principal penalty. See
 [reward eligibility and staking terms](/docs/recognized-usage).
+
+---
+
+## The bigger picture
+
+### What happens when LLMs become so good that anyone can do anything?
+
+That is exactly what we want. When LLMs become dramatically more capable, costs collapse and more people can run their own capable LLMs on their own hardware. Those people become Antseed providers, so the supply side grows, not shrinks. But "anyone can do anything" does not mean everyone delivers the same result. The value is in what you build on top: the skills, the workflows, the domain expertise, the agent orchestration. A more capable base model raises the ceiling for every provider.
+
+### Isn't this just like P2P file sharing? Netflix killed that.
+
+Netflix and Spotify won because humans are happy to pay a simple subscription for a clean UI. That logic only applies to humans who care about experience. Agents don't. An agent has no preference for a polished interface, no reason to care about a brand, no inertia keeping it on a familiar platform. It just needs the service, the price, and the reliability, and on those axes an open P2P network with no middleman and no markup wins every time.
 
 ---
 

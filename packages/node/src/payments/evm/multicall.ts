@@ -1,4 +1,4 @@
-import { Contract, Interface, type AbstractProvider } from 'ethers';
+import { Contract, Interface, isError, type AbstractProvider } from 'ethers';
 
 /** Canonical Multicall3 deployment (same address on Base, Base Sepolia, and most EVM chains). */
 export const MULTICALL3_ADDRESS = '0xcA11bde05977b3631167028862bE2a173976CA11';
@@ -14,6 +14,15 @@ export interface MulticallRequest {
   args?: unknown[];
 }
 
+function batchCapacityError(error: unknown): boolean {
+  const message = error instanceof Error ? error.message : String(error);
+  return /out of gas|gas required exceeds allowance|exceeds (?:the )?(?:block )?gas limit|(?:request|response|payload|batch)(?: size)? (?:is )?too large|(?:request|response|payload|batch) size (?:limit|exceeded)/i.test(message);
+}
+
+function contractRevert(error: unknown): boolean {
+  return isError(error, 'CALL_EXCEPTION') && error.data !== null && error.data !== undefined;
+}
+
 /**
  * Batch many read calls into a few `eth_call`s via Multicall3 (`allowFailure`
  * per call: a reverting read yields `null` instead of failing the batch).
@@ -26,32 +35,54 @@ export async function multicallRead(
 ): Promise<Array<unknown[] | null>> {
   if (requests.length === 0) return [];
   const chunkSize = options.chunkSize ?? 80;
-  const concurrency = Math.max(1, options.concurrency ?? 4);
+  const concurrency = options.concurrency ?? 4;
+  if (!Number.isSafeInteger(chunkSize) || chunkSize < 1 || !Number.isSafeInteger(concurrency) || concurrency < 1) {
+    throw new Error('Multicall chunkSize and concurrency must be positive integers');
+  }
   const multicall = new Contract(options.address ?? MULTICALL3_ADDRESS, MULTICALL3_ABI, provider);
   const results: Array<unknown[] | null> = new Array(requests.length).fill(null);
-  const code = options.assumeDeployed ? '0x1' : await provider.getCode(options.address ?? MULTICALL3_ADDRESS).catch(() => '0x');
+  const code = options.assumeDeployed ? '0x1' : await provider.getCode(options.address ?? MULTICALL3_ADDRESS, options.blockTag);
+  let stopped = false;
+  const parallel = async (offsets: number[], read: (offset: number) => Promise<void>): Promise<void> => {
+    await Promise.all(Array.from({ length: Math.min(concurrency, offsets.length) }, async () => {
+      for (let next = offsets.shift(); next !== undefined && !stopped; next = offsets.shift()) {
+        try {
+          await read(next);
+        } catch (error) {
+          stopped = true;
+          throw error;
+        }
+      }
+    }));
+  };
   if (code === '0x') {
-    await Promise.all(requests.map(async (request, index) => {
+    await parallel(requests.map((_, index) => index), async (index) => {
+      const request = requests[index]!;
+      let data: string;
       try {
-        const data = await provider.call({ to: request.target, data: request.iface.encodeFunctionData(request.method, request.args ?? []), ...(options.blockTag !== undefined ? { blockTag: options.blockTag } : {}) });
+        data = await provider.call({ to: request.target, data: request.iface.encodeFunctionData(request.method, request.args ?? []), ...(options.blockTag !== undefined ? { blockTag: options.blockTag } : {}) });
+      } catch (error) {
+        if (!contractRevert(error)) throw error;
+        return;
+      }
+      try {
         results[index] = [...request.iface.decodeFunctionResult(request.method, data)];
       } catch {
         results[index] = null;
       }
-    }));
+    });
     return results;
   }
   const overrides = options.blockTag !== undefined ? { blockTag: options.blockTag } : {};
-  // A chunk that fails as a whole (RPC timeout, gas cap) is split and retried;
-  // a single call that still fails yields null like a reverting read.
   const run = async (offset: number, size: number): Promise<void> => {
     const chunk = requests.slice(offset, offset + size);
-    if (chunk.length === 0) return;
+    if (chunk.length === 0 || stopped) return;
     const calls = chunk.map((request) => ({ target: request.target, allowFailure: true, callData: request.iface.encodeFunctionData(request.method, request.args ?? []) }));
     let returned: Array<{ success: boolean; returnData: string }>;
     try {
       returned = await multicall.getFunction('aggregate3').staticCall(calls, overrides) as Array<{ success: boolean; returnData: string }>;
     } catch (error) {
+      if (!batchCapacityError(error)) throw error;
       if (chunk.length === 1) return;
       const half = Math.ceil(chunk.length / 2);
       await run(offset, half);
@@ -68,11 +99,7 @@ export async function multicallRead(
       }
     });
   };
-  // Chunks run a few at a time: sequential batches made a 3,000-read view
-  // take ~13 s through a public RPC, while a full fan-out trips rate limits.
   const offsets = Array.from({ length: Math.ceil(requests.length / chunkSize) }, (_, index) => index * chunkSize);
-  await Promise.all(Array.from({ length: Math.min(concurrency, offsets.length) }, async () => {
-    for (let next = offsets.shift(); next !== undefined; next = offsets.shift()) await run(next, chunkSize);
-  }));
+  await parallel(offsets, offset => run(offset, chunkSize));
   return results;
 }

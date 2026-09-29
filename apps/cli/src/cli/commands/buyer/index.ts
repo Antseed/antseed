@@ -2,6 +2,7 @@ import type { Command } from 'commander';
 import { registerBuyerStartCommand } from './start.js';
 import { registerBuyerStatusCommand } from './status.js';
 import { registerBuyerDepositCommand } from './deposit.js';
+import { registerBuyerSetAuthorizedWalletCommand } from './set-authorized-wallet.js';
 import { registerBuyerWithdrawCommand } from './withdraw.js';
 import { registerBuyerSweepCommand } from './sweep.js';
 import { registerBuyerBalanceCommand } from './balance.js';
@@ -20,6 +21,7 @@ export function registerBuyerCommands(program: Command): void {
   registerBuyerStatusCommand(buyerCmd);
   registerBuyerDepositCommand(buyerCmd);
   registerBuyerWithdrawCommand(buyerCmd);
+  registerBuyerSetAuthorizedWalletCommand(buyerCmd);
   registerBuyerSweepCommand(buyerCmd);
   registerBuyerBalanceCommand(buyerCmd);
   registerBuyerConnectionCommand(buyerCmd);

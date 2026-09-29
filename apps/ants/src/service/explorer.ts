@@ -32,6 +32,7 @@ export async function explorerSellers(baseUrl: string | undefined, fetchImpl: ty
       if (typeof seller.address !== 'string') continue;
       const address = seller.address.toLowerCase();
       byAddress.set(address, {
+        fetchedAt: Date.now(), stale: false,
         name: seller.sellerName ?? null,
         providers: Array.isArray(seller.sellerProviders) ? seller.sellerProviders : [],
         modelsServed: seller.modelsServed ?? null,
@@ -48,6 +49,6 @@ export async function explorerSellers(baseUrl: string | undefined, fetchImpl: ty
     cache.set(baseUrl, entry);
     return entry;
   } catch {
-    return cached ?? { byAddress: new Map(), byAgent: new Map() };
+    return cached ? { ...cached, byAddress: new Map([...cached.byAddress].map(([address, profile]) => [address, { ...profile, stale: true }])) } : { byAddress: new Map(), byAgent: new Map() };
   }
 }

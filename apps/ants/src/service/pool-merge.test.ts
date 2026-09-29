@@ -33,10 +33,10 @@ describe('mergePools', () => {
     expect(rows.map((row) => row.agentId)).toEqual([10, 12, 11, 99]);
     const [a, c, b, mine] = rows;
     expect(a).toMatchObject({ stakeable: true, hasPool: true, profile: { name: 'A' }, powerShareBps: 6000, yourPower: '150', yourPoolShareBps: 2500, yourPositionIds: [4, 5], yourStake: '200' });
-    expect(a!.volumes).toEqual([{ epoch: 22, usdc: '50' }, { epoch: 21, usdc: '45' }, { epoch: 20, usdc: '0' }]);
+    expect(a!.volumes).toEqual([{ epoch: 22, usdc: '50' }, { epoch: 21, usdc: '45' }]);
     expect(a!.lastEpochEmission).toBe('12');
     expect(b).toMatchObject({ stakeable: false, hasPool: false, lastEpochEmission: null });
-    expect(c).toMatchObject({ seller: '0xccc', stakeable: false, volumes: [{ epoch: 22, usdc: '7' }, { epoch: 21, usdc: '0' }, { epoch: 20, usdc: '0' }] });
+    expect(c).toMatchObject({ seller: '0xccc', stakeable: false, volumes: [{ epoch: 22, usdc: '7' }] });
     expect(mine).toMatchObject({ agentId: 99, yourPositionIds: [6], yourStake: '1' });
   });
 

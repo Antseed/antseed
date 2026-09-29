@@ -1,6 +1,7 @@
 import { useState } from 'react';
 import type { SellerView } from '../../../src/api-types';
 import { api } from '../api';
+import { useConfig } from '../app-context';
 import { AddressLink } from '../components/AddressLink';
 import { ActionButton } from '../components/Confirm';
 import { Details } from '../components/Details';
@@ -12,24 +13,44 @@ import { Pill } from '../components/Pill';
 import { StatTile, Tiles } from '../components/StatTile';
 import { OwnSellerStatus, ProofLookup, ProofSubmit, SellerLookup } from '../components/Verification';
 import { usePageData } from '../data';
-import { formatAnts, isPositiveInt } from '../format';
+import { formatAnts, formatUsdc, formatInt, isPositiveInt } from '../format';
 
 export function SellerPage() {
-  const page = usePageData('seller', api.seller);
+  const config = useConfig();
+  const disconnected = /^0x0{40}$/i.test(config.address);
+  const page = usePageData(disconnected ? null : `seller:${config.address.toLowerCase()}`, api.seller);
   const data = page.data;
+
+  if (disconnected) {
+    return (
+      <Panel title="Open your seller dashboard">
+        <p className="muted">
+          Open this dashboard with <code>antseed ants --address 0x...</code> using your seller’s address, then connect that seller’s wallet.
+        </p>
+      </Panel>
+    );
+  }
+  if (!data) {
+    return page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : <Skeleton rows={6} />;
+  }
   return (
     <>
-      {page.error && !data ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
       {page.error && data ? <div className="status-line">Refresh failed: {page.error}</div> : null}
-      {!data && page.loading ? <Skeleton rows={6} /> : null}
-      {data ? <SellerBody data={data} /> : null}
+      {data.agentId === 0 ? (
+        <Panel title="Not registered as a seller">
+          <p className="muted">
+            The connected wallet has no seller identity on this network. Switch to your seller wallet, or register this wallet below to create its identity and bind it in the seller registry.
+          </p>
+        </Panel>
+      ) : null}
+      <SellerBody data={data} />
 
       <Panel title="Wash-trading status">
         <OwnSellerStatus />
       </Panel>
 
       <Panel className="panel-collapsible">
-        <Details summary="Submit a seller proof">
+        <Details summary="Advanced: submit a seller proof">
           <div className="stack-lg">
             <ProofSubmit />
             <div>
@@ -69,7 +90,7 @@ function SellerBody({ data }: { data: SellerView }) {
           items={[
             ['ERC-8004 identity', <YesNo value={data.identityRegistered} />],
             ['Seller registry binding', <YesNo value={data.registryBound} />],
-            ['Legacy stake', `${formatAnts(data.legacyStake, 4)} ANTS`],
+            ['Legacy stake', `${formatUsdc(data.legacyStake)} USDC`],
             ['Legacy eligibility path', <YesNo value={data.legacyEligibilityEnabled} />],
           ]}
         />
@@ -101,7 +122,7 @@ function SellerBody({ data }: { data: SellerView }) {
           <>
             <Facts
               items={[
-                ['Remaining', `${formatAnts(starter.remaining, 4)} ANTS`],
+                ['Grants remaining', formatInt(starter.remaining)],
                 ['Grant amount', `${formatAnts(starter.amount, 4)} ANTS`],
                 ['Claim window ends', <EpochCell epoch={starter.endEpoch} />],
                 ['Legacy eligible', <YesNo value={starter.legacyEligible} />],
@@ -109,18 +130,13 @@ function SellerBody({ data }: { data: SellerView }) {
             />
             <div className="mt">
               <ActionButton
-                label="Claim starter"
+                label={starter.initialized ? 'Grant already claimed' : 'Claim starter'}
                 variant="primary"
                 title="Claim starter grant"
                 path="/api/seller/claim-starter"
                 body={{}}
-                disabled={!starter.claimable}
-                disabledReason={starter.expired ? 'The starter grant window has expired.' : 'The starter grant is not claimable for this wallet.'}
-                summary={[
-                  ['Wallet', <span className="mono">{data.address}</span>],
-                  ['Amount', <span className="mono">{formatAnts(starter.remaining, 4)} ANTS</span>],
-                  ['Contract', <span className="mono">{starter.contract ?? '—'}</span>],
-                ]}
+                disabled={starter.initialized || !starter.claimable}
+                disabledReason={starter.initialized ? 'This starter grant has already been claimed.' : starter.expired ? 'The starter grant window has expired.' : 'The starter grant is not claimable for this wallet.'}
               />
             </div>
             <Details summary="Details" className="mt">
@@ -149,7 +165,7 @@ function RegisterAction({ data }: { data: SellerView }) {
   const body: { agentId?: number } = agentId.trim() ? { agentId: Number(agentId) } : {};
   return (
     <div className="form-row">
-      <Input label="Agent id (optional)" hint="Leave empty to register a new ERC-8004 identity" width="md" inputMode="numeric" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
+      <Input label="Agent id (optional)" hint="Use an existing ID, or leave empty to create an identity if this wallet has none." width="md" inputMode="numeric" value={agentId} onChange={(e) => setAgentId(e.target.value)} />
       <ActionButton
         label={data.registryBound ? 'Re-register binding' : 'Register binding'}
         variant="primary"
@@ -157,14 +173,8 @@ function RegisterAction({ data }: { data: SellerView }) {
         path="/api/seller/register"
         body={body}
         validate={() => (agentId.trim() && !isPositiveInt(agentId) ? 'Agent id must be a positive integer.' : null)}
-        summary={[
-          ['Wallet', <span className="mono">{data.address}</span>],
-          ['Agent id', <span className="mono">{agentId.trim() || 'new identity'}</span>],
-          ['Currently bound', data.registryBound ? 'yes' : 'no'],
-        ]}
-      >
-        <p className="hint mt">Binds this wallet to the agent id in the seller registry (registering an ERC-8004 identity first when none is given).</p>
-      </ActionButton>
+      />
+      <p className="hint mt">Binds this wallet to its agent id in the seller registry. Without an id, it reuses a known identity or creates one if this wallet has none. Creating and binding can require separate transactions.</p>
     </div>
   );
 }

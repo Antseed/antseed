@@ -43,14 +43,16 @@ export async function checkSellerReadiness(
     command: isReg ? undefined : 'antseed seller register',
   });
 
-  // 3. Staked (seller on-chain address = proxy when configured)
-  const stake = await stakingClient.getStake(sellerAddr);
-  const hasStake = stake > 0n;
+  // 3. Use the configured staking contract's eligibility rule. The seller
+  // registry can allow zero stake, but still requires a valid bound agent.
+  const eligible = await stakingClient.isStakedAboveMin(sellerAddr);
   checks.push({
     name: 'Stake',
-    passed: hasStake,
-    message: hasStake ? `Staked: ${stake}` : 'No stake. Run: antseed seller stake <amount>',
-    command: hasStake ? undefined : 'antseed seller stake 10',
+    passed: eligible,
+    message: eligible
+      ? 'Seller meets on-chain eligibility requirements'
+      : 'Seller does not meet on-chain eligibility requirements. Check agent binding and required stake with: antseed seller status',
+    command: eligible ? undefined : 'antseed seller status',
   });
 
   return checks;

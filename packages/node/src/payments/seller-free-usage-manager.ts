@@ -9,6 +9,7 @@ import type {
 import { peerIdToAddress } from '../types/peer.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 import { FreeUsageClient } from './evm/free-usage-client.js';
+import type { SellerFreeTierLimiter } from './seller-free-tier-limiter.js';
 import {
   computeFreeUsageChannelId,
   FREE_USAGE_AUTH_TYPES,
@@ -84,7 +85,11 @@ export class SellerFreeUsageManager {
   private readonly _sessions = new Map<string, SellerFreeUsageSession>();
   private readonly _buyerLocks = new Map<string, Promise<void>>();
 
-  constructor(identity: Identity, config: SellerFreeUsageConfig) {
+  constructor(
+    identity: Identity,
+    config: SellerFreeUsageConfig,
+    private readonly _freeTierLimiter: SellerFreeTierLimiter | null = null,
+  ) {
     this._signer = identity.wallet;
     this._sellerEvmAddr = identity.wallet.address;
     this._domain = makeFreeUsageDomain(config.chainId, config.freeUsageContractAddress);
@@ -102,9 +107,9 @@ export class SellerFreeUsageManager {
     return this._client;
   }
 
-  handleOpen(buyerPeerId: string, payload: FreeUsageOpenPayload, paymentMux: PaymentMux): void {
+  handleOpen(buyerPeerId: string, payload: FreeUsageOpenPayload, paymentMux: PaymentMux, remoteIp: string | null = null): void {
     const lock = (this._buyerLocks.get(buyerPeerId) ?? Promise.resolve()).then(async () => {
-      await this._handleOpenInner(buyerPeerId, payload, paymentMux);
+      await this._handleOpenInner(buyerPeerId, payload, paymentMux, remoteIp);
     });
     this._buyerLocks.set(buyerPeerId, lock.catch(() => {}));
     void lock.catch((err) => {
@@ -201,6 +206,7 @@ export class SellerFreeUsageManager {
     buyerPeerId: string,
     payload: FreeUsageOpenPayload,
     paymentMux: PaymentMux,
+    remoteIp: string | null,
   ): Promise<void> {
     const buyerEvmAddr = peerIdToAddress(buyerPeerId);
     const expectedChannelId = computeFreeUsageChannelId(buyerEvmAddr, this._sellerEvmAddr, payload.salt);
@@ -219,6 +225,17 @@ export class SellerFreeUsageManager {
     );
     if (recovered.toLowerCase() !== buyerEvmAddr.toLowerCase()) {
       throw new Error(`invalid FreeUsageOpen signer recovered=${recovered} expected=${buyerEvmAddr}`);
+    }
+
+    // Check inside the buyer lock, immediately before spending gas. Opening
+    // does not consume quota; the inference handler accounts for requests.
+    // Storage errors propagate so admission fails closed without an open/ack.
+    const admission = this._freeTierLimiter?.check({ buyerPeerId, remoteIp });
+    if (admission && !admission.allowed) {
+      throw new Error(
+        `free_tier_exhausted: limitedBy=${admission.limitedBy} ` +
+        `ip=${admission.remoteIp ?? 'unknown'} retryAfterMs=${admission.retryAfterMs}`,
+      );
     }
 
     const openPromise = this._openOnChain(buyerEvmAddr, payload);

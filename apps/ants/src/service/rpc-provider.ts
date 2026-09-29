@@ -10,9 +10,11 @@ export type RpcTransport = (url: string, body: string) => Promise<RpcTransportRe
 
 const REQUEST_TIMEOUT_MS = 10_000;
 const THROTTLE_COOLDOWN_MS = 20_000;
-/** Once an endpoint has throttled, its calls are paced below the budget the public gateways were measured to allow. */
-const PACED_CALLS_PER_SECOND = 12;
+/** Pace calls before an endpoint throttles to limit bursts against public gateways. */
+const PACED_CALLS_PER_SECOND = 8;
 const RATE_LIMIT_CODE = -32005;
+/** Deployed contract code does not change; Multicall3 is probed on every batched read. */
+const CODE_CACHE_MS = 10 * 60_000;
 
 interface Endpoint {
   url: string;
@@ -33,11 +35,13 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
   private readonly endpoints: Endpoint[];
   private readonly transport: RpcTransport;
   private readonly now: () => number;
+  private readonly inflightReads = new Map<string, Promise<JsonRpcResult[]>>();
+  private readonly codeCache = new Map<string, { result: string; at: number }>();
 
   constructor(urls: string[], evmChainId?: number, options: { transport?: RpcTransport; now?: () => number } = {}) {
     if (urls.length === 0) throw new Error('At least one RPC endpoint is required.');
     super(urls[0], evmChainId, { staticNetwork: !!evmChainId, batchMaxCount: 1 });
-    this.endpoints = urls.map((url) => ({ url, coolingUntil: 0, bucket: null }));
+    this.endpoints = urls.map((url) => ({ url, coolingUntil: 0, bucket: new TokenBucket(PACED_CALLS_PER_SECOND, 4) }));
     this.transport = options.transport ?? fetchTransport;
     this.now = options.now ?? Date.now;
   }
@@ -51,7 +55,35 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
     return this.endpoints.map((endpoint) => endpoint.url);
   }
 
+  invalidateReads(): void {
+    this.inflightReads.clear();
+  }
+
   override async _send(payload: JsonRpcPayload | JsonRpcPayload[]): Promise<JsonRpcResult[]> {
+    if (Array.isArray(payload) || !['eth_call', 'eth_getCode', 'eth_getBalance'].includes(payload.method)) {
+      return this.sendPayload(payload);
+    }
+    const codeAddress = payload.method === 'eth_getCode' && Array.isArray(payload.params) && typeof payload.params[0] === 'string' ? payload.params[0].toLowerCase() : null;
+    const cachedCode = codeAddress ? this.codeCache.get(codeAddress) : undefined;
+    if (cachedCode && this.now() - cachedCode.at < CODE_CACHE_MS) return [{ id: payload.id, result: cachedCode.result }];
+    const key = JSON.stringify([payload.method, payload.params]);
+    let pending = this.inflightReads.get(key);
+    if (!pending) {
+      pending = this.sendPayload(payload);
+      this.inflightReads.set(key, pending);
+    }
+    try {
+      const results = (await pending).map(result => ({ ...result, id: payload.id }));
+      const code = results[0] && 'result' in results[0] ? results[0].result : undefined;
+      // Only deployed code is remembered: an account may still gain EIP-7702 delegation later.
+      if (codeAddress && typeof code === 'string' && code !== '0x') this.codeCache.set(codeAddress, { result: code, at: this.now() });
+      return results;
+    } finally {
+      if (this.inflightReads.get(key) === pending) this.inflightReads.delete(key);
+    }
+  }
+
+  private async sendPayload(payload: JsonRpcPayload | JsonRpcPayload[]): Promise<JsonRpcResult[]> {
     const calls = Array.isArray(payload) ? payload.length : 1;
     const body = JSON.stringify(payload);
     let lastError: Error | null = null;
@@ -59,6 +91,7 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
       const endpoint = this.pick();
       if (!endpoint) break;
       if (endpoint.bucket) await endpoint.bucket.take(calls);
+      if (endpoint.coolingUntil > this.now()) continue;
       let response: RpcTransportResponse;
       try {
         response = await this.transport(endpoint.url, body);
@@ -73,6 +106,11 @@ export class RotatingJsonRpcProvider extends JsonRpcProvider {
         continue;
       }
       if (response.status < 200 || response.status >= 300) {
+        if (response.status >= 500) {
+          lastError = new Error(`${endpoint.url} responded with HTTP ${response.status}`);
+          this.cool(endpoint);
+          continue;
+        }
         throw new Error(`${endpoint.url} responded with HTTP ${response.status}`);
       }
       return (Array.isArray(response.body) ? response.body : [response.body]) as JsonRpcResult[];

@@ -30,6 +30,10 @@ before an epoch boundary to have power in that epoch.
 Legacy USDC staking remains an eligibility fallback until explicitly disabled;
 the new seller registry does not expose the legacy USDC withdrawal flow.
 
+The registry's `minSellerPoolStake` is currently 0 on Base mainnet, so any
+seller with a bound agent ID is eligible to sell without staking. Stake
+determines pool power and rewards, not selling eligibility.
+
 ### Moving stake and early withdrawal
 
 Moving stake preserves the full ANTS principal and the original lock and

@@ -13,6 +13,7 @@ import {
 } from '../integrations/integrations';
 import styles from '../integrations/integrations.module.css';
 import {ArrowRight, Button, FinalCta, PageHero, Section, Ticks} from '../components/ui';
+import {SkillChip} from '../components/SkillChip';
 import {HugeiconsIcon} from '@hugeicons/react';
 import {
   SourceCodeIcon,
@@ -21,11 +22,7 @@ import {
   ComputerTerminal01Icon,
 } from '@hugeicons/core-free-icons';
 
-/* --------------------------- Category icons --------------------------- *
- * Hugeicons, stroke style, 20x20. Centralized so we don't sprinkle
- * ASCII glyphs around the UI.
- * -------------------------------------------------------------------- */
-
+/* Category icons: Hugeicons, stroke style, 20x20. */
 const CATEGORY_ICON = {
   'coding-agent': SourceCodeIcon,
   'agent-platform': NeuralNetworkIcon,
@@ -35,6 +32,14 @@ const CATEGORY_ICON = {
 
 function CategoryIcon({category}: {category: IntegrationCategory}) {
   return <HugeiconsIcon icon={CATEGORY_ICON[category]} size={20} strokeWidth={1.6} />;
+}
+
+function matchesQuery(i: Integration, q: string): boolean {
+  return (
+    i.name.toLowerCase().includes(q) ||
+    i.oneLiner.toLowerCase().includes(q) ||
+    CATEGORY_LABELS[i.category].toLowerCase().includes(q)
+  );
 }
 
 function IntegrationCard({i}: {i: Integration}) {
@@ -103,22 +108,25 @@ function CategorySection({
   );
 }
 
+const BREADCRUMB_LD = {
+  '@context': 'https://schema.org',
+  '@type': 'BreadcrumbList',
+  itemListElement: [
+    {'@type': 'ListItem', position: 1, name: 'Home', item: 'https://antseed.com/'},
+    {'@type': 'ListItem', position: 2, name: 'Integrations', item: 'https://antseed.com/integrations/'},
+  ],
+};
+
 export default function ConnectHub(): JSX.Element {
   const [query, setQuery] = useState('');
 
   const grouped = useMemo<Record<IntegrationCategory, Integration[]>>(() => {
     const out = {} as Record<IntegrationCategory, Integration[]>;
     for (const cat of CATEGORY_ORDER) out[cat] = [];
+    const filtering = query.trim() !== '';
+    const q = query.toLowerCase();
     for (const i of integrations) {
-      if (query.trim()) {
-        const q = query.toLowerCase();
-        if (
-          !i.name.toLowerCase().includes(q) &&
-          !i.oneLiner.toLowerCase().includes(q) &&
-          !CATEGORY_LABELS[i.category].toLowerCase().includes(q)
-        )
-          continue;
-      }
+      if (filtering && !matchesQuery(i, q)) continue;
       out[i.category].push(i);
     }
     return out;
@@ -155,24 +163,9 @@ export default function ConnectHub(): JSX.Element {
       title="Integrations"
       description="Every way to use Antseed: coding agents, autonomous agents, editors, SDKs, frameworks, partner platforms. Anthropic and OpenAI compatible. Drop-in via localhost:8377.">
       <Head>
-        <link
-          rel="alternate"
-          type="text/markdown"
-          href="/skill.md"
-          title="Agent-readable integration guide"
-        />
         <meta property="og:title" content="Integrations | Antseed" />
         <meta property="og:description" content="Every way to use Antseed: coding agents, autonomous agents, editors, SDKs, frameworks, partner platforms. Anthropic and OpenAI compatible." />
-        <script type="application/ld+json">
-          {JSON.stringify({
-            '@context': 'https://schema.org',
-            '@type': 'BreadcrumbList',
-            itemListElement: [
-              {'@type': 'ListItem', position: 1, name: 'Home', item: 'https://antseed.com/'},
-              {'@type': 'ListItem', position: 2, name: 'Integrations', item: 'https://antseed.com/integrations/'},
-            ],
-          })}
-        </script>
+        <script type="application/ld+json">{JSON.stringify(BREADCRUMB_LD)}</script>
       </Head>
 
       <PageHero
@@ -180,14 +173,12 @@ export default function ConnectHub(): JSX.Element {
         title="One local endpoint. Every tool you already use."
         lead={
           <>
-            Antseed runs a buyer proxy at <code>http://localhost:8377</code> that speaks{' '}
-            <strong>all four major LLM API protocols</strong> - Anthropic Messages,
-            OpenAI Chat Completions, OpenAI Responses, and OpenAI Completions - and
-            translates between them on the fly. Pick your tool below; Antseed makes it fit.
+            Your local endpoint at <code>http://localhost:8377</code> is OpenAI and Anthropic
+            compatible and translates between the two on the fly. Pick your tool below.
           </>
         }>
-        <Button to="/docs/install" arrow>Install Antseed</Button>
-        <Button href="/skill.md" variant="ghost">For agents: skill.md</Button>
+        <Button to="/docs/install" arrow>Install the CLI</Button>
+        <SkillChip size="md" />
       </PageHero>
 
       <Section tone="tinted" width="xl" compact>
@@ -214,6 +205,7 @@ export default function ConnectHub(): JSX.Element {
         <div className={styles.searchRow}>
           <input
             type="search"
+            aria-label="Search integrations"
             placeholder="Search integrations…"
             value={query}
             onChange={(e) => setQuery(e.target.value)}
@@ -263,8 +255,8 @@ export default function ConnectHub(): JSX.Element {
           <div>
             <h3>Building an integration?</h3>
             <p>
-              Read the <Link to="/docs/guides/using-the-api">protocol guide</Link>, grab{' '}
-              <a href="/skill.md">skill.md</a> for your agent, and ping us in{' '}
+              Read the <Link to="/docs/guides/using-the-api">API guide</Link>, give your agent{' '}
+              <a href="/skill.md">the skill</a>, and ping us in{' '}
               <a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer">
                 Telegram
               </a>{' '}
@@ -276,16 +268,15 @@ export default function ConnectHub(): JSX.Element {
 
       <FinalCta
         title="Point your tools at Antseed"
-        sub="Install once, set one environment variable, and keep the workflow you already have."
+        sub="Install once, set one base URL, and keep the workflow you already have."
         note={
           <>
-            <a href="/docs/install">Install guide</a>
-            <a href="/docs/guides/using-the-api">Protocol guide</a>
-            <a href="/skill.md">skill.md</a>
+            <a href="/docs/guides/using-the-api">Read the API guide</a>
+            <a href="/skill.md">Read the skill</a>
           </>
         }>
-        <Button to="/docs/install" variant="white" size="lg" arrow>Install Antseed</Button>
-        <Button to="/providers" variant="light" size="lg">Become a provider</Button>
+        <Button to="/docs/install" variant="white" size="lg" arrow>Install the CLI</Button>
+        <SkillChip dark />
       </FinalCta>
     </Layout>
   );

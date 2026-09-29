@@ -94,7 +94,7 @@ function ActivityList() {
   return (
     <>
       {jobs.length === 0 ? (
-        <div className="activity-empty">No transactions yet this session.</div>
+        <div className="activity-empty">No recorded transactions. Signed-wallet activity is saved locally for 30 days.</div>
       ) : (
         <ol className="activity-list">
           {jobs.map((job) => (
@@ -115,6 +115,7 @@ function ActivityRow({ job, now }: { job: JobView; now: number }) {
       <div className="activity-main">
         <div className="activity-title">{jobTitle(job.kind)}</div>
         {subtitle ? <div className="activity-sub">{subtitle}</div> : null}
+        {job.steps.length > 1 ? <details><summary>Action steps</summary><ol>{job.steps.map((step, index) => <li key={index}>{step.label}</li>)}</ol></details> : null}
         {job.status === 'failed' && job.error ? <div className="activity-error">{job.error}</div> : null}
         {hashed.length > 0 ? (
           <div className="activity-links">

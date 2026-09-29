@@ -23,11 +23,10 @@ antseed seller setup
 # 2. Set your identity key
 export ANTSEED_IDENTITY_HEX=<your-secp256k1-private-key-hex>
 
-# 3. Fund your wallet with ETH (gas) and USDC (staking) on Base Mainnet
+# 3. Fund your wallet with ETH (gas) on Base Mainnet
 
-# 4. Register on-chain and stake
+# 4. Register on-chain (staking is optional)
 antseed seller register
-antseed seller stake 10
 
 # 5. Set your upstream API key
 export ANTHROPIC_API_KEY=<your-key>        # for anthropic provider

@@ -1,3 +1,4 @@
+import { WalletProvider } from './wallet';
 import { Card } from './components/ui';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { api, getToken, onUnauthorized } from './api';
@@ -8,6 +9,7 @@ import { usePageData } from './data';
 import { JobsProvider } from './jobs';
 import { AddressesPage } from './pages/Addresses';
 import { NetworkPage } from './pages/Network';
+import { PositionsPage } from './pages/Positions';
 import { RewardsPage } from './pages/Rewards';
 import { SellerPage } from './pages/Seller';
 import { StakePage } from './pages/Stake';
@@ -17,7 +19,7 @@ const THEME_KEY = 'ants.dashboard.theme';
 /** The shell re-reads the overview on this cadence so the footer "updated" time and the tiles stay fresh. */
 const OVERVIEW_POLL_MS = 60_000;
 
-/** Stored preference wins; otherwise follow the OS setting; light by default. */
+/** Stored preference wins; otherwise follow the OS setting; dark by default. */
 function readTheme(): Theme {
   try {
     const stored = window.localStorage.getItem(THEME_KEY);
@@ -26,9 +28,9 @@ function readTheme(): Theme {
     /* storage unavailable */
   }
   try {
-    return window.matchMedia?.('(prefers-color-scheme: dark)').matches ? 'dark' : 'light';
+    return window.matchMedia?.('(prefers-color-scheme: light)').matches ? 'light' : 'dark';
   } catch {
-    return 'light';
+    return 'dark';
   }
 }
 
@@ -64,11 +66,19 @@ function AuthGate() {
           ANTS<span>staking</span>
         </div>
         <p>
-          Open this dashboard from <code>antseed ants</code>.
+          <strong>Reopen your rewards or staking dashboard</strong>
         </p>
         <p className="muted small">
-          The CLI starts the local server and opens the browser with a one-time session token. This page has no token (or the server rejected it), so it cannot read
-          wallet or chain data.
+          This link is missing a valid session or is no longer valid. Open a fresh link to continue.
+        </p>
+        <p className="muted small">
+          <strong>Using the AntSeed desktop app?</strong><br />
+          Go to <strong>Rewards</strong>, then select <strong>Claim rewards</strong> or <strong>Manage staking</strong>. To use another browser, choose{' '}
+          <strong>Copy link</strong> beside the action and paste it into the browser where you use your wallet.
+        </p>
+        <p className="muted small">
+          <strong>Using the CLI?</strong><br />
+          Run <code>antseed ants</code> to reopen the dashboard.
         </p>
       </Card>
     </div>
@@ -82,13 +92,13 @@ function Shell({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }
 
   const refreshOverview = overview.refresh;
   useEffect(() => {
-    const timer = window.setInterval(refreshOverview, OVERVIEW_POLL_MS);
+    const timer = window.setInterval(() => { if (document.visibilityState === 'visible') refreshOverview(); }, OVERVIEW_POLL_MS);
     return () => window.clearInterval(timer);
   }, [refreshOverview]);
 
   const value = useMemo<AppValue | null>(
-    () => (config.data ? { config: config.data, overview: overview.data, theme, toggleTheme } : null),
-    [config.data, overview.data, theme, toggleTheme],
+    () => (config.data ? { config: config.data, overview: overview.data, overviewError: overview.error, theme, toggleTheme } : null),
+    [config.data, overview.data, overview.error, theme, toggleTheme],
   );
 
   if (!value) {
@@ -102,18 +112,20 @@ function Shell({ theme, toggleTheme }: { theme: Theme; toggleTheme: () => void }
   }
 
   return (
-    <AppContext.Provider value={value}>
+    <WalletProvider config={value.config}><AppContext.Provider value={value}>
       <JobsProvider>
         <Layout page={route.page} updatedAt={overview.updatedAt} loading={overview.loading}>
           <PageView page={route.page} />
         </Layout>
       </JobsProvider>
-    </AppContext.Provider>
+    </AppContext.Provider></WalletProvider>
   );
 }
 
 function PageView({ page }: { page: Page }) {
   switch (page) {
+    case 'positions':
+      return <PositionsPage />;
     case 'rewards':
       return <RewardsPage />;
     case 'seller':

@@ -1,0 +1,117 @@
+.chip {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  gap: 10px;
+  height: 50px;
+  padding: 0 16px 0 18px;
+  border-radius: 999px;
+  border: 1px solid var(--as-line);
+  background: var(--as-soil-2);
+  color: var(--as-heading);
+  font-family: var(--as-font-data);
+  font-size: 14px;
+  cursor: pointer;
+  transition: border-color 0.15s ease, background 0.15s ease;
+  white-space: nowrap;
+}
+
+.chip:hover {
+  border-color: var(--as-line-strong);
+}
+
+.md {
+  height: 46px;
+  font-size: 13px;
+  padding: 0 14px 0 16px;
+}
+
+.prompt {
+  color: var(--as-green-deep);
+  font-weight: 600;
+}
+
+.cmd {
+  font-family: inherit;
+  font-size: inherit;
+  background: none;
+  border: none;
+  padding: 0;
+  color: inherit;
+}
+
+.icon {
+  display: inline-flex;
+  width: 16px;
+  height: 16px;
+  color: var(--as-text-2);
+}
+
+.icon svg { width: 16px; height: 16px; }
+
+.copied .icon { color: var(--as-green-deep); }
+
+.toast {
+  position: absolute;
+  left: 50%;
+  bottom: calc(100% + 6px);
+  transform: translateX(-50%);
+  font-family: var(--as-font-app);
+  font-size: 12px;
+  line-height: 18px;
+  padding: 0 8px;
+  border-radius: 6px;
+  background: var(--as-void-deep, #001408);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.15s ease;
+  pointer-events: none;
+}
+
+.copied .toast { opacity: 1; }
+
+@media (max-width: 480px) {
+  .chip { font-size: 12px; padding: 0 12px 0 14px; }
+}
+
+/* Long commands on narrow screens: shrink the type and let the pill hug the viewport */
+.chip {
+  max-width: 100%;
+  box-sizing: border-box;
+}
+
+.chip { min-width: 0; }
+.cmd { min-width: 0; }
+
+@media (max-width: 480px) {
+  /* Wrap the command instead of clipping it: it has to stay copyable and
+     readable on a phone. */
+  .chip {
+    font-size: 12px;
+    gap: 8px;
+    padding: 12px 12px 12px 14px;
+    height: auto;
+    min-height: 46px;
+    white-space: normal;
+    text-align: left;
+    border-radius: 18px;
+    width: 100%;
+  }
+  .cmd {
+    flex: 1;
+    overflow-wrap: anywhere;
+    line-height: 18px;
+  }
+  .icon { flex-shrink: 0; }
+}
+
+/* On the ink closing bands */
+.dark {
+  border-color: rgba(255, 255, 255, 0.22);
+  background: rgba(255, 255, 255, 0.06);
+  color: #fff;
+}
+.dark:hover { border-color: rgba(255, 255, 255, 0.4); }
+.dark .prompt { color: #5bdbab; }
+.dark .icon { color: rgba(255, 255, 255, 0.7); }
+.dark.copied .icon { color: #5bdbab; }
