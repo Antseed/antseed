@@ -3,6 +3,7 @@
  * network, plugins, and dashboard config.
  */
 import { ipcMain } from 'electron';
+import { stakingSessions } from '../staking/portal.js';
 import { isMultiInstanceDevelopment } from '../dev-instance.js';
 import type { LogEvent } from '../runtime/log-parser.js';
 import type { ProcessManager, RuntimeProcessState } from '../runtime/process-manager.js';
@@ -358,13 +359,15 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
         return { ok: false, data: null, error: 'No valid config keys provided', status: null };
       }
       try {
-        const merged = await mergeConfig(safeConfig, ACTIVE_CONFIG_PATH);
+        const merged = await stakingSessions.reset(async () => {
+          const config = await mergeConfig(safeConfig, ACTIVE_CONFIG_PATH);
+          await stopPaymentsPortal();
+          return config;
+        });
         // Drop cached clients and the RPC backoff so the next read uses the
         // new chain config instead of answers from the old chain.
         invalidateChainClients();
         invalidateOnChainEnrichmentCache();
-        // Restart payments portal if running so it picks up new contract/chain config
-        void stopPaymentsPortal().catch(() => {});
         return { ok: true, data: { config: merged }, error: null, status: 200 };
       } catch (err) {
         return { ok: false, data: null, error: err instanceof Error ? err.message : String(err), status: null };

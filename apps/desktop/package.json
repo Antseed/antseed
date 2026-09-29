@@ -1,7 +1,7 @@
 {
   "name": "@antseed/desktop",
   "productName": "Antseed AI VPN",
-  "version": "0.2.43",
+  "version": "0.2.49",
   "private": true,
   "description": "Desktop app for Antseed",
   "author": "Antseed <hello@antseed.com>",
@@ -9,7 +9,7 @@
   "type": "module",
   "main": "dist/main/main.js",
   "scripts": {
-    "ensure:cli-dist": "pnpm -C ../../packages/api-adapter build && pnpm -C ../../packages/protocol build && pnpm -C ../../packages/buyer-core build && pnpm -C ../../packages/node build && pnpm -C ../../packages/provider-core build && pnpm -C ../../packages/router-core build && pnpm -C ../../packages/ant-agent build && pnpm -C ../../plugins/router-local build && pnpm -C ../../packages/antseed-verifier build && pnpm -C ../payments build:server && pnpm -C ../ants build:server && pnpm -C ../cli build",
+    "ensure:cli-dist": "pnpm -C ../../packages/api-adapter build && pnpm -C ../../packages/protocol build && pnpm -C ../../packages/buyer-core build && pnpm -C ../../packages/node build && pnpm -C ../../packages/provider-core build && pnpm -C ../../packages/router-core build && pnpm -C ../../packages/ant-agent build && pnpm -C ../../plugins/router-local build && pnpm -C ../../packages/antseed-verifier build && pnpm -C ../payments build:server && pnpm -C ../ants build && pnpm -C ../cli build",
     "brand:electron-dev": "node ./scripts/brand-electron-dev.mjs",
     "models:update-metadata": "pnpm -C ../../packages/node build && node ./scripts/update-model-metadata.mjs",
     "ensure:native": "npm run ensure:runtime-native",
@@ -33,13 +33,13 @@
     "start": "electron .",
     "start:debug": "cross-env ANTSEED_DESKTOP_DEBUG=1 electron . --debug-runtime",
     "prepare-dist": "node ./scripts/prepare-dist.mjs",
-    "dist": "npm run build && npm run prepare-dist && electron-builder",
+    "dist": "npm run build && npm run prepare-dist && node scripts/dist.mjs",
     "dist:mac": "npm run build && node scripts/release-mac.mjs --no-publish",
     "release:mac": "npm run build && node scripts/release-mac.mjs",
     "dist:win": "npm run build && npm run prepare-dist && electron-builder --win",
     "release:win": "npm run build && npm run prepare-dist && node scripts/release-win.mjs",
-    "dist:linux": "npm run build && npm run prepare-dist && electron-builder --linux",
-    "release:linux": "npm run build && npm run prepare-dist && electron-builder --linux --publish always"
+    "dist:linux": "npm run build && npm run prepare-dist && electron-builder --config electron-builder.linux.cjs --linux",
+    "release:linux": "npm run build && npm run prepare-dist && electron-builder --config electron-builder.linux.cjs --linux --publish always"
   },
   "dependencies": {
     "@antseed/antseed-verifier": "workspace:*",
@@ -53,7 +53,8 @@
     "fflate": "0.8.2",
     "node-datachannel": "^0.7.0",
     "officeparser": "6.1.0",
-    "yaml": "^2.8.2"
+    "yaml": "^2.8.2",
+    "@antseed/ants": "workspace:*"
   },
   "devDependencies": {
     "@antseed/ui": "workspace:*",

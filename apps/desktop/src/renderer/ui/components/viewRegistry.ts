@@ -6,12 +6,11 @@ import {
   BubbleChatIcon,
   ConnectIcon,
   DiscoverCircleIcon,
-  HelpCircleIcon,
-  PreferenceHorizontalIcon,
   SquarePowerIcon,
   UserIcon,
 } from '@hugeicons/core-free-icons';
 import type { ViewName } from '../types';
+import { AntIcon } from './vpr/AntIcon';
 
 // ViewHost only mounts the active view (plus the outgoing one during the
 // slide transition), so views don't receive an `active` flag — mounted means
@@ -130,7 +129,6 @@ export const VIEW_REGISTRY = {
       receivesOnSelectView: true,
       slideIndex: 5,
       preloadPriority: 'idle',
-      nav: { slot: 'main', label: 'Prefs', icon: PreferenceHorizontalIcon },
     },
   ),
   credits: createViewEntry(
@@ -152,7 +150,12 @@ export const VIEW_REGISTRY = {
   ),
   rewards: createViewEntry(
     async () => (await import('./views/VprRewardsView')).VprRewardsView as ComponentType<RoutedViewProps>,
-    { receivesOnSelectView: true, slideIndex: 10, preloadPriority: 'idle' },
+    {
+      receivesOnSelectView: true,
+      slideIndex: 6,
+      preloadPriority: 'idle',
+      nav: { slot: 'main', label: 'Rewards', icon: AntIcon },
+    },
   ),
   chat: createViewEntry(
     async () => (await import('./views/ChatView')).ChatView as ComponentType<RoutedViewProps>,
@@ -167,9 +170,8 @@ export const VIEW_REGISTRY = {
     async () => (await import('./views/VprHelpView')).VprHelpView as ComponentType<RoutedViewProps>,
     {
       receivesOnSelectView: true,
-      slideIndex: 6,
+      slideIndex: 10,
       preloadPriority: 'idle',
-      nav: { slot: 'main', label: 'Help', icon: HelpCircleIcon },
     },
   ),
   peers: createViewEntry(

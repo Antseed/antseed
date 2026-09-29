@@ -267,9 +267,8 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
         console.log(chalk.bold('\nNext steps:\n'));
         console.log(`  ${chalk.cyan('1.')} Set credentials: ${chalk.dim(getSellerSetupCredentialHint(pluginName))}`);
         console.log(`  ${chalk.cyan('2.')} Register on-chain: ${chalk.dim('antseed seller register')}`);
-        console.log(`  ${chalk.cyan('3.')} Stake ANTS: ${chalk.dim('antseed seller stake <ants> --epochs <n>')}`);
-        console.log(chalk.dim('     Before the upgrade, use: antseed seller legacy stake <usdc>'));
-        console.log(`  ${chalk.cyan('4.')} Start selling: ${chalk.dim('antseed seller start')}`);
+        console.log(`  ${chalk.cyan('3.')} Start selling: ${chalk.dim('antseed seller start')}`);
+        console.log(chalk.dim('     Optional: stake ANTS for rewards with antseed seller stake <ants> --epochs <n>'));
         console.log('');
 
         await printReadinessCheck(globalOpts.dataDir, globalOpts.config);

@@ -1,14 +1,18 @@
+import { EarlyExitHelp } from './EarlyExitHelp';
 import { Button } from './ui';
-import { useEffect, useState } from 'react';
+import { useEffect, useRef, useState, type ReactNode } from 'react';
 import type { WithdrawRequest } from '../../../src/api-types';
 import { api, type WithdrawPreview } from '../api';
 import { describeError, formatAnts, formatBps } from '../format';
 import { useJobs } from '../jobs';
 import { Confirm, useActionBlock } from './Confirm';
 import { Spinner } from './Feedback';
+import { Facts } from './Panel';
 
 interface Props {
-  positionIds: number[];
+  /** Single position, or several via `positionIds` (bulk withdraw from the positions table). */
+  positionId?: number;
+  positionIds?: number[];
   size?: 'sm';
   /** Open the preview immediately instead of waiting for the button (row-level withdraw). */
   autoOpen?: boolean;
@@ -17,24 +21,29 @@ interface Props {
 }
 
 /** Withdraw flow: preview first (synchronous), then an explicit slashing acknowledgement when exiting early. */
-export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted, onCancel }: Props) {
+export function WithdrawAction({ positionId, positionIds, size, autoOpen = false, onStarted, onCancel }: Props) {
+  const ids = positionIds ?? (positionId !== undefined ? [positionId] : []);
   const jobs = useJobs();
   const block = useActionBlock();
-  const [open, setOpen] = useState(false);
+  const [open, setOpen] = useState(autoOpen);
   const [preview, setPreview] = useState<WithdrawPreview | null>(null);
   const [previewError, setPreviewError] = useState<string | null>(null);
   const [loadingPreview, setLoadingPreview] = useState(false);
   const [accepted, setAccepted] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [busy, setBusy] = useState(false);
+  const submitting = useRef(false);
+  const disabled = ids.length === 0 || ids.some((id) => !Number.isSafeInteger(id) || id <= 0);
 
   const loadPreview = async () => {
+    if (disabled) return;
     setLoadingPreview(true);
     setPreview(null);
     setPreviewError(null);
     setAccepted(false);
     try {
-      setPreview(await api.withdrawPreview(positionIds));
+      const result = await api.withdrawPreview(ids);
+      setPreview(ids.length === 1 ? singlePositionPreview(result, ids[0]!) : result);
     } catch (err) {
       setPreviewError(describeError(err));
     } finally {
@@ -43,12 +52,11 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
   };
 
   const onOpen = () => {
+    if (disabled) return;
     setOpen(true);
     setError(null);
     void loadPreview();
   };
-
-  const disabled = block.blocked || positionIds.length === 0;
 
   useEffect(() => {
     if (autoOpen && !disabled) onOpen();
@@ -57,12 +65,13 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
   }, []);
 
   const onConfirm = async () => {
-    if (!preview) return;
+    if (!canConfirm || !preview || submitting.current) return;
     const body: WithdrawRequest = {
-      positionIds,
+      positionIds: ids,
       acceptSlashing: preview.earlyExit && accepted,
       maxSlashedAmount: preview.totalSlashed,
     };
+    submitting.current = true;
     setBusy(true);
     setError(null);
     try {
@@ -70,14 +79,15 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
       setOpen(false);
       onStarted?.();
     } catch (err) {
-      setError(describeError(err));
+      jobs.pushToast({ tone: 'danger', title: `Withdraw · position${ids.length > 1 ? 's' : ''} ${ids.map(id => `#${id}`).join(', ')} failed`, body: describeError(err), sticky: true });
     } finally {
+      submitting.current = false;
       setBusy(false);
     }
   };
 
-  const reason = block.reason ?? (positionIds.length === 0 ? 'Select at least one position.' : undefined);
-  const canConfirm = preview !== null && (!preview.earlyExit || accepted);
+  const reason = block.reason ?? (disabled ? 'Choose at least one position to withdraw.' : undefined);
+  const canConfirm = !disabled && !block.blocked && !busy && preview !== null && !preview.simulationError && (!preview.earlyExit || accepted);
 
   return (
     <div className="action">
@@ -90,8 +100,9 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
       )}
       {open ? (
         <Confirm
-          title={`Withdraw ${positionIds.length} position${positionIds.length === 1 ? '' : 's'}`}
-          confirmLabel={preview?.earlyExit ? 'Withdraw and burn slashed principal' : 'Withdraw'}
+          title={ids.length > 1 ? `Withdraw ${ids.length} positions` : 'Withdraw position'}
+          hideTitle={autoOpen}
+          confirmLabel={block.label ?? (preview?.earlyExit ? 'Withdraw and burn slashed principal' : 'Withdraw')}
           danger={preview?.earlyExit === true}
           disabled={!canConfirm}
           busy={busy}
@@ -104,6 +115,7 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
             onCancel?.();
           }}
         >
+          {block.reason ? <div className="hint">{block.reason} You can still review this estimate.</div> : null}
           {loadingPreview ? (
             <div className="muted small">
               <Spinner /> Computing slashing preview…
@@ -119,50 +131,20 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
               </div>
             </div>
           ) : null}
+          {preview?.simulationError && <div className="error-text">Withdrawal cannot execute: {preview.simulationError}</div>}
+          {preview ? <div className="hint">Rewards to claim separately: {formatAnts(preview.pendingRewards, 4)} ANTS. {preview.transfersRestricted ? 'Returned ANTS remain transfer-restricted in this wallet. Ending a position does not enable token transfers. Consider moving your allocation directly to another seller.' : 'ANTS transfers are currently enabled for this wallet.'}</div> : null}
           {preview ? (
             <div className="stack">
-              <div className="table-wrap" style={{ marginBottom: 0 }}>
-                <table className="table">
-                  <thead>
-                    <tr>
-                      <th>Position</th>
-                      <th className="num">Amount</th>
-                      <th className="num">Slash</th>
-                      <th className="num">Burned</th>
-                      <th className="num">Returned</th>
-                    </tr>
-                  </thead>
-                  <tbody>
-                    {preview.positions.map((p) => (
-                      <tr key={p.id}>
-                        <td className="mono">#{p.id}</td>
-                        <td className="num">{formatAnts(p.amount, 4)}</td>
-                        <td className={`num ${p.slashBps > 0 ? 'danger' : ''}`}>{formatBps(p.slashBps)}</td>
-                        <td className={`num ${p.slashBps > 0 ? 'danger' : ''}`}>{formatAnts(p.slashedAmount, 4)}</td>
-                        <td className="num">{formatAnts(p.returnedAmount, 4)}</td>
-                      </tr>
-                    ))}
-                  </tbody>
-                  <tfoot>
-                    <tr>
-                      <td>Total</td>
-                      <td />
-                      <td />
-                      <td className={`num ${preview.earlyExit ? 'danger' : ''}`}>{formatAnts(preview.totalSlashed, 4)}</td>
-                      <td className="num">{formatAnts(preview.totalReturned, 4)}</td>
-                    </tr>
-                  </tfoot>
-                </table>
-              </div>
+              <WithdrawalDetails preview={preview} />
               {preview.earlyExit ? (
-                <label className="check danger">
+                <div className="row"><label className="check danger">
                   <input type="checkbox" checked={accepted} onChange={(e) => setAccepted(e.target.checked)} />
                   <span>
                     I accept burning <span className="mono">{formatAnts(preview.totalSlashed, 4)}</span> ANTS of principal (early exit).
                   </span>
-                </label>
+                </label><EarlyExitHelp /></div>
               ) : (
-                <div className="hint">No early-exit slashing applies. Pending rewards are settled with the withdrawal.</div>
+                <div className="hint">No early-exit penalty applies. Withdrawal returns principal; rewards must be claimed separately.<EarlyExitHelp /></div>
               )}
             </div>
           ) : null}
@@ -170,4 +152,20 @@ export function WithdrawAction({ positionIds, size, autoOpen = false, onStarted,
       ) : null}
     </div>
   );
+}
+
+export function singlePositionPreview(preview: WithdrawPreview, positionId: number): WithdrawPreview {
+  if (preview.positions.length !== 1 || preview.positions[0]?.id !== positionId) throw new Error('Withdrawal preview does not match this position. Refresh and try again.');
+  return preview;
+}
+
+export function WithdrawalDetails({ preview }: { preview: WithdrawPreview }) {
+  const single = preview.positions.length === 1;
+  return <Facts items={[
+    ...(single
+      ? [['Early-exit penalty', <span className={preview.earlyExit ? 'danger' : undefined}>{formatBps(preview.positions[0]!.slashBps)}<EarlyExitHelp /></span>] as [string, ReactNode]]
+      : preview.positions.map((position): [string, ReactNode] => [`Position #${position.id}`, <span className={position.slashBps > 0 ? 'danger' : undefined}>{formatAnts(position.amount, 4)} ANTS · penalty {formatBps(position.slashBps)}</span>])),
+    ['Burned', <span className={preview.earlyExit ? 'danger' : undefined}>{formatAnts(preview.totalSlashed, 4)} ANTS</span>],
+    ['You receive', `${formatAnts(preview.totalReturned, 4)} ANTS`],
+  ]} />;
 }

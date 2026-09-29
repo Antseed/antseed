@@ -2,6 +2,7 @@ import type { ServiceApiProtocol } from './service-api.js';
 
 export const UNIT_BILLING_UNITS_V1 = [
   'output_images',
+  'completed_requests',
   'video_generations',
   'video_seconds',
 ] as const;
@@ -49,6 +50,13 @@ export interface UnitBillingContext {
   attributes?: Partial<Record<UnitBillingMatchKeyV1, string>>;
   unitLimits?: Partial<Record<UnitBillingUnitV1, number>>;
 }
+
+export const UNIT_BILLING_UNIT_IDS_V1 = {
+  output_images: 0,
+  completed_requests: 1,
+  video_generations: 2,
+  video_seconds: 3,
+} as const satisfies Record<UnitBillingUnitV1, number>;
 
 export const GENERATED_IMAGE_OUTPUT_UNIT_V1 = 'output_images' satisfies UnitBillingUnitV1;
 

@@ -334,16 +334,23 @@ export function setConfigValue(config: Record<string, unknown>, key: string, val
 }
 
 /**
- * Key paths that are accepted even when the intermediate segments don't
- * exist in the current config yet. These are dictionaries keyed by
- * user-supplied identifiers (provider names, service IDs).
+ * Key paths accepted even when optional intermediate objects do not exist.
+ * Provider paths are dynamic because their names and service IDs are user-defined;
+ * optional fixed-shape blocks enumerate their supported leaf keys explicitly.
  */
 const DYNAMIC_KEY_PREFIXES = [
   'seller.providers.',
 ];
 
-function isDynamicKey(key: string): boolean {
-  return DYNAMIC_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
+const DYNAMIC_KEYS = new Set([
+  'seller.freeTier.maxRequestsPerAddress',
+  'seller.freeTier.maxRequestsPerIp',
+  'seller.freeTier.windowMs',
+]);
+
+export function isDynamicKey(key: string): boolean {
+  return DYNAMIC_KEYS.has(key)
+    || DYNAMIC_KEY_PREFIXES.some((prefix) => key.startsWith(prefix));
 }
 
 function getValidConfigKeys(config: AntseedConfig, prefix = ''): string[] {

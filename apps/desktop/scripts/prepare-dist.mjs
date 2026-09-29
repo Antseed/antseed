@@ -29,6 +29,7 @@ const nmDir = path.join(appDir, 'node_modules');
 
 /** Map of workspace package names to their real source directories. */
 const WORKSPACE_PACKAGES = {
+  '@antseed/ants': path.resolve(appDir, '..', 'ants'),
   '@antseed/antseed-verifier': path.resolve(appDir, '..', '..', 'packages', 'antseed-verifier'),
   '@antseed/api-adapter': path.resolve(appDir, '..', '..', 'packages', 'api-adapter'),
   '@antseed/buyer-core': path.resolve(appDir, '..', '..', 'packages', 'buyer-core'),

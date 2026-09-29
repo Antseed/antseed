@@ -18,7 +18,7 @@ A **provider** (seller) offers AI services on the Antseed network. Buyers pay pe
 
 **Requirements:**
 - Node.js 20+
-- An EVM wallet funded with USDC (for staking) and ETH (for gas) on Base
+- An EVM wallet funded with ETH (for gas) on Base
 - An upstream AI API key (Anthropic, OpenAI, Together, etc.) or a local LLM
 
 ## Step 1: Install the CLI
@@ -80,21 +80,19 @@ Register the provider's EVM address on the ERC-8004 IdentityRegistry:
 antseed seller register
 ```
 
-This mints an agent identity NFT and prints the **Agent ID**. Save this — it's needed for staking.
+This mints an agent identity NFT and prints the **Agent ID**. Registration is all a provider needs to be eligible for buyer connections.
 
-## Step 6: Stake USDC
+## Step 6: Stake (optional)
 
-Providers must stake a minimum of $10 USDC to be eligible for buyer connections:
+Staking is optional: the seller registry's minimum pool stake is currently 0. Stake ANTS to earn recognized-usage rewards:
 
 ```bash
-antseed seller stake 10 --agent-id <AGENT_ID>
+antseed seller stake <ants> --epochs <n>
 ```
 
-The `--agent-id` flag is only needed for the first stake. Subsequent stakes look it up automatically.
-
 The provider's wallet needs:
-- USDC for the stake (minimum $10)
 - ETH for gas (a few cents)
+- ANTS only if staking
 
 ## Step 7: Configure provider credentials
 
@@ -157,7 +155,7 @@ antseed seller status
 
 This runs all readiness checks:
 - Identity registered on-chain
-- USDC staked above minimum
+- Seller eligible on-chain (registration is enough; stake is optional)
 - Provider credentials valid
 
 All checks must pass before starting the seller.
@@ -210,7 +208,7 @@ antseed seller emissions claim
 
 ## Troubleshooting
 
-- **"SellerNotStaked"**: Run `antseed seller stake 10 --agent-id <ID>`. The wallet needs USDC and ETH.
+- **"SellerNotStaked"** or readiness reports the seller ineligible: Run `antseed seller register`, then check `antseed seller status` for agent binding.
 - **"No provider configured"**: Set the API key env var or configure a provider in `~/.antseed/config.json`.
 - **"Not registered"**: Run `antseed seller register` first.
 - **"InsufficientAllowance"**: The CLI auto-approves USDC. If it fails, wait a few seconds and retry (nonce conflict).

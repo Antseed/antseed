@@ -1,6 +1,28 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { ants, epochDate, explorerTx, parseIds, pct, usdc } from './shared.js';
+import { mkdtemp, readdir, rm, writeFile } from 'node:fs/promises';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
+import { Command } from 'commander';
+import { AntsContext } from '@antseed/ants';
+import { Wallet } from 'ethers';
+import { ants, epochDate, explorerTx, loadAntsContext, parseIds, pct, usdc } from './shared.js';
+
+test('dashboard selection loads an existing identity without creating one, or skips identity for an explicit address', async (context) => {
+  context.mock.method(AntsContext.prototype, 'selectRpc', async () => {});
+  const dataDir = await mkdtemp(join(tmpdir(), 'ants-dashboard-context-'));
+  context.after(() => rm(dataDir, { recursive: true, force: true }));
+  const command = new Command('ants').option('--data-dir <directory>', '', dataDir).option('--config <file>', '', join(dataDir, 'config.json'));
+  const wallet = Wallet.createRandom();
+  const external = await loadAntsContext(command, { address: wallet.address });
+  assert.equal(external.ctx.address, wallet.address);
+  assert.equal(external.ctx.signer, undefined);
+  assert.deepEqual(await readdir(dataDir), []);
+  await writeFile(join(dataDir, 'identity.key'), wallet.privateKey.slice(2));
+  const integrated = await loadAntsContext(command);
+  assert.equal(integrated.ctx.address, wallet.address);
+  assert.equal(await integrated.ctx.signer?.getAddress(), wallet.address);
+});
 
 test('parseIds turns positional strings into numbers', () => {
   assert.deepEqual(parseIds(['1', '7']), [1, 7]);

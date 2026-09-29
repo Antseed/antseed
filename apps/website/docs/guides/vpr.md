@@ -47,7 +47,7 @@ Seller reputation is an input to routing, not a guarantee about model quality, p
 
 ## Set routing preferences
 
-Open **Preferences** to control automatic routing across models:
+Click the **Settings** gear beside the credit balance to open **Preferences** and control automatic routing across models:
 
 - **Minimum trust score** excludes sellers below the selected threshold.
 - **Price preference** strongly penalizes offers above the preferred input-token price.
@@ -196,7 +196,7 @@ Antseed is pay per use. Add credits once, then the AI VPN authorizes bounded pay
 
 ### Add credits
 
-Open **Credits** and choose **Add credits**. The available funding methods can include card checkout or USDC transfers, depending on your location and the currently enabled providers.
+Open **Profile** and choose **Add Credits**. The available funding methods can include card checkout or USDC transfers, depending on your location and the currently enabled providers.
 
 Credits are USDC on Base held by the AntseedDeposits contract for your AI VPN signing identity. Circle publishes the official [USDC contract addresses](https://developers.circle.com/stablecoins/usdc-contract-addresses); always verify the network and destination shown by the AI VPN before transferring funds.
 
@@ -206,11 +206,11 @@ When a paid session starts, the AI VPN signs a capped authorization for one sell
 
 Reserved balance is still yours. Any unspent amount returns to available balance when the channel settles or closes. If a seller disappears, the channel can enter an on-chain close process and release the remaining funds after the grace period.
 
-Open **Activity** to view active channels, spending history, settlement state, and close actions. See [Payments](/docs/guides/payments) for the full buyer flow and Base contract addresses.
+Open **Profile → Activity** to view active channels, spending history, settlement state, and close actions. See [Payments](/docs/guides/payments) for the full buyer flow and Base contract addresses.
 
 ### Withdraw unused credits
 
-Open **Credits** and choose **Withdraw unused credits**. Only available balance can be withdrawn immediately. Amounts reserved by active channels must be released through settlement or channel closure first.
+Open **Profile** and choose **Withdraw unused credits**. Only available balance can be withdrawn immediately. Amounts reserved by active channels must be released through settlement or channel closure first.
 
 ### Signing identity and funding wallet
 
@@ -220,7 +220,7 @@ See [Security: signing identity vs funding wallet](/docs/security#signing-identi
 
 ## Rewards
 
-The **Rewards** screen shows ANTS attributed to eligible network usage on the selected chain. Availability, transferability, and claim behavior depend on the deployed emissions contracts and current network phase.
+Open **Rewards** in the left sidebar to see ANTS attributed to eligible network usage on the selected chain and access **Manage staking** in your browser. Availability, transferability, and claim behavior depend on the deployed emissions contracts and current network phase. Credit balance, usage statistics, and payment channels remain in **Profile**.
 
 If claims are available, the AI VPN opens a secure browser flow for the authorized wallet signature. A displayed pending amount is not a promise of token value, future emissions, or permanent eligibility. See [Payments: ANTS token emissions](/docs/guides/payments#ants-token-emissions) and the [ANTS token overview](/ants-token).
 
@@ -288,7 +288,7 @@ See [Using the API](/docs/guides/using-the-api) for SDK configuration, format tr
 2. Wait a few seconds for peer discovery.
 3. Open **Models** and use **Refresh models**.
 4. Check whether local security software is blocking the AI VPN's outbound or inbound network connections.
-5. Open **Help → Developer mode → Available peers** to inspect discovery directly.
+5. Click **Help** beside the credit balance, then open **Developer mode → Available peers** to inspect discovery directly.
 
 Antseed prefers encrypted TCP for node-to-node traffic and can fall back to WebRTC for compatible peers. Do not troubleshoot the AI VPN as if WebRTC were its only transport.
 
@@ -328,7 +328,7 @@ Open **Activity** and inspect the active channel. Request a cooperative close wh
 
 ### Collect diagnostics
 
-Open **Help**, enable **Developer mode**, then use:
+Click **Help** beside the credit balance (or open **Profile → Help**), enable **Developer mode**, then use:
 
 - **Live logs** for runtime events
 - **Available peers** for discovered sellers and services

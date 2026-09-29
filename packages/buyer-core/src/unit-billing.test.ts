@@ -1,5 +1,11 @@
 import { describe, it, expect } from 'vitest';
-import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost } from './unit-billing.js';
+import {
+  captureUnitBillingContext,
+  computeFinalUnitBilling,
+  estimateUnitRequestCost,
+  isUnitBilledProtocol,
+  validateUnitBillingModelForProtocolV1,
+} from './unit-billing.js';
 import { validateUnitBillingUsage, type UnitBillingModelV1 } from '@antseed/protocol/billing';
 
 const model: UnitBillingModelV1 = { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] };
@@ -49,5 +55,24 @@ describe('acceptance-based video metering', () => {
     const captured = capture();
     const replay = { ...response({ id: 'task' }), headers: { 'x-antseed-idempotent-replay': 'true' } };
     expect(computeFinalUnitBilling(model, captured.context, replay, captured.requestFacts).costUsdc).toBe(0n);
+  });
+});
+
+describe('unit billing adapters', () => {
+  it('routes image and video billing through their adapters', () => {
+    const image: UnitBillingModelV1 = { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] };
+
+    expect(isUnitBilledProtocol('openai-images')).toBe(true);
+    expect(isUnitBilledProtocol('seedance-video')).toBe(true);
+    expect(isUnitBilledProtocol('openai-responses')).toBe(false);
+    expect(validateUnitBillingModelForProtocolV1('openai-images', image)).toEqual([]);
+    expect(validateUnitBillingModelForProtocolV1('veo-video', model)).toEqual([]);
+    expect(validateUnitBillingModelForProtocolV1('openai-images', model)).toEqual(['video_seconds is not supported for openai-images']);
+  });
+
+  it('fails closed for reserved completed_requests billing', () => {
+    const completed: UnitBillingModelV1 = { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.1 }] };
+
+    expect(validateUnitBillingModelForProtocolV1('openai-images', completed)).toEqual(['completed-request billing is not implemented']);
   });
 });

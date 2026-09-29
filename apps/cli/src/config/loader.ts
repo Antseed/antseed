@@ -337,6 +337,38 @@ function normalizeSellerGasCheck(
   };
 }
 
+function cloneSellerFreeTier(
+  value: AntseedConfig['seller']['freeTier'],
+): AntseedConfig['seller']['freeTier'] {
+  if (!value) return undefined;
+  return {
+    ...(value.maxRequestsPerAddress !== undefined ? { maxRequestsPerAddress: value.maxRequestsPerAddress } : {}),
+    ...(value.maxRequestsPerIp !== undefined ? { maxRequestsPerIp: value.maxRequestsPerIp } : {}),
+    ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
+  };
+}
+
+function normalizeSellerFreeTier(
+  value: unknown,
+  fallback?: AntseedConfig['seller']['freeTier'],
+): { freeTier: NonNullable<AntseedConfig['seller']['freeTier']> } | Record<string, never> {
+  if (!isRecord(value)) {
+    const cloned = cloneSellerFreeTier(fallback);
+    return cloned ? { freeTier: cloned } : {};
+  }
+  return {
+    freeTier: {
+      ...(value['maxRequestsPerAddress'] !== undefined
+        ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
+        : {}),
+      ...(value['maxRequestsPerIp'] !== undefined
+        ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
+        : {}),
+      ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
+    },
+  };
+}
+
 function mergeSellerConfig(
   defaults: AntseedConfig['seller'],
   value: unknown
@@ -352,6 +384,7 @@ function mergeSellerConfig(
       ...(normalizeVerifications(undefined, defaults.verifications)),
       ...(normalizeSellerHealthCheck(undefined, defaults.healthCheck)),
       ...(normalizeSellerGasCheck(undefined, defaults.gasCheck)),
+      ...(normalizeSellerFreeTier(undefined, defaults.freeTier)),
     };
   }
 
@@ -375,6 +408,7 @@ function mergeSellerConfig(
     ...(normalizeAgentDir(value['agentDir'], defaults.agentDir)),
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
+    ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
   };
 }
 

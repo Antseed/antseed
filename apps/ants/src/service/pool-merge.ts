@@ -9,8 +9,8 @@ export interface MergeInput {
   sellerEpochs: Map<string, IndexedSellerEpoch[]>;
   /** Epochs to show volume for, current first. */
   epochs: number[];
-  /** Your open positions per agent and their live power this epoch. */
-  own: Map<number, { positionIds: number[]; power: bigint; stake: bigint }>;
+  /** Your open positions per agent: live power this epoch, stake counting now, and stake pending activation. */
+  own: Map<number, { positionIds: number[]; power: bigint; stake: bigint; pending: bigint }>;
 }
 
 function bps(part: bigint, whole: bigint): number {
@@ -20,18 +20,18 @@ function bps(part: bigint, whole: bigint): number {
 /** The pool summary carries volume for the current (index 0) and previous (index 1) epoch only. */
 function poolVolumeAt(pool: IndexedPool | undefined, index: number): string | null {
   if (!pool) return null;
-  if (index === 0) return pool.volumeUsdc;
-  if (index === 1) return pool.lastVolumeUsdc;
+  if (index === 0) return pool.volumeAvailable === false ? null : pool.volumeUsdc;
+  if (index === 1) return pool.lastVolumeAvailable === false ? null : pool.lastVolumeUsdc;
   return null;
 }
 
 function volumesFor(seller: string | null, epochs: number[], sellerEpochs: Map<string, IndexedSellerEpoch[]>, pool?: IndexedPool): EpochVolume[] {
   const rows = seller ? sellerEpochs.get(seller.toLowerCase()) ?? [] : [];
-  return epochs.map((epoch, index) => {
+  return epochs.flatMap((epoch, index) => {
     const sellerVolume = rows.find((entry) => entry.epoch === epoch)?.volumeUsdc;
     if (sellerVolume) return { epoch, usdc: sellerVolume };
     const poolVolume = poolVolumeAt(pool, index);
-    return { epoch, usdc: poolVolume && poolVolume !== '0' ? poolVolume : '0' };
+    return poolVolume === null ? [] : [{ epoch, usdc: poolVolume }];
   });
 }
 
@@ -56,8 +56,12 @@ export function mergePools(input: MergeInput): PoolView[] {
       seller,
       profile: profileFor(seller),
       hasPool: weight !== 0n || pool.openPositions > 0,
+      openPositions: pool.participationComplete === false ? undefined : pool.openPositions,
+      totalPositions: pool.participationComplete === false ? undefined : pool.totalPositions,
+      stakers: pool.stakers ?? null,
       stakeable: pool.registered,
       activeStake: pool.activeStake,
+      pendingStake: pool.pendingStake,
       weight: pool.weight,
       powerShareBps: pool.powerShareBps || bps(weight, totalPower),
       securityShareBps: Number(pool.securityShareBps),
@@ -70,6 +74,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       lastEpochRewardPer1kPower: pool.lastRewardPer1kPower,
       projectedRewardPer1kPower: pool.projectedRewardPer1kPower,
       yourStake: (mine?.stake ?? 0n).toString(),
+      yourPendingStake: (mine?.pending ?? 0n).toString(),
       yourPower: (mine?.power ?? 0n).toString(),
       yourPoolShareBps: bps(mine?.power ?? 0n, weight),
       yourPositionIds: mine?.positionIds ?? [],
@@ -88,6 +93,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       hasPool: false,
       stakeable: false,
       activeStake: (mine?.stake ?? 0n).toString(),
+      pendingStake: (mine?.pending ?? 0n).toString(),
       weight: '0',
       powerShareBps: 0,
       securityShareBps: 0,
@@ -100,6 +106,7 @@ export function mergePools(input: MergeInput): PoolView[] {
       lastEpochRewardPer1kPower: null,
       projectedRewardPer1kPower: null,
       yourStake: (mine?.stake ?? 0n).toString(),
+      yourPendingStake: (mine?.pending ?? 0n).toString(),
       yourPower: (mine?.power ?? 0n).toString(),
       yourPoolShareBps: 0,
       yourPositionIds: mine?.positionIds ?? [],

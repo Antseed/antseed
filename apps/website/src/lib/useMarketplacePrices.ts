@@ -1,5 +1,6 @@
 import {useEffect, useState} from 'react';
 import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
+import {createSharedFetch} from './sharedFetch';
 
 /**
  * Live marketplace showcase for the homepage pricing card. No curated
@@ -34,7 +35,7 @@ import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
 const MARKETPLACE_API = 'https://antscan.co/api/marketplace?limit=1000';
 const OPENROUTER_MODELS_API = 'https://openrouter.ai/api/v1/models';
 const OPENROUTER_RANKINGS_API = 'https://openrouter.ai/api/frontend/v1/rankings/models?view=week';
-const CACHE_KEY = 'as-marketplace-prices-v6';
+const CACHE_KEY = 'as-marketplace-prices-v7';
 const CACHE_TTL_MS = 10 * 60 * 1000;
 
 /** Models with less weekly OpenRouter volume than this are noise, not
@@ -70,6 +71,17 @@ interface Offering {
   sellerOnChainReputationScore: number | null;
 }
 
+/** An offering that counts: priced, and from a seller with on-chain reputation. */
+type ProvenOffering = Offering & {inputUsdPerMillion: number};
+
+function isProven(o: Offering): o is ProvenOffering {
+  return (
+    typeof o.inputUsdPerMillion === 'number' &&
+    o.inputUsdPerMillion >= 0 &&
+    (o.sellerOnChainReputationScore ?? 0) > 0
+  );
+}
+
 interface OpenRouterModel {
   /** "minimax/minimax-m2.7" */
   id: string;
@@ -101,22 +113,28 @@ export interface ShowcaseRow {
   /** "96%" */
   save: string;
   live: boolean;
+  /** lowest advertised input price, USD per million tokens */
+  bestUsd: number;
+  officialUsd: number;
 }
 
 /* Last verified live picks (2026-07-30) — real models, official prices,
    and DHT offers at that date. Shown only for SSR and API failure. */
 const FALLBACK_ROWS: ShowcaseRow[] = [
-  {model: 'Kimi K2.7 Code', vendor: 'by MoonshotAI', vendorKey: 'Moonshot', official: '$0.73', best: '$0.45', save: '38%', live: false},
-  {model: 'Claude Fable 5', vendor: 'by Anthropic', vendorKey: 'Anthropic', official: '$10.00', best: '$6.00', save: '40%', live: false},
-  {model: 'Qwen3.7 Plus', vendor: 'by Qwen', vendorKey: 'Qwen', official: '$0.32', best: '$0.12', save: '64%', live: false},
-  {model: 'MiniMax M3', vendor: 'by MiniMax', vendorKey: 'Minimax', official: '$0.30', best: '$0.09', save: '69%', live: false},
+  {model: 'Kimi K2.7 Code', vendor: 'by MoonshotAI', vendorKey: 'Moonshot', official: '$0.73', best: '$0.45', save: '38%', live: false, bestUsd: 0.45, officialUsd: 0.73},
+  {model: 'Claude Fable 5', vendor: 'by Anthropic', vendorKey: 'Anthropic', official: '$10.00', best: '$6.00', save: '40%', live: false, bestUsd: 6, officialUsd: 10},
+  {model: 'Qwen3.7 Plus', vendor: 'by Qwen', vendorKey: 'Qwen', official: '$0.32', best: '$0.12', save: '64%', live: false, bestUsd: 0.12, officialUsd: 0.32},
+  {model: 'MiniMax M3', vendor: 'by MiniMax', vendorKey: 'Minimax', official: '$0.30', best: '$0.09', save: '69%', live: false, bestUsd: 0.09, officialUsd: 0.3},
 ];
 
 function normalizeService(s: string): string {
   return s.toLowerCase().replace(/[^a-z0-9]/g, '');
 }
 
+/** "$0.45"; a $0 offer is "Free", sub-cent prices never round to "$0.00". */
 function usd(n: number): string {
+  if (n === 0) return 'Free';
+  if (n < 0.01) return '<$0.01';
   return `$${n.toFixed(2)}`;
 }
 
@@ -134,15 +152,9 @@ function buildCandidates(
   popularity: PopularityMap,
 ): Candidate[] {
   // Proven, priced offerings grouped by normalized service id.
-  const groups = new Map<string, Offering[]>();
+  const groups = new Map<string, ProvenOffering[]>();
   for (const o of offerings) {
-    if (
-      typeof o.inputUsdPerMillion !== 'number' ||
-      o.inputUsdPerMillion <= 0 ||
-      (o.sellerOnChainReputationScore ?? 0) <= 0
-    ) {
-      continue;
-    }
+    if (!isProven(o)) continue;
     const key = normalizeService(o.service);
     const group = groups.get(key);
     if (group) group.push(o);
@@ -162,9 +174,10 @@ function buildCandidates(
     if (!group) continue;
     const weekly = popularity[model.canonicalSlug] ?? 0;
     if (haveRankings && weekly < MIN_WEEKLY_TOKENS) continue;
-    const price = Math.min(...group.map(o => o.inputUsdPerMillion!));
+    const price = Math.min(...group.map(o => o.inputUsdPerMillion));
     if (price >= model.officialUsd) continue;
-    const save = Math.min(99, Math.max(1, Math.round((1 - price / model.officialUsd) * 100)));
+    const save =
+      price === 0 ? 100 : Math.min(99, Math.max(1, Math.round((1 - price / model.officialUsd) * 100)));
     candidates.push({
       row: {
         model: model.name,
@@ -174,6 +187,8 @@ function buildCandidates(
         best: usd(price),
         save: `${save}%`,
         live: true,
+        bestUsd: price,
+        officialUsd: model.officialUsd,
       },
       created: model.created,
       popularity: weekly,
@@ -310,8 +325,17 @@ async function fetchMarket(signal: AbortSignal): Promise<CachedMarket | null> {
   return {offerings, models, popularity};
 }
 
-/** The pricing-card rows: live network picks, or the dated fallback snapshot. */
-export function useMarketplaceShowcase(count = 4): ShowcaseRow[] {
+/* One in-flight fetch shared by every mounted hook, so several cards on one
+   page (the hero picks call useMarketplacePicks three times) hit the three
+   APIs once. */
+const subscribeMarketFetch = createSharedFetch(async signal => {
+  const result = await fetchMarket(signal);
+  if (result) writeCache(result);
+  return result;
+}, 8000);
+
+/** Shared market fetch (session-cached) behind the showcase and pick hooks. */
+function useMarket(): CachedMarket | null {
   const [market, setMarket] = useState<CachedMarket | null>(null);
 
   useEffect(() => {
@@ -322,23 +346,66 @@ export function useMarketplaceShowcase(count = 4): ShowcaseRow[] {
       return undefined;
     }
     let cancelled = false;
-    const controller = new AbortController();
-    const timeout = setTimeout(() => controller.abort(), 8000);
-    fetchMarket(controller.signal)
-      .then(result => {
-        if (cancelled || !result) return;
-        writeCache(result);
-        setMarket(result);
-      })
-      .catch(() => {
-        /* offline / API down — keep the fallback snapshot */
-      })
-      .finally(() => clearTimeout(timeout));
+    const {promise, unsubscribe} = subscribeMarketFetch();
+    promise.then(result => {
+      if (!cancelled && result) setMarket(result);
+    });
     return () => {
       cancelled = true;
-      controller.abort();
+      unsubscribe();
     };
   }, []);
 
+  return market;
+}
+
+/** The pricing-card rows: live network picks, or the dated fallback snapshot. */
+export function useMarketplaceShowcase(count = 4): ShowcaseRow[] {
+  const market = useMarket();
   return market ? pickShowcase(market.offerings, market.models, market.popularity, count) : FALLBACK_ROWS;
+}
+
+export interface ModelPick {
+  /** OpenRouter model id, e.g. "anthropic/claude-opus-5.5" */
+  id: string;
+  /** display name override (OpenRouter names carry date suffixes) */
+  name: string;
+  /** last verified live offer, used for SSR / API failure */
+  fallback: {bestUsd: number; officialUsd: number};
+}
+
+/** Rows for a curated list of models (the hero's agent card): the lowest
+    reputable live offer per model, in the given order; a model with no
+    live offer shows its dated fallback snapshot. */
+export function useMarketplacePicks(picks: ModelPick[]): ShowcaseRow[] {
+  const market = useMarket();
+  const byService = new Map<string, number>();
+  if (market) {
+    for (const o of market.offerings) {
+      if (!isProven(o)) continue;
+      const key = normalizeService(o.service);
+      const prev = byService.get(key);
+      if (prev === undefined || o.inputUsdPerMillion < prev) byService.set(key, o.inputUsdPerMillion);
+    }
+  }
+  return picks.map(pick => {
+    const [vendorPrefix, slug] = pick.id.split('/');
+    const model = market?.models.find(m => m.id === pick.id);
+    const live = byService.get(normalizeService(slug));
+    const bestUsd = live ?? pick.fallback.bestUsd;
+    const officialUsd = model?.officialUsd ?? pick.fallback.officialUsd;
+    const save =
+      bestUsd === 0 ? 100 : Math.min(99, Math.max(0, Math.round((1 - bestUsd / officialUsd) * 100)));
+    return {
+      model: pick.name,
+      vendor: `by ${model?.vendorName ?? vendorPrefix}`,
+      vendorKey: VENDOR_KEYS[vendorPrefix] ?? vendorPrefix,
+      official: usd(officialUsd),
+      best: usd(bestUsd),
+      save: `${save}%`,
+      live: live !== undefined,
+      bestUsd,
+      officialUsd,
+    };
+  });
 }

@@ -39,8 +39,10 @@ import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
 import type { VprModelCatalogEntry } from '../../../core/state';
 import { getPeerDisplayName } from '../../../core/peer-utils';
+import { selectHeadlineBalanceUsdc } from '../../../core/balance';
 import { getUiStateRef, notifyUiStateChangedSync } from '../../../core/store';
 import { VprStackedLogo } from '../VprLogo';
+import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
@@ -233,6 +235,7 @@ const chatViewCache: ChatViewCache = {
 
 export function ChatView({ onSelectView }: ChatViewProps) {
   const snap = useUiSelector((state) => ({
+    headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     browserPreviewRequestId: state.browserPreviewRequestId,
     browserPreviewUrl: state.browserPreviewUrl,
     chatAbortVisible: state.chatAbortVisible,
@@ -1181,8 +1184,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           )}
         </div>
         )}
-        {snap.chatActiveConversation && (
-          <div className={`${styles.pageHeaderRight}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+          <div className={`${styles.pageHeaderRight}${messageSearchOpen ? ` ${styles.pageHeaderRightSearching}` : ''}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+            {snap.chatActiveConversation && <>
             {!searchOnlyHeader && snap.chatActiveConversation && currentPeerId && (
               <button
                 type="button"
@@ -1264,8 +1267,9 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 <HugeiconsIcon icon={BrowserIcon} size={15} strokeWidth={1.8} />
               </button>
             )}
+            </>}
+            <VprHeaderActions credits={snap.headlineBalanceUsdc} onSelectView={onSelectView} />
           </div>
-        )}
       </div>
 
       {showWelcome && (

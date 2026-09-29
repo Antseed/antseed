@@ -4,9 +4,6 @@ import type { UsageView, UsageEpochView } from '../api-types.js';
 import { toJson } from './json.js';
 import { IndexerError } from './indexer.js';
 
-async function safe<T>(read: () => Promise<T>, fallback: T): Promise<T> {
-  try { return await read(); } catch { return fallback; }
-}
 
 /**
  * Your buyer and seller usage per epoch with network totals. The per-epoch
@@ -50,11 +47,11 @@ export async function usage(ctx: AntsContext, options: { epochs?: number } = {})
     }
   }
   const [buyerTotal, networkTotal, pointsPolicy, poolWeightPolicy, minimumPower] = await Promise.all([
-    accounting ? safe(() => accounting.buyerUsageTotal(ctx.address), { points: 0n, weightedPoints: 0n }) : Promise.resolve({ points: 0n, weightedPoints: 0n }),
-    accounting ? safe(() => accounting.totalUsage(), { buyers: { points: 0n, weightedPoints: 0n }, sellers: { points: 0n, weightedPoints: 0n } }) : Promise.resolve({ buyers: { points: 0n, weightedPoints: 0n }, sellers: { points: 0n, weightedPoints: 0n } }),
-    accounting ? safe<string | null>(() => accounting.pointsPolicy(), null) : Promise.resolve(null),
-    accounting ? safe<string | null>(() => accounting.poolWeightPolicy(), null) : Promise.resolve(null),
-    accounting ? safe<bigint | null>(() => accounting.minimumAccountedPoolPower(), null) : Promise.resolve(null),
+    accounting ? accounting.buyerUsageTotal(ctx.address) : Promise.resolve({ points: 0n, weightedPoints: 0n }),
+    accounting ? accounting.totalUsage() : Promise.resolve({ buyers: { points: 0n, weightedPoints: 0n }, sellers: { points: 0n, weightedPoints: 0n } }),
+    accounting ? accounting.pointsPolicy() : Promise.resolve(null),
+    accounting ? accounting.poolWeightPolicy() : Promise.resolve(null),
+    accounting ? accounting.minimumAccountedPoolPower() : Promise.resolve(null),
   ]);
   return toJson({
     currentEpoch: stack.currentEpoch,

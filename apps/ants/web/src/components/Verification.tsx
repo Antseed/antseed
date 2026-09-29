@@ -206,11 +206,6 @@ export function ProofSubmit() {
           body={{ artifact: proof?.artifact }}
           disabled={!proof}
           disabledReason="Choose a valid proof file first."
-          summary={[
-            ['File', <span className="mono">{proof?.name ?? '—'}</span>],
-            ['Kind', <span className="mono">{proof?.kind ?? '—'}</span>],
-            ['Seller', proof?.seller ? <span className="mono break">{proof.seller}</span> : <span className="muted">not present in file</span>],
-          ]}
         />
       </div>
       {error ? <div className="error-text">{error}</div> : null}

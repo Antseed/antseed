@@ -61,11 +61,25 @@ antseed buyer activity   # tokens, spending history, measured savings, active ch
 
 `antseed buyer activity` mirrors the desktop app's Activity view: lifetime tokens/spent/saved, a per-day spending chart (`--days 7|30|90`), active channels with their locked amounts and channel IDs, and ANTS emissions available to claim (`antseed buyer emissions claim`). It needs the buyer connection running (`antseed buyer start`).
 
+### Setting an Authorized Wallet
+
+The authorized wallet controls withdrawals, channel recovery, and buyer reward claims. The recommended setup opens a secure localhost page where you connect the external wallet that should receive this authority:
+
+```bash
+antseed buyer set-authorized-wallet
+```
+
+The buyer identity signs the initial EIP-712 authorization, while the connected wallet submits the transaction and pays Base gas. Pass `--no-open` to print the local URL without launching a browser. To deliberately use the buyer hot wallet for both roles instead, run `antseed buyer set-authorized-wallet --self`; the buyer wallet then needs ETH for gas.
+
+The command does not accept an arbitrary wallet address. Connecting the external wallet proves control and avoids granting withdrawal authority to a mistyped or inaccessible address. Once set, only the current authorized wallet can transfer that authority to another wallet.
+
 ### Withdrawing
 
 ```bash
 antseed buyer withdraw 5
 ```
+
+The CLI withdrawal command signs with the buyer wallet and therefore works only when that wallet was authorized with `--self`. When an external wallet is authorized, connect that wallet through the AI VPN payments flow to withdraw.
 
 ### How Costs Are Calculated
 
@@ -120,6 +134,10 @@ recognized service usage and locked seller-pool stake. Participants hold
 lANTS staking-position NFTs; pool power activates in the following epoch.
 Eligible sellers can initialize a starter position, including contract sellers
 whose authorized operator initializes on their behalf.
+
+Staking is optional for selling: the seller registry's minimum pool stake is
+currently 0, so any registered seller can serve requests. Stake affects ANTS
+rewards, not eligibility.
 
 ```bash
 antseed seller legacy stake 10

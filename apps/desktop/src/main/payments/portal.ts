@@ -37,6 +37,11 @@ export async function startPaymentsPortal(): Promise<void> {
     paymentsServer = await createPaymentsServer({
       port: PAYMENTS_PORT,
       identityHex,
+      configPath: ACTIVE_CONFIG_PATH,
+      onOpenRewards: async () => {
+        const { stakingSessions } = await import('../staking/portal.js');
+        await stakingSessions.open('rewards');
+      },
       onPaymentCompleted: () => {
         // The payment landed in the browser — pull the app back up and let
         // the renderer refresh balances/channels/rewards immediately.

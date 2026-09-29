@@ -2,8 +2,10 @@
  * Docusaurus plugin that:
  *   1. Registers a route at /integrations/<slug> for every integration in
  *      src/integrations/integrations.ts.
- *   2. Generates /skill.md (and /llms-connect.txt) at build time so agents and
- *      LLM crawlers can ingest the integration catalog without scraping HTML.
+ *   2. Generates /llms-connect.txt at build time so LLM crawlers can ingest
+ *      the integration catalog without scraping HTML.
+ *   3. Copies skills/join-buyer/SKILL.md to /skill.md, the one file an agent
+ *      reads to install, start, fund and use Antseed.
  *
  * Adding a new entry to integrations.ts is enough — the route appears on
  * the next build.
@@ -26,7 +28,7 @@ import {
 
 /**
  * Strip a small set of inline HTML tags we use in `description` strings so the
- * skill.md output is clean markdown. We control the source so this is safe.
+ * llms-connect.txt output is clean markdown. We control the source so this is safe.
  */
 function htmlToMarkdown(input: string): string {
   return input
@@ -160,7 +162,7 @@ function renderIntegrationMarkdown(i: Integration): string {
     lines.push(htmlToMarkdown(p));
     lines.push('');
   }
-  if (i.prereqs && i.prereqs.length) {
+  if (i.prereqs?.length) {
     lines.push('**Prerequisites**');
     lines.push('');
     for (const p of i.prereqs) lines.push(`- ${p}`);
@@ -186,13 +188,13 @@ function renderIntegrationMarkdown(i: Integration): string {
     }
     lines.push('');
   }
-  if (i.test && i.test.length) {
+  if (i.test?.length) {
     lines.push('**Test it**');
     lines.push('');
     for (const s of i.test) lines.push(renderStep(s));
     lines.push('');
   }
-  if (i.troubleshooting && i.troubleshooting.length) {
+  if (i.troubleshooting?.length) {
     lines.push('**Troubleshooting**');
     lines.push('');
     for (const t of i.troubleshooting) {
@@ -200,7 +202,7 @@ function renderIntegrationMarkdown(i: Integration): string {
     }
     lines.push('');
   }
-  if (i.caveats && i.caveats.length) {
+  if (i.caveats?.length) {
     lines.push('**Caveats**');
     lines.push('');
     for (const c of i.caveats) lines.push(`- ${c}`);
@@ -208,7 +210,7 @@ function renderIntegrationMarkdown(i: Integration): string {
   }
   lines.push(renderWireFormatBlock(i));
   lines.push('');
-  if (i.links && i.links.length) {
+  if (i.links?.length) {
     lines.push('**Links**');
     lines.push('');
     for (const l of i.links) lines.push(`- [${l.label}](${l.href})`);
@@ -560,7 +562,9 @@ function renderSkillMarkdown(): string {
   out.push('');
   out.push('Edit `apps/website/src/integrations/integrations.ts` in');
   out.push('https://github.com/AntSeed/antseed and open a PR. The hub at /integrations, the');
-  out.push('per-tool page, and this skill.md are all generated from that single file.');
+  out.push('per-tool page, and this file are all generated from that single file. The');
+  out.push('onboarding skill an agent reads first (install, start, fund, use) is served');
+  out.push('at /skill.md.');
   out.push('');
   return out.join('\n');
 }
@@ -570,14 +574,22 @@ export default function connectPagesPlugin(context: LoadContext): Plugin {
     name: 'integrations-pages',
 
     async loadContent() {
-      // Generate skill.md into static/ so it is served at /skill.md in both
-      // `docusaurus start` (dev) and `docusaurus build` (prod). Re-runs on
-      // content reload, keeping the file fresh while editing integrations.ts.
-      const skill = renderSkillMarkdown();
+      // Generate the crawler catalog into static/ so it is served at
+      // /llms-connect.txt in both `docusaurus start` (dev) and
+      // `docusaurus build` (prod). Re-runs on content reload, keeping the
+      // file fresh while editing integrations.ts.
       const staticDir = path.join(context.siteDir, 'static');
       await fs.mkdir(staticDir, {recursive: true});
-      await fs.writeFile(path.join(staticDir, 'skill.md'), skill, 'utf8');
-      await fs.writeFile(path.join(staticDir, 'llms-connect.txt'), skill, 'utf8');
+      await fs.writeFile(path.join(staticDir, 'llms-connect.txt'), renderSkillMarkdown(), 'utf8');
+
+      // /skill.md is the onboarding skill, copied verbatim from the repo so
+      // the website and `gh skill install Antseed/antseed join-buyer` never
+      // drift apart.
+      const joinBuyer = await fs.readFile(
+        path.join(context.siteDir, '..', '..', 'skills', 'join-buyer', 'SKILL.md'),
+        'utf8',
+      );
+      await fs.writeFile(path.join(staticDir, 'skill.md'), joinBuyer, 'utf8');
       return null;
     },
 

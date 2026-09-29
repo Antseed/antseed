@@ -3,6 +3,8 @@ import type { CryptoContext, PaymentCryptoConfig } from './crypto-context.js';
 import {
   DepositsClient,
   EmissionsClient,
+  EmissionsGateClient,
+  resolveLegacyContractAddresses,
   UsageAccountingClient,
   UsageRewardsClient,
   ANTSTokenClient,
@@ -72,14 +74,18 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
     return depositsClient;
   }
 
+  // After cutover, the primary emissions slot points to UsageAccounting, not
+  // the legacy reward contract expected by these claim endpoints and their UI.
+  const legacyAddresses = resolveLegacyContractAddresses(ctx.chainConfig);
+  const claimContractAddress = legacyAddresses.legacyEmissionsContractAddress;
   let emissionsClient: EmissionsClient | null = null;
   function getEmissionsClient(): EmissionsClient | null {
-    if (!ctx.chainConfig.emissionsContractAddress) return null;
+    if (!claimContractAddress) return null;
     if (!emissionsClient) {
       emissionsClient = new EmissionsClient({
         rpcUrl: ctx.cryptoConfig.rpcUrl,
         ...(ctx.cryptoConfig.fallbackRpcUrls ? { fallbackRpcUrls: ctx.cryptoConfig.fallbackRpcUrls } : {}),
-        contractAddress: ctx.chainConfig.emissionsContractAddress,
+        contractAddress: claimContractAddress,
         evmChainId: ctx.chainConfig.evmChainId,
       });
     }
@@ -88,17 +94,24 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
 
   let legacyEmissionsClient: EmissionsClient | null = null;
   function getLegacyEmissionsClient(): EmissionsClient | null {
-    if (!ctx.chainConfig.legacyEmissionsContractAddress) return null;
+    if (!legacyAddresses.legacyEmissionsV1ContractAddress) return null;
     if (!legacyEmissionsClient) {
       legacyEmissionsClient = new EmissionsClient({
         rpcUrl: ctx.cryptoConfig.rpcUrl,
         ...(ctx.cryptoConfig.fallbackRpcUrls ? { fallbackRpcUrls: ctx.cryptoConfig.fallbackRpcUrls } : {}),
-        contractAddress: ctx.chainConfig.legacyEmissionsContractAddress,
+        contractAddress: legacyAddresses.legacyEmissionsV1ContractAddress,
         evmChainId: ctx.chainConfig.evmChainId,
       });
     }
     return legacyEmissionsClient;
   }
+
+  const emissionsGate = ctx.chainConfig.emissionsGateAddress ? new EmissionsGateClient({
+    rpcUrl: ctx.cryptoConfig.rpcUrl,
+    ...(ctx.cryptoConfig.fallbackRpcUrls ? { fallbackRpcUrls: ctx.cryptoConfig.fallbackRpcUrls } : {}),
+    contractAddress: ctx.chainConfig.emissionsGateAddress,
+    evmChainId: ctx.chainConfig.evmChainId,
+  }) : null;
 
   let usageAccountingClient: UsageAccountingClient | null = null;
   function getUsageAccountingClient(): UsageAccountingClient | null {
@@ -178,7 +191,7 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
       depositsContractAddress: ctx.cryptoConfig.depositsContractAddress,
       channelsContractAddress: ctx.cryptoConfig.channelsContractAddress,
       usdcContractAddress: ctx.cryptoConfig.usdcContractAddress,
-      emissionsContractAddress: ctx.chainConfig.emissionsContractAddress ?? null,
+      emissionsContractAddress: claimContractAddress ?? null,
       legacyEmissionsContractAddress: ctx.chainConfig.recognizedUsage?.status === 'active'
         ? ctx.chainConfig.legacyEmissionsContractAddress ?? null
         : ctx.chainConfig.emissionsContractAddress ?? null,
@@ -323,16 +336,25 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
 
   fastify.get('/api/emissions', async (_request, reply) => {
     const client = getEmissionsClient();
-    if (!client) {
+    if (!client && !emissionsGate) {
       return reply.status(503).send({ ok: false, error: 'Emissions contract not configured for this chain' });
     }
     try {
+      if (emissionsGate) {
+        const [currentEpoch, epochDuration, currentRate, genesis, halvingInterval] = await Promise.all([
+          retryRead(() => emissionsGate.currentEpoch()), retryRead(() => emissionsGate.epochDuration()),
+          retryRead(() => emissionsGate.currentEmissionRate()), retryRead(() => emissionsGate.genesis()),
+          retryRead(() => emissionsGate.halvingInterval()),
+        ]);
+        const epochEmission = await retryRead(() => emissionsGate.getEpochEmission(currentEpoch));
+        return { currentEpoch, epochDuration, currentRate: currentRate.toString(), epochEmission: epochEmission.toString(), genesis, halvingInterval };
+      }
       const [info, genesis, halving] = await Promise.all([
-        retryRead(() => client.getEpochInfo()),
-        retryRead(() => client.getGenesis()),
-        retryRead(() => client.getHalvingInterval()),
+        retryRead(() => client!.getEpochInfo()),
+        retryRead(() => client!.getGenesis()),
+        retryRead(() => client!.getHalvingInterval()),
       ]);
-      const emission = await retryRead(() => client.getEpochEmission(info.epoch));
+      const emission = await retryRead(() => client!.getEpochEmission(info.epoch));
       return {
         currentEpoch: info.epoch,
         epochDuration: info.epochDuration,
@@ -347,9 +369,9 @@ export function registerRoutes(fastify: FastifyInstance, ctx: RouteContext): voi
   });
 
   fastify.get('/api/emissions/pending', async (request, reply) => {
-    const legacyClient = ctx.chainConfig.recognizedUsage?.status === 'active'
-      ? getLegacyEmissionsClient()
-      : getEmissionsClient();
+    // Legacy epochs always read the legacy V2 reward contract; the primary
+    // emissions slot points to UsageAccounting after cutover.
+    const legacyClient = getEmissionsClient();
     const usageAccounting = getUsageAccountingClient();
     const usageRewards = getUsageRewardsClient();
     const effectiveEpoch = ctx.chainConfig.recognizedUsage?.status === 'active'

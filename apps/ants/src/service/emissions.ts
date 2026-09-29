@@ -3,9 +3,6 @@ import type { AntsContext } from './context.js';
 import type { EmissionsView, MinterView } from '../api-types.js';
 import { toJson } from './json.js';
 
-async function safe<T>(read: () => Promise<T>, fallback: T): Promise<T> {
-  try { return await read(); } catch { return fallback; }
-}
 
 export async function emissions(ctx: AntsContext): Promise<EmissionsView> {
   const stack = await ctx.stack();
@@ -18,14 +15,14 @@ export async function emissions(ctx: AntsContext): Promise<EmissionsView> {
   if (gate) {
     const epoch = stack.currentEpoch;
     const [halvingInterval, initialEmission, currentRate, cumulative, shareDenominator, emissionsReserve, legacyEscrow] = await Promise.all([
-      gate.halvingInterval(), gate.initialEmission(), gate.currentEmissionRate(), safe(() => gate.cumulativeEmissionThrough(epoch + 1), 0n),
-      safe(() => gate.shareDenominator(), 100_000), safe<string | null>(() => gate.emissionsReserve(), null), safe<string | null>(() => gate.legacyEscrow(), null),
+      gate.halvingInterval(), gate.initialEmission(), gate.currentEmissionRate(), gate.cumulativeEmissionThrough(epoch + 1),
+      gate.shareDenominator(), gate.emissionsReserve(), gate.legacyEscrow(),
     ]);
     const minters: MinterView[] = await Promise.all(GATE_MINTERS.map(async (minter) => {
       const id = gateMinterId(minter.id);
       const [info, budget] = await Promise.all([
-        safe(() => gate.minter(id), { controller: '0x0000000000000000000000000000000000000000', shareBps: 0, editable: false }),
-        safe(() => gate.minterEpochBudget(id, Math.max(epoch, stack.effectiveEpoch ?? epoch)), 0n),
+        gate.minter(id),
+        gate.minterEpochBudget(id, Math.max(epoch, stack.effectiveEpoch ?? epoch)),
       ]);
       return { name: minter.name, id, controller: info.controller, shareBps: info.shareBps, editable: info.editable, epochBudget: budget.toString() };
     }));
@@ -36,7 +33,7 @@ export async function emissions(ctx: AntsContext): Promise<EmissionsView> {
     };
   } else {
     if (!legacy) throw new Error('No emissions contract configured.');
-    const [halvingInterval, initialEmission, info] = await Promise.all([legacy.getHalvingInterval(), safe(() => legacy.getEpochEmission(0), 0n), legacy.getEpochInfo()]);
+    const [halvingInterval, initialEmission, info] = await Promise.all([legacy.getHalvingInterval(), legacy.getEpochEmission(0), legacy.getEpochInfo()]);
     view = {
       currentEpoch: stack.currentEpoch, effectiveEpoch: null, genesis: stack.genesis, epochDuration: stack.epochDuration, halvingInterval,
       initialEmission: initialEmission.toString(), currentRate: info.emission.toString(), cumulativeThroughCurrent: '0', shareDenominator: 100, minters: [],
@@ -44,18 +41,18 @@ export async function emissions(ctx: AntsContext): Promise<EmissionsView> {
     };
   }
 
-  const dynamicStaker = poolRewards ? await safe<EmissionsView['dynamicStaker']>(async () => {
+  const dynamicStaker = poolRewards ? await (async () => {
     const config = await poolRewards.dynamicStakerConfigAt(stack.currentEpoch);
     return { minShareBps: config.minShareBps, maxShareBps: config.maxShareBps, stakeShareTarget: config.stakeShareTarget.toString() };
-  }, null) : null;
-  const dynamicUsage = usageRewards ? await safe<EmissionsView['dynamicUsage']>(async () => {
+  })() : null;
+  const dynamicUsage = usageRewards ? await (async () => {
     const config = await usageRewards.dynamicUsageConfigAt(stack.currentEpoch);
     return { ...config, volumeShareTarget: config.volumeShareTarget.toString() };
-  }, null) : null;
-  const legacyView = legacy && stack.legacyEmissions ? await safe<EmissionsView['legacy']>(async () => {
+  })() : null;
+  const legacyView = legacy && stack.legacyEmissions ? await (async () => {
     const [shares, info] = await Promise.all([legacy.getShares(), legacy.getEpochInfo()]);
     return { contract: stack.legacyEmissions!, sellerPct: shares.sellerSharePct, buyerPct: shares.buyerSharePct, reservePct: shares.reserveSharePct, teamPct: shares.teamSharePct, currentEpoch: info.epoch };
-  }, null) : null;
+  })() : null;
 
   return toJson({ ...view, dynamicStaker, dynamicUsage, legacy: legacyView });
 }

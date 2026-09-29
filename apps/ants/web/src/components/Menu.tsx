@@ -63,6 +63,7 @@ export function Menu({ items, label = 'More actions' }: { items: MenuItem[]; lab
               title={item.title}
               onClick={() => {
                 setOpen(false);
+                triggerRef.current?.focus({ preventScroll: true });
                 item.onSelect();
               }}
             >

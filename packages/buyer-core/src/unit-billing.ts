@@ -10,6 +10,7 @@ import {
   parseJsonObject,
   nativeVideoFacts,
   nativeVideoAcceptance,
+  nativeVideoRoute,
   type NativeVideoFacts,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
@@ -17,14 +18,16 @@ import type {
   UnitBillingContext,
   UnitBillingMatchKeyV1,
   UnitBillingModelV1,
+  UnitBillingUnitV1,
   UnitBillingUsage,
   UnitBillingUsageReportV1,
 } from '@antseed/protocol/billing';
 import {
   evaluateUnitBilling,
   unitUsageToBillingReport,
+  validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
-import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { NATIVE_VIDEO_PROTOCOLS, type ServiceApiProtocol } from '@antseed/protocol/service-api';
 
 const ZERO_TOKEN_USAGE: TokenUsage = {
   inputTokens: 0,
@@ -48,21 +51,106 @@ export interface FinalUnitBillingResult {
   billingUsage: UnitBillingUsageReportV1;
 }
 
-export function captureUnitBillingContext(args: {
+export interface CaptureUnitBillingArgs {
   sellerPeerId: string;
   provider: string;
   service: string;
   serviceApiProtocol: ServiceApiProtocol;
   request: SerializedHttpRequest;
-}): CapturedUnitBillingContext {
+}
+
+export interface UnitBillingAdapter {
+  name: string;
+  units: readonly UnitBillingUnitV1[];
+  protocols: readonly ServiceApiProtocol[];
+  capture(args: CaptureUnitBillingArgs): CapturedUnitBillingContext;
+  measure(
+    response: SerializedHttpResponse,
+    requestFacts?: BillingRequestFacts,
+  ): { usage: UnitBillingUsage; tokenUsage: TokenUsage };
+  billableUsage?(model: UnitBillingModelV1, requestFacts: BillingRequestFacts, usage: UnitBillingUsage): UnitBillingUsage;
+}
+
+const imageBillingAdapter: UnitBillingAdapter = {
+  name: 'image billing',
+  units: ['output_images'],
+  protocols: ['openai-images'],
+  capture: captureImageUnitBillingContext,
+  measure: extractImageResponseUsage,
+};
+
+const videoBillingAdapter: UnitBillingAdapter = {
+  name: 'video billing',
+  units: ['video_generations', 'video_seconds'],
+  protocols: NATIVE_VIDEO_PROTOCOLS,
+  capture: captureVideoUnitBillingContext,
+  measure: extractVideoResponseUsage,
+  billableUsage: (model, requestFacts, usage) => requestFacts.video ? videoBillingUsage(model, requestFacts.video, usage) : usage,
+};
+
+function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBillingUnitV1[]): UnitBillingAdapter {
+  const fail = (): never => {
+    throw new Error(`${name} is not implemented`);
+  };
+  return { name, units, protocols: [], capture: fail, measure: fail };
+}
+
+const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
+  imageBillingAdapter,
+  unimplementedUnitBillingAdapter('completed-request billing', ['completed_requests']),
+  videoBillingAdapter,
+];
+
+function adapterForProtocol(protocol: ServiceApiProtocol): UnitBillingAdapter | undefined {
+  return UNIT_BILLING_ADAPTERS.find((adapter) => adapter.protocols.includes(protocol));
+}
+
+function resolveUnitBillingAdapter(protocol: ServiceApiProtocol, model: UnitBillingModelV1): UnitBillingAdapter {
+  const protocolAdapter = adapterForProtocol(protocol);
+  if (!protocolAdapter) throw new Error(`Unit billing is not supported for ${protocol}`);
+  for (const component of model.components) {
+    const unitAdapter = UNIT_BILLING_ADAPTERS.find((adapter) => adapter.units.includes(component.unit));
+    if (!unitAdapter) throw new Error(`No unit billing adapter for ${component.unit}`);
+    if (unitAdapter.protocols.length === 0) throw new Error(`${unitAdapter.name} is not implemented`);
+    if (unitAdapter !== protocolAdapter) throw new Error(`${component.unit} is not supported for ${protocol}`);
+  }
+  return protocolAdapter;
+}
+
+function adapterForRequestFacts(requestFacts: BillingRequestFacts | undefined): UnitBillingAdapter {
+  return requestFacts?.video ? videoBillingAdapter : imageBillingAdapter;
+}
+
+export function isUnitBilledProtocol(protocol: string | null | undefined): protocol is ServiceApiProtocol {
+  return typeof protocol === 'string' && UNIT_BILLING_ADAPTERS.some((adapter) => adapter.protocols.includes(protocol as ServiceApiProtocol));
+}
+
+export function validateUnitBillingModelForProtocolV1(
+  protocol: ServiceApiProtocol,
+  model: UnitBillingModelV1,
+): string[] {
+  const errors = validateUnitBillingModelV1(model);
+  if (errors.length > 0) return errors;
+  try {
+    resolveUnitBillingAdapter(protocol, model);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+  return errors;
+}
+
+export function captureUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
+  const adapter = nativeVideoRoute(args.request) ? videoBillingAdapter : adapterForProtocol(args.serviceApiProtocol) ?? imageBillingAdapter;
+  return adapter.capture(args);
+}
+
+function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
   const requestFacts: BillingRequestFacts = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,
     body: parsed ?? undefined,
   });
-  const video = nativeVideoFacts(args.request);
-  if (video) requestFacts.video = video;
   const requestUsage = factsToUnitUsage(requestFacts);
   const attributes = factsToAttributes(requestFacts);
   return {
@@ -75,7 +163,25 @@ export function captureUnitBillingContext(args: {
       ...(requestFacts.requestedImages !== undefined
         ? { unitLimits: { output_images: requestFacts.requestedImages } }
         : {}),
-      ...(video ? { unitLimits: requestUsage.units, attributes: { model: args.service, ...(video.resolution ? { resolution: video.resolution } : {}) } } : {}),
+    },
+    requestUsage,
+    requestFacts,
+  };
+}
+
+function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
+  const video = nativeVideoFacts(args.request);
+  if (!video) return captureImageUnitBillingContext(args);
+  const requestFacts: BillingRequestFacts = { video };
+  const requestUsage = factsToUnitUsage(requestFacts);
+  return {
+    context: {
+      sellerPeerId: args.sellerPeerId,
+      provider: args.provider,
+      service: args.service,
+      serviceApiProtocol: args.serviceApiProtocol,
+      unitLimits: requestUsage.units,
+      attributes: { model: args.service, ...(video.resolution ? { resolution: video.resolution } : {}) },
     },
     requestUsage,
     requestFacts,
@@ -86,13 +192,25 @@ export function extractUnitResponseUsage(
   response: SerializedHttpResponse,
   requestFacts?: BillingRequestFacts,
 ): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
-  if (requestFacts?.video) {
-    const video = requestFacts.video;
-    const accepted = video.action === 'create'
-      && !isIdempotentReplay(response)
-      && nativeVideoAcceptance(video.protocol, response) !== null;
-    return { usage: accepted ? factsToUnitUsage(requestFacts) : { units: {} }, tokenUsage: ZERO_TOKEN_USAGE };
-  }
+  return adapterForRequestFacts(requestFacts).measure(response, requestFacts);
+}
+
+function extractVideoResponseUsage(
+  response: SerializedHttpResponse,
+  requestFacts?: BillingRequestFacts,
+): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
+  const video = requestFacts?.video;
+  const accepted = video !== undefined
+    && video.action === 'create'
+    && !isIdempotentReplay(response)
+    && nativeVideoAcceptance(video.protocol, response) !== null;
+  return { usage: accepted ? factsToUnitUsage(requestFacts!) : { units: {} }, tokenUsage: ZERO_TOKEN_USAGE };
+}
+
+function extractImageResponseUsage(
+  response: SerializedHttpResponse,
+  requestFacts?: BillingRequestFacts,
+): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
   const parsed = parseJsonObject(response.body);
   const responseFacts: ProviderResponseFacts = parsed
     ? extractProviderResponseFacts(parsed)
@@ -120,23 +238,23 @@ export function computeFinalUnitBilling(
   model: UnitBillingModelV1,
   context: UnitBillingContext,
   response: SerializedHttpResponse,
-  requestFacts?: BillingRequestFacts,
+  requestFacts: BillingRequestFacts = {},
 ): FinalUnitBillingResult {
-  const responseUsage = extractUnitResponseUsage(response, requestFacts);
-  if (requestFacts?.video) responseUsage.usage = videoBillingUsage(model, requestFacts.video, responseUsage.usage);
-  const costUsdc = evaluateUnitBilling(model, context, responseUsage.usage);
+  const adapter = resolveUnitBillingAdapter(context.serviceApiProtocol, model);
+  const responseUsage = adapter.measure(response, requestFacts);
+  const usage = adapter.billableUsage?.(model, requestFacts, responseUsage.usage) ?? responseUsage.usage;
+  const costUsdc = evaluateUnitBilling(model, context, usage);
   return {
-    usage: responseUsage.usage,
+    usage,
     tokenUsage: responseUsage.tokenUsage,
     costUsdc,
-    billingUsage: unitUsageToBillingReport(responseUsage.usage),
+    billingUsage: unitUsageToBillingReport(usage),
   };
 }
 
 export function estimateUnitRequestCost(model: UnitBillingModelV1, captured: CapturedUnitBillingContext): bigint {
-  const usage = captured.requestFacts.video
-    ? videoBillingUsage(model, captured.requestFacts.video, captured.requestUsage)
-    : captured.requestUsage;
+  const adapter = resolveUnitBillingAdapter(captured.context.serviceApiProtocol, model);
+  const usage = adapter.billableUsage?.(model, captured.requestFacts, captured.requestUsage) ?? captured.requestUsage;
   return evaluateUnitBilling(model, captured.context, usage);
 }
 

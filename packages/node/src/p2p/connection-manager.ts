@@ -147,6 +147,7 @@ export class PeerConnection extends EventEmitter {
   private _signalingSocket: Socket | null = null;
   private _remoteCapabilities = new Set<string>();
   private _crypto: TransportCrypto | null = null;
+  private _remoteAddress: string | null = null;
 
   constructor(config: ConnectionConfig) {
     super();
@@ -157,6 +158,15 @@ export class PeerConnection extends EventEmitter {
 
   get state(): ConnectionState {
     return this._state;
+  }
+
+  /**
+   * Remote IP of the underlying socket (raw TCP, or the signaling socket for
+   * WebRTC), captured when the socket is attached. Null for connections that
+   * never had a socket attached (tests, unusual transports).
+   */
+  get remoteAddress(): string | null {
+    return this._remoteAddress;
   }
 
   setRemoteCapabilities(capabilities: Iterable<string>): void {
@@ -173,6 +183,7 @@ export class PeerConnection extends EventEmitter {
 
   attachSignalingSocket(socket: Socket): void {
     this._signalingSocket = socket;
+    this._remoteAddress ??= socket.remoteAddress ?? null;
   }
 
   attachDataChannel(channel: NativeDataChannel): void {
@@ -217,6 +228,7 @@ export class PeerConnection extends EventEmitter {
 
   attachRawSocket(socket: Socket, initialData?: Uint8Array, crypto?: TransportCrypto): void {
     this._rawSocket = socket;
+    this._remoteAddress = socket.remoteAddress ?? this._remoteAddress;
     this._crypto = crypto ?? null;
     socket.setKeepAlive(true, TCP_KEEPALIVE_INITIAL_DELAY_MS);
 

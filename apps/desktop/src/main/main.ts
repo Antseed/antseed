@@ -3,6 +3,7 @@ import {
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   ipcMain,
+  dialog,
 } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
@@ -69,6 +70,8 @@ import { LOCALHOST_URL } from './constants.js';
 import { registerAppIpc } from './ipc/app.js';
 import { registerDesktopIpc } from './ipc/desktop.js';
 import { registerFloatIpc } from './ipc/float.js';
+import { registerStakingIpc } from './ipc/staking.js';
+import { stakingSessions } from './staking/portal.js';
 import { registerPaymentsIpc } from './ipc/payments.js';
 import { registerRuntimeIpc } from './ipc/runtime.js';
 import { registerSystemProxyIpc } from './ipc/system-proxy.js';
@@ -281,7 +284,7 @@ initSystemProxyRuntime({
 // ── Payments Portal ──
 
 async function stopDesktopServices(): Promise<void> {
-  await Promise.all([telegramBridge.stop(), stopManagedRuntimes(), stopPaymentsPortal()]);
+  await Promise.all([telegramBridge.stop(), stopManagedRuntimes(), stopPaymentsPortal(), stakingSessions.stop()]);
 }
 
 function getCombinedProcessState(): RuntimeProcessState[] {
@@ -292,6 +295,7 @@ function getCombinedProcessState(): RuntimeProcessState[] {
 // Each group lives in ipc/<domain>.ts; anything they need from this file is
 // passed in rather than reached for.
 registerPaymentsIpc();
+registerStakingIpc();
 registerDesktopIpc();
 registerAppIpc();
 registerFloatIpc();
@@ -875,6 +879,16 @@ app.on('before-quit', (event) => {
   }
 
   event.preventDefault();
+  try {
+    stakingSessions.pauseWrites();
+  } catch {
+    dialog.showMessageBoxSync({
+      type: 'info', title: 'Staking action in progress',
+      message: 'Wait for your staking action to finish before quitting VPR.',
+      detail: 'You can follow its progress in the staking dashboard.',
+    });
+    return;
+  }
   isQuitting = true;
 
   // First, and synchronously: the async teardown below waits on child
