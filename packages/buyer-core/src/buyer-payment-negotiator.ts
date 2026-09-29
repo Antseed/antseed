@@ -62,6 +62,10 @@ export interface BuyerNegotiatorConfig {
 
 /** How long to wait for a seller's CloseChannelResult before giving up. */
 const CLOSE_REQUEST_TIMEOUT_MS = 60_000;
+const VIDEO_TOPUP_POLL_MS = 1_000;
+const VIDEO_TOPUP_TIMEOUT_MS = 45_000;
+/** Contract default for TOP_UP_SETTLED_THRESHOLD_BPS, used only if the chain read fails. */
+const DEFAULT_TOPUP_THRESHOLD_BPS = 8_500n;
 
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
@@ -140,6 +144,11 @@ export class BuyerPaymentNegotiator {
   private readonly _bufferedPaymentRequired = new Map<string, PaymentRequiredPayload>();
   /** Per-peer mutex to prevent concurrent payment negotiations. */
   private readonly _negotiationLocks = new Map<string, Promise<void>>();
+  /** Per-peer queue so concurrent video top-ups never race on one channel. */
+  private readonly _videoHeadroomLocks = new Map<string, Promise<void>>();
+  private _topUpThresholdBps: bigint | null = null;
+  private _videoTopUpPollMs = VIDEO_TOPUP_POLL_MS;
+  private _videoTopUpTimeoutMs = VIDEO_TOPUP_TIMEOUT_MS;
   /** Peers that have sent their first request after session establishment. */
   private readonly _firstRequestSent = new Set<string>();
   /** Per-peer last response cost, raw content, and latency from the seller. */
@@ -285,10 +294,17 @@ export class BuyerPaymentNegotiator {
         if (!nativeVideoRoute(request)) throw cause;
         throw buyerFault(cause instanceof Error ? cause.message : 'Invalid video request', 'invalid-request', { cause });
       }
-      if (estimatedCost > this._bpm.maxPerRequestUsdc) throw buyerFault('Video request exceeds maxPerRequestUsdc', 'buyer-budget-too-low');
+      const maxVideoRequestUsdc = this._bpm.maxVideoRequestUsdc;
+      if (estimatedCost > maxVideoRequestUsdc) {
+        throw buyerFault(
+          `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(maxVideoRequestUsdc)} USDC`,
+          'buyer-budget-too-low',
+        );
+      }
       this._bpm.trackRequestBilling(request.requestId, {
         context: captured.context,
         requestFacts: captured.requestFacts,
+        ...(estimatedCost > 0n ? { estimatedCostUsdc: estimatedCost } : {}),
         ...(route.unitModel ? { unitModel: route.unitModel } : {}),
         ...(route.tokenPricing ? { tokenPricing: route.tokenPricing } : {}),
       });
@@ -327,6 +343,92 @@ export class BuyerPaymentNegotiator {
     // Skip if cost data was already consumed by post-response auth
     if (!this._lastResponseCost.has(peer.peerId)) return;
     await this._sendPerRequestAuth(peer.peerId, conn);
+  }
+
+  /**
+   * Make sure a paid video create fits into the reserve locked on-chain.
+   *
+   * If it does not, raise the channel straight to `current cumulative +
+   * maxVideoRequestUsdc` with a single topUp(), or only to the video price
+   * when deposits cannot cover the full limit. topUp() only succeeds once
+   * TOP_UP_SETTLED_THRESHOLD_BPS of the current deposit is settled, so the
+   * buyer first prepays the missing part of that threshold. The prepayment is
+   * always smaller than the video price and is absorbed by the cumulative
+   * charge when the job is accepted. No-ops without an established channel;
+   * the 402 path opens one and calls this again before retrying.
+   */
+  async ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
+    const previous = this._videoHeadroomLocks.get(peer.peerId) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(() => this._ensureVideoHeadroom(peer, conn, requestId));
+    const tail = run.catch(() => {});
+    this._videoHeadroomLocks.set(peer.peerId, tail);
+    try {
+      await run;
+    } finally {
+      if (this._videoHeadroomLocks.get(peer.peerId) === tail) this._videoHeadroomLocks.delete(peer.peerId);
+    }
+  }
+
+  private async _ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
+    if (!this._lockedPeers.has(peer.peerId)) return;
+    const videoCost = this._bpm.getRequestBilling(requestId)?.estimatedCostUsdc;
+    if (!videoCost || !this._channelsClient) return;
+
+    await this.drainPendingNeedAuth();
+    const session = this._bpm.getActiveSession(peer.peerId);
+    if (!session) return;
+
+    const deposit = (await this._channelsClient.getSession(session.sessionId)).deposit;
+    await this._bpm.reconcileReserveAmount(peer.peerId, deposit);
+    const currentCumulative = this._bpm.getCumulativeAmount(peer.peerId);
+    if (currentCumulative + videoCost <= deposit) return;
+
+    const balance = await this._bpm.getBalance();
+    const minimumCeiling = currentCumulative + videoCost;
+    if (balance.available < minimumCeiling - deposit) {
+      throw buyerFault(
+        `Insufficient deposits for this video: ${formatUsdc(minimumCeiling - deposit - balance.available)} USDC more needed`,
+        'buyer-deposits-insufficient',
+      );
+    }
+    const fullCeiling = currentCumulative + this._bpm.maxVideoRequestUsdc;
+    const targetCeiling = balance.available >= fullCeiling - deposit ? fullCeiling : minimumCeiling;
+
+    const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
+    const thresholdBps = await this._getTopUpThresholdBps();
+    const settledForTopUp = (deposit * thresholdBps + 9_999n) / 10_000n;
+    if (settledForTopUp > currentCumulative) {
+      await this._bpm.signVideoDownPayment(peer.peerId, pmux, requestId, settledForTopUp, videoCost, deposit);
+    }
+    await this._bpm.topUpReserve(peer.peerId, pmux, targetCeiling);
+
+    const deadline = Date.now() + this._videoTopUpTimeoutMs;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, this._videoTopUpPollMs));
+      const onChainDeposit = (await this._channelsClient.getSession(session.sessionId)).deposit;
+      if (onChainDeposit >= targetCeiling) {
+        await this._bpm.reconcileReserveAmount(peer.peerId, onChainDeposit);
+        debugLog(`[BuyerNegotiator] Video top-up confirmed for ${peer.peerId.slice(0, 12)}...: deposit=${onChainDeposit}`);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw buyerFault(
+          `Seller did not confirm the video spending limit in time (deposit=${formatUsdc(onChainDeposit)} USDC, needed ${formatUsdc(targetCeiling)} USDC)`,
+          'buyer-reserve-topup-timeout',
+        );
+      }
+    }
+  }
+
+  private async _getTopUpThresholdBps(): Promise<bigint> {
+    if (this._topUpThresholdBps !== null) return this._topUpThresholdBps;
+    try {
+      this._topUpThresholdBps = await this._channelsClient!.getTopUpSettledThresholdBps();
+    } catch (err) {
+      debugWarn(`[BuyerNegotiator] Failed to read TOP_UP_SETTLED_THRESHOLD_BPS, assuming ${DEFAULT_TOPUP_THRESHOLD_BPS}: ${err instanceof Error ? err.message : err}`);
+      return DEFAULT_TOPUP_THRESHOLD_BPS;
+    }
+    return this._topUpThresholdBps;
   }
 
   /**

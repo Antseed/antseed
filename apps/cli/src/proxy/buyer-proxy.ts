@@ -449,6 +449,16 @@ export function sanitizePeerBuyerFaultMarker(response: SerializedHttpResponse): 
     : response
 }
 
+function buyerFaultStatusCode(faultCode: string | null): number {
+  switch (faultCode) {
+    case 'invalid-request': return 400
+    case 'buyer-deposits-insufficient': return 402
+    case 'buyer-budget-too-low': return 422
+    case 'buyer-reserve-topup-timeout': return 504
+    default: return 503
+  }
+}
+
 /**
  * Inject the buyer-known peerId into a 402 payment_required JSON body.
  * The seller doesn't include its own peerId (and shouldn't — self-reported
@@ -3388,7 +3398,7 @@ export class BuyerProxy {
       if (fault === 'buyer') {
         const buyerResponse = adaptBuyerFaultErrorResponse({
           requestId: requestForPeer.requestId,
-          statusCode: faultCode === 'invalid-request' ? 400 : faultCode === 'buyer-budget-too-low' ? 422 : 503,
+          statusCode: buyerFaultStatusCode(faultCode),
           headers: {
             'content-type': 'application/json',
             [ANTSEED_FAULT_ATTRIBUTION_HEADER]: 'buyer',

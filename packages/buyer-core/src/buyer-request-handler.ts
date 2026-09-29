@@ -387,6 +387,12 @@ export class BuyerRequestHandler {
       );
     });
 
+    const paidVideoCreate = Boolean(negotiator)
+      && !isFreeService
+      && !externalSpendingAuth
+      && nativeVideoRoute(req)?.action === 'create';
+    if (paidVideoCreate) await negotiator!.ensureVideoHeadroom(peer, conn, req.requestId);
+
     const response = await executeRequest();
 
     // A seller demanded payment while this buyer runs no payment machinery
@@ -413,6 +419,7 @@ export class BuyerRequestHandler {
       if (result.action === 'return') {
         return adaptPeerResponse(result.response);
       }
+      if (paidVideoCreate) await negotiator.ensureVideoHeadroom(peer, conn, req.requestId);
       startTime = Date.now();
       const retriedResponse = await executeRequest();
       if (!isFreeService) {

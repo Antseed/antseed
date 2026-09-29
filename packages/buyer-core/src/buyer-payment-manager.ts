@@ -50,6 +50,8 @@ const INITIAL_TOPUP_HEADROOM_PERCENT = 35n;
 /** Fixed remaining headroom that triggers every later top-up ($0.50). */
 const SUBSEQUENT_TOPUP_HEADROOM_USDC = 500_000n;
 const PERCENT_DENOMINATOR = 100n;
+/** Default max price of one video generation ($5.00). */
+export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
 const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
@@ -85,6 +87,11 @@ export interface BuyerPaymentConfig {
   maxPerRequestUsdc: bigint;
   /** Max USDC to reserve per ReserveAuth signature (base units). Default: 1000000 ($1.00). */
   maxReserveAmountUsdc: bigint;
+  /**
+   * Max price of one video generation, and the reserve headroom a video top-up
+   * raises the channel to (base units). Default: 5000000 ($5.00).
+   */
+  maxVideoRequestUsdc?: bigint;
   /** Max ratio of seller-claimed cost to buyer's bytes/4 estimate. Default: 1.4. */
   costToleranceMultiplier?: number;
   /** Disable per-service attribution in metadata v2. Default: false. */
@@ -104,6 +111,8 @@ export interface BuyerRequestBillingEntry {
   unitModel?: UnitBillingModelV1;
   tokenPricing?: ServicePricing;
   observedUnitUsage?: UnitBillingUsage;
+  /** Buyer-computed price of a video create, from the seller's advertised unit pricing. */
+  estimatedCostUsdc?: bigint;
 }
 
 interface StoredBuyerRequestBillingEntry extends BuyerRequestBillingEntry {
@@ -1685,6 +1694,7 @@ export class BuyerPaymentManager {
   async topUpReserve(
     sellerPeerId: string,
     paymentMux: PaymentMux,
+    targetCeiling?: bigint,
   ): Promise<void> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -1693,7 +1703,8 @@ export class BuyerPaymentManager {
     }
 
     const prevCeiling = this._getCeiling(sellerPeerId);
-    const newCeiling = prevCeiling + this._config.maxReserveAmountUsdc;
+    if (targetCeiling !== undefined && targetCeiling <= prevCeiling) return;
+    const newCeiling = targetCeiling ?? prevCeiling + this._config.maxReserveAmountUsdc;
     const additionalReserve = newCeiling - prevCeiling;
     const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
 
@@ -1755,6 +1766,65 @@ export class BuyerPaymentManager {
   /** Max USDC per ReserveAuth signature from buyer config. */
   get maxReserveAmountUsdc(): bigint {
     return this._config.maxReserveAmountUsdc;
+  }
+
+  /** Max price of one video generation from buyer config. */
+  get maxVideoRequestUsdc(): bigint {
+    return this._config.maxVideoRequestUsdc ?? DEFAULT_MAX_VIDEO_REQUEST_USDC;
+  }
+
+  /**
+   * Prepay part of a tracked video create so the seller can call topUp().
+   *
+   * topUp() requires most of the current deposit to be settled first. This
+   * signs a plain cumulative SpendingAuth up to `targetCumulative`, bounded by
+   * the buyer's own estimate for the request: the prepayment is always smaller
+   * than the video price and counts toward it once the job is charged.
+   */
+  async signVideoDownPayment(
+    sellerPeerId: string,
+    paymentMux: PaymentMux,
+    requestId: string,
+    targetCumulative: bigint,
+    videoCostUsdc: bigint,
+    confirmedDeposit: bigint,
+  ): Promise<void> {
+    const session = this.getActiveSession(sellerPeerId);
+    if (!session) {
+      throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
+    }
+    const billing = this.getRequestBilling(requestId);
+    if (billing?.requestFacts.video?.action !== 'create') {
+      throw buyerFault(`[BuyerPayment] Down payment requires a tracked video create (${requestId})`, 'buyer-session-state');
+    }
+    const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    if (targetCumulative <= currentCumulative) return;
+    const downPayment = targetCumulative - currentCumulative;
+    if (videoCostUsdc > this.maxVideoRequestUsdc || downPayment >= videoCostUsdc || targetCumulative > confirmedDeposit) {
+      throw buyerFault(
+        `[BuyerPayment] Refusing video down payment: amount=${downPayment} cost=${videoCostUsdc} ` +
+        `target=${targetCumulative} deposit=${confirmedDeposit}`,
+        'buyer-session-state',
+      );
+    }
+
+    const spendingAuth = await this._commitUpdatedSpendingAuth(
+      session,
+      sellerPeerId,
+      targetCumulative,
+      this._sanitizeMetadata(this._metadata.get(sellerPeerId)),
+    );
+    paymentMux.sendSpendingAuth(spendingAuth);
+    this._reportSpend({
+      sellerPeerId,
+      requestId,
+      amountUsdc: downPayment.toString(),
+      inputTokens: '0',
+      cachedInputTokens: '0',
+      outputTokens: '0',
+      outputImages: '0',
+    });
+    debugLog(`[BuyerPayment] Video down payment sent: cumulative ${currentCumulative} → ${targetCumulative}`);
   }
 
   /** Current buyer-verified cost for a seller. */

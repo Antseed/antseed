@@ -210,6 +210,8 @@ export interface NodePaymentsConfig {
   maxPerRequestUsdc?: string;
   /** Maximum total USDC the buyer will reserve in a single SpendingAuth (base units). Default: "10000000" ($10.00). */
   maxReserveAmountUsdc?: string;
+  /** Maximum USDC the buyer pays for one video generation (base units). Default: "5000000" ($5.00). */
+  maxVideoRequestUsdc?: string;
   /** Disable per-service buyer attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
@@ -1803,6 +1805,7 @@ export class AntseedNode extends EventEmitter {
           defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
           maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
           maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
+          maxVideoRequestUsdc: BigInt(payments.maxVideoRequestUsdc ?? "5000000"),  // $5.00 default per video
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
           dataDir: paymentsDir,
         };

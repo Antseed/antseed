@@ -1638,6 +1638,104 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getReserveCeiling(sellerPeerId)).toBe(20_000_000n);
   });
 
+  it('topUpReserve raises the ceiling to an explicit target', async () => {
+    const sellerPeerId = fakePeerId('seller-topup-target');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.topUpReserve(sellerPeerId, mux, 5_850_000n);
+
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('5850000');
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(5_850_000n);
+
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux, 5_000_000n);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+  });
+
+  describe('signVideoDownPayment', () => {
+    const videoRequestId = 'video-create-1';
+
+    function trackVideo(sellerPeerId: string, estimatedCostUsdc = 4_200_000n): void {
+      manager.trackRequestBilling(videoRequestId, {
+        context: {
+          sellerPeerId,
+          provider: 'venice',
+          service: 'video-model',
+          serviceApiProtocol: 'venice-video',
+          unitLimits: { video_generations: 1 },
+        },
+        requestFacts: { video: { protocol: 'venice-video', action: 'create', count: 1 } },
+        unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
+        estimatedCostUsdc,
+      });
+    }
+
+    it('signs a cumulative prepayment that the later video charge absorbs', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId);
+      mux.sentSpendingAuths.length = 0;
+
+      await manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 4_200_000n, 1_000_000n);
+
+      expect(mux.sentSpendingAuths).toHaveLength(1);
+      const sent = mux.sentSpendingAuths[0] as Record<string, unknown>;
+      expect(sent.cumulativeAmount).toBe('850000');
+      expect(sent.reserveMaxAmount).toBeUndefined();
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
+    });
+
+    it('refuses a prepayment that is not smaller than the video price', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-big');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId, 800_000n);
+      mux.sentSpendingAuths.length = 0;
+
+      await expect(
+        manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 800_000n, 1_000_000n),
+      ).rejects.toThrow('Refusing video down payment');
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('refuses a prepayment above the confirmed on-chain deposit', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-dep');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId);
+
+      await expect(
+        manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 4_200_000n, 500_000n),
+      ).rejects.toThrow('Refusing video down payment');
+    });
+
+    it('refuses a prepayment for an untracked request', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-untracked');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+
+      await expect(
+        manager.signVideoDownPayment(sellerPeerId, mux, 'unknown-request', 850_000n, 4_200_000n, 1_000_000n),
+      ).rejects.toThrow('tracked video create');
+    });
+
+    it('refuses a video above maxVideoRequestUsdc', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-cap');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId, 6_000_000n);
+
+      expect(manager.maxVideoRequestUsdc).toBe(5_000_000n);
+      await expect(
+        manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 6_000_000n, 1_000_000n),
+      ).rejects.toThrow('Refusing video down payment');
+    });
+  });
+
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
     store.close();
     store = new ChannelStore(tempDir);

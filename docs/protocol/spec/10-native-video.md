@@ -93,6 +93,16 @@ Discovery billing entries retain their existing wire IDs: Seedance `10` and Veni
 
 A create is charged when the seller returns an accepted job ID: Seedance `id` or Venice `queue_id`. Polling and cancellation are free. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Seedance `-1`, Seedance `frames`, and Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
 
+### Videos above the first reserve
+
+The buyer rejects a create whose price, computed from the seller's advertised unit pricing, is above `maxVideoRequestUsdc` (default `5000000`, $5.00). A cheaper video that does not fit into the reserve locked on-chain raises the channel before the create is sent:
+
+1. The buyer prepays up to `TOP_UP_SETTLED_THRESHOLD_BPS` of the current deposit (85% today) with a plain cumulative SpendingAuth. The prepayment is always smaller than the video price.
+2. In the same exchange, the buyer signs a ReserveAuth for `current cumulative + maxVideoRequestUsdc`, or only `current cumulative + video price` when its deposits cannot cover the full limit. The seller's `topUp()` settles the prepayment and locks the new ceiling in one transaction.
+3. The buyer waits until the new deposit is visible on-chain (up to 45 seconds), then sends the create.
+
+The acceptance charge is cumulative, so it only adds the video price minus the prepayment. Later videos on the same channel fit into the raised ceiling, and unused reserve is released when the channel closes. The first reserve still respects `FIRST_SIGN_CAP`; no contract change is involved. If the buyer's deposits cannot cover even the video price, the create fails with `buyer-deposits-insufficient` (HTTP 402 from the proxy); if the top-up is not confirmed in time, with `buyer-reserve-topup-timeout` (HTTP 504), and the prepayment stays as credit on the channel.
+
 ## Routing and ownership
 
 ### Streamed downloads
