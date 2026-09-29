@@ -20,6 +20,7 @@ import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth } from './response-auth.js';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
   detectRequestServiceApiProtocol,
@@ -144,15 +145,15 @@ export class BuyerRequestHandler {
         }
       } else {
         if (
-          requestProtocol === "openai-images"
+          isUnitBilledProtocol(requestProtocol)
           && (
             !billingRoute
-            || billingRoute.serviceApiProtocol !== "openai-images"
+            || billingRoute.serviceApiProtocol !== requestProtocol
             || (!billingRoute.unitModel && !isZeroTokenPricing(billingRoute.tokenPricing))
           )
         ) {
           throw new Error(
-            `Cannot send paid openai-images request for service "${requestedService}" without service unit billing metadata`,
+            `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
         }
         negotiator.trackRequestBillingContext(req, requestedService, billingRoute);
