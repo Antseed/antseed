@@ -1,6 +1,6 @@
 import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { validateUnitBillingModelV1 } from '@antseed/node';
-import { nativeVideoRoute, requestService, type NativeVideoProtocol } from '@antseed/api-adapter';
+import { nativeVideoOptionError, nativeVideoRoute, requestService, type NativeVideoProtocol } from '@antseed/api-adapter';
 import { BaseProvider } from './base-provider.js';
 import type { RelayConfig } from './http-relay.js';
 import { parseCsv, parseServiceUnitBillingModelsJson, parseServiceCapabilitiesJson } from './config-utils.js';
@@ -42,13 +42,18 @@ export function createNativeVideoProvider(options: NativeVideoProviderOptions, c
       maxConcurrency, allowedServices: [], preserveRequestBody: true, retryOn5xx: 0, redirect: 'error',
     },
   });
+  const error = (request: SerializedHttpRequest, code: string, message: string): SerializedHttpResponse => ({
+    requestId: request.requestId, statusCode: 400, headers: { 'content-type': 'application/json' },
+    body: new TextEncoder().encode(JSON.stringify({ error: { code, message } })),
+  });
   const handleRequest = async (request: SerializedHttpRequest): Promise<SerializedHttpResponse> => {
     const route = nativeVideoRoute(request);
     const service = requestService(request);
     if (!route || route.protocol !== protocol || !service || !services.includes(service)) {
-      return { requestId: request.requestId, statusCode: 400, headers: { 'content-type': 'application/json' },
-        body: new TextEncoder().encode(JSON.stringify({ error: { code: 'unsupported_video_request', message: 'Unsupported video endpoint or service' } })) };
+      return error(request, 'unsupported_video_request', 'Unsupported video endpoint or service');
     }
+    const optionError = nativeVideoOptionError(request, provider.serviceCapabilities?.[service]?.video);
+    if (optionError) return error(request, 'unsupported_video_options', optionError);
     const headers = { ...request.headers };
     for (const header of Object.keys(headers)) {
       if (header.toLowerCase().startsWith('x-antseed-') && header.toLowerCase() !== 'x-antseed-buyer-peer-id') delete headers[header];
@@ -58,7 +63,8 @@ export function createNativeVideoProvider(options: NativeVideoProviderOptions, c
     requestUrl.searchParams.delete('api_key');
     return relay.handleRequest({ ...request, headers, path: `${requestUrl.pathname}${requestUrl.search}` });
   };
-  return { name, services, pricing: relay.pricing, serviceApiProtocols: relay.serviceApiProtocols,
+  const provider: Provider = { name, services, pricing: relay.pricing, serviceApiProtocols: relay.serviceApiProtocols,
     serviceUnitBillingModels, serviceCapabilities: relay.serviceCapabilities, maxConcurrency,
     handleRequest, getCapacity: () => relay.getCapacity() };
+  return provider;
 }

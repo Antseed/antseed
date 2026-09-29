@@ -19,6 +19,20 @@ interface VideoRequestFields {
   count?: unknown;
   duration?: unknown;
   resolution?: unknown;
+  aspectRatio?: unknown;
+  audio?: unknown;
+}
+
+export type VideoInputKind = 'first_frame' | 'last_frame' | 'reference_image' | 'video' | 'reference_video' | 'audio';
+
+/** Same shape as `ServiceCapabilities.video` in `@antseed/protocol`. */
+export interface VideoOptions {
+  durationsSeconds?: number[];
+  resolutions?: string[];
+  aspectRatios?: string[];
+  inputs?: VideoInputKind[];
+  requiredInputs?: VideoInputKind[];
+  audio?: boolean;
 }
 
 /**
@@ -43,6 +57,7 @@ interface NativeVideoApi {
   jobId: (body: JsonObject) => unknown;
   jobIdPattern: RegExp;
   fields: (body: JsonObject) => VideoRequestFields;
+  inputs: (body: JsonObject) => VideoInputKind[];
   /** Sentinel duration values meaning "let the model decide". */
   autoDuration?: unknown[];
   /** Maps equivalent job IDs to one ownership key. */
@@ -74,7 +89,16 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
     jobIdPattern: VEO_OPERATION,
     fields: body => {
       const parameters = object(body.parameters);
-      return { count: veoVideoCount(parameters), duration: parameters.durationSeconds, resolution: parameters.resolution };
+      return { count: veoVideoCount(parameters), duration: parameters.durationSeconds, resolution: parameters.resolution, aspectRatio: parameters.aspectRatio, audio: parameters.generateAudio };
+    },
+    inputs: body => {
+      const instance = object(Array.isArray(body.instances) ? body.instances[0] : undefined);
+      return [
+        ...(instance.image ? ['first_frame' as const] : []),
+        ...(instance.lastFrame ? ['last_frame' as const] : []),
+        ...(Array.isArray(instance.referenceImages) && instance.referenceImages.length ? ['reference_image' as const] : []),
+        ...(instance.video ? ['video' as const] : []),
+      ];
     },
     resourceKey: resourceId => resourceId.replace(/^models\/[^/]+\//, ''),
   },
@@ -88,7 +112,14 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
       .filter(item => object(item).type === 'draft_task')
       .map(item => object(object(item).draft_task).id),
     // `frames` overrides `duration`, so frame-based requests have no explicit seconds.
-    fields: body => ({ duration: body.frames === undefined ? body.duration : undefined, resolution: body.resolution }),
+    fields: body => ({ duration: body.frames === undefined ? body.duration : undefined, resolution: body.resolution, aspectRatio: body.ratio, audio: body.generate_audio }),
+    inputs: body => (Array.isArray(body.content) ? body.content : []).flatMap(item => {
+      const content = object(item);
+      if (content.type === 'image_url') return [content.role === 'last_frame' ? 'last_frame' as const : content.role === 'reference_image' ? 'reference_image' as const : 'first_frame' as const];
+      if (content.type === 'video_url') return ['reference_video' as const];
+      if (content.type === 'audio_url') return ['audio' as const];
+      return [];
+    }),
     autoDuration: [-1, '-1'],
   },
   {
@@ -103,7 +134,15 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
     jobId: body => body.queue_id,
     jobIdPattern: SIMPLE_ID,
     // Venice sends durations as strings such as "5s".
-    fields: body => ({ duration: typeof body.duration === 'string' ? body.duration.replace(/s$/, '') : body.duration, resolution: body.resolution }),
+    fields: body => ({ duration: typeof body.duration === 'string' ? body.duration.replace(/s$/, '') : body.duration, resolution: body.resolution, aspectRatio: body.aspect_ratio, audio: body.audio }),
+    inputs: body => [
+      ...(body.image_url ? ['first_frame' as const] : []),
+      ...(body.end_image_url ? ['last_frame' as const] : []),
+      ...(Array.isArray(body.reference_image_urls) && body.reference_image_urls.length ? ['reference_image' as const] : []),
+      ...(body.video_url ? ['video' as const] : []),
+      ...(Array.isArray(body.reference_video_urls) && body.reference_video_urls.length ? ['reference_video' as const] : []),
+      ...(body.audio_url || (Array.isArray(body.reference_audio_urls) && body.reference_audio_urls.length) ? ['audio' as const] : []),
+    ],
     autoDuration: ['auto', 'Auto', '-1', '1 gen'],
   },
 ];
@@ -200,6 +239,42 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
     ...(duration === undefined ? {} : { duration }),
     ...(typeof fields.resolution === 'string' ? { resolution: fields.resolution } : {}),
   };
+}
+
+/**
+ * Returns the first create setting the model does not advertise. Only
+ * advertised lists are enforced: an absent list means the seller did not
+ * describe that option, so the upstream remains the authority.
+ */
+export function nativeVideoOptionError(request: SerializedHttpRequest, options: VideoOptions | undefined): string | null {
+  const route = nativeVideoRoute(request);
+  if (!route || route.action !== 'create' || !options) return null;
+  const body = parseJsonObject(request.body);
+  if (!body) return 'Video submission requires a JSON object';
+  const entry = api(route.protocol);
+  const fields = entry.fields(body);
+  const inputs = [...new Set(entry.inputs(body))];
+  const duration = entry.autoDuration?.includes(fields.duration) ? undefined : positiveInteger(fields.duration);
+  if (options.durationsSeconds && (duration === null || (duration !== undefined && !options.durationsSeconds.includes(duration)))) {
+    return `Unsupported duration; choose one of ${options.durationsSeconds.join(', ')} seconds`;
+  }
+  const choice = (value: unknown, supported: string[] | undefined, label: string) => (
+    value !== undefined && supported && (typeof value !== 'string' || !supported.some(item => item.toLowerCase() === value.toLowerCase()))
+      ? `Unsupported ${label}; choose one of ${supported.join(', ')}`
+      : null
+  );
+  const resolution = choice(fields.resolution, options.resolutions, 'resolution');
+  if (resolution) return resolution;
+  const aspectRatio = choice(fields.aspectRatio, options.aspectRatios, 'aspect ratio');
+  if (aspectRatio) return aspectRatio;
+  if (options.inputs) {
+    const unsupported = inputs.find(input => !options.inputs!.includes(input));
+    if (unsupported) return `Unsupported video input ${unsupported}`;
+  }
+  const missing = options.requiredInputs?.find(input => !inputs.includes(input));
+  if (missing) return `Missing required video input ${missing}`;
+  if (fields.audio === true && options.audio === false) return 'This model does not generate audio';
+  return null;
 }
 
 /** Positive integer from a number or decimal string; undefined when absent, null when invalid. */

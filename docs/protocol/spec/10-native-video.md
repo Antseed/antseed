@@ -83,6 +83,29 @@ AntSeed also preserves native `lastFrame`, `referenceImages`, and `video` fields
 
 Native field references: [Venice queue](https://docs.venice.ai/api-reference/endpoint/video/queue), [BytePlus create task](https://docs.byteplus.com/en/docs/ModelArk/1520757), [Google Veo](https://ai.google.dev/gemini-api/docs/veo), and [Google SDK converters](https://github.com/googleapis/js-genai/blob/main/src/converters/_models_converters.ts).
 
+## Model options
+
+Sellers can advertise what each video model accepts in `capabilities.video` (peer metadata v12):
+
+```json
+{
+  "seedance-1-0-pro": {
+    "video": {
+      "durationsSeconds": [5, 10],
+      "resolutions": ["720p", "1080p"],
+      "aspectRatios": ["16:9", "9:16"],
+      "inputs": ["first_frame", "last_frame"],
+      "requiredInputs": [],
+      "audio": false
+    }
+  }
+}
+```
+
+Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional, and an omitted field is not checked. The buyer skips sellers whose options reject a create and returns `422 unsupported_video_options` if none remain. The seller also rejects such creates with `400 unsupported_video_options` before payment or any upstream call. Automatic durations, polling, cancellation and downloads are never checked.
+
+Venice sellers fill these options automatically from `GET /api/v1/models?type=video` at startup. Configured options take precedence. Seedance and Veo sellers set them through service `capabilities` or `ANTSEED_SERVICE_CAPABILITIES_JSON`.
+
 ## Billing
 
 Discovery billing entries retain their existing wire IDs: Veo `7`, Seedance `10`, and Venice `11`. IDs `6`, `8`, and `9` are unused; removing a provider must not renumber the remaining protocols.
@@ -99,7 +122,7 @@ Venice MP4 responses without `Content-Length` are staged in a seller-local priva
 
 ### Veo downloads
 
-For completed Veo operations, the buyer proxy replaces Google file URLs with local download URLs only when the selected provider and service advertise `serviceCapabilities[service].videoDownload = "video-stream-v1"` in signed metadata. This field is encoded in metadata v13 as a download-version byte before each service capability entry's presence byte (0 = absent, 1 = `video-stream-v1`). Sellers without download capabilities continue announcing v12. Missing or unknown capabilities leave upstream URLs unchanged; manually requesting a local download from an unsupported seller returns 501. The direct-Google Veo plugin advertises the capability automatically; custom `GEMINI_BASE_URL` origins do not.
+For completed Veo operations, the buyer proxy replaces Google file URLs with local download URLs only when the selected provider and service advertise `serviceCapabilities[service].videoDownload = "video-stream-v1"` in signed metadata. Metadata stays at v12: bit 3 of the service capability value byte signals `video-stream-v1`, and bit 4 signals video options appended after the supported-parameter list (when present). Entries without these video fields retain the existing v12 encoding. Older buyers reject the unknown value bits and cannot use the seller's announcement; they do not silently skip the video fields. Missing download capabilities leave upstream URLs unchanged; manually requesting a local download from an unsupported seller returns 501. The direct-Google Veo plugin advertises the capability automatically; custom `GEMINI_BASE_URL` origins do not.
 
 Local download URLs contain the operation name and zero-based result index. Fetch the returned URI directly; no Google API key is needed on the buyer. The Google JavaScript SDK's `files.download()` reconstructs a Google Files API path instead of fetching local HTTP URIs, so use `fetch(video.uri)` for this step rather than that helper.
 

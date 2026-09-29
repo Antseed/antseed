@@ -1,6 +1,7 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
 import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -19,6 +20,7 @@ export type CatalogServiceCapabilities = {
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];
+  video?: VideoOptions;
 };
 
 export type NetworkServiceCatalogPeer = {

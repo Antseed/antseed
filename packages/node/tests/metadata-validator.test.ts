@@ -42,6 +42,21 @@ function validMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 
 
 describe('validateMetadata', () => {
+  it('validates announced video options', () => {
+    const metadata = validMetadata();
+    metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: { video: { durationsSeconds: [0, 5, 5], resolutions: ['bad value'], inputs: [], requiredInputs: ['first_frame'] } } };
+    expect(validateMetadata(metadata).map(error => error.message)).toEqual(expect.arrayContaining([
+      'Invalid video.durationsSeconds value 0',
+      'Duplicate video.durationsSeconds value 5',
+      'Invalid video.resolutions value "bad value"',
+      'video.requiredInputs must also be listed in video.inputs',
+    ]));
+    metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: {
+      videoDownload: 'video-stream-v1', video: { durationsSeconds: [5] },
+    } };
+    expect(validateMetadata({ ...metadata, version: 12 })).toEqual([]);
+  });
+
   it('accepts native video unit pricing and video output capabilities', () => {
     const metadata = validMetadata();
     const provider = metadata.providers[0]!;

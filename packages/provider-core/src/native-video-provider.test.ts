@@ -67,4 +67,20 @@ describe('seller-operated native video relays', () => {
     await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"model":"model"}') });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
+
+  it('rejects creates outside the advertised model options before contacting upstream', async () => {
+    const fetchMock = vi.fn();
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = createNativeVideoProvider({ name: 'custom-video-seller', protocol: 'seedance-video', relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'key' } }, {
+      ANTSEED_ALLOWED_SERVICES: 'model',
+      ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"model":{"seedance-video":{"version":1,"components":[]}}}',
+      ANTSEED_SERVICE_CAPABILITIES_JSON: '{"model":{"video":{"durationsSeconds":[5],"inputs":[]}}}',
+    });
+    for (const body of [{ model: 'model', duration: 10 }, { model: 'model', content: [{ type: 'image_url', role: 'first_frame' }] }]) {
+      const response = await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) });
+      expect(response.statusCode).toBe(400);
+      expect(JSON.parse(Buffer.from(response.body).toString()).error.code).toBe('unsupported_video_options');
+    }
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
 });

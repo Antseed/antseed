@@ -32,13 +32,57 @@ function makeMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 }
 
 describe('encodeMetadata / decodeMetadata', () => {
-  it('round-trips service-scoped video downloads only in v13', () => {
-    const metadata = makeMetadata();
+  it('round-trips service-scoped video downloads in v12', () => {
+    const metadata = makeMetadata({ version: 12 });
     metadata.providers[0]!.serviceCapabilities = { video: { outputs: ['video'], videoDownload: 'video-stream-v1' } };
     expect(decodeMetadata(encodeMetadata(metadata)).providers[0]!.serviceCapabilities).toEqual(metadata.providers[0]!.serviceCapabilities);
-    expect(() => encodeMetadata({ ...metadata, version: 12 })).toThrow('v13');
+    expect(decodeMetadata(encodeMetadata(metadata)).version).toBe(12);
     delete metadata.providers[0]!.serviceCapabilities.video!.videoDownload;
     expect(decodeMetadata(encodeMetadata({ ...metadata, version: 12 })).providers[0]!.serviceCapabilities?.video?.videoDownload).toBeUndefined();
+  });
+  it('round-trips signed video options in v12', () => {
+    const metadata = makeMetadata({ version: 12 });
+    const video = { durationsSeconds: [5, 10], resolutions: ['720p', '1080p'], aspectRatios: ['16:9', '9:16'], inputs: ['first_frame', 'last_frame'] as const, requiredInputs: ['first_frame'] as const, audio: false };
+    metadata.providers[0]!.serviceCapabilities = { video: { outputs: ['video'], video: { ...video, inputs: [...video.inputs], requiredInputs: [...video.requiredInputs] } } };
+    expect(decodeMetadata(encodeMetadata(metadata)).providers[0]!.serviceCapabilities?.video?.video).toEqual(metadata.providers[0]!.serviceCapabilities.video!.video);
+    expect(decodeMetadata(encodeMetadata(metadata)).version).toBe(12);
+    const changed = structuredClone(metadata);
+    changed.providers[0]!.serviceCapabilities!.video!.video!.durationsSeconds = [5];
+    expect(encodeMetadataForSigning(changed)).not.toEqual(encodeMetadataForSigning(metadata));
+  });
+  it('preserves the existing non-video v12 wire format', () => {
+    const metadata = makeMetadata({
+      version: 12,
+      region: 'us',
+      providers: [{
+        provider: 'test', services: ['text'],
+        defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+        serviceCapabilities: { text: {
+          inputs: ['text'], outputs: ['text'], reasoning: false,
+          toolUse: true, supportedParameters: ['temperature'],
+        } },
+        maxConcurrency: 1, currentLoad: 0,
+      }],
+    });
+    const legacyBytes = Buffer.from(
+      '0caaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa0275730000018bcfe5680001047465737400010474657874000000000000000000000000000000000000000000010474657874dc010102010b74656d706572617475726500010000000000000000000000' + 'bb'.repeat(65),
+      'hex',
+    );
+
+    expect(Buffer.from(encodeMetadata(metadata))).toEqual(legacyBytes);
+    expect(decodeMetadata(legacyBytes).providers[0]!.serviceCapabilities).toEqual(metadata.providers[0]!.serviceCapabilities);
+  });
+  it('round-trips mixed video and non-video entries without losing empty options', () => {
+    const metadata = makeMetadata({ version: 12 });
+    metadata.providers[0]!.serviceCapabilities = {
+      alpha: { videoDownload: 'video-stream-v1', video: { audio: true }, supportedParameters: ['seed'] },
+      beta: { video: {} },
+      gamma: { inputs: ['text'], toolUse: false },
+    };
+
+    const decoded = decodeMetadata(encodeMetadata(metadata));
+    expect(decoded.providers[0]!.serviceCapabilities).toEqual(metadata.providers[0]!.serviceCapabilities);
+    expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(metadata));
   });
   it('round-trips native video protocols and appended billing units without changing image IDs', () => {
     const metadata = makeMetadata();

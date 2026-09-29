@@ -1,5 +1,5 @@
 import { describe, it, expect } from 'vitest';
-import { nativeVideoRoute, nativeVideoAcceptance, nativeVideoFacts, nativeVideoResourceKey, requestService, detectRequestServiceApiProtocol, selectTargetProtocolForRequest, inferProviderDefaultServiceApiProtocols, isNativeVideoProtocol, NATIVE_VIDEO_PROTOCOLS } from '../src/index.js';
+import { nativeVideoRoute, nativeVideoAcceptance, nativeVideoFacts, nativeVideoResourceKey, requestService, detectRequestServiceApiProtocol, selectTargetProtocolForRequest, inferProviderDefaultServiceApiProtocols, isNativeVideoProtocol, NATIVE_VIDEO_PROTOCOLS, nativeVideoOptionError } from '../src/index.js';
 import { veoDownloadPath } from '../src/index.js';
 
 describe('native video API contracts', () => {
@@ -177,5 +177,37 @@ describe('Seedance (BytePlus ModelArk) video API', () => {
     expect(nativeVideoRoute(final)?.referencedResourceIds).toEqual(['cgt-draft']);
     expect(nativeVideoRoute(create({ content: [{ type: 'draft_task', draft_task: { id: '../x' } }] }))?.referencedResourceIds).toEqual(['']);
     expect(nativeVideoRoute(create({ content: [{ type: 'text', text: 'boat' }] }))?.referencedResourceIds).toBeUndefined();
+  });
+});
+
+describe('advertised video options', () => {
+  const create = (path: string, body: object) => ({ requestId: 'r', method: 'POST', path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) });
+  const venice = (body: object) => create('/api/v1/video/queue', { model: 'video', prompt: 'cat', ...body });
+  const options = { durationsSeconds: [5, 10], resolutions: ['720p'], aspectRatios: ['16:9'], inputs: ['first_frame' as const, 'last_frame' as const], requiredInputs: ['first_frame' as const], audio: false };
+  const image = { image_url: 'https://media.example/a.png' };
+
+  it('accepts matching creates and ignores follow-ups, auto durations and undescribed options', () => {
+    expect(nativeVideoOptionError(venice({ ...image, duration: '5s', resolution: '720P', aspect_ratio: '16:9' }), options)).toBeNull();
+    expect(nativeVideoOptionError(venice({ ...image, duration: 'auto' }), options)).toBeNull();
+    expect(nativeVideoOptionError(venice({ duration: '7s' }), undefined)).toBeNull();
+    expect(nativeVideoOptionError(create('/api/v1/video/retrieve', { model: 'video', queue_id: 'q' }), options)).toBeNull();
+  });
+
+  it.each([
+    [{ ...image, duration: '7s' }, /duration; choose one of 5, 10/],
+    [{ ...image, resolution: '1080p' }, /resolution/],
+    [{ ...image, aspect_ratio: '9:16' }, /aspect ratio/],
+    [{ ...image, video_url: 'https://media.example/a.mp4' }, /input video/],
+    [{}, /Missing required video input first_frame/],
+    [{ ...image, audio: true }, /audio/],
+  ])('rejects %j', (body, message) => {
+    expect(nativeVideoOptionError(venice(body), options)).toMatch(message);
+  });
+
+  it('reads media inputs from each native API shape', () => {
+    const textOnly = { inputs: [] };
+    expect(nativeVideoOptionError(create('/v1beta/models/veo:predictLongRunning', { instances: [{ prompt: 'cat', lastFrame: {} }], parameters: { aspectRatio: '16:9' } }), textOnly)).toMatch(/last_frame/);
+    expect(nativeVideoOptionError(create('/api/v3/contents/generations/tasks', { model: 'seedance', content: [{ type: 'image_url', role: 'reference_image' }] }), textOnly)).toMatch(/reference_image/);
+    expect(nativeVideoOptionError(create('/api/v3/contents/generations/tasks', { model: 'seedance', content: [{ type: 'text', text: 'cat' }] }), textOnly)).toBeNull();
   });
 });

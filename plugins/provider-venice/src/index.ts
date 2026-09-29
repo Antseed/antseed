@@ -1,6 +1,7 @@
 import type { AntseedProviderPlugin } from '@antseed/node';
 import { createNativeVideoProvider } from '@antseed/provider-core';
 import { withVeniceRetrieve } from './retrieve.js';
+import { withVeniceModelOptions } from './models.js';
 
 export const VENICE_DEFAULT_BASE_URL = 'https://api.venice.ai';
 
@@ -24,7 +25,7 @@ const plugin: AntseedProviderPlugin = {
       protocol: 'venice-video',
       relay: { baseUrl, authHeaderName: 'authorization', authHeaderValue: `Bearer ${apiKey}` },
     }, config);
-    return withVeniceRetrieve(provider, baseUrl, apiKey);
+    return withVeniceModelOptions(withVeniceRetrieve(provider, baseUrl, apiKey), baseUrl, apiKey);
   },
 };
 

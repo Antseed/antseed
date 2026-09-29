@@ -10,6 +10,7 @@ Install with `antseed plugin add @antseed/provider-veo`, then configure:
 - `GEMINI_API_KEY`: seller API credential
 - `ANTSEED_ALLOWED_SERVICES`: native model names
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `veo-video` pricing using `video_generations` or `video_seconds`
+- `ANTSEED_SERVICE_CAPABILITIES_JSON` (optional): per-model [video options](../../docs/protocol/spec/10-native-video.md#model-options), such as `{"model":{"video":{"durationsSeconds":[5,10],"inputs":["first_frame"]}}}`; unsupported creates are rejected before payment
 
 ## Buyer API
 

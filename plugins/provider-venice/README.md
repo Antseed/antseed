@@ -11,6 +11,8 @@ Install with `antseed plugin add @antseed/provider-venice`, then configure:
 - `ANTSEED_ALLOWED_SERVICES`: Venice video model names, for example `wan-2.5-preview-text-to-video`
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `venice-video` pricing using `video_generations` or `video_seconds`
 
+At startup the plugin reads Venice's video model list and advertises each model's supported durations, resolutions, aspect ratios, media inputs and audio. Unsupported creates are rejected before Venice is called. Options set through `ANTSEED_SERVICE_CAPABILITIES_JSON` take precedence. See [model options](../../docs/protocol/spec/10-native-video.md#model-options).
+
 Check that Venice's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.
 
 ## Buyer API

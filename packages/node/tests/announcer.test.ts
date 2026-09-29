@@ -180,6 +180,14 @@ describe('PeerAnnouncer metadata versions', () => {
     expect(metadata?.version).toBe(12);
     expect(metadata?.providers[0]?.serviceUnitBillingModels).toBeUndefined();
   });
+
+  it('keeps v12 for sellers that announce video options and downloads', async () => {
+    const config = makeBaseConfig();
+    config.providers[0]!.serviceCapabilities = { [config.providers[0]!.services[0]!]: { videoDownload: 'video-stream-v1', video: { durationsSeconds: [5] } } };
+    const announcer = new PeerAnnouncer(config);
+    await announcer.announce();
+    expect(announcer.getLatestMetadata()?.version).toBe(12);
+  });
 });
 
 describe('PeerAnnouncer metadata limits', () => {

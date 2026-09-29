@@ -10,6 +10,7 @@ Install with `antseed plugin add @antseed/provider-seedance`, then configure:
 - `ARK_BASE_URL` (optional): defaults to `https://ark.ap-southeast.bytepluses.com`
 - `ANTSEED_ALLOWED_SERVICES`: ModelArk model names
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `seedance-video` pricing using `video_generations` or `video_seconds`
+- `ANTSEED_SERVICE_CAPABILITIES_JSON` (optional): per-model [video options](../../docs/protocol/spec/10-native-video.md#model-options), such as `{"model":{"video":{"durationsSeconds":[5,10],"inputs":["first_frame"]}}}`; unsupported creates are rejected before payment
 
 Sellers must add value beyond reselling ModelArk access and must follow BytePlus terms.
 

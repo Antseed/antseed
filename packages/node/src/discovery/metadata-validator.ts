@@ -631,9 +631,6 @@ export function validateMetadata(metadata: PeerMetadata): ValidationError[] {
         for (const message of validateServiceCapabilityFields(caps)) {
           errors.push({ field, message });
         }
-        if (caps.videoDownload !== undefined && metadata.version < 13) {
-          errors.push({ field, message: 'Video downloads require metadata version 13' });
-        }
       }
     }
 

@@ -1,4 +1,4 @@
-import { nativeVideoRoute } from '@antseed/api-adapter'
+import { nativeVideoOptionError, nativeVideoRoute } from '@antseed/api-adapter'
 import { ResourceRoutes } from './resource-routes.js'
 import { prepareVideoRequest, recordVideoAcceptance, recordVideoCreateAttempt, rewriteVideoDownloadUrls } from './native-video-proxy.js'
 import { downloadVideo } from './video-download.js'
@@ -2506,6 +2506,7 @@ export class BuyerProxy {
 
       const router = this._node.router
       const policyRouter = router as BuyerPolicyRouter | null | undefined
+      let videoOptionError: string | null = null
       const routeCandidates = modelPeers
         .map((peer) => {
           const plan = modelPlans.get(peer.peerId)
@@ -2513,6 +2514,13 @@ export class BuyerProxy {
           if (!plan?.serviceId) return null
           const offer = findAdvertisedServiceOffer(peer, plan.provider, plan.serviceId)
           if (!offer) return null
+          const requestForPeer = withRoutedModel(serializedReq, plan.serviceId)
+          const optionError = nativeVideo ? nativeVideoOptionError(requestForPeer, offer.capabilities?.video) : null
+          if (optionError) {
+            videoOptionError ??= optionError
+            log(`Video option filter: peer ${peer.peerId.slice(0, 12)}... service="${plan.serviceId}" ${optionError}`)
+            return null
+          }
           const missingRequired = plan.selection?.requiresTransform
             ? requiredParameters
             : findMissingRequiredParameters(
@@ -2528,7 +2536,7 @@ export class BuyerProxy {
             )
             return null
           }
-          const requestForPolicy = withRoutedModel(serializedReq, plan.serviceId)
+          const requestForPolicy = requestForPeer
           if (!peerAllowedByPolicy(policyRouter, requestForPolicy, peer)) return null
           return {
             peer,
@@ -2582,6 +2590,11 @@ export class BuyerProxy {
         }
       }
       if (candidates.length === 0) {
+        if (videoOptionError) {
+          res.writeHead(422, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { type: 'unsupported_video_options', code: 'unsupported_video_options', message: videoOptionError } }))
+          return
+        }
         const capabilityRequired = requiredParameters.length > 0
         // The model exists on the network but only behind an API this
         // request does not speak (e.g. a decision model asked via chat).

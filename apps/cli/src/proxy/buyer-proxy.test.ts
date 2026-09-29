@@ -163,6 +163,27 @@ test('native video creates are not retried automatically, and a client retry wit
   assert.equal(invalid.statusCode, 400)
 })
 
+test('native video creates skip sellers whose advertised options reject the request', async () => {
+  const peers = [makePeer('a', ['seedance']), makePeer('b', ['seedance'])]
+  for (const peer of peers) peer.providerServiceApiProtocols = { seedance: { services: { model: ['seedance-video'] } } }
+  peers[0]!.providerServiceCapabilities = { seedance: { services: { model: { video: { durationsSeconds: [5] } } } } }
+  peers[1]!.providerServiceCapabilities = { seedance: { services: { model: { video: { durationsSeconds: [5, 10] } } } } }
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  ;(proxy as any)._persistResourceRoutes = async () => {}
+  const selected: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    selected.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id: 'task' })) }
+  }
+  const create = (duration: number) => invokeProxy(proxy, makeProxyRequest({ path: '/api/v3/contents/generations/tasks', body: { model: 'model', duration } }))
+  assert.equal((await create(10)).statusCode, 200)
+  assert.deepEqual(selected, [peers[1]!.peerId])
+  const rejected = await create(15)
+  assert.equal(rejected.statusCode, 422, rejected.body)
+  assert.match(rejected.body, /unsupported_video_options/)
+  assert.equal(selected.length, 1)
+})
+
 test('existing required CLI verification rejects a failed pin without payment/inference and auto falls back to a verified seller', async () => {
   const rejected = makePeer('a', ['openai'])
   const accepted = makePeer('b', ['openai'])
