@@ -4,7 +4,7 @@ import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
-import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED } from '../src/types/protocol.js';
+import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from '../src/types/protocol.js';
 import { ANTSEED_ATTEST_PATH, type Prover, type SellerRequest } from '../src/interfaces/plugin.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
 import { mkdtempSync } from 'node:fs';
@@ -165,7 +165,11 @@ describe('native video job ownership and idempotency', () => {
   const other = 'c'.repeat(40);
   const pricing = { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] };
 
-  function setup(dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db'), taskIds = ['task-1', 'task-2']) {
+  function setup(
+    dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db'),
+    taskIds = ['task-1', 'task-2'],
+    spmOverrides: Record<string, unknown> = {},
+  ) {
     const provider = makeProvider(0, 0, {
       name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
       serviceUnitBillingModels: { video: { 'venice-video': pricing } },
@@ -177,8 +181,9 @@ describe('native video job ownership and idempotency', () => {
     });
     const recordSpend = vi.fn();
     const store = new ResourceOwnershipStore(dbPath);
+    const spm = makeSpmMock({ recordSpend, ...spmOverrides });
     const handler = makeSellerRequestHandler({
-      providers: [provider], sellerPaymentManager: makeSpmMock({ recordSpend }),
+      providers: [provider], sellerPaymentManager: spm,
       channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
       resourceOwnershipStore: store,
     });
@@ -195,7 +200,7 @@ describe('native video job ownership and idempotency', () => {
       return decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
     };
     const create = (peer: string, headers: Record<string, string> = {}, body: object = { model: 'video', duration: '8s' }) => send(peer, 'POST', '/api/v1/video/queue', body, headers);
-    return { provider, recordSpend, store, send, create, payment, dbPath };
+    return { provider, recordSpend, store, send, create, payment, dbPath, settleSession: spm.settleSession };
   }
 
   it('rejects polls from buyers that did not create the job, without calling upstream', async () => {
@@ -310,6 +315,261 @@ describe('native video job ownership and idempotency', () => {
     } finally {
       store.close();
     }
+  });
+
+  describe('video creates above the locked reserve', () => {
+    const newDbPath = () => join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db');
+    const bigVideo = { model: 'video', duration: '20s' };
+    const bodyOf = (response: { body: Uint8Array }) => JSON.parse(new TextDecoder().decode(response.body));
+
+    it('asks for a larger reserve without starting the job or closing the channel', async () => {
+      const { provider, recordSpend, create, settleSession, store } = setup(newDbPath(), undefined, { getCumulativeSpend: () => 100_000n, getAcceptedCumulative: () => 100_000n });
+      try {
+        const response = await create(buyer, {}, bigVideo);
+        expect(response.statusCode).toBe(402);
+        expect(bodyOf(response)).toMatchObject({
+          error: 'payment_required',
+          code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED,
+          estimatedRequestCost: '2000000',
+          remainingLockedReserve: '900000',
+          reserveMaxAmount: '1000000',
+        });
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+        expect(settleSession).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('asks for a larger reserve even when the reserve estimate overdraft would cover the video', async () => {
+      const provider = makeProvider(0, 0, {
+        name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+        serviceUnitBillingModels: { video: { 'venice-video': pricing } },
+      });
+      provider.handleRequest = vi.fn();
+      const store = new ResourceOwnershipStore(newDbPath());
+      const frames: Uint8Array[] = [];
+      const settleSession = vi.fn(async () => {});
+      const handler = makeSellerRequestHandler({
+        providers: [provider], sellerPaymentManager: makeSpmMock({ settleSession }),
+        channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
+        resourceOwnershipStore: store, reserveEstimateOverdraftUsdc: 5_000_000n,
+      });
+      try {
+        const { mux } = handler.handleConnection(makeConn(frames), buyer, { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
+        await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+          requestId: 'r', method: 'POST', path: '/api/v1/video/queue',
+          headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' },
+          body: Buffer.from(JSON.stringify(bigVideo)),
+        }) });
+        const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+        expect(response.statusCode).toBe(402);
+        expect(bodyOf(response).code).toBe(PAYMENT_CODE_VIDEO_RESERVE_REQUIRED);
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(settleSession).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('starts a video whose price exactly fits the remaining reserve', async () => {
+      const { provider, create, store } = setup(newDbPath(), undefined, { getCumulativeSpend: () => 200_000n, getAcceptedCumulative: () => 200_000n });
+      try {
+        expect((await create(buyer)).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+      } finally { store.close(); }
+    });
+
+    it('asks for a larger reserve when the video is one unit above the remaining reserve', async () => {
+      const { provider, create, store } = setup(newDbPath(), undefined, { getCumulativeSpend: () => 200_001n, getAcceptedCumulative: () => 200_001n });
+      try {
+        const response = await create(buyer);
+        expect(response.statusCode).toBe(402);
+        expect(bodyOf(response)).toMatchObject({ code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED, remainingLockedReserve: '799999' });
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('answers an idempotent replay without asking for a larger reserve', async () => {
+      const dbPath = newDbPath();
+      const seeded = new ResourceOwnershipStore(dbPath);
+      seeded.recordAcceptedCreate('venice-video', 'task-1', buyer, 'big-key', {
+        statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task-1"}'),
+      });
+      seeded.close();
+      const { provider, recordSpend, create, store } = setup(dbPath);
+      try {
+        const replay = await create(buyer, { 'x-antseed-idempotency-key': 'big-key' }, bigVideo);
+        expect(replay.statusCode).toBe(200);
+        expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
+        expect(bodyOf(replay).queue_id).toBe('task-1');
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+        expect(recordSpend).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('rejects an invalid idempotency key before asking for a larger reserve', async () => {
+      const { provider, create, store } = setup(newDbPath());
+      try {
+        const response = await create(buyer, { 'x-antseed-idempotency-key': 'bad key!' }, bigVideo);
+        expect(response.statusCode).toBe(400);
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('rejects an unbillable video before asking for a larger reserve', async () => {
+      const { provider, create, store } = setup(newDbPath());
+      try {
+        const response = await create(buyer, {}, { model: 'video', duration: 'auto' });
+        expect(response.statusCode).toBe(400);
+        expect(bodyOf(response).error.code).toBe('invalid_billing_request');
+        expect(provider.handleRequest).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    function holdingProvider(provider: Provider) {
+      const releases: Array<(status: number) => void> = [];
+      const started: string[] = [];
+      provider.handleRequest = vi.fn(request => new Promise(resolve => {
+        started.push(request.requestId);
+        releases.push(status => resolve({
+          requestId: request.requestId,
+          statusCode: status,
+          headers: { 'content-type': 'application/json' },
+          body: Buffer.from(status === 200 ? JSON.stringify({ queue_id: `task-${request.requestId}` }) : '{"error":{"message":"upstream failed"}}'),
+        }));
+      }));
+      return { releases, started };
+    }
+
+    async function waitForStarts(started: string[], count: number) {
+      for (let attempt = 0; attempt < 100 && started.length < count; attempt += 1) await new Promise(resolve => setTimeout(resolve, 5));
+      expect(started).toHaveLength(count);
+    }
+
+    it('allows only one video create per buyer at a time', async () => {
+      const { provider, recordSpend, create, store } = setup(newDbPath());
+      const { releases, started } = holdingProvider(provider);
+      try {
+        const first = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 1);
+        const secondPending = create(buyer, {}, { model: 'video', duration: '5s' });
+        await new Promise(resolve => setTimeout(resolve, 20));
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+        const second = await secondPending;
+        expect(second.statusCode).toBe(409);
+        expect(bodyOf(second).error.code).toBe('video_create_in_progress');
+        expect(bodyOf(second).error.message).toMatch(/only one video can be created per buyer at a time \(a temporary limit\)/);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+        releases[0]!(200);
+        expect((await first).statusCode).toBe(200);
+        expect(recordSpend).toHaveBeenCalledOnce();
+      } finally {
+        releases.forEach(release => release(200));
+        store.close();
+      }
+    });
+
+    it('lets the next video start once the previous create finished', async () => {
+      const { provider, create, store } = setup(newDbPath());
+      const { releases, started } = holdingProvider(provider);
+      try {
+        const first = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 1);
+        releases[0]!(200);
+        expect((await first).statusCode).toBe(200);
+        const next = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 2);
+        releases[1]!(200);
+        expect((await next).statusCode).toBe(200);
+      } finally { store.close(); }
+    });
+
+    it('lets the next video start once the previous create failed upstream', async () => {
+      const { provider, create, store } = setup(newDbPath());
+      const { releases, started } = holdingProvider(provider);
+      try {
+        const first = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 1);
+        releases[0]!(500);
+        expect((await first).statusCode).toBe(500);
+        const next = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 2);
+        releases[1]!(200);
+        expect((await next).statusCode).toBe(200);
+      } finally { store.close(); }
+    });
+
+    it('does not block the next video when a create is rejected before starting', async () => {
+      const { provider, create, store } = setup(newDbPath());
+      const { releases, started } = holdingProvider(provider);
+      try {
+        expect((await create(buyer, {}, bigVideo)).statusCode).toBe(402);
+        expect((await create(buyer, {}, { model: 'video', duration: 'auto' })).statusCode).toBe(400);
+        const next = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 1);
+        releases[0]!(200);
+        expect((await next).statusCode).toBe(200);
+      } finally { store.close(); }
+    });
+
+    it('still answers an idempotent replay while another create is in flight', async () => {
+      const dbPath = newDbPath();
+      const seeded = new ResourceOwnershipStore(dbPath);
+      seeded.recordAcceptedCreate('venice-video', 'task-old', buyer, 'old-key', {
+        statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task-old"}'),
+      });
+      seeded.close();
+      const { provider, create, store } = setup(dbPath);
+      const { releases, started } = holdingProvider(provider);
+      try {
+        const first = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 1);
+        const replay = await create(buyer, { 'x-antseed-idempotency-key': 'old-key' });
+        expect(replay.statusCode).toBe(200);
+        expect(bodyOf(replay).queue_id).toBe('task-old');
+        releases[0]!(200);
+        expect((await first).statusCode).toBe(200);
+      } finally {
+        releases.forEach(release => release(200));
+        store.close();
+      }
+    });
+
+    it('does not limit other buyers or polls while a create is in flight', async () => {
+      const { provider, create, send, store } = setup(newDbPath());
+      const { releases, started } = holdingProvider(provider);
+      try {
+        const first = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 1);
+        const otherBuyer = create(other, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 2);
+        releases[0]!(200);
+        releases[1]!(200);
+        expect((await first).statusCode).toBe(200);
+        expect((await otherBuyer).statusCode).toBe(200);
+        const second = create(buyer, {}, { model: 'video', duration: '5s' });
+        await waitForStarts(started, 3);
+        const poll = send(buyer, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: `task-${started[0]}` });
+        await waitForStarts(started, 4);
+        releases[3]!(200);
+        expect((await poll).statusCode).toBe(200);
+        releases[2]!(200);
+        expect((await second).statusCode).toBe(200);
+      } finally {
+        releases.forEach(release => release(200));
+        store.close();
+      }
+    });
+
+    it('starts the same create once the top-up raised the locked reserve', async () => {
+      let reserveMax = 1_000_000n;
+      const { provider, create, store } = setup(newDbPath(), undefined, { getReserveMax: () => reserveMax });
+      try {
+        const key = { 'x-antseed-idempotency-key': 'topup-key' };
+        expect((await create(buyer, key, bigVideo)).statusCode).toBe(402);
+        reserveMax = 3_000_000n;
+        expect((await create(buyer, key, bigVideo)).statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+      } finally { store.close(); }
+    });
   });
 
   it('refuses video when ownership storage is unavailable', async () => {

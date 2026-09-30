@@ -175,6 +175,25 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.topUpReserve).not.toHaveBeenCalled();
     });
 
+    it('does nothing when the video exactly fits the locked reserve', async () => {
+      const { negotiator, bpm } = makeNegotiator({ cumulative: 0n, deposit: 4_200_000n, videoCost: 4_200_000n });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(bpm.signVideoAdvance).not.toHaveBeenCalled();
+      expect(bpm.topUpReserve).not.toHaveBeenCalled();
+    });
+
+    it('tops up when the video exceeds the locked reserve by one unit', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 0n,
+        deposit: 4_200_000n,
+        videoCost: 4_200_001n,
+        available: 1n,
+        confirmedDeposits: [4_200_001n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:3570000', 'topup:4200001']);
+    });
+
     it('counts an outstanding video advance as available headroom', async () => {
       const { negotiator, bpm } = makeNegotiator({ cumulative: 4_900_000n, delivered: 4_050_000n, deposit: 5_000_000n, videoCost: 900_000n });
       await negotiator.ensureVideoHeadroom(peer, connection, requestId);
@@ -201,6 +220,30 @@ describe('BuyerPaymentNegotiator', () => {
       const { negotiator, events } = makeNegotiator({
         cumulative: 0n,
         deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        confirmedDeposits: [5_200_000n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:850000', 'topup:5200000']);
+    });
+
+    it('does not sign a duplicate advance at the exact settlement threshold', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 850_000n,
+        deposit: 1_000_000n,
+        delivered: 0n,
+        videoCost: 4_200_000n,
+        confirmedDeposits: [5_200_000n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['topup:5200000']);
+    });
+
+    it('requires the one-unit threshold advance when cumulative is just below it', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 849_999n,
+        deposit: 1_000_000n,
+        delivered: 0n,
         videoCost: 4_200_000n,
         confirmedDeposits: [5_200_000n],
       });
@@ -243,6 +286,82 @@ describe('BuyerPaymentNegotiator', () => {
       });
       expect(bpm.signVideoAdvance).not.toHaveBeenCalled();
       expect(bpm.topUpReserve).not.toHaveBeenCalled();
+    });
+
+    it('accepts deposits that exactly cover the required top-up', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 0n,
+        deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        available: 3_200_000n,
+        confirmedDeposits: [5_000_000n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:850000', 'topup:4200000']);
+    });
+
+    it('adds the reserve-step buffer when deposits exactly cover it', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 0n,
+        deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        available: 4_200_000n,
+        confirmedDeposits: [5_200_000n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:850000', 'topup:5200000']);
+    });
+
+    it('drops the reserve-step buffer when deposits are one unit short of it', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 0n,
+        deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        available: 4_199_999n,
+        confirmedDeposits: [4_200_000n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:850000', 'topup:4200000']);
+    });
+
+    it('bases the buffered ceiling on delivered work, not the outstanding advance', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 900_000n,
+        delivered: 100_000n,
+        deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        confirmedDeposits: [5_300_000n],
+      });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['topup:5300000']);
+    });
+
+    it('rejects deposits one unit below the required top-up', async () => {
+      const { negotiator, bpm } = makeNegotiator({
+        cumulative: 0n,
+        deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        available: 3_199_999n,
+      });
+      await expect(negotiator.ensureVideoHeadroom(peer, connection, requestId)).rejects.toMatchObject({
+        code: 'buyer-deposits-insufficient',
+      });
+      expect(bpm.signVideoAdvance).not.toHaveBeenCalled();
+      expect(bpm.topUpReserve).not.toHaveBeenCalled();
+    });
+
+    it('serializes concurrent video headroom checks for one seller', async () => {
+      const { negotiator, events } = makeNegotiator({
+        cumulative: 0n,
+        deposit: 1_000_000n,
+        videoCost: 4_200_000n,
+        confirmedDeposits: [5_200_000n, 5_200_000n],
+      });
+      await Promise.all([
+        negotiator.ensureVideoHeadroom(peer, connection, 'video-create-1'),
+        negotiator.ensureVideoHeadroom(peer, connection, 'video-create-2'),
+      ]);
+      expect(events).toEqual(['advance:850000', 'topup:5200000']);
     });
 
     it('times out when the seller never lands the top-up', async () => {

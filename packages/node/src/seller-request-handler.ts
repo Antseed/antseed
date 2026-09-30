@@ -22,7 +22,7 @@ import {
   estimateTokensFromBytes,
 } from './payments/pricing.js';
 import { debugLog, debugWarn } from './utils/debug.js';
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_CHANNEL_EXHAUSTED } from './types/protocol.js';
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_CHANNEL_EXHAUSTED, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
@@ -99,6 +99,17 @@ export class SellerRequestHandler {
   private readonly _providerLoadCounts = new Map<string, number>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
   private readonly _pendingVideoCreates = new Set<string>();
+  /**
+   * Buyers with a video create in flight. Spend is only recorded after the
+   * provider answers, so two creates that arrive together would both pass the
+   * reserve check against the same spend and could together start more work
+   * than the locked reserve pays for. Allowing one create per buyer at a time
+   * closes that window. Polls and downloads are not limited.
+   *
+   * Temporary: this limit is a stopgap until the reserve check accounts for
+   * in-flight creates, after which concurrent videos can be allowed again.
+   */
+  private readonly _activeVideoCreateBuyers = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: SellerRequestHandlerDeps) {
@@ -261,6 +272,12 @@ export class SellerRequestHandler {
       const videoIdempotencyKey = videoRoute?.action === 'create' ? headerValue(request.headers, IDEMPOTENCY_KEY_HEADER) : undefined;
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel, videoIdempotencyKey)) return;
       const pendingVideoCreate = videoIdempotencyKey ? `${buyerPeerId.toLowerCase()}\n${videoRoute!.protocol}\n${videoIdempotencyKey}` : null;
+      const videoCreateBuyer = videoRoute?.action === 'create' ? buyerPeerId.toLowerCase() : null;
+      if (videoCreateBuyer && this._activeVideoCreateBuyers.has(videoCreateBuyer)) {
+        this._sendJsonError(mux, request.requestId, 409, 'video_create_in_progress', 'Another video from this buyer is still being created. For now, only one video can be created per buyer at a time (a temporary limit); retry when the current video finishes.');
+        return;
+      }
+      if (videoCreateBuyer) this._activeVideoCreateBuyers.add(videoCreateBuyer);
       if (pendingVideoCreate) this._pendingVideoCreates.add(pendingVideoCreate);
       try {
       const isFreeService = (videoRoute !== null && videoRoute.action !== 'create') || isZeroTokenPricing(requestPricing)
@@ -453,7 +470,19 @@ export class SellerRequestHandler {
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
             ? remainingLockedReserve + reserveEstimateOverdraft
             : null;
-          const estimatedCostExceedsLockedReserve = effectiveEstimateLimit != null
+          // A video create may cost more than one reserve step. It is not an
+          // exhausted channel: ask the buyer to raise the reserve instead of
+          // closing, and only at this point, after idempotent replays and
+          // invalid requests were already answered by the video precheck. This
+          // is what lets the buyer top up only for a create that will really
+          // start a new paid job, while we never start work the locked reserve
+          // cannot pay for. The check ignores reserveEstimateOverdraftUsdc on
+          // purpose: an overdraft on a multi-dollar video is a real loss.
+          const videoNeedsLargerReserve = videoRoute?.action === 'create'
+            && reserveMax > 0n
+            && estimatedRequestCost > remainingLockedReserve;
+          const estimatedCostExceedsLockedReserve = !videoNeedsLargerReserve
+            && effectiveEstimateLimit != null
             && reserveMax > 0n
             && estimatedRequestCost > 0n
             && estimatedRequestCost > effectiveEstimateLimit;
@@ -537,6 +566,24 @@ export class SellerRequestHandler {
                 requestId: request.requestId,
               }, buyerPeerId, 'budget-catch-up');
             }
+            return;
+          }
+
+          if (videoNeedsLargerReserve) {
+            debugLog(`[SellerHandler] Video create for ${buyerPeerId.slice(0, 12)}... needs a larger reserve (estimatedRequestCost=${estimatedRequestCost} remainingLockedReserve=${remainingLockedReserve} reserveMax=${reserveMax}) — returning 402 ${PAYMENT_CODE_VIDEO_RESERVE_REQUIRED}`);
+            mux.sendProxyResponse({
+              requestId: request.requestId,
+              statusCode: 402,
+              headers: { "content-type": "application/json" },
+              body: new TextEncoder().encode(JSON.stringify({
+                error: 'payment_required',
+                code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED,
+                channelId: session.sessionId,
+                estimatedRequestCost: estimatedRequestCost.toString(),
+                remainingLockedReserve: remainingLockedReserve.toString(),
+                reserveMaxAmount: reserveMax.toString(),
+              })),
+            });
             return;
           }
         }
@@ -787,6 +834,7 @@ export class SellerRequestHandler {
       }
       } finally {
         if (pendingVideoCreate) this._pendingVideoCreates.delete(pendingVideoCreate);
+        if (videoCreateBuyer) this._activeVideoCreateBuyers.delete(videoCreateBuyer);
       }
     });
 

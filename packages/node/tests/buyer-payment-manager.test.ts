@@ -1741,6 +1741,25 @@ describe('BuyerPaymentManager', () => {
       expect(manager.getVerifiedCost(sellerPeerId)).toBe(100_000n);
     });
 
+    it('attributes the headroom advance to the video request for conversation accounting', async () => {
+      const sellerPeerId = fakePeerId('video-advance-attribution');
+      const spendEvents: Array<{ requestId: string | null; amountUsdc: string }> = [];
+      manager.setSpendListener(event => spendEvents.push({ requestId: event.requestId, amountUsdc: event.amountUsdc }));
+
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_100_000n);
+      manager.recordObservedUnitUsage(videoRequestId, { units: { video_generations: 1 } });
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      await manager.handleNeedAuth(sellerPeerId, videoNeedAuth(channelId, '4300000'), mux);
+
+      expect(spendEvents).toContainEqual({ requestId: videoRequestId, amountUsdc: '750000' });
+      expect(spendEvents.filter(event => event.requestId === null)).toEqual([]);
+      const videoTotal = spendEvents
+        .filter(event => event.requestId === videoRequestId)
+        .reduce((sum, event) => sum + BigInt(event.amountUsdc), 0n);
+      expect(videoTotal).toBe(4_200_000n);
+    });
+
     it.each(['response-first', 'need-auth-first'] as const)('charges exactly delivered cost for the video: %s', async (order) => {
       const sellerPeerId = fakePeerId(`video-exact-${order}`);
       const spendEvents: Array<{ amountUsdc: string }> = [];

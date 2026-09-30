@@ -352,15 +352,20 @@ export class BuyerPaymentNegotiator {
   /**
    * Make sure a paid video create fits into the reserve locked on-chain.
    *
-   * If it does not, raise the channel straight to `delivered cost +
-   * maxVideoRequestUsdc` with a single topUp(), or only to the video price
-   * when deposits cannot cover the full limit. topUp() only succeeds once
-   * TOP_UP_SETTLED_THRESHOLD_BPS of the current deposit is settled, so the
-   * buyer first signs an ordinary SpendingAuth early (a video advance). The
-   * advance is always smaller than the video price; the video's own charge
-   * then brings the signed cumulative to exactly delivered cost, so nothing
-   * is paid twice. No-ops without an established channel; the 402 path opens
-   * one and calls this again before retrying.
+   * Called only after the seller answered the create with 402
+   * video_reserve_required, never before the first send: the advance below
+   * is settled on-chain and cannot be refunded, so it must not be paid for an
+   * idempotent replay or a create the seller rejects.
+   *
+   * If the video does not fit, raise the channel to `delivered cost + video
+   * price + maxReserveAmountUsdc` with a single topUp(), or only to
+   * `delivered cost + video price` when deposits cannot cover that buffer.
+   * topUp() only succeeds once TOP_UP_SETTLED_THRESHOLD_BPS of the current
+   * deposit is settled, so the buyer first signs an ordinary SpendingAuth
+   * early (a video advance). The advance is always smaller than the video
+   * price; the video's own charge then brings the signed cumulative to
+   * exactly delivered cost, so nothing is paid twice. No-ops without an
+   * established channel.
    */
   async ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
     const previous = this._videoHeadroomLocks.get(peer.peerId) ?? Promise.resolve();
@@ -375,8 +380,8 @@ export class BuyerPaymentNegotiator {
   }
 
   private async _ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
-    // No active payment channel yet: let the normal 402 negotiation open it,
-    // then the caller will run this check again before retrying the video request.
+    // No active payment channel yet: the normal 402 negotiation opens it, and
+    // the seller asks for a larger reserve on the retried create if needed.
     if (!this._lockedPeers.has(peer.peerId)) return;
     const videoCost = this._bpm.getRequestBilling(requestId)?.estimatedCostUsdc;
     if (!videoCost || !this._channelsClient) return;

@@ -30,7 +30,7 @@ import {
   extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from '@antseed/protocol/messages';
 import { buyerFault, peerFault } from './errors.js';
 import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
 
@@ -392,12 +392,20 @@ export class BuyerRequestHandler {
       && !isFreeService
       && !externalSpendingAuth
       && nativeVideoRoute(req)?.action === 'create';
-    // A new video can cost more than the channel's currently locked reserve.
-    // Expand and confirm the reserve before sending the create request so the
-    // seller never starts work that the buyer cannot authorize.
-    if (paidVideoCreate) await negotiator!.ensureVideoHeadroom(peer, conn, req.requestId);
+    // Send the video create first and top up only when the seller asks for it.
+    // Raising the reserve signs an early SpendingAuth (the video advance) that
+    // the seller settles on-chain during topUp(), so it cannot be taken back.
+    // Topping up before the seller answers would pay that advance even for an
+    // idempotent replay of an existing job or a create the seller rejects.
+    // The seller replies 402 video_reserve_required only after those checks,
+    // and never starts a video that the locked reserve cannot pay for.
+    let response = await executeRequest();
 
-    const response = await executeRequest();
+    if (paidVideoCreate && isVideoReserveRequired402(response)) {
+      await negotiator!.ensureVideoHeadroom(peer, conn, req.requestId);
+      startTime = Date.now();
+      response = await executeRequest();
+    }
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -420,14 +428,24 @@ export class BuyerRequestHandler {
 
     // Provider video APIs may use HTTP 402 for their own errors; only start
     // AntSeed payment negotiation when the response is our payment contract.
-    if (response.statusCode === 402 && negotiator && !externalSpendingAuth && (!nativeVideoRoute(req) || isPaymentRequired402(response))) {
+    if (
+      response.statusCode === 402
+      && negotiator
+      && !externalSpendingAuth
+      && !isVideoReserveRequired402(response)
+      && (!nativeVideoRoute(req) || isPaymentRequired402(response))
+    ) {
       const result = await negotiator.handle402(response, peer, conn, req);
       if (result.action === 'return') {
         return adaptPeerResponse(result.response);
       }
-      if (paidVideoCreate) await negotiator.ensureVideoHeadroom(peer, conn, req.requestId);
       startTime = Date.now();
-      const retriedResponse = await executeRequest();
+      let retriedResponse = await executeRequest();
+      if (paidVideoCreate && isVideoReserveRequired402(retriedResponse)) {
+        await negotiator.ensureVideoHeadroom(peer, conn, req.requestId);
+        startTime = Date.now();
+        retriedResponse = await executeRequest();
+      }
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
@@ -475,6 +493,10 @@ export class BuyerRequestHandler {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
       return;
     }
+    // Snapshot the headers: callers add headers to the returned response
+    // (e.g. x-antseed-seller-peer), which would otherwise change what the
+    // late-arriving ResponseAuth is verified against.
+    response = { ...response, headers: { ...response.headers } };
     const storage = this._deps.verificationStorage;
     const advertisedService = requestedService ?? 'unknown';
     const expectedChannelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
@@ -665,6 +687,16 @@ export function stripPeerControlledResponseHeaders(
 }
 
 /** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */
+function isVideoReserveRequired402(response: SerializedHttpResponse): boolean {
+  if (response.statusCode !== 402) return false;
+  try {
+    const parsed = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
+    return parsed.error === 'payment_required' && parsed.code === PAYMENT_CODE_VIDEO_RESERVE_REQUIRED;
+  } catch {
+    return false;
+  }
+}
+
 function isPaymentRequired402(response: SerializedHttpResponse): boolean {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;

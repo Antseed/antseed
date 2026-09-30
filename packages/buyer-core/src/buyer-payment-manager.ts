@@ -88,8 +88,8 @@ export interface BuyerPaymentConfig {
   /** Max USDC to reserve per ReserveAuth signature (base units). Default: 1000000 ($1.00). */
   maxReserveAmountUsdc: bigint;
   /**
-   * Max price of one video generation, and the reserve headroom a video top-up
-   * raises the channel to (base units). Default: 5000000 ($5.00).
+   * Max price of one video generation the buyer will pay for (base units).
+   * Default: 5000000 ($5.00).
    */
   maxVideoRequestUsdc?: bigint;
   /** Max ratio of seller-claimed cost to buyer's bytes/4 estimate. Default: 1.4. */
@@ -1879,9 +1879,12 @@ export class BuyerPaymentManager {
       metadata,
       delivered,
     );
+    // Attribute the advance to the video create that needed it, so per-request
+    // and per-conversation accounting include it. The video's own charge later
+    // reports only the rest of its price, so the two add up to the full price.
     this._reportSpend({
       sellerPeerId,
-      requestId: null,
+      requestId,
       amountUsdc: (targetCumulative - currentCumulative).toString(),
       inputTokens: '0',
       cachedInputTokens: '0',
