@@ -17,7 +17,7 @@ describe('native video API contracts', () => {
 
   it('recognizes native paths and never translates into chat or another video API', () => {
     expect(detectRequestServiceApiProtocol(request('/api/v3/contents/generations/tasks'))).toBe('seedance-video');
-    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/task-123', {}, 'DELETE'))?.action).toBe('cancel');
+    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/task-123', {}, 'DELETE'))).toBeNull();
     expect(nativeVideoRoute(request('/v1beta/models/veo-3.1:predictLongRunning'))).toBeNull();
     expect(selectTargetProtocolForRequest('seedance-video', ['venice-video', 'openai-chat-completions'])).toBeNull();
   });
@@ -60,9 +60,9 @@ describe('native video API contracts', () => {
     expect(() => nativeVideoFacts(request('/api/v3/contents/generations/tasks', { duration: 'soon' }))).toThrow(/duration/);
   });
 
-  it('describes Seedance with the same create, poll and cancel lifecycle', () => {
+  it('describes Seedance with the same create and poll lifecycle', () => {
     expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks'))).toEqual({ protocol: 'seedance-video', action: 'create' });
-    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-1', {}, 'DELETE'))).toMatchObject({ protocol: 'seedance-video', action: 'cancel', resourceId: 'cgt-1' });
+    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-1', {}, 'GET'))).toMatchObject({ protocol: 'seedance-video', action: 'status', resourceId: 'cgt-1' });
 
     const response = (body: object) => ({ requestId: 'request', statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)) });
     expect(nativeVideoAcceptance('seedance-video', response({ id: 'cgt-1' }))).toBe('cgt-1');
@@ -95,11 +95,11 @@ describe('native video API contracts', () => {
 describe('Venice video API', () => {
   const request = (path: string, body: object = {}, headers: Record<string, string> = {}) => ({ requestId: 'request', method: 'POST', path, headers: { 'content-type': 'application/json', ...headers }, body: new TextEncoder().encode(JSON.stringify(body)) });
 
-  it('reads the job from the body for retrieve and complete', () => {
+  it('reads the job from the body for retrieve and does not relay complete', () => {
     const queueId = '123e4567-e89b-12d3-a456-426614174000';
     expect(nativeVideoRoute(request('/api/v1/video/queue', { model: 'wan-2.5' }))).toEqual({ protocol: 'venice-video', action: 'create' });
     expect(nativeVideoRoute(request('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: queueId }))).toEqual({ protocol: 'venice-video', action: 'download', resourceId: queueId });
-    expect(nativeVideoRoute(request('/api/v1/video/complete', { queue_id: queueId }))).toEqual({ protocol: 'venice-video', action: 'cancel', resourceId: queueId });
+    expect(nativeVideoRoute(request('/api/v1/video/complete', { queue_id: queueId }))).toBeNull();
     expect(nativeVideoRoute({ method: 'POST', path: '/api/v1/video/retrieve' })).toEqual({ protocol: 'venice-video', action: 'download' });
     for (const queue_id of ['../account', 5, '', undefined]) {
       expect(nativeVideoRoute(request('/api/v1/video/retrieve', { queue_id }))?.resourceId).toBeUndefined();
@@ -132,10 +132,10 @@ describe('Seedance (BytePlus ModelArk) video API', () => {
   const request = (path: string, body: object = {}, method = 'POST') => ({ requestId: 'request', method, path, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) });
   const create = (body: object) => request('/api/v3/contents/generations/tasks', { model: 'dreamina-seedance-2-0-260128', ...body });
 
-  it('routes create, retrieve and cancel/delete, and refuses the account-wide task list', () => {
+  it('routes create and retrieve, and refuses delete and the account-wide task list', () => {
     expect(nativeVideoRoute(create({}))).toEqual({ protocol: 'seedance-video', action: 'create' });
     expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-2025abc', {}, 'GET'))).toEqual({ protocol: 'seedance-video', action: 'status', resourceId: 'cgt-2025abc' });
-    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-2025abc', {}, 'DELETE'))).toEqual({ protocol: 'seedance-video', action: 'cancel', resourceId: 'cgt-2025abc' });
+    expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks/cgt-2025abc', {}, 'DELETE'))).toBeNull();
     expect(nativeVideoRoute(request('/api/v3/contents/generations/tasks?page_size=500', {}, 'GET'))).toBeNull();
   });
 

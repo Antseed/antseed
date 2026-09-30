@@ -27,7 +27,7 @@ POST /api/v1/video/retrieve
 {"model":"wan-2.5-preview-text-to-video","queue_id":"<queue_id>"}
 ```
 
-The queue call is charged once when Venice returns a `queue_id`. Retrieve is free: it returns Venice's JSON status while the job runs, then streams the finished MP4 from the same seller. Private models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response. `POST /api/v1/video/complete` deletes the stored media. Chat and image models on Venice continue to use `@antseed/provider-openai`.
+The queue call is charged once when Venice returns a `queue_id`. Retrieve is free: it returns Venice's JSON status while the job runs, then streams the finished MP4 from the same seller. Private models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response. `POST /api/v1/video/complete` is not relayed. Chat and image models on Venice continue to use `@antseed/provider-openai`.
 
 For image-to-video, select an image-capable model and add `image_url` (an accessible URL or inline image data URL) to the same queue request. Native end-frame, reference-image and video inputs are forwarded unchanged where the model supports them. See [media-input examples and limitations](../../docs/protocol/spec/10-native-video.md#image-to-video-and-video-inputs).
 

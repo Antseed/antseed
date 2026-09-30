@@ -5,7 +5,7 @@ export type { NativeVideoProtocol };
 
 export interface NativeVideoRoute {
   protocol: NativeVideoProtocol;
-  action: 'create' | 'status' | 'cancel' | 'download';
+  action: 'create' | 'status' | 'download';
   resourceId?: string;
   /** Earlier jobs a create builds on (Seedance draft tasks). Invalid IDs are kept as '' so ownership checks fail. */
   referencedResourceIds?: string[];
@@ -41,13 +41,13 @@ export interface VideoOptions {
 interface NativeVideoApi {
   protocol: NativeVideoProtocol;
   createPaths: RegExp;
-  /** Status (GET) and cancel (DELETE) paths; the first capture group is the job ID. */
-  jobPaths: { GET?: RegExp; DELETE?: RegExp };
+  /** Status (GET) path; the first capture group is the job ID. */
+  statusPath?: RegExp;
   /**
-   * Follow-ups that are POSTs carrying the job ID in the JSON body (Venice).
-   * `download` answers with the finished MP4 itself, so it is streamed.
+   * Download POST carrying the job ID in the JSON body (Venice). It answers
+   * with the finished MP4 itself, so it is streamed.
    */
-  bodyJobPaths?: { path: RegExp; action: 'download' | 'cancel' }[];
+  downloadPath?: RegExp;
   bodyJobId?: (body: JsonObject) => unknown;
   /** Earlier job IDs a create builds on; they only exist on the seller that ran them. */
   referencedJobs?: (body: JsonObject) => unknown[];
@@ -69,7 +69,7 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
   {
     protocol: 'seedance-video',
     createPaths: /^\/api\/v3\/contents\/generations\/tasks$/,
-    jobPaths: { GET: new RegExp(`^/api/v3/contents/generations/tasks/(${ID})$`), DELETE: new RegExp(`^/api/v3/contents/generations/tasks/(${ID})$`) },
+    statusPath: new RegExp(`^/api/v3/contents/generations/tasks/(${ID})$`),
     jobId: body => body.id,
     jobIdPattern: SIMPLE_ID,
     referencedJobs: body => (Array.isArray(body.content) ? body.content : [])
@@ -89,11 +89,7 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
   {
     protocol: 'venice-video',
     createPaths: /^\/api\/v1\/video\/queue$/,
-    jobPaths: {},
-    bodyJobPaths: [
-      { path: /^\/api\/v1\/video\/retrieve$/, action: 'download' },
-      { path: /^\/api\/v1\/video\/complete$/, action: 'cancel' },
-    ],
+    downloadPath: /^\/api\/v1\/video\/retrieve$/,
     bodyJobId: body => body.queue_id,
     jobId: body => body.queue_id,
     jobIdPattern: SIMPLE_ID,
@@ -132,14 +128,13 @@ export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | '
         ...(referencedResourceIds.length ? { referencedResourceIds } : {}),
       };
     }
-    const bodyJob = request.method === 'POST' ? entry.bodyJobPaths?.find(candidate => candidate.path.test(path)) : undefined;
-    if (bodyJob) {
+    if (request.method === 'POST' && entry.downloadPath?.test(path)) {
       const resourceId = request.body ? entry.bodyJobId!(parseJsonObject(request.body) ?? {}) : undefined;
       const valid = typeof resourceId === 'string' && entry.jobIdPattern.test(resourceId);
-      return { protocol: entry.protocol, action: bodyJob.action, ...(valid ? { resourceId } : {}) };
+      return { protocol: entry.protocol, action: 'download', ...(valid ? { resourceId } : {}) };
     }
-    const job = entry.jobPaths[request.method as 'GET' | 'DELETE']?.exec(path);
-    if (job) return { protocol: entry.protocol, action: request.method === 'GET' ? 'status' : 'cancel', resourceId: job[1]! };
+    const job = request.method === 'GET' ? entry.statusPath?.exec(path) : null;
+    if (job) return { protocol: entry.protocol, action: 'status', resourceId: job[1]! };
   }
   return null;
 }

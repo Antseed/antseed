@@ -9,8 +9,8 @@ export interface VideoRequestError {
 /**
  * Prepares a native video request before seller selection.
  *
- * A create may go to any seller that serves the model. Status and cancel must
- * go back to the exact seller, provider and service that accepted the job,
+ * A create may go to any seller that serves the model. Status and download
+ * requests must go back to the exact seller, provider and service that accepted the job,
  * because only that seller knows the job ID.
  */
 export function prepareVideoRequest(
@@ -44,7 +44,7 @@ function pinHeaders(route: ResourceRoute): Record<string, string> {
 
 /**
  * Tags a seller's video response for the client and remembers which seller
- * accepted a new job, so later status and cancel requests route back to it.
+ * accepted a new job, so later status and download requests route back to it.
  * Returns true when a new job route was recorded and should be persisted.
  */
 export function recordVideoAcceptance(

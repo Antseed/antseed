@@ -25,7 +25,7 @@ POST /api/v3/contents/generations/tasks
 ```
 
 - Poll with `GET /api/v3/contents/generations/tasks/{id}`. A finished task returns `content.video_url`, which ModelArk keeps for 24 hours; download it directly.
-- `DELETE` on the same path cancels a queued task or deletes a finished task record.
+- `DELETE` is not relayed, so queued tasks cannot be cancelled through AntSeed.
 - Draft flow: create with `"draft": true`, then create the final video with `{"type":"draft_task","draft_task":{"id":"<draft id>"}}` in `content`. The final create is sent to the seller that ran the draft. Both creates are charged.
 - The account-wide task list is not relayed.
 - `callback_url` is forwarded to ModelArk unchanged, so ModelArk (not AntSeed) posts task updates to that URL.

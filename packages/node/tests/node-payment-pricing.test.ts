@@ -119,7 +119,7 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   expect(recordSpend).toHaveBeenCalledWith('session-1', 800000n);
   expect(sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { video_seconds: '8' } } }));
   paid = false;
-  for (const method of ['GET', 'GET', 'DELETE']) {
+  for (const method of ['GET', 'GET']) {
     await mux.handleFrame({ type: MessageType.HttpRequest, messageId: frames.length + 1, payload: encodeHttpRequest(request(method, '/api/v3/contents/generations/tasks/task')) });
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
   }
@@ -129,7 +129,7 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   await other.mux.handleFrame({ type: MessageType.HttpRequest, messageId: 10, payload: encodeHttpRequest(request('GET', '/api/v3/contents/generations/tasks/task')) });
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(404);
   expect(owners.get('task')).toBe(buyer);
-  expect(provider.handleRequest).toHaveBeenCalledTimes(4);
+  expect(provider.handleRequest).toHaveBeenCalledTimes(3);
 });
 
 describe('native video job ownership and idempotency', () => {
@@ -173,7 +173,7 @@ describe('native video job ownership and idempotency', () => {
     const creates: string[] = [];
     provider.handleRequest = vi.fn(async request => {
       const id = request.method === 'POST' ? taskIds[creates.push(request.requestId) - 1]! : request.path.split('/').at(-1)!;
-      return { requestId: request.requestId, statusCode: request.method === 'DELETE' ? 204 : 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id, status: 'PENDING' })) };
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id, status: 'PENDING' })) };
     });
     const recordSpend = vi.fn();
     const store = new ResourceOwnershipStore(dbPath);
@@ -198,18 +198,15 @@ describe('native video job ownership and idempotency', () => {
     return { provider, recordSpend, store, send, create, payment, dbPath };
   }
 
-  it('rejects polls and cancels from buyers that did not create the job, without calling upstream', async () => {
+  it('rejects polls from buyers that did not create the job, without calling upstream', async () => {
     const { provider, send, create, store } = setup();
     expect((await create(buyer)).statusCode).toBe(200);
-    for (const method of ['GET', 'DELETE']) {
-      const denied = await send(other, method, '/api/v3/contents/generations/tasks/task-1');
-      expect(denied.statusCode).toBe(404);
-      expect(JSON.parse(new TextDecoder().decode(denied.body)).error.code).toBe('resource_not_found');
-    }
+    const denied = await send(other, 'GET', '/api/v3/contents/generations/tasks/task-1');
+    expect(denied.statusCode).toBe(404);
+    expect(JSON.parse(new TextDecoder().decode(denied.body)).error.code).toBe('resource_not_found');
     expect((await send(other, 'GET', '/api/v3/contents/generations/tasks/unknown')).statusCode).toBe(404);
     expect(provider.handleRequest).toHaveBeenCalledTimes(1);
     expect((await send(buyer, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(200);
-    expect((await send(buyer, 'DELETE', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(204);
     store.close();
   });
 

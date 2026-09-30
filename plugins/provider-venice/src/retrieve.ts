@@ -7,10 +7,10 @@ const MAX_STATUS_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
 
 /**
- * The seller rebuilds follow-up bodies from the owned job and the routed
+ * The seller rebuilds retrieve bodies from the owned job and the routed
  * service, so a buyer cannot point `model` or other fields elsewhere.
  */
-function followUpBody(service: string, queueId: string, deleteMedia?: unknown): Uint8Array {
+function retrieveBody(service: string, queueId: string, deleteMedia?: unknown): Uint8Array {
   return Buffer.from(JSON.stringify({ model: service, queue_id: queueId, ...(typeof deleteMedia === 'boolean' ? { delete_media_on_completion: deleteMedia } : {}) }));
 }
 
@@ -18,7 +18,6 @@ function followUpBody(service: string, queueId: string, deleteMedia?: unknown): 
  * Venice `/video/retrieve` answers with JSON while a job runs (and for private
  * models, which deliver through `download_url`), or with the finished MP4
  * itself. MP4 answers are streamed to the buyer; JSON answers are returned as is.
- * `/video/complete` is relayed with a rebuilt body.
  */
 export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: string): Provider {
   let activeDownloads = 0;
@@ -29,11 +28,8 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
     return { route, service: service && provider.services.includes(service) ? service : undefined };
   };
   const handleRequest = async (request: SerializedHttpRequest): Promise<SerializedHttpResponse> => {
-    const { route, service } = followUp(request);
-    if (route?.action === 'download') return videoDownloadError(request, 400, 'unsupported_video_download', 'A streaming video download is required');
-    if (route?.action !== 'cancel') return provider.handleRequest(request);
-    if (!service || !route.resourceId) return videoDownloadError(request, 400, 'unsupported_video_request', 'Unsupported video service or queue_id');
-    return provider.handleRequest({ ...request, body: followUpBody(service, route.resourceId) });
+    if (nativeVideoRoute(request)?.action === 'download') return videoDownloadError(request, 400, 'unsupported_video_download', 'A streaming video download is required');
+    return provider.handleRequest(request);
   };
   return {
     ...provider,
@@ -51,7 +47,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
         const upstream = await fetch(retrieveUrl, {
           method: 'POST',
           headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', 'accept-encoding': 'identity' },
-          body: followUpBody(service, route.resourceId, parseJsonObject(request.body)?.delete_media_on_completion),
+          body: retrieveBody(service, route.resourceId, parseJsonObject(request.body)?.delete_media_on_completion),
           redirect: 'error', signal: download.signal,
         });
         const contentType = upstream.headers.get('content-type')?.split(';')[0]?.trim();

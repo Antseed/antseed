@@ -372,10 +372,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         expect(Buffer.from(init!.body as Uint8Array).toString()).toBe(createBody);
         return Response.json({ model: body.model, queue_id: 'queue-1' });
       }
-      if (path === '/api/v1/video/complete') {
-        expect(Object.keys(body).sort()).toEqual(['model', 'queue_id']);
-        return Response.json({ success: true });
-      }
       if (!ready) return Response.json({ status: 'PROCESSING', average_execution_time: 1000, execution_duration: 10 });
       return new Response(video, { headers: { 'content-type': 'video/mp4', ...(hasContentLength ? { 'content-length': String(video.length) } : {}) } });
     });
@@ -407,14 +403,12 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         expect(download.headers.get('content-type')).toBe('video/mp4');
         expect(Buffer.from(await download.arrayBuffer())).toEqual(video);
       }
-      const completed = await post('/api/v1/video/complete', { model: 'other', queue_id: 'queue-1', delete_media_on_completion: false });
-      expect(completed.status).toBe(200);
-      expect(calls.at(-1)).toEqual({ path: '/api/v1/video/complete', body: { model: 'wan-2.5', queue_id: 'queue-1' } });
+      expect((await post('/api/v1/video/complete', { model: 'wan-2.5', queue_id: 'queue-1' })).status).toBe(404);
       expect((await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'unknown' })).status).toBe(404);
       expect((await post('/api/v1/video/retrieve', { model: 'wan-2.5' })).status).toBe(404);
       const callsBefore = calls.length;
       (sellerNode as any)._resourceOwnership.recordAcceptedCreate('venice-video', 'someone-elses', '11'.repeat(20));
-      const denied = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'non-owner', method: 'POST', path: '/api/v1/video/complete', headers: { 'content-type': 'application/json', 'x-antseed-service': 'wan-2.5', 'x-antseed-provider': 'venice' }, body: Buffer.from('{"queue_id":"someone-elses"}') }, { pinned: true });
+      const denied = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'non-owner', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'wan-2.5', 'x-antseed-provider': 'venice', 'x-antseed-video-download': 'video-stream-v1' }, body: Buffer.from('{"queue_id":"someone-elses"}') }, { pinned: true });
       expect(denied.statusCode).toBe(404);
       expect(calls.length).toBe(callsBefore);
       expect(calls.filter(call => call.path === '/api/v1/video/queue')).toHaveLength(1);
@@ -446,7 +440,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const raw = init?.body ? Buffer.from(init.body as Uint8Array).toString() : '';
       calls.push({ method, path, ...(raw ? { body: JSON.parse(raw) } : {}) });
       if (method === 'POST') return Response.json({ id: `cgt-${++next}` });
-      if (method === 'DELETE') return Response.json({});
       return Response.json({ id: path.split('/').at(-1), status: 'succeeded', content: { video_url: 'https://seller-tos.example/video.mp4' }, usage: { completion_tokens: 1 } });
     });
     try {
@@ -465,7 +458,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(90_000n);
       const status = await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`);
       expect((await status.json()).content.video_url).toBe('https://seller-tos.example/video.mp4');
-      expect((await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`, { method: 'DELETE' })).status).toBe(200);
+      expect((await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`, { method: 'DELETE' })).status).toBe(404);
       expect((await post({ content: [{ type: 'draft_task', draft_task: { id: 'cgt-unknown' } }], duration: 5 })).status).toBe(404);
       expect((await fetch(`${base}/api/v3/contents/generations/tasks?page_size=500`)).status).toBe(404);
       const callsBefore = calls.length;

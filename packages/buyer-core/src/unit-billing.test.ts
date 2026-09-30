@@ -15,13 +15,11 @@ function capture(path = '/api/v3/contents/generations/tasks', body: object = { m
 }
 
 describe('acceptance-based video metering', () => {
-  it('bills the requested duration once on acceptance, not on status or cancellation', () => {
+  it('bills the requested duration once on acceptance, not on status', () => {
     const captured = capture();
     expect(computeFinalUnitBilling(model, captured.context, response({ id: 'task' }), captured.requestFacts).costUsdc).toBe(800000n);
-    for (const method of ['GET', 'DELETE']) {
-      const followUp = capture('/api/v3/contents/generations/tasks/task', {}, method);
-      expect(computeFinalUnitBilling(model, followUp.context, response({ id: 'task', status: 'SUCCEEDED' }), followUp.requestFacts).costUsdc).toBe(0n);
-    }
+    const followUp = capture('/api/v3/contents/generations/tasks/task', {}, 'GET');
+    expect(computeFinalUnitBilling(model, followUp.context, response({ id: 'task', status: 'SUCCEEDED' }), followUp.requestFacts).costUsdc).toBe(0n);
   });
 
   it('rejects missing duration for per-second pricing and unmatched tiers before submission', () => {

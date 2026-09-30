@@ -6,7 +6,7 @@ import { ResourceRoutes } from './resource-routes.js'
 const seller = 'a'.repeat(40)
 const response = (body: object) => ({ requestId: 'r', statusCode: 200, headers: {} as Record<string, string>, body: Buffer.from(JSON.stringify(body)) })
 
-test('video status and cancel pin the seller that accepted the job, and unknown jobs return 404', () => {
+test('video status pins the seller that accepted the job, and unknown jobs return 404', () => {
   const routes = new ResourceRoutes()
   const accepted = response({ id: 'task-1' })
   const create = { protocol: 'seedance-video', action: 'create' } as const
@@ -28,14 +28,13 @@ test('only accepted creates are recorded', () => {
   assert.equal(routes.snapshot().length, 0)
 })
 
-test('Venice retrieve and complete route by the body queue_id to the accepting seller', () => {
+test('Venice retrieve routes by the body queue_id to the accepting seller', () => {
   const routes = new ResourceRoutes()
   const create = { protocol: 'venice-video', action: 'create' } as const
   const accepted = response({ model: 'wan-2.5', queue_id: 'queue-1' })
   assert.equal(recordVideoAcceptance(create, accepted, { peerId: seller, provider: 'venice', service: 'wan-2.5' }, routes), true)
   const pinned = { headers: { 'x-antseed-pin-peer': seller, 'x-antseed-provider': 'venice', 'x-antseed-service': 'wan-2.5' } }
   assert.deepEqual(prepareVideoRequest({ protocol: 'venice-video', action: 'download', resourceId: 'queue-1' }, {}, routes), pinned)
-  assert.deepEqual(prepareVideoRequest({ protocol: 'venice-video', action: 'cancel', resourceId: 'queue-1' }, {}, routes), pinned)
   for (const resourceId of ['other', undefined]) {
     const unknown = prepareVideoRequest({ protocol: 'venice-video', action: 'download', resourceId }, {}, routes)
     assert.ok('error' in unknown && unknown.error.statusCode === 404)
