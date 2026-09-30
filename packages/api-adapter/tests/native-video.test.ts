@@ -7,6 +7,7 @@ import {
   detectRequestServiceApiProtocol,
   selectTargetProtocolForRequest,
   inferProviderDefaultServiceApiProtocols,
+  detectNativeVideoProtocol,
   isNativeVideoProtocol,
   NATIVE_VIDEO_PROTOCOLS,
   nativeVideoOptionError,
@@ -33,6 +34,8 @@ describe('native video API contracts', () => {
     expect(nativeVideoRoute(request('/api/v1/video/retrieve', { queue_id: 'task-123' }))).toEqual({ protocol: 'venice-video', action: 'download', resourceId: 'task-123' });
     expect(nativeVideoRoute(request('/api/v1/video/complete', { queue_id: 'task-123' }))).toBeNull();
     expect(nativeVideoRoute(request('/v1beta/models/veo-3.1:predictLongRunning'))).toBeNull();
+    expect(detectNativeVideoProtocol('/api/v1/video/retrieve?download=1')).toBe('venice-video');
+    expect(detectNativeVideoProtocol('/API/V1/VIDEO/QUEUE')).toBeNull();
     expect(selectTargetProtocolForRequest('venice-video', ['openai-chat-completions'])).toBeNull();
   });
 
@@ -69,7 +72,7 @@ describe('native video API contracts', () => {
     expect(NATIVE_VIDEO_PROTOCOLS).toEqual(['venice-video']);
     expect(isNativeVideoProtocol('venice-video')).toBe(true);
     expect(isNativeVideoProtocol('seedance-video')).toBe(false);
-    expect(inferProviderDefaultServiceApiProtocols('venice')).toEqual(['venice-video']);
+    expect(inferProviderDefaultServiceApiProtocols('venice')).toEqual([]);
   });
 
   it('validates advertised Venice video options', () => {

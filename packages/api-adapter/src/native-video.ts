@@ -5,7 +5,7 @@ export type { NativeVideoProtocol };
 
 export interface NativeVideoRoute {
   protocol: NativeVideoProtocol;
-  action: 'create' | 'status' | 'download';
+  action: 'create' | 'download';
   resourceId?: string;
 }
 
@@ -30,54 +30,14 @@ export interface VideoOptions {
   audio?: boolean;
 }
 
-/**
- * One entry per native video API. Everything provider-specific lives here:
- * paths, where the job ID sits in the accepted response, and which request
- * fields carry the billable quantity. Routing, ownership, idempotency and
- * billing elsewhere only use these descriptors.
- */
-interface NativeVideoApi {
-  protocol: NativeVideoProtocol;
-  createPaths: RegExp;
-  /** Status (GET) path; the first capture group is the job ID. */
-  statusPath?: RegExp;
-  /**
-   * Download POST carrying the job ID in the JSON body (Venice). It answers
-   * with the finished MP4 itself, so it is streamed.
-   */
-  downloadPath?: RegExp;
-  bodyJobId?: (body: JsonObject) => unknown;
-  jobId: (body: JsonObject) => unknown;
-  jobIdPattern: RegExp;
-  fields: (body: JsonObject) => VideoRequestFields;
-  inputs: (body: JsonObject) => VideoInputKind[];
-  /** Sentinel duration values meaning "let the model decide". */
-  autoDuration?: unknown[];
-}
+const VENICE_CREATE_PATH = '/api/v1/video/queue';
+const VENICE_DOWNLOAD_PATH = '/api/v1/video/retrieve';
+const VENICE_QUEUE_ID = /^[A-Za-z0-9_-]{1,256}$/;
+const VENICE_AUTO_DURATIONS = new Set(['auto', 'Auto', '-1', '1 gen']);
 
-const SIMPLE_ID = /^[A-Za-z0-9_-]{1,256}$/;
-const NATIVE_VIDEO_APIS: NativeVideoApi[] = [{
-    protocol: 'venice-video',
-    createPaths: /^\/api\/v1\/video\/queue$/,
-    downloadPath: /^\/api\/v1\/video\/retrieve$/,
-    bodyJobId: body => body.queue_id,
-    jobId: body => body.queue_id,
-    jobIdPattern: SIMPLE_ID,
-    // Venice sends durations as strings such as "5s".
-    fields: body => ({ duration: typeof body.duration === 'string' ? body.duration.replace(/s$/, '') : body.duration, resolution: body.resolution, aspectRatio: body.aspect_ratio, audio: body.audio }),
-    inputs: body => [
-      ...(body.image_url ? ['first_frame' as const] : []),
-      ...(body.end_image_url ? ['last_frame' as const] : []),
-      ...(Array.isArray(body.reference_image_urls) && body.reference_image_urls.length ? ['reference_image' as const] : []),
-      ...(body.video_url ? ['video' as const] : []),
-      ...(Array.isArray(body.reference_video_urls) && body.reference_video_urls.length ? ['reference_video' as const] : []),
-      ...(body.audio_url || (Array.isArray(body.reference_audio_urls) && body.reference_audio_urls.length) ? ['audio' as const] : []),
-    ],
-    autoDuration: ['auto', 'Auto', '-1', '1 gen'],
-}];
-
-function api(protocol: NativeVideoProtocol): NativeVideoApi {
-  return NATIVE_VIDEO_APIS.find(entry => entry.protocol === protocol)!;
+export function detectNativeVideoProtocol(path: string): NativeVideoProtocol | null {
+  const normalizedPath = normalizedRequestPath(path);
+  return normalizedPath === VENICE_CREATE_PATH || normalizedPath === VENICE_DOWNLOAD_PATH ? 'venice-video' : null;
 }
 
 /**
@@ -86,23 +46,12 @@ function api(protocol: NativeVideoProtocol): NativeVideoApi {
  * `resourceId`, which callers treat as an unknown job.
  */
 export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | 'method'> & { body?: Uint8Array }): NativeVideoRoute | null {
-  const path = request.path.split('?')[0] ?? '';
-  for (const entry of NATIVE_VIDEO_APIS) {
-    const create = request.method === 'POST' ? entry.createPaths.exec(path) : null;
-    if (create) {
-      return {
-        protocol: entry.protocol, action: 'create',
-      };
-    }
-    if (request.method === 'POST' && entry.downloadPath?.test(path)) {
-      const resourceId = request.body ? entry.bodyJobId!(parseJsonObject(request.body) ?? {}) : undefined;
-      const valid = typeof resourceId === 'string' && entry.jobIdPattern.test(resourceId);
-      return { protocol: entry.protocol, action: 'download', ...(valid ? { resourceId } : {}) };
-    }
-    const job = request.method === 'GET' ? entry.statusPath?.exec(path) : null;
-    if (job) return { protocol: entry.protocol, action: 'status', resourceId: job[1]! };
-  }
-  return null;
+  if (request.method !== 'POST') return null;
+  const path = normalizedRequestPath(request.path);
+  if (path === VENICE_CREATE_PATH) return { protocol: 'venice-video', action: 'create' };
+  if (path !== VENICE_DOWNLOAD_PATH) return null;
+  const resourceId = request.body ? veniceQueueId(parseJsonObject(request.body)) : null;
+  return { protocol: 'venice-video', action: 'download', ...(resourceId ? { resourceId } : {}) };
 }
 
 /** Job ID from a successful create response, or null when the seller did not accept a job. */
@@ -110,9 +59,7 @@ export function nativeVideoAcceptance(protocol: NativeVideoProtocol, response: S
   if (response.statusCode < 200 || response.statusCode >= 300) return null;
   const body = parseJsonObject(response.body);
   if (!body || body.error) return null;
-  const entry = api(protocol);
-  const resource = entry.jobId(body);
-  return typeof resource === 'string' && resource.length <= 512 && entry.jobIdPattern.test(resource) ? resource : null;
+  return protocol === 'venice-video' ? veniceQueueId(body) : null;
 }
 
 export function requestService(request: SerializedHttpRequest): string | undefined {
@@ -144,10 +91,9 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
   if (route.action !== 'create') return { protocol: route.protocol, action: route.action, count: 0 };
   const body = parseJsonObject(request.body);
   if (!body) throw new Error('Video submission requires a JSON object');
-  const entry = api(route.protocol);
-  const fields = entry.fields(body);
+  const fields = veniceFields(body);
   const count = 1;
-  const duration = entry.autoDuration?.includes(fields.duration) ? undefined : positiveInteger(fields.duration);
+  const duration = veniceDuration(fields.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
   if (duration !== undefined && !Number.isSafeInteger(duration * count)) throw new Error('Video quantity exceeds the safe integer limit');
   return {
@@ -167,10 +113,9 @@ export function nativeVideoOptionError(request: SerializedHttpRequest, options: 
   if (!route || route.action !== 'create' || !options) return null;
   const body = parseJsonObject(request.body);
   if (!body) return 'Video submission requires a JSON object';
-  const entry = api(route.protocol);
-  const fields = entry.fields(body);
-  const inputs = [...new Set(entry.inputs(body))];
-  const duration = entry.autoDuration?.includes(fields.duration) ? undefined : positiveInteger(fields.duration);
+  const fields = veniceFields(body);
+  const inputs = [...new Set(veniceInputs(body))];
+  const duration = veniceDuration(fields.duration);
   if (options.durationsSeconds && (duration === null || (duration !== undefined && !options.durationsSeconds.includes(duration)))) {
     return `Unsupported duration; choose one of ${options.durationsSeconds.join(', ')} seconds`;
   }
@@ -191,6 +136,39 @@ export function nativeVideoOptionError(request: SerializedHttpRequest, options: 
   if (missing) return `Missing required video input ${missing}`;
   if (fields.audio === true && options.audio === false) return 'This model does not generate audio';
   return null;
+}
+
+function normalizedRequestPath(path: string): string {
+  return path.split('?')[0] ?? '';
+}
+
+function veniceQueueId(body: JsonObject | null): string | null {
+  const queueId = body?.queue_id;
+  return typeof queueId === 'string' && VENICE_QUEUE_ID.test(queueId) ? queueId : null;
+}
+
+function veniceFields(body: JsonObject): VideoRequestFields {
+  return {
+    duration: typeof body.duration === 'string' ? body.duration.replace(/s$/, '') : body.duration,
+    resolution: body.resolution,
+    aspectRatio: body.aspect_ratio,
+    audio: body.audio,
+  };
+}
+
+function veniceInputs(body: JsonObject): VideoInputKind[] {
+  return [
+    ...(body.image_url ? ['first_frame' as const] : []),
+    ...(body.end_image_url ? ['last_frame' as const] : []),
+    ...(Array.isArray(body.reference_image_urls) && body.reference_image_urls.length ? ['reference_image' as const] : []),
+    ...(body.video_url ? ['video' as const] : []),
+    ...(Array.isArray(body.reference_video_urls) && body.reference_video_urls.length ? ['reference_video' as const] : []),
+    ...(body.audio_url || (Array.isArray(body.reference_audio_urls) && body.reference_audio_urls.length) ? ['audio' as const] : []),
+  ];
+}
+
+function veniceDuration(value: unknown): number | undefined | null {
+  return typeof value === 'string' && VENICE_AUTO_DURATIONS.has(value) ? undefined : positiveInteger(value);
 }
 
 /** Positive integer from a number or decimal string; undefined when absent, null when invalid. */

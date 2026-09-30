@@ -6,7 +6,7 @@ import type { ResponseAuthPayload } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 import { ANTSEED_STREAMING_RESPONSE_HEADER } from '@antseed/protocol/http';
 import { bytesToHex, hexToBytes, signData, verifySignature } from '@antseed/protocol/signing';
-import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
+import { encodeHttpRequest, encodeHttpResponse, encodeHttpResponsePrefix } from '@antseed/protocol/request-codec';
 
 const RESPONSE_AUTH_DOMAIN = 'antseed-response-auth-v1';
 
@@ -125,8 +125,8 @@ export function createStreamingResponseHash(response: SerializedHttpResponse) {
     }
   }
   const byteLength = rawLength === undefined ? undefined : Number(rawLength);
-  const prefix = encodeHttpResponse({ ...stripStreamingHeader(response), body: new Uint8Array(0) });
-  if (byteLength !== undefined) new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength).setUint32(prefix.length - 4, byteLength);
+  const { body: _body, ...responseWithoutBody } = stripStreamingHeader(response);
+  const prefix = encodeHttpResponsePrefix(responseWithoutBody, byteLength ?? 0);
   const hash = keccak_256.create().update(prefix);
   let received = 0;
   return {

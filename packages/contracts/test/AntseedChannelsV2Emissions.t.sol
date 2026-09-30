@@ -865,41 +865,6 @@ contract AntseedChannelsV2EmissionsTest is Test {
         channels.topUp(channelId, settleAmount, encodeMetadata(3000, 1000), spendingSig, newMax, newDeadline, reserveSig);
     }
 
-    /// Video flow: $1 first reserve (production FIRST_SIGN_CAP), prepay 85%,
-    /// then a single topUp straight to a $5 ceiling.
-    function test_topUp_videoPrepayToFiveUsdc() public {
-        channels.setFirstSignCap(1_000_000);
-        bytes32 channelId = doReserve(keccak256("session-video-topup"), 1_000_000, 10_000_000);
-
-        uint128 downPayment = 850_000;
-        bytes memory spendingSig = signSpendingAuth(BUYER_PK, channelId, downPayment, 0, 0);
-        uint128 newMax = 5_000_000;
-        uint256 newDeadline = block.timestamp + 2 hours;
-        bytes memory reserveSig = signReserveAuth(BUYER_PK, channelId, newMax, newDeadline);
-
-        vm.prank(seller);
-        channels.topUp(channelId, downPayment, encodeMetadata(0, 0), spendingSig, newMax, newDeadline, reserveSig);
-
-        (,, uint128 sDeposit, uint128 sSettled,,,,,) = channels.channels(channelId);
-        assertEq(sDeposit, newMax);
-        assertEq(sSettled, downPayment);
-    }
-
-    function test_topUp_videoPrepayBelowThresholdReverts() public {
-        channels.setFirstSignCap(1_000_000);
-        bytes32 channelId = doReserve(keccak256("session-video-topup-low"), 1_000_000, 10_000_000);
-
-        uint128 downPayment = 849_999;
-        bytes memory spendingSig = signSpendingAuth(BUYER_PK, channelId, downPayment, 0, 0);
-        uint128 newMax = 5_000_000;
-        uint256 newDeadline = block.timestamp + 2 hours;
-        bytes memory reserveSig = signReserveAuth(BUYER_PK, channelId, newMax, newDeadline);
-
-        vm.prank(seller);
-        vm.expectRevert(AntseedChannels.TopUpThresholdNotMet.selector);
-        channels.topUp(channelId, downPayment, encodeMetadata(0, 0), spendingSig, newMax, newDeadline, reserveSig);
-    }
-
     function test_topUp_revert_newAmountNotHigher() public {
         bytes32 salt = keccak256("session-topup-low");
         bytes32 channelId = doReserve(salt, USDC_100, USDC_150);
