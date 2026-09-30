@@ -52,7 +52,7 @@ describe('validateMetadata', () => {
       'video.requiredInputs must also be listed in video.inputs',
     ]));
     metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: {
-      videoDownload: 'video-stream-v1', video: { durationsSeconds: [5] },
+      video: { durationsSeconds: [5] },
     } };
     expect(validateMetadata({ ...metadata, version: 12 })).toEqual([]);
   });

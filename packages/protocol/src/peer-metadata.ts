@@ -53,7 +53,6 @@ export interface VideoOptions {
  * optional: absent means unknown, so buyers fall back to their own defaults.
  */
 export interface ServiceCapabilities {
-  videoDownload?: 'video-stream-v1';
   /** Options accepted by a native video model. */
   video?: VideoOptions;
   /** Total context window in tokens. */
@@ -128,7 +127,6 @@ function validateVideoOptions(video: VideoOptions): string[] {
  */
 export function validateServiceCapabilityFields(caps: ServiceCapabilities): string[] {
   const errors: string[] = [];
-  if (caps.videoDownload !== undefined && caps.videoDownload !== 'video-stream-v1') errors.push('Unsupported video download version');
   if (caps.video !== undefined) errors.push(...validateVideoOptions(caps.video));
   for (const key of ["contextWindow", "maxOutputTokens"] as const) {
     const value = caps[key];

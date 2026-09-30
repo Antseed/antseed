@@ -33,14 +33,6 @@ function makeMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 }
 
 describe('encodeMetadata / decodeMetadata', () => {
-  it('round-trips service-scoped video downloads in v12', () => {
-    const metadata = makeMetadata({ version: 12 });
-    metadata.providers[0]!.serviceCapabilities = { video: { outputs: ['video'], videoDownload: 'video-stream-v1' } };
-    expect(decodeMetadata(encodeMetadata(metadata)).providers[0]!.serviceCapabilities).toEqual(metadata.providers[0]!.serviceCapabilities);
-    expect(decodeMetadata(encodeMetadata(metadata)).version).toBe(12);
-    delete metadata.providers[0]!.serviceCapabilities.video!.videoDownload;
-    expect(decodeMetadata(encodeMetadata({ ...metadata, version: 12 })).providers[0]!.serviceCapabilities?.video?.videoDownload).toBeUndefined();
-  });
   it('round-trips signed video options in v12', () => {
     const metadata = makeMetadata({ version: 12 });
     const video = { durationsSeconds: [5, 10], resolutions: ['720p', '1080p'], aspectRatios: ['16:9', '9:16'], inputs: ['first_frame', 'last_frame'] as const, requiredInputs: ['first_frame'] as const, audio: false };
@@ -76,7 +68,7 @@ describe('encodeMetadata / decodeMetadata', () => {
   it('round-trips mixed video and non-video entries without losing empty options', () => {
     const metadata = makeMetadata({ version: 12 });
     metadata.providers[0]!.serviceCapabilities = {
-      alpha: { videoDownload: 'video-stream-v1', video: { audio: true }, supportedParameters: ['seed'] },
+      alpha: { video: { audio: true }, supportedParameters: ['seed'] },
       beta: { video: {} },
       gamma: { inputs: ['text'], toolUse: false },
     };

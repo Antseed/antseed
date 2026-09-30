@@ -11,7 +11,6 @@ import {
   ANTSEED_BUYER_FAULT_ERROR_CODE,
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_ATTEST_PATH,
-  VIDEO_DOWNLOAD_STREAM_VERSION,
   adaptPeerFaultErrorResponse,
   computeTrustScore,
   decodeSweepRequest,
@@ -452,7 +451,6 @@ export function sanitizePeerBuyerFaultMarker(response: SerializedHttpResponse): 
 function buyerFaultStatusCode(faultCode: string | null): number {
   switch (faultCode) {
     case 'invalid-request': return 400
-    case 'buyer-deposits-insufficient': return 402
     case 'buyer-budget-too-low': return 422
     case 'buyer-reserve-topup-timeout': return 504
     default: return 503
@@ -2530,13 +2528,13 @@ export class BuyerProxy {
             )
             return null
           }
-          const requestForPeer = withRoutedModel(serializedReq, plan.serviceId)
-          if (!peerAllowedByPolicy(policyRouter, requestForPeer, peer)) return null
+          const requestForPolicy = withRoutedModel(serializedReq, plan.serviceId)
+          if (!peerAllowedByPolicy(policyRouter, requestForPolicy, peer)) return null
           return {
             peer,
             peerId: peer.peerId,
             serviceId: plan.serviceId,
-            request: requestForPeer,
+            request: requestForPolicy,
             reputation: normalizedModelReputationScore(peer) ?? -1,
             hasCachedInputPricing: offer.cachedInputUsdPerMillion !== undefined,
             inputUsdPerMillion: offer.inputUsdPerMillion ?? null,
@@ -2668,6 +2666,8 @@ export class BuyerProxy {
             }
             return
           }
+          // Never retry a video on another seller: a create may already have
+          // started (and been charged), and follow-ups only exist on one seller.
           if (nativeVideo) {
             res.writeHead(result.statusCode, result.responseHeaders)
             res.end(result.responseBody)
@@ -3121,14 +3121,10 @@ export class BuyerProxy {
     this._markModelActivity()
 
     // Forward through P2P
-    const wantsStreaming = clientWantsStreaming && !nativeVideoRoute(requestForPeer)
-    if (nativeVideoRoute(requestForPeer)?.action === 'download') {
-      const capability = requestedService ? selectedPeer.providerServiceCapabilities?.[selectedRoutePlan.provider]?.services[requestedService]?.videoDownload : undefined
-      if (capability !== VIDEO_DOWNLOAD_STREAM_VERSION) {
-        res.writeHead(501, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ error: 'Seller does not support video downloads' }))
-        return { done: true }
-      }
+    const videoRoute = nativeVideoRoute(requestForPeer)
+    // Video responses are JSON job objects or a streamed MP4, never SSE.
+    const wantsStreaming = clientWantsStreaming && !videoRoute
+    if (videoRoute?.action === 'download') {
       await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, { signal, pinned: true }), requestSignal)
       return { done: true }
     }
@@ -3258,7 +3254,6 @@ export class BuyerProxy {
         res.end(Buffer.from(responseForClient.body))
         return { done: true }
       } else {
-        const videoRoute = nativeVideoRoute(requestForPeer)
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: requestSignal,
           pinned,
@@ -3267,6 +3262,9 @@ export class BuyerProxy {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
         }
 
+        // Only the seller that accepted a video job knows its ID. Remember and
+        // persist job ID -> seller so later status and download requests (even
+        // after a proxy restart) are pinned back to that seller.
         if (videoRoute && recordVideoAcceptance(
           videoRoute,
           upstreamResponse,

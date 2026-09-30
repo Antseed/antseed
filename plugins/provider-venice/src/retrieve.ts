@@ -34,7 +34,6 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
   return {
     ...provider,
     handleRequest,
-    serviceCapabilities: Object.fromEntries(provider.services.map(service => [service, { ...provider.serviceCapabilities?.[service], videoDownload: VIDEO_DOWNLOAD_STREAM_VERSION }])),
     async handleRequestStream(request, callbacks): Promise<SerializedHttpResponse> {
       const { route, service } = followUp(request);
       if (route?.action !== 'download') return handleRequest(request);

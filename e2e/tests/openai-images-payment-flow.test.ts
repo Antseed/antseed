@@ -383,7 +383,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         const createConnection = manager.createConnection.bind(manager);
         manager.createConnection = (config: any) => createConnection({ ...config, remoteCapabilities: config.remoteCapabilities.filter((capability: string) => capability !== 'transport.tcp-enc.v1') });
       }
-      expect(discoveredSeller.providerServiceCapabilities?.venice?.services['wan-2.5']?.videoDownload).toBe('video-stream-v1');
       const base = `http://127.0.0.1:${port}`;
       const post = (path: string, body: object) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
       const created = await fetch(`${base}/api/v1/video/queue`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-idempotency-key': 'venice-input' }, body: createBody });

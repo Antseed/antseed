@@ -486,10 +486,9 @@ const CAP_PRESENCE_MASK = CAP_HAS_CONTEXT_WINDOW | CAP_HAS_MAX_OUTPUT_TOKENS | C
 const CAP_VAL_REASONING = 1 << 0;
 const CAP_VAL_TOOL_USE = 1 << 1;
 const CAP_VAL_STRUCTURED_OUTPUT = 1 << 2;
-const CAP_VAL_VIDEO_DOWNLOAD = 1 << 3;
-const CAP_VAL_VIDEO_OPTIONS = 1 << 4;
+const CAP_VAL_VIDEO_OPTIONS = 1 << 3;
 const CAP_VALUE_MASK = CAP_VAL_REASONING | CAP_VAL_TOOL_USE | CAP_VAL_STRUCTURED_OUTPUT
-  | CAP_VAL_VIDEO_DOWNLOAD | CAP_VAL_VIDEO_OPTIONS;
+  | CAP_VAL_VIDEO_OPTIONS;
 const CAP_MODALITY_MASK = (1 << SERVICE_CAPABILITY_MODALITIES.length) - 1;
 const VIDEO_HAS_DURATIONS = 1 << 0;
 const VIDEO_HAS_RESOLUTIONS = 1 << 1;
@@ -631,7 +630,6 @@ function encodeServiceCapabilities(
     if (caps.reasoning === true) boolBits |= CAP_VAL_REASONING;
     if (caps.toolUse === true) boolBits |= CAP_VAL_TOOL_USE;
     if (caps.structuredOutput === true) boolBits |= CAP_VAL_STRUCTURED_OUTPUT;
-    if (caps.videoDownload === 'video-stream-v1') boolBits |= CAP_VAL_VIDEO_DOWNLOAD;
     if (caps.video !== undefined) boolBits |= CAP_VAL_VIDEO_OPTIONS;
     parts.push(new Uint8Array([boolBits]));
     if (caps.supportedParameters !== undefined) {
@@ -715,7 +713,6 @@ function decodeServiceCapabilities(
       }
       caps.supportedParameters = parameters;
     }
-    if (boolBits & CAP_VAL_VIDEO_DOWNLOAD) caps.videoDownload = 'video-stream-v1';
     if (boolBits & CAP_VAL_VIDEO_OPTIONS) [caps.video, offset] = decodeVideoOptions(data, offset, checkBounds);
     serviceCapabilities[serviceName] = caps;
   }

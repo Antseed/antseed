@@ -16,7 +16,7 @@ it('registers the Venice plugin with the Venice API by default and advertises st
   expect(() => plugin.createProvider({ ...config, VENICE_API_KEY: ' ' })).toThrow(/authentication/);
   const provider = await plugin.createProvider(config);
   expect(provider.serviceApiProtocols).toEqual({ 'wan-2.5': ['venice-video'] });
-  expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ outputs: ['video'], videoDownload: 'video-stream-v1' });
+  expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ outputs: ['video'] });
 });
 
 it.each([

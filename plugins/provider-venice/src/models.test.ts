@@ -27,7 +27,7 @@ it('fills options from the Venice model list, rejects unsupported creates before
   });
   await provider.init!();
   expect(fetchMock.mock.calls[0]![0]).toBe('https://api.venice.ai/api/v1/models?type=video');
-  expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ videoDownload: 'video-stream-v1', video: { durationsSeconds: [5], inputs: [] } });
+  expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ video: { durationsSeconds: [5], inputs: [] } });
   expect(provider.serviceCapabilities?.kling?.video).toEqual({ durationsSeconds: [10] });
 
   const response = await provider.handleRequest({ requestId: 'q', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'wan-2.5', prompt: 'cat', duration: '10s' })) });

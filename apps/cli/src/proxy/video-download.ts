@@ -5,6 +5,7 @@ import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWN
 type SendDownload = (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>
 let activeDownloads = 0
 
+/** Streams a finished video from the seller that owns the job to the client. */
 export async function downloadVideo(request: SerializedHttpRequest, response: ServerResponse, send: SendDownload, clientSignal: AbortSignal): Promise<void> {
   const error = (status: number, code: string) => {
     response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
