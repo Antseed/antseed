@@ -9,7 +9,7 @@ export interface VideoRequestError {
 /**
  * Prepares a native video request before seller selection.
  *
- * A create may go to any seller that serves the model. Status and download
+ * A create may go to any seller that serves the model. Retrieve
  * requests must go back to the exact seller, provider and service that accepted the job,
  * because only that seller knows the job ID.
  */
@@ -38,7 +38,7 @@ function pinHeaders(route: ResourceRoute): Record<string, string> {
 
 /**
  * Tags a seller's video response for the client and remembers which seller
- * accepted a new job, so later status and download requests route back to it.
+ * accepted a new job, so later retrieve requests route back to it.
  * Returns true when a new job route was recorded and should be persisted.
  */
 export function recordVideoAcceptance(
@@ -48,7 +48,7 @@ export function recordVideoAcceptance(
   routes: ResourceRoutes,
 ): boolean {
   response.headers['x-antseed-seller-peer'] = seller.peerId
-  if (route.action !== 'create') return false
+  if (route.action === 'retrieve') return false
   const resourceId = nativeVideoAcceptance(route.protocol, response)
   if (!resourceId || !seller.service) return false
   routes.record({ protocol: route.protocol, resourceId, sellerPeerId: seller.peerId.toLowerCase(), provider: seller.provider, service: seller.service })

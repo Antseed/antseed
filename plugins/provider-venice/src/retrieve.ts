@@ -27,7 +27,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
     return { route, service: service && provider.services.includes(service) ? service : undefined };
   };
   const handleRequest = async (request: SerializedHttpRequest): Promise<SerializedHttpResponse> => {
-    if (nativeVideoRoute(request)?.action === 'download') return videoDownloadError(request, 400, 'unsupported_video_download', 'A streaming video download is required');
+    if (nativeVideoRoute(request)?.action === 'retrieve') return videoDownloadError(request, 400, 'unsupported_video_download', 'A streaming video download is required');
     return provider.handleRequest(request);
   };
   return {
@@ -35,7 +35,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
     handleRequest,
     async handleRequestStream(request, callbacks): Promise<SerializedHttpResponse> {
       const { route, service } = followUp(request);
-      if (route?.action !== 'download') return handleRequest(request);
+      if (route?.action !== 'retrieve') return handleRequest(request);
       const error = (statusCode: number, code: string, message: string) => videoDownloadError(request, statusCode, code, message);
       if (!service || !route.resourceId) return error(400, 'unsupported_video_request', 'Unsupported video service or queue_id');
       if (request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] !== VIDEO_DOWNLOAD_STREAM_VERSION || !callbacks.signal) return error(400, 'unsupported_video_download', 'A streaming video download is required');

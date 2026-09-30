@@ -3124,7 +3124,7 @@ export class BuyerProxy {
     const videoRoute = nativeVideoRoute(requestForPeer)
     // Video responses are JSON job objects or a streamed MP4, never SSE.
     const wantsStreaming = clientWantsStreaming && !videoRoute
-    if (videoRoute?.action === 'download') {
+    if (videoRoute?.action === 'retrieve') {
       await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, { signal, pinned: true }), requestSignal)
       return { done: true }
     }
@@ -3263,7 +3263,7 @@ export class BuyerProxy {
         }
 
         // Only the seller that accepted a video job knows its ID. Remember and
-        // persist job ID -> seller so later status and download requests (even
+        // persist job ID -> seller so later retrieve requests (even
         // after a proxy restart) are pinned back to that seller.
         if (videoRoute && recordVideoAcceptance(
           videoRoute,

@@ -9,7 +9,7 @@ Finished Venice videos are streamed through the original seller; its API key nev
 | Protocol | Method | Native path |
 | --- | --- | --- |
 | `venice-video` | POST | `/api/v1/video/queue` |
-| `venice-video` | POST | `/api/v1/video/retrieve` (status or streamed MP4) |
+| `venice-video` | POST | `/api/v1/video/retrieve` (JSON result or streamed MP4) |
 
 Venice uses the body `model` as the service. Retrieve carries `queue_id` in the JSON body instead of the path; the seller rebuilds it as `{model, queue_id}` (plus `delete_media_on_completion`) from the owned job and routed service. Venice `/api/v1/video/complete` and `/api/v1/video/quote` are not relayed. The API path, job ID field, and billing fields are declared in `packages/api-adapter/src/native-video.ts`. Create requests use the same model routing as images: `antseed` resolves to the selected route, and `<peerId>@<model>` pins that peer and is rewritten to `<model>` before forwarding. Other body fields are unchanged. Video services appear in `GET /v1/models?type=videos`.
 
@@ -63,19 +63,19 @@ Sellers can advertise what each video model accepts in `capabilities.video` (pee
 }
 ```
 
-Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional, and an omitted field is not checked. The seller rejects such creates with `400 unsupported_video_options` before payment or any upstream call. Automatic durations, polling and downloads are never checked.
+Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional, and an omitted field is not checked. The Venice provider rejects such creates with `400 unsupported_video_options` before payment or any upstream call. Automatic durations and retrieve requests are never checked.
 
 Venice sellers fill these options automatically from `GET /api/v1/models?type=video` at startup. Configured options take precedence.
 
 ## Billing
 
-Discovery billing entries retain Venice wire ID `11`. Retired IDs are not reused; removing a provider must not renumber the remaining protocols.
+Discovery billing entries use the protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`; `venice-video` is ID `6`.
 
-A create is charged when the seller returns an accepted Venice `queue_id`. Polling is free. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
+A create is charged when the seller returns an accepted Venice `queue_id`. Retrieve requests are free. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
 
 ### Videos above the first reserve
 
-The buyer rejects a create whose price, computed from the seller's advertised unit pricing, is above `maxVideoRequestUsdc` (default `5000000`, $5.00). The buyer always sends the create first. The seller answers idempotent replays, invalid idempotency keys and unbillable requests before any payment check. Only then, if the video's price is above the reserve still locked on the channel (`reserveMax - spent`), the seller replies HTTP 402 with `{"error":"payment_required","code":"video_reserve_required"}` plus `estimatedRequestCost`, `remainingLockedReserve` and `reserveMaxAmount`. It does not start the job and keeps the channel open. Sellers run at most one video create per buyer at a time; a second create while one is in flight gets HTTP 409 `video_create_in_progress` without starting a job. This is a temporary limit until the reserve check accounts for in-flight creates, so concurrent creates cannot together exceed the locked reserve. Idempotent replays, polls, downloads and other buyers are not limited. This check ignores `reserveEstimateOverdraftUsdc`. Raising the reserve pays an advance that cannot be refunded, so the buyer raises it only after that reply, never for a replay or a rejected create:
+The buyer rejects a create whose price, computed from the seller's advertised unit pricing, is above `maxVideoRequestUsdc` (default `5000000`, $5.00). The buyer always sends the create first. The seller answers idempotent replays, invalid idempotency keys and unbillable requests before any payment check. Only then, if the video's price is above the reserve still locked on the channel (`reserveMax - spent`), the seller replies HTTP 402 with `{"error":"payment_required","code":"video_reserve_required"}` plus `estimatedRequestCost`, `remainingLockedReserve` and `reserveMaxAmount`. It does not start the job and keeps the channel open. Sellers run at most one video create per buyer at a time; a second create while one is in flight gets HTTP 409 `video_create_in_progress` without starting a job. This is a temporary limit until the reserve check accounts for in-flight creates, so concurrent creates cannot together exceed the locked reserve. Idempotent replays, retrieve requests and other buyers are not limited. This check ignores `reserveEstimateOverdraftUsdc`. Raising the reserve pays an advance that cannot be refunded, so the buyer raises it only after that reply, never for a replay or a rejected create:
 
 1. The buyer signs an ordinary cumulative SpendingAuth up to `TOP_UP_SETTLED_THRESHOLD_BPS` of the current deposit (85%) and sends it before the top-up (a video advance). Everything signed beyond delivered work stays smaller than the video price and within the locked deposit. Sellers already accept SpendingAuths above delivered spend, so no new message field is involved.
 2. The buyer sends a top-up ReserveAuth. The new ceiling is `delivered + video price + maxReserveAmountUsdc` (one normal reserve step for follow-up chats), or only `delivered + video price` when deposits cannot cover the buffer. The seller calls `topUp()` with its latest SpendingAuth (the advance), which settles it and locks the new ceiling in one transaction.
@@ -91,7 +91,7 @@ If the top-up fails, the advance stays signed and later requests use it up: thei
 
 ### Streamed downloads
 
-Venice `/api/v1/video/retrieve` is always sent as a streamed download; every seller serving `venice-video` must support it (the Venice plugin always does). While the job runs the seller returns Venice's JSON status unchanged; once finished it streams the MP4 using the flow below. Private Venice models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response, which is passed to the buyer unchanged. Venice bills some moderation rejections itself, so a create is still charged once accepted.
+Venice `/api/v1/video/retrieve` is always sent as a streamed download; every seller serving `venice-video` must support it (the Venice plugin always does). While the job runs the seller returns Venice's JSON response unchanged; once finished it streams the MP4 using the flow below. Private Venice models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response, which is passed to the buyer unchanged. Venice bills some moderation rejections itself, so a create is still charged once accepted.
 
 Venice MP4 responses may omit `Content-Length`. They are streamed directly through the same authenticated P2P path; no temporary file or second upstream fetch is used. The seller and buyer count received bytes and enforce the 64 MiB download limit.
 
@@ -107,9 +107,9 @@ Both peers incrementally compute the existing response-auth v1 hash over the enc
 
 Downloads and repeated downloads are free; they do not create a new job or change acceptance-based billing. Expired or missing files, unfinished jobs, and upstream failures return errors instead of switching sellers or generating another video. Retaining a job route does not extend upstream file retention.
 
-The buyer proxy stores accepted job routes in `buyer.state.json` for 30 days, so status and download requests go back to the same seller, provider, and service. Unknown jobs return `404`.
+The buyer proxy stores accepted job routes in `buyer.state.json` for 30 days, so retrieve requests go back to the same seller, provider, and service. Unknown jobs return `404`.
 
-The seller node stores `(protocol, job ID) -> buyer peer ID` in `resources.db`. Status and download requests from another buyer return `404` before reaching the seller API. Video requests are refused if this storage is unavailable.
+The seller node stores `(protocol, job ID) -> buyer peer ID` in `resources.db`. Retrieve requests from another buyer return `404` before reaching the seller API. Video requests are refused if this storage is unavailable.
 
 ## Duplicate charge protection
 

@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import plugin from './index.js';
-import { veniceVideoOptions } from './models.js';
+import { veniceVideoOptionError, veniceVideoOptions } from './models.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -14,6 +14,16 @@ it('maps Venice model constraints to advertised video options', () => {
   expect(veniceVideoOptions(model('x-reference-to-video', { model_type: 'image-to-video' }))).toMatchObject({ inputs: ['reference_image'], requiredInputs: ['reference_image'] });
   expect(veniceVideoOptions(model('x-video-to-video', { model_type: 'video', video_input: true }))).toMatchObject({ inputs: ['video', 'reference_video'], requiredInputs: ['video'] });
   expect(veniceVideoOptions(model('unknown', {}))).toBeUndefined();
+});
+
+it('validates advertised Venice video options', () => {
+  const request = (body: object) => ({ requestId: 'q', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ model: 'video', prompt: 'cat', ...body })) });
+  const options = { durationsSeconds: [5, 10], resolutions: ['720p'], aspectRatios: ['16:9'], inputs: ['first_frame' as const], requiredInputs: ['first_frame' as const], audio: false };
+  expect(veniceVideoOptionError(request({ image_url: 'https://media.example/a.png', duration: '5s', resolution: '720P', aspect_ratio: '16:9' }), options)).toBeNull();
+  expect(veniceVideoOptionError(request({ duration: '7s' }), undefined)).toBeNull();
+  expect(veniceVideoOptionError(request({ image_url: 'https://media.example/a.png', duration: '7s' }), options)).toMatch(/duration/);
+  expect(veniceVideoOptionError(request({ image_url: 'https://media.example/a.png', audio: true }), options)).toMatch(/audio/);
+  expect(veniceVideoOptionError({ ...request({ queue_id: 'q' }), path: '/api/v1/video/retrieve' }, options)).toBeNull();
 });
 
 it('fills options from the Venice model list, rejects unsupported creates before upstream, and keeps explicit config', async () => {

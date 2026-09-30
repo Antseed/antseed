@@ -69,19 +69,4 @@ describe('seller-operated native video relays', () => {
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
-  it('rejects creates outside the advertised model options before contacting upstream', async () => {
-    const fetchMock = vi.fn();
-    vi.stubGlobal('fetch', fetchMock);
-    const provider = createNativeVideoProvider({ name: 'custom-video-seller', protocol: 'venice-video', relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'key' } }, {
-      ANTSEED_ALLOWED_SERVICES: 'model',
-      ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"model":{"venice-video":{"version":1,"components":[]}}}',
-      ANTSEED_SERVICE_CAPABILITIES_JSON: '{"model":{"video":{"durationsSeconds":[5],"inputs":[]}}}',
-    });
-    for (const body of [{ model: 'model', duration: '10s' }, { model: 'model', image_url: 'https://media.example/image.png' }]) {
-      const response = await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) });
-      expect(response.statusCode).toBe(400);
-      expect(JSON.parse(Buffer.from(response.body).toString()).error.code).toBe('unsupported_video_options');
-    }
-    expect(fetchMock).not.toHaveBeenCalled();
-  });
 });

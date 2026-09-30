@@ -104,7 +104,7 @@ export class SellerRequestHandler {
    * provider answers, so two creates that arrive together would both pass the
    * reserve check against the same spend and could together start more work
    * than the locked reserve pays for. Allowing one create per buyer at a time
-   * closes that window. Polls and downloads are not limited.
+   * closes that window. Retrieve requests are not limited.
    *
    * Temporary: this limit is a stopgap until the reserve check accounts for
    * in-flight creates, after which concurrent videos can be allowed again.
@@ -280,7 +280,7 @@ export class SellerRequestHandler {
       if (videoCreateBuyer) this._activeVideoCreateBuyers.add(videoCreateBuyer);
       if (pendingVideoCreate) this._pendingVideoCreates.add(pendingVideoCreate);
       try {
-      const isFreeService = (videoRoute !== null && videoRoute.action !== 'create') || isZeroTokenPricing(requestPricing)
+      const isFreeService = videoRoute?.action === 'retrieve' || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
 
       if (isFreeService && this._deps.sellerFreeTierLimiter) {
@@ -608,7 +608,7 @@ export class SellerRequestHandler {
       let statusCode = 500;
       let responseBody: Uint8Array = new Uint8Array(0);
       let streamedResponseStarted = false;
-      const isDownload = videoRoute?.action === 'download' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      const isDownload = videoRoute?.action === 'retrieve' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
       let responseStartedAt = startTime;
@@ -861,7 +861,7 @@ export class SellerRequestHandler {
     }
     const buyer = buyerPeerId.toLowerCase();
     try {
-      if (route.action !== 'create') {
+      if (route.action === 'retrieve') {
         if (route.resourceId && store.getOwner(route.protocol, route.resourceId) === buyer) return false;
         this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Video job not found');
         return true;

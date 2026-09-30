@@ -1,4 +1,4 @@
-export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoFacts, nativeVideoOptionError, requestService, type NativeVideoRoute, type NativeVideoFacts, type VideoInputKind, type VideoOptions } from './native-video.js';
+export { detectNativeVideoProtocol, nativeVideoRoute, nativeVideoAcceptance, nativeVideoFacts, requestService, type NativeVideoRoute, type NativeVideoFacts } from './native-video.js';
 
 export {
   transformRequest,

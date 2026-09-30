@@ -1,5 +1,8 @@
-import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
-import { nativeVideoOptionError, requestService, type VideoInputKind, type VideoOptions } from '@antseed/api-adapter';
+import type { Provider, SerializedHttpRequest, SerializedHttpResponse, ServiceCapabilities } from '@antseed/node';
+
+type VideoOptions = NonNullable<ServiceCapabilities['video']>;
+type VideoInputKind = NonNullable<VideoOptions['inputs']>[number];
+import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 
 type JsonObject = Record<string, unknown>;
 
@@ -9,6 +12,54 @@ function object(value: unknown): JsonObject {
 
 function strings(value: unknown): string[] {
   return Array.isArray(value) ? [...new Set(value.filter((item): item is string => typeof item === 'string' && /^[A-Za-z0-9:._-]{1,32}$/.test(item)))] : [];
+}
+
+const AUTO_DURATIONS = new Set(['auto', 'Auto', '-1', '1 gen']);
+
+export function veniceVideoOptionError(request: SerializedHttpRequest, options: VideoOptions | undefined): string | null {
+  const route = nativeVideoRoute(request);
+  if (route?.action !== 'create' || !options) return null;
+  const body = parseJsonObject(request.body);
+  if (!body) return 'Video submission requires a JSON object';
+  const duration = veniceDuration(body.duration);
+  if (options.durationsSeconds && (duration === null || (duration !== undefined && !options.durationsSeconds.includes(duration)))) {
+    return `Unsupported duration; choose one of ${options.durationsSeconds.join(', ')} seconds`;
+  }
+  const resolution = unsupportedChoice(body.resolution, options.resolutions, 'resolution');
+  if (resolution) return resolution;
+  const aspectRatio = unsupportedChoice(body.aspect_ratio, options.aspectRatios, 'aspect ratio');
+  if (aspectRatio) return aspectRatio;
+  const inputs = veniceInputs(body);
+  const unsupported = options.inputs ? inputs.find(input => !options.inputs!.includes(input)) : undefined;
+  if (unsupported) return `Unsupported video input ${unsupported}`;
+  const missing = options.requiredInputs?.find(input => !inputs.includes(input));
+  if (missing) return `Missing required video input ${missing}`;
+  if (body.audio === true && options.audio === false) return 'This model does not generate audio';
+  return null;
+}
+
+function unsupportedChoice(value: unknown, supported: string[] | undefined, label: string): string | null {
+  return value !== undefined && supported && (typeof value !== 'string' || !supported.some(item => item.toLowerCase() === value.toLowerCase()))
+    ? `Unsupported ${label}; choose one of ${supported.join(', ')}`
+    : null;
+}
+
+function veniceInputs(body: JsonObject): VideoInputKind[] {
+  return [...new Set<VideoInputKind>([
+    ...(body.image_url ? ['first_frame' as const] : []),
+    ...(body.end_image_url ? ['last_frame' as const] : []),
+    ...(Array.isArray(body.reference_image_urls) && body.reference_image_urls.length ? ['reference_image' as const] : []),
+    ...(body.video_url ? ['video' as const] : []),
+    ...(Array.isArray(body.reference_video_urls) && body.reference_video_urls.length ? ['reference_video' as const] : []),
+    ...(body.audio_url || (Array.isArray(body.reference_audio_urls) && body.reference_audio_urls.length) ? ['audio' as const] : []),
+  ])];
+}
+
+function veniceDuration(value: unknown): number | undefined | null {
+  if (value === undefined || (typeof value === 'string' && AUTO_DURATIONS.has(value))) return undefined;
+  const normalized = typeof value === 'string' ? value.trim().replace(/s$/, '') : value;
+  const parsed = typeof normalized === 'string' && /^[0-9]+$/.test(normalized) ? Number(normalized) : normalized;
+  return typeof parsed === 'number' && Number.isSafeInteger(parsed) && parsed > 0 ? parsed : null;
 }
 
 /** Venice model constraints use a model-specific shape; convert only the fields we can enforce. */
@@ -52,7 +103,7 @@ export function veniceVideoOptions(model: unknown): VideoOptions | undefined {
 export function withVeniceModelOptions(provider: Provider, baseUrl: string, apiKey: string): Provider {
   const optionError = (request: SerializedHttpRequest): SerializedHttpResponse | null => {
     const service = requestService(request);
-    const message = service ? nativeVideoOptionError(request, wrapped.serviceCapabilities?.[service]?.video) : null;
+    const message = service ? veniceVideoOptionError(request, wrapped.serviceCapabilities?.[service]?.video) : null;
     return message ? { requestId: request.requestId, statusCode: 400, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ error: { code: 'unsupported_video_options', message } })) } : null;
   };
   const wrapped: Provider = {

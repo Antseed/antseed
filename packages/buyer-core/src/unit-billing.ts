@@ -291,7 +291,7 @@ function factsToUnitUsage(facts: BillingRequestFacts): UnitBillingUsage {
 
 function videoBillingUsage(model: UnitBillingModelV1, facts: NativeVideoFacts, usage: UnitBillingUsage): UnitBillingUsage {
   const units: UnitBillingUsage['units'] = {};
-  if (facts.action !== 'create') return { units };
+  if (facts.action === 'retrieve') return { units };
   for (const component of model.components) {
     if (component.unit === 'video_seconds' && facts.duration === undefined) throw new Error('Explicit video duration is required for per-second pricing');
     if (component.unit === 'video_generations' || component.unit === 'video_seconds') {

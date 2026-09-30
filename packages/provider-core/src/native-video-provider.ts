@@ -1,6 +1,6 @@
 import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { validateUnitBillingModelV1 } from '@antseed/node';
-import { nativeVideoOptionError, nativeVideoRoute, requestService, type NativeVideoProtocol } from '@antseed/api-adapter';
+import { nativeVideoRoute, requestService, type NativeVideoProtocol } from '@antseed/api-adapter';
 import { BaseProvider } from './base-provider.js';
 import type { RelayConfig } from './http-relay.js';
 import { parseCsv, parseServiceUnitBillingModelsJson, parseServiceCapabilitiesJson } from './config-utils.js';
@@ -52,8 +52,6 @@ export function createNativeVideoProvider(options: NativeVideoProviderOptions, c
     if (!route || route.protocol !== protocol || !service || !services.includes(service)) {
       return error(request, 'unsupported_video_request', 'Unsupported video endpoint or service');
     }
-    const optionError = nativeVideoOptionError(request, provider.serviceCapabilities?.[service]?.video);
-    if (optionError) return error(request, 'unsupported_video_options', optionError);
     const headers = { ...request.headers };
     for (const header of Object.keys(headers)) {
       if (header.toLowerCase().startsWith('x-antseed-') && header.toLowerCase() !== 'x-antseed-buyer-peer-id') delete headers[header];

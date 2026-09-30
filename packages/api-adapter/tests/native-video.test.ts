@@ -10,7 +10,6 @@ import {
   detectNativeVideoProtocol,
   isNativeVideoProtocol,
   NATIVE_VIDEO_PROTOCOLS,
-  nativeVideoOptionError,
 } from '../src/index.js';
 
 describe('native video API contracts', () => {
@@ -31,7 +30,7 @@ describe('native video API contracts', () => {
 
   it('recognizes native paths without translating them into chat', () => {
     expect(nativeVideoRoute(request('/api/v1/video/queue'))).toEqual({ protocol: 'venice-video', action: 'create' });
-    expect(nativeVideoRoute(request('/api/v1/video/retrieve', { queue_id: 'task-123' }))).toEqual({ protocol: 'venice-video', action: 'download', resourceId: 'task-123' });
+    expect(nativeVideoRoute(request('/api/v1/video/retrieve', { queue_id: 'task-123' }))).toEqual({ protocol: 'venice-video', action: 'retrieve', resourceId: 'task-123' });
     expect(nativeVideoRoute(request('/api/v1/video/complete', { queue_id: 'task-123' }))).toBeNull();
     expect(nativeVideoRoute(request('/v1beta/models/veo-3.1:predictLongRunning'))).toBeNull();
     expect(detectNativeVideoProtocol('/api/v1/video/retrieve?download=1')).toBe('venice-video');
@@ -40,7 +39,7 @@ describe('native video API contracts', () => {
   });
 
   it('rejects malformed and unsupported video routes', () => {
-    expect(nativeVideoRoute(request('/api/v1/video/retrieve'))).toEqual({ protocol: 'venice-video', action: 'download' });
+    expect(nativeVideoRoute(request('/api/v1/video/retrieve'))).toEqual({ protocol: 'venice-video', action: 'retrieve' });
     expect(nativeVideoRoute(request('/api/v1/video/retrieve/../account'))).toBeNull();
     expect(nativeVideoRoute(request('/api/v1/video/quote'))).toBeNull();
     expect(nativeVideoRoute(request('/api/v1/video/queue', {}, 'GET'))).toBeNull();
@@ -75,13 +74,4 @@ describe('native video API contracts', () => {
     expect(inferProviderDefaultServiceApiProtocols('venice')).toEqual([]);
   });
 
-  it('validates advertised Venice video options', () => {
-    const create = (body: object) => request('/api/v1/video/queue', { model: 'video', prompt: 'cat', ...body });
-    const options = { durationsSeconds: [5, 10], resolutions: ['720p'], aspectRatios: ['16:9'], inputs: ['first_frame' as const], requiredInputs: ['first_frame' as const], audio: false };
-    expect(nativeVideoOptionError(create({ image_url: 'https://media.example/a.png', duration: '5s', resolution: '720P', aspect_ratio: '16:9' }), options)).toBeNull();
-    expect(nativeVideoOptionError(create({ duration: '7s' }), undefined)).toBeNull();
-    expect(nativeVideoOptionError(create({ image_url: 'https://media.example/a.png', duration: '7s' }), options)).toMatch(/duration/);
-    expect(nativeVideoOptionError(create({ image_url: 'https://media.example/a.png', audio: true }), options)).toMatch(/audio/);
-    expect(nativeVideoOptionError(request('/api/v1/video/retrieve', { model: 'video', queue_id: 'q' }), options)).toBeNull();
-  });
 });

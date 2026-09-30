@@ -135,7 +135,7 @@ export class BuyerRequestHandler {
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
-    const videoFollowUp = nativeVideoRoute(req)?.action !== undefined && nativeVideoRoute(req)?.action !== 'create';
+    const videoFollowUp = nativeVideoRoute(req)?.action === 'retrieve';
     if (nativeVideoRoute(req) && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
     const isFreeService = videoFollowUp || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
@@ -187,7 +187,7 @@ export class BuyerRequestHandler {
       let streamStartResponse: SerializedHttpResponse | null = null;
       let forwardStreamToCallbacks = false;
       const streamChunks: Uint8Array[] = [];
-      const isDownload = nativeVideoRoute(req)?.action === 'download' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      const isDownload = nativeVideoRoute(req)?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let activeTimeout: ReturnType<typeof setTimeout> | null = null;
       let activeTimeoutMs = streamInitialResponseTimeoutMs;

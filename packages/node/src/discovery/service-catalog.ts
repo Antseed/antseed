@@ -101,8 +101,6 @@ export function inferServiceProtocol(provider: string): Exclude<CatalogServicePr
   if (provider === 'anthropic' || provider === 'claude-code' || provider === 'claude-oauth') {
     return 'anthropic-messages';
   }
-  const videoProtocol = `${provider}-video`;
-  if (isNativeVideoProtocol(videoProtocol)) return videoProtocol;
   if (provider === 'typesafe') return 'typesafe-systemone';
   return null;
 }
