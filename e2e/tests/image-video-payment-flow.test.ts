@@ -3,8 +3,8 @@ import OpenAI from 'openai';
 import { createServer as createNetServer } from 'node:net';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
 import { execFile } from 'node:child_process';
-import { cp, mkdtemp, rm, writeFile } from 'node:fs/promises';
-import { createHash, randomBytes, randomUUID } from 'node:crypto';
+import { mkdtemp, rm } from 'node:fs/promises';
+import { randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
@@ -16,11 +16,8 @@ import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
 import venicePlugin from '../../plugins/provider-venice/src/index.js';
 import seedancePlugin from '../../plugins/provider-seedance/src/index.js';
-import { runLiveVeniceMatrix } from './helpers/live-venice-matrix.js';
 
 const execFileAsync = promisify(execFile);
-const liveVeniceKey = process.env['ANTSEED_LIVE_VENICE_KEY'];
-delete process.env['ANTSEED_LIVE_VENICE_KEY'];
 
 function largeVideoInputImage(): string {
   const chunk = (type: string, data: Buffer) => {
@@ -282,7 +279,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     rpcCallLog = [];
   }
 
-  async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType, resumeState?: string): Promise<{
+  async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType): Promise<{
     provider: ProviderType;
     port: number;
     discoveredSeller: PeerInfo;
@@ -290,7 +287,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     bootstrap = await createLocalBootstrap();
 
     sellerDataDir = await mkdtemp(join(tmpdir(), 'antseed-seller-images-pay-'));
-    if (resumeState) await cp(join(resumeState, 'seller'), sellerDataDir, { recursive: true });
     const imageProvider = provider ?? new MockOpenAIImageProvider() as unknown as ProviderType;
     sellerNode = new AntseedNode({
       role: 'seller',
@@ -306,7 +302,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     await sellerNode.start();
 
     buyerDataDir = await mkdtemp(join(tmpdir(), 'antseed-buyer-images-pay-'));
-    if (resumeState) await cp(join(resumeState, 'buyer'), buyerDataDir, { recursive: true });
     buyerNode = new AntseedNode({
       role: 'buyer',
       dataDir: buyerDataDir,
@@ -336,15 +331,6 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
 
     return { provider: imageProvider, port, discoveredSeller: discoveredSeller! };
   }
-
-  it.skipIf(process.env['ANTSEED_LIVE_VENICE'] !== '1')('generates a real Venice video matrix through buyer and seller', async () => {
-    if (!liveVeniceKey) throw new Error('ANTSEED_LIVE_VENICE_KEY is required');
-    await setupRpc();
-    await runLiveVeniceMatrix(liveVeniceKey, async (provider) => {
-      const network = await setupProxyNetwork(provider, process.env['ANTSEED_LIVE_VENICE_RESUME_STATE']);
-      return { ...network, buyer: buyerNode! };
-    });
-  }, 25 * 60_000);
 
   it.each([
     ['tcp-encrypted', true, 'text'], ['webrtc', true, 'image'], ['tcp-encrypted', false, 'image'], ['webrtc', false, 'text'],

@@ -34,6 +34,7 @@ import type { ResourceOwnershipStore } from './resources/resource-ownership-stor
 import type { ServiceApiProtocol } from './types/service-api.js';
 import {
   detectRequestServiceApiProtocol,
+  extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
@@ -997,7 +998,13 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
-    return requestService(request) ?? null;
+    if (nativeVideoRoute(request)) return requestService(request) ?? null;
+    const body = extractRequestBodyFields(request.headers, request.body);
+    const service = body?.["service"] ?? body?.["model"];
+    if (typeof service !== "string" || service.trim().length === 0) {
+      return null;
+    }
+    return service.trim();
   }
 
   private _extractRequestedProvider(request: SerializedHttpRequest): string | null {

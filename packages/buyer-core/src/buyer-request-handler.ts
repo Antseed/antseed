@@ -27,6 +27,7 @@ import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
   detectRequestServiceApiProtocol,
+  extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
@@ -522,7 +523,11 @@ export class BuyerRequestHandler {
 
 /** Extract the service/model name from a JSON or multipart request body, or undefined if not found. */
 function extractServiceFromBody(request: SerializedHttpRequest): string | undefined {
-  return requestService(request);
+  if (nativeVideoRoute(request)) return requestService(request);
+  const parsed = extractRequestBodyFields(request.headers, request.body);
+  const service = parsed?.service ?? parsed?.model;
+  if (typeof service === 'string' && service.length > 0) return service;
+  return undefined;
 }
 
 function selectBillingRoute(
