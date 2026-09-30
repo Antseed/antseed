@@ -91,19 +91,10 @@ export function decodeSpendingAuth(data: Uint8Array): SpendingAuthPayload {
     metadata: typeof obj.metadata === 'string' ? obj.metadata : '',
     spendingAuthSig: requireStringField(obj, 'spendingAuthSig'),
   };
-  // Optional reserve params (initial auth or top-up)
+  // Optional reserve params (only on initial auth)
   if (typeof obj.reserveSalt === 'string') result.reserveSalt = obj.reserveSalt;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
   if (typeof obj.reserveDeadline === 'number') result.reserveDeadline = obj.reserveDeadline;
-  if (obj.topUpSpendingAuth != null) {
-    const auth = obj.topUpSpendingAuth as Record<string, unknown>;
-    result.topUpSpendingAuth = {
-      cumulativeAmount: requireStringField(auth, 'cumulativeAmount'),
-      metadataHash: requireStringField(auth, 'metadataHash'),
-      metadata: requireStringField(auth, 'metadata'),
-      spendingAuthSig: requireStringField(auth, 'spendingAuthSig'),
-    };
-  }
   return result;
 }
 

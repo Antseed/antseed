@@ -11,27 +11,6 @@ import {
 } from './payment-codec.js';
 
 describe('payment payload codec', () => {
-  it('round-trips a conditional top-up payment without making it a standalone payment', () => {
-    const payload = {
-      channelId: '0x' + 'aa'.repeat(32),
-      cumulativeAmount: '0',
-      metadataHash: '0x' + 'bb'.repeat(32),
-      metadata: '0x',
-      spendingAuthSig: 'reserve-signature',
-      reserveMaxAmount: '5000000',
-      topUpSpendingAuth: {
-        cumulativeAmount: '850000',
-        metadataHash: '0x' + 'cc'.repeat(32),
-        metadata: '0x',
-        spendingAuthSig: 'prepayment-signature',
-      },
-    };
-    expect(decodeSpendingAuth(encodeSpendingAuth(payload))).toEqual(payload);
-    expect(() => decodeSpendingAuth(new TextEncoder().encode(JSON.stringify({
-      ...payload, topUpSpendingAuth: { cumulativeAmount: '850000' },
-    })))).toThrow();
-  });
-
   it('round-trips a SpendingAuth with reserve fields', () => {
     const payload = {
       channelId: '0x' + 'aa'.repeat(32),

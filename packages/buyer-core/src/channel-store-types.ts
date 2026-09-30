@@ -5,7 +5,6 @@
  */
 
 import type { SpendingAuthMetadata, SpendingAuthServiceMetadata } from '@antseed/protocol/signatures';
-import type { SpendingAuthPayload } from '@antseed/protocol/messages';
 
 export const CHANNEL_STATUS = {
   ACTIVE: 'active',
@@ -63,11 +62,11 @@ export interface StoredChannel {
   reserveAuthPending?: boolean;
   /** Last reserve ceiling acknowledged initially or observed on-chain. */
   confirmedReserveAmount?: string | null;
-  videoPrepaidAmount?: string;
-  videoVerifiedCost?: string;
-  videoAccountedRequestIds?: string[];
-  hasVideoPrepayment?: boolean;
-  pendingVideoSpendingAuth?: SpendingAuthPayload['topUpSpendingAuth'];
+  /**
+   * Cumulative amount owed for delivered work. Below authMax only while a
+   * video advance is outstanding; the gap covers the next charges.
+   */
+  deliveredAmount?: string | null;
   createdAt: number;
   updatedAt: number;
 }

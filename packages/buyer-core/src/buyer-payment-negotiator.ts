@@ -348,14 +348,15 @@ export class BuyerPaymentNegotiator {
   /**
    * Make sure a paid video create fits into the reserve locked on-chain.
    *
-   * If it does not, raise the channel straight to `current cumulative +
+   * If it does not, raise the channel straight to `delivered cost +
    * maxVideoRequestUsdc` with a single topUp(), or only to the video price
    * when deposits cannot cover the full limit. topUp() only succeeds once
    * TOP_UP_SETTLED_THRESHOLD_BPS of the current deposit is settled, so the
-   * buyer includes a prepayment authorization in the top-up. The prepayment is
-   * always smaller than the video price and is absorbed by the cumulative
-   * charge when the job is accepted. No-ops without an established channel;
-   * the 402 path opens one and calls this again before retrying.
+   * buyer first signs an ordinary SpendingAuth early (a video advance). The
+   * advance is always smaller than the video price; the video's own charge
+   * then brings the signed cumulative to exactly delivered cost, so nothing
+   * is paid twice. No-ops without an established channel; the 402 path opens
+   * one and calls this again before retrying.
    */
   async ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
     const previous = this._videoHeadroomLocks.get(peer.peerId) ?? Promise.resolve();
@@ -384,32 +385,26 @@ export class BuyerPaymentNegotiator {
     }
     const deposit = channel.deposit;
     await this._bpm.reconcileReserveAmount(peer.peerId, deposit);
-    const reconciled = this._bpm.getActiveSession(peer.peerId)!;
-    if (reconciled.pendingVideoSpendingAuth && reconciled.reserveAuthPending && reconciled.reserveMaxAmount) {
-      await this._bpm.resendPendingReserveAuth(peer.peerId, this.getOrCreatePaymentMux(peer.peerId, conn));
-      await this._waitForVideoTopUp(peer.peerId, session.sessionId, BigInt(reconciled.reserveMaxAmount));
-      return this._ensureVideoHeadroom(peer, conn, requestId);
-    }
     const currentCumulative = this._bpm.getCumulativeAmount(peer.peerId);
-    const consumed = currentCumulative - BigInt(reconciled.videoPrepaidAmount ?? '0');
-    if (consumed + videoCost <= deposit) return;
+    const delivered = this._bpm.getDeliveredAmount(peer.peerId);
+    if (delivered + videoCost <= deposit) return;
 
     const balance = await this._bpm.getBalance();
-    const minimumCeiling = consumed + videoCost;
+    const minimumCeiling = delivered + videoCost;
     if (balance.available < minimumCeiling - deposit) {
       throw buyerFault(
         `Insufficient deposits for this video: ${formatUsdc(minimumCeiling - deposit - balance.available)} USDC more needed`,
         'buyer-deposits-insufficient',
       );
     }
-    const fullCeiling = consumed + this._bpm.maxVideoRequestUsdc;
+    const fullCeiling = delivered + this._bpm.maxVideoRequestUsdc;
     const targetCeiling = balance.available >= fullCeiling - deposit ? fullCeiling : minimumCeiling;
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
     const thresholdBps = await this._getTopUpThresholdBps();
     const settledForTopUp = (deposit * thresholdBps + 9_999n) / 10_000n;
     if (settledForTopUp > currentCumulative) {
-      await this._bpm.signVideoDownPayment(peer.peerId, requestId, settledForTopUp, videoCost, deposit);
+      await this._bpm.signVideoAdvance(peer.peerId, requestId, settledForTopUp, videoCost, deposit, pmux);
     }
     await this._bpm.topUpReserve(peer.peerId, pmux, targetCeiling);
     await this._waitForVideoTopUp(peer.peerId, session.sessionId, targetCeiling);

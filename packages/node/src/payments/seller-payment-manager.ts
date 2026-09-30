@@ -269,15 +269,14 @@ export class SellerPaymentManager {
           continue;
         }
 
-        // A video advance is settled money, not delivered work. Preserve the
-        // durable local usage counter on channels that can have prepaid credit.
-        if (channel.hasVideoPrepayment) {
-          this._reserveMax.set(channel.sessionId, onChainState.channel.deposit);
-          this._channelStore.upsertChannel({ ...channel, previousConsumption: onChainState.channel.deposit.toString() });
-        }
+        // Reconcile: if on-chain settled > local spent, update local to avoid double-charging.
+        // A buyer's video advance is settled ahead of delivered work; it never
+        // exceeds the accepted cumulative, so only a settle beyond that points
+        // to lost local state.
         const onChainSettled = onChainState.channel.settled;
         const localSpent = this._spent.get(channel.sessionId) ?? 0n;
-        if (onChainSettled > localSpent && !channel.hasVideoPrepayment) {
+        const acceptedCumulative = this._acceptedCumulative.get(channel.sessionId) ?? 0n;
+        if (onChainSettled > localSpent && onChainSettled > acceptedCumulative) {
           this._spent.set(channel.sessionId, onChainSettled);
           // Clear auth only if its cumulative would revert settle() with InvalidAmount
           // (cumulativeAmount must be > on-chain settled). If auth is still valid
@@ -511,7 +510,6 @@ export class SellerPaymentManager {
       const channelsDomain = makeChannelsDomain(this._config.chainId, channelsAddr);
 
       if (existingCumulative === undefined) {
-        if (payload.topUpSpendingAuth) return 'rejected';
         const hasReserveFields = payload.reserveSalt != null
           || payload.reserveMaxAmount != null
           || payload.reserveDeadline != null;
@@ -627,7 +625,7 @@ export class SellerPaymentManager {
         return 'reserved';
       } else if (
         payload.reserveMaxAmount
-        && (payload.topUpSpendingAuth || BigInt(payload.reserveMaxAmount) > (this._reserveMax.get(channelId) ?? 0n))
+        && BigInt(payload.reserveMaxAmount) > (this._reserveMax.get(channelId) ?? 0n)
       ) {
         // ── Top-up: buyer is extending the reserve ceiling ──
         const newMaxAmount = BigInt(payload.reserveMaxAmount);
@@ -645,35 +643,9 @@ export class SellerPaymentManager {
           debugWarn(`[SellerPayment] Invalid top-up ReserveAuth signature: recovered=${recovered} expected=${buyerEvmAddr}`);
           return 'rejected';
         }
-        if (newMaxAmount <= currentReserveMax) {
-          if (!await this._validateRetainedChannel(buyerPeerId, channelId, existingCumulative, disconnectMarker)) return 'rejected';
-          this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
-          return 'accepted';
-        }
 
         // Call topUp() on-chain — includes settle of current cumulative spend
-        let { amount: settleAmount, metadata: settleMetadata, sig: settleSig } = this._getSettleParams(channelId);
-        const prepayment = payload.topUpSpendingAuth;
-        if (prepayment) {
-          const prepaymentAmount = BigInt(prepayment.cumulativeAmount);
-          if (!this._metadataMatchesHash({ ...prepayment, channelId })
-            || prepaymentAmount > currentReserveMax
-            || prepaymentAmount < (this._spent.get(channelId) ?? 0n)) return 'rejected';
-          const prepaymentSigner = verifyTypedData(channelsDomain, SPENDING_AUTH_TYPES, {
-            channelId,
-            cumulativeAmount: prepaymentAmount,
-            metadataHash: prepayment.metadataHash,
-          }, prepayment.spendingAuthSig);
-          if (prepaymentSigner.toLowerCase() !== buyerEvmAddr.toLowerCase()) return 'rejected';
-          const session = this._channelStore.getChannel(channelId);
-          if (!session) return 'rejected';
-          this._channelStore.upsertChannel({ ...session, hasVideoPrepayment: true });
-          if (prepaymentAmount > settleAmount) {
-            settleAmount = prepaymentAmount;
-            settleMetadata = prepayment.metadata;
-            settleSig = prepayment.spendingAuthSig;
-          }
-        }
+        const { amount: settleAmount, metadata: settleMetadata, sig: settleSig } = this._getSettleParams(channelId);
         debugLog(`[SellerPayment] Top-up verified: channel=${channelId.slice(0, 18)}... ceiling ${currentReserveMax} → ${newMaxAmount} (settling cumulative=${settleAmount})`);
         try {
           await this._channelsClient.topUp(
@@ -690,10 +662,6 @@ export class SellerPaymentManager {
           // Update tracking
           this._hydratedChannelIds.delete(channelId);
           this._reserveMax.set(channelId, newMaxAmount);
-          if (prepayment) {
-            this._pendingTopUp.delete(channelId);
-            this._retainSuccessfulTopUpPrepayment(channelId, prepayment);
-          }
           const session = this._channelStore.getChannel(channelId);
           if (session) {
             session.previousConsumption = newMaxAmount.toString(); // repurposed: stores reserveMax
@@ -704,24 +672,6 @@ export class SellerPaymentManager {
 
           debugLog(`[SellerPayment] Top-up completed: channel=${channelId.slice(0, 18)}... new ceiling=${newMaxAmount}`);
         } catch (topUpErr) {
-          if (prepayment) {
-            try {
-              const onChain = await this._channelsClient.getSession(channelId);
-              if (onChain.status === 1 && onChain.deposit >= newMaxAmount && onChain.settled >= settleAmount) {
-                this._reserveMax.set(channelId, onChain.deposit);
-                this._pendingTopUp.delete(channelId);
-                this._retainSuccessfulTopUpPrepayment(channelId, prepayment);
-                const retained = this._channelStore.getChannel(channelId);
-                if (retained) this._channelStore.upsertChannel({ ...retained, previousConsumption: onChain.deposit.toString(), deadline: topUpDeadline });
-                return 'accepted';
-              }
-            } catch (readError) {
-              debugWarn(`[SellerPayment] Video top-up outcome is unconfirmed: ${this._formatError(readError)}`);
-            }
-            this._pendingTopUp.delete(channelId);
-            debugWarn(`[SellerPayment] Video top-up not confirmed; retaining only prior payable auth: ${this._formatError(topUpErr)}`);
-            return 'rejected';
-          }
           const failureKind = this._classifyTopUpFailure(topUpErr);
           if (failureKind === 'retryable-threshold' || failureKind === 'retryable-tx-backpressure') {
             // TopUpThresholdNotMet is a timing/settlement race; tx backpressure
@@ -943,24 +893,6 @@ export class SellerPaymentManager {
     if (!existing || pending.newMaxAmount >= existing.newMaxAmount) {
       this._pendingTopUp.set(channelId, pending);
     }
-  }
-
-  private _retainSuccessfulTopUpPrepayment(channelId: string, prepayment: NonNullable<SpendingAuthPayload['topUpSpendingAuth']>): void {
-    const amount = BigInt(prepayment.cumulativeAmount);
-    if (amount <= (this._acceptedCumulative.get(channelId) ?? 0n)) return;
-    const session = this._channelStore.getChannel(channelId);
-    if (!session) throw new Error('Missing channel after video top-up');
-    this._channelStore.upsertChannel({
-      ...session,
-      authMax: prepayment.cumulativeAmount,
-      latestBuyerSig: prepayment.spendingAuthSig,
-      latestSpendingAuthSig: prepayment.spendingAuthSig,
-      latestMetadata: prepayment.metadata,
-      updatedAt: Date.now(),
-    });
-    this._acceptedCumulative.set(channelId, amount);
-    this._latestAuth.set(channelId, { ...prepayment, cumulativeAmount: amount });
-    this._notifyAcceptedUpdate(channelId, amount);
   }
 
   private _formatError(err: unknown): string {
