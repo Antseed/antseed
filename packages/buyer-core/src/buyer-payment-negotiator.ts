@@ -352,7 +352,7 @@ export class BuyerPaymentNegotiator {
    * maxVideoRequestUsdc` with a single topUp(), or only to the video price
    * when deposits cannot cover the full limit. topUp() only succeeds once
    * TOP_UP_SETTLED_THRESHOLD_BPS of the current deposit is settled, so the
-   * buyer first prepays the missing part of that threshold. The prepayment is
+   * buyer includes a prepayment authorization in the top-up. The prepayment is
    * always smaller than the video price and is absorbed by the cumulative
    * charge when the job is accepted. No-ops without an established channel;
    * the 402 path opens one and calls this again before retrying.
@@ -378,37 +378,61 @@ export class BuyerPaymentNegotiator {
     const session = this._bpm.getActiveSession(peer.peerId);
     if (!session) return;
 
-    const deposit = (await this._channelsClient.getSession(session.sessionId)).deposit;
+    const channel = await this._channelsClient.getSession(session.sessionId);
+    if (channel.status != null && channel.status !== 1) {
+      throw buyerFault('Video payment channel is no longer active', 'buyer-session-state');
+    }
+    const deposit = channel.deposit;
     await this._bpm.reconcileReserveAmount(peer.peerId, deposit);
+    const reconciled = this._bpm.getActiveSession(peer.peerId)!;
+    if (reconciled.pendingVideoSpendingAuth && reconciled.reserveAuthPending && reconciled.reserveMaxAmount) {
+      await this._bpm.resendPendingReserveAuth(peer.peerId, this.getOrCreatePaymentMux(peer.peerId, conn));
+      await this._waitForVideoTopUp(peer.peerId, session.sessionId, BigInt(reconciled.reserveMaxAmount));
+      return this._ensureVideoHeadroom(peer, conn, requestId);
+    }
     const currentCumulative = this._bpm.getCumulativeAmount(peer.peerId);
-    if (currentCumulative + videoCost <= deposit) return;
+    const consumed = currentCumulative - BigInt(reconciled.videoPrepaidAmount ?? '0');
+    if (consumed + videoCost <= deposit) return;
 
     const balance = await this._bpm.getBalance();
-    const minimumCeiling = currentCumulative + videoCost;
+    const minimumCeiling = consumed + videoCost;
     if (balance.available < minimumCeiling - deposit) {
       throw buyerFault(
         `Insufficient deposits for this video: ${formatUsdc(minimumCeiling - deposit - balance.available)} USDC more needed`,
         'buyer-deposits-insufficient',
       );
     }
-    const fullCeiling = currentCumulative + this._bpm.maxVideoRequestUsdc;
+    const fullCeiling = consumed + this._bpm.maxVideoRequestUsdc;
     const targetCeiling = balance.available >= fullCeiling - deposit ? fullCeiling : minimumCeiling;
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
     const thresholdBps = await this._getTopUpThresholdBps();
     const settledForTopUp = (deposit * thresholdBps + 9_999n) / 10_000n;
     if (settledForTopUp > currentCumulative) {
-      await this._bpm.signVideoDownPayment(peer.peerId, pmux, requestId, settledForTopUp, videoCost, deposit);
+      await this._bpm.signVideoDownPayment(peer.peerId, requestId, settledForTopUp, videoCost, deposit);
     }
     await this._bpm.topUpReserve(peer.peerId, pmux, targetCeiling);
+    await this._waitForVideoTopUp(peer.peerId, session.sessionId, targetCeiling);
+  }
 
+  private async _waitForVideoTopUp(peerId: string, channelId: string, targetCeiling: bigint): Promise<void> {
     const deadline = Date.now() + this._videoTopUpTimeoutMs;
     for (;;) {
       await new Promise((resolve) => setTimeout(resolve, this._videoTopUpPollMs));
-      const onChainDeposit = (await this._channelsClient.getSession(session.sessionId)).deposit;
+      let channel;
+      try {
+        channel = await this._channelsClient!.getSession(channelId);
+      } catch (error) {
+        if (Date.now() >= deadline) throw buyerFault('Unable to confirm the video top-up before timeout', 'buyer-reserve-topup-timeout', { cause: error });
+        continue;
+      }
+      if (channel.status != null && channel.status !== 1) {
+        throw buyerFault('Video payment channel closed before the request was sent', 'buyer-session-state');
+      }
+      const onChainDeposit = channel.deposit;
       if (onChainDeposit >= targetCeiling) {
-        await this._bpm.reconcileReserveAmount(peer.peerId, onChainDeposit);
-        debugLog(`[BuyerNegotiator] Video top-up confirmed for ${peer.peerId.slice(0, 12)}...: deposit=${onChainDeposit}`);
+        await this._bpm.reconcileReserveAmount(peerId, onChainDeposit);
+        debugLog(`[BuyerNegotiator] Video top-up confirmed for ${peerId.slice(0, 12)}...: deposit=${onChainDeposit}`);
         return;
       }
       if (Date.now() >= deadline) {

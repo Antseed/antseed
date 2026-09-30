@@ -106,10 +106,16 @@ export interface SpendingAuthPayload {
   metadataHash: string;         // bytes32 hex
   metadata: string;             // hex-encoded abi.encode(version, inputTokens, outputTokens, requestCount, services[])
   spendingAuthSig: string;      // EIP-712 SpendingAuth signature (covers amount + metadata)
-  // Only for initial reserve
+  // ReserveAuth fields for initial reserve or top-up
   reserveSalt?: string;
   reserveMaxAmount?: string;
   reserveDeadline?: number;
+  topUpSpendingAuth?: {
+    cumulativeAmount: string;
+    metadataHash: string;
+    metadata: string;
+    spendingAuthSig: string;
+  };
 }
 
 /**

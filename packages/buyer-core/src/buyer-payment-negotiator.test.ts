@@ -134,19 +134,20 @@ describe('BuyerPaymentNegotiator', () => {
       deposit: bigint;
       videoCost?: bigint;
       available?: bigint;
+      prepaid?: bigint;
       confirmedDeposits?: bigint[];
     }) {
       const events: string[] = [];
       const deposits = [opts.deposit, ...(opts.confirmedDeposits ?? [])];
-      const getSession = vi.fn(async () => ({ deposit: deposits.length > 1 ? deposits.shift()! : deposits[0]! }));
+      const getSession = vi.fn(async () => ({ deposit: deposits.length > 1 ? deposits.shift()! : deposits[0]!, status: 1 }));
       const bpm = {
         maxVideoRequestUsdc: 5_000_000n,
         getRequestBilling: vi.fn(() => (opts.videoCost ? { estimatedCostUsdc: opts.videoCost } : undefined)),
-        getActiveSession: vi.fn(() => ({ sessionId: `0x${'a'.repeat(64)}` })),
+        getActiveSession: vi.fn(() => ({ sessionId: `0x${'a'.repeat(64)}`, videoPrepaidAmount: opts.prepaid?.toString() })),
         getCumulativeAmount: vi.fn(() => opts.cumulative),
         reconcileReserveAmount: vi.fn(async () => {}),
         getBalance: vi.fn(async () => ({ available: opts.available ?? 10_000_000n, reserved: 0n })),
-        signVideoDownPayment: vi.fn(async (_peer: string, _mux: unknown, _req: string, target: bigint) => {
+        signVideoDownPayment: vi.fn(async (_peer: string, _req: string, target: bigint) => {
           events.push(`down:${target}`);
         }),
         topUpReserve: vi.fn(async (_peer: string, _mux: unknown, target: bigint) => {
@@ -173,6 +174,28 @@ describe('BuyerPaymentNegotiator', () => {
       await negotiator.ensureVideoHeadroom(peer, connection, requestId);
       expect(bpm.signVideoDownPayment).not.toHaveBeenCalled();
       expect(bpm.topUpReserve).not.toHaveBeenCalled();
+    });
+
+    it('counts unused prepaid credit as available headroom', async () => {
+      const { negotiator, bpm } = makeNegotiator({ cumulative: 4_900_000n, prepaid: 850_000n, deposit: 5_000_000n, videoCost: 900_000n });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(bpm.signVideoDownPayment).not.toHaveBeenCalled();
+      expect(bpm.topUpReserve).not.toHaveBeenCalled();
+    });
+
+    it('retries a transient chain-read failure before confirming the top-up', async () => {
+      const { negotiator, getSession, bpm } = makeNegotiator({ cumulative: 0n, deposit: 5_000_000n, videoCost: 4_200_000n });
+      getSession.mockResolvedValueOnce({ deposit: 1_000_000n, status: 1 }).mockRejectedValueOnce(new Error('RPC timeout'));
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(bpm.reconcileReserveAmount).toHaveBeenLastCalledWith(peer.peerId, 5_000_000n);
+      expect(bpm.topUpReserve).toHaveBeenCalledOnce();
+    });
+
+    it('does not authorize video headroom on a closed channel', async () => {
+      const { negotiator, getSession, bpm } = makeNegotiator({ cumulative: 0n, deposit: 1_000_000n, videoCost: 4_200_000n });
+      getSession.mockResolvedValueOnce({ deposit: 1_000_000n, status: 2 });
+      await expect(negotiator.ensureVideoHeadroom(peer, connection, requestId)).rejects.toMatchObject({ code: 'buyer-session-state' });
+      expect(bpm.signVideoDownPayment).not.toHaveBeenCalled();
     });
 
     it('prepays to the settle threshold, then tops up straight to the video limit', async () => {

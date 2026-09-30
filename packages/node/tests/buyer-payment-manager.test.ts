@@ -1657,8 +1657,8 @@ describe('BuyerPaymentManager', () => {
   describe('signVideoDownPayment', () => {
     const videoRequestId = 'video-create-1';
 
-    function trackVideo(sellerPeerId: string, estimatedCostUsdc = 4_200_000n): void {
-      manager.trackRequestBilling(videoRequestId, {
+    function trackVideo(sellerPeerId: string, estimatedCostUsdc = 4_200_000n, requestId = videoRequestId): void {
+      manager.trackRequestBilling(requestId, {
         context: {
           sellerPeerId,
           provider: 'venice',
@@ -1667,26 +1667,168 @@ describe('BuyerPaymentManager', () => {
           unitLimits: { video_generations: 1 },
         },
         requestFacts: { video: { protocol: 'venice-video', action: 'create', count: 1 } },
-        unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
+        unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: Number(estimatedCostUsdc) / 1_000_000 }] },
         estimatedCostUsdc,
       });
     }
 
-    it('signs a cumulative prepayment that the later video charge absorbs', async () => {
+    async function prepareVideo(sellerPeerId: string): Promise<string> {
+      manager.setSigner(identity.wallet);
+      vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 20_000_000n, reserved: 0n });
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId);
+      await manager.signVideoDownPayment(sellerPeerId, videoRequestId, 850_000n, 4_200_000n, 1_000_000n);
+      await manager.topUpReserve(sellerPeerId, mux, 5_000_000n);
+      return channelId;
+    }
+
+    function restartBuyer(): void {
+      store.close();
+      store = new ChannelStore(tempDir);
+      manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+      manager.setSigner(identity.wallet);
+    }
+
+    function videoResponse(requestId = videoRequestId) {
+      return {
+        requestId, service: 'video-model', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+        unitUsage: { units: { video_generations: 1 } },
+      };
+    }
+
+    function videoNeedAuth(channelId: string, requestId = videoRequestId, cost = '4200000') {
+      return {
+        channelId, requestId, requiredCumulativeAmount: cost, currentAcceptedCumulative: '850000',
+        deposit: '5000000', lastRequestCost: cost, inputTokens: '0', outputTokens: '0',
+        billingUsage: { version: 1 as const, units: { video_generations: '1' } },
+      };
+    }
+
+    it.each(['response-first', 'need-auth-first', 'concurrent'] as const)('credits and charges only once: %s', async (order) => {
+      const sellerPeerId = fakePeerId('video-dedup');
+      const spendEvents: Array<{ amountUsdc: string }> = [];
+      manager.setSpendListener(event => spendEvents.push(event));
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      manager.recordObservedUnitUsage(videoRequestId, { units: { video_generations: 1 } });
+      const response = () => manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      const needAuth = () => manager.handleNeedAuth(sellerPeerId, videoNeedAuth(channelId), mux);
+      if (order === 'response-first') { await response(); await needAuth(); }
+      else if (order === 'need-auth-first') { await needAuth(); await response(); }
+      else { await Promise.all([needAuth(), response()]); }
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(4_200_000n);
+      expect(manager.getVerifiedCost(sellerPeerId)).toBe(4_200_000n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('0');
+      expect(spendEvents.map(event => event.amountUsdc)).toEqual(['850000', '3350000']);
+      expect(decodeMetadataServices(store.getChannel(channelId)!.latestMetadata!)[0]).toMatchObject({
+        cumulativeAmount: 4_200_000n, cumulativeRequestCount: 1n,
+      });
+    });
+
+    it.each(['before-confirmation', 'after-confirmation'] as const)('preserves prepaid credit and deduplication across restart: %s', async (checkpoint) => {
+      const sellerPeerId = fakePeerId('video-restart');
+      const channelId = await prepareVideo(sellerPeerId);
+      if (checkpoint === 'after-confirmation') await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      restartBuyer();
+      if (checkpoint === 'before-confirmation') {
+        expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
+        expect(await manager.buildCloseChannelRequest(sellerPeerId)).not.toHaveProperty('spendingAuthSig');
+        mux.sentSpendingAuths.length = 0;
+        await manager.resendPendingReserveAuth(sellerPeerId, mux);
+        expect(mux.sentSpendingAuths).toEqual([expect.objectContaining({
+          cumulativeAmount: '0', topUpSpendingAuth: expect.objectContaining({ cumulativeAmount: '850000' }),
+        })]);
+      }
+      await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('850000');
+      trackVideo(sellerPeerId);
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      restartBuyer();
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      await manager.handleNeedAuth(sellerPeerId, videoNeedAuth(channelId), mux);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(4_200_000n);
+      expect(manager.getVerifiedCost(sellerPeerId)).toBe(4_200_000n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('0');
+    });
+
+    it('does not turn an unconfirmed top-up into spend or a close authorization', async () => {
+      const sellerPeerId = fakePeerId('video-unconfirmed');
+      const spend = vi.fn();
+      manager.setSpendListener(spend);
+      await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 1_000_000n);
+      restartBuyer();
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('0');
+      expect(await manager.buildCloseChannelRequest(sellerPeerId)).not.toHaveProperty('spendingAuthSig');
+      expect(spend).not.toHaveBeenCalled();
+    });
+
+    it('uses leftover credit when later accepted work costs less than the advance', async () => {
+      const sellerPeerId = fakePeerId('video-leftover');
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      trackVideo(sellerPeerId, 500_000n, 'cheaper-video');
+      manager.recordObservedUnitUsage('cheaper-video', { units: { video_generations: 1 } });
+      await manager.handleNeedAuth(sellerPeerId, videoNeedAuth(channelId, 'cheaper-video', '500000'), mux);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('350000');
+      trackVideo(sellerPeerId, 500_000n, 'next-video');
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse('next-video'));
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(1_000_000n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('0');
+    });
+
+    it('credits a second top-up without reusing the first advance', async () => {
+      const sellerPeerId = fakePeerId('video-second-topup');
+      await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      trackVideo(sellerPeerId, 4_200_000n, 'second-video');
+      await manager.signVideoDownPayment(sellerPeerId, 'second-video', 4_250_000n, 4_200_000n, 5_000_000n);
+      await manager.topUpReserve(sellerPeerId, mux, 9_200_000n);
+      await manager.reconcileReserveAmount(sellerPeerId, 9_200_000n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('50000');
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse('second-video'));
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(8_400_000n);
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('0');
+    });
+
+    it('credits the prepayment against the accepted video instead of authorizing $4.70', async () => {
+      manager = new BuyerPaymentManager(identity, makeConfig(tempDir, { maxPerRequestUsdc: 500_000n }), store);
+      manager.setSigner(identity.wallet);
       const sellerPeerId = fakePeerId('seller-video-down');
       const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
       manager.handleAuthAck(sellerPeerId, { channelId });
       trackVideo(sellerPeerId);
       mux.sentSpendingAuths.length = 0;
 
-      await manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 4_200_000n, 1_000_000n);
+      await manager.signVideoDownPayment(sellerPeerId, videoRequestId, 850_000n, 4_200_000n, 1_000_000n);
 
-      expect(mux.sentSpendingAuths).toHaveLength(1);
-      const sent = mux.sentSpendingAuths[0] as Record<string, unknown>;
-      expect(sent.cumulativeAmount).toBe('850000');
-      expect(sent.reserveMaxAmount).toBeUndefined();
-      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(0n);
       expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
+      await manager.topUpReserve(sellerPeerId, mux, 5_000_000n);
+      expect(mux.sentSpendingAuths).toEqual([expect.objectContaining({
+        cumulativeAmount: '0', reserveMaxAmount: '5000000',
+        topUpSpendingAuth: expect.objectContaining({ cumulativeAmount: '850000' }),
+      })]);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_000_000n);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      const result = await manager.signPerRequestAuth(sellerPeerId, {
+        requestId: videoRequestId,
+        service: 'video-model',
+        inputBytes: new Uint8Array(),
+        outputBytes: new Uint8Array(),
+        unitUsage: { units: { video_generations: 1 } },
+      });
+      expect(result.payload.cumulativeAmount).toBe('4200000');
+      expect(manager.getActiveSession(sellerPeerId)?.videoPrepaidAmount).toBe('0');
+      expect(decodeMetadataServices(result.payload.metadata)[0]?.cumulativeAmount).toBe(4_200_000n);
     });
 
     it('refuses a prepayment that is not smaller than the video price', async () => {
@@ -1697,7 +1839,7 @@ describe('BuyerPaymentManager', () => {
       mux.sentSpendingAuths.length = 0;
 
       await expect(
-        manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 800_000n, 1_000_000n),
+        manager.signVideoDownPayment(sellerPeerId, videoRequestId, 850_000n, 800_000n, 1_000_000n),
       ).rejects.toThrow('Refusing video down payment');
       expect(mux.sentSpendingAuths).toHaveLength(0);
     });
@@ -1709,7 +1851,7 @@ describe('BuyerPaymentManager', () => {
       trackVideo(sellerPeerId);
 
       await expect(
-        manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 4_200_000n, 500_000n),
+        manager.signVideoDownPayment(sellerPeerId, videoRequestId, 850_000n, 4_200_000n, 500_000n),
       ).rejects.toThrow('Refusing video down payment');
     });
 
@@ -1719,7 +1861,7 @@ describe('BuyerPaymentManager', () => {
       manager.handleAuthAck(sellerPeerId, { channelId });
 
       await expect(
-        manager.signVideoDownPayment(sellerPeerId, mux, 'unknown-request', 850_000n, 4_200_000n, 1_000_000n),
+        manager.signVideoDownPayment(sellerPeerId, 'unknown-request', 850_000n, 4_200_000n, 1_000_000n),
       ).rejects.toThrow('tracked video create');
     });
 
@@ -1731,7 +1873,7 @@ describe('BuyerPaymentManager', () => {
 
       expect(manager.maxVideoRequestUsdc).toBe(5_000_000n);
       await expect(
-        manager.signVideoDownPayment(sellerPeerId, mux, videoRequestId, 850_000n, 6_000_000n, 1_000_000n),
+        manager.signVideoDownPayment(sellerPeerId, videoRequestId, 850_000n, 6_000_000n, 1_000_000n),
       ).rejects.toThrow('Refusing video down payment');
     });
   });

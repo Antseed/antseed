@@ -706,6 +706,80 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
   });
 
+  it.each([0n, 100_000n])('does not collect a failed conditional video prepayment (prior spend %s)', async (priorSpend) => {
+    const channelId = makeChannelId(130);
+    const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reserve, mux);
+    if (priorSpend > 0n) {
+      const prior = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+        cumulativeAmount: priorSpend, reserveMaxAmount: '1000000',
+      });
+      await manager.handleSpendingAuth(buyerIdentity.peerId, prior, mux);
+      manager.recordSpend(channelId, priorSpend);
+    }
+    const prepayment = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 850_000n });
+    const topUp = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '5000000',
+    });
+    topUp.topUpSpendingAuth = prepayment;
+    vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
+      deposit: 1_000_000n, settled: 0n,
+    }));
+    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp').mockRejectedValue(new Error('execution reverted: InsufficientBalance'));
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp, mux)).toBe('rejected');
+    expect(topUpSpy.mock.calls[0]?.[2]).toBe(850_000n);
+    expect(store.getChannel(channelId)?.authMax).toBe(priorSpend.toString());
+    expect(store.getChannel(channelId)?.latestSpendingAuthSig).not.toBe(prepayment.spendingAuthSig);
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+    const restarted = new SellerPaymentManager(sellerIdentity, {
+      rpcUrl: 'http://127.0.0.1:8545', channelsContractAddress: CONTRACT_ADDR, chainId: CHAIN_ID, dataDir: tempDir,
+    }, store);
+    const closeSpy = vi.spyOn(restarted.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+    vi.spyOn(restarted.channelsClient, 'requestClose').mockResolvedValue('0xrequest-close-hash');
+    await restarted.settleSession(buyerIdentity.peerId);
+    if (priorSpend > 0n) expect(closeSpy.mock.calls[0]?.[2]).toBe(priorSpend);
+    else expect(closeSpy).not.toHaveBeenCalled();
+  });
+
+  it.each(['confirmed', 'rpc-timeout'] as const)('retains video prepayment only after successful top-up: %s', async (outcome) => {
+    const channelId = makeChannelId(131);
+    const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reserve, mux);
+    const prepayment = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 850_000n });
+    const topUp = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '5000000',
+    });
+    topUp.topUpSpendingAuth = prepayment;
+    const topUpSpy = vi.spyOn(manager.channelsClient, 'topUp');
+    if (outcome === 'confirmed') topUpSpy.mockResolvedValue('0xtopup-hash');
+    else topUpSpy.mockRejectedValue(new Error('RPC timed out after broadcast'));
+    vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
+      deposit: 5_000_000n, settled: 850_000n,
+    }));
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp, mux)).toBe('accepted');
+    expect(topUpSpy.mock.calls[0]?.[2]).toBe(850_000n);
+    expect(manager.getReserveMax(channelId)).toBe(5_000_000n);
+    expect(store.getChannel(channelId)).toMatchObject({ authMax: '850000', latestSpendingAuthSig: prepayment.spendingAuthSig });
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp, mux)).toBe('accepted');
+    expect(topUpSpy).toHaveBeenCalledOnce();
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+    const restarted = new SellerPaymentManager(sellerIdentity, {
+      rpcUrl: 'http://127.0.0.1:8545', channelsContractAddress: CONTRACT_ADDR, chainId: CHAIN_ID, dataDir: tempDir,
+    }, store);
+    vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
+      deposit: 5_000_000n, settled: 850_000n,
+    }));
+    await restarted.validateHydratedChannels();
+    expect(restarted.getCumulativeSpend(channelId)).toBe(0n);
+    restarted.recordSpend(channelId, 4_200_000n);
+    const finalAuth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 4_200_000n, reserveMaxAmount: '5000000' });
+    expect(await restarted.handleSpendingAuth(buyerIdentity.peerId, finalAuth, mux)).toBe('accepted');
+  });
+
   it('blocks the channel if permanent top-up failure cannot close immediately', async () => {
     const channelId = makeChannelId(105);
 

@@ -58,6 +58,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     getRequestBilling: vi.fn().mockReturnValue(undefined),
     getSessionPricing: vi.fn().mockReturnValue(null),
     maxPerRequestUsdc: 100_000n,
+    maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
 }
@@ -136,8 +137,8 @@ describe('BuyerPaymentNegotiator', () => {
       const request: SerializedHttpRequest = { requestId: 'video-cap', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: enc.encode(JSON.stringify({ model: 'seedance-2-0', duration: 8 })) };
       expect(() => negotiator.trackRequestBillingContext(request, 'seedance-2-0', {
         sellerPeerId: SELLER_PEER_ID, provider: 'seedance', service: 'seedance-2-0', serviceApiProtocol: 'seedance-video',
-        unitModel: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] },
-      })).toThrow('maxPerRequestUsdc');
+        unitModel: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 1 }] },
+      })).toThrow('Video costs 8.0 USDC, limit is 5.0 USDC');
       expect(bpm.signPerRequestAuth).not.toHaveBeenCalled();
     });
     it('attributes malformed video quantities to the buyer', () => {
