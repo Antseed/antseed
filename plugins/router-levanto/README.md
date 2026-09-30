@@ -97,8 +97,8 @@ legacy `defaultRoutedModel` is converted and persisted once if `selection` is
 missing. An existing `selection` always wins, including an explicitly cleared
 default. The legacy key can remain in the file but is ignored after conversion.
 The old top-level `model` API field is no longer supported.
-Desktop/VPR and other model-only control clients need a follow-up update; this
-change intentionally does not preserve their old selection API.
+Desktop/VPR model selections, connected apps and the Telegram bridge use the
+same typed API.
 Selection changes apply to subsequent requests. In-flight requests retain their
 original selection and are not cancelled by model or chat selection changes.
 Client-disconnect cancellation remains in place. Explicit state selections
@@ -110,13 +110,9 @@ input, cached-input, and output tokens. Recommendation purchases do not add an
 extra conversation request count. A recommendation reporting zero tokens adds
 no tokens; token usage is not suppressed just because it came from a router.
 
-Preference schemas come from the service catalog's `preferencesSchema`, which the
-adapter's `getCatalog()` fetches from the router API (`GET /v1/levanto-route/catalog`,
-base URL explicitly configured through `LEVANTO_ROUTING_PEER_URL`). No HTTP address
-or port is inferred from peer discovery. Without a configured URL, `getCatalog()`
-returns `undefined` without making an HTTP request; supported models are unknown
-and the adapter's fallback settings schema is empty. The same transport can serve
-different routing services with different settings. The buyer validates the exact selected service's schema.
+The built-in Levanto adapter does not fetch a separate catalog. It sends the buyer's
+eligible candidates in each paid routing request, and its settings schema is empty.
+Other adapters may implement `getCatalog()` to restrict candidates or provide a schema.
 For example, a CQT field:
 
 ```json
@@ -173,24 +169,21 @@ Code integrating an additional adapter registers it with the buyer-owned registr
 import { ModelRouterRegistry } from '@antseed/router-core';
 import { LevantoRoutingAdapter } from '@antseed/router-levanto';
 
-const modelRouters = new ModelRouterRegistry();
-modelRouters.register('levanto-routing', new LevantoRoutingAdapter({ routingPeerUrl }));
-modelRouters.register('another-routing-protocol', anotherAdapter);
+const modelRouterRegistry = new ModelRouterRegistry();
+modelRouterRegistry.register('levanto-routing', new LevantoRoutingAdapter());
+modelRouterRegistry.register('another-routing-protocol', anotherAdapter);
 ```
 
 Here `anotherAdapter` is an instance implementing `ModelRouterAdapter`. The protocol
 must also be supported by discovery metadata; registering an adapter does not
 extend metadata's wire format. This is explicit code registration, not automatic
 discovery or installation of arbitrary npm plugins. For built-in integrations,
-add a default registration alongside Levanto in the CLI's `createBuyerModelRouters`
-setup function and pass the registry as `BuyerProxyConfig.modelRouters`. Neither
+add a default registration alongside Levanto in the CLI's `createBuyerModelRouterRegistry`
+setup function and pass the registry as `BuyerProxyConfig.modelRouterRegistry`. Neither
 the local plugin's factory nor the SDK's existing `Router` interface needs adapter hooks.
 
 Registration creates local objects only; it does not contact a routing service or
-make a purchase. One registry is retained for the buyer's lifetime. The buyer reads
-`LEVANTO_ROUTING_PEER_URL` from its environment; a legacy `--instance` configuration
-value is retained as a fallback, with the environment taking precedence. A missing
-URL retains the adapter's existing unknown-catalog behavior. Proxies without an
+make a purchase. One registry is retained for the buyer's lifetime. Proxies without an
 adapter registry can route models but reject routing-service selections explicitly.
 
 The buyer validates live selections and resolves preferences using the selected

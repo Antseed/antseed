@@ -1,6 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import { getNetworkStats } from '../runtime/fetch-network-stats.js';
+import { modelDefaultRoute } from '../runtime/buyer-default-route.js';
 import { raceBudget } from './race-budget.js';
 import { type ChatStreamStopReason } from './stream-stop.js';
 import {
@@ -1011,7 +1012,7 @@ export function registerPiChatHandlers({
       const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/route`, {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ model }),
+        body: JSON.stringify({ selection: modelDefaultRoute(peerId, service) }),
       });
       const result = await response.json() as { ok?: boolean; error?: string };
       if (result.ok) {

@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import type { PeerInfo, RouteRecommendation, RouteSelectionContext, ModelRouterAdapter, RoutingCatalogV1, RoutingServiceTarget, RoutingUsageObservation, SerializedHttpRequest } from '@antseed/node';
+import type { PeerInfo, RouteRecommendation, RouteSelectionContext, ModelRouterAdapter, RoutingUsageObservation, SerializedHttpRequest } from '@antseed/node';
 import { completedRequestPrice, resolveServiceBillingOffer, canonicalRoutingJson, createRoutingServiceMetadata } from '@antseed/node';
 import { LEVANTO_ROUTING_PATH, validateRoutingRequest, validateRoutingResponse } from './validation.js';
 import { CacheObservations } from './cache-observations.js';
@@ -11,31 +11,10 @@ export const levantoRoutingMetadata = createRoutingServiceMetadata({
   properties: {},
 });
 
-export const LEVANTO_CATALOG_PATH = '/v1/levanto-route/catalog';
-
-export type LevantoRoutingAdapterOptions = {
-  routingPeerUrl?: string;
-  fetchImpl?: typeof fetch;
-};
-
 export class LevantoRoutingAdapter implements ModelRouterAdapter {
   readonly routingMetadata = structuredClone(levantoRoutingMetadata);
   private readonly conversations = new Map<string, CachedRoute>();
   readonly observations = new CacheObservations();
-
-  constructor(private readonly options: LevantoRoutingAdapterOptions = {}) {}
-
-  async getCatalog(target: RoutingServiceTarget, _peers: PeerInfo[], signal: AbortSignal): Promise<RoutingCatalogV1 | undefined> {
-    const base = this.options.routingPeerUrl?.trim().replace(/\/+$/, '');
-    if (!base) return undefined;
-    const url = new URL(`${base}${LEVANTO_CATALOG_PATH}`);
-    url.searchParams.set('provider', target.provider);
-    url.searchParams.set('service', target.serviceId);
-    const response = await (this.options.fetchImpl ?? fetch)(url, { headers: { accept: 'application/json' }, signal });
-    if (response.status === 404) return undefined;
-    if (!response.ok) throw new Error(`Router catalog unavailable (${response.status})`);
-    return await response.json() as RoutingCatalogV1;
-  }
 
   recordUsage(observation: RoutingUsageObservation): void {
     this.observations.record(observation);

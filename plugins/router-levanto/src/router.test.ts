@@ -98,26 +98,6 @@ describe('Levanto buyer adapter', () => {
     await expect(state.adapter.selectRoute(request(), [peer], state.context)).rejects.toThrow('No eligible');
     expect(state.sendRequest).not.toHaveBeenCalled();
   });
-  it('fetches the catalog from the router HTTP API for the exact service', async () => {
-    const catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }], undefined, { title: 'Auto Router' });
-    const fetchImpl = vi.fn(async (url: string | URL | Request) => {
-      const parsed = new URL(String(url));
-      return parsed.searchParams.get('service') === 'levanto-route' ? Response.json(catalog) : new Response('{}', { status: 404 });
-    });
-    const adapter = new LevantoRoutingAdapter({ routingPeerUrl: 'http://router.test:9000/', fetchImpl: fetchImpl as typeof fetch });
-    const target = { peerId: sellerId, provider: 'levanto', serviceId: 'levanto-route' };
-    expect(await adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).toEqual(catalog);
-    expect(String(fetchImpl.mock.calls[0]![0])).toBe('http://router.test:9000/v1/levanto-route/catalog?provider=levanto&service=levanto-route');
-    expect(await adapter.getCatalog({ ...target, serviceId: 'other' }, [peer], AbortSignal.timeout(1000))).toBeUndefined();
-    fetchImpl.mockResolvedValueOnce(new Response('down', { status: 503 }));
-    await expect(adapter.getCatalog(target, [peer], AbortSignal.timeout(1000))).rejects.toThrow('503');
-  });
-  it.each([undefined, '203.0.113.5:6882', '[2001:db8::1]:6882'])('does not derive a catalog URL from the announced address %s', async (publicAddress) => {
-    const fetchImpl = vi.fn();
-    const adapter = new LevantoRoutingAdapter({ fetchImpl: fetchImpl as typeof fetch });
-    expect(await adapter.getCatalog({ peerId: sellerId, provider: 'levanto', serviceId: 'levanto-route' }, [{ ...peer, publicAddress }], AbortSignal.timeout(1000))).toBeUndefined();
-    expect(fetchImpl).not.toHaveBeenCalled();
-  });
   it.each(['Help through Responses', [{ role: 'user', content: [{ type: 'input_text', text: 'Help through Responses' }] }]])('routes Responses input without altering the downstream request', async (input) => {
     const state = setup();
     const responseRequest = { ...request(), path: '/v1/responses', body: new TextEncoder().encode(JSON.stringify({ model: 'antseed', input })) };

@@ -15,7 +15,7 @@ import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
-import { createBuyerModelRouters, resolveBuyerModelRouterOptions } from '../../../proxy/model-router-setup.js'
+import { createBuyerModelRouterRegistry } from '../../../proxy/model-router-setup.js'
 import { DepositWatcher } from '../../../proxy/deposit-watcher.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
@@ -228,7 +228,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       })
 
       let router
-      let modelRouterOptions = resolveBuyerModelRouterOptions(process.env)
       let toolHints: Array<{ name: string; envVar: string }> = []
       const routerName = resolveBuyerRouterName({ router: options.router as string | undefined })
 
@@ -252,7 +251,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           const runtimeEnv = buildRouterRuntimeEnvFromBuyerConfig(effectiveBuyerConfig)
           const pluginConfig = buildPluginConfig(plugin.configSchema ?? plugin.configKeys ?? [], runtimeEnv, instance.config as Record<string, string>)
           router = await plugin.createRouter(pluginConfig)
-          modelRouterOptions = resolveBuyerModelRouterOptions(process.env, instance.config)
           spinner.succeed(chalk.green(`Router "${plugin.displayName}" loaded`))
           toolHints = (plugin as any).TOOL_HINTS ?? []
         } catch (err) {
@@ -461,7 +459,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       const proxy = new BuyerProxy({
-        modelRouters: createBuyerModelRouters(modelRouterOptions),
+        modelRouterRegistry: createBuyerModelRouterRegistry(),
         port: proxyPort,
         node,
         pinnedPeerId,

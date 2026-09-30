@@ -28,6 +28,7 @@ import {
   type TelegramSettings,
 } from './store.js';
 import { LOCALHOST_URL } from '../constants.js';
+import { defaultRouteModel } from '../runtime/buyer-default-route.js';
 import { asErrorMessage } from '../utils.js';
 
 export type TelegramBridgeStatus = {
@@ -374,8 +375,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
     try {
       const port = await engine.getProxyPort();
       const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/route`);
-      const body = await response.json() as { ok?: boolean; model?: string | null };
-      const model = typeof body.model === 'string' ? body.model.trim() : '';
+      const model = defaultRouteModel(await response.json());
       const at = model.indexOf('@');
       if (at > 0) {
         routed = { peerId: model.slice(0, at), service: model.slice(at + 1) };

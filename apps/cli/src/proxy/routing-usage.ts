@@ -1,10 +1,10 @@
 import type { PeerInfo, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node'
-import type { BuyerModelRouters } from './model-router-setup.js'
+import type { BuyerModelRouterRegistry } from './model-router-setup.js'
 import { computeResponseTelemetry } from './telemetry.js'
 import { isCompletionRequestPath } from './conversation-identity.js'
 
 export function recordRouterUsage(
-  routers: Pick<BuyerModelRouters, 'recordUsage'> | null,
+  routers: Pick<BuyerModelRouterRegistry, 'recordUsage'> | null,
   conversationKey: string | null,
   request: SerializedHttpRequest,
   response: SerializedHttpResponse,

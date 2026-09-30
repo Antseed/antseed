@@ -118,7 +118,7 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { loadConfig } from '../config/loader.js'
-import type { BuyerModelRouters } from './model-router-setup.js'
+import type { BuyerModelRouterRegistry } from './model-router-setup.js'
 
 // Re-export for backward compatibility (used by tests and other consumers)
 export { selectCandidatePeersForRouting, type CandidatePeerRouteSelection } from './routing.js'
@@ -139,7 +139,7 @@ const WATCHER_ABSENCE_ERRORS: Record<DepositWatcherAbsenceReason, string> = {
 }
 
 export interface BuyerProxyConfig {
-  modelRouters?: BuyerModelRouters
+  modelRouterRegistry?: BuyerModelRouterRegistry
   port: number
   node: AntseedNode
   /** Data directory used to persist buyer.state.json (discovered peers, session peer pin). */
@@ -353,6 +353,8 @@ function isBuyerFault(result: DispatchFailure): boolean {
 }
 
 type RouterSelection = Extract<RoutingSelection, { kind: 'router' }>
+type DefaultRouteSelection = Extract<RoutingSelection, { kind: 'model' }> | (RouterSelection & { service: RoutingServiceTarget })
+const EMPTY_DEFAULT_ROUTE: DefaultRouteSelection = { kind: 'model', model: null }
 
 type ProtocolTransformStrategy = {
   from: ServiceApiProtocol
@@ -830,16 +832,12 @@ export class BuyerProxy {
   private _configFileWatching = false
   private _pinnedPeer: string | null
   /**
-   * Route substituted for the `antseed` model alias (`<service>` for automatic
-   * peer selection, or `<peerId>@<service>` for an explicit seller pin).
-   * Set via `POST /_antseed/route` (the desktop keeps it on the current VPR
-   * selection) and persisted in buyer.state.json like the session peer pin.
+   * Default for the `antseed` model alias: an explicit model route or an exact routing service.
+   * Set via `POST /_antseed/route` and persisted in buyer.state.json.
    */
-  private _defaultRoutedModel: string | null = null
-  /** Optional routing service that picks the model for `antseed` requests. Set via `POST /_antseed/route` with `router`. */
-  private _routerSelection: RouterSelection | null = null
+  private _defaultRoute: DefaultRouteSelection = EMPTY_DEFAULT_ROUTE
   private readonly _routingCatalogs = new RoutingCatalogCache()
-  private readonly _modelRouters: BuyerModelRouters | null
+  private readonly _modelRouterRegistry: BuyerModelRouterRegistry | null
   private _conversations!: ConversationStore
   /**
    * Wall-clock of the last model-request activity (dispatch or streamed
@@ -901,7 +899,7 @@ export class BuyerProxy {
 
   constructor(config: BuyerProxyConfig) {
     this._node = config.node
-    this._modelRouters = config.modelRouters ?? null
+    this._modelRouterRegistry = config.modelRouterRegistry ?? null
     this._verifier = config.verifier
     this._teeVerification = new TeeVerification(config.verifier)
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
@@ -1143,18 +1141,37 @@ export class BuyerProxy {
 
   private _validateRouterSelection(value: unknown): asserts value is RouterSelection & { service: RoutingServiceTarget } {
     if (!isRoutingSelection(value) || value.kind !== 'router') throw new Error('Invalid router selection')
-    if (!this._modelRouters) throw new Error('The buyer has no routing-service adapters configured')
+    if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
     if (!value.service) throw new Error('Select an exact routing-service target')
   }
 
   private async _validateRoutingService(value: RouterSelection & { service: RoutingServiceTarget }): Promise<void> {
-    if (!this._modelRouters) throw new Error('The buyer has no routing-service adapters configured')
+    if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
     const peers = await this._getPeers()
-    const adapter = this._modelRouters.resolve(value.service, peers)
+    const adapter = this._modelRouterRegistry.resolve(value.service, peers)
     const catalog = await this._routingCatalogs.get(adapter, value.service, peers)
     const metadata = routingMetadataForService(adapter, catalog)
     if (metadata) validateRoutingServiceMetadata(metadata)
     resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, value.preferences ?? {})
+  }
+
+  private _parseDefaultRoute(value: unknown): DefaultRouteSelection {
+    if (!isRoutingSelection(value)) throw new Error('selection must be { kind: "model", model } or { kind: "router", service }')
+    if (value.kind === 'model') {
+      const model = value.model?.trim() ?? null
+      if (model && !isValidRoutedModelTarget(model)) throw new Error('model must be "<service>", "<peerId>@<service>", or null to clear')
+      return { kind: 'model', model }
+    }
+    this._validateRouterSelection(value)
+    return structuredClone(value)
+  }
+
+  private get _defaultRoutedModel(): string | null {
+    return this._defaultRoute.kind === 'model' ? this._defaultRoute.model : null
+  }
+
+  private get _defaultRouterSelection(): RouterSelection | null {
+    return this._defaultRoute.kind === 'router' ? this._defaultRoute : null
   }
 
   private async _reloadSessionOverrides(opts: { preservePeerPin?: boolean } = {}): Promise<void> {
@@ -1167,18 +1184,17 @@ export class BuyerProxy {
           : null
         this._pinnedPeer = pinnedPeer
       }
-      const routedModel = typeof parsed.defaultRoutedModel === 'string' ? parsed.defaultRoutedModel.trim() : ''
-      this._defaultRoutedModel = routedModel.length > 0 && isValidRoutedModelTarget(routedModel) ? routedModel : null
-      this._routerSelection = null
       try {
-        if (parsed.routerSelection != null) {
-          this._validateRouterSelection(parsed.routerSelection)
-          this._routerSelection = parsed.routerSelection
-        }
+        const legacyModel = typeof parsed.defaultRoutedModel === 'string' && parsed.defaultRoutedModel.trim()
+          ? parsed.defaultRoutedModel.trim()
+          : null
+        this._defaultRoute = parsed.selection === undefined
+          ? this._parseDefaultRoute({ kind: 'model', model: legacyModel })
+          : this._parseDefaultRoute(parsed.selection)
       } catch {
-        // invalid or unusable saved router; stay in model mode
+        this._defaultRoute = EMPTY_DEFAULT_ROUTE
       }
-      log(`Session overrides reloaded: peer=${this._pinnedPeer ?? 'none'} route=${this._defaultRoutedModel ?? 'none'}${this._routerSelection ? ' router=on' : ''}`)
+      log(`Session overrides reloaded: peer=${this._pinnedPeer ?? 'none'} selection=${JSON.stringify(this._defaultRoute)}`)
     } catch {
       // state file unreadable; keep current values
     }
@@ -1245,7 +1261,7 @@ export class BuyerProxy {
     // in the file — the debounce may have been cancelled before
     // _reloadSessionOverrides could commit the latest CLI-written values.
     const sessionOverrides = state === 'connected'
-      ? { pinnedPeerId: this._pinnedPeer, defaultRoutedModel: this._defaultRoutedModel, routerSelection: this._routerSelection }
+      ? { pinnedPeerId: this._pinnedPeer, selection: this._defaultRoute }
       : {}
     await this._mergeStateFile({
       state,
@@ -1836,7 +1852,7 @@ export class BuyerProxy {
 
     if (path === '/_antseed/route' && method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel, ...(this._routerSelection ? { router: this._routerSelection } : {}) }))
+      res.end(JSON.stringify({ ok: true, selection: this._defaultRoute }))
       return
     }
 
@@ -1852,48 +1868,31 @@ export class BuyerProxy {
         }
         chunks.push(chunk as Buffer)
       }
-      let model: string
-      let router: unknown
+      let body: Record<string, unknown>
       try {
-        const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
-        model = typeof body.model === 'string' ? body.model.trim() : ''
-        router = body.router
+        body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
         return
       }
-      // `{ router }` turns routing on (or off with null) and leaves the default model alone.
-      if (router !== undefined) {
-        try {
-          if (router !== null) {
-            this._validateRouterSelection(router)
-            await this._validateRoutingService(router)
-          }
-        } catch (error) {
-          res.writeHead(400, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
-          return
+      let selection: DefaultRouteSelection
+      try {
+        if (!body || typeof body !== 'object' || Array.isArray(body) || Object.keys(body).some(key => key !== 'selection')) {
+          throw new Error('Request body must be { selection }')
         }
-        this._routerSelection = router === null ? null : structuredClone(router)
-        await this._mergeStateFile({ routerSelection: this._routerSelection })
-        log(`Router selection set: ${this._routerSelection ? JSON.stringify(this._routerSelection.service) : 'none'}`)
-        res.writeHead(200, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel, ...(this._routerSelection ? { router: this._routerSelection } : {}) }))
-        return
-      }
-      if (model.length > 0 && !isValidRoutedModelTarget(model)) {
+        selection = this._parseDefaultRoute(body.selection)
+        if (selection.kind === 'router') await this._validateRoutingService(selection)
+      } catch (error) {
         res.writeHead(400, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'model must be "<service>", "<peerId>@<service>", or empty to clear' }))
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
         return
       }
-      // Choosing a model switches routing off.
-      this._defaultRoutedModel = model.length > 0 ? model : null
-      this._routerSelection = null
-      await this._mergeStateFile({ defaultRoutedModel: this._defaultRoutedModel, routerSelection: null })
-      log(`Default routed model set: ${this._defaultRoutedModel ?? 'none'}`)
+      this._defaultRoute = selection
+      await this._mergeStateFile({ selection: this._defaultRoute })
+      log(`Default route set: ${JSON.stringify(this._defaultRoute)}`)
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel }))
+      res.end(JSON.stringify({ ok: true, selection: this._defaultRoute }))
       return
     }
 
@@ -2415,7 +2414,7 @@ export class BuyerProxy {
     // Use this chat's router override when present; otherwise follow the buyer's default choice.
     const conversationSelection = storedConversation?.routingSelection ?? null
     // Keep this request's choice stable; later selection changes affect subsequent requests.
-    const routerSelection = structuredClone(conversationSelection ?? this._routerSelection)
+    const routerSelection = structuredClone(conversationSelection ?? this._defaultRouterSelection)
     const storedAutoRoute = storedConversation?.peerSource === 'auto' && storedConversation.pinnedModel
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
@@ -2481,10 +2480,10 @@ export class BuyerProxy {
     const conversationId = this._trackRouterConversation(context)
     let recommendations: RouteRecommendation[]
     try {
-      if (!this._modelRouters) throw new Error('The buyer has no routing-service adapters configured')
+      if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
       if (!selection.service) throw new Error('Select an exact routing-service target')
       const peers = await this._getPeers({ forceRefresh: true })
-      const adapter = this._modelRouters.resolve(selection.service, peers)
+      const adapter = this._modelRouterRegistry.resolve(selection.service, peers)
       // The router may only recommend destinations the buyer's own policies allow.
       const candidates = eligibleRouterCandidates(request, peers, requiredParameters, this._routingPreferences,
         (policyRequest, peer) => peerAllowedByPolicy(this._node.router as BuyerPolicyRouter | null, policyRequest, peer)
@@ -3344,7 +3343,7 @@ export class BuyerProxy {
           },
         }, { signal: requestSignal, pinned })
 
-        recordRouterUsage(this._modelRouters, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
+        recordRouterUsage(this._modelRouterRegistry, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
         responseForClient = adaptPeerResponse(responseForClient)
@@ -3436,7 +3435,7 @@ export class BuyerProxy {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
         }
 
-        recordRouterUsage(this._modelRouters, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
+        recordRouterUsage(this._modelRouterRegistry, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
 
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
         response = adaptPeerResponse(response)

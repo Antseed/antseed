@@ -91,7 +91,7 @@ async function startProfilesOnRoute(
 
 /**
  * Push the current AI VPN selection to the buyer proxy's default route
- * (`POST /_antseed/route`), keeping the proxy the single routing authority:
+ * (`POST /_antseed/route` with `{ selection: { kind: 'model', model } }`), keeping the proxy the single routing authority:
  * the `antseed` model alias and headless frontends (the Telegram bridge)
  * resolve their peer from this route instead of re-deriving it. Best-effort —
  * main dedupes repeat values and the buyer proxy may not be running yet, so
