@@ -69,6 +69,7 @@ const plugin: AntseedProviderPlugin = {
         maxConcurrency,
         allowedServices,
         extraHeaders: { 'anthropic-beta': 'oauth-2025-04-20' },
+        retryOn401: true,
       },
     });
   },

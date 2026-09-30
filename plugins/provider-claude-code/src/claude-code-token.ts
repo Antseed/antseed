@@ -63,6 +63,21 @@ export class ClaudeCodeTokenProvider implements TokenProvider {
     }
   }
 
+  async forceRefresh(): Promise<string> {
+    if (!this.inner) {
+      await this.loadFromKeychain();
+    }
+    if (!this.inner) {
+      throw new Error('ClaudeCodeTokenProvider: failed to initialize from keychain');
+    }
+    try {
+      return await this.inner.forceRefresh();
+    } catch {
+      await this.loadFromKeychain();
+      return await this.inner!.forceRefresh();
+    }
+  }
+
   stop(): void {
     this.inner?.stop();
   }
