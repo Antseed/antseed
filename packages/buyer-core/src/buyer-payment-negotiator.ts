@@ -375,6 +375,8 @@ export class BuyerPaymentNegotiator {
   }
 
   private async _ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
+    // No active payment channel yet: let the normal 402 negotiation open it,
+    // then the caller will run this check again before retrying the video request.
     if (!this._lockedPeers.has(peer.peerId)) return;
     const videoCost = this._bpm.getRequestBilling(requestId)?.estimatedCostUsdc;
     if (!videoCost || !this._channelsClient) return;
@@ -401,8 +403,10 @@ export class BuyerPaymentNegotiator {
         'buyer-deposits-insufficient',
       );
     }
-    const fullCeiling = delivered + this._bpm.maxVideoRequestUsdc;
-    const targetCeiling = balance.available >= fullCeiling - deposit ? fullCeiling : minimumCeiling;
+    // Keep one normal reserve step of headroom after the video so existing and
+    // follow-up chats on this channel are not blocked by a fully used reserve.
+    const bufferedCeiling = minimumCeiling + this._bpm.maxReserveAmountUsdc;
+    const targetCeiling = balance.available >= bufferedCeiling - deposit ? bufferedCeiling : minimumCeiling;
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
     const settledForTopUp = (deposit * TOP_UP_SETTLED_THRESHOLD_BPS + 9_999n) / 10_000n;

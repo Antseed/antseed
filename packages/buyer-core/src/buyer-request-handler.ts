@@ -392,6 +392,9 @@ export class BuyerRequestHandler {
       && !isFreeService
       && !externalSpendingAuth
       && nativeVideoRoute(req)?.action === 'create';
+    // A new video can cost more than the channel's currently locked reserve.
+    // Expand and confirm the reserve before sending the create request so the
+    // seller never starts work that the buyer cannot authorize.
     if (paidVideoCreate) await negotiator!.ensureVideoHeadroom(peer, conn, req.requestId);
 
     const response = await executeRequest();
@@ -415,6 +418,8 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
+    // Provider video APIs may use HTTP 402 for their own errors; only start
+    // AntSeed payment negotiation when the response is our payment contract.
     if (response.statusCode === 402 && negotiator && !externalSpendingAuth && (!nativeVideoRoute(req) || isPaymentRequired402(response))) {
       const result = await negotiator.handle402(response, peer, conn, req);
       if (result.action === 'return') {
@@ -470,8 +475,6 @@ export class BuyerRequestHandler {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
       return;
     }
-    response = { ...response, headers: { ...response.headers } };
-
     const storage = this._deps.verificationStorage;
     const advertisedService = requestedService ?? 'unknown';
     const expectedChannelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
