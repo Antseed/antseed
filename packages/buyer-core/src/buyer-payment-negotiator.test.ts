@@ -158,13 +158,10 @@ describe('BuyerPaymentNegotiator', () => {
       const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
       Object.assign(negotiator as object, {
         _bpm: bpm,
-        _channelsClient: { getSession, getTopUpSettledThresholdBps: vi.fn(async () => 8_500n) },
+        _channelsClient: { getSession },
         _lockedPeers: new Set([peer.peerId]),
         _pendingNeedAuth: new Set(),
         _videoHeadroomLocks: new Map(),
-        _topUpThresholdBps: null,
-        _videoTopUpPollMs: 1,
-        _videoTopUpTimeoutMs: 20,
         getOrCreatePaymentMux: () => ({}),
       });
       return { negotiator, bpm, events, getSession };
@@ -249,9 +246,15 @@ describe('BuyerPaymentNegotiator', () => {
 
     it('times out when the seller never lands the top-up', async () => {
       const { negotiator } = makeNegotiator({ cumulative: 0n, deposit: 1_000_000n, videoCost: 4_200_000n });
-      await expect(negotiator.ensureVideoHeadroom(peer, connection, requestId)).rejects.toMatchObject({
-        code: 'buyer-reserve-topup-timeout',
-      });
+      vi.useFakeTimers();
+      try {
+        const result = negotiator.ensureVideoHeadroom(peer, connection, requestId);
+        const assertion = expect(result).rejects.toMatchObject({ code: 'buyer-reserve-topup-timeout' });
+        await vi.advanceTimersByTimeAsync(45_000);
+        await assertion;
+      } finally {
+        vi.useRealTimers();
+      }
     });
 
     it('does nothing before a channel is established', async () => {

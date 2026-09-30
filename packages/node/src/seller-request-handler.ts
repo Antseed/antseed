@@ -818,11 +818,6 @@ export class SellerRequestHandler {
         this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Video job not found');
         return true;
       }
-      const referencesOwned = (route.referencedResourceIds ?? []).every(id => id && store.getOwner(route.protocol, id) === buyer);
-      if (!referencesOwned) {
-        this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Referenced video job not found');
-        return true;
-      }
       if (idempotencyKey === undefined) return false;
       if (!IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_idempotency_key', `${IDEMPOTENCY_KEY_HEADER} must be 1-128 characters of [A-Za-z0-9._:-]`);
@@ -1048,7 +1043,7 @@ export class SellerRequestHandler {
     model: UnitBillingModelV1,
   ): { cost: bigint; inputTokens: number; maxOutputTokens: number } {
     return {
-      cost: estimateUnitRequestCost(model, requestBilling),
+      cost: estimateUnitRequestCost(model, requestBilling.context, requestBilling.requestUsage),
       inputTokens: 0,
       maxOutputTokens: 0,
     };

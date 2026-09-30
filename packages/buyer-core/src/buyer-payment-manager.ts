@@ -216,6 +216,8 @@ export class BuyerPaymentManager {
 
   /** Latest ReserveAuth awaiting seller acknowledgement, including top-ups. */
   private readonly _pendingReserveAuth = new Map<string, PendingReserveAuthorization>();
+  /** Per-seller queue so each top-up builds on the ceiling signed by the previous one. */
+  private readonly _topUpLocks = new Map<string, Promise<void>>();
 
   /** Cached EIP-712 domain — static for the lifetime of this manager. */
   private readonly _channelsDomain: ReturnType<typeof makeChannelsDomain>;
@@ -1335,14 +1337,6 @@ export class BuyerPaymentManager {
     // If cost is 0, the cumulative amount stays the same — no spending auth needed
     // but we still sign one to keep the seller's session alive.
 
-    // NeedAuth may have counted this response first. Then its cost is already
-    // in verifiedCost and the signed cumulative, so it must not be added again.
-    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
-    if (alreadyCounted) {
-      verifiedCostDelta = 0n;
-      acceptedCost = 0n;
-    }
-
     // Advance the amount owed for delivered work by the accepted cost. It
     // equals the signed cumulative unless a video advance is outstanding; then
     // the already-signed surplus covers this cost instead of adding to it.
@@ -1360,8 +1354,9 @@ export class BuyerPaymentManager {
     const signedDelta = newAmount - prevAmount;
     const serviceAmountDelta = nextDelivered - previousDelivered;
 
-    // Update cumulative metadata, deduplicating the response's usage together
-    // with its service amount.
+    // Update cumulative metadata. NeedAuth may have counted this response
+    // first, so deduplicate the response's service amount and usage together.
+    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
     const newMeta = this._advanceUsageMetadata(
       this._metadata.get(sellerPeerId),
       responseStats.service,
@@ -1609,12 +1604,6 @@ export class BuyerPaymentManager {
       verifiedCostDelta += sellerCost;
     }
 
-    // If post-response signing counted this response first, its cost is
-    // already in verifiedCost; the required cumulative is absolute and needs
-    // no deduplication.
-    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
-    if (alreadyCounted) verifiedCostDelta = 0n;
-
     // Cap at overdraft limit: verifiedCost + maxPerRequestUsdc, then at reserve ceiling.
     // This prevents a malicious seller from claiming a small cost but requesting the full reserve.
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
@@ -1675,6 +1664,9 @@ export class BuyerPaymentManager {
     const serviceAmountDelta = acceptedServiceCost > 0n
       ? (acceptedServiceCost < deliveredDelta ? acceptedServiceCost : deliveredDelta)
       : 0n;
+    // If post-response signing counted this response first, deduplicate the
+    // response's service amount and usage together.
+    const alreadyCounted = this._serviceTokensCounted.has(payload.requestId);
     // Attribution only — never cost; mirrors signPerRequestAuth.
     let attributedInputTokens = reportedInputTokens;
     let attributedOutputTokens = reportedOutputTokens;
@@ -1743,6 +1735,22 @@ export class BuyerPaymentManager {
    * Note: requires contract support for top-up (increaseDeposit on existing channelId).
    */
   async topUpReserve(
+    sellerPeerId: string,
+    paymentMux: PaymentMux,
+    targetCeiling?: bigint,
+  ): Promise<void> {
+    const previous = this._topUpLocks.get(sellerPeerId) ?? Promise.resolve();
+    const run = previous.then(() => this._topUpReserve(sellerPeerId, paymentMux, targetCeiling));
+    const tail = run.catch(() => {});
+    this._topUpLocks.set(sellerPeerId, tail);
+    try {
+      await run;
+    } finally {
+      if (this._topUpLocks.get(sellerPeerId) === tail) this._topUpLocks.delete(sellerPeerId);
+    }
+  }
+
+  private async _topUpReserve(
     sellerPeerId: string,
     paymentMux: PaymentMux,
     targetCeiling?: bigint,

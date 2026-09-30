@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import {
-  UNIT_BILLING_UNIT_IDS_V1,
+  UNIT_BILLING_UNITS_V1,
   validateUnitBillingUsage,
   type UnitBillingContext,
   type UnitBillingModelV1,
@@ -8,13 +8,13 @@ import {
 import { WELL_KNOWN_SERVICE_API_PROTOCOLS } from './service-api.js';
 
 describe('unit billing registry', () => {
-  it('keeps stable metadata ids for billing units', () => {
-    expect(UNIT_BILLING_UNIT_IDS_V1).toEqual({
-      output_images: 0,
-      completed_requests: 1,
-      video_generations: 2,
-      video_seconds: 3,
-    });
+  it('preserves billing unit positions in metadata', () => {
+    expect(UNIT_BILLING_UNITS_V1.slice(0, 4)).toEqual([
+      'output_images',
+      'completed_requests',
+      'video_generations',
+      'video_seconds',
+    ]);
   });
 
   it('keeps service API protocol positions append-only', () => {

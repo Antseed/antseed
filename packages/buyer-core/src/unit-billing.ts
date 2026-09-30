@@ -117,10 +117,6 @@ function resolveUnitBillingAdapter(protocol: ServiceApiProtocol, model: UnitBill
   return protocolAdapter;
 }
 
-function adapterForRequestFacts(requestFacts: BillingRequestFacts | undefined): UnitBillingAdapter {
-  return requestFacts?.video ? videoBillingAdapter : imageBillingAdapter;
-}
-
 export function isUnitBilledProtocol(protocol: string | null | undefined): protocol is ServiceApiProtocol {
   return typeof protocol === 'string' && UNIT_BILLING_ADAPTERS.some((adapter) => adapter.protocols.includes(protocol as ServiceApiProtocol));
 }
@@ -191,8 +187,12 @@ function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
 export function extractUnitResponseUsage(
   response: SerializedHttpResponse,
   requestFacts?: BillingRequestFacts,
+  serviceApiProtocol: ServiceApiProtocol = 'openai-images',
 ): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
-  return adapterForRequestFacts(requestFacts).measure(response, requestFacts);
+  const adapter = requestFacts?.video
+    ? videoBillingAdapter
+    : adapterForProtocol(serviceApiProtocol) ?? imageBillingAdapter;
+  return adapter.measure(response, requestFacts);
 }
 
 function extractVideoResponseUsage(
@@ -252,10 +252,27 @@ export function computeFinalUnitBilling(
   };
 }
 
-export function estimateUnitRequestCost(model: UnitBillingModelV1, captured: CapturedUnitBillingContext): bigint {
-  const adapter = resolveUnitBillingAdapter(captured.context.serviceApiProtocol, model);
-  const usage = adapter.billableUsage?.(model, captured.requestFacts, captured.requestUsage) ?? captured.requestUsage;
-  return evaluateUnitBilling(model, captured.context, usage);
+export function estimateUnitRequestCost(
+  model: UnitBillingModelV1,
+  context: UnitBillingContext,
+  requestUsage: UnitBillingUsage,
+): bigint {
+  resolveUnitBillingAdapter(context.serviceApiProtocol, model);
+  const usage = usageForModel(model, requestUsage);
+  if (model.components.some((component) => component.unit === 'video_seconds')
+    && (usage.units.video_seconds === undefined || usage.units.video_seconds <= 0)) {
+    throw new Error('Explicit video duration is required for per-second pricing');
+  }
+  return evaluateUnitBilling(model, context, usage);
+}
+
+function usageForModel(model: UnitBillingModelV1, usage: UnitBillingUsage): UnitBillingUsage {
+  const units: UnitBillingUsage['units'] = {};
+  for (const component of model.components) {
+    const count = usage.units[component.unit];
+    if (count !== undefined) units[component.unit] = count;
+  }
+  return { units };
 }
 
 function factsToUnitUsage(facts: BillingRequestFacts): UnitBillingUsage {

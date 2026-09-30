@@ -10,7 +10,7 @@ function pair() {
   return { buyer, seller, errors };
 }
 
-const request = { requestId: 'download', method: 'GET', path: '/video', headers: { 'x-antseed-video-download': 'video-stream-v1' }, body: new Uint8Array() };
+const request = { requestId: 'download', method: 'POST', path: '/video', headers: { 'x-antseed-video-download': 'video-stream-v1' }, body: new TextEncoder().encode('{"queue_id":"queue-1"}') };
 const start = { requestId: request.requestId, statusCode: 200, headers: { 'x-antseed-streaming': '1' }, body: new Uint8Array() };
 
 it('waits for the consumer before acknowledging each bounded chunk', async () => {

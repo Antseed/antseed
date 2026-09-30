@@ -1,10 +1,8 @@
 export const ANTSEED_STREAMING_RESPONSE_HEADER = 'x-antseed-streaming';
 export const VIDEO_DOWNLOAD_STREAM_HEADER = 'x-antseed-video-download';
 export const VIDEO_DOWNLOAD_STREAM_VERSION = 'video-stream-v1';
-/** Largest length the streamed response hash can encode (a uint32 body length). */
-export const VIDEO_DOWNLOAD_MAX_BYTES = 0xFFFF_FFFF;
-/** Downloads have no total time limit; they fail only after this long without progress. */
-export const VIDEO_DOWNLOAD_IDLE_TIMEOUT_MS = 60_000;
+/** Keep the first native-video download path bounded and predictable. */
+export const VIDEO_DOWNLOAD_MAX_BYTES = 64 * 1024 * 1024;
 export const VIDEO_DOWNLOAD_CHUNK_BYTES = 64 * 1024;
 export const ANTSEED_FAULT_ATTRIBUTION_HEADER = 'x-antseed-fault-attribution';
 export const ANTSEED_BUYER_FAULT_ERROR_CODE = 'antseed_buyer_fault';

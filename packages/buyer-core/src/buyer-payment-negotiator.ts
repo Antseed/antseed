@@ -62,10 +62,12 @@ export interface BuyerNegotiatorConfig {
 
 /** How long to wait for a seller's CloseChannelResult before giving up. */
 const CLOSE_REQUEST_TIMEOUT_MS = 60_000;
+/** Delay between chain reads while waiting for a seller's video top-up to land. */
 const VIDEO_TOPUP_POLL_MS = 1_000;
+/** Maximum time to wait for a seller's video top-up before failing the request. */
 const VIDEO_TOPUP_TIMEOUT_MS = 45_000;
-/** Contract default for TOP_UP_SETTLED_THRESHOLD_BPS, used only if the chain read fails. */
-const DEFAULT_TOPUP_THRESHOLD_BPS = 8_500n;
+/** AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS: share of the deposit that must be settled before topUp(). */
+const TOP_UP_SETTLED_THRESHOLD_BPS = 8_500n;
 
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
@@ -144,11 +146,8 @@ export class BuyerPaymentNegotiator {
   private readonly _bufferedPaymentRequired = new Map<string, PaymentRequiredPayload>();
   /** Per-peer mutex to prevent concurrent payment negotiations. */
   private readonly _negotiationLocks = new Map<string, Promise<void>>();
-  /** Per-peer queue so concurrent video top-ups never race on one channel. */
+  /** Serializes video top-ups per seller so concurrent creates share one channel safely. */
   private readonly _videoHeadroomLocks = new Map<string, Promise<void>>();
-  private _topUpThresholdBps: bigint | null = null;
-  private _videoTopUpPollMs = VIDEO_TOPUP_POLL_MS;
-  private _videoTopUpTimeoutMs = VIDEO_TOPUP_TIMEOUT_MS;
   /** Peers that have sent their first request after session establishment. */
   private readonly _firstRequestSent = new Set<string>();
   /** Per-peer last response cost, raw content, and latency from the seller. */
@@ -279,27 +278,32 @@ export class BuyerPaymentNegotiator {
     route: SelectedBillingRoute | null,
   ): void {
     if (route) {
+      const captureArgs = {
+        sellerPeerId: route.sellerPeerId,
+        provider: route.provider,
+        service: route.service,
+        serviceApiProtocol: route.serviceApiProtocol,
+        request,
+      };
       let captured;
       let estimatedCost = 0n;
-      try {
-        captured = captureUnitBillingContext({
-          sellerPeerId: route.sellerPeerId,
-          provider: route.provider,
-          service: route.service,
-          serviceApiProtocol: route.serviceApiProtocol,
-          request,
-        });
-        if (captured.requestFacts.video && route.unitModel) estimatedCost = estimateUnitRequestCost(route.unitModel, captured);
-      } catch (cause) {
-        if (!nativeVideoRoute(request)) throw cause;
-        throw buyerFault(cause instanceof Error ? cause.message : 'Invalid video request', 'invalid-request', { cause });
-      }
-      const maxVideoRequestUsdc = this._bpm.maxVideoRequestUsdc;
-      if (estimatedCost > maxVideoRequestUsdc) {
-        throw buyerFault(
-          `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(maxVideoRequestUsdc)} USDC`,
-          'buyer-budget-too-low',
-        );
+      if (nativeVideoRoute(request)) {
+        try {
+          captured = captureUnitBillingContext(captureArgs);
+          if (captured.requestFacts.video && route.unitModel) {
+            estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
+          }
+        } catch (cause) {
+          throw buyerFault(cause instanceof Error ? cause.message : 'Invalid video request', 'invalid-request', { cause });
+        }
+        if (estimatedCost > this._bpm.maxVideoRequestUsdc) {
+          throw buyerFault(
+            `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(this._bpm.maxVideoRequestUsdc)} USDC`,
+            'buyer-budget-too-low',
+          );
+        }
+      } else {
+        captured = captureUnitBillingContext(captureArgs);
       }
       this._bpm.trackRequestBilling(request.requestId, {
         context: captured.context,
@@ -401,8 +405,7 @@ export class BuyerPaymentNegotiator {
     const targetCeiling = balance.available >= fullCeiling - deposit ? fullCeiling : minimumCeiling;
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
-    const thresholdBps = await this._getTopUpThresholdBps();
-    const settledForTopUp = (deposit * thresholdBps + 9_999n) / 10_000n;
+    const settledForTopUp = (deposit * TOP_UP_SETTLED_THRESHOLD_BPS + 9_999n) / 10_000n;
     if (settledForTopUp > currentCumulative) {
       await this._bpm.signVideoAdvance(peer.peerId, requestId, settledForTopUp, videoCost, deposit, pmux);
     }
@@ -411,9 +414,9 @@ export class BuyerPaymentNegotiator {
   }
 
   private async _waitForVideoTopUp(peerId: string, channelId: string, targetCeiling: bigint): Promise<void> {
-    const deadline = Date.now() + this._videoTopUpTimeoutMs;
+    const deadline = Date.now() + VIDEO_TOPUP_TIMEOUT_MS;
     for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, this._videoTopUpPollMs));
+      await new Promise((resolve) => setTimeout(resolve, VIDEO_TOPUP_POLL_MS));
       let channel;
       try {
         channel = await this._channelsClient!.getSession(channelId);
@@ -437,17 +440,6 @@ export class BuyerPaymentNegotiator {
         );
       }
     }
-  }
-
-  private async _getTopUpThresholdBps(): Promise<bigint> {
-    if (this._topUpThresholdBps !== null) return this._topUpThresholdBps;
-    try {
-      this._topUpThresholdBps = await this._channelsClient!.getTopUpSettledThresholdBps();
-    } catch (err) {
-      debugWarn(`[BuyerNegotiator] Failed to read TOP_UP_SETTLED_THRESHOLD_BPS, assuming ${DEFAULT_TOPUP_THRESHOLD_BPS}: ${err instanceof Error ? err.message : err}`);
-      return DEFAULT_TOPUP_THRESHOLD_BPS;
-    }
-    return this._topUpThresholdBps;
   }
 
   /**
@@ -853,7 +845,7 @@ export class BuyerPaymentNegotiator {
       try {
         unitBilling = computeFinalUnitBilling(unitModel, billingEntry.context, response, requestFacts);
       } catch (err) {
-        const observed = extractUnitResponseUsage(response, requestFacts);
+        const observed = extractUnitResponseUsage(response, requestFacts, billingEntry.context.serviceApiProtocol);
         if (requestId) {
           this._bpm.recordObservedUnitUsage(requestId, observed.usage);
         }

@@ -114,29 +114,3 @@ it('cancels the upstream fetch when the buyer disconnects', async () => {
   controller.abort();
   expect((await pending).statusCode).toBe(504);
 });
-
-it('streams videos far above the old 64 MiB cap', async () => {
-  const size = 100 * 1024 * 1024;
-  const chunk = new Uint8Array(1024 * 1024).fill(1);
-  let sent = 0;
-  const body = new ReadableStream<Uint8Array>({ pull(controller) { if (sent >= size) { controller.close(); return; } controller.enqueue(chunk); sent += chunk.length; } });
-  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'video/mp4', 'content-length': String(size) } })));
-  let received = 0;
-  const result = await stream(await plugin.createProvider(config), { onResponseChunk(part) { received += part.data.length; } });
-  expect(result.statusCode).toBe(200);
-  expect(received).toBe(size);
-});
-
-it('aborts a download only after the upstream stops making progress', async () => {
-  vi.useFakeTimers();
-  try {
-    let cancelled = false;
-    const body = new ReadableStream<Uint8Array>({ start(controller) { controller.enqueue(new Uint8Array(10)); }, cancel() { cancelled = true; } });
-    vi.stubGlobal('fetch', vi.fn().mockResolvedValue(new Response(body, { headers: { 'content-type': 'video/mp4', 'content-length': '20' } })));
-    const pending = stream(await plugin.createProvider(config)).catch(error => error);
-    await vi.advanceTimersByTimeAsync(59_000);
-    expect(cancelled).toBe(false);
-    await vi.advanceTimersByTimeAsync(2_000);
-    expect(String(await pending)).toContain('interrupted');
-  } finally { vi.useRealTimers(); }
-});

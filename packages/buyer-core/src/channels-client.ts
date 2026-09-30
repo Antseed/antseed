@@ -39,7 +39,6 @@ const CHANNELS_ABI = [
   'function getAgentStats(uint256 agentId) external view returns (uint64 channelCount, uint64 ghostCount, uint256 totalVolumeUsdc, uint64 lastSettledAt)',
   'function domainSeparator() external view returns (bytes32)',
   'function FIRST_SIGN_CAP() external view returns (uint256)',
-  'function TOP_UP_SETTLED_THRESHOLD_BPS() external view returns (uint256)',
   'event CloseRequested(bytes32 indexed channelId, address indexed buyer, address indexed seller, uint256 gracePeriodEnd)',
 ] as const;
 
@@ -238,11 +237,6 @@ export class ChannelsClient extends BaseEvmClient {
   async getFirstSignCap(): Promise<bigint> {
     const contract = new Contract(await this._getReadAddress(), CHANNELS_ABI, this._provider);
     return contract.getFunction('FIRST_SIGN_CAP')() as Promise<bigint>;
-  }
-
-  async getTopUpSettledThresholdBps(): Promise<bigint> {
-    const contract = new Contract(await this._getReadAddress(), CHANNELS_ABI, this._provider);
-    return contract.getFunction('TOP_UP_SETTLED_THRESHOLD_BPS')() as Promise<bigint>;
   }
 
   async computeChannelId(buyer: string, seller: string, salt: string): Promise<string> {

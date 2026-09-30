@@ -1,7 +1,6 @@
 import {
   ANTSEED_STREAMING_RESPONSE_HEADER,
   VIDEO_DOWNLOAD_CHUNK_BYTES,
-  VIDEO_DOWNLOAD_IDLE_TIMEOUT_MS,
   VIDEO_DOWNLOAD_MAX_BYTES,
   VIDEO_DOWNLOAD_STREAM_HEADER,
   VIDEO_DOWNLOAD_STREAM_VERSION,
@@ -17,22 +16,14 @@ export function videoDownloadError(request: SerializedHttpRequest, statusCode: n
   };
 }
 
-/**
- * Aborts when the caller cancels, or when no progress is reported for the idle
- * timeout. There is no total time limit, so large videos on slow links finish.
- */
+const VIDEO_DOWNLOAD_TIMEOUT_MS = 5 * 60_000;
+
+/** Keep downloads bounded by the ordinary request timeout. */
 export function videoDownloadSignal(callerSignal: AbortSignal): { signal: AbortSignal; progress: () => void; done: () => void } {
-  const controller = new AbortController();
-  let timer: ReturnType<typeof setTimeout> | undefined;
-  const progress = () => {
-    clearTimeout(timer);
-    timer = setTimeout(() => controller.abort(new Error('Video download stalled')), VIDEO_DOWNLOAD_IDLE_TIMEOUT_MS);
-  };
-  progress();
   return {
-    signal: AbortSignal.any([callerSignal, controller.signal]),
-    progress,
-    done: () => { clearTimeout(timer); controller.abort(); },
+    signal: AbortSignal.any([callerSignal, AbortSignal.timeout(VIDEO_DOWNLOAD_TIMEOUT_MS)]),
+    progress: () => {},
+    done: () => {},
   };
 }
 
@@ -49,17 +40,18 @@ export async function streamVideoResponse(
   download: { signal: AbortSignal; progress: () => void },
 ): Promise<SerializedHttpResponse> {
   const lengthHeader = upstream.headers.get('content-length');
-  const length = Number(lengthHeader);
-  if (upstream.status !== 200 || !/^[1-9][0-9]*$/.test(lengthHeader ?? '') || !Number.isSafeInteger(length) || length > VIDEO_DOWNLOAD_MAX_BYTES
+  const length = lengthHeader === null ? null : Number(lengthHeader);
+  const validLength = lengthHeader === null || (length !== null && /^[1-9][0-9]*$/.test(lengthHeader) && Number.isSafeInteger(length) && length <= VIDEO_DOWNLOAD_MAX_BYTES);
+  if (upstream.status !== 200 || !validLength
     || upstream.headers.get('content-type')?.split(';')[0]?.trim() !== 'video/mp4'
     || ![null, 'identity'].includes(upstream.headers.get('content-encoding'))) {
     await upstream.body?.cancel();
-    return videoDownloadError(request, length > VIDEO_DOWNLOAD_MAX_BYTES ? 413 : [404, 410].includes(upstream.status) ? upstream.status : 502, 'video_download_unavailable', 'Video is unavailable or exceeds download limits');
+    return videoDownloadError(request, length !== null && length > VIDEO_DOWNLOAD_MAX_BYTES ? 413 : [404, 410].includes(upstream.status) ? upstream.status : 502, 'video_download_unavailable', 'Video is unavailable or exceeds download limits');
   }
   const reader = upstream.body?.getReader();
   if (!reader) return videoDownloadError(request, 502, 'video_download_unavailable', 'Empty video response');
   const response: SerializedHttpResponse = { requestId: request.requestId, statusCode: 200, headers: {
-    'content-type': 'video/mp4', 'content-length': String(length), 'cache-control': 'no-store',
+    'content-type': 'video/mp4', ...(length === null ? {} : { 'content-length': String(length) }), 'cache-control': 'no-store',
     [ANTSEED_STREAMING_RESPONSE_HEADER]: '1', [VIDEO_DOWNLOAD_STREAM_HEADER]: VIDEO_DOWNLOAD_STREAM_VERSION,
   }, body: new Uint8Array(0) };
   let received = 0;
@@ -73,14 +65,14 @@ export async function streamVideoResponse(
       const { value, done } = await reader.read();
       if (done) break;
       received += value.length;
-      if (received > length) throw new Error('Video exceeds declared length');
+      if (received > VIDEO_DOWNLOAD_MAX_BYTES || (length !== null && received > length)) throw new Error('Video exceeds download limit');
       for (let offset = 0; offset < value.length; offset += VIDEO_DOWNLOAD_CHUNK_BYTES) {
         download.signal.throwIfAborted();
         await callbacks.onResponseChunk({ requestId: request.requestId, data: value.subarray(offset, offset + VIDEO_DOWNLOAD_CHUNK_BYTES), done: false });
         download.progress();
       }
     }
-    if (received !== length) throw new Error('Incomplete video');
+    if (length !== null && received !== length) throw new Error('Incomplete video');
     await callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
     return response;
   } catch {

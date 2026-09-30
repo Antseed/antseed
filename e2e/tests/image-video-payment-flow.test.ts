@@ -9,15 +9,31 @@ import { crc32, deflateSync } from 'node:zlib';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
+import { Interface } from 'ethers';
 import { AntseedNode } from '@antseed/node';
 import { ANTSEED_UPLOAD_THRESHOLD_BYTES } from '../../packages/protocol/src/http.js';
 import type { NodePaymentsConfig, PeerInfo, Provider } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
 import venicePlugin from '../../plugins/provider-venice/src/index.js';
-import seedancePlugin from '../../plugins/provider-seedance/src/index.js';
 
 const execFileAsync = promisify(execFile);
+const liveVeniceKey = process.env.VENICE_INFERENCE_KEY?.trim();
+
+const mockPaymentViewInterface = new Interface([
+  'function channels(bytes32 channelId) external view returns (address buyer, address seller, uint128 deposit, uint128 settled, bytes32 metadataHash, uint256 deadline, uint256 settledAt, uint256 closeRequestedAt, uint8 status)',
+  'function channelsAddress() external view returns (address)',
+  'function getBuyerBalance(address buyer) external view returns (uint256 available, uint256 reserved, uint256 lastActivityAt)',
+  'function getBuyerCreditLimit(address buyer) external view returns (uint256)',
+  'function uniqueSellersCharged(address buyer) external view returns (uint256)',
+  'function getOperator(address buyer) external view returns (address)',
+  'function getOperatorNonce(address buyer) external view returns (uint256)',
+  'function domainSeparator() external view returns (bytes32)',
+  'function FIRST_SIGN_CAP() external view returns (uint256)',
+  'function TOP_UP_SETTLED_THRESHOLD_BPS() external view returns (uint256)',
+  'function getAgentStats(uint256 agentId) external view returns (uint64 channelCount, uint64 ghostCount, uint256 totalVolumeUsdc, uint64 lastSettledAt)',
+  'function balanceOf(address owner) external view returns (uint256)',
+]);
 
 function largeVideoInputImage(): string {
   const chunk = (type: string, data: Buffer) => {
@@ -49,6 +65,7 @@ function largeVideoInputImage(): string {
 let rpcCallLog: Array<{ method: string; params: unknown[] }> = [];
 let lastTxHash = '0x' + '11'.repeat(32);
 let txCounter = 0;
+let mockChannelActive = false;
 
 async function handleSingleRpcRequest(parsed: { id: number; method: string; params?: unknown[] }): Promise<{ jsonrpc: string; id: number; result: unknown }> {
   rpcCallLog.push({ method: parsed.method, params: (parsed.params ?? []) as unknown[] });
@@ -103,6 +120,7 @@ async function handleSingleRpcRequest(parsed: { id: number; method: string; para
       });
     case 'eth_sendRawTransaction': {
       const rawTx = String((parsed.params ?? [])[0] ?? '0x');
+      mockChannelActive = true;
       try {
         const { keccak256 } = await import('ethers');
         lastTxHash = keccak256(rawTx);
@@ -136,7 +154,33 @@ async function handleSingleRpcRequest(parsed: { id: number; method: string; para
       const reserved = 0n;
       const lastActivityAt = BigInt(Math.floor(Date.now() / 1000));
       const encode256 = (n: bigint) => n.toString(16).padStart(64, '0');
-      return makeResult('0x' + encode256(available) + encode256(reserved) + encode256(lastActivityAt));
+      const call = (parsed.params ?? [])[0] as { data?: unknown } | undefined;
+      const selector = typeof call?.data === 'string' ? call.data.slice(0, 10).toLowerCase() : '';
+      const selectorFor = (name: string) => mockPaymentViewInterface.getFunction(name)!.selector;
+
+      if (selector === selectorFor('channels')) {
+        // Before reserve(), report a missing channel. After the mock seller
+        // sends its transaction, expose an active channel with test credit so
+        // video headroom checks can follow the real payment path.
+        const channelWords = [
+          0n, 0n, mockChannelActive ? available : 0n, 0n, 0n,
+          0n, 0n, 0n, mockChannelActive ? 1n : 0n,
+        ];
+        return makeResult('0x' + channelWords.map(encode256).join(''));
+      }
+      if (selector === selectorFor('getBuyerBalance')) {
+        return makeResult('0x' + encode256(available) + encode256(reserved) + encode256(lastActivityAt));
+      }
+      if (selector === selectorFor('getAgentStats')) {
+        return makeResult('0x' + encode256(0n).repeat(4));
+      }
+      if (selector === selectorFor('channelsAddress')) {
+        // The configured mock address is a plain channels contract, not a facade.
+        return makeResult('0x');
+      }
+      // Scalar view functions (domainSeparator, credit limits, ERC-20 balances,
+      // and payment constants) only need one ABI word in this mock chain.
+      return makeResult('0x' + encode256(available));
     }
     default:
       return makeResult('0x');
@@ -270,6 +314,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     }
     rpcUrl = '';
     rpcCallLog = [];
+    mockChannelActive = false;
   });
 
   async function setupRpc(): Promise<void> {
@@ -277,6 +322,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     rpcServer = rpc.server;
     rpcUrl = rpc.url;
     rpcCallLog = [];
+    mockChannelActive = false;
   }
 
   async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType): Promise<{
@@ -406,58 +452,60 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);
 
-  it('runs Seedance draft and final tasks on the draft seller with per-task billing', async () => {
+  it.skipIf(!liveVeniceKey)('runs a real Venice video request through the buyer proxy', async () => {
     await setupRpc();
-    const originalFetch = globalThis.fetch;
-    const origin = 'https://ark.ap-southeast.bytepluses.com';
-    const calls: Array<{ method: string; path: string; body?: any }> = [];
-    let next = 0;
-    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
-      const url = String(input);
-      if (!url.startsWith(`${origin}/`)) {
-        const headers = new Headers(init?.headers);
-        headers.set('connection', 'close');
-        return originalFetch(input, { ...init, headers });
-      }
-      expect(new Headers(init?.headers).get('authorization')).toBe('Bearer ark-secret');
-      const path = new URL(url).pathname;
-      const method = init?.method ?? 'GET';
-      const raw = init?.body ? Buffer.from(init.body as Uint8Array).toString() : '';
-      calls.push({ method, path, ...(raw ? { body: JSON.parse(raw) } : {}) });
-      if (method === 'POST') return Response.json({ id: `cgt-${++next}` });
-      return Response.json({ id: path.split('/').at(-1), status: 'succeeded', content: { video_url: 'https://seller-tos.example/video.mp4' }, usage: { completion_tokens: 1 } });
+    const model = 'wan-2.5-preview-text-to-video';
+    const provider = await venicePlugin.createProvider({
+      VENICE_API_KEY: liveVeniceKey!,
+      ANTSEED_ALLOWED_SERVICES: model,
+      ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({
+        [model]: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } },
+      }),
     });
-    try {
-      const provider = await seedancePlugin.createProvider({ ARK_API_KEY: 'ark-secret', ANTSEED_ALLOWED_SERVICES: 'seedance-2-5', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"seedance-2-5":{"seedance-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.01}]}}}' });
-      const { port, discoveredSeller } = await setupProxyNetwork(provider);
-      const base = `http://127.0.0.1:${port}`;
-      const post = (body: object) => fetch(`${base}/api/v3/contents/generations/tasks`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify({ model: 'seedance-2-5', ...body }) });
-      const draft = await post({ content: [{ type: 'text', text: 'boat' }], draft: true, resolution: '480p', duration: 4 });
-      expect(draft.status).toBe(200);
-      expect((await draft.json()).id).toBe('cgt-1');
-      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(40_000n);
-      const final = await post({ content: [{ type: 'draft_task', draft_task: { id: 'cgt-1' } }], duration: 5 });
-      expect(final.status).toBe(200);
-      expect((await final.json()).id).toBe('cgt-2');
-      expect(calls[1]!.body.content[0]).toEqual({ type: 'draft_task', draft_task: { id: 'cgt-1' } });
-      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(90_000n);
-      const status = await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`);
-      expect((await status.json()).content.video_url).toBe('https://seller-tos.example/video.mp4');
-      expect((await fetch(`${base}/api/v3/contents/generations/tasks/cgt-2`, { method: 'DELETE' })).status).toBe(404);
-      expect((await post({ content: [{ type: 'draft_task', draft_task: { id: 'cgt-unknown' } }], duration: 5 })).status).toBe(404);
-      expect((await fetch(`${base}/api/v3/contents/generations/tasks?page_size=500`)).status).toBe(404);
-      const callsBefore = calls.length;
-      (sellerNode as any)._resourceOwnership.recordAcceptedCreate('seedance-video', 'cgt-foreign', '11'.repeat(20));
-      const stolen = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'foreign-draft', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'seedance' }, body: Buffer.from(JSON.stringify({ model: 'seedance-2-5', duration: 5, content: [{ type: 'draft_task', draft_task: { id: 'cgt-foreign' } }] })) }, { pinned: true });
-      expect(stolen.statusCode).toBe(404);
-      expect(calls.length).toBe(callsBefore);
-      expect(calls.map(call => `${call.method} ${call.path}`)).toEqual([
-        'POST /api/v3/contents/generations/tasks', 'POST /api/v3/contents/generations/tasks',
-        'GET /api/v3/contents/generations/tasks/cgt-2', 'DELETE /api/v3/contents/generations/tasks/cgt-2',
-      ]);
-      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(90_000n);
-    } finally { vi.unstubAllGlobals(); }
-  }, 60_000);
+    const { port, discoveredSeller } = await setupProxyNetwork(provider);
+    const base = `http://127.0.0.1:${port}`;
+    const headers = {
+      'content-type': 'application/json',
+      'x-antseed-pin-peer': discoveredSeller.peerId,
+    };
+    const createBody = {
+      model,
+      prompt: 'A small sailboat crossing calm blue water at sunrise',
+      duration: '5s',
+      resolution: '720p',
+      aspect_ratio: '16:9',
+    };
+
+    const created = await fetch(`${base}/api/v1/video/queue`, {
+      method: 'POST', headers, body: JSON.stringify(createBody),
+    });
+    const accepted = await created.json() as { queue_id?: unknown; error?: unknown };
+    expect(created.status, JSON.stringify(accepted)).toBe(200);
+    expect(typeof accepted.queue_id).toBe('string');
+
+    let download: Response | undefined;
+    for (let attempt = 0; attempt < 36; attempt += 1) {
+      const response = await fetch(`${base}/api/v1/video/retrieve`, {
+        method: 'POST',
+        headers,
+        body: JSON.stringify({ model, queue_id: accepted.queue_id }),
+      });
+      if (response.headers.get('content-type')?.startsWith('video/mp4')) {
+        download = response;
+        break;
+      }
+      const status = await response.json() as { status?: unknown; error?: unknown };
+      expect(response.status, JSON.stringify(status)).toBe(200);
+      expect(status.status).toBe('PROCESSING');
+      await new Promise(resolve => setTimeout(resolve, 5_000));
+    }
+
+    expect(download).toBeDefined();
+    expect(download!.status).toBe(200);
+    expect(download!.headers.get('content-type')).toBe('video/mp4');
+    expect((await download!.arrayBuffer()).byteLength).toBeGreaterThan(0);
+    expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n);
+  }, 240_000);
 
   it('negotiates payment and records image usage for images.generate', async () => {
     await setupRpc();
@@ -559,84 +607,4 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     expect(buyerNode!.buyerPaymentManager?.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
   }, 30_000);
 
-  for (const name of ['seedance'] as const) {
-    it.each(['text', 'image'] as const)(`relays seller-operated ${name} %s-to-video jobs with acceptance billing and free follow-ups`, async (inputKind) => {
-      await setupRpc();
-      const protocol = 'seedance-video';
-      const owners = new Map<string, string>();
-      let submissions = 0;
-      let lastSubmission: unknown;
-      let lastSubmissionBytes: Buffer | undefined;
-      const sellerApi = createServer(async (request, response) => {
-        if (request.url === '/result') {
-          response.writeHead(200, { 'content-type': 'video/mp4' });
-          response.end('mock-video');
-          return;
-        }
-        const buyer = String(request.headers['x-antseed-buyer-peer-id'] ?? '');
-        const credentials = name === 'seedance' ? request.headers.authorization : request.headers['x-goog-api-key'];
-        if (credentials !== (name === 'seedance' ? 'Bearer endpoint-secret' : 'endpoint-secret') || !buyer) {
-          response.writeHead(401); response.end(); return;
-        }
-        const chunks: Buffer[] = [];
-        for await (const chunk of request) chunks.push(Buffer.from(chunk));
-        if (request.method === 'POST') {
-          submissions += 1;
-          lastSubmissionBytes = Buffer.concat(chunks);
-          lastSubmission = JSON.parse(lastSubmissionBytes.toString());
-          owners.set('job', buyer);
-        }
-        if (owners.get('job') !== buyer) { response.writeHead(403); response.end(); return; }
-        const address = sellerApi.address() as { port: number };
-        const uri = `http://127.0.0.1:${address.port}/result`;
-        const body = { id: 'job', ...(request.method === 'POST' ? {} : { status: 'succeeded', content: { video_url: uri } }) };
-        response.writeHead(200, { 'content-type': 'application/json' });
-        response.end(JSON.stringify(body));
-      });
-      await new Promise<void>(resolve => sellerApi.listen(0, '127.0.0.1', resolve));
-      try {
-        const address = sellerApi.address() as { port: number };
-        const provider = await seedancePlugin.createProvider({
-          ARK_BASE_URL: `http://127.0.0.1:${address.port}`, ARK_API_KEY: 'endpoint-secret',
-          ANTSEED_ALLOWED_SERVICES: 'video-model',
-          ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ 'video-model': { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } } }),
-        });
-        const { port, discoveredSeller } = await setupProxyNetwork(provider);
-        const manager = (buyerNode as any)._connectionManager;
-        if (inputKind === 'image') {
-          const createConnection = manager.createConnection.bind(manager);
-          manager.createConnection = (config: any) => createConnection({ ...config, remoteCapabilities: config.remoteCapabilities.filter((capability: string) => capability !== 'transport.tcp-enc.v1') });
-        }
-        const image = inputKind === 'image' ? largeVideoInputImage() : undefined;
-        const body = { model: 'video-model', service: 'extension', content: [{ type: 'text', text: '猫' }, ...(image ? [{ type: 'image_url', image_url: { url: `data:image/png;base64,${image}` }, role: 'first_frame' }] : [])], duration: 8, custom: { enabled: true } };
-        const path = '/api/v3/contents/generations/tasks';
-        const rawBody = ` \n${JSON.stringify(body, null, 2)}\n`;
-        if (image) expect(Buffer.byteLength(rawBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);
-        const createOptions = { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-idempotency-key': `${name}-${inputKind}` }, body: rawBody };
-        const created = await fetch(`http://127.0.0.1:${port}${path}`, createOptions);
-        expect(created.status).toBe(200);
-        expect(await created.json()).toEqual({ id: 'job' });
-        const replay = await fetch(`http://127.0.0.1:${port}${path}`, createOptions);
-        expect(replay.status).toBe(200);
-        expect(await replay.json()).toEqual({ id: 'job' });
-        expect(lastSubmission).toEqual(body);
-        expect(lastSubmissionBytes).toEqual(Buffer.from(rawBody));
-        expect(submissions).toBe(1);
-        if (image) expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe('webrtc');
-        expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(80_000n);
-        const statusPath = '/api/v3/contents/generations/tasks/job';
-        for (let poll = 0; poll < 2; poll += 1) {
-          const status = await fetch(`http://127.0.0.1:${port}${statusPath}`);
-          expect(status.status).toBe(200);
-          const result = await status.json() as any;
-          const uri = result.content.video_url;
-          expect(await (await fetch(uri)).text()).toBe('mock-video');
-        }
-        expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(80_000n);
-        expect(submissions).toBe(1);
-      } finally {
-        await new Promise<void>((resolve, reject) => sellerApi.close(error => error ? reject(error) : resolve()));
-      }
-    }, 30_000);
-  }
 });

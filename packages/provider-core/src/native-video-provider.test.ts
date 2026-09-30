@@ -5,8 +5,8 @@ afterEach(() => vi.unstubAllGlobals());
 
 describe('seller-operated native video relays', () => {
   {
-    const name = 'seedance';
-    const protocol = 'seedance-video';
+    const name = 'venice';
+    const protocol = 'venice-video';
     const options: NativeVideoProviderOptions = {
       name: 'custom-video-seller', protocol,
       relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'seller-secret', extraHeaders: { 'x-seller-version': 'custom-v1' } },
@@ -27,11 +27,11 @@ describe('seller-operated native video relays', () => {
 
     it(`${name} preserves native payloads and injects seller auth without exposing account endpoints`, async () => {
       const body = { model: 'video-model', service: { extension: true }, content: [{ type: 'text', text: '猫' }], duration: 8, custom: [1, null, 'value'] };
-      const acceptance = { id: 'task' };
+      const acceptance = { queue_id: 'task' };
       const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify(acceptance), { status: 200, headers: { 'content-type': 'application/json' } }));
       vi.stubGlobal('fetch', fetchMock);
       const provider = createNativeVideoProvider(options, config);
-      const request = { requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', authorization: 'buyer-key', 'x-goog-api-key': 'buyer-key', 'x-antseed-buyer-peer-id': 'a'.repeat(40), 'x-antseed-provider': name }, body: new TextEncoder().encode(` \n${JSON.stringify(body, null, 2)}\n`) };
+      const request = { requestId: 'request', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json', authorization: 'buyer-key', 'x-goog-api-key': 'buyer-key', 'x-antseed-buyer-peer-id': 'a'.repeat(40), 'x-antseed-provider': name }, body: new TextEncoder().encode(` \n${JSON.stringify(body, null, 2)}\n`) };
       const result = await provider.handleRequest(request);
       expect(JSON.parse(new TextDecoder().decode(result.body))).toEqual(acceptance);
       const [url, fetchOptions] = fetchMock.mock.calls[0]!;
@@ -54,7 +54,7 @@ describe('seller-operated native video relays', () => {
       vi.stubGlobal('fetch', fetchMock);
       const provider = createNativeVideoProvider(options, config);
       for (const model of ['VIDEO-MODEL', ' video-model ', 'unavailable']) {
-        const request = { requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video-model' }, body: Buffer.from(JSON.stringify({ model, service: 'video-model' })) };
+        const request = { requestId: 'request', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json', 'x-antseed-service': 'video-model' }, body: Buffer.from(JSON.stringify({ model, service: 'video-model' })) };
         expect((await provider.handleRequest(request)).statusCode).toBe(400);
       }
       expect(fetchMock).not.toHaveBeenCalled();
@@ -64,21 +64,21 @@ describe('seller-operated native video relays', () => {
   it('does not retry an uncertain upstream submission', async () => {
     const fetchMock = vi.fn().mockRejectedValue(new Error('connection reset'));
     vi.stubGlobal('fetch', fetchMock);
-    const provider = createNativeVideoProvider({ name: 'custom-video-seller', protocol: 'seedance-video', relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'key' } }, { ANTSEED_ALLOWED_SERVICES: 'model', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"model":{"seedance-video":{"version":1,"components":[]}}}' });
-    await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"model":"model"}') });
+    const provider = createNativeVideoProvider({ name: 'custom-video-seller', protocol: 'venice-video', relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'key' } }, { ANTSEED_ALLOWED_SERVICES: 'model', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"model":{"venice-video":{"version":1,"components":[]}}}' });
+    await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: Buffer.from('{"model":"model"}') });
     expect(fetchMock).toHaveBeenCalledTimes(1);
   });
 
   it('rejects creates outside the advertised model options before contacting upstream', async () => {
     const fetchMock = vi.fn();
     vi.stubGlobal('fetch', fetchMock);
-    const provider = createNativeVideoProvider({ name: 'custom-video-seller', protocol: 'seedance-video', relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'key' } }, {
+    const provider = createNativeVideoProvider({ name: 'custom-video-seller', protocol: 'venice-video', relay: { baseUrl: 'https://seller.example.test', authHeaderName: 'x-seller-key', authHeaderValue: 'key' } }, {
       ANTSEED_ALLOWED_SERVICES: 'model',
-      ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"model":{"seedance-video":{"version":1,"components":[]}}}',
+      ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"model":{"venice-video":{"version":1,"components":[]}}}',
       ANTSEED_SERVICE_CAPABILITIES_JSON: '{"model":{"video":{"durationsSeconds":[5],"inputs":[]}}}',
     });
-    for (const body of [{ model: 'model', duration: 10 }, { model: 'model', content: [{ type: 'image_url', role: 'first_frame' }] }]) {
-      const response = await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v3/contents/generations/tasks', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) });
+    for (const body of [{ model: 'model', duration: '10s' }, { model: 'model', image_url: 'https://media.example/image.png' }]) {
+      const response = await provider.handleRequest({ requestId: 'request', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) });
       expect(response.statusCode).toBe(400);
       expect(JSON.parse(Buffer.from(response.body).toString()).error.code).toBe('unsupported_video_options');
     }

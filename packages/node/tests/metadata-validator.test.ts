@@ -60,12 +60,11 @@ describe('validateMetadata', () => {
   it('accepts native video unit pricing and video output capabilities', () => {
     const metadata = validMetadata();
     const provider = metadata.providers[0]!;
-    provider.provider = 'seedance';
+    provider.provider = 'venice';
     provider.services = ['video'];
-    provider.serviceApiProtocols = { video: ['seedance-video', 'venice-video'] };
+    provider.serviceApiProtocols = { video: ['venice-video'] };
     provider.serviceCapabilities = { video: { inputs: ['text'], outputs: ['video'] } };
     provider.serviceUnitBillingModels = { video: {
-      'seedance-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] },
       'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] },
     } };
     expect(validateMetadata(metadata)).toEqual([]);

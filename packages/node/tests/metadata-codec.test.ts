@@ -80,9 +80,8 @@ describe('encodeMetadata / decodeMetadata', () => {
   it('round-trips native video protocols and appended billing units without changing image IDs', () => {
     const metadata = makeMetadata();
     const provider = metadata.providers[0]!;
-    provider.serviceApiProtocols = { video: ['seedance-video', 'venice-video'] };
+    provider.serviceApiProtocols = { video: ['venice-video'] };
     provider.serviceUnitBillingModels = { video: {
-      'seedance-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] },
       'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.25 }] },
     } };
     const decoded = decodeMetadata(encodeMetadata(metadata));
@@ -92,7 +91,7 @@ describe('encodeMetadata / decodeMetadata', () => {
   it.each([
     ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
     ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
-    ['seedance-video', 10], ['venice-video', 11],
+    ['venice-video', 11],
   ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
     const metadata = makeMetadata();
     const marker = 'billing-wire-id';
@@ -270,7 +269,7 @@ describe('encodeMetadata / decodeMetadata', () => {
     expect(decoded.providers[0]!.serviceApiProtocols?.['claude-3-opus']).toEqual(['anthropic-messages', 'openai-chat-completions']);
   });
 
-  it('encodes reserved billing unit ids explicitly', () => {
+  it('encodes billing units by their canonical positions', () => {
     const units = ['output_images', 'completed_requests', 'video_generations', 'video_seconds'] as const;
     const encodedIds = units.map((unit) => {
       const metadata = makeMetadata({
@@ -288,12 +287,12 @@ describe('encodeMetadata / decodeMetadata', () => {
       });
       const encoded = encodeMetadata(metadata);
       expect(decodeMetadata(encoded).providers[0]!.serviceUnitBillingModels?.svc?.['openai-images']?.components[0]?.unit).toBe(unit);
-      const unitOffset = encoded.findIndex((byte, index) => (
-        byte === 1
-        && encoded[index + 1] === UNIT_BILLING_UNIT_IDS_V1[unit]
-        && encoded[index + 6] === 0
+      const entryPrefix = [3, 115, 118, 99, 4, 1, 1];
+      const entryOffset = encoded.findIndex((_, index) => (
+        entryPrefix.every((byte, relativeIndex) => encoded[index + relativeIndex] === byte)
       ));
-      return encoded[unitOffset + 1];
+      expect(entryOffset).toBeGreaterThanOrEqual(0);
+      return encoded[entryOffset + entryPrefix.length];
     });
 
     expect(encodedIds).toEqual([0, 1, 2, 3]);

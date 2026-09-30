@@ -35,7 +35,7 @@ const SERVICE_UNIT_BILLING_PROTOCOL_IDS: Record<ServiceApiProtocol, number> = {
   "openai-responses": 3,
   "openai-images": 4,
   "typesafe-systemone": 5,
-  "seedance-video": 10,
+  // Wire ID 10 is retired. Keep Venice at 11 so existing metadata remains stable.
   "venice-video": 11,
 };
 const SERVICE_UNIT_BILLING_PROTOCOLS_BY_ID = new Map(

@@ -31,6 +31,6 @@ The queue call is charged once when Venice returns a `queue_id`. Retrieve is fre
 
 For image-to-video, select an image-capable model and add `image_url` (an accessible URL or inline image data URL) to the same queue request. Native end-frame, reference-image and video inputs are forwarded unchanged where the model supports them. See [media-input examples and limitations](../../docs/protocol/spec/10-native-video.md#image-to-video-and-video-inputs).
 
-Venice can return MP4s without `Content-Length`. The existing signed P2P format needs the byte length before sending the video, so these responses are first written to a private temporary file on the seller, then streamed to the buyer. The file is removed on completion or failure; there is one upstream fetch, bounded memory use, a 4 GiB size limit and at most two active downloads. Known-length responses stream directly. Buyer-visible progress starts after staging, and the buyer's 60-second idle timeout still applies while waiting for the first bytes. Sellers need enough temporary disk space for staged downloads.
+Finished MP4s are streamed through the seller when Venice provides a valid `Content-Length`. The first version keeps downloads bounded to 64 MiB and uses the buyer's normal five-minute request timeout. Responses without a usable length are rejected; staging them to disk and supporting larger or slower transfers can be added separately.
 
 See [native video integration](../../docs/protocol/spec/10-native-video.md) for billing, routing, ownership, and retry behavior.

@@ -8,7 +8,6 @@ export interface TrustedPlugin {
 }
 
 export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
-  { name: 'seedance', type: 'provider', description: 'Seller-operated Seedance video API', package: '@antseed/provider-seedance' },
   { name: 'venice', type: 'provider', description: 'Venice video API', package: '@antseed/provider-venice' },
   {
     name: 'anthropic',

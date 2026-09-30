@@ -7,8 +7,6 @@ export interface NativeVideoRoute {
   protocol: NativeVideoProtocol;
   action: 'create' | 'status' | 'download';
   resourceId?: string;
-  /** Earlier jobs a create builds on (Seedance draft tasks). Invalid IDs are kept as '' so ownership checks fail. */
-  referencedResourceIds?: string[];
 }
 
 type JsonObject = Record<string, unknown>;
@@ -49,8 +47,6 @@ interface NativeVideoApi {
    */
   downloadPath?: RegExp;
   bodyJobId?: (body: JsonObject) => unknown;
-  /** Earlier job IDs a create builds on; they only exist on the seller that ran them. */
-  referencedJobs?: (body: JsonObject) => unknown[];
   jobId: (body: JsonObject) => unknown;
   jobIdPattern: RegExp;
   fields: (body: JsonObject) => VideoRequestFields;
@@ -59,34 +55,8 @@ interface NativeVideoApi {
   autoDuration?: unknown[];
 }
 
-const ID = '[A-Za-z0-9_-]+';
 const SIMPLE_ID = /^[A-Za-z0-9_-]{1,256}$/;
-function object(value: unknown): JsonObject {
-  return value && typeof value === 'object' && !Array.isArray(value) ? value as JsonObject : {};
-}
-
-const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
-  {
-    protocol: 'seedance-video',
-    createPaths: /^\/api\/v3\/contents\/generations\/tasks$/,
-    statusPath: new RegExp(`^/api/v3/contents/generations/tasks/(${ID})$`),
-    jobId: body => body.id,
-    jobIdPattern: SIMPLE_ID,
-    referencedJobs: body => (Array.isArray(body.content) ? body.content : [])
-      .filter(item => object(item).type === 'draft_task')
-      .map(item => object(object(item).draft_task).id),
-    // `frames` overrides `duration`, so frame-based requests have no explicit seconds.
-    fields: body => ({ duration: body.frames === undefined ? body.duration : undefined, resolution: body.resolution, aspectRatio: body.ratio, audio: body.generate_audio }),
-    inputs: body => (Array.isArray(body.content) ? body.content : []).flatMap(item => {
-      const content = object(item);
-      if (content.type === 'image_url') return [content.role === 'last_frame' ? 'last_frame' as const : content.role === 'reference_image' ? 'reference_image' as const : 'first_frame' as const];
-      if (content.type === 'video_url') return ['reference_video' as const];
-      if (content.type === 'audio_url') return ['audio' as const];
-      return [];
-    }),
-    autoDuration: [-1, '-1'],
-  },
-  {
+const NATIVE_VIDEO_APIS: NativeVideoApi[] = [{
     protocol: 'venice-video',
     createPaths: /^\/api\/v1\/video\/queue$/,
     downloadPath: /^\/api\/v1\/video\/retrieve$/,
@@ -104,8 +74,7 @@ const NATIVE_VIDEO_APIS: NativeVideoApi[] = [
       ...(body.audio_url || (Array.isArray(body.reference_audio_urls) && body.reference_audio_urls.length) ? ['audio' as const] : []),
     ],
     autoDuration: ['auto', 'Auto', '-1', '1 gen'],
-  },
-];
+}];
 
 function api(protocol: NativeVideoProtocol): NativeVideoApi {
   return NATIVE_VIDEO_APIS.find(entry => entry.protocol === protocol)!;
@@ -121,11 +90,8 @@ export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | '
   for (const entry of NATIVE_VIDEO_APIS) {
     const create = request.method === 'POST' ? entry.createPaths.exec(path) : null;
     if (create) {
-      const referenced = request.body && entry.referencedJobs ? entry.referencedJobs(parseJsonObject(request.body) ?? {}) : [];
-      const referencedResourceIds = referenced.map(id => typeof id === 'string' && entry.jobIdPattern.test(id) ? id : '');
       return {
         protocol: entry.protocol, action: 'create',
-        ...(referencedResourceIds.length ? { referencedResourceIds } : {}),
       };
     }
     if (request.method === 'POST' && entry.downloadPath?.test(path)) {

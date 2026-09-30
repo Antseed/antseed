@@ -7,29 +7,6 @@ import type { SerializedHttpRequest, SerializedHttpResponse } from '../src/types
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '../src/types/protocol.js';
 
 describe('BuyerRequestHandler response auth sampling', () => {
-  it.each([
-    { free: true, validSignature: true, error: null },
-    { free: false, validSignature: true, error: 'channel_id_mismatch' },
-    { free: true, validSignature: false, error: 'invalid_signature' },
-  ])('checks receipt identity and signatures without requiring a stale paid channel for free requests: %j', async scenario => {
-    const seller = identityFromPrivateKeyHex('11'.repeat(32));
-    const buyer = identityFromPrivateKeyHex('22'.repeat(32));
-    const peer = { peerId: seller.peerId, capabilities: [CONNECTION_CAPABILITY_RESPONSE_AUTH_V1] } as PeerInfo;
-    const request = { requestId: 'free-video-reconnect', method: 'POST', path: '/api/v1/video/retrieve', headers: {}, body: new TextEncoder().encode('{"queue_id":"job"}') };
-    const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: new Uint8Array([42]) };
-    const payload = createResponseAuthPayload({ request, response, buyerPeerId: buyer.peerId, sellerPeerId: seller.peerId, advertisedService: 'venice', provider: 'venice', responseStartedAt: 100, responseCompletedAt: 200, channelId: '0x' + '33'.repeat(32) }, seller.wallet);
-    if (!scenario.validSignature) payload.signature = '00'.repeat(65);
-    const maybeStoreResponseAuthSample = vi.fn(async () => null);
-    const handler = new BuyerRequestHandler({}, {
-      localPeerId: buyer.peerId,
-      negotiator: { bpm: { getActiveSession: () => ({ sessionId: '0x' + '44'.repeat(32) }) } },
-      verificationSampler: { maybeStoreResponseAuthSample },
-    } as any);
-    (handler as any)._recordResponseAuth(peer, request, response, 'venice', { waitForResponseAuth: async () => payload }, scenario.free);
-    await vi.waitFor(() => expect(maybeStoreResponseAuthSample).toHaveBeenCalledOnce());
-    expect(maybeStoreResponseAuthSample).toHaveBeenCalledWith(expect.objectContaining({ verified: scenario.error === null, verificationError: scenario.error }));
-  });
-
   it('passes verified response auth evidence to the sampler', async () => {
     const seller = identityFromPrivateKeyHex('11'.repeat(32));
     const buyer = identityFromPrivateKeyHex('22'.repeat(32));

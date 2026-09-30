@@ -118,23 +118,26 @@ export function hashResponse(response: SerializedHttpResponse): string {
 
 export function createStreamingResponseHash(response: SerializedHttpResponse) {
   const rawLength = response.headers['content-length'];
-  const byteLength = Number(rawLength);
-  if (!/^[1-9][0-9]*$/.test(rawLength ?? '') || !Number.isSafeInteger(byteLength) || byteLength > VIDEO_DOWNLOAD_MAX_BYTES) {
-    throw new Error('Invalid video content length');
+  if (rawLength !== undefined) {
+    const declaredLength = Number(rawLength);
+    if (!/^[1-9][0-9]*$/.test(rawLength) || !Number.isSafeInteger(declaredLength) || declaredLength > VIDEO_DOWNLOAD_MAX_BYTES) {
+      throw new Error('Invalid video content length');
+    }
   }
+  const byteLength = rawLength === undefined ? undefined : Number(rawLength);
   const prefix = encodeHttpResponse({ ...stripStreamingHeader(response), body: new Uint8Array(0) });
-  new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength).setUint32(prefix.length - 4, byteLength);
+  if (byteLength !== undefined) new DataView(prefix.buffer, prefix.byteOffset, prefix.byteLength).setUint32(prefix.length - 4, byteLength);
   const hash = keccak_256.create().update(prefix);
   let received = 0;
   return {
     update(data: Uint8Array): void {
       received += data.length;
-      if (received > byteLength) throw new Error('Video exceeds content length');
+      if (received > VIDEO_DOWNLOAD_MAX_BYTES || (byteLength !== undefined && received > byteLength)) throw new Error('Video exceeds content length');
       hash.update(data);
     },
     finish(): NonNullable<SerializedHttpResponse['streamedBody']> {
-      if (received !== byteLength) throw new Error('Incomplete video');
-      return { byteLength, responseHash: `0x${bytesToHex(hash.digest())}` };
+      if (byteLength !== undefined && received !== byteLength) throw new Error('Incomplete video');
+      return { byteLength: received, responseHash: `0x${bytesToHex(hash.digest())}` };
     },
   };
 }

@@ -22,7 +22,12 @@ it('incremental hashing exactly matches v1 response authentication for any chunk
   }
 });
 
-it('rejects missing, oversized, excessive and truncated bodies', () => {
+it('supports bounded streams without a content length and rejects invalid declared lengths', () => {
+  const unknownLength = { ...response, headers: { 'content-type': 'video/mp4', 'x-antseed-streaming': '1' } };
+  const hash = createStreamingResponseHash(unknownLength);
+  hash.update(body.subarray(0, 20));
+  hash.update(body.subarray(20));
+  expect(hash.finish().byteLength).toBe(body.length);
   for (const length of ['', '0', '-1', 'NaN', '4294967296']) expect(() => createStreamingResponseHash({ ...response, headers: { 'content-length': length } })).toThrow();
   const truncated = createStreamingResponseHash(response);
   truncated.update(body.subarray(0, 20));

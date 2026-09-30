@@ -1,7 +1,6 @@
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, type Provider, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node';
-import { videoDownloadError, videoDownloadSignal } from '@antseed/provider-core';
-import { streamVeniceVideo } from './download.js';
+import { streamVideoResponse, videoDownloadError, videoDownloadSignal } from '@antseed/provider-core';
 
 const MAX_STATUS_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
@@ -57,7 +56,7 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
           }
           activeDownloads += 1;
           streaming = true;
-          try { return await streamVeniceVideo(request, upstream, callbacks, download); }
+          try { return await streamVideoResponse(request, upstream, callbacks, download); }
           finally { activeDownloads -= 1; }
         }
         const text = await upstream.text();

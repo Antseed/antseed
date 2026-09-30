@@ -90,8 +90,6 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'start your local LLM runtime (no API key required)';
     case 'typesafe':
       return 'export TYPESAFE_API_KEY=<key>';
-    case 'seedance':
-      return 'export ARK_API_KEY=<seller-api-key>';
     case 'venice':
       return 'export VENICE_API_KEY=<seller-api-key>';
     default:

@@ -1654,6 +1654,22 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths).toHaveLength(0);
   });
 
+  it('serializes concurrent top-ups so each builds on the previous ceiling', async () => {
+    const sellerPeerId = fakePeerId('seller-topup-serial');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+
+    await Promise.all([
+      manager.topUpReserve(sellerPeerId, mux),
+      manager.topUpReserve(sellerPeerId, mux, 5_000_000n),
+      manager.topUpReserve(sellerPeerId, mux),
+    ]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount))
+      .toEqual(['11000000', '21000000']);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(21_000_000n);
+  });
+
   describe('signVideoAdvance', () => {
     const videoRequestId = 'video-create-1';
 

@@ -841,13 +841,13 @@ test('keeps a canonically merged model text-routable when any peer serves text',
   assert.deepEqual(model?.peers.map((peer) => peer.type).sort(), ['image', 'text'])
 })
 test('native video protocols are discoverable separately from text models', () => {
-  const peer = makePeer({ peerId: 'a'.repeat(40), providers: ['seedance'] })
-  peer.providerServiceApiProtocols = { seedance: { services: { 'seedance-2-0': ['seedance-video'] } } }
-  peer.providerPricing = { seedance: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } }
-  peer.providerServiceUnitBillingModels = { seedance: { services: { 'seedance-2-0': { 'seedance-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } }
+  const peer = makePeer({ peerId: 'a'.repeat(40), providers: ['venice'] })
+  peer.providerServiceApiProtocols = { venice: { services: { 'wan-2.5': ['venice-video'] } } }
+  peer.providerPricing = { venice: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } }
+  peer.providerServiceUnitBillingModels = { venice: { services: { 'wan-2.5': { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } }
   const models = buildNetworkModels([peer], NOW_MS)
-  assert.equal(models.find(model => model.id === 'seedance-2-0')?.type, 'video')
+  assert.equal(models.find(model => model.id === 'wan-2.5')?.type, 'video')
   assert.equal(parseModelTypeFilter('videos'), 'video')
   assert.equal(models[0]?.peers[0]?.inputUsdPerMillion, undefined)
-  assert.equal(models[0]?.peers[0]?.unitBillingModels?.['seedance-video']?.components[0]?.priceUsd, 0.1)
+  assert.equal(models[0]?.peers[0]?.unitBillingModels?.['venice-video']?.components[0]?.priceUsd, 0.1)
 })

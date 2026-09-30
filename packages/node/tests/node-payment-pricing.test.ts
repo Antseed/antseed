@@ -90,8 +90,8 @@ function makeSellerRequestHandler(
 
 it('meters native video acceptance once, preserves buyer ownership, and serves follow-ups without budget', async () => {
   const provider = makeProvider(0, 0, {
-    name: 'seedance', services: ['seedance-2-0'], serviceApiProtocols: { 'seedance-2-0': ['seedance-video'] },
-    serviceUnitBillingModels: { 'seedance-2-0': { 'seedance-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
+    name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+    serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
   });
   const owners = new Map<string, string>();
   provider.handleRequest = vi.fn(async request => {
@@ -99,7 +99,7 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
     const buyer = request.headers['x-antseed-buyer-peer-id']!;
     if (request.method === 'POST') owners.set('task', buyer);
     const statusCode = owners.get('task') === buyer ? 200 : 403;
-    return { requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id: 'task', status: 'SUCCEEDED', output: ['https://seller.example.test/result'] })) };
+    return { requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'task', status: 'SUCCEEDED' })) };
   });
   let paid = true;
   const recordSpend = vi.fn();
@@ -114,19 +114,19 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   const buyer = 'b'.repeat(40);
   const { mux } = handler.handleConnection(makeConn(frames), buyer, payment);
   const request = (method: string, path: string): SerializedHttpRequest => ({ requestId: `${method}-${frames.length}`, method, path,
-    headers: { 'content-type': 'application/json', 'x-antseed-service': 'seedance-2-0', 'X-Antseed-Buyer-Peer-Id': 'spoofed', 'x-antseed-buyer-peer-id': 'spoofed' }, body: Buffer.from(JSON.stringify(method === 'POST' ? { model: 'seedance-2-0', duration: 8 } : {})) });
-  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest(request('POST', '/api/v3/contents/generations/tasks')) });
+    headers: { 'content-type': 'application/json', 'x-antseed-service': 'video', 'X-Antseed-Buyer-Peer-Id': 'spoofed', 'x-antseed-buyer-peer-id': 'spoofed' }, body: Buffer.from(JSON.stringify(path.endsWith('/queue') ? { model: 'video', duration: '8s' } : { model: 'video', queue_id: 'task' })) });
+  await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest(request('POST', '/api/v1/video/queue')) });
   expect(recordSpend).toHaveBeenCalledWith('session-1', 800000n);
   expect(sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { video_seconds: '8' } } }));
   paid = false;
-  for (const method of ['GET', 'GET']) {
-    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: frames.length + 1, payload: encodeHttpRequest(request(method, '/api/v3/contents/generations/tasks/task')) });
+  for (const method of ['POST', 'POST']) {
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: frames.length + 1, payload: encodeHttpRequest(request(method, '/api/v1/video/retrieve')) });
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
   }
   expect(recordSpend).toHaveBeenCalledTimes(1);
   expect(payment.sendPaymentRequired).not.toHaveBeenCalled();
   const other = handler.handleConnection(makeConn(frames), 'c'.repeat(40), payment);
-  await other.mux.handleFrame({ type: MessageType.HttpRequest, messageId: 10, payload: encodeHttpRequest(request('GET', '/api/v3/contents/generations/tasks/task')) });
+  await other.mux.handleFrame({ type: MessageType.HttpRequest, messageId: 10, payload: encodeHttpRequest(request('POST', '/api/v1/video/retrieve')) });
   expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(404);
   expect(owners.get('task')).toBe(buyer);
   expect(provider.handleRequest).toHaveBeenCalledTimes(3);
@@ -167,13 +167,13 @@ describe('native video job ownership and idempotency', () => {
 
   function setup(dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db'), taskIds = ['task-1', 'task-2']) {
     const provider = makeProvider(0, 0, {
-      name: 'seedance', services: ['seedance-2-0'], serviceApiProtocols: { 'seedance-2-0': ['seedance-video'] },
-      serviceUnitBillingModels: { 'seedance-2-0': { 'seedance-video': pricing } },
+      name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+      serviceUnitBillingModels: { video: { 'venice-video': pricing } },
     });
     const creates: string[] = [];
     provider.handleRequest = vi.fn(async request => {
-      const id = request.method === 'POST' ? taskIds[creates.push(request.requestId) - 1]! : request.path.split('/').at(-1)!;
-      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id, status: 'PENDING' })) };
+      const id = request.method === 'POST' && request.path.endsWith('/queue') ? taskIds[creates.push(request.requestId) - 1]! : 'task-1';
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: id, status: 'PENDING' })) };
     });
     const recordSpend = vi.fn();
     const store = new ResourceOwnershipStore(dbPath);
@@ -190,23 +190,23 @@ describe('native video job ownership and idempotency', () => {
       const connection = connections.get(peer) ?? handler.handleConnection(makeConn(frames), peer, payment);
       connections.set(peer, connection);
       messageId += 1;
-      const request: SerializedHttpRequest = { requestId: `r-${messageId}`, method, path, headers: { 'content-type': 'application/json', 'x-antseed-service': 'seedance-2-0', ...headers }, body: Buffer.from(JSON.stringify(body)) };
+      const request: SerializedHttpRequest = { requestId: `r-${messageId}`, method, path, headers: { 'content-type': 'application/json', 'x-antseed-service': 'video', ...headers }, body: Buffer.from(JSON.stringify(body)) };
       await connection.mux.handleFrame({ type: MessageType.HttpRequest, messageId, payload: encodeHttpRequest(request) });
       return decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
     };
-    const create = (peer: string, headers: Record<string, string> = {}, body: object = { model: 'seedance-2-0', duration: 8 }) => send(peer, 'POST', '/api/v3/contents/generations/tasks', body, headers);
+    const create = (peer: string, headers: Record<string, string> = {}, body: object = { model: 'video', duration: '8s' }) => send(peer, 'POST', '/api/v1/video/queue', body, headers);
     return { provider, recordSpend, store, send, create, payment, dbPath };
   }
 
   it('rejects polls from buyers that did not create the job, without calling upstream', async () => {
     const { provider, send, create, store } = setup();
     expect((await create(buyer)).statusCode).toBe(200);
-    const denied = await send(other, 'GET', '/api/v3/contents/generations/tasks/task-1');
+    const denied = await send(other, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: 'task-1' });
     expect(denied.statusCode).toBe(404);
     expect(JSON.parse(new TextDecoder().decode(denied.body)).error.code).toBe('resource_not_found');
-    expect((await send(other, 'GET', '/api/v3/contents/generations/tasks/unknown')).statusCode).toBe(404);
+    expect((await send(other, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: 'unknown' })).statusCode).toBe(404);
     expect(provider.handleRequest).toHaveBeenCalledTimes(1);
-    expect((await send(buyer, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(200);
+    expect((await send(buyer, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: 'task-1' })).statusCode).toBe(200);
     store.close();
   });
 
@@ -215,8 +215,8 @@ describe('native video job ownership and idempotency', () => {
     await first.create(buyer);
     first.store.close();
     const restarted = setup(first.dbPath);
-    expect((await restarted.send(buyer, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(200);
-    expect((await restarted.send(other, 'GET', '/api/v3/contents/generations/tasks/task-1')).statusCode).toBe(404);
+    expect((await restarted.send(buyer, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: 'task-1' })).statusCode).toBe(200);
+    expect((await restarted.send(other, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: 'task-1' })).statusCode).toBe(404);
     restarted.store.close();
   });
 
@@ -225,14 +225,14 @@ describe('native video job ownership and idempotency', () => {
     const key = { 'x-antseed-idempotency-key': 'retry-key-1' };
     const original = await create(buyer, key);
     const replay = await create(buyer, key);
-    expect(JSON.parse(new TextDecoder().decode(replay.body)).id).toBe('task-1');
+    expect(JSON.parse(new TextDecoder().decode(replay.body)).queue_id).toBe('task-1');
     expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
     expect(original.headers['x-antseed-idempotent-replay']).toBeUndefined();
     expect(provider.handleRequest).toHaveBeenCalledTimes(1);
     expect(recordSpend).toHaveBeenCalledTimes(1);
     expect(payment.sendNeedAuth).toHaveBeenCalledTimes(1);
     const otherBuyer = await create(other, key);
-    expect(JSON.parse(new TextDecoder().decode(otherBuyer.body)).id).toBe('task-2');
+    expect(JSON.parse(new TextDecoder().decode(otherBuyer.body)).queue_id).toBe('task-2');
     store.close();
   });
 
@@ -272,7 +272,7 @@ describe('native video job ownership and idempotency', () => {
     provider.handleRequest = vi.fn(async request => {
       markStarted();
       await pending;
-      return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{"id":"task-1"}') };
+      return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{"queue_id":"task-1"}') };
     });
     const original = create(buyer, key);
     try {
@@ -306,19 +306,19 @@ describe('native video job ownership and idempotency', () => {
       expect((await create(buyer, key)).statusCode).toBe(400);
       expect(provider.handleRequest).toHaveBeenCalledTimes(2);
       expect(recordSpend.mock.calls.every(([, amount]) => amount === 0n)).toBe(true);
-      expect(store.getReplay(buyer, 'seedance-video', 'rejected-key')).toBeNull();
+      expect(store.getReplay(buyer, 'venice-video', 'rejected-key')).toBeNull();
     } finally {
       store.close();
     }
   });
 
   it('refuses video when ownership storage is unavailable', async () => {
-    const provider = makeProvider(0, 0, { name: 'seedance', services: ['seedance-2-0'], serviceApiProtocols: { 'seedance-2-0': ['seedance-video'] }, serviceUnitBillingModels: { 'seedance-2-0': { 'seedance-video': pricing } } });
+    const provider = makeProvider(0, 0, { name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] }, serviceUnitBillingModels: { video: { 'venice-video': pricing } } });
     provider.handleRequest = vi.fn(provider.handleRequest);
     const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: makeSpmMock(), channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false });
     const frames: Uint8Array[] = [];
     const { mux } = handler.handleConnection(makeConn(frames), buyer, { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
-    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'r', method: 'GET', path: '/api/v3/contents/generations/tasks/task', headers: { 'x-antseed-service': 'seedance-2-0' }, body: new Uint8Array() }) });
+    await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({ requestId: 'r', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'x-antseed-service': 'video' }, body: Buffer.from('{"model":"video","queue_id":"task"}') }) });
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(503);
     expect(provider.handleRequest).not.toHaveBeenCalled();
   });
@@ -541,11 +541,11 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(pricing).toEqual({ inputUsdPerMillion: 0.05, outputUsdPerMillion: 0.1 });
   });
 
-  it.each(['seedance-video'] as const)('never replaces an explicitly selected %s provider that lost its service', (protocol) => {
+  it.each(['venice-video'] as const)('never replaces an explicitly selected %s provider that lost its service', (protocol) => {
     const recorded = makeProvider(0, 0, { name: 'recorded', services: ['other'] });
     const replacement = makeProvider(0, 0, { name: 'replacement', services: ['video-model'], serviceApiProtocols: { 'video-model': [protocol] } });
     const handler = makeSellerRequestHandler({ providers: [recorded, replacement], sellerPaymentManager: null, sessionTracker: null, channelsClient: null, announcer: null, emit: () => false });
-    const request: SerializedHttpRequest = { requestId: 'video', method: 'GET', path: '/api/v3/contents/generations/tasks/job', headers: { 'x-antseed-provider': 'recorded', 'x-antseed-service': 'video-model' }, body: new Uint8Array() };
+    const request: SerializedHttpRequest = { requestId: 'video', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'x-antseed-provider': 'recorded', 'x-antseed-service': 'video-model' }, body: Buffer.from('{"model":"video-model","queue_id":"job"}') };
     expect(handler.matchProvider(request)).toBeUndefined();
     recorded.services = ['video-model'];
     expect(handler.matchProvider(request)).toBeUndefined();
