@@ -15,7 +15,7 @@ import { ANTSEED_UPLOAD_THRESHOLD_BYTES } from '../../packages/protocol/src/http
 import type { NodePaymentsConfig, PeerInfo, Provider } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
-import venicePlugin from '../../plugins/provider-venice/src/index.js';
+import veniceVideoPlugin from '../../plugins/provider-venice-video/src/index.js';
 
 const execFileAsync = promisify(execFile);
 const liveVeniceKey = process.env.VENICE_INFERENCE_KEY?.trim();
@@ -408,7 +408,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       return new Response(video, { headers: { 'content-type': 'video/mp4', ...(hasContentLength ? { 'content-length': String(video.length) } : {}) } });
     });
     try {
-      const provider = await venicePlugin.createProvider({ VENICE_API_KEY: 'seller-secret', ANTSEED_ALLOWED_SERVICES: 'wan-2.5', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"wan-2.5":{"venice-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.01}]}}}' });
+      const provider = await veniceVideoPlugin.createProvider({ VENICE_VIDEO_API_KEY: 'seller-secret', ANTSEED_ALLOWED_SERVICES: 'wan-2.5', ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: '{"wan-2.5":{"venice-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.01}]}}}' });
       const { port, discoveredSeller } = await setupProxyNetwork(provider);
       const manager = (buyerNode as any)._connectionManager;
       if (transport === 'webrtc') {
@@ -439,7 +439,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect((await post('/api/v1/video/retrieve', { model: 'wan-2.5' })).status).toBe(404);
       const callsBefore = calls.length;
       (sellerNode as any)._resourceOwnership.recordAcceptedCreate('venice-video', 'someone-elses', '11'.repeat(20));
-      const denied = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'non-owner', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'wan-2.5', 'x-antseed-provider': 'venice', 'x-antseed-video-download': 'video-stream-v1' }, body: Buffer.from('{"queue_id":"someone-elses"}') }, { pinned: true });
+      const denied = await buyerNode!.sendRequest(discoveredSeller, { requestId: 'non-owner', method: 'POST', path: '/api/v1/video/retrieve', headers: { 'content-type': 'application/json', 'x-antseed-service': 'wan-2.5', 'x-antseed-provider': 'venice-video', 'x-antseed-video-download': 'video-stream-v1' }, body: Buffer.from('{"queue_id":"someone-elses"}') }, { pinned: true });
       expect(denied.statusCode).toBe(404);
       expect(calls.length).toBe(callsBefore);
       expect(calls.filter(call => call.path === '/api/v1/video/queue')).toHaveLength(1);
@@ -455,8 +455,8 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
   it.skipIf(!liveVeniceKey)('runs a real Venice video request through the buyer proxy', async () => {
     await setupRpc();
     const model = 'wan-2.5-preview-text-to-video';
-    const provider = await venicePlugin.createProvider({
-      VENICE_API_KEY: liveVeniceKey!,
+    const provider = await veniceVideoPlugin.createProvider({
+      VENICE_VIDEO_API_KEY: liveVeniceKey!,
       ANTSEED_ALLOWED_SERVICES: model,
       ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({
         [model]: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } },

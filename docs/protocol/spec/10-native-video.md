@@ -63,9 +63,7 @@ Sellers can advertise what each video model accepts in `capabilities.video` (pee
 }
 ```
 
-Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional, and an omitted field is not checked. The Venice provider rejects such creates with `400 unsupported_video_options` before payment or any upstream call. Automatic durations and retrieve requests are never checked.
-
-Venice sellers fill these options automatically from `GET /api/v1/models?type=video` at startup. Configured options take precedence.
+Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `reference_video`, and `audio`; `inputs: []` means text only. Every field is optional. The Venice Video plugin does not fetch or enforce these options; sellers configure them through `ANTSEED_SERVICE_CAPABILITIES_JSON`, and Venice remains the source of truth for request validation.
 
 ## Billing
 
@@ -91,7 +89,7 @@ If the top-up fails, the advance stays signed and later requests use it up: thei
 
 ### Streamed downloads
 
-Venice `/api/v1/video/retrieve` is always sent as a streamed download; every seller serving `venice-video` must support it (the Venice plugin always does). While the job runs the seller returns Venice's JSON response unchanged; once finished it streams the MP4 using the flow below. Private Venice models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response, which is passed to the buyer unchanged. Venice bills some moderation rejections itself, so a create is still charged once accepted.
+Venice `/api/v1/video/retrieve` is always sent as a streamed download; every seller serving `venice-video` must support it (`@antseed/provider-venice-video` always does). While the job runs the seller returns Venice's JSON response unchanged; once finished it streams the MP4 using the flow below. Private Venice models return JSON `COMPLETED` and deliver the file through the `download_url` from the queue response, which is passed to the buyer unchanged. Venice bills some moderation rejections itself, so a create is still charged once accepted.
 
 Venice MP4 responses may omit `Content-Length`. They are streamed directly through the same authenticated P2P path; no temporary file or second upstream fetch is used. The seller and buyer count received bytes and enforce the 64 MiB download limit.
 

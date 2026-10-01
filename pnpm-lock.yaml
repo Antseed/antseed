@@ -889,7 +889,7 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
 
-  plugins/provider-venice:
+  plugins/provider-venice-video:
     dependencies:
       '@antseed/api-adapter':
         specifier: workspace:*
