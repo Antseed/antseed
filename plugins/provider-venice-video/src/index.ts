@@ -16,6 +16,9 @@ export const VENICE_DEFAULT_BASE_URL = 'https://api.venice.ai';
 const PROTOCOL = 'venice-video';
 const MAX_STATUS_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
+/** Venice pre-signed download URLs are valid for 24 hours. */
+const DOWNLOAD_URL_TTL_MS = 24 * 60 * 60_000;
+const MAX_DOWNLOAD_URLS = 1000;
 
 function error(request: SerializedHttpRequest, statusCode: number, code: string, message: string) {
   return videoDownloadError(request, statusCode, code, message);
@@ -87,10 +90,47 @@ const plugin: AntseedProviderPlugin = {
     };
 
     let activeDownloads = 0;
+    // Private (VPS-backed) Venice models return a pre-signed download_url on
+    // create instead of streaming the file from retrieve. The seller keeps
+    // that URL and streams the file itself, so every video reaches the buyer
+    // through the same checked, charge-on-delivery download.
+    const downloadUrls = new Map<string, { url: string; expiresAt: number }>();
+    const keepDownloadUrl = (queueId: string, url: string) => {
+      const now = Date.now();
+      for (const [key, entry] of downloadUrls) if (entry.expiresAt <= now) downloadUrls.delete(key);
+      downloadUrls.set(queueId, { url, expiresAt: now + DOWNLOAD_URL_TTL_MS });
+      while (downloadUrls.size > MAX_DOWNLOAD_URLS) downloadUrls.delete(downloadUrls.keys().next().value!);
+    };
+    const takeDownloadUrl = (queueId: string): string | undefined => {
+      const entry = downloadUrls.get(queueId);
+      if (entry && entry.expiresAt > Date.now()) return entry.url;
+      downloadUrls.delete(queueId);
+      return undefined;
+    };
+
     const handleRequest: Provider['handleRequest'] = async (request) => {
       const { videoRoute, service } = route(request);
       if (videoRoute?.action !== 'create' || !service) return error(request, 400, 'unsupported_video_request', 'Unsupported video endpoint or service');
-      return relay.handleRequest({ ...request, path: new URL(request.path, 'http://local').pathname });
+      const response = await relay.handleRequest({ ...request, path: new URL(request.path, 'http://local').pathname });
+      const body = response.statusCode === 200 ? parseJsonObject(response.body) : null;
+      if (typeof body?.queue_id !== 'string' || typeof body.download_url !== 'string') return response;
+      const { download_url: downloadUrl, ...rest } = body;
+      keepDownloadUrl(body.queue_id, downloadUrl);
+      const headers = Object.fromEntries(Object.entries(response.headers).filter(([key]) => key.toLowerCase() !== 'content-length'));
+      return { ...response, headers, body: Buffer.from(JSON.stringify(rest)) };
+    };
+
+    const streamUpstream = async (request: SerializedHttpRequest, upstream: Response, callbacks: Parameters<NonNullable<Provider['handleRequestStream']>>[1], download: ReturnType<typeof videoDownloadSignal>) => {
+      if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
+        await upstream.body?.cancel();
+        return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
+      }
+      activeDownloads += 1;
+      try {
+        return await streamVideoResponse(request, upstream, callbacks, download);
+      } finally {
+        activeDownloads -= 1;
+      }
     };
 
     return {
@@ -123,21 +163,20 @@ const plugin: AntseedProviderPlugin = {
           });
           const contentType = upstream.headers.get('content-type')?.split(';')[0]?.trim();
           if (upstream.status === 200 && contentType === 'video/mp4') {
-            if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {
-              await upstream.body?.cancel();
-              return error(request, 429, 'video_download_busy', 'Too many concurrent video downloads');
-            }
-            activeDownloads += 1;
             streaming = true;
-            try {
-              return await streamVideoResponse(request, upstream, callbacks, download);
-            } finally {
-              activeDownloads -= 1;
-            }
+            return await streamUpstream(request, upstream, callbacks, download);
           }
           const body = Buffer.from(await upstream.arrayBuffer());
           if (body.length > MAX_STATUS_BYTES || contentType !== 'application/json') {
             return error(request, 502, 'video_status_unavailable', 'Video status is unavailable');
+          }
+          const downloadUrl = upstream.status === 200 && parseJsonObject(body)?.status === 'COMPLETED'
+            ? takeDownloadUrl(videoRoute.resourceId)
+            : undefined;
+          if (downloadUrl) {
+            const file = await fetch(downloadUrl, { headers: { 'accept-encoding': 'identity' }, redirect: 'error', signal: download.signal });
+            streaming = true;
+            return await streamUpstream(request, file, callbacks, download);
           }
           return { requestId: request.requestId, statusCode: upstream.status, headers: { 'content-type': 'application/json', 'cache-control': 'no-store' }, body };
         } catch (cause) {

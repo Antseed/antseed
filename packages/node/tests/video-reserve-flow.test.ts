@@ -31,10 +31,12 @@ import type { SpendingAuthPayload } from '../src/types/protocol.js';
  * negotiator, connected by an in-memory framed transport. Only the chain is
  * faked: one shared channel record that reserve()/topUp()/close() mutate and
  * getSession() reads, following AntseedChannels semantics (topUp settles the
- * signed advance and requires 85% of the old deposit to be settled first).
+ * signed serious fee and requires TOP_UP_SETTLED_THRESHOLD_BPS (8500 here) of
+ * the old deposit to be settled first).
  */
 
 const VIDEO_PRICE = 4_200_000n;
+const VIDEO_FILE = mp4Video(5_000);
 const CHAT_DELIVERED = 100_000n;
 const FIRST_RESERVE = 1_000_000n;
 const BUFFERED_CEILING = CHAT_DELIVERED + VIDEO_PRICE + FIRST_RESERVE;
@@ -107,6 +109,7 @@ interface Harness {
   releaseTopUp(): void;
   send(request: SerializedHttpRequest): ReturnType<BuyerRequestHandler['sendRequest']>;
   videoRequest(requestId: string, idempotencyKey?: string): SerializedHttpRequest;
+  retrieveRequest(requestId: string, queueId: string): SerializedHttpRequest;
   chatRequest(requestId: string): SerializedHttpRequest;
   settle(): Promise<void>;
 }
@@ -201,6 +204,18 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
       serviceUnitBillingModels: { 'video-model': { 'venice-video': VIDEO_UNIT_MODEL } },
       maxConcurrency: 4,
       getCapacity: () => ({ current: 0, max: 4 }),
+      // The finished video streams as a real 5 s MP4, so it passes the delivery check.
+      async handleRequestStream(request, callbacks) {
+        if (!request.path.endsWith('/video/retrieve')) return provider.handleRequest(request);
+        const start = {
+          requestId: request.requestId, statusCode: 200, body: new Uint8Array(0),
+          headers: { 'content-type': 'video/mp4', 'content-length': String(VIDEO_FILE.length), 'x-antseed-streaming': '1', 'x-antseed-video-download': 'video-stream-v1' },
+        };
+        callbacks.onResponseStart(start);
+        await callbacks.onResponseChunk({ requestId: request.requestId, data: VIDEO_FILE, done: false });
+        await callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true });
+        return start;
+      },
       handleRequest: vi.fn(async (request: SerializedHttpRequest) => {
         if (request.path.endsWith('/video/queue')) {
           providerCreates.push(request);
@@ -270,6 +285,13 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
       },
       body: Buffer.from(JSON.stringify({ model: 'video-model', prompt: 'a cat', duration: '5s' })),
     });
+    const retrieveRequest = (requestId: string, queueId: string): SerializedHttpRequest => ({
+      requestId,
+      method: 'POST',
+      path: '/api/v1/video/retrieve',
+      headers: { 'content-type': 'application/json', 'x-antseed-service': 'video-model', 'x-antseed-provider': 'venice', 'x-antseed-video-download': 'video-stream-v1' },
+      body: Buffer.from(JSON.stringify({ model: 'video-model', queue_id: queueId })),
+    });
     const chatRequest = (requestId: string): SerializedHttpRequest => ({
       requestId,
       method: 'POST',
@@ -281,8 +303,9 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     return {
       buyerIdentity, sellerIdentity, peer, buyer, seller, buyerHandler, chain, topUp, close, providerCreates, sentAuths,
       releaseTopUp: () => { expect(releaseTopUp).not.toBeNull(); releaseTopUp!(); },
-      send: (request) => buyerHandler.sendRequest(peer, request),
+      send: (request) => buyerHandler.sendRequest(peer, request, request.path.endsWith('/video/retrieve') ? { onResponseStart() {}, onResponseChunk() {} } : undefined),
       videoRequest,
+      retrieveRequest,
       chatRequest,
       settle: async () => { await negotiator.drainPendingNeedAuth(); await new Promise((resolve) => setTimeout(resolve, 20)); },
     };
@@ -297,12 +320,22 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
   }
 
-  it('sends the create, tops up only after the seller asks, resends it, and charges exactly the video price', async () => {
+  it('pays the serious fee inside topUp(), and charges the rest only after the video is delivered', async () => {
     const h = setup();
     await openChannelWithChat(h);
 
     const response = await h.send(h.videoRequest('video-1', 'video-key-1'));
     await h.settle();
+
+    // Accepted, not delivered: only the serious fee is paid, and only on-chain
+    // inside topUp(). Nothing more is owed yet.
+    expect(h.chain.settled).toBe(ADVANCE);
+    expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
+    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(ADVANCE);
+
+    const delivered = await h.send(h.retrieveRequest('retrieve-1', 'job-1'));
+    await h.settle();
+    expect(delivered.statusCode).toBe(200);
 
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(Buffer.from(response.body).toString()).queue_id).toBe('job-1');
@@ -374,12 +407,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.close.mock.calls[0]![2]).toBeLessThanOrEqual(ADVANCE);
   });
 
-  // Known bug: after a permanent topUp() failure the seller closes the channel
-  // with the buyer's latest SpendingAuth, which is the unused video advance, so
-  // the buyer pays $0.85 for $0.10 of delivered work. close() only needs
-  // finalAmount >= settled (0 here), so an honest seller could close at the
-  // delivered spend instead. Remove `.fails` once the seller does that.
-  it.fails('closes at delivered spend, not the unused advance, when the seller top-up reverts', async () => {
+  it('closes at delivered spend, not the unused advance, when the seller top-up reverts', async () => {
     const h = setup({ topUpBehavior: 'revert' });
     await openChannelWithChat(h);
 
@@ -429,7 +457,75 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.providerCreates).toHaveLength(1);
     expect(h.topUp).toHaveBeenCalledOnce();
     expect(h.sentAuths.filter(isAdvance)).toHaveLength(1);
+    const download = h.send(h.retrieveRequest('retrieve-1', 'job-1'));
+    await advance(1_000);
+    expect((await download).statusCode).toBe(200);
+    await advance(1_000);
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
   }, 30_000);
+  it('charges a delivered video only once, even when it is downloaded again', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    await h.send(h.videoRequest('video-1', 'video-key-1'));
+    await h.settle();
+
+    await h.send(h.retrieveRequest('retrieve-1', 'job-1'));
+    await h.settle();
+    const authsAfterDelivery = h.sentAuths.length;
+    await h.send(h.retrieveRequest('retrieve-2', 'job-1'));
+    await h.settle();
+
+    expect(h.sentAuths).toHaveLength(authsAfterDelivery);
+    expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
+  });
+
+  it('keeps only the serious fee when the video is never delivered', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    await h.send(h.videoRequest('video-1', 'video-key-1'));
+    await h.settle();
+
+    await h.seller.settleSession(h.buyerIdentity.peerId);
+
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.close.mock.calls[0]![2]).toBe(ADVANCE);
+    expect(h.chain).toMatchObject({ settled: ADVANCE, status: 2 });
+  });
+
+  it('never cashes the serious fee on its own when the buyer disconnects before the top-up', async () => {
+    const h = setup({ topUpBehavior: 'slow' });
+    await openChannelWithChat(h);
+    const pending = h.send(h.videoRequest('video-1', 'video-key-1')).catch(() => {});
+    for (let attempt = 0; attempt < 100 && h.topUp.mock.calls.length === 0; attempt += 1) {
+      await new Promise((resolve) => setTimeout(resolve, 5));
+    }
+    expect(h.topUp).toHaveBeenCalledOnce();
+
+    // Buyer drops while topUp() is still pending: close must use delivered work only.
+    await h.seller.settleSession(h.buyerIdentity.peerId);
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.close.mock.calls[0]![2]).toBe(CHAT_DELIVERED);
+    h.releaseTopUp();
+    void pending;
+  });
 });
+
+/** Minimal MP4 (ftyp, mvhd duration, small mdat) that passes the delivery check. */
+function mp4Video(durationMs: number): Uint8Array {
+  const box = (type: string, body: Uint8Array) => {
+    const out = new Uint8Array(8 + body.length);
+    new DataView(out.buffer).setUint32(0, out.length);
+    out.set(new TextEncoder().encode(type), 4);
+    out.set(body, 8);
+    return out;
+  };
+  const mvhd = new Uint8Array(20);
+  new DataView(mvhd.buffer).setUint32(12, 1000);
+  new DataView(mvhd.buffer).setUint32(16, durationMs);
+  const parts = [box('ftyp', new TextEncoder().encode('isom\0\0\0\0isom')), box('moov', box('mvhd', mvhd)), box('mdat', new Uint8Array(1024).fill(7))];
+  const out = new Uint8Array(parts.reduce((total, part) => total + part.length, 0));
+  let offset = 0;
+  for (const part of parts) { out.set(part, offset); offset += part.length; }
+  return out;
+}

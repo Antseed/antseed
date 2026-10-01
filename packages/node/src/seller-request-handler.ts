@@ -29,8 +29,8 @@ import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@an
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
 import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
-import { nativeVideoAcceptance, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
-import type { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
+import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
+import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import {
   detectRequestServiceApiProtocol,
@@ -465,7 +465,10 @@ export class SellerRequestHandler {
             return;
           }
           const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
-          const remainingLockedReserve = reserveMax > spent ? reserveMax - spent : 0n;
+          // Accepted videos are charged on download; keep their price reserved.
+          const reservedForVideos = this._pendingVideoCharges(session.sessionId);
+          const committed = spent + reservedForVideos;
+          const remainingLockedReserve = reserveMax > committed ? reserveMax - committed : 0n;
           const reserveEstimateOverdraft = this._deps.reserveEstimateOverdraftUsdc;
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
             ? remainingLockedReserve + reserveEstimateOverdraft
@@ -570,6 +573,9 @@ export class SellerRequestHandler {
           }
 
           if (videoNeedsLargerReserve) {
+            // The buyer answers with a serious fee before the top-up. It may only
+            // be cashed together with the reserve increase inside topUp().
+            spm.expectSeriousFee(session.sessionId);
             debugLog(`[SellerHandler] Video create for ${buyerPeerId.slice(0, 12)}... needs a larger reserve (estimatedRequestCost=${estimatedRequestCost} remainingLockedReserve=${remainingLockedReserve} reserveMax=${reserveMax}) — returning 402 ${PAYMENT_CODE_VIDEO_RESERVE_REQUIRED}`);
             mux.sendProxyResponse({
               requestId: request.requestId,
@@ -663,9 +669,14 @@ export class SellerRequestHandler {
               mux.sendProxyChunk(chunk);
             },
           });
-          // Only charge for a video the buyer can retrieve later: if the job
-          // owner cannot be saved, answer 503 so billing sees no acceptance.
-          if (videoRoute?.action === 'create' && !this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoIdempotencyKey)) {
+          // A video is charged when the buyer downloads it, not on acceptance.
+          // Store the job's price with its owner; if that cannot be saved,
+          // answer 503 so no job is handed out that could never be charged.
+          const videoChannelId = spm?.getChannelByPeer(buyerPeerId)?.sessionId;
+          const videoCharge = videoRoute?.action === 'create' && requestBilling && unitBillingModel && videoChannelId
+            ? this._videoCharge(unitBillingModel, requestBilling, response, requestedModel, videoChannelId)
+            : undefined;
+          if (videoRoute?.action === 'create' && !this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoIdempotencyKey, videoCharge)) {
             response = {
               requestId: request.requestId,
               statusCode: 503,
@@ -683,7 +694,11 @@ export class SellerRequestHandler {
           } else {
             debugLog(`[SellerHandler] Provider responded: status=${statusCode} (${Date.now() - startTime}ms, ${responseBody.length}b)`);
           }
-          if (requestBilling && unitBillingModel) {
+          if (videoRoute?.action === 'create') {
+            // Nothing is charged for the create itself; see _chargeDeliveredVideo.
+            billingUsageReport = null;
+            unitCostUsdc = 0n;
+          } else if (requestBilling && unitBillingModel) {
             const unitBilling = computeFinalUnitBilling(unitBillingModel, requestBilling.context, response, requestBilling.requestFacts);
             responseUsage = unitBilling.tokenUsage;
             billingUsageReport = unitBilling.billingUsage;
@@ -744,7 +759,7 @@ export class SellerRequestHandler {
           }
         }
 
-          if (requestBilling && unitBillingModel && responseForAuth && billingUsageReport === null) {
+          if (requestBilling && unitBillingModel && responseForAuth && billingUsageReport === null && videoRoute?.action !== 'create') {
             const finalBilling = computeFinalUnitBilling(
               unitBillingModel,
               requestBilling.context,
@@ -815,6 +830,10 @@ export class SellerRequestHandler {
             outputTokens: responseUsage.outputTokens,
             service: this._extractRequestedService(request) ?? undefined,
           });
+        }
+
+        if (videoRoute?.action === 'retrieve' && responseForAuth) {
+          this._chargeDeliveredVideo(videoRoute, responseForAuth, buyerPeerId, paymentMux, request.requestId);
         }
 
         const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
@@ -893,11 +912,86 @@ export class SellerRequestHandler {
     }
   }
 
+  private _pendingVideoCharges(channelId: string): bigint {
+    try {
+      return this._deps.resourceOwnershipStore?.getPendingChargeTotal(channelId) ?? 0n;
+    } catch (err) {
+      debugWarn(`[SellerHandler] Pending video charges unavailable: ${err instanceof Error ? err.message : err}`);
+      return 0n;
+    }
+  }
+
+  /** Price of an accepted create, stored until the buyer downloads the video. */
+  private _videoCharge(
+    model: UnitBillingModelV1,
+    requestBilling: SellerBillingContext,
+    response: SerializedHttpResponse,
+    service: string,
+    channelId: string,
+  ): PendingResourceCharge | undefined {
+    const billing = computeFinalUnitBilling(model, requestBilling.context, response, requestBilling.requestFacts);
+    const durationSeconds = requestBilling.requestFacts.video?.duration;
+    return billing.costUsdc > 0n
+      ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
+      : undefined;
+  }
+
+  /**
+   * Charge a video once, when the buyer first receives the finished file.
+   * The serious fee paid before generation already covers part of the price,
+   * so the buyer signs only the rest.
+   */
+  private _chargeDeliveredVideo(
+    route: NativeVideoRoute,
+    response: SerializedHttpResponse,
+    buyerPeerId: string,
+    paymentMux: PaymentMux,
+    requestId: string,
+  ): void {
+    const store = this._deps.resourceOwnershipStore;
+    const spm = this._deps.sellerPaymentManager;
+    if (!store || !spm || !route.resourceId) return;
+    const buyer = buyerPeerId.toLowerCase();
+    try {
+      const charge = store.getPendingCharge(route.protocol, route.resourceId, buyer);
+      if (!charge || !nativeVideoDelivered(response, charge.durationSeconds)) return;
+      const session = spm.getChannelByPeer(buyerPeerId);
+      // The price was reserved on the channel that accepted the job.
+      if (!session || session.sessionId !== charge.channelId) return;
+      if (!store.markCharged(route.protocol, route.resourceId)) return;
+      try {
+        spm.recordSpend(session.sessionId, charge.amount);
+      } catch (err) {
+        store.unmarkCharged(route.protocol, route.resourceId);
+        throw err;
+      }
+      const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
+      debugLog(`[SellerHandler] Video delivered: buyer=${buyerPeerId.slice(0, 12)}... job=${route.resourceId} cost=${charge.amount} cumulative=${cumulativeSpend}`);
+      this._sendNeedAuthBestEffort(paymentMux, {
+        channelId: session.sessionId,
+        requiredCumulativeAmount: cumulativeSpend.toString(),
+        currentAcceptedCumulative: spm.getAcceptedCumulative(session.sessionId).toString(),
+        deposit: session.authMax ?? '0',
+        requestId,
+        lastRequestCost: charge.amount.toString(),
+        inputTokens: '0',
+        outputTokens: '0',
+        cachedInputTokens: '0',
+        freshInputTokens: '0',
+        service: charge.service,
+        billingUsage: charge.billingUsage,
+      }, buyerPeerId, 'video-delivered');
+    } catch (err) {
+      debugWarn(`[SellerHandler] Failed to charge delivered video ${route.resourceId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
   private _recordVideoAcceptance(
     route: NativeVideoRoute,
     response: SerializedHttpResponse,
     buyerPeerId: string,
     idempotencyKey: string | undefined,
+    charge?: PendingResourceCharge,
   ): boolean {
     const resourceId = nativeVideoAcceptance(route.protocol, response);
     if (!resourceId) return true;
@@ -908,6 +1002,7 @@ export class SellerRequestHandler {
         buyerPeerId.toLowerCase(),
         idempotencyKey,
         { statusCode: response.statusCode, headers: response.headers, body: response.body ?? new Uint8Array(0) },
+        charge,
       );
       return true;
     } catch (err) {
@@ -1192,7 +1287,7 @@ export class SellerRequestHandler {
     paymentMux: PaymentMux,
     payload: Parameters<PaymentMux['sendNeedAuth']>[0],
     buyerPeerId: string,
-    phase: 'budget-catch-up' | 'post-response',
+    phase: 'budget-catch-up' | 'post-response' | 'video-delivered',
   ): void {
     try {
       paymentMux.sendNeedAuth(payload);

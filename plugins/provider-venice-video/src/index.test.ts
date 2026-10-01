@@ -77,3 +77,24 @@ it('streams finished MP4s in bounded chunks', async () => {
   expect(headers).toMatchObject({ 'content-type': 'video/mp4', 'x-antseed-video-download': 'video-stream-v1' });
   expect(received).toBe(bytes.length);
 });
+
+it('keeps private-model download URLs on the seller and streams the file on retrieve', async () => {
+  const bytes = new Uint8Array(70_000).fill(5);
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json({ model: 'wan-2.5', queue_id: 'queue-1', download_url: 'https://files.venice.ai/v/queue-1?sig=abc' }))
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED', average_execution_time: 1, execution_duration: 1 }))
+    .mockResolvedValueOnce(new Response(bytes, { headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) } }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+
+  const created = await provider.handleRequest(request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'cat' }));
+  expect(JSON.parse(Buffer.from(created.body).toString())).toEqual({ model: 'wan-2.5', queue_id: 'queue-1' });
+
+  let received = 0;
+  const response = await stream(provider, retrieve(), { onResponseChunk(chunk) { received += chunk.data.length; } });
+  expect(response.headers).toMatchObject({ 'content-type': 'video/mp4' });
+  expect(received).toBe(bytes.length);
+  const [url, init] = fetchMock.mock.calls[2]!;
+  expect(url).toBe('https://files.venice.ai/v/queue-1?sig=abc');
+  expect(init.headers).not.toHaveProperty('authorization');
+});

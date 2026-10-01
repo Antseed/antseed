@@ -1,5 +1,6 @@
 import { keccak256 } from 'ethers';
 import { keccak_256 } from '@noble/hashes/sha3';
+import { createMp4Inspector } from '@antseed/api-adapter';
 import { VIDEO_DOWNLOAD_MAX_BYTES } from '@antseed/protocol/http';
 import type { Wallet } from 'ethers';
 import type { ResponseAuthPayload } from '@antseed/protocol/messages';
@@ -128,16 +129,23 @@ export function createStreamingResponseHash(response: SerializedHttpResponse) {
   const { body: _body, ...responseWithoutBody } = stripStreamingHeader(response);
   const prefix = encodeHttpResponsePrefix(responseWithoutBody, byteLength ?? 0);
   const hash = keccak_256.create().update(prefix);
+  const mp4 = createMp4Inspector();
   let received = 0;
   return {
     update(data: Uint8Array): void {
       received += data.length;
       if (received > VIDEO_DOWNLOAD_MAX_BYTES || (byteLength !== undefined && received > byteLength)) throw new Error('Video exceeds content length');
       hash.update(data);
+      mp4.update(data);
     },
     finish(): NonNullable<SerializedHttpResponse['streamedBody']> {
       if (byteLength !== undefined && received !== byteLength) throw new Error('Incomplete video');
-      return { byteLength: received, responseHash: `0x${bytesToHex(hash.digest())}` };
+      const video = mp4.finish();
+      return {
+        byteLength: received,
+        responseHash: `0x${bytesToHex(hash.digest())}`,
+        ...(video ? { videoDurationMs: video.durationMs } : {}),
+      };
     },
   };
 }

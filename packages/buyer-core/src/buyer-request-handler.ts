@@ -1,4 +1,4 @@
-import { nativeVideoRoute, requestService } from '@antseed/api-adapter';
+import { nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
@@ -171,6 +171,15 @@ export class BuyerRequestHandler {
         debugWarn(`[BuyerRequest] Failed to prepare free usage channel for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
       }
     }
+
+    // A retrieve is free to send, but delivering the finished video triggers
+    // the job's charge. Bind it to the accepted job so that charge is checked
+    // against the job's own price and signed only after delivery.
+    const videoRetrieve = nativeVideoRoute(req);
+    const videoJobId = videoRetrieve?.action === 'retrieve' ? videoRetrieve.resourceId : undefined;
+    const trackedVideoRetrieve = Boolean(
+      videoRetrieve && videoJobId && this._deps.negotiator?.bpm?.trackVideoRetrieve(peer.peerId, videoRetrieve.protocol, videoJobId, req.requestId),
+    );
 
     let startTime = Date.now();
 
@@ -456,6 +465,12 @@ export class BuyerRequestHandler {
     if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
+    if (
+      trackedVideoRetrieve && videoRetrieve && videoJobId
+      && nativeVideoDelivered(response, this._deps.negotiator?.bpm?.getRequestBilling(req.requestId)?.requestFacts.video?.duration)
+    ) {
+      this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRetrieve.protocol, videoJobId, req.requestId);
+    }
 
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
     return adaptPeerResponse(response);
@@ -686,7 +701,7 @@ export function stripPeerControlledResponseHeaders(
     : { ...response, headers };
 }
 
-/** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */
+/** Tag a response with the serious fee paid for it, when one was paid. */
 function isVideoReserveRequired402(response: SerializedHttpResponse): boolean {
   if (response.statusCode !== 402) return false;
   try {

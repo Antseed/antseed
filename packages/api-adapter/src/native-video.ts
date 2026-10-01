@@ -43,6 +43,29 @@ export function nativeVideoAcceptance(protocol: NativeVideoProtocol, response: S
   return protocol === 'venice-video' ? veniceQueueId(body) : null;
 }
 
+/**
+ * True when a retrieve response hands the finished video to the buyer: a
+ * completed streamed MP4 download, or Venice's JSON `COMPLETED` status for
+ * private models that deliver through their own download URL.
+ */
+/** Share of the requested duration a delivered video must reach (models round). */
+export const VIDEO_MIN_DURATION_RATIO = 0.9;
+
+/**
+ * Whether a retrieve response delivered the finished video, so its price may
+ * be charged. Only a streamed download counts, and only when it is a complete
+ * MP4 (`video/mp4`, starts with `ftyp`, readable duration) at least
+ * VIDEO_MIN_DURATION_RATIO of the requested seconds long. JSON status answers
+ * never count; the seller streams private-model files from their download URL.
+ */
+export function nativeVideoDelivered(response: SerializedHttpResponse, requestedDurationSeconds?: number): boolean {
+  if (response.statusCode !== 200 || !response.streamedBody) return false;
+  const contentType = Object.entries(response.headers).find(([key]) => key.toLowerCase() === 'content-type')?.[1];
+  const durationMs = response.streamedBody.videoDurationMs;
+  if (!contentType?.toLowerCase().startsWith('video/mp4') || durationMs === undefined) return false;
+  return !requestedDurationSeconds || durationMs >= requestedDurationSeconds * 1000 * VIDEO_MIN_DURATION_RATIO;
+}
+
 export function requestService(request: SerializedHttpRequest): string | undefined {
   const route = nativeVideoRoute(request);
   if (route?.action === 'retrieve') {

@@ -65,6 +65,7 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(),
     hasInFlightRequests: () => false,
     hasClosingChannel: () => false,
+    expectSeriousFee: vi.fn(),
     ...overrides,
   };
 }
@@ -88,7 +89,7 @@ function makeSellerRequestHandler(
   });
 }
 
-it('meters native video acceptance once, preserves buyer ownership, and serves follow-ups without budget', async () => {
+it('does not charge a native video on acceptance or JSON status, preserves buyer ownership, and serves follow-ups without budget', async () => {
   const provider = makeProvider(0, 0, {
     name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
     serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
@@ -97,9 +98,10 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   provider.handleRequest = vi.fn(async request => {
     expect(request.headers['X-Antseed-Buyer-Peer-Id']).toBeUndefined();
     const buyer = request.headers['x-antseed-buyer-peer-id']!;
-    if (request.method === 'POST') owners.set('task', buyer);
+    const isCreate = request.path.endsWith('/queue');
+    if (isCreate) owners.set('task', buyer);
     const statusCode = owners.get('task') === buyer ? 200 : 403;
-    return { requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'task', status: 'SUCCEEDED' })) };
+    return { requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(isCreate ? { queue_id: 'task', status: 'QUEUED' } : { status: 'COMPLETED' })) };
   });
   let paid = true;
   const recordSpend = vi.fn();
@@ -116,14 +118,20 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   const request = (method: string, path: string): SerializedHttpRequest => ({ requestId: `${method}-${frames.length}`, method, path,
     headers: { 'content-type': 'application/json', 'x-antseed-service': 'video', 'X-Antseed-Buyer-Peer-Id': 'spoofed', 'x-antseed-buyer-peer-id': 'spoofed' }, body: Buffer.from(JSON.stringify(path.endsWith('/queue') ? { model: 'video', duration: '8s' } : { model: 'video', queue_id: 'task' })) });
   await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest(request('POST', '/api/v1/video/queue')) });
-  expect(recordSpend).toHaveBeenCalledWith('session-1', 800000n);
-  expect(sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { video_seconds: '8' } } }));
+  // Acceptance charges nothing; the price is charged when the video is delivered.
+  expect(recordSpend.mock.calls.every(([, cost]) => cost === 0n)).toBe(true);
+  expect(sendNeedAuth.mock.calls.some(([payload]) => payload.billingUsage)).toBe(false);
+  recordSpend.mockClear();
+  sendNeedAuth.mockClear();
   paid = false;
   for (const method of ['POST', 'POST']) {
     await mux.handleFrame({ type: MessageType.HttpRequest, messageId: frames.length + 1, payload: encodeHttpRequest(request(method, '/api/v1/video/retrieve')) });
     expect(decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload).statusCode).toBe(200);
   }
-  expect(recordSpend).toHaveBeenCalledTimes(1);
+  // A JSON COMPLETED status is not a delivery; only a checked MP4 stream is
+  // (covered end to end in video-reserve-flow.test.ts).
+  expect(recordSpend.mock.calls.every(([, cost]) => cost === 0n)).toBe(true);
+  expect(sendNeedAuth.mock.calls.some(([payload]) => payload.billingUsage)).toBe(false);
   expect(payment.sendPaymentRequired).not.toHaveBeenCalled();
   const other = handler.handleConnection(makeConn(frames), 'c'.repeat(40), payment);
   await other.mux.handleFrame({ type: MessageType.HttpRequest, messageId: 10, payload: encodeHttpRequest(request('POST', '/api/v1/video/retrieve')) });
@@ -181,7 +189,12 @@ describe('native video job ownership and idempotency', () => {
     });
     const recordSpend = vi.fn();
     const store = new ResourceOwnershipStore(dbPath);
-    const spm = makeSpmMock({ recordSpend, ...spmOverrides });
+    // One channel per buyer: accepted videos keep their price reserved on it.
+    const spm = makeSpmMock({
+      recordSpend,
+      getChannelByPeer: (peer: string) => ({ sessionId: peer === buyer ? 'session-1' : `session-${peer.slice(0, 8)}`, authMax: '1000000' }),
+      ...spmOverrides,
+    });
     const handler = makeSellerRequestHandler({
       providers: [provider], sellerPaymentManager: spm,
       channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,

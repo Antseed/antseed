@@ -37,7 +37,7 @@ export interface SerializedHttpResponse {
   statusCode: number;
   headers: Record<string, string>;
   body: Uint8Array;
-  streamedBody?: { byteLength: number; responseHash: string };
+  streamedBody?: { byteLength: number; responseHash: string; videoDurationMs?: number };
 }
 
 export interface SerializedHttpResponseChunk {

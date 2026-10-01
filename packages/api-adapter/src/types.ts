@@ -11,6 +11,12 @@ export interface SerializedHttpResponse {
   statusCode: number;
   headers: Record<string, string>;
   body: Uint8Array;
+  /**
+   * Locally computed descriptor of a streamed video download (never read from
+   * the wire). `videoDurationMs` is set only when the bytes formed a complete
+   * MP4 with a readable duration.
+   */
+  streamedBody?: { byteLength: number; responseHash: string; videoDurationMs?: number };
 }
 
 export interface SerializedHttpResponseChunk {

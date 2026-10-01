@@ -128,6 +128,17 @@ export class SellerPaymentManager {
   private readonly _latestAuth = new Map<string, LatestAuth>();
 
   /**
+   * channelId -> serious fee: a buyer auth above delivered spend, signed so a
+   * video top-up passes the contract's settled threshold. Kept apart from
+   * _latestAuth and never persisted, so settle()/close() cannot cash it alone;
+   * only topUp() submits it, atomically with the larger reserve.
+   */
+  private readonly _pendingFee = new Map<string, LatestAuth>();
+
+  /** Channels that were sent video_reserve_required and expect a serious fee. */
+  private readonly _feeExpected = new Set<string>();
+
+  /**
    * channelId -> waiters blocked on acceptedCumulative reaching a target.
    * Used to hide the NeedAuth → SpendingAuth round-trip latency from the next
    * request: if a new request arrives while the prior response's NeedAuth is
@@ -310,6 +321,7 @@ export class SellerPaymentManager {
     this._acceptedCumulative.delete(channelId);
     this._spent.delete(channelId);
     this._latestAuth.delete(channelId);
+    this._clearPendingFee(channelId);
     this._closeRetryCount.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
     this._reserveMax.delete(channelId);
@@ -644,8 +656,9 @@ export class SellerPaymentManager {
           return 'rejected';
         }
 
-        // Call topUp() on-chain — includes settle of current cumulative spend
-        const { amount: settleAmount, metadata: settleMetadata, sig: settleSig } = this._getSettleParams(channelId);
+        // Call topUp() on-chain — includes settle of current cumulative spend,
+        // or of the serious fee when one is waiting.
+        const { amount: settleAmount, metadata: settleMetadata, sig: settleSig } = this._getTopUpParams(channelId);
         debugLog(`[SellerPayment] Top-up verified: channel=${channelId.slice(0, 18)}... ceiling ${currentReserveMax} → ${newMaxAmount} (settling cumulative=${settleAmount})`);
         try {
           await this._channelsClient.topUp(
@@ -661,6 +674,7 @@ export class SellerPaymentManager {
 
           // Update tracking
           this._hydratedChannelIds.delete(channelId);
+          this._promotePendingFee(channelId);
           this._reserveMax.set(channelId, newMaxAmount);
           const session = this._channelStore.getChannel(channelId);
           if (session) {
@@ -697,6 +711,7 @@ export class SellerPaymentManager {
             `kind=${failureKind} error=${this._formatError(topUpErr)} — closing latest auth and rejecting topUp`,
           );
           this._pendingTopUp.delete(channelId);
+          this._clearPendingFee(channelId);
           this._blockedChannels.add(channelId);
           await this.settleSession(buyerPeerId);
           return 'rejected';
@@ -759,14 +774,29 @@ export class SellerPaymentManager {
           return 'rejected';
         }
 
-        // Update tracking
-        this._acceptedCumulative.set(channelId, cumulativeAmount);
-        this._latestAuth.set(channelId, {
+        const buyerAuth: LatestAuth = {
           spendingAuthSig: payload.spendingAuthSig,
           cumulativeAmount,
           metadataHash: payload.metadataHash,
           metadata: payload.metadata,
-        });
+        };
+        if (this._feeExpected.has(channelId) && cumulativeAmount > spent) {
+          // Serious fee: held for topUp() only, never as a settle/close auth.
+          this._pendingFee.set(channelId, buyerAuth);
+          debugLog(`[SellerPayment] Serious fee held for topUp: channel=${channelId.slice(0, 18)}... cumulative=${cumulativeAmount}`);
+          const pendingTopUp = this._pendingTopUp.get(channelId);
+          if (pendingTopUp) {
+            const { amount, metadata, sig } = this._getTopUpParams(channelId);
+            await this._retryPendingTopUp(buyerPeerId, channelId, pendingTopUp, amount, metadata, sig);
+          }
+          return 'accepted';
+        }
+        const pendingFee = this._pendingFee.get(channelId);
+        if (pendingFee && cumulativeAmount >= pendingFee.cumulativeAmount) this._clearPendingFee(channelId);
+
+        // Update tracking
+        this._acceptedCumulative.set(channelId, cumulativeAmount);
+        this._latestAuth.set(channelId, buyerAuth);
         this._notifyAcceptedUpdate(channelId, cumulativeAmount);
 
         // Persist latest auth + sigs to ChannelStore
@@ -785,7 +815,7 @@ export class SellerPaymentManager {
         // Retry any deferred topUp now that we have a higher settle amount.
         const pendingTopUp = this._pendingTopUp.get(channelId);
         if (pendingTopUp) {
-          const { amount: retrySettleAmount, metadata: retryMetadata, sig: retrySig } = this._getSettleParams(channelId);
+          const { amount: retrySettleAmount, metadata: retryMetadata, sig: retrySig } = this._getTopUpParams(channelId);
           await this._retryPendingTopUp(buyerPeerId, channelId, pendingTopUp, retrySettleAmount, retryMetadata, retrySig);
         }
 
@@ -1026,6 +1056,7 @@ export class SellerPaymentManager {
         BigInt(pendingTopUp.deadline),
         pendingTopUp.reserveAuthSig,
       );
+      this._promotePendingFee(channelId);
       this._reserveMax.set(channelId, pendingTopUp.newMaxAmount);
       const topUpSession = this._channelStore.getChannel(channelId);
       if (topUpSession) {
@@ -1052,6 +1083,7 @@ export class SellerPaymentManager {
         `[SellerPayment] Deferred topUp failed permanently: channel=${channelId.slice(0, 18)}... ` +
         `kind=${failureKind} error=${this._formatError(retryErr)} — closing latest auth and dropping pending topUp`,
       );
+      this._clearPendingFee(channelId);
       this._blockedChannels.add(channelId);
       await this.settleSession(buyerPeerId);
       return 'permanent-failure';
@@ -1197,6 +1229,45 @@ export class SellerPaymentManager {
     return { amount: 0n, metadata: encodeMetadata(ZERO_METADATA), sig: '0x' };
   }
 
+  /** topUp() settles the serious fee when one is held, otherwise the latest auth. */
+  private _getTopUpParams(channelId: string): { amount: bigint; metadata: string; sig: string } {
+    const fee = this._pendingFee.get(channelId);
+    if (!fee) return this._getSettleParams(channelId);
+    return { amount: fee.cumulativeAmount, metadata: fee.metadata || encodeMetadata(ZERO_METADATA), sig: fee.spendingAuthSig };
+  }
+
+  /**
+   * Mark that the buyer was asked for a larger video reserve, so its next auth
+   * above delivered spend is a serious fee that only topUp() may submit.
+   */
+  expectSeriousFee(channelId: string): void {
+    this._feeExpected.add(channelId);
+  }
+
+  /** After topUp() settled it with the larger reserve, the fee is an ordinary auth. */
+  private _promotePendingFee(channelId: string): void {
+    const fee = this._pendingFee.get(channelId);
+    this._clearPendingFee(channelId);
+    if (!fee || fee.cumulativeAmount <= (this._acceptedCumulative.get(channelId) ?? 0n)) return;
+    this._acceptedCumulative.set(channelId, fee.cumulativeAmount);
+    this._latestAuth.set(channelId, fee);
+    const session = this._channelStore.getChannel(channelId);
+    if (session) {
+      session.authMax = fee.cumulativeAmount.toString();
+      session.latestBuyerSig = fee.spendingAuthSig;
+      session.latestSpendingAuthSig = fee.spendingAuthSig;
+      session.latestMetadata = fee.metadata;
+      session.updatedAt = Date.now();
+      this._channelStore.upsertChannel(session);
+    }
+    this._notifyAcceptedUpdate(channelId, fee.cumulativeAmount);
+  }
+
+  private _clearPendingFee(channelId: string): void {
+    this._pendingFee.delete(channelId);
+    this._feeExpected.delete(channelId);
+  }
+
   /**
    * Settle or close a session's payment channel on-chain.
    *
@@ -1277,6 +1348,7 @@ export class SellerPaymentManager {
     this._acceptedCumulative.delete(channelId);
     this._spent.delete(channelId);
     this._latestAuth.delete(channelId);
+    this._clearPendingFee(channelId);
     this._closeRetryCount.delete(channelId);
     this._reserveMax.delete(channelId);
     this._pendingTopUp.delete(channelId);

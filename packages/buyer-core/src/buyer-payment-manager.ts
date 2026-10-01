@@ -53,6 +53,9 @@ const PERCENT_DENOMINATOR = 100n;
 /** Default max price of one video generation ($5.00). */
 export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
+/** Accepted video jobs awaiting delivery are remembered this long (matches job routes). */
+const VIDEO_JOB_TTL_MS = 30 * 24 * 60 * 60_000;
+const MAX_VIDEO_JOBS = 1_000;
 const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
  *  to record delivered unit usage before rejecting a positive claim. */
@@ -216,6 +219,12 @@ export class BuyerPaymentManager {
 
   /** Latest ReserveAuth awaiting seller acknowledgement, including top-ups. */
   private readonly _pendingReserveAuth = new Map<string, PendingReserveAuthorization>();
+  /**
+   * `${sellerPeerId}\n${protocol}\n${jobId}` -> billing of an accepted video
+   * that has not been delivered yet. Its price is signed only after the buyer
+   * receives the finished video.
+   */
+  private readonly _videoJobs = new Map<string, StoredBuyerRequestBillingEntry>();
   /** Per-seller queue so each top-up builds on the ceiling signed by the previous one. */
   private readonly _topUpLocks = new Map<string, Promise<void>>();
 
@@ -780,6 +789,9 @@ export class BuyerPaymentManager {
   }
 
   private _clearRequestBillingForSeller(sellerPeerId: string): void {
+    for (const [key, job] of this._videoJobs) {
+      if (job.context.sellerPeerId === sellerPeerId) this._videoJobs.delete(key);
+    }
     for (const [requestId, entry] of this._requestBillingEntries) {
       if (entry.context.sellerPeerId === sellerPeerId) {
         this.clearRequestBilling(requestId);
@@ -1632,7 +1644,7 @@ export class BuyerPaymentManager {
 
     // When a topUp is needed, first sign at the current ceiling so the seller
     // has a high-enough settled amount to pass the on-chain TopUpThresholdNotMet
-    // check (contract requires 85% of deposit to be settleable before topUp).
+    // check (contract requires TOP_UP_SETTLED_THRESHOLD_BPS of deposit to be settleable before topUp).
     // We cap at the old ceiling here; the topUp is sent AFTER so the seller
     // processes the SpendingAuth first, then the topUp with adequate settle amount.
     const effectiveAmount = needsTopUp
@@ -1715,7 +1727,7 @@ export class BuyerPaymentManager {
 
     // Send topUp AFTER the SpendingAuth so the seller processes the higher
     // cumulative first — this ensures the on-chain settle amount meets the
-    // contract's TopUpThresholdNotMet requirement (85% of deposit must be
+    // contract's TopUpThresholdNotMet requirement (TOP_UP_SETTLED_THRESHOLD_BPS of deposit must be
     // settleable before topUp is allowed). Also proactively send the top-up
     // once the signed cumulative reaches the buyer's remaining-headroom
     // threshold; the seller may defer it until the contract gate is satisfied.
@@ -2018,6 +2030,58 @@ export class BuyerPaymentManager {
     return publicEntry;
   }
 
+  /** Remember an accepted video job; its price is charged on delivery. */
+  trackVideoJob(sellerPeerId: string, protocol: string, jobId: string, entry: BuyerRequestBillingEntry): void {
+    const now = Date.now();
+    for (const [key, job] of this._videoJobs) {
+      if (now - job.createdAtMs > VIDEO_JOB_TTL_MS) this._videoJobs.delete(key);
+    }
+    this._videoJobs.set(videoJobKey(sellerPeerId, protocol, jobId), { ...entry, createdAtMs: now });
+    while (this._videoJobs.size > MAX_VIDEO_JOBS) {
+      const oldest = this._videoJobs.keys().next().value;
+      if (oldest === undefined) break;
+      this._videoJobs.delete(oldest);
+    }
+  }
+
+  /** Total price of this seller's accepted videos that are not delivered yet. */
+  getPendingVideoTotal(sellerPeerId: string): bigint {
+    let total = 0n;
+    for (const job of this._videoJobs.values()) {
+      if (job.context.sellerPeerId === sellerPeerId) total += job.estimatedCostUsdc ?? 0n;
+    }
+    return total;
+  }
+
+  /**
+   * Bind a retrieve request to its accepted job so the seller's delivery
+   * NeedAuth is validated against the job's own billing facts.
+   */
+  trackVideoRetrieve(sellerPeerId: string, protocol: string, jobId: string, requestId: string): boolean {
+    const job = this._videoJobs.get(videoJobKey(sellerPeerId, protocol, jobId));
+    if (!job) return false;
+    const { createdAtMs: _createdAtMs, observedUnitUsage: _observed, ...entry } = job;
+    this.trackRequestBilling(requestId, entry);
+    return true;
+  }
+
+  /**
+   * Record that the buyer received the finished video. Only now may the
+   * seller's NeedAuth for the job's price be signed, and only once.
+   */
+  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): void {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const job = this._videoJobs.get(key);
+    const entry = this._requestBillingEntries.get(requestId);
+    if (!job || !entry?.requestFacts.video) return;
+    this._videoJobs.delete(key);
+    const video = entry.requestFacts.video;
+    this.recordObservedUnitUsage(requestId, { units: {
+      video_generations: video.count,
+      video_seconds: (video.duration ?? 0) * video.count,
+    } });
+  }
+
   clearRequestBilling(requestId: string): void {
     this._requestBillingEntries.delete(requestId);
     this._requestService.take(requestId);
@@ -2096,4 +2160,8 @@ export class BuyerPaymentManager {
   }
 
   // parseResponseCost removed — cost data now flows through NeedAuth on PaymentMux.
+}
+
+function videoJobKey(sellerPeerId: string, protocol: string, jobId: string): string {
+  return `${sellerPeerId.toLowerCase()}\n${protocol}\n${jobId}`;
 }

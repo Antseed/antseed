@@ -136,6 +136,7 @@ describe('BuyerPaymentNegotiator', () => {
       available?: bigint;
       delivered?: bigint;
       confirmedDeposits?: bigint[];
+      thresholdBps?: bigint;
     }) {
       const events: string[] = [];
       const deposits = [opts.deposit, ...(opts.confirmedDeposits ?? [])];
@@ -147,6 +148,7 @@ describe('BuyerPaymentNegotiator', () => {
         getActiveSession: vi.fn(() => ({ sessionId: `0x${'a'.repeat(64)}` })),
         getCumulativeAmount: vi.fn(() => opts.cumulative),
         getDeliveredAmount: vi.fn(() => opts.delivered ?? opts.cumulative),
+        getPendingVideoTotal: vi.fn(() => 0n),
         reconcileReserveAmount: vi.fn(async () => {}),
         getBalance: vi.fn(async () => ({ available: opts.available ?? 10_000_000n, reserved: 0n })),
         signVideoAdvance: vi.fn(async (_peer: string, _req: string, target: bigint) => {
@@ -159,7 +161,7 @@ describe('BuyerPaymentNegotiator', () => {
       const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
       Object.assign(negotiator as object, {
         _bpm: bpm,
-        _channelsClient: { getSession },
+        _channelsClient: { getSession, getTopUpSettledThresholdBps: vi.fn(async () => opts.thresholdBps ?? 8_500n) },
         _lockedPeers: new Set([peer.peerId]),
         _pendingNeedAuth: new Set(),
         _videoHeadroomLocks: new Map(),
@@ -167,6 +169,19 @@ describe('BuyerPaymentNegotiator', () => {
       });
       return { negotiator, bpm, events, getSession };
     }
+
+    it('signs the serious fee up to the threshold read from the contract', async () => {
+      const { negotiator, events } = makeNegotiator({ cumulative: 100_000n, deposit: 1_000_000n, videoCost: 4_200_000n, thresholdBps: 6_500n, confirmedDeposits: [5_300_000n] });
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:650000', 'topup:5300000']);
+    });
+
+    it('excludes videos accepted but not yet delivered from the free reserve', async () => {
+      const { negotiator, bpm, events } = makeNegotiator({ cumulative: 0n, deposit: 1_000_000n, videoCost: 800_000n, confirmedDeposits: [2_600_000n] });
+      bpm.getPendingVideoTotal.mockReturnValue(800_000n);
+      await negotiator.ensureVideoHeadroom(peer, connection, requestId);
+      expect(events).toEqual(['advance:850000', 'topup:2600000']);
+    });
 
     it('does nothing when the video fits the locked reserve', async () => {
       const { negotiator, bpm } = makeNegotiator({ cumulative: 0n, deposit: 1_000_000n, videoCost: 800_000n });

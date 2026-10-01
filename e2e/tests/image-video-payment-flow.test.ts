@@ -35,6 +35,20 @@ const mockPaymentViewInterface = new Interface([
   'function balanceOf(address owner) external view returns (uint256)',
 ]);
 
+/** Minimal MP4 (ftyp, mvhd duration, mdat padding) that passes the delivery check. */
+function mp4Video(durationMs: number, mediaBytes: number): Buffer {
+  const box = (type: string, body: Buffer) => {
+    const head = Buffer.alloc(8);
+    head.writeUInt32BE(8 + body.length);
+    head.write(type, 4, 'latin1');
+    return Buffer.concat([head, body]);
+  };
+  const mvhd = Buffer.alloc(20);
+  mvhd.writeUInt32BE(1000, 12);
+  mvhd.writeUInt32BE(durationMs, 16);
+  return Buffer.concat([box('ftyp', Buffer.from('isom\0\0\0\0isom', 'latin1')), box('moov', box('mvhd', mvhd)), box('mdat', Buffer.alloc(mediaBytes, 9))]);
+}
+
 function largeVideoInputImage(): string {
   const chunk = (type: string, data: Buffer) => {
     const contents = Buffer.concat([Buffer.from(type), data]);
@@ -384,7 +398,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     await setupRpc();
     const originalFetch = globalThis.fetch;
     const origin = 'https://api.venice.ai';
-    const video = Buffer.alloc(3 * 1024 * 1024 + 17, 9);
+    const video = mp4Video(5_000, 3 * 1024 * 1024 + 17);
     const calls: Array<{ path: string; body: any }> = [];
     const createBody = JSON.stringify({ model: 'wan-2.5', prompt: 'boat', duration: '5s', ...(inputKind === 'image' ? { image_url: `data:image/png;base64,${largeVideoInputImage()}` } : {}) });
     if (inputKind === 'image') expect(Buffer.byteLength(createBody)).toBeGreaterThan(ANTSEED_UPLOAD_THRESHOLD_BYTES);
@@ -423,7 +437,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       const replay = await fetch(`${base}/api/v1/video/queue`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-idempotency-key': 'venice-input' }, body: createBody });
       expect(replay.status).toBe(200);
       expect((await replay.json()).queue_id).toBe('queue-1');
-      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n);
+      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
       const pending = await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'queue-1' });
       expect(pending.status).toBe(200);
       expect((await pending.json()).status).toBe('PROCESSING');
@@ -444,7 +458,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect(calls.length).toBe(callsBefore);
       expect(calls.filter(call => call.path === '/api/v1/video/queue')).toHaveLength(1);
       expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe(transport);
-      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n);
+      await vi.waitFor(() => expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n));
       await vi.waitFor(() => {
         const auths = (buyerNode as any)._verificationStorage.listResponseAuthsBySeller(discoveredSeller.peerId);
         expect(auths.filter((auth: any) => !auth.verified).map((auth: any) => auth.verificationError)).toEqual([]);
@@ -504,7 +518,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     expect(download!.status).toBe(200);
     expect(download!.headers.get('content-type')).toBe('video/mp4');
     expect((await download!.arrayBuffer()).byteLength).toBeGreaterThan(0);
-    expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n);
+    await vi.waitFor(() => expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n));
   }, 240_000);
 
   it('negotiates payment and records image usage for images.generate', async () => {
