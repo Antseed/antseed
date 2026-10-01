@@ -109,7 +109,7 @@ Downloads and repeated downloads are free; they do not create a new job or chang
 
 The buyer proxy stores accepted job routes in `buyer.state.json` for 30 days, so retrieve requests go back to the same seller, provider, and service. Unknown jobs return `404`.
 
-The seller node stores `(protocol, job ID) -> buyer peer ID` in `resources.db`. Retrieve requests from another buyer return `404` before reaching the seller API. Video requests are refused if this storage is unavailable.
+The seller node stores `(protocol, job ID) -> buyer peer ID` in the seller's `metering.db`. Retrieve requests from another buyer return `404` before reaching the seller API. Video requests are refused if this storage is unavailable.
 
 ## Duplicate charge protection
 

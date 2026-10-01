@@ -131,7 +131,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     const sellerIdentity = identity();
     const buyerStore = new ChannelStore(join(directory, 'buyer'));
     const sellerStore = new ChannelStore(join(directory, 'seller'));
-    const ownership = new ResourceOwnershipStore(join(directory, 'resources.db'));
+    const ownership = new ResourceOwnershipStore(join(directory, 'metering.db'));
     cleanups.push(() => { buyerStore.close(); sellerStore.close(); ownership.close(); });
 
     vi.spyOn(DepositsClient.prototype, 'getBuyerBalance').mockResolvedValue({

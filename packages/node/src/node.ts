@@ -1566,7 +1566,7 @@ export class AntseedNode extends EventEmitter {
       debugWarn(`[Node] Metering storage unavailable: ${err instanceof Error ? err.message : err}`);
     }
     try {
-      this._resourceOwnership = new ResourceOwnershipStore(join(dataDir, "resources.db"));
+      this._resourceOwnership = new ResourceOwnershipStore(join(dataDir, "metering.db"));
     } catch (err) {
       debugWarn(`[Node] Resource ownership storage unavailable; video services will be refused: ${err instanceof Error ? err.message : err}`);
     }

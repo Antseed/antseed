@@ -1,6 +1,6 @@
 import Database from 'better-sqlite3';
 import { runMigrations } from '../storage/migrate.js';
-import { resourceMigrations } from '../storage/migrations/resources/index.js';
+import { meteringMigrations } from '../storage/migrations/metering/index.js';
 import type { SerializedHttpResponse } from '../types/http.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60_000;
@@ -13,14 +13,17 @@ interface ReplayRow {
   body: Buffer;
 }
 
-/** Seller-side owner of each accepted video job, plus its replayable acceptance keyed by buyer idempotency key. */
+/**
+ * Seller-side owner of each accepted video job, plus its replayable acceptance keyed by buyer idempotency key.
+ * Tables live in the seller's metering database.
+ */
 export class ResourceOwnershipStore {
   private readonly _db: Database.Database;
 
   constructor(dbPath: string, private readonly _now: () => number = Date.now) {
     this._db = new Database(dbPath);
     this._db.pragma('journal_mode = WAL');
-    runMigrations(this._db, resourceMigrations);
+    runMigrations(this._db, meteringMigrations);
     const cutoff = this._now() - RETENTION_MS;
     this._db.prepare('DELETE FROM resource_owners WHERE created_at < ?').run(cutoff);
     this._db.prepare('DELETE FROM resource_idempotency WHERE created_at < ?').run(cutoff);

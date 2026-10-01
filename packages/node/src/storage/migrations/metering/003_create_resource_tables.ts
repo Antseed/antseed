@@ -1,7 +1,7 @@
 import type { Migration } from '../../migrate.js';
 
 export const migration: Migration = {
-  version: 1,
+  version: 3,
   name: 'create_resource_ownership_tables',
   up: (db) => {
     db.exec(`

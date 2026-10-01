@@ -107,7 +107,7 @@ it('meters native video acceptance once, preserves buyer ownership, and serves f
   const handler = makeSellerRequestHandler({
     providers: [provider], sellerPaymentManager: makeSpmMock({ recordSpend, hasSession: () => paid }),
     channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
-    resourceOwnershipStore: new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db')),
+    resourceOwnershipStore: new ResourceOwnershipStore(join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'metering.db')),
   });
   const frames: Uint8Array[] = [];
   const payment = { sendNeedAuth, sendPaymentRequired: vi.fn() } as any;
@@ -139,7 +139,7 @@ describe('native video job ownership and idempotency', () => {
       serviceUnitBillingModels: { video: { 'venice-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } },
     });
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 206, headers: { 'content-type': 'video/mp4' }, body: Buffer.from('video') }));
-    const dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-video-download-')), 'resources.db');
+    const dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-video-download-')), 'metering.db');
     let store = new ResourceOwnershipStore(dbPath);
     store.recordAcceptedCreate('venice-video', 'job', 'b'.repeat(40));
     store.close();
@@ -166,7 +166,7 @@ describe('native video job ownership and idempotency', () => {
   const pricing = { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] };
 
   function setup(
-    dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db'),
+    dbPath = join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'metering.db'),
     taskIds = ['task-1', 'task-2'],
     spmOverrides: Record<string, unknown> = {},
   ) {
@@ -318,7 +318,7 @@ describe('native video job ownership and idempotency', () => {
   });
 
   describe('video creates above the locked reserve', () => {
-    const newDbPath = () => join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'resources.db');
+    const newDbPath = () => join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'metering.db');
     const bigVideo = { model: 'video', duration: '20s' };
     const bodyOf = (response: { body: Uint8Array }) => JSON.parse(new TextDecoder().decode(response.body));
 
