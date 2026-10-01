@@ -1,4 +1,4 @@
-import { validateRoutingServiceMetadata, type PeerInfo, type ModelRouterAdapter, type RoutingServiceTarget, type RoutingUsageObservation } from '@antseed/node'
+import type { PeerInfo, ModelRouterAdapter, RoutingServiceTarget, RoutingUsageObservation } from '@antseed/node'
 
 export class ModelRouterRegistry {
   private readonly adapters = new Map<string, ModelRouterAdapter>()
@@ -6,7 +6,6 @@ export class ModelRouterRegistry {
   register(protocol: string, adapter: ModelRouterAdapter): void {
     if (!protocol.trim() || protocol !== protocol.trim()) throw new Error('Invalid routing protocol')
     if (this.adapters.has(protocol)) throw new Error(`Routing adapter already registered: ${protocol}`)
-    validateRoutingServiceMetadata(adapter.routingMetadata)
     this.adapters.set(protocol, adapter)
   }
 

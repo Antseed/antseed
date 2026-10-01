@@ -37,13 +37,13 @@ const imageModel: UnitBillingModelV1 = {
 describe("unit billing runtime", () => {
   const requestContext: UnitBillingContext = {
     sellerPeerId: 'a'.repeat(40), provider: 'router', service: 'route',
-    serviceApiProtocol: 'levanto-routing', unitLimits: { completed_requests: 1 },
+    serviceApiProtocol: 'model-routing', unitLimits: { completed_requests: 1 },
   };
   const routeResponse = {
     requestId: 'route-1', statusCode: 200, headers: {},
     body: new TextEncoder().encode(JSON.stringify({ ranked: Array.from({ length: 5 }, () => ({ model: 'chat' })) })),
   };
-  it.each(['levanto-routing', 'typesafe-systemone'] as const)('selects request measurement from the billing model, not the %s API', serviceApiProtocol => {
+  it.each(['model-routing', 'typesafe-systemone'] as const)('selects request measurement from the billing model, not the %s API', serviceApiProtocol => {
     const request = { requestId: 'request-unit', method: 'POST', path: '/custom', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ n: 5 })) };
     const args = { sellerPeerId: 'a'.repeat(40), provider: 'provider', service: 'service', serviceApiProtocol, request };
     const captured = captureUnitBillingContext({ ...args, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } });

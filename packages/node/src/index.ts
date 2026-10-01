@@ -34,11 +34,25 @@ export {
 // on ethers directly.
 export { formatEther, parseEther } from 'ethers';
 export type { Router } from './interfaces/buyer-router.js';
-export type { ModelRouterAdapter, RouteRecommendation, RouteCandidate, RouteSelectionContext } from './interfaces/model-router-adapter.js';
+export type { ModelRouterAdapter, RouteRecommendation, RouteCandidate, RouteSelectionContext, RoutingDescribeContext } from './interfaces/model-router-adapter.js';
+export { RoutingDescriptionChangedError } from './interfaces/model-router-adapter.js';
 export type { RoutingUsageObservation } from './interfaces/model-router-adapter.js';
 export * from './routing/selection.js';
-export { assertRoutingPreferences, canonicalRoutingJson, createRoutingServiceMetadata, resolveRoutingPreferences, validateRoutingPreferenceSchema, validateRoutingServiceMetadata, type RoutingPreferences, type RoutingPreferenceSchema, type RoutingServiceMetadataV1 } from '@antseed/protocol';
-export { validateRoutingCatalog, type RoutingCatalogV1 } from './routing/catalog.js';
+export { assertRoutingPreferences, canonicalRoutingJson, resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferenceField, type RoutingPreferences, type RoutingPreferenceSchema } from '@antseed/protocol';
+export {
+  MODEL_ROUTING_PROTOCOL,
+  MODEL_ROUTING_DESCRIBE_PATH,
+  MODEL_ROUTING_RANK_PATH,
+  routingCandidateKey,
+  validateRoutingDescribeResponse,
+  validateRoutingRankRequest,
+  validateRoutingRankResponse,
+  type RoutingCandidateV1,
+  type RoutingDescribeResponseV1,
+  type RoutingRankRequestV1,
+  type RoutingRankResponseV1,
+  type RoutingRecommendationV1,
+} from '@antseed/protocol';
 
 // Types (re-export everything)
 export * from './types/index.js';

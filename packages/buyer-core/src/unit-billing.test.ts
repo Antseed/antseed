@@ -25,10 +25,10 @@ describe('unit billing adapters', () => {
 
   it('routes completed-request billing on any advertised protocol', () => {
     const model: UnitBillingModelV1 = { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] };
-    const context: UnitBillingContext = { ...imageContext, serviceApiProtocol: 'levanto-routing', unitLimits: { completed_requests: 1 } };
+    const context: UnitBillingContext = { ...imageContext, serviceApiProtocol: 'model-routing', unitLimits: { completed_requests: 1 } };
 
-    expect(isUnitBilledProtocol('levanto-routing')).toBe(false);
-    expect(validateUnitBillingModelForProtocolV1('levanto-routing', model)).toEqual([]);
+    expect(isUnitBilledProtocol('model-routing')).toBe(false);
+    expect(validateUnitBillingModelForProtocolV1('model-routing', model)).toEqual([]);
     expect(validateUnitBillingModelForProtocolV1('openai-chat-completions', model)).toEqual([]);
     expect(estimateUnitRequestCost(model, context, { units: { completed_requests: 1 } })).toBe(1_000n);
   });

@@ -14,15 +14,15 @@ The unit calculator and payment channels are shared; measurement differs.
 
 ## Provider configuration
 
-API format and pricing are separate. A Levanto seller supplies `handleRequest`
+API format and pricing are separate. A routing seller (for example a ranking service) supplies `handleRequest`
 and ordinary provider configuration:
 
 ```ts
-services: ['levanto-route'],
-serviceApiProtocols: { 'levanto-route': ['levanto-routing'] },
+services: ['alpha-route'],
+serviceApiProtocols: { 'alpha-route': ['model-routing'] },
 serviceUnitBillingModels: {
-  'levanto-route': {
-    'levanto-routing': {
+  'alpha-route': {
+    'model-routing': {
       version: 1,
       components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
     },
@@ -32,13 +32,14 @@ pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
 ```
 
 There is no `serviceExecution` map or separate execution-contract configuration.
-The Levanto buyer plugin validates its `POST /v1/levanto-route` body and
-the response, including `v: 1`, before accepting recommendations. The shared API
+The buyer's `ModelRoutingAdapter` validates its `POST /v1/routing/rank` body and
+the response, including `version: 1`, before accepting recommendations (see
+[model-routing.md](model-routing.md)). The shared API
 adapter only identifies the protocol. Providers are responsible for validating
 their own API requests and returning non-success responses for rejected work;
-the generic seller handler does not inspect Levanto's payload schema.
+the generic seller handler does not inspect the routing payload schema.
 
-`priceUsd: 0.001` costs 1000 micro-USDC; `priceUsd: 0` makes the service free. The current Levanto
+`priceUsd: 0.001` costs 1000 micro-USDC; `priceUsd: 0` makes the service free. The current routing
 buyer supports completed-request pricing, not token-priced routing. Nonzero token
 surcharges are rejected because the completed-request adapter does not measure
 backend tokens. Supporting token-priced routing requires actual usage reporting.
@@ -120,5 +121,5 @@ completed-request schema validation, price limits, response acceptance,
 concurrency and mixed-service operation. They use the current source tree and
 do not fetch or execute historical buyer code; compatibility against an old buyer
 implementation is not tested automatically.
-Live settlement and Levanto's private backend still need an authenticated smoke
+Live settlement and the router's private backend still need an authenticated smoke
 test. See the router README for selection, fallback and conversation accounting.

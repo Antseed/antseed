@@ -44,9 +44,9 @@ describe('isImageModelId', () => {
 
 describe('parseServiceUnitBillingModelsJson', () => {
   it('accepts completed requests in the existing priceUsd component format', () => {
-    const models = { route: { 'levanto-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
+    const models = { route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
     expect(parseServiceUnitBillingModelsJson(JSON.stringify(models))).toEqual(models);
-    models.route['levanto-routing'].components[0]!.priceUsd = 16.777217;
+    models.route['model-routing'].components[0]!.priceUsd = 16.777217;
     expect(() => parseServiceUnitBillingModelsJson(JSON.stringify(models))).toThrow('float32');
   });
 

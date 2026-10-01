@@ -134,7 +134,7 @@ describe('BuyerPaymentManager', () => {
 
   // ── authorizeSpending ──────────────────────────────────────────
   describe('completed-request responses', () => {
-    const offer = { provider: 'levanto', service: 'levanto-route', serviceApiProtocol: 'levanto-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
+    const offer = { provider: 'alpha', service: 'alpha-route', serviceApiProtocol: 'model-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
     const peer = 'a'.repeat(40);
     async function open() {
       const channelId = await manager.authorizeSpending(peer, mux, 1000n, TEST_PRICING);
@@ -309,7 +309,7 @@ describe('BuyerPaymentManager', () => {
       expect(payload.cumulativeAmount).toBe('26000');
       expect(decodeMetadataTokens(payload.metadata).outputImages).toBe(1n);
       const services = decodeMetadataServices(payload.metadata);
-      expect(services.find(service => service.serviceId === id('levanto-route'))?.cumulativeAmount).toBe(1000n);
+      expect(services.find(service => service.serviceId === id('alpha-route'))?.cumulativeAmount).toBe(1000n);
       expect(services.find(service => service.serviceId === id('image-model'))?.cumulativeAmount).toBe(25000n);
     });
   });

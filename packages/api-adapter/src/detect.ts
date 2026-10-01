@@ -40,8 +40,9 @@ export function detectRequestServiceApiProtocol(
   if (normalizedPath.startsWith('/v1/systemone')) {
     return 'typesafe-systemone';
   }
-  if (normalizedPath === '/v1/levanto-route') {
-    return 'levanto-routing';
+  const pathOnly = normalizedPath.split('?')[0];
+  if (pathOnly === '/v1/routing/describe' || pathOnly === '/v1/routing/rank') {
+    return 'model-routing';
   }
 
   const hasAnthropicVersionHeader = Object.keys(request.headers)

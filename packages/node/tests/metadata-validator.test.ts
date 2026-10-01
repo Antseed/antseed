@@ -307,10 +307,10 @@ describe('validateMetadata', () => {
 
   it('accepts completed requests in v12 and rejects token surcharges or missing API declarations', () => {
     const metadata = validMetadata({ providers: [{
-      provider: 'levanto', services: ['route'], maxConcurrency: 1, currentLoad: 0,
+      provider: 'alpha', services: ['route'], maxConcurrency: 1, currentLoad: 0,
       defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-      serviceApiProtocols: { route: ['levanto-routing'] },
-      serviceUnitBillingModels: { route: { 'levanto-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+      serviceApiProtocols: { route: ['model-routing'] },
+      serviceUnitBillingModels: { route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
     }] });
     expect(metadata.version).toBe(12);
     expect(validateMetadata(metadata)).toEqual([]);

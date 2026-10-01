@@ -317,7 +317,7 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
-  return protocol !== 'openai-images' && protocol !== 'levanto-routing';
+  return protocol !== 'openai-images' && protocol !== 'model-routing';
 }
 
 /**
@@ -368,8 +368,8 @@ export function buildHealthProbeRequest(service: string, protocol: ServiceApiPro
       break;
     case 'openai-images':
       throw new Error('Health probes are not supported for openai-images services');
-    case 'levanto-routing':
-      throw new Error('Health probes are not supported for levanto-routing services');
+    case 'model-routing':
+      throw new Error('Health probes are not supported for model-routing services');
   }
   return {
     requestId: `health-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`,

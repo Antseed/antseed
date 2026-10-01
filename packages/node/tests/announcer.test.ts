@@ -137,7 +137,7 @@ describe('PeerAnnouncer capabilities', () => {
 
 describe('PeerAnnouncer metadata versions', () => {
   it('signs native completed-request and image models together in metadata v12', async () => {
-    const offer = { provider: 'levanto', service: 'levanto-route', serviceApiProtocol: 'levanto-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
+    const offer = { provider: 'alpha', service: 'alpha-route', serviceApiProtocol: 'model-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
     const announcer = new PeerAnnouncer({
       ...makeBaseConfig(),
       providers: [{ provider: 'images', services: ['image'], maxConcurrency: 5,

@@ -18,7 +18,6 @@ import {
   peerSupportsCooperativeClose,
   isRoutingSelection,
   resolveRoutingPreferences,
-  validateRoutingServiceMetadata,
   rankModelRoutes,
   sanitizePeerDisplayName,
   type AntseedNode,
@@ -96,7 +95,7 @@ import {
   type ConversationIdentity,
 } from './conversation-identity.js'
 import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
-import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, routingMetadataForService, RoutingCatalogCache } from './router-execution.js'
+import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, RoutingDescriptionCache } from './router-execution.js'
 import { recordRouterUsage } from './routing-usage.js'
 import type { DepositWatcher } from './deposit-watcher.js'
 import {
@@ -836,7 +835,7 @@ export class BuyerProxy {
    * Set via `POST /_antseed/route` and persisted in buyer.state.json.
    */
   private _defaultRoute: DefaultRouteSelection = EMPTY_DEFAULT_ROUTE
-  private readonly _routingCatalogs = new RoutingCatalogCache()
+  private readonly _routingDescriptions = new RoutingDescriptionCache()
   private readonly _modelRouterRegistry: BuyerModelRouterRegistry | null
   private _conversations!: ConversationStore
   /**
@@ -1149,10 +1148,8 @@ export class BuyerProxy {
     if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
     const peers = await this._getPeers()
     const adapter = this._modelRouterRegistry.resolve(value.service, peers)
-    const catalog = await this._routingCatalogs.get(adapter, value.service, peers)
-    const metadata = routingMetadataForService(adapter, catalog)
-    if (metadata) validateRoutingServiceMetadata(metadata)
-    resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, value.preferences ?? {})
+    const description = await this._routingDescriptions.get(adapter, value.service, peers, this._node)
+    resolveRoutingPreferences(description.preferencesSchema, value.preferences ?? {})
   }
 
   private _parseDefaultRoute(value: unknown): DefaultRouteSelection {
@@ -2445,7 +2442,7 @@ export class BuyerProxy {
     }
     const rawService = extractRequestedService(serializedReq)
     const autoRequested = routerSelection !== null
-      && (rawService === 'levanto-auto' || rawService === ROUTED_MODEL_ALIAS)
+      && rawService === ROUTED_MODEL_ALIAS
     const chatModelPin = storedConversation?.peerSource === 'user' ? chatPinnedModel : null
     if (autoRequested && chatModelPin) {
       serializedReq = withRoutedModel(serializedReq, chatModelPin)
@@ -2490,7 +2487,7 @@ export class BuyerProxy {
           && !isCoolingDown(this._peerHealth.get(peer.peerId), this._now()))
       recommendations = await executeRouterSelection({
         node: this._node, adapter, request, peers, candidates,
-        conversationKey: routingConversationKey, selection, catalogs: this._routingCatalogs,
+        conversationKey: routingConversationKey, selection, descriptions: this._routingDescriptions,
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
           if (conversationId) this._trackRequestConversation(requestId, conversationId, undefined, 'routing')

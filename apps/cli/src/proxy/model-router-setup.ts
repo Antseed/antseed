@@ -1,10 +1,10 @@
-import { ModelRouterRegistry } from '@antseed/router-core'
-import { LevantoRoutingAdapter } from '@antseed/router-levanto'
+import { MODEL_ROUTING_PROTOCOL } from '@antseed/node'
+import { ModelRouterRegistry, ModelRoutingAdapter } from '@antseed/router-core'
 
 export type BuyerModelRouterRegistry = Pick<ModelRouterRegistry, 'resolve' | 'recordUsage'>
 
 export function createBuyerModelRouterRegistry(): ModelRouterRegistry {
   const registry = new ModelRouterRegistry()
-  registry.register('levanto-routing', new LevantoRoutingAdapter())
+  registry.register(MODEL_ROUTING_PROTOCOL, new ModelRoutingAdapter())
   return registry
 }

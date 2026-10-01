@@ -10,14 +10,14 @@ import type {
 import type { PeerInfo } from '../src/types/peer.js';
 
 describe('explicit completed-request buyer requests', () => {
-  const offer = { provider: 'levanto', service: 'levanto-route', serviceApiProtocol: 'levanto-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
+  const offer = { provider: 'alpha', service: 'alpha-route', serviceApiProtocol: 'model-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
   const peer = { peerId: 'a'.repeat(40) } as PeerInfo;
   const request = {
     requestId: 'fixed', method: 'POST', path: '/_antseed/route',
     headers: { 'x-antseed-provider': offer.provider },
-    body: new TextEncoder().encode(JSON.stringify({ service: offer.service, v: 1, cqt: 5, inputMessage: 'Help', promptTokens: 1, expectedCachedTokens: [], constraints: {} })),
+    body: new TextEncoder().encode(JSON.stringify({ service: offer.service, v: 1, tradeoff: 5, inputMessage: 'Help', promptTokens: 1, expectedCachedTokens: [], constraints: {} })),
   };
-  const validResponse = { v: 1, router: 'levanto', ranked: [{ model: 'model-a', peer: 'b'.repeat(40), estimate: { costUsd: 0.01, inputTokens: 1, cachedInputTokens: 0, outputTokens: 2 }, price: { inUsdPerM: 1, outUsdPerM: 2, cachedInUsdPerM: 0 } }] };
+  const validResponse = { v: 1, router: 'alpha', ranked: [{ model: 'model-a', peer: 'b'.repeat(40), estimate: { costUsd: 0.01, inputTokens: 1, cachedInputTokens: 0, outputTokens: 2 }, price: { inUsdPerM: 1, outUsdPerM: 2, cachedInUsdPerM: 0 } }] };
   function setup(responses = [{ statusCode: 200, body: validResponse as unknown }], enabled = true) {
     const bpm = { trackUnitRequest: vi.fn(), bindUnitRequestChannel: vi.fn(), observeUnitResponse: vi.fn(), authorizeUnitResponse: vi.fn(async () => {}) };
     const negotiator = { bpm, getOrCreatePaymentMux: vi.fn(() => ({})), negotiateUnitBillingPayment: vi.fn(async () => true), handle402: vi.fn(), estimateCostFromResponse: vi.fn(), trackRequestService: vi.fn(), trackRequestBillingContext: vi.fn() };
@@ -55,7 +55,7 @@ describe('explicit completed-request buyer requests', () => {
     await expect(harness.handler.sendRequest(peer, { ...request, headers: { 'X-Antseed-Provider': 'wrong-provider' } }, undefined, { unitBilling: offer, acceptResponse: harness.acceptResponse })).rejects.toThrow('agreed offer');
     expect(harness.mux.sendProxyRequest).not.toHaveBeenCalled();
   });
-  it('executes a non-Levanto contract through the same request and payment path', async () => {
+  it('executes a non-alpha contract through the same request and payment path', async () => {
     const state = setup([{ statusCode: 200, body: { summary: 'Done' } }]);
     const summaryOffer = { provider: 'summarizer', service: 'summary', serviceApiProtocol: 'typesafe-systemone' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
     const response = await state.handler.sendRequest(peer, {
@@ -106,7 +106,7 @@ describe('explicit completed-request buyer requests', () => {
     };
     await expect(state.handler.sendRequest(seller, {
       ...request,
-      path: '/v1/levanto-route',
+      path: '/v1/routing/rank',
       headers: { ...request.headers, 'content-type': 'application/json' },
     })).rejects.toThrow('explicit offer and response acceptance');
     expect(state.mux.sendProxyRequest).not.toHaveBeenCalled();

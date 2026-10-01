@@ -3,6 +3,7 @@ import type { RouteCandidate, RoutingUsageObservation } from '@antseed/node';
 type Observation = { ratio: number; inputTokens: number; at: number };
 type Conversation = { offers: Map<string, Observation>; requests: Set<string> };
 
+/** Per-conversation prompt-cache reuse observed from completed inference responses. */
 export class CacheObservations {
   private readonly conversations = new Map<string, Conversation>();
 
@@ -28,18 +29,11 @@ export class CacheObservations {
     if (this.conversations.size > 500) this.conversations.delete(this.conversations.keys().next().value!);
   }
 
-  estimates(conversationKey: string | null, candidates: readonly RouteCandidate[], promptTokens: number): Array<{ model: string; peer: string; tokens: number }> {
+  /** Expected cached input tokens for one exact peer/provider/model in this conversation. */
+  expectedCachedInputTokens(conversationKey: string | null, candidate: Pick<RouteCandidate, 'peerId' | 'provider' | 'serviceId'>, promptTokens: number): number {
     const conversation = conversationKey ? this.conversations.get(conversationKey) : undefined;
-    if (!conversation) return [];
-    const estimates = new Map<string, { model: string; peer: string; tokens: number }>();
-    for (const candidate of candidates) {
-      const observation = conversation.offers.get(JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId]));
-      const tokens = observation && this.now() - observation.at <= 3 * 60_000
-        ? Math.round(Math.min(observation.inputTokens * observation.ratio, promptTokens)) : 0;
-      const key = JSON.stringify([candidate.peerId, candidate.serviceId]);
-      const previous = estimates.get(key);
-      estimates.set(key, { model: candidate.serviceId, peer: candidate.peerId, tokens: previous ? Math.min(previous.tokens, tokens) : tokens });
-    }
-    return [...estimates.values()].filter(estimate => estimate.tokens > 0);
+    const observation = conversation?.offers.get(JSON.stringify([candidate.peerId, candidate.provider, candidate.serviceId]));
+    if (!observation || this.now() - observation.at > 3 * 60_000) return 0;
+    return Math.max(0, Math.round(Math.min(observation.inputTokens * observation.ratio, promptTokens)));
   }
 }

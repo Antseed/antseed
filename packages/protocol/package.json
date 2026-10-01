@@ -61,6 +61,10 @@
       "import": "./dist/billing.js",
       "types": "./dist/billing.d.ts"
     },
+    "./model-routing": {
+      "import": "./dist/model-routing.js",
+      "types": "./dist/model-routing.d.ts"
+    },
     "./service-billing": {
       "import": "./dist/service-billing.js",
       "types": "./dist/service-billing.d.ts"

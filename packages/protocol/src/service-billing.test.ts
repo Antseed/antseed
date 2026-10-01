@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest';
 import { completedRequestPrice, parseMicroUsdc, resolveCompletedRequestBilling, resolveServiceBillingOffer } from './service-billing.js';
 import type { ProviderAnnouncement } from './peer-metadata.js';
 
-const offer = { provider: 'levanto', service: 'levanto-route', serviceApiProtocol: 'levanto-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
+const offer = { provider: 'alpha', service: 'alpha-route', serviceApiProtocol: 'model-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
 
 function announcement(priceMicroUsdc = '1000'): ProviderAnnouncement {
   return {
@@ -32,7 +32,7 @@ describe('native completed-request prices', () => {
     const models = announcement().serviceUnitBillingModels![offer.service]!;
     models['openai-images'] = { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] };
     expect(() => resolveCompletedRequestBilling(models)).toThrow('Invalid');
-    expect(() => resolveCompletedRequestBilling({ unknown: models['levanto-routing'] } as typeof models)).toThrow('Invalid');
+    expect(() => resolveCompletedRequestBilling({ unknown: models['model-routing'] } as typeof models)).toThrow('Invalid');
   });
   it('requires a price for every advertised protocol', () => {
     const provider = announcement();
@@ -60,7 +60,7 @@ describe('native completed-request prices', () => {
     const provider = announcement();
     provider.serviceUnitBillingModels = {};
     expect(() => resolveServiceBillingOffer([provider], offer.provider, offer.service)).toThrow();
-    provider.serviceUnitBillingModels = { [offer.service]: { 'levanto-routing': { version: 1, components: [] } } };
+    provider.serviceUnitBillingModels = { [offer.service]: { 'model-routing': { version: 1, components: [] } } };
     expect(() => resolveServiceBillingOffer([provider], offer.provider, offer.service)).toThrow();
     const unadvertised = announcement();
     unadvertised.serviceApiProtocols = {};

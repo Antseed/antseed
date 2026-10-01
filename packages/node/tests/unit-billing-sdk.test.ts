@@ -78,9 +78,9 @@ describe('independent service execution and pricing', () => {
     return {
       name: 'mixed', services: ['route', 'image'], maxConcurrency: 4,
       pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
-      serviceApiProtocols: { route: ['levanto-routing'], image: ['openai-images'] },
+      serviceApiProtocols: { route: ['model-routing'], image: ['openai-images'] },
       serviceUnitBillingModels: {
-        route: { 'levanto-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
+        route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
         image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
       },
       handleRequest: vi.fn(),
@@ -92,7 +92,7 @@ describe('independent service execution and pricing', () => {
   it('keeps completed requests out of inference listings without filtering their metadata', () => {
     const candidate = provider();
     register(candidate);
-    expect(completedRequestOffer(candidate, 'route')).toEqual({ provider: 'mixed', service: 'route', serviceApiProtocol: 'levanto-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } });
+    expect(completedRequestOffer(candidate, 'route')).toEqual({ provider: 'mixed', service: 'route', serviceApiProtocol: 'model-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } });
     expect(candidate.services.filter(service => isLegacyInferenceService(candidate, service))).toEqual(['image']);
   });
   it('allows routing execution without forcing completed-request pricing', () => {
@@ -104,7 +104,7 @@ describe('independent service execution and pricing', () => {
   });
   it('allows the same completed-request price on a TypeSafe API', () => {
     const candidate = provider();
-    const model = candidate.serviceUnitBillingModels!.route!['levanto-routing']!;
+    const model = candidate.serviceUnitBillingModels!.route!['model-routing']!;
     candidate.serviceApiProtocols!.route = ['typesafe-systemone'];
     candidate.serviceUnitBillingModels!.route = { 'typesafe-systemone': model };
     expect(() => register(candidate)).not.toThrow();
@@ -112,7 +112,7 @@ describe('independent service execution and pricing', () => {
   });
   it('rejects ambiguous service pricing or an unadvertised API protocol', () => {
     const candidate = provider();
-    candidate.serviceApiProtocols!.route = ['levanto-routing', 'typesafe-systemone'];
+    candidate.serviceApiProtocols!.route = ['model-routing', 'typesafe-systemone'];
     candidate.serviceUnitBillingModels!.route!['typesafe-systemone'] = { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.002 }] };
     expect(() => register(candidate)).toThrow('same unit price');
     const unadvertised = provider();
@@ -139,7 +139,7 @@ describe('independent service execution and pricing', () => {
   });
   it('supports zero-priced completions and keeps request-priced images out of inference listings', () => {
     const free = provider();
-    free.serviceUnitBillingModels!.route = { 'levanto-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0 }] } };
+    free.serviceUnitBillingModels!.route = { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0 }] } };
     expect(() => register(free)).not.toThrow();
     const invalid = provider();
     invalid.serviceUnitBillingModels!.image = { 'openai-images': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } };

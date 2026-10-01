@@ -21,3 +21,5 @@ export {
   type ToolHint,
 } from './tool-hints.js'
 export { ModelRouterRegistry } from './routing-adapters.js'
+export { ModelRoutingAdapter, latestUserText } from './model-routing-adapter.js'
+export { CacheObservations } from './cache-observations.js'

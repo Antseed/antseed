@@ -13,5 +13,5 @@ export function completedRequestOffer(provider: Provider, service: string): Serv
 }
 
 export function isLegacyInferenceService(provider: Provider, service: string): boolean {
-  return !provider.serviceApiProtocols?.[service]?.includes('levanto-routing') && !completedRequestOffer(provider, service);
+  return !provider.serviceApiProtocols?.[service]?.includes('model-routing') && !completedRequestOffer(provider, service);
 }

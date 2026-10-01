@@ -1,4 +1,4 @@
-import { sha256, toUtf8Bytes } from 'ethers';
+import { toUtf8Bytes } from 'ethers';
 
 export type RoutingPreferences = Record<string, string>;
 export type RoutingPreferenceField = {
@@ -13,11 +13,6 @@ export type RoutingPreferenceSchema = {
   properties: Record<string, RoutingPreferenceField>;
   additionalProperties: false;
   required?: string[];
-};
-export type RoutingServiceMetadataV1 = {
-  version: 1;
-  preferencesSchema: RoutingPreferenceSchema;
-  preferencesSchemaHash: string;
 };
 export const MAX_ROUTING_PREFERENCE_BYTES = 16 * 1024;
 const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype']);
@@ -81,15 +76,4 @@ export function resolveRoutingPreferences(schema: RoutingPreferenceSchema, value
   }
   assertRoutingPreferences(result);
   return result;
-}
-
-export function createRoutingServiceMetadata(preferencesSchema: RoutingPreferenceSchema): RoutingServiceMetadataV1 {
-  validateRoutingPreferenceSchema(preferencesSchema);
-  return { version: 1, preferencesSchema: structuredClone(preferencesSchema), preferencesSchemaHash: sha256(toUtf8Bytes(canonicalRoutingJson(preferencesSchema))) };
-}
-
-export function validateRoutingServiceMetadata(value: unknown): asserts value is RoutingServiceMetadataV1 {
-  if (!object(value) || value.version !== 1 || Object.keys(value).some((key) => !['version', 'preferencesSchema', 'preferencesSchemaHash'].includes(key))) throw new Error('Invalid routing service metadata');
-  validateRoutingPreferenceSchema(value.preferencesSchema);
-  if (createRoutingServiceMetadata(value.preferencesSchema).preferencesSchemaHash !== value.preferencesSchemaHash) throw new Error('Routing preferences schema hash mismatch');
 }

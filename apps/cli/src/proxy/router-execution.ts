@@ -2,41 +2,42 @@ import { buildNetworkServiceOffers, isModelRouteEligible, type AntseedNode, type
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
-import { createRoutingServiceMetadata, resolveRoutingPreferences, validateRoutingCatalog, validateRoutingServiceMetadata, type RoutingCatalogV1, type RoutingSelection, type RoutingServiceTarget, type ModelRouterAdapter } from '@antseed/node'
+import { RoutingDescriptionChangedError, resolveRoutingPreferences, type RoutingDescribeResponseV1, type RoutingSelection, type RoutingServiceTarget, type ModelRouterAdapter } from '@antseed/node'
 
-const CATALOG_TIMEOUT_MS = 5_000
+const DESCRIBE_TIMEOUT_MS = 5_000
 
-/** Router-supplied model catalogs, reused for a short time so each chat turn does not refetch them. */
-export class RoutingCatalogCache {
-  private readonly entries = new Map<string, { catalog: RoutingCatalogV1 | undefined; fetchedAt: number }>()
+/** Router descriptions, reused until they expire or the router reports that its description changed. */
+export class RoutingDescriptionCache {
+  private readonly entries = new Map<string, { description: RoutingDescribeResponseV1; fetchedAt: number }>()
 
   constructor(private readonly ttlMs = 60_000, private readonly now: () => number = Date.now) {}
 
-  async get(adapter: Pick<ModelRouterAdapter, 'getCatalog'>, target: RoutingServiceTarget | undefined, peers: PeerInfo[]): Promise<RoutingCatalogV1 | undefined> {
-    if (!target || !adapter.getCatalog) return undefined
-    const key = catalogKey(target)
+  async get(adapter: Pick<ModelRouterAdapter, 'describe'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RoutingDescribeResponseV1> {
+    const key = descriptionKey(target)
     const cached = this.entries.get(key)
-    if (cached && this.now() - cached.fetchedAt < this.ttlMs) return cached.catalog
-    const catalog = await adapter.getCatalog(target, peers, AbortSignal.timeout(CATALOG_TIMEOUT_MS))
-    if (catalog !== undefined) validateRoutingCatalog(catalog)
-    this.entries.set(key, { catalog, fetchedAt: this.now() })
-    return catalog
+    if (cached && this.now() - cached.fetchedAt < this.ttlMs) return structuredClone(cached.description)
+    const signal = AbortSignal.timeout(DESCRIBE_TIMEOUT_MS)
+    const description = await adapter.describe(target, peers, {
+      signal,
+      sendRequest: (peer, request) => {
+        if (peer.peerId !== target.peerId) throw new Error('Router description must come from the selected routing-service peer')
+        return node.sendRequest(peer, request, { signal, controlPlane: true })
+      },
+    })
+    this.entries.set(key, { description: structuredClone(description), fetchedAt: this.now() })
+    return description
   }
 
   invalidate(target: RoutingServiceTarget): void {
-    this.entries.delete(catalogKey(target))
+    this.entries.delete(descriptionKey(target))
   }
 }
 
-function catalogKey(target: RoutingServiceTarget): string {
+function descriptionKey(target: RoutingServiceTarget): string {
   return JSON.stringify([target.peerId, target.provider, target.serviceId])
 }
 
 export type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
-
-export function routingMetadataForService(adapter: Pick<ModelRouterAdapter, 'routingMetadata'>, catalog?: RoutingCatalogV1) {
-  return catalog ? createRoutingServiceMetadata(catalog.preferencesSchema) : adapter.routingMetadata
-}
 
 /** Build the text-model destinations this buyer's policies allow. The router chooses among them. */
 export function eligibleRouterCandidates(
@@ -64,6 +65,7 @@ export function eligibleRouterCandidates(
     const candidate = {
       peer, peerId: peer.peerId, provider: offer.provider, serviceId: plan.serviceId,
       inputUsdPerMillion: offer.inputUsdPerMillion, outputUsdPerMillion: offer.outputUsdPerMillion,
+      ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
     }
     if (!preferences || (isModelRouteEligible(candidate, preferences) && candidate.inputUsdPerMillion <= preferences.maxInputUsdPerMillion)) candidates.push(candidate)
   }
@@ -81,7 +83,7 @@ export function resolveRouterRecommendations(routes: readonly RouteRecommendatio
   const resolved: RouteRecommendation[] = []
   const seen = new Set<string>()
   for (const route of routes) {
-    if (!route || typeof route.serviceId !== 'string' || !route.serviceId || route.inference !== undefined
+    if (!route || typeof route.serviceId !== 'string' || !route.serviceId
       || (route.provider !== undefined && (typeof route.provider !== 'string' || !route.provider.trim()))
       || (route.peerId !== undefined && (typeof route.peerId !== 'string' || !/^[0-9a-f]{40}$/.test(route.peerId)))) continue
     for (const candidate of candidates) {
@@ -124,38 +126,36 @@ export async function executeRouterSelection(args: {
   peers: PeerInfo[];
   candidates: ExecutionCandidate[];
   conversationKey: string | null;
-  selection?: Extract<RoutingSelection, { kind: 'router' }>;
+  selection: Extract<RoutingSelection, { kind: 'router' }>;
   signal: AbortSignal;
-  catalogs?: RoutingCatalogCache;
+  descriptions?: RoutingDescriptionCache;
   onRoutingRequest?: (requestId: string) => void;
 }): Promise<RouteRecommendation[]> {
   const { node, adapter, request, peers, conversationKey, signal } = args
-  const routingService = args.selection?.service
-  const allowedModels = args.selection?.allowedModels
-  const catalogs = args.catalogs ?? new RoutingCatalogCache(0)
-  const catalog = await catalogs.get(adapter, routingService, peers)
-  const candidates: RouteCandidate[] = args.candidates
-    .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
-      model.provider === candidate.provider && model.serviceId === candidate.serviceId))
-    .filter(candidate => !catalog || catalog.models.some(model =>
-      model.provider === candidate.provider && model.serviceId === candidate.serviceId))
-    .map(({ peer: _peer, ...candidate }) => candidate)
-  if (!candidates.length && allowedModels !== undefined) throw new Error('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
-  if (!candidates.length && catalog) throw new Error('No eligible allowed models are supported by this router')
-  // Adapters are plugins: check the user's preferences against the service's schema before paying.
-  const metadata = routingMetadataForService(adapter, catalog)
-  if (metadata) validateRoutingServiceMetadata(metadata)
-  const preferences = resolveRoutingPreferences(metadata?.preferencesSchema ?? { type: 'object', properties: {}, additionalProperties: false }, args.selection?.preferences ?? {})
-  try {
+  const routingService = args.selection.service
+  if (!routingService) throw new Error('Select an exact routing-service target')
+  const allowedModels = args.selection.allowedModels
+  const descriptions = args.descriptions ?? new RoutingDescriptionCache(0)
+  const attempt = async (): Promise<RouteRecommendation[]> => {
+    const description = await untilAborted(signal, descriptions.get(adapter, routingService, peers, node))
+    const supported = new Set(description.supportedServiceIds)
+    const allowed = args.candidates
+      .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
+        model.provider === candidate.provider && model.serviceId === candidate.serviceId))
+    if (!allowed.length && allowedModels !== undefined) throw new Error('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
+    // Send only models the router understands.
+    const candidates: RouteCandidate[] = allowed
+      .filter(candidate => supported.has(candidate.serviceId))
+      .map(({ peer: _peer, ...candidate }) => candidate)
+    if (!candidates.length) throw new Error('No eligible allowed models are supported by this router')
+    // Check the user's choices against the router's own schema before paying.
+    const preferences = resolveRoutingPreferences(description.preferencesSchema, args.selection.preferences ?? {})
     const routes = await untilAborted(signal, adapter.selectRoute(request, peers, {
-      signal, conversationKey, candidates, preferences,
-      preferencesSchemaHash: metadata?.preferencesSchemaHash,
-      routingService,
-      ...(catalog ? { catalog } : {}),
+      signal, conversationKey, candidates, preferences, routingService, description,
       // Pay for the recommendation only if it names at least one allowed destination.
       acceptRecommendations: recommendations => resolveRouterRecommendations(recommendations, candidates).length > 0,
       sendRequest: (peer, serviceRequest, options) => {
-        if (routingService && peer.peerId !== routingService.peerId) throw new Error('Routing request must use the selected routing-service peer')
+        if (peer.peerId !== routingService.peerId) throw new Error('Routing request must use the selected routing-service peer')
         // Routing and inference are separate purchases, so they need separate billing IDs.
         if (!serviceRequest.requestId || serviceRequest.requestId === request.requestId) throw new Error('Routing purchases require a distinct request ID')
         args.onRoutingRequest?.(serviceRequest.requestId)
@@ -166,9 +166,20 @@ export async function executeRouterSelection(args: {
     const resolved = routes ? resolveRouterRecommendations(routes, candidates) : []
     if (!resolved.length) throw new Error('Selected router returned no eligible recommendation')
     return resolved
+  }
+  try {
+    return await attempt()
   } catch (error) {
-    // A rejected route may mean the router's catalog changed; fetch it fresh next time.
-    if (routingService) catalogs.invalidate(routingService)
+    descriptions.invalidate(routingService)
+    // The router's models or settings changed after we described it: refresh once and retry.
+    if (error instanceof RoutingDescriptionChangedError) {
+      try {
+        return await attempt()
+      } catch (retryError) {
+        descriptions.invalidate(routingService)
+        throw retryError
+      }
+    }
     throw error
   }
 }
