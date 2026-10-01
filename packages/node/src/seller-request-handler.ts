@@ -638,7 +638,7 @@ export class SellerRequestHandler {
       this.adjustProviderLoad(provider.name, 1);
       try {
         try {
-          const response = await this._executeRequest(provider, request, {
+          let response = await this._executeRequest(provider, request, {
             signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
               if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
@@ -663,6 +663,16 @@ export class SellerRequestHandler {
               mux.sendProxyChunk(chunk);
             },
           });
+          // Only charge for a video the buyer can retrieve later: if the job
+          // owner cannot be saved, answer 503 so billing sees no acceptance.
+          if (videoRoute?.action === 'create' && !this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoIdempotencyKey)) {
+            response = {
+              requestId: request.requestId,
+              statusCode: 503,
+              headers: { 'content-type': 'application/json' },
+              body: new TextEncoder().encode(JSON.stringify({ error: { code: 'resource_ownership_unavailable', message: 'Seller cannot record video job ownership' } })),
+            };
+          }
           statusCode = response.statusCode;
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
@@ -682,9 +692,6 @@ export class SellerRequestHandler {
             responseUsage = parseResponseUsage(response.body);
           }
           debugLog(`[SellerHandler] Raw provider usage: in=${responseUsage.inputTokens} fresh=${responseUsage.freshInputTokens} cached=${responseUsage.cachedInputTokens} out=${responseUsage.outputTokens}`);
-          if (videoRoute?.action === 'create') {
-            this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoIdempotencyKey);
-          }
           if (!streamedResponseStarted) {
             mux.sendProxyResponse(response);
           } else if (heldDoneChunkData !== null) {
@@ -891,9 +898,9 @@ export class SellerRequestHandler {
     response: SerializedHttpResponse,
     buyerPeerId: string,
     idempotencyKey: string | undefined,
-  ): void {
+  ): boolean {
     const resourceId = nativeVideoAcceptance(route.protocol, response);
-    if (!resourceId) return;
+    if (!resourceId) return true;
     try {
       this._deps.resourceOwnershipStore?.recordAcceptedCreate(
         route.protocol,
@@ -902,8 +909,10 @@ export class SellerRequestHandler {
         idempotencyKey,
         { statusCode: response.statusCode, headers: response.headers, body: response.body ?? new Uint8Array(0) },
       );
+      return true;
     } catch (err) {
       debugWarn(`[SellerHandler] Failed to record video job ownership: ${err instanceof Error ? err.message : err}`);
+      return false;
     }
   }
 

@@ -215,6 +215,17 @@ describe('native video job ownership and idempotency', () => {
     store.close();
   });
 
+  it('does not charge for a video whose owner cannot be saved', async () => {
+    const { create, send, recordSpend, store } = setup();
+    vi.spyOn(store, 'recordAcceptedCreate').mockImplementation(() => { throw new Error('disk full'); });
+    const response = await create(buyer);
+    expect(response.statusCode).toBe(503);
+    expect(JSON.parse(new TextDecoder().decode(response.body)).error.code).toBe('resource_ownership_unavailable');
+    expect(recordSpend.mock.calls.every(([, cost]) => cost === 0n)).toBe(true);
+    expect((await send(buyer, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: 'task-1' })).statusCode).toBe(404);
+    store.close();
+  });
+
   it('keeps ownership across a seller restart', async () => {
     const first = setup();
     await first.create(buyer);
