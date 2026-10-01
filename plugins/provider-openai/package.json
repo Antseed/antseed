@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-openai",
-  "version": "0.2.46",
+  "version": "0.2.47",
   "description": "OpenAI-compatible provider plugin for Antseed",
   "type": "module",
   "files": [
