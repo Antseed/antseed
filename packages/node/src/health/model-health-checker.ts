@@ -99,6 +99,19 @@ export class ModelHealthChecker {
     this._failureThreshold = Math.max(1, config.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD);
     this._probeTimeoutMs = config.probeTimeoutMs ?? DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS;
     this._onChange = config.onChange;
+    // Providers retained after an OAuth initialization failure must pass a real
+    // probe before any service is advertised. Keep their services in recovery
+    // state rather than dropping the provider permanently.
+    for (const { provider } of this._targets) {
+      if (provider.healthCheckAvailable !== false) continue;
+      for (const [index, service] of provider.services.entries()) {
+        const state = this._stateFor(provider.name, service);
+        state.removed = true;
+        state.removedAtIndex = index;
+        state.lastDetail = 'Awaiting successful probe after initialization failure';
+      }
+      provider.services.splice(0);
+    }
   }
 
   /** Start periodic sweeps. The first sweep runs immediately (async). */

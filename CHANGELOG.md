@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Development/testing OAuth: optionally persist Claude credentials with `CLAUDE_AUTH_FILE`, retain rotated tokens across restarts, and back off failed refresh attempts without logging upstream credential responses. With model health checks enabled, OAuth refresh failures during CLI provider initialization no longer terminate multi-provider development sessions; affected services stay hidden until a successful probe. Configuration errors remain fatal. Subscription OAuth plugins remain for testing and development only.
+
 ### Changed
 
 - Docs: document `seller.freeUsage` record batching in the configuration guide and the CLI README.
