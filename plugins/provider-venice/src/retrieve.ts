@@ -4,6 +4,19 @@ import { streamVideoResponse, videoDownloadError, videoDownloadSignal } from '@a
 
 const MAX_STATUS_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
+const MAX_RETRIEVE_ATTEMPTS = 3;
+const RETRIEVE_RETRY_DELAY_MS = 250;
+
+async function fetchRetrieve(url: string, init: RequestInit, signal: AbortSignal): Promise<Response> {
+  for (let attempt = 1; ; attempt += 1) {
+    try {
+      return await fetch(url, init);
+    } catch (cause) {
+      if (signal.aborted || attempt >= MAX_RETRIEVE_ATTEMPTS) throw cause;
+      await new Promise((resolve) => setTimeout(resolve, RETRIEVE_RETRY_DELAY_MS * attempt));
+    }
+  }
+}
 
 /**
  * The seller rebuilds retrieve bodies from the owned job and the routed
@@ -42,12 +55,12 @@ export function withVeniceRetrieve(provider: Provider, baseUrl: string, apiKey: 
       const download = videoDownloadSignal(callbacks.signal);
       let streaming = false;
       try {
-        const upstream = await fetch(retrieveUrl, {
+        const upstream = await fetchRetrieve(retrieveUrl, {
           method: 'POST',
           headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json', 'accept-encoding': 'identity' },
           body: retrieveBody(service, route.resourceId, parseJsonObject(request.body)?.delete_media_on_completion),
           redirect: 'error', signal: download.signal,
-        });
+        }, download.signal);
         const contentType = upstream.headers.get('content-type')?.split(';')[0]?.trim();
         if (upstream.status === 200 && contentType === 'video/mp4') {
           if (activeDownloads >= MAX_ACTIVE_DOWNLOADS) {

@@ -88,6 +88,17 @@ it('passes Venice JSON errors through and hides upstream exceptions', async () =
   expect(Buffer.from(failed.body).toString()).not.toContain('seller-secret');
 });
 
+it('retries a transient Venice retrieve failure', async () => {
+  const fetchMock = vi.fn()
+    .mockRejectedValueOnce(new TypeError('fetch failed'))
+    .mockResolvedValueOnce(Response.json({ status: 'PROCESSING' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const result = await stream(await plugin.createProvider(config));
+  expect(result.statusCode).toBe(200);
+  expect(JSON.parse(Buffer.from(result.body).toString()).status).toBe('PROCESSING');
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
 it('rejects unknown services, missing queue ids, and non-streamed retrieves without calling Venice', async () => {
   const fetchMock = vi.fn();
   vi.stubGlobal('fetch', fetchMock);
