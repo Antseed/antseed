@@ -188,7 +188,7 @@ export interface SellerCLIConfig {
   gasCheck?: SellerGasCheckCLIConfig;
   /** Optional persistent per-address request limit for zero-priced services. */
   freeTier?: SellerFreeTierCLIConfig;
-  /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 300000). */
+  /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
 }
 
