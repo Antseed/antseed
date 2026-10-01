@@ -111,6 +111,24 @@ describe('buildHealthProbeRequest', () => {
 });
 
 describe('ModelHealthChecker', () => {
+  it('quarantines initial auth failures and restores only models with successful probes', async () => {
+    const provider = makeProvider({
+      healthCheckAvailable: false,
+      onRequest: statusSequence({ 'model-a': [200], 'model-b': [400, 200] }),
+    });
+    const onChange = vi.fn();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], onChange });
+    expect(provider.services).toEqual([]);
+    expect(checker.getSnapshot().every((s) => !s.advertised)).toBe(true);
+    await checker.runSweep();
+    expect(provider.services).toEqual(['model-a']);
+    expect(provider.healthCheckAvailable).toBe(true);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    await checker.runSweep();
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
   it('unadvertises a service after the failure threshold and emits an event', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({ 'model-a': [500, 500, 500], 'model-b': [200, 200, 200] }),

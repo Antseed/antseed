@@ -42,6 +42,7 @@ import { ensureDerivedIdentityDisplayName } from '../../../config/identity-displ
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
+import { initializeProvider } from './provider-init.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -466,7 +467,10 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           const provider = await plugin.createProvider(pluginConfig)
           if (provider.init) {
             spinner.text = `Validating credentials for "${providerName}"...`
-            await provider.init()
+            const ready = await initializeProvider(provider, effectiveSellerConfig.healthCheck?.enabled !== false)
+            if (!ready) {
+              spinner.warn(chalk.yellow(`Provider "${providerName}" OAuth unavailable; services hidden until health checks recover`))
+            }
           }
           providers.push(provider)
           spinner.succeed(chalk.green(`Provider "${providerName}" loaded via ${packageName}`))
@@ -775,7 +779,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
-      for (const provider of registeredProviders) {
+      for (const [index, provider] of registeredProviders.entries()) {
+        // Preserve initial unavailability across optional agent wrappers.
+        if (providers[index]?.healthCheckAvailable === false) provider.healthCheckAvailable = false
         node.registerProvider(provider)
       }
 
