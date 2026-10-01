@@ -1,5 +1,5 @@
 import type { AntseedProviderPlugin } from '@antseed/node';
-import { createNativeVideoProvider } from '@antseed/provider-core';
+import { createNativeVideoProvider } from './provider.js';
 import { withVeniceRetrieve } from './retrieve.js';
 import { withVeniceModelOptions } from './models.js';
 

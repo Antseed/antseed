@@ -136,25 +136,11 @@ export function decodeHttpRequest(data: Uint8Array): SerializedHttpRequest {
  * [bodyLen:4][body:N]
  */
 export function encodeHttpResponse(resp: SerializedHttpResponse): Uint8Array {
-  const prefix = encodeHttpResponsePrefix(resp, resp.body.length);
-  const buf = new Uint8Array(prefix.length + resp.body.length);
-  buf.set(prefix);
-  buf.set(resp.body, prefix.length);
-  return buf;
-}
-
-/**
- * Encode every HTTP response field before the body bytes, using the supplied
- * body length. Streaming callers hash this prefix and then append body chunks.
- */
-export function encodeHttpResponsePrefix(
-  resp: Omit<SerializedHttpResponse, 'body'>,
-  bodyLength: number,
-): Uint8Array {
-  if (!Number.isInteger(bodyLength) || bodyLength < 0 || bodyLength > 0xffff_ffff) {
-    throw new RangeError('HTTP response body length must fit in uint32');
+  if (!resp.body) {
+    resp = { ...resp, body: new Uint8Array(0) };
   }
   const requestIdBytes = encoder.encode(resp.requestId);
+
   const headerEntries = Object.entries(resp.headers);
   const encodedHeaders: Array<{ key: Uint8Array; val: Uint8Array }> = [];
   let headersSize = 0;
@@ -169,20 +155,23 @@ export function encodeHttpResponsePrefix(
     2 + requestIdBytes.length +
     2 +
     2 + headersSize +
-    4;
+    4 + resp.body.length;
 
   const buf = new Uint8Array(totalSize);
   const view = new DataView(buf.buffer);
   let offset = 0;
 
+  // requestId
   view.setUint16(offset, requestIdBytes.length);
   offset += 2;
   buf.set(requestIdBytes, offset);
   offset += requestIdBytes.length;
 
+  // statusCode
   view.setUint16(offset, resp.statusCode);
   offset += 2;
 
+  // headers
   view.setUint16(offset, headerEntries.length);
   offset += 2;
   for (const { key, val } of encodedHeaders) {
@@ -196,8 +185,28 @@ export function encodeHttpResponsePrefix(
     offset += val.length;
   }
 
-  view.setUint32(offset, bodyLength);
+  // body
+  view.setUint32(offset, resp.body.length);
+  offset += 4;
+  buf.set(resp.body, offset);
+
   return buf;
+}
+
+/**
+ * Encode every HTTP response field before the body bytes, using the supplied
+ * body length. Streaming callers hash this prefix and then append body chunks.
+ */
+export function encodeHttpResponsePrefix(
+  resp: Omit<SerializedHttpResponse, 'body'>,
+  bodyLength: number,
+): Uint8Array {
+  if (!Number.isInteger(bodyLength) || bodyLength < 0 || bodyLength > 0xffff_ffff) {
+    throw new RangeError('HTTP response body length must fit in uint32');
+  }
+  const encoded = encodeHttpResponse({ ...resp, body: new Uint8Array(0) });
+  new DataView(encoded.buffer).setUint32(encoded.length - 4, bodyLength);
+  return encoded;
 }
 
 /**

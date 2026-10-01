@@ -1,5 +1,5 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
-import { createNativeVideoProvider, type NativeVideoProviderOptions } from './native-video-provider.js';
+import { createNativeVideoProvider, type NativeVideoProviderOptions } from './provider.js';
 
 afterEach(() => vi.unstubAllGlobals());
 

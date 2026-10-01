@@ -1,4 +1,3 @@
-export { createNativeVideoProvider, type NativeVideoProviderOptions } from './native-video-provider.js';
 export { HttpRelay, type RelayConfig, type RelayCallbacks } from './http-relay.js';
 export { DEFAULT_HTTP_TIMEOUT_MS } from './http-relay.js';
 export { swapAuthHeader, validateRequestService, KNOWN_AUTH_HEADERS } from './auth-swap.js';

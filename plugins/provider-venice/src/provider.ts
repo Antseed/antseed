@@ -1,9 +1,7 @@
 import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { validateUnitBillingModelV1 } from '@antseed/node';
 import { nativeVideoRoute, requestService, type NativeVideoProtocol } from '@antseed/api-adapter';
-import { BaseProvider } from './base-provider.js';
-import type { RelayConfig } from './http-relay.js';
-import { parseCsv, parseServiceUnitBillingModelsJson, parseServiceCapabilitiesJson } from './config-utils.js';
+import { BaseProvider, parseCsv, parseServiceCapabilitiesJson, parseServiceUnitBillingModelsJson, type RelayConfig } from '@antseed/provider-core';
 
 export interface NativeVideoProviderOptions {
   name: string;

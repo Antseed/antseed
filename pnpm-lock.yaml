@@ -671,9 +671,6 @@ importers:
 
   packages/provider-core:
     dependencies:
-      '@antseed/api-adapter':
-        specifier: workspace:*
-        version: link:../api-adapter
       bottleneck:
         specifier: ^2.19.5
         version: 2.19.5
