@@ -150,6 +150,7 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
   depositRelayAddress?: string;
+  referralsAddress?: string;
   explorerApiUrl?: string;
   evmChainId: number;
 };
@@ -214,6 +215,7 @@ export function requireCryptoConfig(
     pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
     depositRelayAddress: crypto.depositRelayAddress || resolved.depositRelayAddress,
+    referralsAddress: crypto.referralsAddress || resolved.referralsAddress,
     evmChainId: resolved.evmChainId,
     explorerApiUrl: crypto.explorerApiUrl ?? resolved.explorerApiUrl,
   };

@@ -386,6 +386,17 @@ export interface SellerView {
   } | null;
 }
 
+export interface ReferralView {
+  available: boolean;
+  /** Share link: antseed.com/?ref=<wallet>. */
+  referralUrl: string | null;
+  /** ANTS payable now across claimable epochs (base units). */
+  payable: string;
+  /** Epochs with a payable reward, oldest first. */
+  claimableEpochs: number[];
+  referredCount: number;
+}
+
 export interface JobStep { at: number; label: string; hash?: string; }
 export interface JobView {
   id: string;

@@ -12,7 +12,7 @@ import { LockSlider } from '../components/LockSlider';
 import { poolName } from '../components/Pools';
 import { usePageData } from '../data';
 import { poolDataOptions } from '../pool-data';
-import { formatAnts, isZero, sumBig, toBigInt } from '../format';
+import { formatAnts, formatInt, isZero, sumBig, toBigInt } from '../format';
 
 const RewardRefreshContext = createContext({ updating: false, stale: false });
 
@@ -35,8 +35,38 @@ export function RewardsPage() {
       {data ? <RewardRefreshContext.Provider value={{ updating, stale }}>
         <BuyerRewardsCard data={data} />
         {data.scope !== 'buyer' ? <RewardsBody onRefresh={page.refresh} data={data} /> : null}
+        {data.scope !== 'buyer' ? <ReferralRewardsCard /> : null}
       </RewardRefreshContext.Provider> : null}
     </>
+  );
+}
+
+function ReferralRewardsCard() {
+  const dashboard = useConfig();
+  const page = usePageData('referrals', api.referral, 60_000);
+  const view = page.data;
+  if (view && !view.available) return null;
+  const epochs = view?.claimableEpochs.length ?? 0;
+  return (
+    <Card className="hero" aria-label="Referral rewards">
+      <div className="tile-label">Referral rewards</div>
+      <p className="hint">Invite friends with your wallet link. Each week the referral bucket of network emissions is split among referrers by how much their invited buyers used AntSeed.</p>
+      {page.error ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
+      {view ? <>
+        <div className="hero-value"><RewardAmount>{formatAnts(view.payable, 4)}</RewardAmount><span className="unit">ANTS</span></div>
+        <div className="buckets">
+          <BucketRow visible name="Your referral link" amount={view.referredCount.toString()} amountKind="count" amountDetail={view.referredCount === 1 ? 'referred buyer' : 'referred buyers'}
+            note={<span className="mono" style={{ wordBreak: 'break-all' }}>{view.referralUrl}</span>}
+            actions={<Button variant="outline" size="sm" onClick={() => { void navigator.clipboard?.writeText(view.referralUrl ?? ''); }}>Copy link</Button>} />
+          <BucketRow visible name="Payable now" amount={view.payable}
+            note={epochs > 0 ? `${epochs} ${epochs === 1 ? 'week is' : 'weeks are'} ready to claim.` : 'Weeks become claimable one week after they end.'}
+            actions={<ActionButton label="Claim" title="Claim referral rewards" path="/api/referrals/claim" body={{}}
+              disabled={dashboard.readOnly || isZero(view.payable)}
+              disabledReason={dashboard.readOnly ? 'Connect a wallet with a signer to claim.' : 'Nothing to claim yet.'}
+              summary={[['Payable now', `${formatAnts(view.payable, 4)} ANTS`], ['Weeks', String(epochs)]]} />} />
+        </div>
+      </> : null}
+    </Card>
   );
 }
 
@@ -196,7 +226,8 @@ function RewardsBody({ data, onRefresh }: { data: RewardsView; onRefresh: () => 
   );
 }
 
-function BucketRow({ visible, name, note, amount, amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountDetail?: string; actions: ReactNode }) {
+/** `amount` is an ANTS base-unit string by default; `amountKind="count"` renders a plain integer with no unit. */
+function BucketRow({ visible, name, note, amount, amountKind = 'ants', amountDetail, actions }: { visible: boolean; name: string; note?: ReactNode; amount: string; amountKind?: 'ants' | 'count'; amountDetail?: string; actions: ReactNode }) {
   if (!visible) return null;
   return (
     <div className="bucket">
@@ -205,7 +236,9 @@ function BucketRow({ visible, name, note, amount, amountDetail, actions }: { vis
         {note ? <div className="bucket-note">{note}</div> : null}
       </div>
       <div className={`bucket-amount mono${amountDetail ? ' bucket-amount--detailed' : ''}`}>
-        <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>
+        {amountKind === 'count'
+          ? <span><RewardAmount>{formatInt(amount)}</RewardAmount></span>
+          : <span><RewardAmount>{formatAnts(amount, 4)}</RewardAmount> <span className="unit">ANTS</span></span>}
         {amountDetail ? <span className="bucket-amount-detail"><RewardAmount>{amountDetail}</RewardAmount></span> : null}
       </div>
       <div className="bucket-actions">{actions}</div>

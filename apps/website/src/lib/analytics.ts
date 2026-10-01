@@ -115,6 +115,33 @@ export function withGaAttribution(href: string): string {
   }
 }
 
+const REFERRAL_STORAGE_KEY = 'antseed.referrer-wallet';
+const REFERRER_PATTERN = /^0x[0-9a-fA-F]{40}$/;
+
+export function captureReferrer(): void {
+  if (typeof window === 'undefined') return;
+  const referrer = new URL(window.location.href).searchParams.get('ref')?.trim() ?? '';
+  if (!REFERRER_PATTERN.test(referrer)) return;
+  try { window.sessionStorage.setItem(REFERRAL_STORAGE_KEY, referrer); } catch { /* storage may be disabled */ }
+}
+
+export function withReferralAttribution(href: string): string {
+  if (typeof window === 'undefined') return href;
+  try {
+    const url = new URL(href);
+    if (url.hostname !== new URL(DOWNLOAD_BASE_URL).hostname || url.searchParams.has('ref')) return href;
+    const referrer = window.sessionStorage.getItem(REFERRAL_STORAGE_KEY);
+    if (referrer && REFERRER_PATTERN.test(referrer)) url.searchParams.set('ref', referrer);
+    return url.toString();
+  } catch {
+    return href;
+  }
+}
+
+export function withDownloadAttribution(href: string): string {
+  return withGaAttribution(withReferralAttribution(href));
+}
+
 /**
  * True for internal links into the /get-started mobile onboarding flow
  * (e.g. the mobile-sidebar navbar item). Expects an absolute URL.

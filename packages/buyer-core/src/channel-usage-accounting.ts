@@ -90,6 +90,7 @@ export function advanceUsageMetadata(
     cumulativeRequestCount: prev.cumulativeRequestCount + delta.requests,
     cumulativeOutputImages: (prev.cumulativeOutputImages ?? 0n) + delta.outputImages,
     services: prev.services ?? [],
+    ...(prev.attribution ? { attribution: prev.attribution } : {}),
   };
   return withServiceMetadata(totals, service, delta);
 }

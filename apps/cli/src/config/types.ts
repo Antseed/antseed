@@ -223,6 +223,13 @@ export interface BuyerCLIConfig {
   autoSweep?: boolean;
   /** Buyer-side response-auth evidence sampling settings. */
   verification?: BuyerVerificationConfig;
+  /**
+   * ERC-8004 agent id of the client software running this buyer, appended to
+   * every buyer-signed settlement metadata blob so AntseedClientUsage credits
+   * recognized usage to it. Defaults to the chain-config id for the CLI
+   * (Desktop sets its own via ANTSEED_CLIENT_KIND=desktop).
+   */
+  clientAgentId?: number;
 }
 
 /**
@@ -308,6 +315,8 @@ export interface PaymentsCLIConfig {
     explorerApiUrl?: string;
     /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps) */
     depositRelayAddress?: string;
+    /** Deployed AntseedReferrals contract address (referral rewards). */
+    referralsAddress?: string;
     /** Default lock amount per session in human-readable USDC (e.g. "1" = 1 USDC) */
     defaultLockAmountUSDC?: string;
   };

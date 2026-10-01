@@ -11,6 +11,7 @@ export { emissions } from './emissions.js';
 export { verification, proofStatus, submitProof } from './verification.js';
 export type { SubmitProofResult } from './verification.js';
 export { seller, registerBinding, claimStarter } from './seller.js';
+export { referral, claimReferralRewards } from './referrals.js';
 export { formatAnts, formatAntsExact, parseAnts, formatUsdc, formatBps, shortAddress } from './format.js';
 export { toJson, jsonReplacer } from './json.js';
 export { silentReporter } from './steps.js';

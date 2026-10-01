@@ -14,6 +14,7 @@ import {
   signFreeUsageAuth,
   signFreeUsageOpen,
   type FreeUsageMetadata,
+  type UsageAttribution,
 } from '@antseed/protocol/signatures';
 import { CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type BuyerChannelStore } from './channel-store-types.js';
 import { advanceUsageMetadata, RequestServiceTracker } from './channel-usage-accounting.js';
@@ -25,6 +26,8 @@ export interface BuyerFreeUsageConfig {
   openAckTimeoutMs?: number;
   /** Disable per-service attribution in free-usage metadata. Default: false. */
   disableMetadataV2Services?: boolean;
+  /** Referrer / client attribution appended to every signed metadata blob. */
+  attribution?: UsageAttribution;
 }
 
 interface FreeUsageSession {
@@ -54,6 +57,7 @@ const DEFAULT_OPEN_ACK_TIMEOUT_MS = 30_000;
 export class BuyerFreeUsageManager {
   private readonly _identity: BuyerIdentity;
   private readonly _config: BuyerFreeUsageConfig;
+  private _attribution: UsageAttribution | undefined;
   private readonly _sellerAddressResolver?: SellerAddressResolver;
   private readonly _channelStore?: BuyerChannelStore;
   private readonly _domain: ReturnType<typeof makeFreeUsageDomain>;
@@ -70,6 +74,7 @@ export class BuyerFreeUsageManager {
   ) {
     this._identity = identity;
     this._config = config;
+    this._attribution = config.attribution;
     this._sellerAddressResolver = sellerAddressResolver;
     this._channelStore = channelStore;
     this._domain = makeFreeUsageDomain(config.chainId, config.freeUsageContractAddress);
@@ -80,14 +85,21 @@ export class BuyerFreeUsageManager {
     return this._config.disableMetadataV2Services === true;
   }
 
+  /** Replace the referrer / client attribution appended to future signed metadata. */
+  setAttribution(attribution: UsageAttribution | undefined): void {
+    this._attribution = attribution;
+  }
+
   private _sanitizeMetadata(metadata: FreeUsageMetadata): FreeUsageMetadata {
-    if (!this._disableMetadataV2Services) return metadata;
-    return {
-      cumulativeInputTokens: metadata.cumulativeInputTokens,
-      cumulativeOutputTokens: metadata.cumulativeOutputTokens,
-      cumulativeRequestCount: metadata.cumulativeRequestCount,
-      services: [],
-    };
+    const base: FreeUsageMetadata = this._disableMetadataV2Services
+      ? {
+          cumulativeInputTokens: metadata.cumulativeInputTokens,
+          cumulativeOutputTokens: metadata.cumulativeOutputTokens,
+          cumulativeRequestCount: metadata.cumulativeRequestCount,
+          services: [],
+        }
+      : metadata;
+    return this._attribution ? { ...base, attribution: this._attribution } : base;
   }
 
   private _advanceUsageMetadata(

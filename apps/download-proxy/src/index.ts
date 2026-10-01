@@ -23,6 +23,7 @@
 import {matchAsset, parseTarget} from './assets';
 import {getLatestRelease} from './release';
 import {trackedStream} from './stream';
+import {matchReferral, recordReferralDownload, type ReferralAttributionEnv} from './referrals';
 import {
   deliverEvent,
   endEvent,
@@ -36,7 +37,7 @@ import {
   type GaIds,
 } from './events';
 
-export interface Env {
+export interface Env extends ReferralAttributionEnv {
   GITHUB_REPO: string;
   GA4_MEASUREMENT_ID?: string;
   GITHUB_TOKEN?: string;
@@ -70,6 +71,9 @@ export default {
     }
 
     const url = new URL(request.url);
+    if (url.pathname === '/referral/match') {
+      return matchReferral(request, env);
+    }
     if (url.pathname === '/' || url.pathname === '/vpr' || url.pathname === '/vpr/') {
       return Response.redirect(releasesUrl, 302);
     }
@@ -146,9 +150,16 @@ export default {
     if (role.first) {
       emit(env, ctx, startEvent(downloadCtx), gaIds);
     }
+    const referrer = url.searchParams.get('ref');
     const {readable, done} = trackedStream(origin.body, contentLength);
     ctx.waitUntil(
       done.then(result => {
+        // A referral candidate is only remembered once the installer's last
+        // byte was delivered: a one-byte Range probe must not be enough to
+        // seed a network with an inviter.
+        if (role.final && result.completed && referrer) {
+          ctx.waitUntil(recordReferralDownload(request, env, referrer));
+        }
         if (!role.final) {
           const segment = segmentEvent(downloadCtx, result);
           console.log(JSON.stringify({event: segment.name, ...segment.params, attributed: gaIds.clientId ? 1 : 0}));

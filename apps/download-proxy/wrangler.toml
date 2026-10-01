@@ -22,9 +22,19 @@ GITHUB_REPO = "AntSeed/antseed"
 # (visible via `wrangler tail` / Workers Logs).
 GA4_MEASUREMENT_ID = "G-DF97Q4KV2X"
 
+# Create before deployment, then replace the placeholder ids:
+#   wrangler kv namespace create REFERRAL_ATTRIBUTION
+#   wrangler kv namespace create REFERRAL_ATTRIBUTION --preview
+# [[kv_namespaces]]
+# binding = "REFERRAL_ATTRIBUTION"
+# id = "<production namespace id>"
+# preview_id = "<preview namespace id>"
+
 # Secrets (set via `wrangler secret put <NAME>`):
 #   GITHUB_TOKEN    — optional; raises the GitHub API rate limit for the
 #                     latest-release lookup (fine-grained token, public repo
 #                     read-only is enough).
 #   GA4_API_SECRET  — Measurement Protocol API secret for the GA4 property;
 #                     required for GA4 reporting.
+#   REFERRAL_HASH_SECRET — HMAC key used to derive short-lived attribution
+#                          keys from client IPs. Raw IPs are never persisted.

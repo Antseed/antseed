@@ -508,6 +508,9 @@ const api = {
   getAppSetupStatus(): Promise<{ needed: boolean; complete: boolean }> {
     return ipcRenderer.invoke('app:get-setup-status') as Promise<{ needed: boolean; complete: boolean }>;
   },
+  referralGetStatus: () => ipcRenderer.invoke('referral:get-status'),
+  referralAccept: (referrer: string) => ipcRenderer.invoke('referral:accept', referrer),
+  referralDecline: () => ipcRenderer.invoke('referral:decline'),
   getTeeStatus(): Promise<unknown> {
     return ipcRenderer.invoke('tee:status');
   },

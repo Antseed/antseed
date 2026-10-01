@@ -35,6 +35,7 @@ import { useEverFunded } from '../../hooks/useEverFunded';
 import type { ViewName } from '../../types';
 import { OverlayScrollArea } from '../OverlayScrollArea';
 import { BottomNotice } from '../BottomNotice';
+import { ReferralConfirmation } from '../ReferralConfirmation';
 import { BrandIcon, isThemeAwareAppBrand, resolveBrandKey } from '../brand/BrandIcon';
 import { VprModelRowList } from '../vpr/VprModelRows';
 import { hasSeenChats, rememberSeenChats, VprRecentChatsCard } from '../vpr/VprRecentChats';
@@ -710,6 +711,9 @@ export function VprHomeView({ onSelectView }: Props) {
         dataViewScroll
       >
       <div className={styles.stack}>
+        {/* Unanswered first-run referral question, if setup closed before it
+            was answered (or the app was relaunched). */}
+        <ReferralConfirmation />
         {hasConnectedApps ? (
           /* Connected variant: recent chats instead of the ask input */
           <div className={styles.connectedGroup}>

@@ -93,6 +93,7 @@ let cachedCryptoConfig: {
   recognizedUsageEffectiveEpoch?: number;
   antsTokenAddress?: string;
   depositRelayAddress?: string;
+  referralsAddress?: string;
 } | null = null;
 
 // Cached on-chain clients for the rewards summary — invalidated together with
@@ -112,10 +113,18 @@ export async function loadCachedCryptoConfig(): Promise<typeof cachedCryptoConfi
     // No config — no crypto config available
   }
   // Resolve chain config from the selected chain ID (default: base-mainnet).
-  // All contract addresses come from the preset in chain-config.ts.
+  // Contract addresses come from the preset in chain-config.ts, except the
+  // referrals address: it is rolled out via payments.crypto.referralsAddress
+  // (the CLI child honors the same key), so honor it here too or Desktop
+  // reports referrals dark while the daemon carries the referrer.
   const selectedChain = asString(overrides.chainId as string, '') || 'base-mainnet';
   const userRpcUrl = asString(overrides.rpcUrl as string, '');
-  const cc = resolveChainConfig({ chainId: selectedChain, ...(userRpcUrl ? { rpcUrl: userRpcUrl } : {}) });
+  const userReferralsAddress = asString(overrides.referralsAddress as string, '');
+  const cc = resolveChainConfig({
+    chainId: selectedChain,
+    ...(userRpcUrl ? { rpcUrl: userRpcUrl } : {}),
+    ...(userReferralsAddress ? { referralsAddress: userReferralsAddress } : {}),
+  });
   cachedCryptoConfig = {
     rpcUrl: cc.rpcUrl,
     ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
@@ -138,6 +147,7 @@ export async function loadCachedCryptoConfig(): Promise<typeof cachedCryptoConfi
       : {}),
     ...(cc.antsTokenAddress ? { antsTokenAddress: cc.antsTokenAddress } : {}),
     ...(cc.depositRelayAddress ? { depositRelayAddress: cc.depositRelayAddress } : {}),
+    ...(cc.referralsAddress ? { referralsAddress: cc.referralsAddress } : {}),
   };
   return cachedCryptoConfig;
 }

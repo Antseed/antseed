@@ -80,8 +80,11 @@ async function buildReserveAuth(buyer: Identity, reserveMaxAmount = 10_000_000n)
   };
 }
 
-async function buildSpendingAuth(buyer: Identity, cumulativeAmount: bigint): Promise<SpendingAuthPayload> {
-  const meta = metadataFor(cumulativeAmount);
+async function buildSpendingAuth(
+  buyer: Identity,
+  cumulativeAmount: bigint,
+  meta: SpendingAuthMetadata = metadataFor(cumulativeAmount),
+): Promise<SpendingAuthPayload> {
   const metadataHash = computeMetadataHash(meta);
   const msg: SpendingAuthMessage = { channelId: CHANNEL_ID, cumulativeAmount, metadataHash };
   return {
@@ -97,8 +100,9 @@ async function buildSpendingAuth(buyer: Identity, cumulativeAmount: bigint): Pro
 async function buildCloseRequest(
   buyer: Identity,
   cumulativeAmount: bigint,
+  meta?: SpendingAuthMetadata,
 ): Promise<CloseChannelRequestPayload> {
-  const auth = await buildSpendingAuth(buyer, cumulativeAmount);
+  const auth = await buildSpendingAuth(buyer, cumulativeAmount, meta);
   return {
     version: 1,
     channelId: CHANNEL_ID,
@@ -210,6 +214,39 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
 
     expect(result.status).toBe('closed');
     expect(result.finalAmount).toBe('900000');
+  });
+
+  it('closes with the re-signed metadata when the buyer offers the same cumulative with a new tail', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    // Attribution confirmed after the last advancing auth: same cumulative,
+    // metadata now carries the referrer / client tail.
+    const attributed = { ...metadataFor(400_000n), attribution: { referrer: '0x' + '11'.repeat(20) } };
+    const request = await buildCloseRequest(buyer, 400_000n, attributed);
+    const result = await manager.handleCloseChannelRequest(buyer.peerId, request, mux);
+
+    expect(result.status).toBe('closed');
+    expect(result.finalAmount).toBe('400000');
+    expect(manager.channelsClient.close).toHaveBeenCalledWith(
+      expect.anything(), CHANNEL_ID, 400_000n, request.metadata, request.spendingAuthSig,
+    );
+  });
+
+  it('adopts a re-signed SpendingAuth at the same cumulative for later settlement', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    const attributed = { ...metadataFor(400_000n), attribution: { referrer: '0x' + '11'.repeat(20) } };
+    const resigned = await buildSpendingAuth(buyer, 400_000n, attributed);
+    expect(await manager.handleSpendingAuth(buyer.peerId, resigned, mux)).toBe('accepted');
+    expect(store.getChannel(CHANNEL_ID)!.latestMetadata).toBe(resigned.metadata);
+
+    const result = await manager.handleCloseChannelRequest(buyer.peerId, { version: 1, channelId: CHANNEL_ID }, mux);
+    expect(result.status).toBe('closed');
+    expect(manager.channelsClient.close).toHaveBeenCalledWith(
+      expect.anything(), CHANNEL_ID, 400_000n, resigned.metadata, resigned.spendingAuthSig,
+    );
   });
 
   it('refuses while a billable request is still in flight', async () => {

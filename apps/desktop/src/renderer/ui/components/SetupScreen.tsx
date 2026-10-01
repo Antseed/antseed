@@ -4,6 +4,7 @@ import { BrandIcon, type BrandKey } from './brand/BrandIcon';
 import { SetupAppPreview } from './SetupAppPreview';
 import { canonicalModelKey } from '../../modules/catalog/model-identity';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
+import { ReferralConfirmation } from './ReferralConfirmation';
 import styles from './SetupScreen.module.scss';
 
 /** The long tail of first-run setup — catalog build plus the trust-gate wait
@@ -175,6 +176,7 @@ export function SetupScreen() {
                 : 'Having trouble reaching the peer-to-peer network. A firewall or VPN on this network may be blocking it - try disconnecting the VPN or switching networks.'}
             </p>
           )}
+          <ReferralConfirmation />
         </div>
 
         <div className={styles.footer}>

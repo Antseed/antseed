@@ -4,13 +4,14 @@ import '@fontsource-variable/geist';
 import '@fontsource-variable/geist-mono';
 import {
   track,
+  captureReferrer,
   isDownloadUrl,
   isGetStartedUrl,
   isOutboundUrl,
   platformFromUrl,
   sectionOf,
   visibleLabel,
-  withGaAttribution,
+  withDownloadAttribution,
 } from '../lib/analytics';
 import {isMobileGetStartedVisitor} from '../lib/useMobileGetStarted';
 import {
@@ -64,6 +65,7 @@ function useScrollState() {
  */
 function useClickTracking() {
   useEffect(() => {
+    captureReferrer();
     const onClick = (e: MouseEvent) => {
       // Only real user input. Programmatic .click() calls are not user intent.
       // Ctrl/Cmd-click still arrives here as a normal `click` and does count —
@@ -113,14 +115,14 @@ function useClickTracking() {
           anchor.classList.add('downloadResolving');
           anchor.setAttribute('aria-busy', 'true');
           resolveLatestDesktopDownload().then(url =>
-            window.location.assign(url ? withGaAttribution(url) : RELEASES_URL),
+            window.location.assign(url ? withDownloadAttribution(url) : RELEASES_URL),
           );
         } else {
           // Attach the visitor's GA ids to proxy links just-in-time, so the
           // server-side download events join this GA session and inherit
           // source/campaign attribution. Rewriting href during the capture
           // phase affects the navigation this same click performs.
-          const attributed = withGaAttribution(absolute);
+          const attributed = withDownloadAttribution(absolute);
           if (attributed !== absolute) {
             anchor.setAttribute('href', attributed);
           }

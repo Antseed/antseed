@@ -24,6 +24,11 @@ import {
   getTelemetryService,
 } from '../telemetry/runtime.js';
 import {
+  acceptReferral,
+  declineReferral,
+  getReferralSetupStatus,
+} from '../referrals.js';
+import {
   getMainWindow,
 } from '../ui/window.js';
 import {
@@ -61,6 +66,10 @@ export function registerAppIpc(): void {
   ipcMain.handle('app:get-setup-status', () => ({
     ...getAppSetupStatus(),
   }));
+
+  ipcMain.handle('referral:get-status', () => getReferralSetupStatus());
+  ipcMain.handle('referral:accept', (_event, referrer: string) => acceptReferral(referrer));
+  ipcMain.handle('referral:decline', () => declineReferral());
 
   // Returns the macOS UI language (e.g. 'he', 'ar-EG', 'en-US') as Electron sees
   // it. This is the same locale that drives the system window-chrome direction,

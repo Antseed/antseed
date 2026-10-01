@@ -514,9 +514,11 @@ function mergeBuyerConfig(
       maxStreamDurationMs: defaults.maxStreamDurationMs,
       disableMetadataV2Services: defaults.disableMetadataV2Services,
       autoSweep: defaults.autoSweep,
+      ...(defaults.clientAgentId !== undefined ? { clientAgentId: defaults.clientAgentId } : {}),
       ...(normalizeBuyerVerification(undefined, defaults.verification)),
     };
   }
+  const clientAgentId = normalizeClientAgentId(value['clientAgentId'], defaults.clientAgentId);
   return {
     maxPricing: mergeHierarchicalPricing(defaults.maxPricing, value['maxPricing']),
     minPeerReputation: normalizeMinPeerReputation(value['minPeerReputation'], defaults.minPeerReputation),
@@ -549,8 +551,18 @@ function mergeBuyerConfig(
       defaults.autoSweep ?? true,
       'buyer.autoSweep',
     ),
+    ...(clientAgentId !== undefined ? { clientAgentId } : {}),
     ...(normalizeBuyerVerification(value['verification'], defaults.verification)),
   };
+}
+
+/** `buyer.clientAgentId`: a positive integer ERC-8004 agent id, else the default. */
+function normalizeClientAgentId(value: unknown, fallback: number | undefined): number | undefined {
+  if (value === undefined || value === null) return fallback;
+  const parsed = typeof value === 'string' ? Number.parseInt(value, 10) : value;
+  if (typeof parsed === 'number' && Number.isInteger(parsed) && parsed > 0) return parsed;
+  console.warn(`Ignoring invalid buyer.clientAgentId ${JSON.stringify(value)}: expected a positive integer agent id.`);
+  return fallback;
 }
 
 function normalizeBooleanConfigValue(value: unknown, defaultValue: boolean, path: string): boolean {

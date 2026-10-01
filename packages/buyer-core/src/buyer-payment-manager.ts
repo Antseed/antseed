@@ -17,10 +17,9 @@ import {
   encodeMetadata,
   OUTPUT_IMAGE_TOKEN_EQUIVALENT,
   ZERO_METADATA,
-  ZERO_METADATA_HASH,
   computeChannelId,
 } from '@antseed/protocol/signatures';
-import type { SpendingAuthMessage, ReserveAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
+import type { SpendingAuthMessage, ReserveAuthMessage, SpendingAuthMetadata, UsageAttribution } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
@@ -88,6 +87,8 @@ export interface BuyerPaymentConfig {
   costToleranceMultiplier?: number;
   /** Disable per-service attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
+  /** Referrer / client attribution appended to every signed metadata blob. */
+  attribution?: UsageAttribution;
   dataDir: string;
 }
 
@@ -151,6 +152,7 @@ export class BuyerPaymentManager {
   private _signer: AbstractSigner;
   private readonly _depositsClient: DepositsClient;
   private readonly _config: BuyerPaymentConfig;
+  private _attribution: UsageAttribution | undefined;
   private readonly _channelStore: BuyerChannelStore;
   /** In-memory map of active confirmed sessions by seller peerId for fast lookups. */
   private readonly _confirmedPeers = new Set<string>();
@@ -206,6 +208,7 @@ export class BuyerPaymentManager {
   constructor(identity: BuyerIdentity, config: BuyerPaymentConfig, channelStore: BuyerChannelStore, sellerAddressResolver?: SellerAddressResolver) {
     this._identity = identity;
     this._config = config;
+    this._attribution = config.attribution;
     this._sellerAddressResolver = sellerAddressResolver;
     this._signer = identity.wallet;
     this._depositsClient = new DepositsClient({
@@ -334,16 +337,23 @@ export class BuyerPaymentManager {
     return this._config.disableMetadataV2Services === true;
   }
 
+  /** Replace the referrer / client attribution appended to future signed metadata. */
+  setAttribution(attribution: UsageAttribution | undefined): void {
+    this._attribution = attribution;
+  }
+
   private _sanitizeMetadata(metadata: SpendingAuthMetadata | undefined): SpendingAuthMetadata {
     const current = metadata ?? ZERO_METADATA;
-    if (!this._disableMetadataV2Services) return current;
-    return {
-      cumulativeInputTokens: current.cumulativeInputTokens,
-      cumulativeOutputTokens: current.cumulativeOutputTokens,
-      cumulativeRequestCount: current.cumulativeRequestCount,
-      cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
-      services: [],
-    };
+    const base: SpendingAuthMetadata = this._disableMetadataV2Services
+      ? {
+          cumulativeInputTokens: current.cumulativeInputTokens,
+          cumulativeOutputTokens: current.cumulativeOutputTokens,
+          cumulativeRequestCount: current.cumulativeRequestCount,
+          cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
+          services: [],
+        }
+      : current;
+    return this._attribution ? { ...base, attribution: this._attribution } : base;
   }
 
   private _advanceUsageMetadata(
@@ -1011,11 +1021,13 @@ export class BuyerPaymentManager {
     };
     await this._commitAuthorization(session, initialMetadata);
 
-    // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig
+    // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig.
+    // The hash must cover the metadata actually sent: with attribution set the
+    // zero metadata carries a referrer / client tail, so it is not ZERO_METADATA_HASH.
     paymentMux.sendSpendingAuth({
       channelId,
       cumulativeAmount: '0',
-      metadataHash: ZERO_METADATA_HASH,
+      metadataHash: computeMetadataHash(initialMetadata),
       metadata: encodedInitialMetadata,
       spendingAuthSig: reserveAuthSig,
       reserveSalt: salt,
