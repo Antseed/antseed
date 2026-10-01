@@ -711,6 +711,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(signalingPort ? { signalingPort } : {}),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(effectiveSellerConfig.freeTier ? { freeTier: effectiveSellerConfig.freeTier } : {}),
+        ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
         payments: {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,

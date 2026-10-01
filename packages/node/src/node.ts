@@ -271,6 +271,8 @@ export interface NodeConfig {
   payments?: NodePaymentsConfig;
   /** Optional per-address request limit for zero-priced seller services. */
   freeTier?: SellerFreeTierConfig;
+  /** Seller free-usage on-chain record batching. */
+  freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default). */
   relayer?: NodeRelayerConfig;
   /** Optional buyer-side verification storage and sampling settings. */
@@ -2045,13 +2047,14 @@ export class AntseedNode extends EventEmitter {
           ...(fallbackRpcUrls ? { fallbackRpcUrls } : {}),
           freeUsageContractAddress: payments.freeUsageAddress,
           chainId: payments.chainId ?? 8453,
+          ...(this._config.freeUsage ?? {}),
         };
         this._buyerFreeUsageManager = new BuyerFreeUsageManager(
           this._identity,
           {
             chainId: freeUsageConfig.chainId,
             freeUsageContractAddress: freeUsageConfig.freeUsageContractAddress,
-            defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900,
+            defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
             disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
           },
           this._sellerAddressResolver ?? undefined,

@@ -68,7 +68,7 @@ const FREE_USAGE_METADATA_ABI = [
 ] as const;
 
 const DEFAULT_RECORD_BATCH_SIZE = 16;
-const DEFAULT_RECORD_FLUSH_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_RECORD_FLUSH_INTERVAL_MS = 15 * 60_000;
 
 function normalizeTokenCount(value: number): bigint {
   if (!Number.isFinite(value) || value <= 0) return 0n;
@@ -383,10 +383,13 @@ export class SellerFreeUsageManager {
       return;
     }
     if (session.flushTimer) return;
+    // Records revert on-chain after the channel deadline, so never wait past it.
+    const untilDeadlineMs = session.deadline * 1000 - Date.now() - 60_000;
+    const delayMs = Math.min(this._recordFlushIntervalMs, Math.max(1_000, untilDeadlineMs));
     session.flushTimer = setTimeout(() => {
       session.flushTimer = null;
       void this._flushPendingRecord(buyerPeerId, session);
-    }, this._recordFlushIntervalMs);
+    }, delayMs);
     (session.flushTimer as { unref?: () => void }).unref?.();
   }
 
