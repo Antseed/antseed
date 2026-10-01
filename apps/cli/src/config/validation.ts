@@ -435,6 +435,16 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.seller.freeUsage !== undefined) {
+    const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
+    if (recordBatchSize !== undefined && (!Number.isSafeInteger(recordBatchSize) || recordBatchSize < 1)) {
+      errors.push('seller.freeUsage.recordBatchSize must be a positive safe integer');
+    }
+    if (recordFlushIntervalMs !== undefined && (!Number.isSafeInteger(recordFlushIntervalMs) || recordFlushIntervalMs < 1_000)) {
+      errors.push('seller.freeUsage.recordFlushIntervalMs must be a safe integer >= 1000');
+    }
+  }
+
   validateVerifications('seller.verifications', config.seller.verifications, errors);
 
   if (config.relayer !== undefined) {
