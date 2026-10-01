@@ -780,12 +780,13 @@ export class SellerRequestHandler {
     });
     const query = new URLSearchParams(request.path.split('?')[1] ?? '');
     const service = query.get('service')?.trim();
-    const providerName = query.get('provider')?.trim().toLowerCase();
-    if (!service || !providerName) return reply(400, 'Routing describe requires service and provider query parameters.');
-    const provider = this._deps.providers.find(candidate => candidate.name.toLowerCase() === providerName
+    if (!service) return reply(400, 'Routing describe requires a service query parameter.');
+    // Like other requests, the optional x-antseed-provider header disambiguates providers sharing a service ID.
+    const providerName = this._extractRequestedProvider(request);
+    const provider = this._deps.providers.find(candidate => (!providerName || candidate.name.toLowerCase() === providerName)
       && candidate.services.includes(service)
       && candidate.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL));
-    if (!provider) return reply(404, `No model-routing service "${service}" for provider "${providerName}".`);
+    if (!provider) return reply(404, `No model-routing service "${service}".`);
     if (!this._allowAttest(buyerPeerId)) return reply(429, 'Routing describe rate limit exceeded.', 'rate_limit_error');
     try {
       const response = await provider.handleRequest(request);

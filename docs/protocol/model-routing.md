@@ -1,7 +1,7 @@
 # Model routing protocol
 
 `model-routing` lets a seller recommend which inference destination should
-serve a request. The router only ranks; the buyer still sends the inference to
+serve a request. The router only recommends; the buyer still sends the inference to
 the recommended seller and pays that seller normally.
 
 A routing seller advertises a service with API protocol `model-routing` and
@@ -12,8 +12,8 @@ a completed-request unit billing model (see
 
 | Endpoint | Cost | Purpose |
 | --- | --- | --- |
-| `GET /v1/routing/describe?service=<id>&provider=<name>` | Free, rate limited | Models the router understands and the preferences it accepts |
-| `POST /v1/routing/rank` | One completed request | Ranked destinations for one user turn |
+| `GET /v1/routing/describe?service=<id>` | Free, rate limited | Models the router understands and the preferences it accepts |
+| `POST /v1/routing/rank` | One completed request | Recommended destinations, best first, for one user turn |
 
 ## Describe
 
@@ -22,17 +22,12 @@ a completed-request unit billing model (see
   "version": 1,
   "revision": "2026-09-30.1",
   "supportedServiceIds": ["gpt-5.5", "claude-sonnet-4-6", "kimi-k2.6"],
-  "preferencesSchema": {
-    "type": "object",
-    "additionalProperties": false,
-    "properties": {
-      "tradeoff": {
-        "type": "string",
-        "title": "Cost-quality tradeoff",
-        "description": "1 favors lower cost; 9 favors higher quality.",
-        "enum": ["1", "3", "5", "7", "9"],
-        "default": "5"
-      }
+  "preferences": {
+    "tradeoff": {
+      "options": ["1", "3", "5", "7", "9"],
+      "default": "5",
+      "title": "Cost-quality tradeoff",
+      "description": "1 favors lower cost; 9 favors higher quality."
     }
   },
   "name": "Alpha"
@@ -42,18 +37,16 @@ a completed-request unit billing model (see
 - `revision` is an opaque router-chosen string. Change it whenever the models
   or preferences change.
 - `supportedServiceIds` are AntSeed service IDs. Buyers never send other models.
-- `preferencesSchema` is a flat object of string enums. Each field may carry a
-  `title`, `description` and `default`; `required` lists mandatory fields.
+- `preferences` lists the router's settings by name. Each setting has
+  `options` (unique, nonempty strings) and may carry a `title`, `description`
+  and `default` (one of the options). No other keys are allowed. A setting the
+  buyer leaves unset falls back to its `default`, or is omitted if there is none.
 
-A second router exposes its own policy with the same schema format:
+A second router exposes its own policy in the same format:
 
 ```json
-"preferencesSchema": {
-  "type": "object",
-  "additionalProperties": false,
-  "properties": {
-    "policy": { "type": "string", "enum": ["quality", "balanced", "cost"], "default": "balanced" }
-  }
+"preferences": {
+  "policy": { "options": ["quality", "balanced", "cost"], "default": "balanced" }
 }
 ```
 
@@ -94,12 +87,11 @@ Response:
   "version": 1,
   "recommendations": [
     { "model": "gpt-5.5", "peer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "provider": "openai" }
-  ],
-  "details": { "confidence": 0.82 }
+  ]
 }
 ```
 
-The buyer keeps recommendations that exactly match a sent candidate, in the
+The rank response has only `version` and `recommendations`. The buyer keeps recommendations that exactly match a sent candidate, in the
 router's order. Duplicates and entries with fields other than `model`, `peer`
 and `provider` are dropped. If none remain, the response is rejected and not paid.
 
@@ -118,10 +110,12 @@ Non-success responses are not charged.
 1. Describe the selected routing service (cached for 60 seconds).
 2. Build candidates from eligible sellers whose model is in
    `supportedServiceIds`.
-3. Resolve preferences against `preferencesSchema` and call rank.
+3. Resolve the buyer's choices against the described `preferences` and call rank.
 4. Validate the response, accept delivery (charging one completed request) and
    send the inference to the first recommendation. Later recommendations are
    fallbacks for retryable inference errors.
 
-The buyer-side implementation is `ModelRoutingAdapter` in `@antseed/router-core`.
+The buyer-side implementation is the built-in `ModelRoutingClient` in
+`@antseed/router-core`. It is selected by the advertised `model-routing`
+service API protocol, not by a router plugin.
 Types and validators are in `@antseed/protocol` (`@antseed/protocol/model-routing`).

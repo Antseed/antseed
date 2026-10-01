@@ -2,50 +2,55 @@ import { describe, expect, it } from 'vitest';
 import { assertRoutingPreferences, resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferenceSchema } from './routing-preferences.js';
 
 const schema: RoutingPreferenceSchema = {
-  type: 'object', additionalProperties: false,
-  properties: { policy: { type: 'string', enum: ['quality', 'cost'], default: 'quality', description: 'Routing policy' } },
+  policy: { options: ['quality', 'cost'], default: 'quality', description: 'Routing policy' },
 };
 
-describe('generic router enum preferences', () => {
+describe('router preferences', () => {
   it('preserves router titles and descriptions without renaming wire keys', () => {
-    const titled = { ...schema, properties: { policy: { ...schema.properties.policy!, title: 'Routing policy', description: 'Choose how requests are routed.' } } };
+    const titled = { policy: { ...schema.policy!, title: 'Routing policy', description: 'Choose how requests are routed.' } };
     expect(() => validateRoutingPreferenceSchema(titled)).not.toThrow();
     expect(resolveRoutingPreferences(titled, { policy: 'cost' })).toEqual({ policy: 'cost' });
   });
 
   it.each(['', '  ', 5, null, {}])('rejects invalid titles %j', title => {
-    expect(() => validateRoutingPreferenceSchema({ ...schema, properties: { policy: { ...schema.properties.policy, title } } })).toThrow('title');
+    expect(() => validateRoutingPreferenceSchema({ policy: { ...schema.policy, title } })).toThrow('title');
   });
 
-  it('uses router-defined defaults and choices without modifying caller data', () => {
+  it('uses router-defined defaults and options without modifying caller data', () => {
     const values = {};
     expect(resolveRoutingPreferences(schema, values)).toEqual({ policy: 'quality' });
     expect(values).toEqual({});
     expect(resolveRoutingPreferences(schema, { policy: 'cost' })).toEqual({ policy: 'cost' });
-    expect(resolveRoutingPreferences({ ...schema, properties: { tradeoff: { type: 'string', enum: ['1', '3', '5'], default: '5' } } })).toEqual({ tradeoff: '5' });
+    expect(resolveRoutingPreferences({ tradeoff: { options: ['1', '3', '5'], default: '5' } })).toEqual({ tradeoff: '5' });
+    expect(resolveRoutingPreferences({})).toEqual({});
+  });
+
+  it('leaves out settings with no value and no default', () => {
+    expect(resolveRoutingPreferences({ policy: { options: ['quality', 'cost'] } })).toEqual({});
   });
 
   it.each([{ policy: 5 }, { policy: true }, { policy: 'other' }, { unknown: 'value' }, { policy: {} }, { policy: ['quality'] }])('rejects invalid preferences %j', values => {
     expect(() => resolveRoutingPreferences(schema, values)).toThrow();
   });
 
-  it('validates required fields and schema defaults', () => {
-    const required = { ...schema, properties: { policy: { type: 'string' as const, enum: ['quality', 'cost'] } }, required: ['policy'] };
-    expect(() => resolveRoutingPreferences(required)).toThrow('Required');
-    expect(() => validateRoutingPreferenceSchema({ ...schema, properties: { policy: { ...schema.properties.policy, default: 'unknown' } } })).toThrow();
-    expect(() => validateRoutingPreferenceSchema({ ...schema, required: ['missing'] })).toThrow();
+  it('rejects defaults that are not one of the options', () => {
+    expect(() => validateRoutingPreferenceSchema({ policy: { ...schema.policy, default: 'unknown' } })).toThrow('default');
   });
 
   it.each([
-    { type: 'number', enum: [1, 3] }, { type: 'string', enum: [] },
-    { type: 'string', enum: ['cost', 'cost'] }, { type: 'string', enum: ['cost'], pattern: '.*' },
-  ])('rejects unsupported schema fields %j', field => {
-    expect(() => validateRoutingPreferenceSchema({ ...schema, properties: { policy: field } })).toThrow();
+    { options: [1, 3] }, { options: [] }, { options: ['cost', 'cost'] }, { options: [' '] }, {},
+    { options: ['cost'], type: 'string' }, { options: ['cost'], enum: ['cost'] }, { options: ['cost'], pattern: '.*' },
+  ])('rejects malformed or unsupported settings %j', field => {
+    expect(() => validateRoutingPreferenceSchema({ policy: field })).toThrow();
   });
 
+  it('rejects non-object preference lists', () => {
+    for (const value of [null, [], 'x', { policy: 'cost' }]) expect(() => validateRoutingPreferenceSchema(value)).toThrow();
+  });
 
   it('rejects prototype keys and excessive payloads', () => {
     expect(() => assertRoutingPreferences(JSON.parse('{"__proto__":"cost"}'))).toThrow();
+    expect(() => validateRoutingPreferenceSchema(JSON.parse('{"__proto__":{"options":["a"]}}'))).toThrow();
     expect(() => assertRoutingPreferences({ value: 'x'.repeat(17 * 1024) })).toThrow('16 KiB');
   });
 });

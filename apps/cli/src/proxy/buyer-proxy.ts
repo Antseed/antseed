@@ -117,7 +117,7 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { loadConfig } from '../config/loader.js'
-import type { BuyerModelRouterRegistry } from './model-router-setup.js'
+import { ModelRoutingClient, type ModelRoutingClientApi } from '@antseed/router-core'
 
 // Re-export for backward compatibility (used by tests and other consumers)
 export { selectCandidatePeersForRouting, type CandidatePeerRouteSelection } from './routing.js'
@@ -138,7 +138,8 @@ const WATCHER_ABSENCE_ERRORS: Record<DepositWatcherAbsenceReason, string> = {
 }
 
 export interface BuyerProxyConfig {
-  modelRouterRegistry?: BuyerModelRouterRegistry
+  /** Test seam; production uses the built-in `model-routing` service API client. */
+  modelRoutingClient?: ModelRoutingClientApi
   port: number
   node: AntseedNode
   /** Data directory used to persist buyer.state.json (discovered peers, session peer pin). */
@@ -836,7 +837,7 @@ export class BuyerProxy {
    */
   private _defaultRoute: DefaultRouteSelection = EMPTY_DEFAULT_ROUTE
   private readonly _routingDescriptions = new RoutingDescriptionCache()
-  private readonly _modelRouterRegistry: BuyerModelRouterRegistry | null
+  private readonly _modelRoutingClient: ModelRoutingClientApi
   private _conversations!: ConversationStore
   /**
    * Wall-clock of the last model-request activity (dispatch or streamed
@@ -898,7 +899,7 @@ export class BuyerProxy {
 
   constructor(config: BuyerProxyConfig) {
     this._node = config.node
-    this._modelRouterRegistry = config.modelRouterRegistry ?? null
+    this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
     this._teeVerification = new TeeVerification(config.verifier)
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
@@ -1140,16 +1141,13 @@ export class BuyerProxy {
 
   private _validateRouterSelection(value: unknown): asserts value is RouterSelection & { service: RoutingServiceTarget } {
     if (!isRoutingSelection(value) || value.kind !== 'router') throw new Error('Invalid router selection')
-    if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
     if (!value.service) throw new Error('Select an exact routing-service target')
   }
 
   private async _validateRoutingService(value: RouterSelection & { service: RoutingServiceTarget }): Promise<void> {
-    if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
     const peers = await this._getPeers()
-    const adapter = this._modelRouterRegistry.resolve(value.service, peers)
-    const description = await this._routingDescriptions.get(adapter, value.service, peers, this._node)
-    resolveRoutingPreferences(description.preferencesSchema, value.preferences ?? {})
+    const description = await this._routingDescriptions.get(this._modelRoutingClient, value.service, peers, this._node)
+    resolveRoutingPreferences(description.preferences, value.preferences ?? {})
   }
 
   private _parseDefaultRoute(value: unknown): DefaultRouteSelection {
@@ -2477,16 +2475,15 @@ export class BuyerProxy {
     const conversationId = this._trackRouterConversation(context)
     let recommendations: RouteRecommendation[]
     try {
-      if (!this._modelRouterRegistry) throw new Error('The buyer has no routing-service adapters configured')
+      const client = this._modelRoutingClient
       if (!selection.service) throw new Error('Select an exact routing-service target')
       const peers = await this._getPeers({ forceRefresh: true })
-      const adapter = this._modelRouterRegistry.resolve(selection.service, peers)
       // The router may only recommend destinations the buyer's own policies allow.
       const candidates = eligibleRouterCandidates(request, peers, requiredParameters, this._routingPreferences,
         (policyRequest, peer) => peerAllowedByPolicy(this._node.router as BuyerPolicyRouter | null, policyRequest, peer)
           && !isCoolingDown(this._peerHealth.get(peer.peerId), this._now()))
       recommendations = await executeRouterSelection({
-        node: this._node, adapter, request, peers, candidates,
+        node: this._node, client, request, peers, candidates,
         conversationKey: routingConversationKey, selection, descriptions: this._routingDescriptions,
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
@@ -3340,7 +3337,7 @@ export class BuyerProxy {
           },
         }, { signal: requestSignal, pinned })
 
-        recordRouterUsage(this._modelRouterRegistry, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
+        recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
         responseForClient = adaptPeerResponse(responseForClient)
@@ -3432,7 +3429,7 @@ export class BuyerProxy {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
         }
 
-        recordRouterUsage(this._modelRouterRegistry, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
+        recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
 
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
         response = adaptPeerResponse(response)

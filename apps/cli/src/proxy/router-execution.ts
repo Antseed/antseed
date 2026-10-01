@@ -1,40 +1,50 @@
+import { QueryClient } from '@tanstack/query-core'
 import { buildNetworkServiceOffers, isModelRouteEligible, type AntseedNode, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
-import { RoutingDescriptionChangedError, resolveRoutingPreferences, type RoutingDescribeResponseV1, type RoutingSelection, type RoutingServiceTarget, type ModelRouterAdapter } from '@antseed/node'
+import { RoutingDescriptionChangedError, resolveRoutingPreferences, type RoutingDescribeResponseV1, type RoutingSelection, type RoutingServiceTarget } from '@antseed/node'
+import type { ModelRoutingClientApi } from '@antseed/router-core'
 
 const DESCRIBE_TIMEOUT_MS = 5_000
 
-/** Router descriptions, reused until they expire or the router reports that its description changed. */
+/**
+ * Router descriptions in a TanStack Query Core cache: reused for `ttlMs`, shared by concurrent
+ * callers so a burst of requests sends one describe, and removed when the router reports that
+ * its description changed or a routing attempt fails.
+ */
 export class RoutingDescriptionCache {
-  private readonly entries = new Map<string, { description: RoutingDescribeResponseV1; fetchedAt: number }>()
+  private readonly queries = new QueryClient({
+    defaultOptions: { queries: { retry: false, networkMode: 'always', gcTime: Infinity, structuralSharing: false } },
+  })
 
-  constructor(private readonly ttlMs = 60_000, private readonly now: () => number = Date.now) {}
+  constructor(private readonly ttlMs = 60_000) {}
 
-  async get(adapter: Pick<ModelRouterAdapter, 'describe'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RoutingDescribeResponseV1> {
-    const key = descriptionKey(target)
-    const cached = this.entries.get(key)
-    if (cached && this.now() - cached.fetchedAt < this.ttlMs) return structuredClone(cached.description)
-    const signal = AbortSignal.timeout(DESCRIBE_TIMEOUT_MS)
-    const description = await adapter.describe(target, peers, {
-      signal,
-      sendRequest: (peer, request) => {
-        if (peer.peerId !== target.peerId) throw new Error('Router description must come from the selected routing-service peer')
-        return node.sendRequest(peer, request, { signal, controlPlane: true })
+  async get(client: Pick<ModelRoutingClientApi, 'describe'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RoutingDescribeResponseV1> {
+    const description = await this.queries.fetchQuery({
+      queryKey: descriptionKey(target),
+      staleTime: this.ttlMs,
+      queryFn: () => {
+        const signal = AbortSignal.timeout(DESCRIBE_TIMEOUT_MS)
+        return client.describe(target, peers, {
+          signal,
+          sendRequest: (peer, request) => {
+            if (peer.peerId !== target.peerId) throw new Error('Router description must come from the selected routing-service peer')
+            return node.sendRequest(peer, request, { signal, controlPlane: true })
+          },
+        })
       },
     })
-    this.entries.set(key, { description: structuredClone(description), fetchedAt: this.now() })
-    return description
+    return structuredClone(description)
   }
 
   invalidate(target: RoutingServiceTarget): void {
-    this.entries.delete(descriptionKey(target))
+    this.queries.removeQueries({ queryKey: descriptionKey(target), exact: true })
   }
 }
 
-function descriptionKey(target: RoutingServiceTarget): string {
-  return JSON.stringify([target.peerId, target.provider, target.serviceId])
+function descriptionKey(target: RoutingServiceTarget): readonly [string, string, string] {
+  return [target.peerId, target.provider, target.serviceId]
 }
 
 export type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
@@ -121,7 +131,7 @@ export function requestForRecommendation(request: SerializedHttpRequest, route: 
  */
 export async function executeRouterSelection(args: {
   node: Pick<AntseedNode, 'sendRequest'>;
-  adapter: ModelRouterAdapter;
+  client: ModelRoutingClientApi;
   request: SerializedHttpRequest;
   peers: PeerInfo[];
   candidates: ExecutionCandidate[];
@@ -131,13 +141,13 @@ export async function executeRouterSelection(args: {
   descriptions?: RoutingDescriptionCache;
   onRoutingRequest?: (requestId: string) => void;
 }): Promise<RouteRecommendation[]> {
-  const { node, adapter, request, peers, conversationKey, signal } = args
+  const { node, client, request, peers, conversationKey, signal } = args
   const routingService = args.selection.service
   if (!routingService) throw new Error('Select an exact routing-service target')
   const allowedModels = args.selection.allowedModels
   const descriptions = args.descriptions ?? new RoutingDescriptionCache(0)
   const attempt = async (): Promise<RouteRecommendation[]> => {
-    const description = await untilAborted(signal, descriptions.get(adapter, routingService, peers, node))
+    const description = await untilAborted(signal, descriptions.get(client, routingService, peers, node))
     const supported = new Set(description.supportedServiceIds)
     const allowed = args.candidates
       .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
@@ -149,8 +159,8 @@ export async function executeRouterSelection(args: {
       .map(({ peer: _peer, ...candidate }) => candidate)
     if (!candidates.length) throw new Error('No eligible allowed models are supported by this router')
     // Check the user's choices against the router's own schema before paying.
-    const preferences = resolveRoutingPreferences(description.preferencesSchema, args.selection.preferences ?? {})
-    const routes = await untilAborted(signal, adapter.selectRoute(request, peers, {
+    const preferences = resolveRoutingPreferences(description.preferences, args.selection.preferences ?? {})
+    const routes = await untilAborted(signal, client.selectRoute(request, peers, {
       signal, conversationKey, candidates, preferences, routingService, description,
       // Pay for the recommendation only if it names at least one allowed destination.
       acceptRecommendations: recommendations => resolveRouterRecommendations(recommendations, candidates).length > 0,
@@ -184,7 +194,7 @@ export async function executeRouterSelection(args: {
   }
 }
 
-/** Stop waiting when `signal` aborts, even if the adapter ignores it (so timeouts always apply). */
+/** Stop waiting when `signal` aborts, even if the client ignores it (so timeouts always apply). */
 function untilAborted<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
   signal.throwIfAborted()
   let onAbort = (): void => {}

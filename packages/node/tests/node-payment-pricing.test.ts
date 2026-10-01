@@ -58,7 +58,7 @@ describe('completed-request seller payments', () => {
   });
   it('serves the routing description for free through the provider', async () => {
     const harness = setup();
-    const describePath = '/v1/routing/describe?service=alpha-route&provider=alpha';
+    const describePath = '/v1/routing/describe?service=alpha-route';
     expect((await harness.send('describe', { method: 'GET', path: describePath, body: new Uint8Array() })).statusCode).toBe(200);
     expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe(describePath);
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
@@ -67,15 +67,15 @@ describe('completed-request seller payments', () => {
   it('rejects invalid routing description requests before the provider', async () => {
     const harness = setup();
     const get = (requestId: string, path: string) => harness.send(requestId, { method: 'GET', path, body: new Uint8Array() });
-    expect((await get('missing', '/v1/routing/describe?service=alpha-route')).statusCode).toBe(400);
-    expect((await get('not-routing', '/v1/routing/describe?service=image&provider=alpha')).statusCode).toBe(404);
+    expect((await get('missing', '/v1/routing/describe')).statusCode).toBe(400);
+    expect((await get('not-routing', '/v1/routing/describe?service=image')).statusCode).toBe(404);
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
   });
   it('rate limits routing description requests', async () => {
     const harness = setup();
     const statuses: number[] = [];
     for (let index = 0; index < 11; index += 1) {
-      statuses.push((await harness.send(`describe-${index}`, { method: 'GET', path: '/v1/routing/describe?service=alpha-route&provider=alpha', body: new Uint8Array() })).statusCode);
+      statuses.push((await harness.send(`describe-${index}`, { method: 'GET', path: '/v1/routing/describe?service=alpha-route', body: new Uint8Array() })).statusCode);
     }
     expect(statuses.slice(0, 10).every(status => status === 200)).toBe(true);
     expect(statuses[10]).toBe(429);

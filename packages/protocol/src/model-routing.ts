@@ -1,6 +1,6 @@
 import { resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferences, type RoutingPreferenceSchema } from './routing-preferences.js';
 
-/** Service API protocol advertised by sellers that rank inference candidates. */
+/** Service API protocol advertised by sellers that recommend inference destinations. */
 export const MODEL_ROUTING_PROTOCOL = 'model-routing';
 export const MODEL_ROUTING_DESCRIBE_PATH = '/v1/routing/describe';
 export const MODEL_ROUTING_RANK_PATH = '/v1/routing/rank';
@@ -10,7 +10,7 @@ export type RoutingDescribeResponseV1 = {
   version: 1;
   revision: string;
   supportedServiceIds: string[];
-  preferencesSchema: RoutingPreferenceSchema;
+  preferences: RoutingPreferenceSchema;
   name?: string;
   description?: string;
 };
@@ -47,7 +47,6 @@ export type RoutingRecommendationV1 = {
 export type RoutingRankResponseV1 = {
   version: 1;
   recommendations: RoutingRecommendationV1[];
-  details?: Record<string, string | number>;
 };
 
 function object(value: unknown): value is Record<string, unknown> {
@@ -80,7 +79,7 @@ export function routingCandidateKey(entry: { model: string; peer: string; provid
 }
 
 export function validateRoutingDescribeResponse(value: unknown): asserts value is RoutingDescribeResponseV1 {
-  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'revision', 'supportedServiceIds', 'preferencesSchema', 'name', 'description'])
+  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'revision', 'supportedServiceIds', 'preferences', 'name', 'description'])
     || !text(value.revision, 128) || !Array.isArray(value.supportedServiceIds)
     || !value.supportedServiceIds.every(entry => text(entry))
     || new Set(value.supportedServiceIds).size !== value.supportedServiceIds.length
@@ -88,7 +87,7 @@ export function validateRoutingDescribeResponse(value: unknown): asserts value i
     || (value.description !== undefined && (typeof value.description !== 'string' || value.description.length > 1024))) {
     throw new Error('Invalid model-routing describe response');
   }
-  validateRoutingPreferenceSchema(value.preferencesSchema);
+  validateRoutingPreferenceSchema(value.preferences);
 }
 
 function validateCandidate(value: unknown): asserts value is RoutingCandidateV1 {
@@ -124,7 +123,7 @@ export function validateRoutingRankRequest(value: unknown, description: RoutingD
     if (keys.has(key)) throw new Error('Duplicate model-routing candidate');
     keys.add(key);
   }
-  resolveRoutingPreferences(description.preferencesSchema, value.preferences);
+  resolveRoutingPreferences(description.preferences, value.preferences);
 }
 
 /**
@@ -133,10 +132,8 @@ export function validateRoutingRankRequest(value: unknown, description: RoutingD
  * Throws when the response shape is invalid or no entry survives.
  */
 export function validateRoutingRankResponse(value: unknown, candidates: readonly RoutingCandidateV1[]): RoutingRecommendationV1[] {
-  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'recommendations', 'details'])
-    || !Array.isArray(value.recommendations) || value.recommendations.length === 0
-    || (value.details !== undefined && (!object(value.details)
-      || !Object.values(value.details).every(entry => typeof entry === 'string' || (typeof entry === 'number' && Number.isFinite(entry)))))) {
+  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'recommendations'])
+    || !Array.isArray(value.recommendations) || value.recommendations.length === 0) {
     throw new Error('Invalid model-routing rank response');
   }
   const byKey = new Map(candidates.map(candidate => [routingCandidateKey(candidate), candidate]));

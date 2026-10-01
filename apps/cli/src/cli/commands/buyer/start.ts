@@ -15,7 +15,6 @@ import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
-import { createBuyerModelRouterRegistry } from '../../../proxy/model-router-setup.js'
 import { DepositWatcher } from '../../../proxy/deposit-watcher.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
@@ -459,7 +458,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       const proxy = new BuyerProxy({
-        modelRouterRegistry: createBuyerModelRouterRegistry(),
         port: proxyPort,
         node,
         pinnedPeerId,

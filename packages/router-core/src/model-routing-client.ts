@@ -10,7 +10,6 @@ import {
   validateRoutingDescribeResponse,
   validateRoutingRankRequest,
   validateRoutingRankResponse,
-  type ModelRouterAdapter,
   type PeerInfo,
   type RouteRecommendation,
   type RouteSelectionContext,
@@ -72,7 +71,14 @@ function estimateTokens(value: unknown): number {
 
 function findPeer(peers: PeerInfo[], target: RoutingServiceTarget): PeerInfo {
   const peer = peers.find(entry => entry.peerId === target.peerId)
-  if (!peer) throw new Error('Selected routing-service peer is not reachable')
+  if (peer && !Array.isArray(peer.metadata?.providers)) {
+    throw new Error('Selected router metadata is not available yet. Wait for discovery or restart the router.')
+  }
+  const provider = peer?.metadata?.providers.find(entry => entry.provider === target.provider && entry.services.includes(target.serviceId))
+  if (!peer || !provider) throw new Error('Selected routing service is not advertised by the selected peer')
+  if (!provider.serviceApiProtocols?.[target.serviceId]?.includes(MODEL_ROUTING_PROTOCOL)) {
+    throw new Error('Selected service does not advertise model-routing')
+  }
   return peer
 }
 
@@ -103,7 +109,7 @@ function rankFailure(statusCode: number): Error {
  * a fixed fee per rank call. The buyer decides which candidates are allowed; the router only
  * orders them.
  */
-export class ModelRoutingAdapter implements ModelRouterAdapter {
+export class ModelRoutingClient {
   private readonly conversations = new Map<string, CachedRoute>()
   readonly observations = new CacheObservations()
 
@@ -112,7 +118,7 @@ export class ModelRoutingAdapter implements ModelRouterAdapter {
   }
 
   async describe(target: RoutingServiceTarget, peers: PeerInfo[], context: RoutingDescribeContext): Promise<RoutingDescribeResponseV1> {
-    const query = new URLSearchParams({ service: target.serviceId, provider: target.provider })
+    const query = new URLSearchParams({ service: target.serviceId })
     const response = await context.sendRequest(findPeer(peers, target), {
       requestId: randomUUID(), method: 'GET', path: `${MODEL_ROUTING_DESCRIBE_PATH}?${query}`,
       headers: { accept: 'application/json', 'x-antseed-provider': target.provider }, body: new Uint8Array(),
@@ -183,8 +189,8 @@ export class ModelRoutingAdapter implements ModelRouterAdapter {
       unitBilling: offer,
       maxFeeMicroUsdc: completedRequestPrice(offer.unitModel).toString(),
       // Only pay for a response whose recommendations the buyer can actually use.
-      acceptResponse: rankResponse => {
-        const routes = toRecommendations(validateRoutingRankResponse(decodeJson(rankResponse.body), rankRequest.candidates))
+      acceptResponse: routeResponse => {
+        const routes = toRecommendations(validateRoutingRankResponse(decodeJson(routeResponse.body), rankRequest.candidates))
         if (!context.acceptRecommendations(routes)) return false
         recommendations = routes
         return true
@@ -212,3 +218,6 @@ export class ModelRoutingAdapter implements ModelRouterAdapter {
     if (this.conversations.size > MAX_CACHED_CONVERSATIONS) this.conversations.delete(this.conversations.keys().next().value!)
   }
 }
+
+/** The `ModelRoutingClient` surface the buyer proxy calls; tests can supply a stand-in. */
+export type ModelRoutingClientApi = Pick<ModelRoutingClient, 'describe' | 'selectRoute'> & Partial<Pick<ModelRoutingClient, 'recordUsage'>>

@@ -1,12 +1,13 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PeerInfo, ModelRouterAdapter, SerializedHttpRequest } from '@antseed/node'
+import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import type { ModelRoutingClientApi } from '@antseed/router-core'
 import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, resolveRouterRecommendations, RoutingDescriptionCache } from './router-execution.js'
 import { RoutingDescriptionChangedError, type RoutingDescribeResponseV1, type RoutingPreferenceSchema } from '@antseed/node'
 
-const emptySchema: RoutingPreferenceSchema = { type: 'object', properties: {}, additionalProperties: false }
-function describeRouter(supportedServiceIds: string[], preferencesSchema = emptySchema, revision = 'rev-1'): RoutingDescribeResponseV1 {
-  return { version: 1, revision, supportedServiceIds, preferencesSchema }
+const emptySchema: RoutingPreferenceSchema = {}
+function describeRouter(supportedServiceIds: string[], preferences = emptySchema, revision = 'rev-1'): RoutingDescribeResponseV1 {
+  return { version: 1, revision, supportedServiceIds, preferences }
 }
 
 const peer = {
@@ -61,7 +62,7 @@ test('router descriptions restrict candidates, are cached, and refresh once afte
   let describeCalls = 0
   let staleOnce = false
   const seen: string[][] = []
-  const adapter: ModelRouterAdapter = {
+  const client: ModelRoutingClientApi = {
     async describe() { describeCalls++; return description },
     async selectRoute(_request, _peers, context) {
       seen.push(context.candidates.map(candidate => candidate.serviceId))
@@ -71,7 +72,7 @@ test('router descriptions restrict candidates, are cached, and refresh once afte
     },
   }
   const descriptions = new RoutingDescriptionCache()
-  const args = { node: unusedNode, adapter, request, descriptions, peers: [peer],
+  const args = { node: unusedNode, client, request, descriptions, peers: [peer],
     candidates: [candidates()[0]!, { ...candidates()[0]!, serviceId: 'model-b' }], conversationKey: null,
     signal: new AbortController().signal, selection: routerSelection }
   assert.deepEqual(await executeRouterSelection(args), [{ serviceId: 'model-a', provider: 'openai' }])
@@ -85,9 +86,31 @@ test('router descriptions restrict candidates, are cached, and refresh once afte
   await assert.rejects(executeRouterSelection({ ...args, descriptions: new RoutingDescriptionCache() }), /supported by this router/)
 })
 
+test('concurrent describes share one request and refresh after invalidation or expiry', async () => {
+  let calls = 0
+  let release!: () => void
+  const gate = new Promise<void>(resolve => { release = resolve })
+  const client: Pick<ModelRoutingClientApi, 'describe'> = { async describe() { calls++; await gate; return describeRouter(['model-a']) } }
+  const descriptions = new RoutingDescriptionCache()
+  const pending = Promise.all([1, 2, 3].map(() => descriptions.get(client, routingService, [peer], unusedNode)))
+  release()
+  const results = await pending
+  assert.equal(calls, 1)
+  results[0]!.supportedServiceIds.push('mutated')
+  assert.deepEqual((await descriptions.get(client, routingService, [peer], unusedNode)).supportedServiceIds, ['model-a'])
+  assert.equal(calls, 1)
+  descriptions.invalidate(routingService)
+  await descriptions.get(client, routingService, [peer], unusedNode)
+  assert.equal(calls, 2)
+  const uncached = new RoutingDescriptionCache(0)
+  await uncached.get(client, routingService, [peer], unusedNode)
+  await uncached.get(client, routingService, [peer], unusedNode)
+  assert.equal(calls, 4)
+})
+
 test('describe requests are free control-plane calls to the selected routing peer', async () => {
   const sent: Array<{ peerId: string; options: unknown }> = []
-  const adapter: ModelRouterAdapter = {
+  const client: ModelRoutingClientApi = {
     async describe(target, peers, context) {
       await context.sendRequest(peers.find(entry => entry.peerId === target.peerId)!, { ...request, requestId: 'describe', method: 'GET', path: '/v1/routing/describe' })
       return describeRouter(['model-a'])
@@ -98,20 +121,20 @@ test('describe requests are free control-plane calls to the selected routing pee
     sent.push({ peerId: target.peerId, options })
     return { requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: new Uint8Array() }
   } }
-  await executeRouterSelection({ node, adapter, request, peers: [peer], candidates: candidates(), conversationKey: null,
+  await executeRouterSelection({ node, client, request, peers: [peer], candidates: candidates(), conversationKey: null,
     signal: new AbortController().signal, selection: routerSelection })
   assert.equal(sent.length, 1)
   assert.equal(sent[0]!.peerId, peer.peerId)
   assert.equal((sent[0]!.options as { controlPlane?: boolean }).controlPlane, true)
 })
 
-test('model allowlists restrict adapter candidates and returned recommendations', async () => {
+test('model allowlists restrict routing candidates and returned recommendations', async () => {
   const first = candidates()[0]!
   const available = [first, { ...first, serviceId: 'model-b' }, { ...first, provider: 'other' }]
   const allowedModels = [{ provider: 'openai', serviceId: 'model-a' }]
   let calls = 0
   let forbiddenOnly = false
-  const adapter: ModelRouterAdapter = { describe: describeAll,
+  const client: ModelRoutingClientApi = { describe: describeAll,
     async selectRoute(_request, _peers, context) {
       calls++
       assert.deepEqual(context.candidates.map(({ provider, serviceId }) => ({ provider, serviceId })), allowedModels)
@@ -120,7 +143,7 @@ test('model allowlists restrict adapter candidates and returned recommendations'
       return forbiddenOnly ? [{ serviceId: 'model-b' }] : [{ serviceId: 'model-b' }, { serviceId: 'model-a' }]
     },
   }
-  const args = { node: unusedNode, adapter, request, peers: [peer], candidates: available, conversationKey: null, signal: new AbortController().signal }
+  const args = { node: unusedNode, client, request, peers: [peer], candidates: available, conversationKey: null, signal: new AbortController().signal }
   assert.deepEqual(await executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels } }), [{ serviceId: 'model-a', provider: 'openai' }])
   forbiddenOnly = true
   await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels } }), /no eligible recommendation/)
@@ -131,29 +154,28 @@ test('model allowlists restrict adapter candidates and returned recommendations'
   assert.equal(calls, before)
 })
 
-test('preferences are validated against the router-supplied schema with defaults before invoking an adapter', async () => {
+test('preferences are validated against the router-supplied schema with defaults before invoking the routing client', async () => {
   let calls = 0
-  const adapter: ModelRouterAdapter = {
-    describe: async () => describeRouter(['model-a'], { type: 'object', additionalProperties: false,
-      properties: { policy: { type: 'string', enum: ['cost', 'quality'], default: 'cost' } } }),
+  const client: ModelRoutingClientApi = {
+    describe: async () => describeRouter(['model-a'], { policy: { options: ['cost', 'quality'], default: 'cost' } }),
     async selectRoute(_request, _peers, context) {
       calls++
       return [{ serviceId: String(context.preferences.policy === 'quality' ? 'model-a' : 'missing') }]
     },
   }
-  const args = { node: unusedNode, adapter, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
-  await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, preferences: { policy: 'invalid' } } }), /enum/)
+  const args = { node: unusedNode, client, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
+  await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, preferences: { policy: 'invalid' } } }), /invalid option/)
   assert.equal(calls, 0)
   assert.deepEqual(await executeRouterSelection({ ...args, selection: { ...routerSelection, preferences: { policy: 'quality' } } }), [{ serviceId: 'model-a', provider: 'openai' }])
   await assert.rejects(executeRouterSelection({ ...args, selection: routerSelection }), /no eligible/)
 })
 
-test('a declined recommendation fails closed and cancellation applies even if the adapter ignores it', async () => {
-  const adapter: ModelRouterAdapter = { describe: describeAll, selectRoute: async () => null }
-  const args = { node: unusedNode, adapter, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal, selection: routerSelection }
+test('a declined recommendation fails closed and cancellation applies even if the client ignores it', async () => {
+  const client: ModelRoutingClientApi = { describe: describeAll, selectRoute: async () => null }
+  const args = { node: unusedNode, client, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal, selection: routerSelection }
   await assert.rejects(executeRouterSelection(args), /no eligible/)
   const abort = new AbortController()
-  adapter.selectRoute = () => new Promise(() => {})
+  client.selectRoute = () => new Promise(() => {})
   const pending = executeRouterSelection({ ...args, signal: abort.signal })
   abort.abort(new Error('client disconnected'))
   await assert.rejects(pending, /client disconnected/)
@@ -161,7 +183,7 @@ test('a declined recommendation fails closed and cancellation applies even if th
 
 test('routing purchases cannot substitute a different routing-service peer', async () => {
   let sent = false
-  const adapter: ModelRouterAdapter = {
+  const client: ModelRoutingClientApi = {
     describe: describeAll,
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, { ...request, requestId: 'routing-request' }, {})
@@ -169,7 +191,7 @@ test('routing purchases cannot substitute a different routing-service peer', asy
     },
   }
   await assert.rejects(executeRouterSelection({
-    node: { sendRequest: async () => { sent = true; throw new Error('must not send') } }, adapter, request,
+    node: { sendRequest: async () => { sent = true; throw new Error('must not send') } }, client, request,
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal,
     selection: { kind: 'router', service: { ...routingService, peerId: 'b'.repeat(40) } },
   }), /selected routing-service peer/)
@@ -186,7 +208,7 @@ test('candidate construction enforces buyer restrictions and required parameters
 
 test('routing purchases are registered before dispatch with their own request ID', async () => {
   const tracked: string[] = []
-  const adapter: ModelRouterAdapter = {
+  const client: ModelRoutingClientApi = {
     describe: describeAll,
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, { ...request, requestId: 'routing-purchase' }, {})
@@ -198,13 +220,13 @@ test('routing purchases are registered before dispatch with their own request ID
       assert.deepEqual(tracked, ['routing-purchase'])
       assert.equal(serviceRequest.requestId, 'routing-purchase')
       return { requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: new Uint8Array() }
-    } }, adapter, request, peers: [peer], candidates: candidates(), conversationKey: 'chat',
+    } }, client, request, peers: [peer], candidates: candidates(), conversationKey: 'chat',
     signal: new AbortController().signal, onRoutingRequest: requestId => tracked.push(requestId), selection: routerSelection,
   })
 })
 
 test('routing purchases cannot reuse the parent inference request ID', async () => {
-  const adapter: ModelRouterAdapter = {
+  const client: ModelRoutingClientApi = {
     describe: describeAll,
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, request, {})
@@ -212,7 +234,7 @@ test('routing purchases cannot reuse the parent inference request ID', async () 
     },
   }
   await assert.rejects(executeRouterSelection({
-    node: { sendRequest: async () => { throw new Error('must not dispatch') } }, adapter, request,
+    node: { sendRequest: async () => { throw new Error('must not dispatch') } }, client, request,
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal, selection: routerSelection,
   }), /distinct request ID/)
 })

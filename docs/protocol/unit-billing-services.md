@@ -32,7 +32,7 @@ pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
 ```
 
 There is no `serviceExecution` map or separate execution-contract configuration.
-The buyer's `ModelRoutingAdapter` validates its `POST /v1/routing/rank` body and
+The buyer's `ModelRoutingClient` validates its `POST /v1/routing/rank` body and
 the response, including `version: 1`, before accepting recommendations (see
 [model-routing.md](model-routing.md)). The shared API
 adapter only identifies the protocol. Providers are responsible for validating

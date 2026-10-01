@@ -56,10 +56,3 @@ export class RoutingDescriptionChangedError extends Error {
     this.name = 'RoutingDescriptionChangedError';
   }
 }
-
-export interface ModelRouterAdapter {
-  /** Fetch the router's supported models and preference schema from the routing peer. */
-  describe(target: RoutingServiceTarget, peers: PeerInfo[], context: RoutingDescribeContext): Promise<RoutingDescribeResponseV1>;
-  selectRoute(request: SerializedHttpRequest, peers: PeerInfo[], context: RouteSelectionContext): Promise<RouteRecommendation[] | null>;
-  recordUsage?(observation: RoutingUsageObservation): void;
-}

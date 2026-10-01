@@ -1,19 +1,15 @@
 import { toUtf8Bytes } from 'ethers';
 
 export type RoutingPreferences = Record<string, string>;
+/** One router setting: a list of string options, with an optional label, description and default. */
 export type RoutingPreferenceField = {
-  type: 'string';
-  enum: string[];
+  options: string[];
   title?: string;
   description?: string;
   default?: string;
 };
-export type RoutingPreferenceSchema = {
-  type: 'object';
-  properties: Record<string, RoutingPreferenceField>;
-  additionalProperties: false;
-  required?: string[];
-};
+/** Router settings advertised by describe, keyed by the name sent back in `preferences`. */
+export type RoutingPreferenceSchema = Record<string, RoutingPreferenceField>;
 export const MAX_ROUTING_PREFERENCE_BYTES = 16 * 1024;
 const forbiddenKeys = new Set(['__proto__', 'constructor', 'prototype']);
 const own = (value: object, key: string): boolean => Object.prototype.hasOwnProperty.call(value, key);
@@ -46,33 +42,29 @@ export function assertRoutingPreferences(value: unknown): asserts value is Routi
 
 export function validateRoutingPreferenceSchema(value: unknown): asserts value is RoutingPreferenceSchema {
   bounded(value);
-  if (!object(value) || value.type !== 'object' || !object(value.properties) || value.additionalProperties !== false
-    || Object.keys(value).some(key => !['type', 'properties', 'additionalProperties', 'required'].includes(key))) throw new Error('Routing preferences require a flat object schema with additionalProperties: false');
-  for (const [key, field] of Object.entries(value.properties)) {
-    if (!key.trim() || forbiddenKeys.has(key) || !object(field) || field.type !== 'string'
-      || Object.keys(field).some(name => !['type', 'enum', 'title', 'description', 'default'].includes(name))
-      || !Array.isArray(field.enum) || field.enum.length === 0
-      || field.enum.some(choice => typeof choice !== 'string' || !choice.trim())
-      || new Set(field.enum).size !== field.enum.length) throw new Error('preferences.' + key + ': expected unique nonempty string choices');
+  if (!object(value)) throw new Error('Routing preferences must be an object of settings');
+  for (const [key, field] of Object.entries(value)) {
+    if (!key.trim() || forbiddenKeys.has(key) || !object(field)
+      || Object.keys(field).some(name => !['options', 'title', 'description', 'default'].includes(name))
+      || !Array.isArray(field.options) || field.options.length === 0
+      || field.options.some(choice => typeof choice !== 'string' || !choice.trim())
+      || new Set(field.options).size !== field.options.length) throw new Error('preferences.' + key + ': expected unique nonempty string options');
     if (own(field, 'title') && (typeof field.title !== 'string' || !field.title.trim())) throw new Error('Preference title must be a nonempty string');
     if (own(field, 'description') && typeof field.description !== 'string') throw new Error('Preference description must be a string');
-    if (own(field, 'default') && !field.enum.includes(field.default)) throw new Error('Preference default must be an enum choice');
+    if (own(field, 'default') && !field.options.includes(field.default as string)) throw new Error('Preference default must be one of its options');
   }
-  if (value.required !== undefined && (!Array.isArray(value.required) || new Set(value.required).size !== value.required.length
-    || value.required.some(key => typeof key !== 'string' || !own(value.properties as object, key)))) throw new Error('Required preferences must be unique declared fields');
 }
 
 export function resolveRoutingPreferences(schema: RoutingPreferenceSchema, values: unknown = {}): RoutingPreferences {
   validateRoutingPreferenceSchema(schema);
   assertRoutingPreferences(values);
   const result: RoutingPreferences = {};
-  for (const key of Object.keys(values)) if (!own(schema.properties, key)) throw new Error('preferences.' + key + ': unknown preference');
-  for (const [key, field] of Object.entries(schema.properties)) {
+  for (const key of Object.keys(values)) if (!own(schema, key)) throw new Error('preferences.' + key + ': unknown preference');
+  for (const [key, field] of Object.entries(schema)) {
     const selected = own(values, key) ? values[key] : field.default;
-    if (selected !== undefined) {
-      if (!field.enum.includes(selected)) throw new Error('preferences.' + key + ': invalid enum choice');
-      result[key] = selected;
-    } else if (schema.required?.includes(key)) throw new Error('Required routing preference: ' + key);
+    if (selected === undefined) continue;
+    if (!field.options.includes(selected)) throw new Error('preferences.' + key + ': invalid option');
+    result[key] = selected;
   }
   assertRoutingPreferences(result);
   return result;
