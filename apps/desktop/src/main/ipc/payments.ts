@@ -1,4 +1,5 @@
 import { readBuyerRewardsSummary } from '../staking/buyer-rewards.js';
+import { CREDITS_FRESH_MS, REWARDS_ERROR_FRESH_MS, REWARDS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
 import { resolveStakingChain } from '../staking/configuration.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -32,6 +33,7 @@ import {
 import { resolveServiceIdHashes } from '../payments/service-hash-resolver.js';
 import {
   type CreditsInfo,
+  getDepositsClient,
   loadCachedCryptoConfig,
   refreshCreditsInfo,
 } from '../payments/credits.js';
@@ -42,7 +44,6 @@ import {
 } from '../payments/buyer-spend-history.js';
 import {
   demoteDepositWatch,
-  makeDepositsClient,
   startDepositWatch,
 } from '../payments/deposit-sweep.js';
 import {
@@ -229,10 +230,16 @@ export function registerPaymentsIpc(): void {
     return { ok: true };
   });
 
-  ipcMain.handle('credits:get-info', async (): Promise<{ ok: boolean; data: CreditsInfo | null; error: string | null }> => {
+  ipcMain.handle('credits:get-info', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: CreditsInfo | null; error: string | null }> => {
     try {
       await ensureSecureIdentity();
-      const info = await refreshCreditsInfo();
+      const address = getSecureIdentity()?.wallet.address ?? '';
+      // Display polls (balance timer, focus handlers) share one read. A caller
+      // deciding whether a payment can proceed passes `fresh` and always reads
+      // the chain, as before.
+      const info = opts?.fresh === true
+        ? await refreshFresh(readKeys.credits(address), refreshCreditsInfo)
+        : await cachedRead(readKeys.credits(address), CREDITS_FRESH_MS, refreshCreditsInfo);
       return { ok: true, data: info, error: null };
     } catch (err) {
       return { ok: false, data: null, error: err instanceof Error ? err.message : String(err) };
@@ -246,7 +253,7 @@ export function registerPaymentsIpc(): void {
       if (!identity) return { ok: false, error: 'Identity not available' };
       const cc = await loadCachedCryptoConfig();
       if (!cc) return { ok: false, error: 'No payment chain configured' };
-      const client = makeDepositsClient(cc);
+      const client = await getDepositsClient(cc);
       const address = identity.wallet.address;
       let balance = 0n;
       try {
@@ -398,8 +405,8 @@ export function registerPaymentsIpc(): void {
     return { ok: true, data: buildLocalBuyerSpendHistory(channels), error: null };
   });
 
-  ipcMain.handle('payments:get-channels', async (): Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[] | null; error: string | null }> => {
-    const channels = await loadBuyerChannels(true);
+  ipcMain.handle('payments:get-channels', async (_event, opts?: { fresh?: boolean }): Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[] | null; error: string | null }> => {
+    const channels = await loadBuyerChannels(true, true, opts?.fresh === true);
     if (!channels) {
       return { ok: false, data: null, error: 'buyer proxy unreachable' };
     }
@@ -414,6 +421,7 @@ export function registerPaymentsIpc(): void {
     }
     try {
       const result = await requestCooperativeChannelClose(peerId);
+      invalidateChainReads();
       return { ok: true, result, error: null };
     } catch (err) {
       return {
@@ -430,7 +438,17 @@ export function registerPaymentsIpc(): void {
       const identity = getSecureIdentity();
       if (!identity) return { ok: true, data: EMPTY_REWARDS_SUMMARY, error: null };
       const chain = resolveStakingChain(await readConfig(ACTIVE_CONFIG_PATH));
-      return { ok: true, data: await readBuyerRewardsSummary(chain, identity.wallet.address), error: null };
+      const address = identity.wallet.address;
+      // The home view asks every 3s until the buyer daemon answers; rewards
+      // only change per epoch or after a claim, which invalidates this.
+      const data = await cachedRead(
+        readKeys.rewards(address, chain.chainId),
+        (cached) => (cached?.error ? REWARDS_ERROR_FRESH_MS : REWARDS_FRESH_MS),
+        () => readBuyerRewardsSummary(chain, address).catch((err: unknown): DesktopRewardsSummary => (
+          { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) }
+        )),
+      );
+      return { ok: true, data, error: null };
     } catch (err) {
       return {
         ok: true,
