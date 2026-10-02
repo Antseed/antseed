@@ -34,27 +34,65 @@ export const readKeys = {
   rewards: (address: string, chain: string) => ['rewards', address.toLowerCase(), chain] as const,
 };
 
+/*
+ * Invalidation is versioned rather than flag-based. TanStack's
+ * `invalidateQueries` only flags a query, and a fetch already in flight still
+ * lands and clears that flag, so a balance read that started before a deposit
+ * was credited would be cached (and handed to a `refreshFresh` caller) as
+ * fresh. Instead every invalidation bumps a generation counter that is part of
+ * the query key: reads started earlier finish under the old key, which no
+ * caller asks for again and the cache garbage-collects.
+ */
+const generations = new Map<string, number>();
+
+function scopeId(scope: QueryKey): string {
+  return JSON.stringify(scope);
+}
+
+/** Sum of the counters of every prefix of `key`, so global and scoped bumps both apply. */
+function generationOf(key: QueryKey): number {
+  let total = 0;
+  for (let length = 0; length <= key.length; length++) {
+    total += generations.get(scopeId(key.slice(0, length))) ?? 0;
+  }
+  return total;
+}
+
+function bump(scope: QueryKey): void {
+  const id = scopeId(scope);
+  generations.set(id, (generations.get(id) ?? 0) + 1);
+}
+
+function versioned(key: QueryKey): QueryKey {
+  return [...key, { generation: generationOf(key) }];
+}
+
 /** `read()` unless a result for `key` younger than `freshMs` exists or is in flight. */
 export function cachedRead<T>(key: QueryKey, freshMs: number | ((data: T | undefined) => number), read: () => Promise<T>): Promise<T> {
   return client.fetchQuery({
-    queryKey: key,
+    queryKey: versioned(key),
     queryFn: read,
     staleTime: typeof freshMs === 'number' ? freshMs : (query) => freshMs(query.state.data as T | undefined),
   });
 }
 
-/** Always read the chain (bypassing any cached value) and store the result for display callers. */
-export async function refreshFresh<T>(key: QueryKey, read: () => Promise<T>): Promise<T> {
-  await client.invalidateQueries({ queryKey: key, exact: true, refetchType: 'none' });
-  return client.fetchQuery({ queryKey: key, queryFn: read, staleTime: 0 });
+/**
+ * Always start a new chain read, never joining one that began earlier, and
+ * make its result what display callers see next. Display callers arriving
+ * while it runs share it.
+ */
+export function refreshFresh<T>(key: QueryKey, read: () => Promise<T>): Promise<T> {
+  bump(key);
+  return client.fetchQuery({ queryKey: versioned(key), queryFn: read, staleTime: 0 });
 }
 
-/** Mark reads stale so the next caller refetches; `scope` limits it to one kind (e.g. `['channels']`). */
-export function invalidateChainReads(scope?: QueryKey): void {
-  void client.invalidateQueries(scope ? { queryKey: scope, refetchType: 'none' } : { refetchType: 'none' });
+/** Make the next read of every key (or of `scope`, e.g. `['channels']`) go to the chain. */
+export function invalidateChainReads(scope: QueryKey = []): void {
+  bump(scope);
 }
 
 /** Drop everything, e.g. when the wallet or chain changes. */
 export function clearChainReads(): void {
+  bump([]);
   client.clear();
 }

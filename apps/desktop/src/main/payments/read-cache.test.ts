@@ -76,3 +76,34 @@ test('a fresh read always reaches the chain and refreshes what display callers s
   assert.equal(await cachedRead(['credits', 'w'], 60_000, read), 2);
   assert.equal(calls, 3);
 });
+
+const later = <T>(ms: number, value: T) => () => new Promise<T>((resolve) => setTimeout(() => resolve(value), ms));
+
+test('a fresh read does not join a read that started before it', async () => {
+  clearChainReads();
+  const before = cachedRead(['credits', 'race'], 60_000, later(40, 'before deposit'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  assert.equal(await refreshFresh(['credits', 'race'], later(5, 'after deposit')), 'after deposit');
+  assert.equal(await before, 'before deposit');
+  // The earlier read finishing later must not replace the fresh value.
+  assert.equal(await cachedRead(['credits', 'race'], 60_000, later(5, 'refetched')), 'after deposit');
+});
+
+test('a read in flight during invalidation is not cached as fresh', async () => {
+  clearChainReads();
+  const before = cachedRead(['credits', 'inv'], 60_000, later(30, 'before payment'));
+  await new Promise((resolve) => setTimeout(resolve, 5));
+  invalidateChainReads();
+  assert.equal(await before, 'before payment');
+  assert.equal(await cachedRead(['credits', 'inv'], 60_000, later(5, 'after payment')), 'after payment');
+});
+
+test('display callers arriving during a fresh read share it', async () => {
+  clearChainReads();
+  let calls = 0;
+  const read = async () => { calls++; await new Promise((resolve) => setTimeout(resolve, 20)); return calls; };
+  const fresh = refreshFresh(['channels', 'share'], read);
+  const display = cachedRead(['channels', 'share'], 60_000, read);
+  assert.deepEqual(await Promise.all([fresh, display]), [1, 1]);
+  assert.equal(calls, 1);
+});
