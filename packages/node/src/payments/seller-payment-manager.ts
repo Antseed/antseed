@@ -135,7 +135,10 @@ export class SellerPaymentManager {
    */
   private readonly _pendingFee = new Map<string, LatestAuth>();
 
-  /** Channels that were sent video_reserve_required and expect a serious fee. */
+  /**
+   * Channels that were sent video_reserve_required and expect a serious fee.
+   * Mirrored to the channel store so the flag survives a restart.
+   */
   private readonly _feeExpected = new Set<string>();
 
   /**
@@ -225,6 +228,7 @@ export class SellerPaymentManager {
       this._hydratedChannelIds.add(channel.sessionId);
       this._acceptedCumulative.set(channel.sessionId, BigInt(channel.authMax));
       this._spent.set(channel.sessionId, BigInt(channel.tokensDelivered));
+      if (channel.seriousFeeExpected) this._feeExpected.add(channel.sessionId);
       // Hydrate reserveMax from previousConsumption (repurposed field)
       const storedReserveMax = BigInt(channel.previousConsumption || '0');
       if (storedReserveMax > 0n) {
@@ -1242,6 +1246,7 @@ export class SellerPaymentManager {
    */
   expectSeriousFee(channelId: string): void {
     this._feeExpected.add(channelId);
+    this._persistFeeExpected(channelId, true);
   }
 
   /** After topUp() settled it with the larger reserve, the fee is an ordinary auth. */
@@ -1265,7 +1270,15 @@ export class SellerPaymentManager {
 
   private _clearPendingFee(channelId: string): void {
     this._pendingFee.delete(channelId);
-    this._feeExpected.delete(channelId);
+    if (this._feeExpected.delete(channelId)) this._persistFeeExpected(channelId, false);
+  }
+
+  private _persistFeeExpected(channelId: string, expected: boolean): void {
+    const session = this._channelStore.getChannel(channelId);
+    if (!session || Boolean(session.seriousFeeExpected) === expected) return;
+    session.seriousFeeExpected = expected;
+    session.updatedAt = Date.now();
+    this._channelStore.upsertChannel(session);
   }
 
   /**

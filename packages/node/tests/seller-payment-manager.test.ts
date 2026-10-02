@@ -768,6 +768,59 @@ describe('SellerPaymentManager', () => {
     expect(closeArgs[4]).toBe(delivered.spendingAuthSig);
   });
 
+  it('still holds a serious fee aside when the seller restarts between the 402 and the fee', async () => {
+    const channelId = makeChannelId(134);
+    const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reserve, mux);
+    manager.recordSpend(channelId, 100_000n);
+    const delivered = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 100_000n, reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, delivered, mux);
+    manager.expectSeriousFee(channelId);
+
+    const restarted = new SellerPaymentManager(sellerIdentity, {
+      rpcUrl: 'http://127.0.0.1:8545', channelsContractAddress: CONTRACT_ADDR, chainId: CHAIN_ID, dataDir: tempDir,
+    }, store);
+    vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
+      deposit: 1_000_000n, settled: 0n,
+    }));
+    const closeSpy = vi.spyOn(restarted.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+    const fee = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 650_000n, reserveMaxAmount: '1000000',
+    });
+    expect(await restarted.handleSpendingAuth(buyerIdentity.peerId, fee, mux)).toBe('accepted');
+
+    expect(restarted.getAcceptedCumulative(channelId)).toBe(100_000n);
+    expect(store.getChannel(channelId)!.authMax).toBe('100000');
+    await restarted.settleSession(buyerIdentity.peerId);
+    expect(closeSpy.mock.calls[0]![2]).toBe(100_000n);
+    expect(closeSpy.mock.calls[0]![4]).toBe(delivered.spendingAuthSig);
+  });
+
+  it('clears the persisted fee flag once the fee is used', async () => {
+    const channelId = makeChannelId(135);
+    const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reserve, mux);
+    manager.recordSpend(channelId, 100_000n);
+    manager.expectSeriousFee(channelId);
+    expect(store.getChannel(channelId)!.seriousFeeExpected).toBe(true);
+    const fee = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 650_000n, reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, fee, mux);
+    vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue(undefined as never);
+    const topUp = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true, reserveMaxAmount: '5100000', salt: '0x' + '35'.repeat(32),
+    });
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, topUp, mux)).toBe('accepted');
+    expect(store.getChannel(channelId)!.seriousFeeExpected).toBe(false);
+  });
+
   it('settles the serious fee only inside topUp() and then treats it as ordinary', async () => {
     const channelId = makeChannelId(133);
     const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {

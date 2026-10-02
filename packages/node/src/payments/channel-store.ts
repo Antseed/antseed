@@ -277,6 +277,7 @@ export class ChannelStore {
         reserveAuthPending: channel.reserveAuthPending,
         confirmedReserveAmount: channel.confirmedReserveAmount,
         deliveredAmount: channel.deliveredAmount,
+        seriousFeeExpected: channel.seriousFeeExpected,
       }),
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,

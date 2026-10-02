@@ -668,19 +668,8 @@ export class SellerRequestHandler {
             },
           });
           // A video is charged when the buyer downloads it, not on acceptance.
-          // Store the job's price with its owner; if that cannot be saved,
-          // answer 503 so no job is handed out that could never be charged.
-          const videoChannelId = spm?.getChannelByPeer(buyerPeerId)?.sessionId;
-          const videoCharge = videoRoute?.action === 'create' && requestBilling && unitBillingModel && videoChannelId
-            ? this._videoCharge(unitBillingModel, requestBilling, response, requestedModel, videoChannelId)
-            : undefined;
-          if (videoRoute?.action === 'create' && !this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoCharge)) {
-            response = {
-              requestId: request.requestId,
-              statusCode: 503,
-              headers: { 'content-type': 'application/json' },
-              body: new TextEncoder().encode(JSON.stringify({ error: { code: 'resource_ownership_unavailable', message: 'Seller cannot record video job ownership' } })),
-            };
+          if (videoRoute?.action === 'create') {
+            response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel);
           }
           statusCode = response.statusCode;
           responseBody = response.body ?? new Uint8Array(0);
@@ -902,21 +891,6 @@ export class SellerRequestHandler {
     }
   }
 
-  /** Price of an accepted create, stored until the buyer downloads the video. */
-  private _videoCharge(
-    model: UnitBillingModelV1,
-    requestBilling: SellerBillingContext,
-    response: SerializedHttpResponse,
-    service: string,
-    channelId: string,
-  ): PendingResourceCharge | undefined {
-    const billing = computeFinalUnitBilling(model, requestBilling.context, response, requestBilling.requestFacts);
-    const durationSeconds = requestBilling.requestFacts.video?.duration;
-    return billing.costUsdc > 0n
-      ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
-      : undefined;
-  }
-
   /**
    * Charge a video once, when the buyer first receives the finished file.
    * The serious fee paid before generation already covers part of the price,
@@ -967,25 +941,42 @@ export class SellerRequestHandler {
     }
   }
 
-  private _recordVideoAcceptance(
+  /**
+   * After a video create, save the job's owner and its price (charged later,
+   * when the buyer downloads the video). Returns the reply to send: the
+   * provider's reply, or a 503 if the job could not be saved, so no job is
+   * handed out that could never be charged.
+   */
+  private _acceptVideoCreate(
     route: NativeVideoRoute,
+    request: SerializedHttpRequest,
     response: SerializedHttpResponse,
     buyerPeerId: string,
-    charge?: PendingResourceCharge,
-  ): boolean {
+    service: string,
+    requestBilling: SellerBillingContext | null,
+    model: UnitBillingModelV1 | undefined,
+  ): SerializedHttpResponse {
+    const channelId = this._deps.sellerPaymentManager?.getChannelByPeer(buyerPeerId)?.sessionId;
+    const billing = requestBilling && model && channelId
+      ? computeFinalUnitBilling(model, requestBilling.context, response, requestBilling.requestFacts)
+      : null;
+    const durationSeconds = requestBilling?.requestFacts.video?.duration;
+    const charge: PendingResourceCharge | undefined = billing && channelId && billing.costUsdc > 0n
+      ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
+      : undefined;
     const resourceId = nativeVideoAcceptance(route.protocol, response);
-    if (!resourceId) return true;
+    if (!resourceId) return response;
     try {
-      this._deps.resourceOwnershipStore?.recordAcceptedCreate(
-        route.protocol,
-        resourceId,
-        buyerPeerId.toLowerCase(),
-        charge,
-      );
-      return true;
+      this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
+      return response;
     } catch (err) {
       debugWarn(`[SellerHandler] Failed to record video job ownership: ${err instanceof Error ? err.message : err}`);
-      return false;
+      return {
+        requestId: request.requestId,
+        statusCode: 503,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ error: { code: 'resource_ownership_unavailable', message: 'Seller cannot record video job ownership' } })),
+      };
     }
   }
 
