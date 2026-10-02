@@ -1308,6 +1308,15 @@ export class BuyerPaymentManager {
     // If cost is 0, the cumulative amount stays the same — no spending auth needed
     // but we still sign one to keep the seller's session alive.
 
+    // NeedAuth may have counted this response first; its cost is then already
+    // in the signed cumulative and verified cost, so adding it again would
+    // charge the request twice.
+    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
+    if (alreadyCounted) {
+      acceptedCost = 0n;
+      verifiedCostDelta = 0n;
+    }
+
     // Advance cumulative amount by the accepted cost, then add overdraft headroom
     // for the next request (so the seller has budget to serve it).
     // maxSignable already caps at reserve ceiling, so one cap is sufficient
@@ -1322,9 +1331,7 @@ export class BuyerPaymentManager {
     if (newAmount < prevAmount) newAmount = prevAmount;
     const signedDelta = newAmount - prevAmount;
 
-    // Update cumulative metadata. NeedAuth may have counted this response
-    // first, so deduplicate the response's service amount and usage together.
-    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
+    // Update cumulative metadata, deduplicating usage for a response NeedAuth already counted.
     const newMeta = this._advanceUsageMetadata(
       this._metadata.get(sellerPeerId),
       responseStats.service,

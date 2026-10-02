@@ -1244,6 +1244,27 @@ describe('BuyerPaymentManager', () => {
     }]);
   });
 
+  it('signPerRequestAuth does not charge again for a request already paid through NeedAuth', async () => {
+    const sellerPeerId = fakePeerId('seller-cost-dedup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    // The seller's NeedAuth for the chat arrives first and is paid.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '20000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '20000', inputTokens: '1000', outputTokens: '1133',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+
+    // The post-response auth for the same chat (e.g. flushed before a close) must not add its cost again.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-1', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 20_000n, reportedInputTokens: 1000n, reportedOutputTokens: 1133n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(20_000n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+  });
+
   it('handleNeedAuth caps at reserve ceiling', async () => {
     const sellerPeerId = fakePeerId('seller-needauth-cap');
     // Reserve ceiling = 10_000 (initial suggested amount)
