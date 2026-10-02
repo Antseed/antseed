@@ -36,6 +36,7 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { MODEL_ROUTING_DESCRIBE_PATH, MODEL_ROUTING_PROTOCOL } from '@antseed/protocol/model-routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
 
@@ -70,7 +71,7 @@ interface SellerBillingContext {
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
 const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
-/** Per-buyer rate limit for the free attestation route. */
+/** Per-buyer rate limit for the free attestation and routing-describe routes. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
 const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
@@ -135,6 +136,11 @@ export class SellerRequestHandler {
       if (request.method === 'GET' && (pathOnly === '/v1/models' || pathOnly.startsWith('/v1/models/'))) {
         const modelsResponse = this._handleModelsRequest(request);
         mux.sendProxyResponse(modelsResponse);
+        return;
+      }
+
+      if (request.method === 'GET' && pathOnly === MODEL_ROUTING_DESCRIBE_PATH) {
+        mux.sendProxyResponse(await this._handleRoutingDescribe(request, buyerPeerId));
         return;
       }
 
@@ -746,6 +752,33 @@ export class SellerRequestHandler {
   }
 
   // -- Local /v1/models handler --
+
+  /**
+   * Free router description: forward to the provider advertising `model-routing` for the
+   * requested service. Rate-limited like attestation because it reaches the upstream router.
+   */
+  private async _handleRoutingDescribe(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
+    const reply = (statusCode: number, message: string, type = 'invalid_request_error'): SerializedHttpResponse => ({
+      requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { message, type } })),
+    });
+    const query = new URLSearchParams(request.path.split('?')[1] ?? '');
+    const service = query.get('service')?.trim();
+    if (!service) return reply(400, 'Routing describe requires a service query parameter.');
+    // Like other requests, the optional x-antseed-provider header disambiguates providers sharing a service ID.
+    const providerName = this._extractRequestedProvider(request);
+    const provider = this._deps.providers.find(candidate => (!providerName || candidate.name.toLowerCase() === providerName)
+      && candidate.services.includes(service)
+      && candidate.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL));
+    if (!provider) return reply(404, `No model-routing service "${service}".`);
+    if (!this._allowAttest(buyerPeerId)) return reply(429, 'Routing describe rate limit exceeded.', 'rate_limit_error');
+    try {
+      const response = await provider.handleRequest(request);
+      return { ...response, requestId: request.requestId };
+    } catch (error) {
+      return reply(502, `Routing describe failed: ${error instanceof Error ? error.message : String(error)}`, 'upstream_error');
+    }
+  }
 
   private _handleModelsRequest(request: SerializedHttpRequest): SerializedHttpResponse {
     const allServices = this._deps.providers.flatMap((p) => p.services);

@@ -43,6 +43,11 @@ describe('isImageModelId', () => {
 });
 
 describe('parseServiceUnitBillingModelsJson', () => {
+  it('accepts completed requests in the existing priceUsd component format', () => {
+    const models = { route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
+    expect(parseServiceUnitBillingModelsJson(JSON.stringify(models))).toEqual(models);
+  });
+
   it('rejects unknown service API protocol keys', () => {
     expect(() => parseServiceUnitBillingModelsJson(JSON.stringify({
       'gpt-image-1': {

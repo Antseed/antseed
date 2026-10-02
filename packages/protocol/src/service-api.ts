@@ -8,6 +8,7 @@ export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   'openai-responses',
   'openai-images',
   'typesafe-systemone',
+  'model-routing',
 ] as const;
 
 export type ServiceApiProtocol = (typeof WELL_KNOWN_SERVICE_API_PROTOCOLS)[number];

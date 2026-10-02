@@ -28,6 +28,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Routing: add the `model-routing` service API protocol, so any seller can offer model routing as a paid service. Buyers describe a router for free (`GET /v1/routing/describe`, cached 60s) and pay per ranking (`POST /v1/routing/rank`) for exact `{model, peer, provider}` candidates. See `docs/protocol/model-routing.md`.
+- Billing: bill `model-routing` ranks as `completed_requests` through the existing unit-billing path, like images. Buyer and seller run the same billing adapter on the same response, so a well-formed ranking costs one request and a malformed one costs nothing on both sides. Channel top-ups and 402 retries work as for any other paid request. Old buyers ignore sellers that advertise `completed_requests`, so run routing services on separate peers until buyers upgrade.
+- `@antseed/router-core`: add `ModelRoutingClient`, the built-in buyer client for `model-routing` sellers. The `router-local` plugin and `Router` interface are unchanged.
+- CLI: route through a selected routing service, by default (`POST /_antseed/route { router: { service, preferences } }`, alongside the unchanged `{ model }`) or per conversation. Preferences are checked against the router's schema on each routed request. Ranked recommendations fall back to the next candidate on retryable inference errors without paying for another ranking, and routing charges count toward the conversation's spend.
 - Website: added lANTS Market to the ecosystem page — a community-built board and USDC market for lANTS staking positions on Antseed, with a card and onchain preview. No other copy or layout changes.
 - Website: blog post "Introducing ANTS Staking" (`/blog/ants-staking`) covering the ways to earn ANTS as a buyer, provider, or staker, how to compare providers, staking positions, and how to open the dashboard with `antseed ants`.
 

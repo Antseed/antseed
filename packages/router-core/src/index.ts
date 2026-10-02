@@ -20,3 +20,5 @@ export {
   formatToolHints,
   type ToolHint,
 } from './tool-hints.js'
+export { ModelRoutingClient, latestUserText, type ModelRoutingClientApi } from './model-routing-client.js'
+export { CacheObservations } from './cache-observations.js'

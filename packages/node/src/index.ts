@@ -34,6 +34,25 @@ export {
 // on ethers directly.
 export { formatEther, parseEther } from 'ethers';
 export type { Router } from './interfaces/buyer-router.js';
+export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, RoutingDescribeContext } from './interfaces/model-routing-client.js';
+export { RoutingDescriptionChangedError } from './interfaces/model-routing-client.js';
+export type { RoutingUsageObservation } from './interfaces/model-routing-client.js';
+export * from './routing/selection.js';
+export { assertRoutingPreferences, resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferenceField, type RoutingPreferences, type RoutingPreferenceSchema } from '@antseed/protocol';
+export {
+  MODEL_ROUTING_PROTOCOL,
+  MODEL_ROUTING_DESCRIBE_PATH,
+  MODEL_ROUTING_RANK_PATH,
+  routingCandidateKey,
+  validateRoutingDescribeResponse,
+  validateRoutingRankRequest,
+  validateRoutingRankResponse,
+  type RoutingCandidateV1,
+  type RoutingDescribeResponseV1,
+  type RoutingRankRequestV1,
+  type RoutingRankResponseV1,
+  type RoutingRecommendationV1,
+} from '@antseed/protocol';
 
 // Types (re-export everything)
 export * from './types/index.js';

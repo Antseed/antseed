@@ -72,6 +72,30 @@ const imageBillingAdapter: UnitBillingAdapter = {
   measure: extractImageResponseUsage,
 };
 
+// Model routing charges one completed request per well-formed ranking. Buyer and seller run this
+// same function on the same response bytes, so they always agree on the charge.
+const routingBillingAdapter: UnitBillingAdapter = {
+  name: 'model-routing billing',
+  units: ['completed_requests'],
+  protocols: ['model-routing'],
+  capture: (args) => ({
+    context: {
+      sellerPeerId: args.sellerPeerId,
+      provider: args.provider,
+      service: args.service,
+      serviceApiProtocol: args.serviceApiProtocol,
+      unitLimits: { completed_requests: 1 },
+    },
+    requestUsage: { units: { completed_requests: 1 } },
+    requestFacts: {},
+  }),
+  measure: (response) => {
+    const parsed = response.statusCode >= 200 && response.statusCode < 300 ? parseJsonObject(response.body) : null;
+    const ranked = parsed?.version === 1 && Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0;
+    return { usage: { units: { completed_requests: ranked ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+  },
+};
+
 function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBillingUnitV1[]): UnitBillingAdapter {
   const fail = (): never => {
     throw new Error(`${name} is not implemented`);
@@ -81,7 +105,7 @@ function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBilli
 
 const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
   imageBillingAdapter,
-  unimplementedUnitBillingAdapter('completed-request billing', ['completed_requests']),
+  routingBillingAdapter,
   unimplementedUnitBillingAdapter('video billing', ['video_generations', 'video_seconds']),
 ];
 

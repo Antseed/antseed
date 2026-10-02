@@ -1,6 +1,7 @@
 import { readFileSync } from 'node:fs'
 import { mkdir, rename, writeFile } from 'node:fs/promises'
 import { join } from 'node:path'
+import { isRoutingSelection, type RoutingSelection, type RoutingServiceTarget } from '@antseed/node'
 import { isCursorEnvironmentSnippet, sanitizeStoredSnippet } from './conversation-identity.js'
 
 /**
@@ -13,7 +14,10 @@ import { isCursorEnvironmentSnippet, sanitizeStoredSnippet } from './conversatio
  * mirroring how buyer.state.json is handled. No database involved.
  */
 
+export type ConversationRouterSelection = Extract<RoutingSelection, { kind: 'router' }> & { service: RoutingServiceTarget }
+
 export type StoredConversation = {
+  routingSelection: ConversationRouterSelection | null
   /** `${tool}:${sessionKey}` — unique per tool chat. */
   id: string
   tool: string
@@ -91,6 +95,9 @@ function sanitizeRecord(value: unknown): StoredConversation | null {
     label: typeof record.label === 'string' && record.label.length > 0 ? record.label : null,
     pinnedModel: typeof record.pinnedModel === 'string' && record.pinnedModel.length > 0 ? record.pinnedModel : null,
     peerSource: record.peerSource === 'user' ? 'user' : 'auto',
+    routingSelection: record.peerSource !== 'user' && isRoutingSelection(record.routingSelection)
+      && record.routingSelection.kind === 'router' && record.routingSelection.service
+      ? structuredClone(record.routingSelection) as ConversationRouterSelection : null,
     lastModel: typeof record.lastModel === 'string' && record.lastModel.length > 0 ? record.lastModel : null,
     spentUsdc: sanitizeCounter(record.spentUsdc),
     inputTokens: sanitizeCounter(record.inputTokens),
@@ -220,6 +227,7 @@ export class ConversationStore {
         label: null,
         pinnedModel: input.lastModel ?? null,
         peerSource: 'auto',
+        routingSelection: null,
         lastModel: input.lastModel ?? null,
         spentUsdc: '0',
         inputTokens: '0',
@@ -330,6 +338,21 @@ export class ConversationStore {
       ...existing,
       pinnedModel: pinnedModel || null,
       peerSource: pinnedModel ? peerSource : 'auto' as const,
+      routingSelection: pinnedModel && peerSource === 'user' ? null : existing.routingSelection,
+    }
+    this._byId.set(id, record)
+    void this._persist()
+    return record
+  }
+
+  setRoutingSelection(id: string, selection: ConversationRouterSelection | null): StoredConversation | null {
+    if (selection !== null && (!isRoutingSelection(selection) || selection.kind !== 'router' || !selection.service)) {
+      throw new Error('Conversation routing requires a router and an exact routing-service target')
+    }
+    const existing = this._byId.get(id)
+    if (!existing) return null
+    const record: StoredConversation = {
+      ...existing, routingSelection: structuredClone(selection), pinnedModel: null, peerSource: 'auto',
     }
     this._byId.set(id, record)
     void this._persist()

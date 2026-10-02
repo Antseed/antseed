@@ -1,4 +1,4 @@
-import { afterEach, beforeAll, describe, expect, it } from 'vitest';
+import { afterEach, beforeAll, describe, expect, it, vi } from 'vitest';
 import OpenAI from 'openai';
 import { createServer as createNetServer } from 'node:net';
 import { createServer, type IncomingMessage, type Server, type ServerResponse } from 'node:http';
@@ -8,7 +8,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { promisify } from 'node:util';
 import { AntseedNode } from '@antseed/node';
-import type { NodePaymentsConfig, PeerInfo } from '@antseed/node';
+import type { NodePaymentsConfig, PeerInfo, Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
 
@@ -252,15 +252,15 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     rpcCallLog = [];
   }
 
-  async function setupProxyNetwork(provider?: MockOpenAIImageProvider): Promise<{
-    provider: MockOpenAIImageProvider;
+  async function setupProxyNetwork<P extends Provider = MockOpenAIImageProvider>(provider?: P): Promise<{
+    provider: P;
     port: number;
     discoveredSeller: PeerInfo;
   }> {
     bootstrap = await createLocalBootstrap();
 
     sellerDataDir = await mkdtemp(join(tmpdir(), 'antseed-seller-images-pay-'));
-    const imageProvider = provider ?? new MockOpenAIImageProvider();
+    const imageProvider = (provider ?? new MockOpenAIImageProvider()) as P;
     sellerNode = new AntseedNode({
       role: 'seller',
       dataDir: sellerDataDir,
@@ -403,5 +403,50 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     expect(rpcCallLog.some((call) => call.method === 'eth_sendRawTransaction')).toBe(false);
     expect(buyerNode!.buyerPaymentManager?.getActiveSession(discoveredSeller.peerId)).toBeNull();
     expect(buyerNode!.buyerPaymentManager?.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
+  }, 30_000);
+
+  it('bills a model-routing rank as one completed request through the same payment flow', async () => {
+    await setupRpc();
+    let rankCalls = 0;
+    const routing: Provider = {
+      name: 'alpha',
+      services: ['alpha-route'],
+      pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+      serviceUnitBillingModels: { 'alpha-route': { 'model-routing': {
+        version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
+      } } },
+      maxConcurrency: 5,
+      getCapacity: () => ({ current: 0, max: 5 }),
+      async handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
+        rankCalls++;
+        const { candidates, input } = JSON.parse(Buffer.from(req.body).toString());
+        if (input.text === 'bad') {
+          return { requestId: req.requestId, statusCode: 200, headers: {}, body: Buffer.from('not a ranking') };
+        }
+        const { model, peer, provider } = candidates[0];
+        return { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ version: 1, recommendations: [{ model, peer, provider }] })) };
+      },
+    };
+    const { discoveredSeller } = await setupProxyNetwork(routing);
+
+    const rank = (text = 'hi') => buyerNode!.sendRequest(discoveredSeller, {
+      requestId: crypto.randomUUID(), method: 'POST', path: '/v1/routing/rank',
+      headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
+      body: Buffer.from(JSON.stringify({ version: 1, service: 'alpha-route', revision: 'r', preferences: {},
+        input: { text, estimatedTokens: 1 },
+        candidates: [{ model: 'm', peer: 'b'.repeat(40), provider: 'openai', price: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 }, expectedCachedInputTokens: 0 }] })),
+    });
+
+    // First call negotiates (402 -> reserve -> retry). A malformed answer costs nothing on
+    // either side, so it cannot leave the seller waiting for a payment that never comes.
+    expect((await rank()).statusCode).toBe(200);
+    expect((await rank('bad')).statusCode).toBe(200);
+    expect((await rank()).statusCode).toBe(200);
+    expect(rankCalls).toBe(3);
+    const bpm = buyerNode!.buyerPaymentManager!;
+    await vi.waitFor(() => expect(bpm.getCumulativeAmount(discoveredSeller.peerId)).toBe(2_000n));
+    expect(bpm.getVerifiedCost(discoveredSeller.peerId)).toBe(2_000n);
   }, 30_000);
 });

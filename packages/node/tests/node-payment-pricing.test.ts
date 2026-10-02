@@ -10,6 +10,162 @@ import { ANTSEED_ATTEST_PATH, type Prover, type SellerRequest } from '../src/int
 const ATTEST_ID = 'antseed-verifier';
 const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 
+describe('completed-request seller payments', () => {
+  const candidate = { model: 'model-a', peer: 'a'.repeat(40), provider: 'openai', price: { inputUsdPerMillion: 1, outputUsdPerMillion: 3 }, expectedCachedInputTokens: 0 };
+  const body = { version: 1, service: 'alpha-route', revision: 'r1', preferences: { tradeoff: '5' }, input: { text: 'Help with code', estimatedTokens: 3 }, candidates: [candidate] };
+  const result = { version: 1, recommendations: [{ model: candidate.model, peer: candidate.peer, provider: candidate.provider }] };
+  function setup(overrides: Record<string, unknown> = {}) {
+    let spend = 0n;
+    const provider = makeProvider(10, 10, { name: 'alpha', services: ['alpha-route', 'image'] });
+    provider.serviceApiProtocols = { 'alpha-route': ['model-routing'] };
+    provider.serviceUnitBillingModels = { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
+    provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { 'alpha-route': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
+    provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) }));
+    delete (provider as Partial<Provider>).handleRequestStream;
+    const spm = makeSpmMock({
+      recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
+      getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend, ...overrides,
+    });
+    const frames: Uint8Array[] = [];
+    const paymentMux = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() };
+    const handler = makeSellerRequestHandler({ providers: [provider], sellerPaymentManager: spm, sessionTracker: null, channelsClient: {} as any, announcer: null, emit: () => false });
+    const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
+    const send = async (requestId = 'fixed', patch: Partial<SerializedHttpRequest> = {}) => {
+      await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
+        requestId, method: 'POST', path: '/v1/routing/rank',
+        headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
+        body: new TextEncoder().encode(JSON.stringify(body)), ...patch,
+      }) });
+      return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
+    };
+    return { provider, spm, paymentMux, send };
+  }
+  it('charges exactly the fee for a well-formed ranking, with zero tokens', async () => {
+    const harness = setup();
+    expect((await harness.send()).statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '1000', inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { completed_requests: '1' } } }));
+  });
+  it('serves the routing description for free through the provider', async () => {
+    const harness = setup();
+    const describePath = '/v1/routing/describe?service=alpha-route';
+    expect((await harness.send('describe', { method: 'GET', path: describePath, body: new Uint8Array() })).statusCode).toBe(200);
+    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe(describePath);
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
+  });
+  it('rejects invalid routing description requests before the provider', async () => {
+    const harness = setup();
+    const get = (requestId: string, path: string) => harness.send(requestId, { method: 'GET', path, body: new Uint8Array() });
+    expect((await get('missing', '/v1/routing/describe')).statusCode).toBe(400);
+    expect((await get('not-routing', '/v1/routing/describe?service=image')).statusCode).toBe(404);
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+  });
+  it('rate limits routing description requests', async () => {
+    const harness = setup();
+    const statuses: number[] = [];
+    for (let index = 0; index < 11; index += 1) {
+      statuses.push((await harness.send(`describe-${index}`, { method: 'GET', path: '/v1/routing/describe?service=alpha-route', body: new Uint8Array() })).statusCode);
+    }
+    expect(statuses.slice(0, 10).every(status => status === 200)).toBe(true);
+    expect(statuses[10]).toBe(429);
+    expect(harness.provider.handleRequest).toHaveBeenCalledTimes(10);
+  });
+  it('negotiates once before execution and allows retrying that request ID', async () => {
+    let hasSession = false;
+    const harness = setup({ hasSession: () => hasSession });
+    expect((await harness.send()).statusCode).toBe(402);
+    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
+    hasSession = true;
+    expect((await harness.send()).statusCode).toBe(200);
+    expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
+  });
+  it('rejects the next request after the confirmed reserve is spent', async () => {
+    const harness = setup({ getReserveMax: () => 1000n });
+    expect((await harness.send('first')).statusCode).toBe(200);
+    expect((await harness.send('second')).statusCode).toBe(402);
+    expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
+  });
+  it('does not charge a malformed ranking, so the buyer and seller stay in agreement', async () => {
+    const harness = setup();
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode('{}') }));
+    expect((await harness.send('opaque')).statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
+  });
+  it('uses ordinary concurrent dispatch for paid routing requests', async () => {
+    const harness = setup();
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => {
+      await gate;
+      return { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) };
+    });
+    const first = harness.send('active');
+    const second = harness.send('concurrent');
+    try {
+      await vi.waitFor(() => expect(harness.provider.handleRequest).toHaveBeenCalledTimes(2));
+    } finally {
+      release();
+      await Promise.all([first, second]);
+    }
+    expect((await first).statusCode).toBe(200);
+    expect((await second).statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledTimes(2);
+  });
+  it('does not charge requests rejected by the provider', async () => {
+    const harness = setup();
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({ requestId: request.requestId, statusCode: 400, headers: {}, body: new TextEncoder().encode('{}') }));
+    expect((await harness.send()).statusCode).toBe(400);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
+  });
+  it('preserves concurrent inference after a completed-request purchase', async () => {
+    const harness = setup();
+    expect((await harness.send('route-attempt')).statusCode).toBe(200);
+    let release!: () => void;
+    const gate = new Promise<void>(resolve => { release = resolve; });
+    const handleRequestStream = vi.fn(async (request: SerializedHttpRequest) => {
+      await gate;
+      return { requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode('{}') };
+    });
+    harness.provider.handleRequestStream = handleRequestStream;
+    const request = { path: '/v1/chat/completions', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ model: 'image' })) };
+    const first = harness.send('first', request);
+    const second = harness.send('second', request);
+    try {
+      await vi.waitFor(() => expect(handleRequestStream).toHaveBeenCalledTimes(2));
+    } finally {
+      release();
+      await Promise.all([first, second]);
+    }
+  });
+  it('keeps legacy image charges and v1 reports unchanged on a mixed seller', async () => {
+    const harness = setup();
+    harness.provider.pricing = { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } };
+    harness.provider.serviceApiProtocols = { ...harness.provider.serviceApiProtocols, image: ['openai-images'] };
+    harness.provider.serviceUnitBillingModels = { ...harness.provider.serviceUnitBillingModels, image: { 'openai-images': {
+      version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }],
+    } } };
+    harness.provider.handleRequestStream = undefined;
+    vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({
+      requestId: request.requestId, statusCode: 200, headers: {},
+      body: new TextEncoder().encode(JSON.stringify({ data: [{ b64_json: 'aGVsbG8=' }, { b64_json: 'd29ybGQ=' }] })),
+    }));
+    const response = await harness.send('legacy-image', {
+      path: '/v1/images/generations', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'image', prompt: 'A tree', n: 2 })),
+    });
+    expect(response.statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 80_000n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({
+      lastRequestCost: '80000', billingUsage: { version: 1, units: { output_images: '2' } },
+    }));
+  });
+});
+
 function makeProvider(inputUsdPerMillion: number, outputUsdPerMillion: number, opts: {
   name: string;
   services: string[];
@@ -42,6 +198,7 @@ function makeProvider(inputUsdPerMillion: number, outputUsdPerMillion: number, o
 }
 
 function makeSpmMock(overrides: Record<string, unknown> = {}): any {
+  let inFlight = 0;
   return {
     hasSession: () => true,
     getChannelByPeer: () => ({ sessionId: 'session-1', authMax: '1000000' }),
@@ -57,9 +214,9 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     waitForPendingAuths: async () => {},
     awaitAcceptedAtLeast: async () => false,
     settleSession: vi.fn(async () => {}),
-    beginBillableRequest: vi.fn(),
-    endBillableRequest: vi.fn(),
-    hasInFlightRequests: () => false,
+    beginBillableRequest: vi.fn(() => { inFlight += 1; }),
+    endBillableRequest: vi.fn(() => { inFlight -= 1; }),
+    hasInFlightRequests: () => inFlight > 0,
     hasClosingChannel: () => false,
     ...overrides,
   };
