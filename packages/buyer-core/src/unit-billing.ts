@@ -20,7 +20,6 @@ import type {
 } from '@antseed/protocol/billing';
 import {
   evaluateUnitBilling,
-  isCompletedRequestBillingModel,
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
@@ -51,19 +50,17 @@ export interface CaptureUnitBillingArgs {
   provider: string;
   service: string;
   serviceApiProtocol: ServiceApiProtocol;
-  unitModel?: UnitBillingModelV1;
   request: SerializedHttpRequest;
 }
 
 export interface UnitBillingAdapter {
   name: string;
   units: readonly UnitBillingUnitV1[];
-  protocols: readonly ServiceApiProtocol[] | 'any';
+  protocols: readonly ServiceApiProtocol[];
   capture(args: CaptureUnitBillingArgs): CapturedUnitBillingContext;
   measure(
     response: SerializedHttpResponse,
     requestFacts?: ImageRequestFacts,
-    accepted?: boolean,
   ): { usage: UnitBillingUsage; tokenUsage: TokenUsage };
 }
 
@@ -75,14 +72,12 @@ const imageBillingAdapter: UnitBillingAdapter = {
   measure: extractImageResponseUsage,
 };
 
-export function completedRequestUsage(accepted: boolean): UnitBillingUsage {
-  return { units: { completed_requests: accepted ? 1 : 0 } };
-}
-
-const completedRequestBillingAdapter: UnitBillingAdapter = {
-  name: 'completed-request billing',
+// Model routing charges one completed request per well-formed ranking. Buyer and seller run this
+// same function on the same response bytes, so they always agree on the charge.
+const routingBillingAdapter: UnitBillingAdapter = {
+  name: 'model-routing billing',
   units: ['completed_requests'],
-  protocols: 'any',
+  protocols: ['model-routing'],
   capture: (args) => ({
     context: {
       sellerPeerId: args.sellerPeerId,
@@ -94,10 +89,10 @@ const completedRequestBillingAdapter: UnitBillingAdapter = {
     requestUsage: { units: { completed_requests: 1 } },
     requestFacts: {},
   }),
-  measure(response, _requestFacts, accepted) {
-    const ok = response.statusCode >= 200 && response.statusCode < 300;
-    if (ok && accepted === undefined) throw new Error('Completed-request measurement requires response acceptance');
-    return { usage: completedRequestUsage(ok && accepted === true), tokenUsage: { ...ZERO_TOKEN_USAGE } };
+  measure: (response) => {
+    const parsed = response.statusCode >= 200 && response.statusCode < 300 ? parseJsonObject(response.body) : null;
+    const ranked = parsed?.version === 1 && Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0;
+    return { usage: { units: { completed_requests: ranked ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
   },
 };
 
@@ -110,33 +105,28 @@ function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBilli
 
 const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
   imageBillingAdapter,
-  completedRequestBillingAdapter,
+  routingBillingAdapter,
   unimplementedUnitBillingAdapter('video billing', ['video_generations', 'video_seconds']),
 ];
 
 function adapterForProtocol(protocol: ServiceApiProtocol): UnitBillingAdapter | undefined {
-  return UNIT_BILLING_ADAPTERS.find((adapter) => adapter.protocols !== 'any' && adapter.protocols.includes(protocol));
+  return UNIT_BILLING_ADAPTERS.find((adapter) => adapter.protocols.includes(protocol));
 }
 
-function resolveUnitBillingAdapter(protocol: ServiceApiProtocol | undefined, model: UnitBillingModelV1): UnitBillingAdapter {
-  let resolved: UnitBillingAdapter | undefined;
+function resolveUnitBillingAdapter(protocol: ServiceApiProtocol, model: UnitBillingModelV1): UnitBillingAdapter {
+  const protocolAdapter = adapterForProtocol(protocol);
+  if (!protocolAdapter) throw new Error(`Unit billing is not supported for ${protocol}`);
   for (const component of model.components) {
     const unitAdapter = UNIT_BILLING_ADAPTERS.find((adapter) => adapter.units.includes(component.unit));
     if (!unitAdapter) throw new Error(`No unit billing adapter for ${component.unit}`);
     if (unitAdapter.protocols.length === 0) throw new Error(`${unitAdapter.name} is not implemented`);
-    if (unitAdapter.protocols !== 'any' && (!protocol || !unitAdapter.protocols.includes(protocol))) {
-      throw new Error(`${component.unit} is not supported for ${protocol ?? 'an unspecified protocol'}`);
-    }
-    if (resolved && resolved !== unitAdapter) throw new Error(`${component.unit} cannot be combined with ${resolved.units.join(', ')}`);
-    resolved = unitAdapter;
+    if (unitAdapter !== protocolAdapter) throw new Error(`${component.unit} is not supported for ${protocol}`);
   }
-  resolved ??= protocol ? adapterForProtocol(protocol) : undefined;
-  if (!resolved) throw new Error(`Unit billing is not supported for ${protocol ?? 'an unspecified protocol'}`);
-  return resolved;
+  return protocolAdapter;
 }
 
 export function isUnitBilledProtocol(protocol: string | null | undefined): protocol is ServiceApiProtocol {
-  return typeof protocol === 'string' && adapterForProtocol(protocol as ServiceApiProtocol) !== undefined;
+  return typeof protocol === 'string' && UNIT_BILLING_ADAPTERS.some((adapter) => adapter.protocols.includes(protocol as ServiceApiProtocol));
 }
 
 export function validateUnitBillingModelForProtocolV1(
@@ -154,10 +144,7 @@ export function validateUnitBillingModelForProtocolV1(
 }
 
 export function captureUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
-  const adapter = args.unitModel && isCompletedRequestBillingModel(args.unitModel)
-    ? completedRequestBillingAdapter
-    : adapterForProtocol(args.serviceApiProtocol) ?? imageBillingAdapter;
-  return adapter.capture(args);
+  return (adapterForProtocol(args.serviceApiProtocol) ?? imageBillingAdapter).capture(args);
 }
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
@@ -220,9 +207,8 @@ export function computeFinalUnitBilling(
   context: UnitBillingContext,
   response: SerializedHttpResponse,
   requestFacts?: ImageRequestFacts,
-  accepted?: boolean,
 ): FinalUnitBillingResult {
-  const responseUsage = resolveUnitBillingAdapter(context.serviceApiProtocol, model).measure(response, requestFacts, accepted);
+  const responseUsage = resolveUnitBillingAdapter(context.serviceApiProtocol, model).measure(response, requestFacts);
   const costUsdc = evaluateUnitBilling(model, context, responseUsage.usage);
   return {
     usage: responseUsage.usage,

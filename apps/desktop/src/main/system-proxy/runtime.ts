@@ -24,7 +24,6 @@ import {
   restartAppTarget,
 } from '../connected-apps/launcher.js';
 import { getNetworkSnapshot, lookupPeer, type DashboardNetworkPeer } from '../runtime/peer-cache.js';
-import { modelDefaultRoute } from '../runtime/buyer-default-route.js';
 import type { ProcessManager, RuntimeMode, RuntimeProcessState } from '../runtime/process-manager.js';
 import { applyWindowView, getMainWindow } from '../ui/window.js';
 import { updateDesktopTray } from '../ui/tray.js';
@@ -852,7 +851,7 @@ export async function postBuyerDefaultRoute(buyerPort: number, peerId: string, m
     await fetch(`http://127.0.0.1:${buyerPort}/_antseed/route`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ selection: modelDefaultRoute(peer, service) }),
+      body: JSON.stringify({ model: `${peer}@${service}` }),
       signal: AbortSignal.timeout(3_000),
     });
   } catch (err) {

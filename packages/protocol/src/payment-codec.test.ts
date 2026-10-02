@@ -55,15 +55,6 @@ describe('payment payload codec', () => {
     expect(decodeAuthAck(encodeAuthAck(ack))).toEqual(ack);
   });
 
-  it('round-trips completed-request and image usage in the same v1 format', () => {
-    const payload = { channelId: 'channel', requestId: 'route-1', requiredCumulativeAmount: '1000', currentAcceptedCumulative: '0', deposit: '10000', lastRequestCost: '1000' };
-    expect(decodeNeedAuth(encodeNeedAuth({ ...payload, billingUsage: { version: 1, units: { completed_requests: '1' } } })).billingUsage).toEqual({ version: 1, units: { completed_requests: '1' } });
-    expect(decodeNeedAuth(encodeNeedAuth({ ...payload, billingUsage: { version: 1, units: { output_images: '2' } } })).billingUsage).toEqual({ version: 1, units: { output_images: '2' } });
-    for (const billingUsage of [{ version: 2, units: { completed_requests: '1' } }, { version: 1, units: { completed_requests: '2' } }, { version: 2, units: { output_images: '1' } }]) {
-      expect(() => decodeNeedAuth(new TextEncoder().encode(JSON.stringify({ ...payload, billingUsage })))).toThrow();
-    }
-  });
-
   it('rejects payloads missing required fields', () => {
     expect(() => decodeNeedAuth(new TextEncoder().encode('{"channelId":"x"}'))).toThrow();
     expect(() => decodeSpendingAuth(new TextEncoder().encode('not json'))).toThrow();

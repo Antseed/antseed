@@ -111,7 +111,7 @@ Non-success responses are not charged.
 2. Build candidates from eligible sellers whose model is in
    `supportedServiceIds`.
 3. Resolve the buyer's choices against the described `preferences` and call rank.
-4. Validate the response, accept delivery (charging one completed request) and
+4. Validate the response (a well-formed ranking is billed as one completed request) and
    send the inference to the first recommendation. Later recommendations are
    fallbacks for retryable inference errors.
 

@@ -1,5 +1,4 @@
 import type { PeerAnnouncer } from './discovery/announcer.js';
-import { completedRequestOffer, isLegacyInferenceService } from './billing/service.js';
 import type {
   Provider,
   ProviderStreamCallbacks,
@@ -37,7 +36,6 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { completedRequestPrice } from '@antseed/protocol/billing';
 import { MODEL_ROUTING_DESCRIBE_PATH, MODEL_ROUTING_PROTOCOL } from '@antseed/protocol/model-routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
@@ -128,7 +126,7 @@ export class SellerRequestHandler {
       maxUploadBodyBytes: this._deps.maxUploadBodyBytes,
     });
 
-    mux.onProxyRequest(async (request: SerializedHttpRequest): Promise<void> => {
+    mux.onProxyRequest(async (request: SerializedHttpRequest) => {
       debugLog(`[SellerHandler] Received request: ${request.method} ${request.path} (reqId=${request.requestId.slice(0, 8)})`);
 
       // Handle /v1/models locally — free metadata endpoint, no payment required.
@@ -240,26 +238,12 @@ export class SellerRequestHandler {
         return;
       }
 
-      const service = this._extractRequestedService(request)!;
-      const unitBilling = completedRequestOffer(provider, service);
-      const unitPrice = unitBilling ? completedRequestPrice(unitBilling.unitModel) : undefined;
-      try {
-        if (unitPrice !== undefined) {
-          if (request.method !== 'POST'
-            || this._extractRequestedProvider(request) !== provider.name.toLowerCase()) throw new Error('Completed-request POST and matching provider required');
-          if (unitPrice > 0n && (!this._deps.sellerPaymentManager || !this._deps.channelsClient)) throw new Error('Seller payments unavailable');
-        }
-      } catch (error) {
-        mux.sendProxyResponse({ requestId: request.requestId, statusCode: 400, headers: { 'content-type': 'application/json' },
-          body: new TextEncoder().encode(JSON.stringify({ error: { message: String(error), type: 'invalid_request_error' } })) });
-        return;
-      }
-      const requestPricing = unitBilling ? { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } : this.resolveProviderPricing(provider, request);
+      const requestPricing = this.resolveProviderPricing(provider, request);
       const requestBilling = this._captureSellerBillingContext(provider, request);
       const unitBillingModel = requestBilling
         ? this.resolveProviderUnitBillingModel(provider, requestBilling.context)
         : undefined;
-      const isFreeService = unitPrice !== undefined ? unitPrice === 0n : isZeroTokenPricing(requestPricing)
+      const isFreeService = isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
 
       if (isFreeService && this._deps.sellerFreeTierLimiter) {
@@ -335,10 +319,6 @@ export class SellerRequestHandler {
             request.requestId, buyerPeerId, requestPricing,
           );
           if (requirements) {
-            if (unitPrice !== undefined) {
-              requirements.minBudgetPerRequest = unitPrice.toString();
-              if (BigInt(requirements.suggestedAmount) < unitPrice) requirements.suggestedAmount = unitPrice.toString();
-            }
             debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
             const paymentBody = JSON.stringify({
               error: 'payment_required',
@@ -398,7 +378,17 @@ export class SellerRequestHandler {
             return;
           }
           let accepted = spm.getAcceptedCumulative(session.sessionId);
-          let spent = spm.getCumulativeSpend(session.sessionId);
+          const spent = spm.getCumulativeSpend(session.sessionId);
+          // Serving headroom only includes funds locked on-chain. Pending
+          // top-ups are not counted until topUp() succeeds, otherwise a large
+          // request could push spend above the current reserve before the extra
+          // funds are actually locked.
+          const reserveMax = spm.getEffectiveReserveMax(session.sessionId);
+          const isBlocked = spm.isChannelBlocked(session.sessionId);
+          // If spend has caught up and there is no headroom left in the reserve,
+          // stop serving before accepting any additional request cost.
+          const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
+
           if (spent > 0n && spent > accepted) {
             // Race cover: the buyer's SpendingAuth for the *previous* response's
             // NeedAuth may still be on the wire when this request arrives. The
@@ -411,14 +401,10 @@ export class SellerRequestHandler {
             // completed) it hides the round-trip latency from the buyer.
             const caughtUp = await spm.awaitAcceptedAtLeast(session.sessionId, spent, DEFAULT_CATCH_UP_WAIT_MS);
             accepted = spm.getAcceptedCumulative(session.sessionId);
-            spent = spm.getCumulativeSpend(session.sessionId);
             if (caughtUp && spent <= accepted) {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }
-          const reserveMax = spm.getEffectiveReserveMax(session.sessionId);
-          const isBlocked = spm.isChannelBlocked(session.sessionId);
-          const isAtExactSpendLimit = spent > 0n && spent === accepted && reserveMax > 0n && accepted >= reserveMax;
           let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
           try {
             requestCostEstimate = requestBilling
@@ -447,7 +433,7 @@ export class SellerRequestHandler {
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
             ? remainingLockedReserve + reserveEstimateOverdraft
             : null;
-          const estimatedCostExceedsLockedReserve = unitBilling ? estimatedRequestCost > remainingLockedReserve : effectiveEstimateLimit != null
+          const estimatedCostExceedsLockedReserve = effectiveEstimateLimit != null
             && reserveMax > 0n
             && estimatedRequestCost > 0n
             && estimatedRequestCost > effectiveEstimateLimit;
@@ -580,7 +566,7 @@ export class SellerRequestHandler {
       this.adjustProviderLoad(provider.name, 1);
       try {
         try {
-          const response = await this._executeRequest(provider, request, unitBilling ? undefined : {
+          const response = await this._executeRequest(provider, request, {
             onResponseStart: (streamResponseStart) => {
               streamedResponseStarted = true;
               responseStartedAt = Date.now();
@@ -599,7 +585,6 @@ export class SellerRequestHandler {
               mux.sendProxyChunk(chunk);
             },
           });
-          const accepted = response.statusCode >= 200 && response.statusCode < 300;
           statusCode = response.statusCode;
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
@@ -610,10 +595,10 @@ export class SellerRequestHandler {
             debugLog(`[SellerHandler] Provider responded: status=${statusCode} (${Date.now() - startTime}ms, ${responseBody.length}b)`);
           }
           if (requestBilling && unitBillingModel) {
-            const measured = computeFinalUnitBilling(unitBillingModel, requestBilling.context, response, requestBilling.requestFacts, accepted);
-            responseUsage = measured.tokenUsage;
-            billingUsageReport = measured.billingUsage;
-            unitCostUsdc = measured.costUsdc;
+            const unitBilling = computeFinalUnitBilling(unitBillingModel, requestBilling.context, response, requestBilling.requestFacts);
+            responseUsage = unitBilling.tokenUsage;
+            billingUsageReport = unitBilling.billingUsage;
+            unitCostUsdc = unitBilling.costUsdc;
           } else {
             responseUsage = parseResponseUsage(response.body);
           }
@@ -631,7 +616,6 @@ export class SellerRequestHandler {
           }
         } catch (err) {
           const message = err instanceof Error ? err.message : "Internal error";
-          if (unitBilling) unitCostUsdc = 0n;
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           responseBody = new TextEncoder().encode(message);
           if (streamedResponseStarted) {
@@ -797,7 +781,7 @@ export class SellerRequestHandler {
   }
 
   private _handleModelsRequest(request: SerializedHttpRequest): SerializedHttpResponse {
-    const allServices = this._deps.providers.flatMap(provider => provider.services.filter(service => isLegacyInferenceService(provider, service)));
+    const allServices = this._deps.providers.flatMap((p) => p.services);
     const now = Math.floor(Date.now() / 1000);
 
     // GET /v1/models/:id — single model lookup
@@ -880,7 +864,7 @@ export class SellerRequestHandler {
     provider: Provider,
     context: UnitBillingContext,
   ): UnitBillingModelV1 | undefined {
-    return context.serviceApiProtocol ? provider.serviceUnitBillingModels?.[context.service]?.[context.serviceApiProtocol] : undefined;
+    return provider.serviceUnitBillingModels?.[context.service]?.[context.serviceApiProtocol];
   }
 
   // -- Load tracking --
@@ -932,13 +916,11 @@ export class SellerRequestHandler {
   private _captureSellerBillingContext(provider: Provider, request: SerializedHttpRequest): SellerBillingContext | null {
     const service = this._extractRequestedService(request);
     if (!service) return null;
-    const serviceApiProtocol = this._selectSellerProtocolForService(provider, service, request);
     return captureUnitBillingContext({
       sellerPeerId: this._deps.identity.peerId,
       provider: provider.name,
       service,
-      serviceApiProtocol,
-      unitModel: provider.serviceUnitBillingModels?.[service]?.[serviceApiProtocol],
+      serviceApiProtocol: this._selectSellerProtocolForService(provider, service, request),
       request,
     });
   }

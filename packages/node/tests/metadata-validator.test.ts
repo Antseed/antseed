@@ -305,23 +305,7 @@ describe('validateMetadata', () => {
     expect(bothErrors).toEqual([]);
   });
 
-  it('accepts completed requests in v12 and rejects token surcharges or missing API declarations', () => {
-    const metadata = validMetadata({ providers: [{
-      provider: 'alpha', services: ['route'], maxConcurrency: 1, currentLoad: 0,
-      defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-      serviceApiProtocols: { route: ['model-routing'] },
-      serviceUnitBillingModels: { route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
-    }] });
-    expect(metadata.version).toBe(12);
-    expect(validateMetadata(metadata)).toEqual([]);
-    metadata.providers[0]!.defaultPricing.inputUsdPerMillion = 1;
-    expect(validateMetadata(metadata)).toContainEqual(expect.objectContaining({ message: expect.stringContaining('unmeasured token charges') }));
-    metadata.providers[0]!.defaultPricing.inputUsdPerMillion = 0;
-    delete metadata.providers[0]!.serviceApiProtocols;
-    expect(validateMetadata(metadata)).toContainEqual(expect.objectContaining({ message: expect.stringContaining('advertised API protocol') }));
-  });
-
-  it('rejects unsupported billing units', () => {
+  it('rejects non-image service unit billing models for now', () => {
     const errors = validateMetadata(validMetadata({
       version: SERVICE_UNIT_BILLING_METADATA_VERSION,
       providers: [

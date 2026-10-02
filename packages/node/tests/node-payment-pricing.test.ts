@@ -21,7 +21,7 @@ describe('completed-request seller payments', () => {
     provider.serviceUnitBillingModels = { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
     provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { 'alpha-route': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) }));
-    provider.handleRequestStream = vi.fn();
+    delete (provider as Partial<Provider>).handleRequestStream;
     const spm = makeSpmMock({
       recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
       getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend, ...overrides,
@@ -40,21 +40,11 @@ describe('completed-request seller payments', () => {
     };
     return { provider, spm, paymentMux, send };
   }
-  it('charges exactly the fee without a capability flag, with zero tokens and no streaming', async () => {
+  it('charges exactly the fee for a well-formed ranking, with zero tokens', async () => {
     const harness = setup();
     expect((await harness.send()).statusCode).toBe(200);
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '1000', inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { completed_requests: '1' } } }));
-    expect(harness.provider.handleRequestStream).not.toHaveBeenCalled();
-  });
-  it('uses completed-request measurement for a TypeSafe service without a price header', async () => {
-    const harness = setup();
-    harness.provider.serviceApiProtocols!['alpha-route'] = ['typesafe-systemone'];
-    harness.provider.serviceUnitBillingModels!['alpha-route'] = { 'typesafe-systemone': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } };
-    expect((await harness.send('typesafe', { path: '/v1/systemone' })).statusCode).toBe(200);
-    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
-    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].headers).not.toHaveProperty('x-antseed-unit-price');
-    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { completed_requests: '1' } } }));
   });
   it('serves the routing description for free through the provider', async () => {
     const harness = setup();
@@ -81,18 +71,12 @@ describe('completed-request seller payments', () => {
     expect(statuses[10]).toBe(429);
     expect(harness.provider.handleRequest).toHaveBeenCalledTimes(10);
   });
-  it('rejects mismatched providers and non-POST requests before execution', async () => {
-    const harness = setup();
-    expect((await harness.send('wrong', { headers: {} })).statusCode).toBe(400);
-    expect((await harness.send('wrong-method', { method: 'GET' })).statusCode).toBe(400);
-    expect(harness.provider.handleRequest).not.toHaveBeenCalled();
-  });
   it('negotiates once before execution and allows retrying that request ID', async () => {
     let hasSession = false;
     const harness = setup({ hasSession: () => hasSession });
     expect((await harness.send()).statusCode).toBe(402);
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
-    expect(harness.paymentMux.sendPaymentRequired).toHaveBeenCalledWith(expect.objectContaining({ minBudgetPerRequest: '1000' }));
+    expect(harness.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
     hasSession = true;
     expect((await harness.send()).statusCode).toBe(200);
     expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
@@ -104,12 +88,12 @@ describe('completed-request seller payments', () => {
     expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
   });
-  it('leaves API payload validation to the provider and buyer', async () => {
+  it('does not charge a malformed ranking, so the buyer and seller stay in agreement', async () => {
     const harness = setup();
     vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode('{}') }));
-    expect((await harness.send('opaque', { body: new TextEncoder().encode(JSON.stringify({ service: 'alpha-route', version: 2 })) })).statusCode).toBe(200);
-    expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
-    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
+    expect((await harness.send('opaque')).statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
   });
   it('uses ordinary concurrent dispatch for paid routing requests', async () => {
     const harness = setup();
@@ -137,11 +121,6 @@ describe('completed-request seller payments', () => {
     expect((await harness.send()).statusCode).toBe(400);
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
-  });
-  it('keeps ordinary services discoverable to legacy model-list clients', async () => {
-    const harness = setup();
-    const response = await harness.send('models', { method: 'GET', path: '/v1/models', headers: {}, body: new Uint8Array() });
-    expect(JSON.parse(new TextDecoder().decode(response.body)).data.map((model: { id: string }) => model.id)).toEqual(['image']);
   });
   it('preserves concurrent inference after a completed-request purchase', async () => {
     const harness = setup();

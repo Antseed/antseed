@@ -1,7 +1,4 @@
 import { EventEmitter } from "node:events";
-import { completedRequestPrice, parseMicroUsdc, resolveServiceBillingOffer } from '@antseed/protocol/service-billing';
-import { completedRequestOffer } from './billing/service.js';
-import { isCompletedRequestBillingModel, validateUnitBillingModelV1 } from '@antseed/protocol/billing';
 import { homedir } from "node:os";
 import { join } from "node:path";
 import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
@@ -432,19 +429,6 @@ export class AntseedNode extends EventEmitter {
   }
 
   registerProvider(provider: Provider): void {
-    for (const [service, protocols] of Object.entries(provider.serviceUnitBillingModels ?? {})) {
-      for (const [protocol, model] of Object.entries(protocols)) {
-        if (!model || !isCompletedRequestBillingModel(model)) continue;
-        const errors = validateUnitBillingModelV1(model);
-        if (errors.length) throw new Error(errors.join('; '));
-        if (!provider.services.includes(service) || !provider.serviceApiProtocols?.[service]?.some(advertised => advertised === protocol)) throw new Error('Completed requests require an advertised API protocol');
-        completedRequestOffer(provider, service);
-        const pricing = provider.pricing.services?.[service] ?? provider.pricing.defaults;
-        if (pricing.inputUsdPerMillion !== 0 || pricing.outputUsdPerMillion !== 0 || (pricing.cachedInputUsdPerMillion ?? 0) !== 0) {
-          throw new Error('Completed-request pricing cannot include unmeasured token charges');
-        }
-      }
-    }
     this._providers.push(provider);
   }
 
@@ -1415,22 +1399,6 @@ export class AntseedNode extends EventEmitter {
     options?: RequestExecutionOptions,
   ): Promise<SerializedHttpResponse> {
     if (!this._buyerHandler) throw buyerFault("Node not started or not in buyer mode", "node-not-started");
-    if (options?.unitBilling) {
-      const agreed = structuredClone(options.unitBilling);
-      const maximum = options.maxFeeMicroUsdc;
-      const acceptResponse = options.acceptResponse;
-      const snapshot = structuredClone(peer);
-      const request = structuredClone(req);
-      const metadata = snapshot.metadata;
-      if (!metadata || metadata.peerId !== snapshot.peerId || !this._peerLookup
-        || !await this._peerLookup.verifyMetadataSignature(metadata)) throw new Error('Verified completed-request metadata required');
-      const offer = resolveServiceBillingOffer(metadata.providers, agreed.provider, agreed.service);
-      const price = completedRequestPrice(offer.unitModel);
-      if (offer.serviceApiProtocol !== agreed.serviceApiProtocol || price !== completedRequestPrice(agreed.unitModel)) throw new Error('Completed-request offer changed');
-      if (maximum === undefined || price > parseMicroUsdc(maximum)) throw new Error('Unit price exceeds buyer limit');
-      if (!acceptResponse) throw new Error('Completed-request requests require response acceptance');
-      return this._buyerHandler.sendRequest(snapshot, request, undefined, { ...options, unitBilling: offer, acceptResponse });
-    }
     return this._buyerHandler.sendRequest(peer, req, undefined, options);
   }
 
@@ -1672,11 +1640,11 @@ export class AntseedNode extends EventEmitter {
         dht: this._dht,
         providers: this._providers.map((p) => ({
           provider: p.name,
-          get services() { return p.services; },
-          ...(p.serviceCategories ? { serviceCategories: p.serviceCategories } : {}),
-          ...(p.serviceApiProtocols ? { serviceApiProtocols: p.serviceApiProtocols } : {}),
-          ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: p.serviceUnitBillingModels } : {}),
-          ...(p.serviceCapabilities ? { serviceCapabilities: p.serviceCapabilities } : {}),
+          services: p.services,
+          ...(p.serviceCategories ? { serviceCategories: { ...p.serviceCategories } } : {}),
+          ...(p.serviceApiProtocols ? { serviceApiProtocols: { ...p.serviceApiProtocols } } : {}),
+          ...(p.serviceUnitBillingModels ? { serviceUnitBillingModels: { ...p.serviceUnitBillingModels } } : {}),
+          ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null && p.healthCheckAvailable !== false,
           pricing: {
@@ -1684,7 +1652,7 @@ export class AntseedNode extends EventEmitter {
               inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
               outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
             },
-            ...(p.pricing.services ? { services: p.pricing.services } : {}),
+            ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
           },
         })),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),

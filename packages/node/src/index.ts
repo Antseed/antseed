@@ -38,7 +38,7 @@ export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, Routin
 export { RoutingDescriptionChangedError } from './interfaces/model-routing-client.js';
 export type { RoutingUsageObservation } from './interfaces/model-routing-client.js';
 export * from './routing/selection.js';
-export { assertRoutingPreferences, canonicalRoutingJson, resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferenceField, type RoutingPreferences, type RoutingPreferenceSchema } from '@antseed/protocol';
+export { assertRoutingPreferences, resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferenceField, type RoutingPreferences, type RoutingPreferenceSchema } from '@antseed/protocol';
 export {
   MODEL_ROUTING_PROTOCOL,
   MODEL_ROUTING_DESCRIBE_PATH,
@@ -385,4 +385,3 @@ export {
   type LoadedProvider,
   type LoadedRouter,
 } from './config/plugin-loader.js'
-export * from '@antseed/protocol/service-billing';

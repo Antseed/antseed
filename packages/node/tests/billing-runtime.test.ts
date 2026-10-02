@@ -35,37 +35,6 @@ const imageModel: UnitBillingModelV1 = {
 };
 
 describe("unit billing runtime", () => {
-  const requestContext: UnitBillingContext = {
-    sellerPeerId: 'a'.repeat(40), provider: 'router', service: 'route',
-    serviceApiProtocol: 'model-routing', unitLimits: { completed_requests: 1 },
-  };
-  const routeResponse = {
-    requestId: 'route-1', statusCode: 200, headers: {},
-    body: new TextEncoder().encode(JSON.stringify({ ranked: Array.from({ length: 5 }, () => ({ model: 'chat' })) })),
-  };
-  it.each(['model-routing', 'typesafe-systemone'] as const)('selects request measurement from the billing model, not the %s API', serviceApiProtocol => {
-    const request = { requestId: 'request-unit', method: 'POST', path: '/custom', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ n: 5 })) };
-    const args = { sellerPeerId: 'a'.repeat(40), provider: 'provider', service: 'service', serviceApiProtocol, request };
-    const captured = captureUnitBillingContext({ ...args, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } });
-    expect(captured.requestUsage).toEqual({ units: { completed_requests: 1 } });
-    expect(captured.context.unitLimits).toEqual({ completed_requests: 1 });
-    expect(captured.context.serviceApiProtocol).toBe(serviceApiProtocol);
-    expect(captureUnitBillingContext(args).requestUsage.units.completed_requests).toBeUndefined();
-  });
-  it('measures five recommendations as one accepted request with no fake tokens or images', () => {
-    const result = computeFinalUnitBilling({ version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] }, requestContext, routeResponse, undefined, true);
-    expect(result.costUsdc).toBe(1000n);
-    expect(result.usage).toEqual({ units: { completed_requests: 1 } });
-    expect(result.billingUsage).toEqual({ version: 1, units: { completed_requests: '1' } });
-    expect(result.tokenUsage).toEqual({ inputTokens: 0, outputTokens: 0, freshInputTokens: 0, cachedInputTokens: 0 });
-  });
-  it('requires explicit acceptance and does not bill failures or rejected responses', () => {
-    const model = { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] };
-    expect(() => computeFinalUnitBilling(model, requestContext, routeResponse)).toThrow('acceptance');
-    expect(computeFinalUnitBilling(model, requestContext, routeResponse, undefined, false).costUsdc).toBe(0n);
-    expect(computeFinalUnitBilling(model, requestContext, { ...routeResponse, statusCode: 500 }).billingUsage).toEqual({ version: 1, units: { completed_requests: '0' } });
-    expect(computeFinalUnitBilling({ version: 1, components: [{ unit: 'completed_requests', priceUsd: 0 }] }, requestContext, routeResponse, undefined, true).costUsdc).toBe(0n);
-  });
   it("rejects positive billingUsage cost when buyer recomputation is zero", () => {
     const mismatchedContext: UnitBillingContext = {
       ...imageContext,

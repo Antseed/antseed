@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import type { UnitBillingContext, UnitBillingModelV1 } from '@antseed/protocol/billing';
 import {
+  computeFinalUnitBilling,
   estimateUnitRequestCost,
   isUnitBilledProtocol,
   validateUnitBillingModelForProtocolV1,
@@ -23,14 +24,21 @@ describe('unit billing adapters', () => {
     expect(estimateUnitRequestCost(model, imageContext, { units: { output_images: 2 } })).toBe(80_000n);
   });
 
-  it('routes completed-request billing on any advertised protocol', () => {
+  it('bills one completed request per well-formed routing response', () => {
     const model: UnitBillingModelV1 = { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] };
     const context: UnitBillingContext = { ...imageContext, serviceApiProtocol: 'model-routing', unitLimits: { completed_requests: 1 } };
+    const response = (statusCode: number, body: unknown) => ({
+      requestId: 'r', statusCode, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)),
+    });
+    const ranked = { version: 1, recommendations: [{ model: 'm', peer: 'p', provider: 'openai' }] };
 
-    expect(isUnitBilledProtocol('model-routing')).toBe(false);
+    expect(isUnitBilledProtocol('model-routing')).toBe(true);
     expect(validateUnitBillingModelForProtocolV1('model-routing', model)).toEqual([]);
-    expect(validateUnitBillingModelForProtocolV1('openai-chat-completions', model)).toEqual([]);
-    expect(estimateUnitRequestCost(model, context, { units: { completed_requests: 1 } })).toBe(1_000n);
+    expect(validateUnitBillingModelForProtocolV1('openai-images', model)).toEqual(['completed_requests is not supported for openai-images']);
+    expect(computeFinalUnitBilling(model, context, response(200, ranked)).costUsdc).toBe(1_000n);
+    expect(computeFinalUnitBilling(model, context, response(200, { version: 1, recommendations: [] })).costUsdc).toBe(0n);
+    expect(computeFinalUnitBilling(model, context, response(200, 'garbage')).costUsdc).toBe(0n);
+    expect(computeFinalUnitBilling(model, context, response(500, ranked)).costUsdc).toBe(0n);
   });
 
   it.each([
