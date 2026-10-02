@@ -362,7 +362,8 @@ export function initChatModule({
     }
 
     try {
-      const result = await bridge.creditsGetInfo();
+      // Decides whether a 402 can be retried right away: never from cache.
+      const result = await bridge.creditsGetInfo({ fresh: true });
       if (!result.ok || !result.data) {
         return parseFloat(uiState.creditsAvailableUsdc || '0');
       }

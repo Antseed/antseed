@@ -8,13 +8,12 @@
  * daemon's watcher over the proxy control plane and forwards its status
  * events to the renderer.
  */
-import { DepositsClient } from '@antseed/node';
 import { LOCALHOST_URL } from '../constants.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getMainWindow } from '../ui/window.js';
 import { closeCheckoutWindows } from './checkout-window.js';
 import { focusMainWindow } from './portal.js';
-import { invalidateCreditsCache, loadCachedCryptoConfig } from './credits.js';
+import { invalidateCreditsCache } from './credits.js';
 import { getTelemetryService } from '../telemetry/runtime.js';
 import { classifyDepositFailure } from '../telemetry/classify.js';
 
@@ -52,16 +51,6 @@ let lastForwardedSeq = 0;
 // The daemon can start seconds after the deposit view opens (process-manager
 // races) — remember the requested mode and re-send it once it answers.
 let pendingDaemonMode: 'active' | 'background' | null = null;
-
-export function makeDepositsClient(cc: NonNullable<Awaited<ReturnType<typeof loadCachedCryptoConfig>>>): DepositsClient {
-  return new DepositsClient({
-    rpcUrl: cc.rpcUrl,
-    ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
-    contractAddress: cc.depositsAddress,
-    usdcAddress: cc.usdcAddress,
-    ...(cc.chainId ? { evmChainId: cc.chainId } : {}),
-  });
-}
 
 function sendDepositWatchStatus(status: DepositWatchStatus): void {
   // Funds arriving at the hot wallet means an in-flight checkout (Fun card /

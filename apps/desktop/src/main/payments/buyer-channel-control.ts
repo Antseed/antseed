@@ -1,5 +1,7 @@
 /** Buyer-daemon client and response normalization for payment channels. */
-import type { CloseChannelResultPayload } from '@antseed/node';
+import type { ChannelInfo, CloseChannelResultPayload } from '@antseed/node';
+import { multicallRead } from '@antseed/node/payments';
+import { Interface, type AbstractProvider } from 'ethers';
 import { LOCALHOST_URL } from '../constants.js';
 import type { DesktopPaymentChannelSummary } from './buyer-channels.js';
 
@@ -120,4 +122,35 @@ export async function requestCooperativeChannelCloseAtPort(
     throw new Error('Buyer daemon returned an invalid cooperative-close response');
   }
   return body['result'];
+}
+
+const CHANNELS_READ_IFACE = new Interface([
+  'function channels(bytes32 channelId) view returns (address buyer, address seller, uint128 deposit, uint128 settled, bytes32 metadataHash, uint256 deadline, uint256 settledAt, uint256 closeRequestedAt, uint8 status)',
+]);
+
+/** Read many channels in one Multicall3 call; channels it could not read are left out. */
+export async function readChannelsBatched(provider: AbstractProvider, channelsAddress: string, channelIds: string[]): Promise<Map<string, ChannelInfo>> {
+  if (channelIds.length === 0) return new Map();
+  const results = await multicallRead(provider, channelIds.map((channelId) => ({
+    target: channelsAddress,
+    iface: CHANNELS_READ_IFACE,
+    method: 'channels',
+    args: [channelId],
+  })));
+  const sessions = new Map<string, ChannelInfo>();
+  results.forEach((result, index) => {
+    if (!result) return;
+    sessions.set(channelIds[index]!, {
+      buyer: result[0] as string,
+      seller: result[1] as string,
+      deposit: result[2] as bigint,
+      settled: result[3] as bigint,
+      metadataHash: result[4] as string,
+      deadline: result[5] as bigint,
+      settledAt: result[6] as bigint,
+      closeRequestedAt: result[7] as bigint,
+      status: Number(result[8]),
+    });
+  });
+  return sessions;
 }

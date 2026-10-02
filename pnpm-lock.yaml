@@ -172,6 +172,9 @@ importers:
       '@sinclair/typebox':
         specifier: ^0.34.48
         version: 0.34.48
+      '@tanstack/query-core':
+        specifier: 5.97.0
+        version: 5.97.0
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2
