@@ -2,6 +2,7 @@ import { FetchRequest, JsonRpcProvider, ZeroAddress, type AbstractProvider, type
 import { RotatingJsonRpcProvider } from './rpc-provider.js';
 import { createIndexer, type Indexer } from './indexer.js';
 import { invalidateNetwork } from './network.js';
+import { clearDisplayStakerRewards } from './staker-rewards.js';
 import {
   ANTSTokenClient,
   DepositsClient,
@@ -321,6 +322,7 @@ export class AntsContext {
     }
     this.sharedProvider?.invalidateReads();
     this.indexerClient?.invalidate?.();
+    clearDisplayStakerRewards(this);
   }
 
   private readonly memos = new Map<string, { value: unknown; at: number; ttl: number }>();

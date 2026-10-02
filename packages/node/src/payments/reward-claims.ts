@@ -49,7 +49,7 @@ type RewardSigner = Parameters<SellerPoolsRewardsClient['claimStakerRewardsBatch
  * about, typically positions closed by split, merge, or move that an indexer
  * reported; those keep their earned rewards but leave the enumeration.
  */
-export async function previewPoolRewards(pools: PoolReader, rewards: PoolRewards, address: string, positionId?: number, options: { includeIds?: number[] } = {}) {
+export async function previewPoolRewards(pools: PoolReader, rewards: Pick<PoolRewards, 'previewStakerRewards'>, address: string, positionId?: number, options: { includeIds?: number[] } = {}) {
   const positions = positionId === undefined
     ? await pools.positionsBatch([...new Set([...await pools.allStakerPositionIds(address), ...(options.includeIds ?? [])])])
     : [await pools.position(positionId)];

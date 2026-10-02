@@ -1,6 +1,7 @@
 import { ZeroAddress } from 'ethers';
 import { claimEpochRewards, pendingEpochRewards, previewPoolRewards, type SellerPoolsClient, type SellerPoolsRewardsClient } from '@antseed/node/payments';
 import { indexedWalletRewards } from './indexed-wallet.js';
+import { displayStakerRewards } from './staker-rewards.js';
 import { IndexerSyncingError } from '../read-state.js';
 import type { AbstractSigner } from 'ethers';
 import type { AntsContext } from './context.js';
@@ -88,7 +89,7 @@ export async function rewards(ctx: AntsContext): Promise<RewardsView> {
     } else {
       const closed = await closedPositionIds(ctx);
       historySource = closed.source;
-      stakerPositions = await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds: closed.ids });
+      stakerPositions = await previewPoolRewards(pools, { previewStakerRewards: (ids) => displayStakerRewards(ctx, ids) }, ctx.address, undefined, { includeIds: closed.ids });
     }
   }
   const stakerTotal = stakerPositions.reduce((sum, position) => sum + position.amount, 0n);

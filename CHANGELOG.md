@@ -13,6 +13,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- ANTS dashboard and `@antseed/node`: staker reward previews read the chain through Multicall3, so one preview takes about one RPC request per calculation step instead of one per contract read (182 positions: 899 requests down to 22, same amounts). The Positions and Rewards views share one preview per dashboard session for 15 seconds instead of each reading it again; claims, restakes and withdrawal previews still read live, and any action or wallet refresh clears the shared preview. Chains without Multicall3 keep the previous individual reads.
 - Docs: document `seller.freeUsage` record batching in the configuration guide and the CLI README.
 - CLI/node: free-usage channels opened by buyers now default to a 1-hour deadline (was 15 minutes), so sellers submit fewer open/close transactions per active buyer. Sellers can batch free-usage record transactions with `seller.freeUsage.recordBatchSize` (default 16) and `seller.freeUsage.recordFlushIntervalMs` (default 900000, flushed earlier when the channel deadline is near).
 - Website: the homepage hero subtitle and the site-wide meta and social-preview descriptions now read "Save on every AI model. No usage limits, no middleman, always anonymous." The navbar gains an Ecosystem link.

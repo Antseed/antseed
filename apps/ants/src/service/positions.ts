@@ -8,6 +8,7 @@ import { IndexerError, type IndexedPosition } from './indexer.js';
 import { stakeEligibility } from './stake-eligibility.js';
 import { assertAgentId, assertEpochs, assertPositiveIds, silentReporter, type StepReporter } from './steps.js';
 import { liveWalletPositions, validateWalletRewards } from './indexed-wallet.js';
+import { displayStakerRewards } from './staker-rewards.js';
 import type { LivePositions } from './position-feed.js';
 import { positionActionEpoch, positionActionProblem, type PositionAction } from '../position-actions.js';
 
@@ -36,7 +37,7 @@ async function describePositions(ctx: AntsContext, positions: SellerPoolPosition
   const rewards = new Map<number, bigint>();
   if (indexedRewards === undefined && poolRewards && positions.length > 0) {
     const ids = positions.map((position) => position.id);
-    const amounts = await poolRewards.previewStakerRewards(ids);
+    const amounts = await displayStakerRewards(ctx, ids);
     ids.forEach((id, index) => rewards.set(id, amounts[index] ?? 0n));
   }
   const liveById = new Map(live?.positions.map(row => [row.id, row]));

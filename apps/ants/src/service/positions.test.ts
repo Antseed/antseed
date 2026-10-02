@@ -56,11 +56,13 @@ describe('position display reads', () => {
   });
 
   it('does not present failed status or reward reads as zero balances', async () => {
-    const { ctx, statuses, rewards } = displayFixture();
+    const { ctx, statuses } = displayFixture();
     statuses.mockRejectedValueOnce(new Error('status unavailable'));
     await expect(positions(ctx)).rejects.toThrow('status unavailable');
-    rewards.mockRejectedValueOnce(new Error('reward unavailable'));
-    await expect(positions(ctx)).rejects.toThrow('reward unavailable');
+    // A fresh context: the first call's successful preview is shared for a few seconds.
+    const failing = displayFixture();
+    failing.rewards.mockRejectedValueOnce(new Error('reward unavailable'));
+    await expect(positions(failing.ctx)).rejects.toThrow('reward unavailable');
   });
 });
 
