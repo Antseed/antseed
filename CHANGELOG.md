@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.
 - Development/testing OAuth: optionally persist Claude credentials with `CLAUDE_AUTH_FILE`, retain rotated tokens across restarts, and back off failed refresh attempts without logging upstream credential responses. With model health checks enabled, OAuth refresh failures during CLI provider initialization no longer terminate multi-provider development sessions; affected services stay hidden until a successful probe. Configuration errors remain fatal. Subscription OAuth plugins remain for testing and development only.
 
 ### Changed
