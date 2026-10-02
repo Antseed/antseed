@@ -135,9 +135,9 @@ export class BuyerRequestHandler {
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
-    const videoFollowUp = nativeVideoRoute(req)?.action === 'retrieve';
-    if (nativeVideoRoute(req) && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
-    const isFreeService = videoFollowUp || (requestedService
+    const videoRoute = nativeVideoRoute(req);
+    if (videoRoute && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
+    const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false);
     if (negotiator && requestedService) {
@@ -175,10 +175,9 @@ export class BuyerRequestHandler {
     // A retrieve is free to send, but delivering the finished video triggers
     // the job's charge. Bind it to the accepted job so that charge is checked
     // against the job's own price and signed only after delivery.
-    const videoRetrieve = nativeVideoRoute(req);
-    const videoJobId = videoRetrieve?.action === 'retrieve' ? videoRetrieve.resourceId : undefined;
+    const videoJobId = videoRoute?.action === 'retrieve' ? videoRoute.resourceId : undefined;
     const trackedVideoRetrieve = Boolean(
-      videoRetrieve && videoJobId && this._deps.negotiator?.bpm?.trackVideoRetrieve(peer.peerId, videoRetrieve.protocol, videoJobId, req.requestId),
+      videoRoute && videoJobId && this._deps.negotiator?.bpm?.trackVideoRetrieve(peer.peerId, videoRoute.protocol, videoJobId, req.requestId),
     );
 
     let startTime = Date.now();
@@ -196,7 +195,7 @@ export class BuyerRequestHandler {
       let streamStartResponse: SerializedHttpResponse | null = null;
       let forwardStreamToCallbacks = false;
       const streamChunks: Uint8Array[] = [];
-      const isDownload = nativeVideoRoute(req)?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      const isDownload = videoRoute?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
       let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let activeTimeout: ReturnType<typeof setTimeout> | null = null;
       let activeTimeoutMs = streamInitialResponseTimeoutMs;
@@ -400,21 +399,27 @@ export class BuyerRequestHandler {
     const paidVideoCreate = Boolean(negotiator)
       && !isFreeService
       && !externalSpendingAuth
-      && nativeVideoRoute(req)?.action === 'create';
+      && videoRoute?.action === 'create';
     // Send the video create first and top up only when the seller asks for it.
     // Raising the reserve signs an early SpendingAuth (the video advance) that
     // the seller settles on-chain during topUp(), so it cannot be taken back.
-    // Topping up before the seller answers would pay that advance even for an
-    // idempotent replay of an existing job or a create the seller rejects.
+    // Topping up before the seller answers would pay that advance even for a
+    // create the seller rejects.
     // The seller replies 402 video_reserve_required only after those checks,
     // and never starts a video that the locked reserve cannot pay for.
-    let response = await executeRequest();
-
-    if (paidVideoCreate && isVideoReserveRequired402(response)) {
+    // If the seller says the reserve is too small for this paid video create
+    // (402 video_reserve_required), pay the serious fee, top up the reserve,
+    // and send the create once more. Any other response is returned unchanged.
+    const retryAfterVideoTopUp = async (res: SerializedHttpResponse): Promise<SerializedHttpResponse> => {
+      if (!paidVideoCreate || !isVideoReserveRequired402(res)) return res;
       await negotiator!.ensureVideoHeadroom(peer, conn, req.requestId);
       startTime = Date.now();
-      response = await executeRequest();
-    }
+      return executeRequest();
+    };
+
+    // Path 1: first send. If a channel already exists but is too small for the
+    // video, top up and send once more. (No channel yet → the normal 402 below opens one.)
+    const response = await retryAfterVideoTopUp(await executeRequest());
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -442,19 +447,16 @@ export class BuyerRequestHandler {
       && negotiator
       && !externalSpendingAuth
       && !isVideoReserveRequired402(response)
-      && (!nativeVideoRoute(req) || isPaymentRequired402(response))
+      && (!videoRoute || isPaymentRequired402(response))
     ) {
       const result = await negotiator.handle402(response, peer, conn, req);
       if (result.action === 'return') {
         return adaptPeerResponse(result.response);
       }
       startTime = Date.now();
-      let retriedResponse = await executeRequest();
-      if (paidVideoCreate && isVideoReserveRequired402(retriedResponse)) {
-        await negotiator.ensureVideoHeadroom(peer, conn, req.requestId);
-        startTime = Date.now();
-        retriedResponse = await executeRequest();
-      }
+      // Path 2: a channel was just opened above. It has the normal reserve size,
+      // so the video may still not fit; if so, top up and send once more.
+      const retriedResponse = await retryAfterVideoTopUp(await executeRequest());
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
@@ -466,10 +468,10 @@ export class BuyerRequestHandler {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
     if (
-      trackedVideoRetrieve && videoRetrieve && videoJobId
+      trackedVideoRetrieve && videoRoute && videoJobId
       && nativeVideoDelivered(response, this._deps.negotiator?.bpm?.getRequestBilling(req.requestId)?.requestFacts.video?.duration)
     ) {
-      this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRetrieve.protocol, videoJobId, req.requestId);
+      this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
     }
 
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
@@ -701,7 +703,7 @@ export function stripPeerControlledResponseHeaders(
     : { ...response, headers };
 }
 
-/** Tag a response with the serious fee paid for it, when one was paid. */
+/** True when the seller asks for a larger reserve before it starts a video create. */
 function isVideoReserveRequired402(response: SerializedHttpResponse): boolean {
   if (response.statusCode !== 402) return false;
   try {
@@ -712,6 +714,7 @@ function isVideoReserveRequired402(response: SerializedHttpResponse): boolean {
   }
 }
 
+/** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */
 function isPaymentRequired402(response: SerializedHttpResponse): boolean {
   try {
     const parsed = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;

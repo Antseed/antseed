@@ -431,12 +431,9 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       }
       const base = `http://127.0.0.1:${port}`;
       const post = (path: string, body: object) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
-      const created = await fetch(`${base}/api/v1/video/queue`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-idempotency-key': 'venice-input' }, body: createBody });
+      const created = await fetch(`${base}/api/v1/video/queue`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: createBody });
       expect(created.status).toBe(200);
       expect((await created.json()).queue_id).toBe('queue-1');
-      const replay = await fetch(`${base}/api/v1/video/queue`, { method: 'POST', headers: { 'content-type': 'application/json', 'x-antseed-idempotency-key': 'venice-input' }, body: createBody });
-      expect(replay.status).toBe(200);
-      expect((await replay.json()).queue_id).toBe('queue-1');
       expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
       const pending = await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'queue-1' });
       expect(pending.status).toBe(200);

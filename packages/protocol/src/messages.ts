@@ -210,8 +210,8 @@ export type PaymentRequiredCode = typeof PAYMENT_CODE_CHANNEL_EXHAUSTED;
  * HTTP 402 body code for a new, valid video create that costs more than the
  * reserve still locked on the channel. The channel stays open: the buyer
  * raises the reserve (video advance + top-up) and resends the same create.
- * Sellers send it only after idempotent replays and request validation are
- * answered, so buyers never top up for a create that would not start a job.
+ * Sellers send it only after request validation, so buyers never top up for
+ * a create that would not start a job.
  */
 export const PAYMENT_CODE_VIDEO_RESERVE_REQUIRED = 'video_reserve_required' as const;
 

@@ -47,13 +47,15 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
     && (pricing.cachedInputUsdPerMillion == null || pricing.cachedInputUsdPerMillion === 0);
 }
 
-export const IDEMPOTENCY_KEY_HEADER = 'x-antseed-idempotency-key';
-export const IDEMPOTENT_REPLAY_HEADER = 'x-antseed-idempotent-replay';
-const IDEMPOTENCY_KEY_PATTERN = /^[A-Za-z0-9._:-]{1,128}$/;
-
-function headerValue(headers: Record<string, string>, name: string): string | undefined {
-  const entry = Object.entries(headers).find(([key]) => key.toLowerCase() === name);
-  return entry?.[1]?.trim();
+/**
+ * Set a header the seller controls. Header names are case-insensitive, so any
+ * buyer-sent copy (in any letter case) is removed first and only ours remains.
+ */
+function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) delete headers[key];
+  }
+  headers[name] = value;
 }
 
 export interface SellerRequestHandlerDeps {
@@ -68,7 +70,7 @@ export interface SellerRequestHandlerDeps {
   announcer: PeerAnnouncer | null;
   maxUploadBodyBytes?: number;
   reserveEstimateOverdraftUsdc?: bigint;
-  /** Persistent buyer ownership and idempotency records for stateful video jobs. Video follow-ups fail closed without it. */
+  /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
   resourceOwnershipStore?: ResourceOwnershipStore | null;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
@@ -98,7 +100,6 @@ export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
-  private readonly _pendingVideoCreates = new Set<string>();
   /**
    * Buyers with a video create in flight. Spend is only recorded after the
    * provider answers, so two creates that arrive together would both pass the
@@ -269,16 +270,13 @@ export class SellerRequestHandler {
         return;
       }
       const videoRoute = nativeVideoRoute(request);
-      const videoIdempotencyKey = videoRoute?.action === 'create' ? headerValue(request.headers, IDEMPOTENCY_KEY_HEADER) : undefined;
-      if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel, videoIdempotencyKey)) return;
-      const pendingVideoCreate = videoIdempotencyKey ? `${buyerPeerId.toLowerCase()}\n${videoRoute!.protocol}\n${videoIdempotencyKey}` : null;
+      if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
       const videoCreateBuyer = videoRoute?.action === 'create' ? buyerPeerId.toLowerCase() : null;
       if (videoCreateBuyer && this._activeVideoCreateBuyers.has(videoCreateBuyer)) {
         this._sendJsonError(mux, request.requestId, 409, 'video_create_in_progress', 'Another video from this buyer is still being created. For now, only one video can be created per buyer at a time (a temporary limit); retry when the current video finishes.');
         return;
       }
       if (videoCreateBuyer) this._activeVideoCreateBuyers.add(videoCreateBuyer);
-      if (pendingVideoCreate) this._pendingVideoCreates.add(pendingVideoCreate);
       try {
       const isFreeService = videoRoute?.action === 'retrieve' || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
@@ -475,8 +473,8 @@ export class SellerRequestHandler {
             : null;
           // A video create may cost more than one reserve step. It is not an
           // exhausted channel: ask the buyer to raise the reserve instead of
-          // closing, and only at this point, after idempotent replays and
-          // invalid requests were already answered by the video precheck. This
+          // closing, and only at this point, after invalid requests were
+          // already answered by the video precheck. This
           // is what lets the buyer top up only for a create that will really
           // start a new paid job, while we never start work the locked reserve
           // cannot pay for. The check ignores reserveEstimateOverdraftUsdc on
@@ -603,10 +601,10 @@ export class SellerRequestHandler {
       // Track active seller session at request start
       this._deps.sessionTracker?.getOrCreateSession(buyerPeerId, provider.name);
 
-      for (const header of Object.keys(request.headers)) {
-        if (header.toLowerCase() === 'x-antseed-buyer-peer-id') delete request.headers[header];
-      }
-      request.headers['x-antseed-buyer-peer-id'] = buyerPeerId;
+      // Tell the provider who the buyer really is (from the authenticated connection).
+      // Needed now that video jobs belong to one buyer: a provider that checks job
+      // ownership by this header must not see a buyer-sent copy with different casing.
+      setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
 
       const requestedModel = this._extractRequestedService(request) ?? 'unknown';
       debugLog(`[SellerHandler] Routing to provider "${provider.name}" model="${requestedModel}"`);
@@ -676,7 +674,7 @@ export class SellerRequestHandler {
           const videoCharge = videoRoute?.action === 'create' && requestBilling && unitBillingModel && videoChannelId
             ? this._videoCharge(unitBillingModel, requestBilling, response, requestedModel, videoChannelId)
             : undefined;
-          if (videoRoute?.action === 'create' && !this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoIdempotencyKey, videoCharge)) {
+          if (videoRoute?.action === 'create' && !this._recordVideoAcceptance(videoRoute, response, buyerPeerId, videoCharge)) {
             response = {
               requestId: request.requestId,
               statusCode: 503,
@@ -859,7 +857,6 @@ export class SellerRequestHandler {
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
       }
       } finally {
-        if (pendingVideoCreate) this._pendingVideoCreates.delete(pendingVideoCreate);
         if (videoCreateBuyer) this._activeVideoCreateBuyers.delete(videoCreateBuyer);
       }
     });
@@ -874,7 +871,6 @@ export class SellerRequestHandler {
     route: NativeVideoRoute,
     buyerPeerId: string,
     unitBillingModel: UnitBillingModelV1 | undefined,
-    idempotencyKey: string | undefined,
   ): boolean {
     if (!unitBillingModel) {
       this._sendJsonError(mux, request.requestId, 503, 'billing_configuration_error', 'Video service requires explicit unit pricing');
@@ -885,25 +881,10 @@ export class SellerRequestHandler {
       this._sendJsonError(mux, request.requestId, 503, 'resource_ownership_unavailable', 'Seller cannot verify video job ownership');
       return true;
     }
-    const buyer = buyerPeerId.toLowerCase();
+    if (route.action !== 'retrieve') return false;
     try {
-      if (route.action === 'retrieve') {
-        if (route.resourceId && store.getOwner(route.protocol, route.resourceId) === buyer) return false;
-        this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Video job not found');
-        return true;
-      }
-      if (idempotencyKey === undefined) return false;
-      if (!IDEMPOTENCY_KEY_PATTERN.test(idempotencyKey)) {
-        this._sendJsonError(mux, request.requestId, 400, 'invalid_idempotency_key', `${IDEMPOTENCY_KEY_HEADER} must be 1-128 characters of [A-Za-z0-9._:-]`);
-        return true;
-      }
-      const replay = store.getReplay(buyer, route.protocol, idempotencyKey);
-      if (!replay) {
-        if (!this._pendingVideoCreates.has(`${buyer}\n${route.protocol}\n${idempotencyKey}`)) return false;
-        this._sendJsonError(mux, request.requestId, 409, 'idempotency_in_progress', 'A video request with this idempotency key is still in progress');
-        return true;
-      }
-      mux.sendProxyResponse({ requestId: request.requestId, ...replay, headers: { ...replay.headers, [IDEMPOTENT_REPLAY_HEADER]: 'true' } });
+      if (route.resourceId && store.getOwner(route.protocol, route.resourceId) === buyerPeerId.toLowerCase()) return false;
+      this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Video job not found');
       return true;
     } catch (err) {
       debugWarn(`[SellerHandler] Video ownership lookup failed: ${err instanceof Error ? err.message : err}`);
@@ -990,7 +971,6 @@ export class SellerRequestHandler {
     route: NativeVideoRoute,
     response: SerializedHttpResponse,
     buyerPeerId: string,
-    idempotencyKey: string | undefined,
     charge?: PendingResourceCharge,
   ): boolean {
     const resourceId = nativeVideoAcceptance(route.protocol, response);
@@ -1000,8 +980,6 @@ export class SellerRequestHandler {
         route.protocol,
         resourceId,
         buyerPeerId.toLowerCase(),
-        idempotencyKey,
-        { statusCode: response.statusCode, headers: response.headers, body: response.body ?? new Uint8Array(0) },
         charge,
       );
       return true;

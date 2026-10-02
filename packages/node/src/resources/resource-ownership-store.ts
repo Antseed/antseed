@@ -1,12 +1,9 @@
 import Database from 'better-sqlite3';
 import { runMigrations } from '../storage/migrate.js';
 import { meteringMigrations } from '../storage/migrations/metering/index.js';
-import type { SerializedHttpResponse } from '../types/http.js';
 import type { UnitBillingUsageReportV1 } from '../types/billing.js';
 
 const RETENTION_MS = 30 * 24 * 60 * 60_000;
-
-export type StoredVideoResponse = Pick<SerializedHttpResponse, 'statusCode' | 'headers' | 'body'>;
 
 /** Price of an accepted video job, charged once when the buyer downloads it. */
 export interface PendingResourceCharge {
@@ -19,14 +16,8 @@ export interface PendingResourceCharge {
   durationSeconds?: number;
 }
 
-interface ReplayRow {
-  status_code: number;
-  headers_json: string;
-  body: Buffer;
-}
-
 /**
- * Seller-side owner of each accepted video job, plus its replayable acceptance keyed by buyer idempotency key.
+ * Seller-side owner of each accepted video job, plus its pending delivery charge.
  * Tables live in the seller's metering database.
  */
 export class ResourceOwnershipStore {
@@ -38,7 +29,6 @@ export class ResourceOwnershipStore {
     runMigrations(this._db, meteringMigrations);
     const cutoff = this._now() - RETENTION_MS;
     this._db.prepare('DELETE FROM resource_owners WHERE created_at < ?').run(cutoff);
-    this._db.prepare('DELETE FROM resource_idempotency WHERE created_at < ?').run(cutoff);
     this._db.prepare('DELETE FROM resource_charges WHERE created_at < ?').run(cutoff);
   }
 
@@ -48,25 +38,10 @@ export class ResourceOwnershipStore {
     return row?.buyer_peer_id ?? null;
   }
 
-  getReplay(buyerPeerId: string, protocol: string, idempotencyKey: string): StoredVideoResponse | null {
-    const row = this._db.prepare(`
-      SELECT status_code, headers_json, body FROM resource_idempotency
-      WHERE buyer_peer_id = ? AND protocol = ? AND idempotency_key = ?
-    `).get(buyerPeerId, protocol, idempotencyKey) as ReplayRow | undefined;
-    if (!row) return null;
-    return {
-      statusCode: row.status_code,
-      headers: JSON.parse(row.headers_json) as Record<string, string>,
-      body: new Uint8Array(row.body),
-    };
-  }
-
   recordAcceptedCreate(
     protocol: string,
     resourceId: string,
     buyerPeerId: string,
-    idempotencyKey?: string,
-    response?: StoredVideoResponse,
     charge?: PendingResourceCharge,
   ): void {
     const createdAt = this._now();
@@ -81,12 +56,6 @@ export class ResourceOwnershipStore {
         INSERT INTO resource_owners (protocol, resource_id, buyer_peer_id, created_at)
         VALUES (?, ?, ?, ?) ON CONFLICT(protocol, resource_id) DO NOTHING
       `).run(protocol, resourceId, buyerPeerId, createdAt);
-      if (idempotencyKey && response) {
-        this._db.prepare(`
-          INSERT INTO resource_idempotency (buyer_peer_id, protocol, idempotency_key, status_code, headers_json, body, created_at)
-          VALUES (?, ?, ?, ?, ?, ?, ?) ON CONFLICT(buyer_peer_id, protocol, idempotency_key) DO NOTHING
-        `).run(buyerPeerId, protocol, idempotencyKey, response.statusCode, JSON.stringify(response.headers), Buffer.from(response.body), createdAt);
-      }
     })();
   }
 

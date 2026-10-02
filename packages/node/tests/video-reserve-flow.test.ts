@@ -108,7 +108,7 @@ interface Harness {
   sentAuths: SpendingAuthPayload[];
   releaseTopUp(): void;
   send(request: SerializedHttpRequest): ReturnType<BuyerRequestHandler['sendRequest']>;
-  videoRequest(requestId: string, idempotencyKey?: string): SerializedHttpRequest;
+  videoRequest(requestId: string, duration?: string): SerializedHttpRequest;
   retrieveRequest(requestId: string, queueId: string): SerializedHttpRequest;
   chatRequest(requestId: string): SerializedHttpRequest;
   settle(): Promise<void>;
@@ -273,7 +273,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
       providerPricing: { venice: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'chat-model': CHAT_PRICING } } },
     } as unknown as PeerInfo;
 
-    const videoRequest = (requestId: string, idempotencyKey?: string): SerializedHttpRequest => ({
+    const videoRequest = (requestId: string, duration = '5s'): SerializedHttpRequest => ({
       requestId,
       method: 'POST',
       path: '/api/v1/video/queue',
@@ -281,9 +281,8 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
         'content-type': 'application/json',
         'x-antseed-service': 'video-model',
         'x-antseed-provider': 'venice',
-        ...(idempotencyKey ? { 'x-antseed-idempotency-key': idempotencyKey } : {}),
       },
-      body: Buffer.from(JSON.stringify({ model: 'video-model', prompt: 'a cat', duration: '5s' })),
+      body: Buffer.from(JSON.stringify({ model: 'video-model', prompt: 'a cat', duration })),
     });
     const retrieveRequest = (requestId: string, queueId: string): SerializedHttpRequest => ({
       requestId,
@@ -324,7 +323,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     const h = setup();
     await openChannelWithChat(h);
 
-    const response = await h.send(h.videoRequest('video-1', 'video-key-1'));
+    const response = await h.send(h.videoRequest('video-1'));
     await h.settle();
 
     // Accepted, not delivered: only the serious fee is paid, and only on-chain
@@ -340,7 +339,6 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(response.statusCode).toBe(200);
     expect(JSON.parse(Buffer.from(response.body).toString()).queue_id).toBe('job-1');
     expect(h.providerCreates).toHaveLength(1);
-    expect(h.providerCreates[0]!.headers['x-antseed-idempotency-key']).toBe('video-key-1');
     expect(h.topUp).toHaveBeenCalledOnce();
     expect(h.topUp.mock.calls[0]![2]).toBe(ADVANCE);
     expect(h.topUp.mock.calls[0]![5]).toBe(BUFFERED_CEILING);
@@ -353,36 +351,14 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.close.mock.calls[0]![2]).toBe(CHAT_DELIVERED + VIDEO_PRICE);
   });
 
-  it('replays the accepted create without another advance, top-up or charge', async () => {
-    const h = setup();
-    await openChannelWithChat(h);
-    await h.send(h.videoRequest('video-1', 'video-key-1'));
-    await h.settle();
-    const authsBefore = h.sentAuths.length;
-    const cumulativeBefore = h.buyer.getCumulativeAmount(h.peer.peerId);
-
-    const replay = await h.send(h.videoRequest('video-1-retry', 'video-key-1'));
-    await h.settle();
-
-    expect(replay.statusCode).toBe(200);
-    expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
-    expect(JSON.parse(Buffer.from(replay.body).toString()).queue_id).toBe('job-1');
-    expect(h.providerCreates).toHaveLength(1);
-    expect(h.topUp).toHaveBeenCalledOnce();
-    expect(h.sentAuths).toHaveLength(authsBefore);
-    expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(cumulativeBefore);
-  });
-
-  it('does not sign an advance for a create the seller rejects', async () => {
+  it('does not sign an advance for an invalid create', async () => {
     const h = setup();
     await openChannelWithChat(h);
     const authsBefore = h.sentAuths.length;
 
-    const bad = h.videoRequest('video-bad', 'bad key!');
-    const response = await h.send(bad);
+    await expect(h.send(h.videoRequest('video-bad', '0s'))).rejects.toMatchObject({ code: 'invalid-request' });
     await h.settle();
 
-    expect(response.statusCode).toBe(400);
     expect(h.providerCreates).toHaveLength(0);
     expect(h.topUp).not.toHaveBeenCalled();
     expect(h.sentAuths).toHaveLength(authsBefore);
@@ -394,7 +370,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     const h = setup({ topUpBehavior: 'revert' });
     await openChannelWithChat(h);
 
-    await expect(h.send(h.videoRequest('video-1', 'video-key-1'))).rejects.toMatchObject({
+    await expect(h.send(h.videoRequest('video-1'))).rejects.toMatchObject({
       code: 'buyer-session-state',
     });
     await h.settle();
@@ -411,7 +387,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     const h = setup({ topUpBehavior: 'revert' });
     await openChannelWithChat(h);
 
-    await h.send(h.videoRequest('video-1', 'video-key-1')).catch(() => {});
+    await h.send(h.videoRequest('video-1')).catch(() => {});
     await h.settle();
 
     expect(h.close).toHaveBeenCalledOnce();
@@ -433,7 +409,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
       }
     };
 
-    const first = h.send(h.videoRequest('video-1', 'video-key-1'));
+    const first = h.send(h.videoRequest('video-1'));
     const firstAssertion = expect(first).rejects.toMatchObject({ code: 'buyer-reserve-topup-timeout' });
     await advance(50_000);
     await firstAssertion;
@@ -448,7 +424,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     await advance(1_000);
     expect(h.chain.deposit).toBe(BUFFERED_CEILING);
 
-    const retry = h.send(h.videoRequest('video-1-retry', 'video-key-1'));
+    const retry = h.send(h.videoRequest('video-1-retry'));
     await advance(5_000);
     const response = await retry;
     await advance(1_000);
@@ -467,7 +443,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
   it('charges a delivered video only once, even when it is downloaded again', async () => {
     const h = setup();
     await openChannelWithChat(h);
-    await h.send(h.videoRequest('video-1', 'video-key-1'));
+    await h.send(h.videoRequest('video-1'));
     await h.settle();
 
     await h.send(h.retrieveRequest('retrieve-1', 'job-1'));
@@ -483,7 +459,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
   it('keeps only the serious fee when the video is never delivered', async () => {
     const h = setup();
     await openChannelWithChat(h);
-    await h.send(h.videoRequest('video-1', 'video-key-1'));
+    await h.send(h.videoRequest('video-1'));
     await h.settle();
 
     await h.seller.settleSession(h.buyerIdentity.peerId);
@@ -496,7 +472,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
   it('never cashes the serious fee on its own when the buyer disconnects before the top-up', async () => {
     const h = setup({ topUpBehavior: 'slow' });
     await openChannelWithChat(h);
-    const pending = h.send(h.videoRequest('video-1', 'video-key-1')).catch(() => {});
+    const pending = h.send(h.videoRequest('video-1')).catch(() => {});
     for (let attempt = 0; attempt < 100 && h.topUp.mock.calls.length === 0; attempt += 1) {
       await new Promise((resolve) => setTimeout(resolve, 5));
     }

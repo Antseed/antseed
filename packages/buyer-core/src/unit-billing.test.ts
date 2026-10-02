@@ -73,12 +73,6 @@ describe('acceptance-based video metering', () => {
       { units: { video_seconds: 8 } },
     )).toThrow();
   });
-
-  it('charges nothing for a seller replay of an accepted create', () => {
-    const captured = capture();
-    const replay = { ...response({ queue_id: 'task' }), headers: { 'x-antseed-idempotent-replay': 'true' } };
-    expect(computeFinalUnitBilling(videoModel, captured.context, replay, captured.requestFacts).costUsdc).toBe(0n);
-  });
 });
 
 describe('unit billing adapters', () => {

@@ -285,32 +285,29 @@ export class BuyerPaymentNegotiator {
     route: SelectedBillingRoute | null,
   ): void {
     if (route) {
-      const captureArgs = {
-        sellerPeerId: route.sellerPeerId,
-        provider: route.provider,
-        service: route.service,
-        serviceApiProtocol: route.serviceApiProtocol,
-        request,
-      };
+      const isVideo = Boolean(nativeVideoRoute(request));
       let captured;
       let estimatedCost = 0n;
-      if (nativeVideoRoute(request)) {
-        try {
-          captured = captureUnitBillingContext(captureArgs);
-          if (captured.requestFacts.video && route.unitModel) {
-            estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
-          }
-        } catch (cause) {
-          throw buyerFault(cause instanceof Error ? cause.message : 'Invalid video request', 'invalid-request', { cause });
+      try {
+        captured = captureUnitBillingContext({
+          sellerPeerId: route.sellerPeerId,
+          provider: route.provider,
+          service: route.service,
+          serviceApiProtocol: route.serviceApiProtocol,
+          request,
+        });
+        if (isVideo && captured.requestFacts.video && route.unitModel) {
+          estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
         }
-        if (estimatedCost > this._bpm.maxVideoRequestUsdc) {
-          throw buyerFault(
-            `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(this._bpm.maxVideoRequestUsdc)} USDC`,
-            'buyer-budget-too-low',
-          );
-        }
-      } else {
-        captured = captureUnitBillingContext(captureArgs);
+      } catch (cause) {
+        if (!isVideo) throw cause;
+        throw buyerFault(cause instanceof Error ? cause.message : 'Invalid video request', 'invalid-request', { cause });
+      }
+      if (estimatedCost > this._bpm.maxVideoRequestUsdc) {
+        throw buyerFault(
+          `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(this._bpm.maxVideoRequestUsdc)} USDC`,
+          'buyer-budget-too-low',
+        );
       }
       this._bpm.trackRequestBilling(request.requestId, {
         context: captured.context,
@@ -361,8 +358,8 @@ export class BuyerPaymentNegotiator {
    *
    * Called only after the seller answered the create with 402
    * video_reserve_required, never before the first send: the advance below
-   * is settled on-chain and cannot be refunded, so it must not be paid for an
-   * idempotent replay or a create the seller rejects.
+   * is settled on-chain and cannot be refunded, so it must not be paid for a
+   * create the seller rejects.
    *
    * If the video does not fit, raise the channel to `delivered cost + video
    * price + maxReserveAmountUsdc` with a single topUp(), or only to

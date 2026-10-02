@@ -146,7 +146,7 @@ test('native resource follow-ups fail when the recorded provider loses support i
   }
 })
 
-test('native video creates are not retried automatically and the proxy adds no idempotency key', async () => {
+test('native video creates are not retried automatically', async () => {
   const peers = [makePeer('a', ['venice']), makePeer('b', ['venice'])]
   for (const peer of peers) peer.providerServiceApiProtocols = { venice: { services: { model: ['venice-video'] } } }
   const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
@@ -158,7 +158,6 @@ test('native video creates are not retried automatically and the proxy adds no i
   const result = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'model', duration: '8s' } }))
   assert.ok(result.statusCode >= 400)
   assert.equal(sent.length, 1)
-  assert.equal(sent[0]!.headers['x-antseed-idempotency-key'], undefined)
   assert.equal(sent[0]!.headers['x-antseed-pin-peer'], undefined)
 })
 

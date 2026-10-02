@@ -140,7 +140,7 @@ it('does not charge a native video on acceptance or JSON status, preserves buyer
   expect(provider.handleRequest).toHaveBeenCalledTimes(3);
 });
 
-describe('native video job ownership and idempotency', () => {
+describe('native video job ownership', () => {
   it('authorizes Venice downloads against the queue owner without charging for bytes', async () => {
     const provider = makeProvider(0, 0, {
       name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
@@ -249,93 +249,16 @@ describe('native video job ownership and idempotency', () => {
     restarted.store.close();
   });
 
-  it('replays an accepted create for the same idempotency key without a second upstream job or charge', async () => {
-    const { provider, recordSpend, create, payment, store } = setup();
-    const key = { 'x-antseed-idempotency-key': 'retry-key-1' };
-    const original = await create(buyer, key);
-    const replay = await create(buyer, key);
-    expect(JSON.parse(new TextDecoder().decode(replay.body)).queue_id).toBe('task-1');
-    expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
-    expect(original.headers['x-antseed-idempotent-replay']).toBeUndefined();
-    expect(provider.handleRequest).toHaveBeenCalledTimes(1);
-    expect(recordSpend).toHaveBeenCalledTimes(1);
-    expect(payment.sendNeedAuth).toHaveBeenCalledTimes(1);
-    const otherBuyer = await create(other, key);
-    expect(JSON.parse(new TextDecoder().decode(otherBuyer.body)).queue_id).toBe('task-2');
-    store.close();
-  });
-
-  it('rejects invalid idempotency keys before submission', async () => {
-    const { provider, create, store } = setup();
-    expect((await create(buyer, { 'x-antseed-idempotency-key': 'bad key!' })).statusCode).toBe(400);
-    expect(provider.handleRequest).not.toHaveBeenCalled();
-    store.close();
-  });
-
-  it('replays accepted creates after a seller restart without another upstream request or charge', async () => {
-    const key = { 'x-antseed-idempotency-key': 'restart-key' };
-    const first = setup();
-    const original = await first.create(buyer, key);
-    first.store.close();
-    const restarted = setup(first.dbPath);
-    try {
-      const replay = await restarted.create(buyer, key);
-      expect(replay.statusCode).toBe(200);
-      expect(replay.body).toEqual(original.body);
-      expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
-      expect(restarted.provider.handleRequest).not.toHaveBeenCalled();
-      expect(restarted.recordSpend).not.toHaveBeenCalled();
-      expect(restarted.payment.sendNeedAuth).not.toHaveBeenCalled();
-    } finally {
-      restarted.store.close();
-    }
-  });
-
-  it('rejects an in-flight duplicate and replays it once the original create is accepted', async () => {
-    const { provider, recordSpend, create, store } = setup();
-    const key = { 'x-antseed-idempotency-key': 'concurrent-key' };
-    let releaseCreate!: () => void;
-    let markStarted!: () => void;
-    const started = new Promise<void>(resolve => { markStarted = resolve; });
-    const pending = new Promise<void>(resolve => { releaseCreate = resolve; });
-    provider.handleRequest = vi.fn(async request => {
-      markStarted();
-      await pending;
-      return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{"queue_id":"task-1"}') };
-    });
-    const original = create(buyer, key);
-    try {
-      await started;
-      const duplicate = await create(buyer, key);
-      expect(duplicate.statusCode).toBe(409);
-      expect(JSON.parse(new TextDecoder().decode(duplicate.body)).error.code).toBe('idempotency_in_progress');
-      expect(recordSpend).not.toHaveBeenCalled();
-      releaseCreate();
-      expect((await original).statusCode).toBe(200);
-      const replay = await create(buyer, key);
-      expect(replay.statusCode).toBe(200);
-      expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
-      expect(provider.handleRequest).toHaveBeenCalledTimes(1);
-      expect(recordSpend).toHaveBeenCalledTimes(1);
-    } finally {
-      releaseCreate();
-      await original;
-      store.close();
-    }
-  });
-
   it('does not charge or remember upstream rejections as accepted jobs', async () => {
     const { provider, recordSpend, create, store } = setup();
-    const key = { 'x-antseed-idempotency-key': 'rejected-key' };
     provider.handleRequest = vi.fn(async request => ({
       requestId: request.requestId, statusCode: 400, headers: {}, body: Buffer.from('{"error":{"message":"Invalid parameters"}}'),
     }));
     try {
-      expect((await create(buyer, key)).statusCode).toBe(400);
-      expect((await create(buyer, key)).statusCode).toBe(400);
-      expect(provider.handleRequest).toHaveBeenCalledTimes(2);
+      expect((await create(buyer)).statusCode).toBe(400);
+      expect(provider.handleRequest).toHaveBeenCalledTimes(1);
       expect(recordSpend.mock.calls.every(([, amount]) => amount === 0n)).toBe(true);
-      expect(store.getReplay(buyer, 'venice-video', 'rejected-key')).toBeNull();
+      expect(store.getPendingChargeTotal('session-1')).toBe(0n);
     } finally {
       store.close();
     }
@@ -407,33 +330,6 @@ describe('native video job ownership and idempotency', () => {
         const response = await create(buyer);
         expect(response.statusCode).toBe(402);
         expect(bodyOf(response)).toMatchObject({ code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED, remainingLockedReserve: '799999' });
-        expect(provider.handleRequest).not.toHaveBeenCalled();
-      } finally { store.close(); }
-    });
-
-    it('answers an idempotent replay without asking for a larger reserve', async () => {
-      const dbPath = newDbPath();
-      const seeded = new ResourceOwnershipStore(dbPath);
-      seeded.recordAcceptedCreate('venice-video', 'task-1', buyer, 'big-key', {
-        statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task-1"}'),
-      });
-      seeded.close();
-      const { provider, recordSpend, create, store } = setup(dbPath);
-      try {
-        const replay = await create(buyer, { 'x-antseed-idempotency-key': 'big-key' }, bigVideo);
-        expect(replay.statusCode).toBe(200);
-        expect(replay.headers['x-antseed-idempotent-replay']).toBe('true');
-        expect(bodyOf(replay).queue_id).toBe('task-1');
-        expect(provider.handleRequest).not.toHaveBeenCalled();
-        expect(recordSpend).not.toHaveBeenCalled();
-      } finally { store.close(); }
-    });
-
-    it('rejects an invalid idempotency key before asking for a larger reserve', async () => {
-      const { provider, create, store } = setup(newDbPath());
-      try {
-        const response = await create(buyer, { 'x-antseed-idempotency-key': 'bad key!' }, bigVideo);
-        expect(response.statusCode).toBe(400);
         expect(provider.handleRequest).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
@@ -534,29 +430,6 @@ describe('native video job ownership and idempotency', () => {
       } finally { store.close(); }
     });
 
-    it('still answers an idempotent replay while another create is in flight', async () => {
-      const dbPath = newDbPath();
-      const seeded = new ResourceOwnershipStore(dbPath);
-      seeded.recordAcceptedCreate('venice-video', 'task-old', buyer, 'old-key', {
-        statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{"queue_id":"task-old"}'),
-      });
-      seeded.close();
-      const { provider, create, store } = setup(dbPath);
-      const { releases, started } = holdingProvider(provider);
-      try {
-        const first = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 1);
-        const replay = await create(buyer, { 'x-antseed-idempotency-key': 'old-key' });
-        expect(replay.statusCode).toBe(200);
-        expect(bodyOf(replay).queue_id).toBe('task-old');
-        releases[0]!(200);
-        expect((await first).statusCode).toBe(200);
-      } finally {
-        releases.forEach(release => release(200));
-        store.close();
-      }
-    });
-
     it('does not limit other buyers or polls while a create is in flight', async () => {
       const { provider, create, send, store } = setup(newDbPath());
       const { releases, started } = holdingProvider(provider);
@@ -587,10 +460,9 @@ describe('native video job ownership and idempotency', () => {
       let reserveMax = 1_000_000n;
       const { provider, create, store } = setup(newDbPath(), undefined, { getReserveMax: () => reserveMax });
       try {
-        const key = { 'x-antseed-idempotency-key': 'topup-key' };
-        expect((await create(buyer, key, bigVideo)).statusCode).toBe(402);
+        expect((await create(buyer, {}, bigVideo)).statusCode).toBe(402);
         reserveMax = 3_000_000n;
-        expect((await create(buyer, key, bigVideo)).statusCode).toBe(200);
+        expect((await create(buyer, {}, bigVideo)).statusCode).toBe(200);
         expect(provider.handleRequest).toHaveBeenCalledOnce();
       } finally { store.close(); }
     });
