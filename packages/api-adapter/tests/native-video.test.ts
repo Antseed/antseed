@@ -25,7 +25,7 @@ describe('native video API contracts', () => {
     const req = request('/api/v1/video/queue', { model: 'video', image_url: 'https://media.example/image.png', duration: '8s' });
     expect(nativeVideoRoute(req)).toEqual({ protocol: 'venice-video', action: 'create' });
     expect(detectRequestServiceApiProtocol(req)).toBe('venice-video');
-    expect(nativeVideoFacts(req)).toEqual({ protocol: 'venice-video', action: 'create', count: 1, duration: 8 });
+    expect(nativeVideoFacts(req)).toEqual({ protocol: 'venice-video', action: 'create', duration: 8 });
   });
 
   it('recognizes native paths without translating them into chat', () => {

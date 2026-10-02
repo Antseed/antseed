@@ -84,7 +84,6 @@ export function requestService(request: SerializedHttpRequest): string | undefin
 export interface NativeVideoFacts {
   protocol: NativeVideoProtocol;
   action: NativeVideoRoute['action'];
-  count: number;
   duration?: number;
   resolution?: string;
 }
@@ -92,15 +91,13 @@ export interface NativeVideoFacts {
 export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFacts | undefined {
   const route = nativeVideoRoute(request);
   if (!route) return undefined;
-  if (route.action === 'retrieve') return { protocol: route.protocol, action: route.action, count: 0 };
+  if (route.action === 'retrieve') return { protocol: route.protocol, action: route.action };
   const body = parseJsonObject(request.body);
   if (!body) throw new Error('Video submission requires a JSON object');
-  const count = 1;
   const duration = veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
-  if (duration !== undefined && !Number.isSafeInteger(duration * count)) throw new Error('Video quantity exceeds the safe integer limit');
   return {
-    protocol: route.protocol, action: route.action, count,
+    protocol: route.protocol, action: route.action,
     ...(duration === undefined ? {} : { duration }),
     ...(typeof body.resolution === 'string' ? { resolution: body.resolution } : {}),
   };

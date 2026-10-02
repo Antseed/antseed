@@ -865,7 +865,7 @@ describe('BuyerPaymentManager', () => {
         attributes: { model: service },
         unitLimits: { output_images: 1 },
       },
-      requestFacts: { model: service, requestedImages: 1 },
+      requestFacts: { kind: 'image', image: { model: service, requestedImages: 1 } },
       unitModel,
     });
     mux.sentSpendingAuths.length = 0;
@@ -975,7 +975,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1036,7 +1036,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '256x256' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1088,7 +1088,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       tokenPricing: TEST_PRICING,
       unitModel: imageModel,
     });
@@ -1140,7 +1140,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1682,7 +1682,7 @@ describe('BuyerPaymentManager', () => {
           serviceApiProtocol: 'venice-video',
           unitLimits: { video_generations: 1 },
         },
-        requestFacts: { video: { protocol: 'venice-video', action: 'create', count: 1 } },
+        requestFacts: { kind: 'video', video: { protocol: 'venice-video', action: 'create' } },
         unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: Number(estimatedCostUsdc) / 1_000_000 }] },
         estimatedCostUsdc,
       });

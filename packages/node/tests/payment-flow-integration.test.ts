@@ -169,7 +169,7 @@ describe('Full Payment Flow Integration', () => {
 
     buyer.trackRequestBilling('video-request', {
       context: { sellerPeerId, service: 'video-model', provider: 'venice', serviceApiProtocol: 'venice-video', unitLimits: { video_generations: 1 } },
-      requestFacts: { video: { protocol: 'venice-video', action: 'create', count: 1 } },
+      requestFacts: { kind: 'video', video: { protocol: 'venice-video', action: 'create' } },
       unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
       estimatedCostUsdc: 4_200_000n,
     });

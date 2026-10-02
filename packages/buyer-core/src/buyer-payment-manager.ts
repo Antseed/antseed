@@ -40,7 +40,7 @@ import {
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
-import { isUnitBilledProtocol } from './unit-billing.js';
+import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
@@ -110,7 +110,8 @@ export interface PerRequestAuthResult {
 
 export interface BuyerRequestBillingEntry {
   context: UnitBillingContext;
-  requestFacts: BillingRequestFacts;
+  /** Absent for requests tracked only for attribution (no unit billing). */
+  requestFacts?: BillingRequestFacts;
   unitModel?: UnitBillingModelV1;
   tokenPricing?: ServicePricing;
   observedUnitUsage?: UnitBillingUsage;
@@ -1318,7 +1319,7 @@ export class BuyerPaymentManager {
       }
       estimatedOutputTokens += estimatedOutputImages * OUTPUT_IMAGE_TOKEN_EQUIVALENT;
       if (estimatedInputTokens <= 0n) {
-        estimatedInputTokens = BigInt(requestBilling?.requestFacts.promptTokens ?? 0);
+        estimatedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
 
@@ -1685,7 +1686,7 @@ export class BuyerPaymentManager {
     if (acceptedOutputImages > 0n) {
       attributedOutputTokens += acceptedOutputImages * OUTPUT_IMAGE_TOKEN_EQUIVALENT;
       if (attributedInputTokens <= 0n) {
-        attributedInputTokens = BigInt(requestBilling?.requestFacts.promptTokens ?? 0);
+        attributedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
     const newMeta = this._advanceUsageMetadata(
@@ -1867,7 +1868,8 @@ export class BuyerPaymentManager {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
     }
     const billing = this.getRequestBilling(requestId);
-    if (billing?.requestFacts.video?.action !== 'create' || billing.context.sellerPeerId !== sellerPeerId || billing.estimatedCostUsdc !== videoCostUsdc) {
+    const facts = billing?.requestFacts;
+    if (!billing || facts?.kind !== 'video' || facts.video.action !== 'create' || billing.context.sellerPeerId !== sellerPeerId || billing.estimatedCostUsdc !== videoCostUsdc) {
       throw buyerFault(`[BuyerPayment] Video advance requires a tracked video create (${requestId})`, 'buyer-session-state');
     }
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
@@ -2073,13 +2075,10 @@ export class BuyerPaymentManager {
     const key = videoJobKey(sellerPeerId, protocol, jobId);
     const job = this._videoJobs.get(key);
     const entry = this._requestBillingEntries.get(requestId);
-    if (!job || !entry?.requestFacts.video) return;
+    const facts = entry?.requestFacts;
+    if (!job || facts?.kind !== 'video') return;
     this._videoJobs.delete(key);
-    const video = entry.requestFacts.video;
-    this.recordObservedUnitUsage(requestId, { units: {
-      video_generations: video.count,
-      video_seconds: (video.duration ?? 0) * video.count,
-    } });
+    this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
   }
 
   clearRequestBilling(requestId: string): void {
@@ -2088,10 +2087,7 @@ export class BuyerPaymentManager {
   }
 
   trackRequestBillingContext(requestId: string, context: UnitBillingContext): void {
-    this.trackRequestBilling(requestId, {
-      context,
-      requestFacts: {},
-    });
+    this.trackRequestBilling(requestId, { context });
   }
 
   /** Get the live response token totals for a seller, or null if none recorded this session. */
@@ -2164,4 +2160,9 @@ export class BuyerPaymentManager {
 
 function videoJobKey(sellerPeerId: string, protocol: string, jobId: string): string {
   return `${sellerPeerId.toLowerCase()}\n${protocol}\n${jobId}`;
+}
+
+function imagePromptTokens(billing: BuyerRequestBillingEntry | undefined): number {
+  const facts = billing?.requestFacts;
+  return facts?.kind === 'image' ? facts.image.promptTokens ?? 0 : 0;
 }

@@ -469,13 +469,18 @@ export class BuyerRequestHandler {
     }
     if (
       trackedVideoRetrieve && videoRoute && videoJobId
-      && nativeVideoDelivered(response, this._deps.negotiator?.bpm?.getRequestBilling(req.requestId)?.requestFacts.video?.duration)
+      && nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId))
     ) {
       this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
     }
 
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
     return adaptPeerResponse(response);
+  }
+
+  private _requestedVideoDuration(requestId: string): number | undefined {
+    const facts = this._deps.negotiator?.bpm?.getRequestBilling(requestId)?.requestFacts;
+    return facts?.kind === 'video' ? facts.video.duration : undefined;
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {

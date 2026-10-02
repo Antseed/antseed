@@ -5,6 +5,7 @@ import {
   captureUnitBillingContext,
   computeFinalUnitBilling,
   estimateUnitRequestCost,
+  extractUnitResponseUsage,
   isUnitBilledProtocol,
   validateUnitBillingModelForProtocolV1,
 } from './unit-billing.js';
@@ -53,6 +54,10 @@ describe('acceptance-based video metering', () => {
     expect(() => estimateUnitRequestCost(tier, captured.context, captured.requestUsage)).toThrow(/No billing component/);
   });
 
+  it('rejects non-video requests priced with a video protocol', () => {
+    expect(() => capture('/v1/images/generations', { model: 'wan-2.5' })).toThrow(/native video request/);
+  });
+
   it('allows fixed per-generation prices without duration', () => {
     const captured = capture('/api/v1/video/queue', { model: 'wan-2.5' });
     const fixed: UnitBillingModelV1 = { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.5 }] };
@@ -93,6 +98,13 @@ describe('unit billing adapters', () => {
     expect(validateUnitBillingModelForProtocolV1('venice-video', videoModel)).toEqual([]);
     expect(validateUnitBillingModelForProtocolV1('openai-images', videoModel)).toEqual(['video_seconds is not supported for openai-images']);
     expect(estimateUnitRequestCost(image, imageContext, { units: { output_images: 2 } })).toBe(80_000n);
+  });
+
+  it('measures only with an explicit, matching protocol', () => {
+    const video = capture();
+    expect(() => extractUnitResponseUsage('openai-responses', response({}), video.requestFacts)).toThrow('Unit billing is not supported for openai-responses');
+    expect(() => extractUnitResponseUsage('openai-images', response({ data: [{ b64_json: 'x' }] }), video.requestFacts)).toThrow('image billing cannot measure video request facts');
+    expect(extractUnitResponseUsage('venice-video', response({ queue_id: 'task' }), video.requestFacts).usage).toEqual({ units: { video_generations: 1, video_seconds: 8 } });
   });
 
   it('fails closed for completed-request billing', () => {

@@ -264,7 +264,8 @@ export class SellerRequestHandler {
       try {
         requestBilling = this._captureSellerBillingContext(provider, request);
         unitBillingModel = requestBilling ? this.resolveProviderUnitBillingModel(provider, requestBilling.context) : undefined;
-        if (requestBilling?.requestFacts.video?.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
+        const facts = requestBilling?.requestFacts;
+        if (requestBilling && facts?.kind === 'video' && facts.video.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
       } catch (error) {
         this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
         return;
@@ -960,7 +961,8 @@ export class SellerRequestHandler {
     const billing = requestBilling && model && channelId
       ? computeFinalUnitBilling(model, requestBilling.context, response, requestBilling.requestFacts)
       : null;
-    const durationSeconds = requestBilling?.requestFacts.video?.duration;
+    const facts = requestBilling?.requestFacts;
+    const durationSeconds = facts?.kind === 'video' ? facts.video.duration : undefined;
     const charge: PendingResourceCharge | undefined = billing && channelId && billing.costUsdc > 0n
       ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
       : undefined;

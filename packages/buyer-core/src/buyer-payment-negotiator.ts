@@ -296,7 +296,7 @@ export class BuyerPaymentNegotiator {
           serviceApiProtocol: route.serviceApiProtocol,
           request,
         });
-        if (isVideo && captured.requestFacts.video && route.unitModel) {
+        if (isVideo && captured.requestFacts.kind === 'video' && route.unitModel) {
           estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
         }
       } catch (cause) {
@@ -870,8 +870,8 @@ export class BuyerPaymentNegotiator {
     // Prefer session pricing (from PaymentRequired negotiation, includes service-specific rates)
     // over peer-level defaults which may be different from the actual service pricing.
     const unitModel = billingEntry?.unitModel;
-    const video = requestFacts?.video;
-    if (video && billingEntry) {
+    if (requestFacts?.kind === 'video' && billingEntry) {
+      const { video } = requestFacts;
       // A video is never paid on acceptance: remember the job and sign its
       // price only after the finished video is delivered.
       if (video.action === 'create') {
@@ -884,11 +884,11 @@ export class BuyerPaymentNegotiator {
       return;
     }
     let unitBilling: FinalUnitBillingResult | null = null;
-    if (unitModel && billingEntry) {
+    if (unitModel && billingEntry && requestFacts) {
       try {
         unitBilling = computeFinalUnitBilling(unitModel, billingEntry.context, response, requestFacts);
       } catch (err) {
-        const observed = extractUnitResponseUsage(response, requestFacts, billingEntry.context.serviceApiProtocol);
+        const observed = extractUnitResponseUsage(billingEntry.context.serviceApiProtocol, response, requestFacts);
         if (requestId) {
           this._bpm.recordObservedUnitUsage(requestId, observed.usage);
         }

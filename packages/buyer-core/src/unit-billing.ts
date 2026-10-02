@@ -10,7 +10,6 @@ import {
   parseJsonObject,
   nativeVideoFacts,
   nativeVideoAcceptance,
-  nativeVideoRoute,
   type NativeVideoFacts,
 } from '@antseed/api-adapter';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
@@ -36,7 +35,10 @@ const ZERO_TOKEN_USAGE: TokenUsage = {
   cachedInputTokens: 0,
 };
 
-export type BillingRequestFacts = ImageRequestFacts & { video?: NativeVideoFacts };
+/** What a unit-billed request asked for, tagged by the kind of output it bills. */
+export type BillingRequestFacts =
+  | { kind: 'image'; image: ImageRequestFacts }
+  | { kind: 'video'; video: NativeVideoFacts };
 
 export interface CapturedUnitBillingContext {
   context: UnitBillingContext;
@@ -66,9 +68,8 @@ export interface UnitBillingAdapter {
   capture(args: CaptureUnitBillingArgs): CapturedUnitBillingContext;
   measure(
     response: SerializedHttpResponse,
-    requestFacts?: BillingRequestFacts,
+    requestFacts: BillingRequestFacts,
   ): { usage: UnitBillingUsage; tokenUsage: TokenUsage };
-  billableUsage?(model: UnitBillingModelV1, requestFacts: BillingRequestFacts, usage: UnitBillingUsage): UnitBillingUsage;
 }
 
 const imageBillingAdapter: UnitBillingAdapter = {
@@ -85,7 +86,6 @@ const videoBillingAdapter: UnitBillingAdapter = {
   protocols: NATIVE_VIDEO_PROTOCOLS,
   capture: captureVideoUnitBillingContext,
   measure: extractVideoResponseUsage,
-  billableUsage: (model, requestFacts, usage) => requestFacts.video ? videoBillingUsage(model, requestFacts.video, usage) : usage,
 };
 
 function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBillingUnitV1[]): UnitBillingAdapter {
@@ -136,19 +136,18 @@ export function validateUnitBillingModelForProtocolV1(
 }
 
 export function captureUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
-  const adapter = nativeVideoRoute(args.request) ? videoBillingAdapter : adapterForProtocol(args.serviceApiProtocol) ?? imageBillingAdapter;
-  return adapter.capture(args);
+  return (adapterForProtocol(args.serviceApiProtocol) ?? imageBillingAdapter).capture(args);
 }
 
 function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
-  const requestFacts: BillingRequestFacts = extractImageRequestFacts({
+  const image = extractImageRequestFacts({
     path: args.request.path,
     method: args.request.method,
     body: parsed ?? undefined,
   });
-  const requestUsage = factsToUnitUsage(requestFacts);
-  const attributes = factsToAttributes(requestFacts);
+  const requestUsage = imageUnitUsage(image);
+  const attributes = imageAttributes(image);
   return {
     context: {
       sellerPeerId: args.sellerPeerId,
@@ -156,20 +155,19 @@ function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
       service: args.service,
       serviceApiProtocol: args.serviceApiProtocol,
       ...(attributes ? { attributes } : {}),
-      ...(requestFacts.requestedImages !== undefined
-        ? { unitLimits: { output_images: requestFacts.requestedImages } }
+      ...(image.requestedImages !== undefined
+        ? { unitLimits: { output_images: image.requestedImages } }
         : {}),
     },
     requestUsage,
-    requestFacts,
+    requestFacts: { kind: 'image', image },
   };
 }
 
 function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
   const video = nativeVideoFacts(args.request);
-  if (!video) return captureImageUnitBillingContext(args);
-  const requestFacts: BillingRequestFacts = { video };
-  const requestUsage = factsToUnitUsage(requestFacts);
+  if (!video) throw new Error(`${args.serviceApiProtocol} billing requires a native video request`);
+  const requestUsage = nativeVideoUnitUsage(video);
   return {
     context: {
       sellerPeerId: args.sellerPeerId,
@@ -180,43 +178,46 @@ function captureVideoUnitBillingContext(args: CaptureUnitBillingArgs): CapturedU
       attributes: { model: args.service, ...(video.resolution ? { resolution: video.resolution } : {}) },
     },
     requestUsage,
-    requestFacts,
+    requestFacts: { kind: 'video', video },
   };
 }
 
 export function extractUnitResponseUsage(
+  serviceApiProtocol: ServiceApiProtocol,
   response: SerializedHttpResponse,
-  requestFacts?: BillingRequestFacts,
-  serviceApiProtocol: ServiceApiProtocol = 'openai-images',
+  requestFacts: BillingRequestFacts,
 ): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
-  const adapter = requestFacts?.video
-    ? videoBillingAdapter
-    : adapterForProtocol(serviceApiProtocol) ?? imageBillingAdapter;
+  const adapter = adapterForProtocol(serviceApiProtocol);
+  if (!adapter) throw new Error(`Unit billing is not supported for ${serviceApiProtocol}`);
   return adapter.measure(response, requestFacts);
+}
+
+function wrongFacts(adapter: string, facts: BillingRequestFacts): never {
+  throw new Error(`${adapter} cannot measure ${facts.kind} request facts`);
 }
 
 function extractVideoResponseUsage(
   response: SerializedHttpResponse,
-  requestFacts?: BillingRequestFacts,
+  requestFacts: BillingRequestFacts,
 ): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
-  const video = requestFacts?.video;
-  const accepted = video !== undefined
-    && video.action === 'create'
-    && nativeVideoAcceptance(video.protocol, response) !== null;
-  return { usage: accepted ? factsToUnitUsage(requestFacts!) : { units: {} }, tokenUsage: ZERO_TOKEN_USAGE };
+  if (requestFacts.kind !== 'video') return wrongFacts('video billing', requestFacts);
+  const { video } = requestFacts;
+  const accepted = nativeVideoAcceptance(video.protocol, response) !== null;
+  return { usage: accepted ? nativeVideoUnitUsage(video) : { units: {} }, tokenUsage: ZERO_TOKEN_USAGE };
 }
 
 function extractImageResponseUsage(
   response: SerializedHttpResponse,
-  requestFacts?: BillingRequestFacts,
+  requestFacts: BillingRequestFacts,
 ): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
+  if (requestFacts.kind !== 'image') return wrongFacts('image billing', requestFacts);
   const parsed = parseJsonObject(response.body);
   const responseFacts: ProviderResponseFacts = parsed
     ? extractProviderResponseFacts(parsed)
     : { tokenUsage: ZERO_TOKEN_USAGE };
   const billableOutputImages = capOutputImagesToRequest(
     responseFacts.outputImages,
-    requestFacts?.requestedImages,
+    requestFacts.image.requestedImages,
   );
   return {
     usage: {
@@ -232,11 +233,13 @@ export function computeFinalUnitBilling(
   model: UnitBillingModelV1,
   context: UnitBillingContext,
   response: SerializedHttpResponse,
-  requestFacts: BillingRequestFacts = {},
+  requestFacts: BillingRequestFacts,
 ): FinalUnitBillingResult {
   const adapter = resolveUnitBillingAdapter(context.serviceApiProtocol, model);
   const responseUsage = adapter.measure(response, requestFacts);
-  const usage = adapter.billableUsage?.(model, requestFacts, responseUsage.usage) ?? responseUsage.usage;
+  // Bill only units the seller priced, e.g. a per-generation video price
+  // ignores the measured seconds.
+  const usage = usageForModel(model, responseUsage.usage);
   const costUsdc = evaluateUnitBilling(model, context, usage);
   return {
     usage,
@@ -269,13 +272,13 @@ function usageForModel(model: UnitBillingModelV1, usage: UnitBillingUsage): Unit
   return { units };
 }
 
-function factsToUnitUsage(facts: BillingRequestFacts): UnitBillingUsage {
-  if (facts.video) {
-    return { units: {
-      video_generations: facts.video.count,
-      video_seconds: (facts.video.duration ?? 0) * facts.video.count,
-    } };
-  }
+/** Units of one video job; status/download requests carry none. */
+export function nativeVideoUnitUsage(video: NativeVideoFacts): UnitBillingUsage {
+  if (video.action !== 'create') return { units: {} };
+  return { units: { video_generations: 1, video_seconds: video.duration ?? 0 } };
+}
+
+function imageUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {
   return {
     units: {
       ...(facts.requestedImages !== undefined ? { output_images: facts.requestedImages } : {}),
@@ -283,19 +286,7 @@ function factsToUnitUsage(facts: BillingRequestFacts): UnitBillingUsage {
   };
 }
 
-function videoBillingUsage(model: UnitBillingModelV1, facts: NativeVideoFacts, usage: UnitBillingUsage): UnitBillingUsage {
-  const units: UnitBillingUsage['units'] = {};
-  if (facts.action === 'retrieve') return { units };
-  for (const component of model.components) {
-    if (component.unit === 'video_seconds' && facts.duration === undefined) throw new Error('Explicit video duration is required for per-second pricing');
-    if (component.unit === 'video_generations' || component.unit === 'video_seconds') {
-      units[component.unit] = usage.units[component.unit] ?? 0;
-    }
-  }
-  return { units };
-}
-
-function factsToAttributes(
+function imageAttributes(
   facts: ImageRequestFacts,
 ): Partial<Record<UnitBillingMatchKeyV1, string>> | undefined {
   const attributes: Partial<Record<UnitBillingMatchKeyV1, string>> = {};
