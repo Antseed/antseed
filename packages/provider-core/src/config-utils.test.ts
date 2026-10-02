@@ -62,7 +62,7 @@ describe('parseServiceUnitBillingModelsJson', () => {
           components: [{ unit: 'video_seconds', priceUsd: 0.1 }],
         },
       },
-    }))).toThrow(/video billing is not implemented/);
+    }))).toThrow(/video_seconds is not supported for openai-images/);
   });
 
   it('accepts known service API protocol keys', () => {

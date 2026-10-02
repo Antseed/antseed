@@ -11,6 +11,8 @@ export enum MessageType {
   // Chunked request upload (buyer→seller body streaming)
   HttpRequestChunk = 0x25,
   HttpRequestEnd   = 0x26,
+  HttpResponseAck = 0x27,
+  HttpRequestCancel = 0x28,
 
   // --- Payment Protocol (0x50-0x5F) ---
   SpendingAuth = 0x50,
@@ -203,6 +205,15 @@ export interface PaymentRequiredPayload {
 
 export const PAYMENT_CODE_CHANNEL_EXHAUSTED = 'channel_exhausted' as const;
 export type PaymentRequiredCode = typeof PAYMENT_CODE_CHANNEL_EXHAUSTED;
+
+/**
+ * HTTP 402 body code for a new, valid video create that costs more than the
+ * reserve still locked on the channel. The channel stays open: the buyer
+ * raises the reserve (video advance + top-up) and resends the same create.
+ * Sellers send it only after request validation, so buyers never top up for
+ * a create that would not start a job.
+ */
+export const PAYMENT_CODE_VIDEO_RESERVE_REQUIRED = 'video_reserve_required' as const;
 
 /**
  * Seller tells buyer that the current cumulative authorization is insufficient.

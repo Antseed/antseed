@@ -22,13 +22,15 @@ import {
   estimateTokensFromBytes,
 } from './payments/pricing.js';
 import { debugLog, debugWarn } from './utils/debug.js';
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_CHANNEL_EXHAUSTED } from './types/protocol.js';
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_CHANNEL_EXHAUSTED, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
-import { createResponseAuthPayload } from './verification/response-auth.js';
+import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
 import { hasJsonContentType, tryParseJsonObject } from './utils/json-codec.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage, UnitBillingUsageReportV1 } from './types/billing.js';
-import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel } from './billing/unit.js';
-import type { ImageRequestFacts } from '@antseed/api-adapter';
+import { captureUnitBillingContext, computeFinalUnitBilling, estimateUnitRequestCost, isFreeUnitBillingModel, type BillingRequestFacts } from './billing/unit.js';
+import { nativeVideoAcceptance, nativeVideoDelivered, nativeVideoRoute, requestService, type NativeVideoRoute } from '@antseed/api-adapter';
+import type { PendingResourceCharge, ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 import type { ServiceApiProtocol } from './types/service-api.js';
 import {
   detectRequestServiceApiProtocol,
@@ -45,6 +47,17 @@ function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
     && (pricing.cachedInputUsdPerMillion == null || pricing.cachedInputUsdPerMillion === 0);
 }
 
+/**
+ * Set a header the seller controls. Header names are case-insensitive, so any
+ * buyer-sent copy (in any letter case) is removed first and only ours remains.
+ */
+function setTrustedHeader(headers: Record<string, string>, name: string, value: string): void {
+  for (const key of Object.keys(headers)) {
+    if (key.toLowerCase() === name) delete headers[key];
+  }
+  headers[name] = value;
+}
+
 export interface SellerRequestHandlerDeps {
   identity: Identity;
   providers: Provider[];
@@ -57,13 +70,15 @@ export interface SellerRequestHandlerDeps {
   announcer: PeerAnnouncer | null;
   maxUploadBodyBytes?: number;
   reserveEstimateOverdraftUsdc?: bigint;
+  /** Persistent buyer ownership and pending charges for stateful video jobs. Video follow-ups fail closed without it. */
+  resourceOwnershipStore?: ResourceOwnershipStore | null;
   emit: (event: string, ...args: unknown[]) => boolean;
 }
 
 interface SellerBillingContext {
   context: UnitBillingContext;
   requestUsage: UnitBillingUsage;
-  requestFacts: ImageRequestFacts;
+  requestFacts: BillingRequestFacts;
 }
 
 /** Debounce interval for metadata refresh after load changes. */
@@ -85,6 +100,17 @@ export class SellerRequestHandler {
   private readonly _deps: SellerRequestHandlerDeps;
   private readonly _providerLoadCounts = new Map<string, number>();
   private readonly _attestRateWindows = new Map<string, { start: number; count: number }>();
+  /**
+   * Buyers with a video create in flight. Spend is only recorded after the
+   * provider answers, so two creates that arrive together would both pass the
+   * reserve check against the same spend and could together start more work
+   * than the locked reserve pays for. Allowing one create per buyer at a time
+   * closes that window. Retrieve requests are not limited.
+   *
+   * Temporary: this limit is a stopgap until the reserve check accounts for
+   * in-flight creates, after which concurrent videos can be allowed again.
+   */
+  private readonly _activeVideoCreateBuyers = new Set<string>();
   private _metadataRefreshTimer: ReturnType<typeof setTimeout> | null = null;
 
   constructor(deps: SellerRequestHandlerDeps) {
@@ -233,11 +259,27 @@ export class SellerRequestHandler {
       }
 
       const requestPricing = this.resolveProviderPricing(provider, request);
-      const requestBilling = this._captureSellerBillingContext(provider, request);
-      const unitBillingModel = requestBilling
-        ? this.resolveProviderUnitBillingModel(provider, requestBilling.context)
-        : undefined;
-      const isFreeService = isZeroTokenPricing(requestPricing)
+      let requestBilling: SellerBillingContext | null;
+      let unitBillingModel: UnitBillingModelV1 | undefined;
+      try {
+        requestBilling = this._captureSellerBillingContext(provider, request);
+        unitBillingModel = requestBilling ? this.resolveProviderUnitBillingModel(provider, requestBilling.context) : undefined;
+        const facts = requestBilling?.requestFacts;
+        if (requestBilling && facts?.kind === 'video' && facts.video.action === 'create' && unitBillingModel) this._estimateUnitRequestCostUsdc(requestBilling, unitBillingModel);
+      } catch (error) {
+        this._sendJsonError(mux, request.requestId, 400, 'invalid_billing_request', error instanceof Error ? error.message : String(error));
+        return;
+      }
+      const videoRoute = nativeVideoRoute(request);
+      if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
+      const videoCreateBuyer = videoRoute?.action === 'create' ? buyerPeerId.toLowerCase() : null;
+      if (videoCreateBuyer && this._activeVideoCreateBuyers.has(videoCreateBuyer)) {
+        this._sendJsonError(mux, request.requestId, 409, 'video_create_in_progress', 'Another video from this buyer is still being created. For now, only one video can be created per buyer at a time (a temporary limit); retry when the current video finishes.');
+        return;
+      }
+      if (videoCreateBuyer) this._activeVideoCreateBuyers.add(videoCreateBuyer);
+      try {
+      const isFreeService = videoRoute?.action === 'retrieve' || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
 
       if (isFreeService && this._deps.sellerFreeTierLimiter) {
@@ -422,12 +464,27 @@ export class SellerRequestHandler {
             return;
           }
           const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
-          const remainingLockedReserve = reserveMax > spent ? reserveMax - spent : 0n;
+          // Accepted videos are charged on download; keep their price reserved.
+          const reservedForVideos = this._pendingVideoCharges(session.sessionId);
+          const committed = spent + reservedForVideos;
+          const remainingLockedReserve = reserveMax > committed ? reserveMax - committed : 0n;
           const reserveEstimateOverdraft = this._deps.reserveEstimateOverdraftUsdc;
           const effectiveEstimateLimit = reserveEstimateOverdraft != null
             ? remainingLockedReserve + reserveEstimateOverdraft
             : null;
-          const estimatedCostExceedsLockedReserve = effectiveEstimateLimit != null
+          // A video create may cost more than one reserve step. It is not an
+          // exhausted channel: ask the buyer to raise the reserve instead of
+          // closing, and only at this point, after invalid requests were
+          // already answered by the video precheck. This
+          // is what lets the buyer top up only for a create that will really
+          // start a new paid job, while we never start work the locked reserve
+          // cannot pay for. The check ignores reserveEstimateOverdraftUsdc on
+          // purpose: an overdraft on a multi-dollar video is a real loss.
+          const videoNeedsLargerReserve = videoRoute?.action === 'create'
+            && reserveMax > 0n
+            && estimatedRequestCost > remainingLockedReserve;
+          const estimatedCostExceedsLockedReserve = !videoNeedsLargerReserve
+            && effectiveEstimateLimit != null
             && reserveMax > 0n
             && estimatedRequestCost > 0n
             && estimatedRequestCost > effectiveEstimateLimit;
@@ -513,6 +570,27 @@ export class SellerRequestHandler {
             }
             return;
           }
+
+          if (videoNeedsLargerReserve) {
+            // The buyer answers with a serious fee before the top-up. It may only
+            // be cashed together with the reserve increase inside topUp().
+            spm.expectSeriousFee(session.sessionId);
+            debugLog(`[SellerHandler] Video create for ${buyerPeerId.slice(0, 12)}... needs a larger reserve (estimatedRequestCost=${estimatedRequestCost} remainingLockedReserve=${remainingLockedReserve} reserveMax=${reserveMax}) — returning 402 ${PAYMENT_CODE_VIDEO_RESERVE_REQUIRED}`);
+            mux.sendProxyResponse({
+              requestId: request.requestId,
+              statusCode: 402,
+              headers: { "content-type": "application/json" },
+              body: new TextEncoder().encode(JSON.stringify({
+                error: 'payment_required',
+                code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED,
+                channelId: session.sessionId,
+                estimatedRequestCost: estimatedRequestCost.toString(),
+                remainingLockedReserve: remainingLockedReserve.toString(),
+                reserveMaxAmount: reserveMax.toString(),
+              })),
+            });
+            return;
+          }
         }
       }
 
@@ -524,7 +602,10 @@ export class SellerRequestHandler {
       // Track active seller session at request start
       this._deps.sessionTracker?.getOrCreateSession(buyerPeerId, provider.name);
 
-      request.headers['x-antseed-buyer-peer-id'] = buyerPeerId;
+      // Tell the provider who the buyer really is (from the authenticated connection).
+      // Needed now that video jobs belong to one buyer: a provider that checks job
+      // ownership by this header must not see a buyer-sent copy with different casing.
+      setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
 
       const requestedModel = this._extractRequestedService(request) ?? 'unknown';
       debugLog(`[SellerHandler] Routing to provider "${provider.name}" model="${requestedModel}"`);
@@ -532,6 +613,8 @@ export class SellerRequestHandler {
       let statusCode = 500;
       let responseBody: Uint8Array = new Uint8Array(0);
       let streamedResponseStarted = false;
+      const isDownload = videoRoute?.action === 'retrieve' && request.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let heldDoneChunkData: Uint8Array | null = null;
       let responseStartedAt = startTime;
       let responseForAuth: SerializedHttpResponse | null = null;
@@ -560,8 +643,10 @@ export class SellerRequestHandler {
       this.adjustProviderLoad(provider.name, 1);
       try {
         try {
-          const response = await this._executeRequest(provider, request, {
+          let response = await this._executeRequest(provider, request, {
+            signal: isDownload ? mux.downloadSignal(request.requestId) : undefined,
             onResponseStart: (streamResponseStart) => {
+              if (isDownload) downloadHash = createStreamingResponseHash(streamResponseStart);
               streamedResponseStarted = true;
               responseStartedAt = Date.now();
               statusCode = streamResponseStart.statusCode;
@@ -571,6 +656,10 @@ export class SellerRequestHandler {
             },
             onResponseChunk: (chunk) => {
               if (!streamedResponseStarted) return;
+              if (downloadHash) {
+                downloadHash.update(chunk.data);
+                if (!chunk.done) return mux.sendDownloadChunk(chunk);
+              }
               // Hold the done chunk — send it after usage is parsed so we can append cost trailer
               if (chunk.done) {
                 heldDoneChunkData = chunk.data;
@@ -579,16 +668,25 @@ export class SellerRequestHandler {
               mux.sendProxyChunk(chunk);
             },
           });
+          // A video is charged when the buyer downloads it, not on acceptance.
+          if (videoRoute?.action === 'create') {
+            response = this._acceptVideoCreate(videoRoute, request, response, buyerPeerId, requestedModel, requestBilling, unitBillingModel);
+          }
           statusCode = response.statusCode;
           responseBody = response.body ?? new Uint8Array(0);
           responseForAuth = response;
+          if (downloadHash) responseForAuth = { ...response, streamedBody: downloadHash.finish() };
           if (statusCode >= 400) {
             const errBody = new TextDecoder().decode(responseBody).slice(0, 200);
             debugWarn(`[SellerHandler] Provider error response: status=${statusCode} provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) body=${errBody}`);
           } else {
             debugLog(`[SellerHandler] Provider responded: status=${statusCode} (${Date.now() - startTime}ms, ${responseBody.length}b)`);
           }
-          if (requestBilling && unitBillingModel) {
+          if (videoRoute?.action === 'create') {
+            // Nothing is charged for the create itself; see _chargeDeliveredVideo.
+            billingUsageReport = null;
+            unitCostUsdc = 0n;
+          } else if (requestBilling && unitBillingModel) {
             const unitBilling = computeFinalUnitBilling(unitBillingModel, requestBilling.context, response, requestBilling.requestFacts);
             responseUsage = unitBilling.tokenUsage;
             billingUsageReport = unitBilling.billingUsage;
@@ -612,7 +710,11 @@ export class SellerRequestHandler {
           const message = err instanceof Error ? err.message : "Internal error";
           debugWarn(`[SellerHandler] Provider exception: provider="${provider.name}" model="${requestedModel}" buyer=${buyerPeerId.slice(0, 12)}... (${Date.now() - startTime}ms) ${message}`);
           responseBody = new TextEncoder().encode(message);
-          if (streamedResponseStarted) {
+          if (streamedResponseStarted && isDownload) {
+            statusCode = 502;
+            responseForAuth = null;
+            mux.sendProxyError(request.requestId);
+          } else if (streamedResponseStarted) {
             const errorFrame = new TextEncoder().encode(`event: error\ndata: ${message}\n\n`);
             responseBody = errorFrame;
             mux.sendProxyChunk({
@@ -645,7 +747,7 @@ export class SellerRequestHandler {
           }
         }
 
-          if (requestBilling && unitBillingModel && responseForAuth && billingUsageReport === null) {
+          if (requestBilling && unitBillingModel && responseForAuth && billingUsageReport === null && videoRoute?.action !== 'create') {
             const finalBilling = computeFinalUnitBilling(
               unitBillingModel,
               requestBilling.context,
@@ -668,7 +770,7 @@ export class SellerRequestHandler {
             statusCode,
             latencyMs,
             inputBytes: request.body.length,
-            outputBytes: responseBody.length,
+            outputBytes: responseForAuth?.streamedBody?.byteLength ?? responseBody.length,
             responseBody,
             providerUsage: responseUsage,
           });
@@ -718,6 +820,10 @@ export class SellerRequestHandler {
           });
         }
 
+        if (videoRoute?.action === 'retrieve' && responseForAuth) {
+          this._chargeDeliveredVideo(videoRoute, responseForAuth, buyerPeerId, paymentMux, request.requestId);
+        }
+
         const buyerSupportsResponseAuth = conn.hasRemoteCapability(CONNECTION_CAPABILITY_RESPONSE_AUTH_V1);
 
         if (responseForAuth && buyerSupportsResponseAuth) {
@@ -740,9 +846,155 @@ export class SellerRequestHandler {
         this.adjustProviderLoad(provider.name, -1);
         if (isBillable) spm!.endBillableRequest(buyerPeerId);
       }
+      } finally {
+        if (videoCreateBuyer) this._activeVideoCreateBuyers.delete(videoCreateBuyer);
+      }
     });
 
     return { mux };
+  }
+
+  /** Returns true when it already sent a response. */
+  private _handleVideoPrecheck(
+    mux: ProxyMux,
+    request: SerializedHttpRequest,
+    route: NativeVideoRoute,
+    buyerPeerId: string,
+    unitBillingModel: UnitBillingModelV1 | undefined,
+  ): boolean {
+    if (!unitBillingModel) {
+      this._sendJsonError(mux, request.requestId, 503, 'billing_configuration_error', 'Video service requires explicit unit pricing');
+      return true;
+    }
+    const store = this._deps.resourceOwnershipStore;
+    if (!store) {
+      this._sendJsonError(mux, request.requestId, 503, 'resource_ownership_unavailable', 'Seller cannot verify video job ownership');
+      return true;
+    }
+    if (route.action !== 'retrieve') return false;
+    try {
+      if (route.resourceId && store.getOwner(route.protocol, route.resourceId) === buyerPeerId.toLowerCase()) return false;
+      this._sendJsonError(mux, request.requestId, 404, 'resource_not_found', 'Video job not found');
+      return true;
+    } catch (err) {
+      debugWarn(`[SellerHandler] Video ownership lookup failed: ${err instanceof Error ? err.message : err}`);
+      this._sendJsonError(mux, request.requestId, 503, 'resource_ownership_unavailable', 'Seller cannot verify video job ownership');
+      return true;
+    }
+  }
+
+  private _pendingVideoCharges(channelId: string): bigint {
+    try {
+      return this._deps.resourceOwnershipStore?.getPendingChargeTotal(channelId) ?? 0n;
+    } catch (err) {
+      debugWarn(`[SellerHandler] Pending video charges unavailable: ${err instanceof Error ? err.message : err}`);
+      return 0n;
+    }
+  }
+
+  /**
+   * Charge a video once, when the buyer first receives the finished file.
+   * The serious fee paid before generation already covers part of the price,
+   * so the buyer signs only the rest.
+   */
+  private _chargeDeliveredVideo(
+    route: NativeVideoRoute,
+    response: SerializedHttpResponse,
+    buyerPeerId: string,
+    paymentMux: PaymentMux,
+    requestId: string,
+  ): void {
+    const store = this._deps.resourceOwnershipStore;
+    const spm = this._deps.sellerPaymentManager;
+    if (!store || !spm || !route.resourceId) return;
+    const buyer = buyerPeerId.toLowerCase();
+    try {
+      const charge = store.getPendingCharge(route.protocol, route.resourceId, buyer);
+      if (!charge || !nativeVideoDelivered(response, charge.durationSeconds)) return;
+      const session = spm.getChannelByPeer(buyerPeerId);
+      // The price was reserved on the channel that accepted the job.
+      if (!session || session.sessionId !== charge.channelId) return;
+      if (!store.markCharged(route.protocol, route.resourceId)) return;
+      try {
+        spm.recordSpend(session.sessionId, charge.amount);
+      } catch (err) {
+        store.unmarkCharged(route.protocol, route.resourceId);
+        throw err;
+      }
+      const cumulativeSpend = spm.getCumulativeSpend(session.sessionId);
+      debugLog(`[SellerHandler] Video delivered: buyer=${buyerPeerId.slice(0, 12)}... job=${route.resourceId} cost=${charge.amount} cumulative=${cumulativeSpend}`);
+      this._sendNeedAuthBestEffort(paymentMux, {
+        channelId: session.sessionId,
+        requiredCumulativeAmount: cumulativeSpend.toString(),
+        currentAcceptedCumulative: spm.getAcceptedCumulative(session.sessionId).toString(),
+        deposit: session.authMax ?? '0',
+        requestId,
+        lastRequestCost: charge.amount.toString(),
+        inputTokens: '0',
+        outputTokens: '0',
+        cachedInputTokens: '0',
+        freshInputTokens: '0',
+        service: charge.service,
+        billingUsage: charge.billingUsage,
+      }, buyerPeerId, 'video-delivered');
+    } catch (err) {
+      debugWarn(`[SellerHandler] Failed to charge delivered video ${route.resourceId}: ${err instanceof Error ? err.message : err}`);
+    }
+  }
+
+  /**
+   * After a video create, save the job's owner and its price (charged later,
+   * when the buyer downloads the video). Returns the reply to send: the
+   * provider's reply, or a 503 if the job could not be saved, so no job is
+   * handed out that could never be charged.
+   */
+  private _acceptVideoCreate(
+    route: NativeVideoRoute,
+    request: SerializedHttpRequest,
+    response: SerializedHttpResponse,
+    buyerPeerId: string,
+    service: string,
+    requestBilling: SellerBillingContext | null,
+    model: UnitBillingModelV1 | undefined,
+  ): SerializedHttpResponse {
+    const channelId = this._deps.sellerPaymentManager?.getChannelByPeer(buyerPeerId)?.sessionId;
+    const billing = requestBilling && model && channelId
+      ? computeFinalUnitBilling(model, requestBilling.context, response, requestBilling.requestFacts)
+      : null;
+    const facts = requestBilling?.requestFacts;
+    const durationSeconds = facts?.kind === 'video' ? facts.video.duration : undefined;
+    const charge: PendingResourceCharge | undefined = billing && channelId && billing.costUsdc > 0n
+      ? { channelId, service, amount: billing.costUsdc, billingUsage: billing.billingUsage, ...(durationSeconds ? { durationSeconds } : {}) }
+      : undefined;
+    const resourceId = nativeVideoAcceptance(route.protocol, response);
+    if (!resourceId) return response;
+    try {
+      this._deps.resourceOwnershipStore?.recordAcceptedCreate(route.protocol, resourceId, buyerPeerId.toLowerCase(), charge);
+      return response;
+    } catch (err) {
+      debugWarn(`[SellerHandler] Failed to record video job ownership: ${err instanceof Error ? err.message : err}`);
+      return {
+        requestId: request.requestId,
+        statusCode: 503,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ error: { code: 'resource_ownership_unavailable', message: 'Seller cannot record video job ownership' } })),
+      };
+    }
+  }
+
+  private _sendJsonError(
+    mux: ProxyMux,
+    requestId: string,
+    statusCode: number,
+    code: string,
+    message: string,
+  ): void {
+    mux.sendProxyResponse({
+      requestId,
+      statusCode,
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ error: { code, message } })),
+    });
   }
 
   // -- Local /v1/models handler --
@@ -797,9 +1049,10 @@ export class SellerRequestHandler {
       return undefined;
     }
     const requestedProvider = this._extractRequestedProvider(request);
+    const videoRoute = nativeVideoRoute(request);
     const providers = this._deps.providers;
     const matchesService = (provider: Provider): boolean =>
-      provider.services.includes(requestedService);
+      provider.services.includes(requestedService) && (!videoRoute || Boolean(provider.serviceApiProtocols?.[requestedService]?.includes(videoRoute.protocol)));
 
     let provider: Provider | undefined;
     if (requestedProvider) {
@@ -807,7 +1060,7 @@ export class SellerRequestHandler {
         candidate.name.toLowerCase() === requestedProvider && matchesService(candidate),
       );
     }
-    if (!provider) {
+    if (!provider && !(videoRoute && requestedProvider)) {
       provider = providers.find((candidate) => matchesService(candidate));
     }
     return provider;
@@ -863,6 +1116,7 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    if (nativeVideoRoute(request)) return requestService(request) ?? null;
     const body = extractRequestBodyFields(request.headers, request.body);
     const service = body?.["service"] ?? body?.["model"];
     if (typeof service !== "string" || service.trim().length === 0) {
@@ -1004,7 +1258,7 @@ export class SellerRequestHandler {
     paymentMux: PaymentMux,
     payload: Parameters<PaymentMux['sendNeedAuth']>[0],
     buyerPeerId: string,
-    phase: 'budget-catch-up' | 'post-response',
+    phase: 'budget-catch-up' | 'post-response' | 'video-delivered',
   ): void {
     try {
       paymentMux.sendNeedAuth(payload);

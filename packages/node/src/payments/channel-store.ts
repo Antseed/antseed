@@ -135,13 +135,13 @@ export class ChannelStore {
           nonce, auth_max, deadline, previous_session_id, previous_consumption,
           tokens_delivered, request_count, reserved_at, settled_at, settled_amount,
           status, latest_buyer_sig, latest_metadata_auth_sig, latest_metadata,
-          created_at, updated_at
+          created_at, updated_at, payment_recovery
         ) VALUES (
           @sessionId, @peerId, @role, @channelKind, @sellerEvmAddr, @buyerEvmAddr,
           @nonce, @authMax, @deadline, @previousSessionId, @previousConsumption,
           @tokensDelivered, @requestCount, @reservedAt, @settledAt, @settledAmount,
           @status, @latestBuyerSig, @latestSpendingAuthSig, @latestMetadata,
-          @createdAt, @updatedAt
+          @createdAt, @updatedAt, @paymentRecovery
         )
         ON CONFLICT(session_id) DO UPDATE SET
           channel_kind = @channelKind,
@@ -155,6 +155,7 @@ export class ChannelStore {
           latest_buyer_sig = @latestBuyerSig,
           latest_metadata_auth_sig = @latestSpendingAuthSig,
           latest_metadata = @latestMetadata,
+          payment_recovery = @paymentRecovery,
           updated_at = @updatedAt
       `),
       getById: this._db.prepare(
@@ -267,6 +268,17 @@ export class ChannelStore {
       latestBuyerSig: channel.latestBuyerSig ?? null,
       latestSpendingAuthSig: channel.latestSpendingAuthSig ?? null,
       latestMetadata: channel.latestMetadata ?? null,
+      paymentRecovery: JSON.stringify({
+        reserveSalt: channel.reserveSalt,
+        initialReserveAmount: channel.initialReserveAmount,
+        reserveMaxAmount: channel.reserveMaxAmount,
+        latestReserveAuthSig: channel.latestReserveAuthSig,
+        latestReserveDeadline: channel.latestReserveDeadline,
+        reserveAuthPending: channel.reserveAuthPending,
+        confirmedReserveAmount: channel.confirmedReserveAmount,
+        deliveredAmount: channel.deliveredAmount,
+        seriousFeeExpected: channel.seriousFeeExpected,
+      }),
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
     });
@@ -599,6 +611,7 @@ export class ChannelStore {
 // ── Row types ─────────────────────────────────────────────────
 
 interface ChannelRow {
+  payment_recovery: string | null;
   session_id: string;
   peer_id: string;
   role: string;
@@ -648,6 +661,7 @@ interface ServiceTotalRow {
 
 function rowToChannel(row: ChannelRow): StoredChannel {
   return {
+    ...(row.payment_recovery ? JSON.parse(row.payment_recovery) : {}),
     sessionId: row.session_id,
     peerId: row.peer_id,
     role: row.role as ChannelRole,

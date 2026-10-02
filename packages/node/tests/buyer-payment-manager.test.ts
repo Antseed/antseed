@@ -865,7 +865,7 @@ describe('BuyerPaymentManager', () => {
         attributes: { model: service },
         unitLimits: { output_images: 1 },
       },
-      requestFacts: { model: service, requestedImages: 1 },
+      requestFacts: { kind: 'image', image: { model: service, requestedImages: 1 } },
       unitModel,
     });
     mux.sentSpendingAuths.length = 0;
@@ -975,7 +975,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1036,7 +1036,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '256x256' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1088,7 +1088,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       tokenPricing: TEST_PRICING,
       unitModel: imageModel,
     });
@@ -1140,7 +1140,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1636,6 +1636,248 @@ describe('BuyerPaymentManager', () => {
     expect(sent.reserveSalt).toBeTypeOf('string');
     expect(sent.reserveDeadline).toBeTypeOf('number');
     expect(manager.getReserveCeiling(sellerPeerId)).toBe(20_000_000n);
+  });
+
+  it('topUpReserve raises the ceiling to an explicit target', async () => {
+    const sellerPeerId = fakePeerId('seller-topup-target');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.topUpReserve(sellerPeerId, mux, 5_850_000n);
+
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('5850000');
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(5_850_000n);
+
+    mux.sentSpendingAuths.length = 0;
+    await manager.topUpReserve(sellerPeerId, mux, 5_000_000n);
+    expect(mux.sentSpendingAuths).toHaveLength(0);
+  });
+
+  it('serializes concurrent top-ups so each builds on the previous ceiling', async () => {
+    const sellerPeerId = fakePeerId('seller-topup-serial');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+    mux.sentSpendingAuths.length = 0;
+
+    await Promise.all([
+      manager.topUpReserve(sellerPeerId, mux),
+      manager.topUpReserve(sellerPeerId, mux, 5_000_000n),
+      manager.topUpReserve(sellerPeerId, mux),
+    ]);
+
+    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount))
+      .toEqual(['11000000', '21000000']);
+    expect(manager.getReserveCeiling(sellerPeerId)).toBe(21_000_000n);
+  });
+
+  describe('signVideoAdvance', () => {
+    const videoRequestId = 'video-create-1';
+
+    function trackVideo(sellerPeerId: string, estimatedCostUsdc = 4_200_000n, requestId = videoRequestId): void {
+      manager.trackRequestBilling(requestId, {
+        context: {
+          sellerPeerId,
+          provider: 'venice',
+          service: 'video-model',
+          serviceApiProtocol: 'venice-video',
+          unitLimits: { video_generations: 1 },
+        },
+        requestFacts: { kind: 'video', video: { protocol: 'venice-video', action: 'create' } },
+        unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: Number(estimatedCostUsdc) / 1_000_000 }] },
+        estimatedCostUsdc,
+      });
+    }
+
+    function restartBuyer(): void {
+      store.close();
+      store = new ChannelStore(tempDir);
+      manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store);
+      manager.setSigner(identity.wallet);
+    }
+
+    function videoResponse(requestId = videoRequestId) {
+      return {
+        requestId, service: 'video-model', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+        unitUsage: { units: { video_generations: 1 } },
+      };
+    }
+
+    function videoNeedAuth(channelId: string, required: string, requestId = videoRequestId, cost = '4200000') {
+      return {
+        channelId, requestId, requiredCumulativeAmount: required, currentAcceptedCumulative: '850000',
+        deposit: '5000000', lastRequestCost: cost, inputTokens: '0', outputTokens: '0',
+        billingUsage: { version: 1 as const, units: { video_generations: '1' } },
+      };
+    }
+
+    /** $1 channel with $0.10 of delivered chat, then an $0.85 video advance and a $5 top-up. */
+    async function prepareVideo(sellerPeerId: string): Promise<string> {
+      vi.spyOn(manager, 'getBalance').mockResolvedValue({ available: 20_000_000n, reserved: 0n });
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-1', requiredCumulativeAmount: '100000', currentAcceptedCumulative: '0',
+        deposit: '1000000', lastRequestCost: '100000', inputTokens: '0', outputTokens: '0',
+      }, mux);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+      trackVideo(sellerPeerId);
+      mux.sentSpendingAuths.length = 0;
+      await manager.signVideoAdvance(sellerPeerId, videoRequestId, 850_000n, 4_200_000n, 1_000_000n, mux);
+      await manager.topUpReserve(sellerPeerId, mux, 5_100_000n);
+      return channelId;
+    }
+
+    it('sends the advance as an ordinary SpendingAuth before the top-up, without counting it as delivered', async () => {
+      const sellerPeerId = fakePeerId('video-advance');
+      await prepareVideo(sellerPeerId);
+
+      expect(mux.sentSpendingAuths).toHaveLength(2);
+      const [advance, topUp] = mux.sentSpendingAuths as Array<Record<string, unknown>>;
+      expect(advance).toMatchObject({ cumulativeAmount: '850000' });
+      expect(advance.reserveMaxAmount).toBeUndefined();
+      expect(topUp).toMatchObject({ cumulativeAmount: '850000', reserveMaxAmount: '5100000' });
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(100_000n);
+      expect(manager.getVerifiedCost(sellerPeerId)).toBe(100_000n);
+    });
+
+    it('attributes the headroom advance to the video request for conversation accounting', async () => {
+      const sellerPeerId = fakePeerId('video-advance-attribution');
+      const spendEvents: Array<{ requestId: string | null; amountUsdc: string }> = [];
+      manager.setSpendListener(event => spendEvents.push({ requestId: event.requestId, amountUsdc: event.amountUsdc }));
+
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_100_000n);
+      manager.recordObservedUnitUsage(videoRequestId, { units: { video_generations: 1 } });
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      await manager.handleNeedAuth(sellerPeerId, videoNeedAuth(channelId, '4300000'), mux);
+
+      expect(spendEvents).toContainEqual({ requestId: videoRequestId, amountUsdc: '750000' });
+      expect(spendEvents.filter(event => event.requestId === null)).toEqual([]);
+      const videoTotal = spendEvents
+        .filter(event => event.requestId === videoRequestId)
+        .reduce((sum, event) => sum + BigInt(event.amountUsdc), 0n);
+      expect(videoTotal).toBe(4_200_000n);
+    });
+
+    it.each(['response-first', 'need-auth-first'] as const)('charges exactly delivered cost for the video: %s', async (order) => {
+      const sellerPeerId = fakePeerId(`video-exact-${order}`);
+      const spendEvents: Array<{ amountUsdc: string }> = [];
+      manager.setSpendListener(event => spendEvents.push(event));
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_100_000n);
+      manager.recordObservedUnitUsage(videoRequestId, { units: { video_generations: 1 } });
+
+      const response = () => manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      const needAuth = () => manager.handleNeedAuth(sellerPeerId, videoNeedAuth(channelId, '4300000'), mux);
+      if (order === 'response-first') { await response(); await needAuth(); }
+      else { await needAuth(); await response(); }
+
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(4_300_000n);
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(4_300_000n);
+      const total = spendEvents.reduce((sum, event) => sum + BigInt(event.amountUsdc), 0n);
+      expect(total).toBe(4_300_000n);
+      const videoService = decodeMetadataServices(store.getChannel(channelId)!.latestMetadata!)
+        .find(service => service.cumulativeAmount === 4_200_000n);
+      expect(videoService).toBeDefined();
+    });
+
+    it('keeps delivered cost separate from the advance across a buyer restart', async () => {
+      const sellerPeerId = fakePeerId('video-restart');
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 5_100_000n);
+
+      restartBuyer();
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(100_000n);
+
+      trackVideo(sellerPeerId);
+      await manager.signPerRequestAuth(sellerPeerId, videoResponse());
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(4_300_000n);
+      expect(store.getChannel(channelId)?.deliveredAmount).toBe('4300000');
+    });
+
+    it('treats channels stored without deliveredAmount as fully delivered', async () => {
+      const sellerPeerId = fakePeerId('video-legacy');
+      const channelId = await prepareVideo(sellerPeerId);
+      store.upsertChannel({ ...store.getChannel(channelId)!, deliveredAmount: undefined });
+
+      restartBuyer();
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(850_000n);
+    });
+
+    it('uses up the advance with later chats when the top-up never lands', async () => {
+      const sellerPeerId = fakePeerId('video-failed-topup');
+      const channelId = await prepareVideo(sellerPeerId);
+      await manager.reconcileReserveAmount(sellerPeerId, 1_000_000n);
+
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-2', requiredCumulativeAmount: '120000', currentAcceptedCumulative: '850000',
+        deposit: '1000000', lastRequestCost: '20000', inputTokens: '0', outputTokens: '0',
+      }, mux);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(120_000n);
+
+      await manager.signPerRequestAuth(sellerPeerId, {
+        requestId: 'chat-3', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+        sellerClaimedCost: 20_000n,
+      });
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(140_000n);
+
+      await manager.handleNeedAuth(sellerPeerId, {
+        channelId, requestId: 'chat-4', requiredCumulativeAmount: '870000', currentAcceptedCumulative: '850000',
+        deposit: '1000000', lastRequestCost: '20000', inputTokens: '0', outputTokens: '0',
+      }, mux);
+      expect(manager.getCumulativeAmount(sellerPeerId)).toBe(870_000n);
+      expect(manager.getDeliveredAmount(sellerPeerId)).toBe(870_000n);
+    });
+
+    it('refuses an advance that is not smaller than the video price', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-big');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId, 800_000n);
+      mux.sentSpendingAuths.length = 0;
+
+      await expect(
+        manager.signVideoAdvance(sellerPeerId, videoRequestId, 850_000n, 800_000n, 1_000_000n, mux),
+      ).rejects.toThrow('Refusing video advance');
+      expect(mux.sentSpendingAuths).toHaveLength(0);
+    });
+
+    it('refuses an advance above the confirmed on-chain deposit', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-dep');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId);
+
+      await expect(
+        manager.signVideoAdvance(sellerPeerId, videoRequestId, 850_000n, 4_200_000n, 500_000n, mux),
+      ).rejects.toThrow('Refusing video advance');
+    });
+
+    it('refuses an advance for an untracked request', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-untracked');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+
+      await expect(
+        manager.signVideoAdvance(sellerPeerId, 'unknown-request', 850_000n, 4_200_000n, 1_000_000n, mux),
+      ).rejects.toThrow('tracked video create');
+    });
+
+    it('refuses a video above maxVideoRequestUsdc', async () => {
+      const sellerPeerId = fakePeerId('seller-video-down-cap');
+      const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
+      manager.handleAuthAck(sellerPeerId, { channelId });
+      trackVideo(sellerPeerId, 6_000_000n);
+
+      expect(manager.maxVideoRequestUsdc).toBe(5_000_000n);
+      await expect(
+        manager.signVideoAdvance(sellerPeerId, videoRequestId, 850_000n, 6_000_000n, 1_000_000n, mux),
+      ).rejects.toThrow('Refusing video advance');
+    });
   });
 
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {

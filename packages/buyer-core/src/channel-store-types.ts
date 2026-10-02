@@ -62,6 +62,17 @@ export interface StoredChannel {
   reserveAuthPending?: boolean;
   /** Last reserve ceiling acknowledged initially or observed on-chain. */
   confirmedReserveAmount?: string | null;
+  /**
+   * Cumulative amount owed for delivered work. Below authMax only while a
+   * video advance is outstanding; the gap covers the next charges.
+   */
+  deliveredAmount?: string | null;
+  /**
+   * Seller only: a 402 video_reserve_required was sent, so the next auth above
+   * delivered spend is a serious fee for topUp() only. Persisted so a restart
+   * cannot turn that fee into an ordinary, closable auth.
+   */
+  seriousFeeExpected?: boolean;
   createdAt: number;
   updatedAt: number;
 }

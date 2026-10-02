@@ -317,6 +317,7 @@ export function buildSellerPluginRuntimeEnv(
     ? 'LOCAL_LLM'
     : pluginPackage === '@antseed/provider-typesafe'
       ? 'TYPESAFE'
+      : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
       : 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl

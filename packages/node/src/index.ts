@@ -12,6 +12,7 @@ export {
   type BuyerChannelSummary,
 } from './node.js';
 export type { Provider, ProviderStreamCallbacks } from './interfaces/seller-provider.js';
+export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
@@ -73,6 +74,8 @@ export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from
 export {
   WELL_KNOWN_SERVICE_CATEGORIES,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
+  NATIVE_VIDEO_PROTOCOLS,
+  isNativeVideoProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
@@ -82,6 +85,7 @@ export {
   type DomainVerificationMethod,
   type GithubVerificationClaim,
   type ServiceApiProtocol,
+  type NativeVideoProtocol,
   type ServiceCapabilities,
   type ServiceCapabilityModality,
   type PeerMetadata,
@@ -131,6 +135,7 @@ export {
   type NetworkServiceOffer,
 } from './discovery/service-catalog.js';
 export { MeteringStorage } from './metering/storage.js';
+export { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
 export type { FreeTierConsumption } from './metering/storage.js';
 export { BalanceManager } from './payments/balance-manager.js';
 export {

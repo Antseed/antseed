@@ -2,6 +2,7 @@ import { describe, it, expect, beforeEach, afterEach } from 'vitest';
 import { mkdtempSync, rmSync } from 'node:fs';
 import { join } from 'node:path';
 import { tmpdir } from 'node:os';
+import Database from 'better-sqlite3';
 import { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel, type StoredReceipt } from '../src/payments/channel-store.js';
 
 function makeTempDir(): string {
@@ -80,6 +81,37 @@ describe('ChannelStore', () => {
     expect(loaded!.status).toBe(CHANNEL_STATUS.SETTLED);
     expect(loaded!.settledAmount).toBe('500000');
     expect(loaded!.settledAt).toBeTypeOf('number');
+  });
+
+  it('durably preserves reserve recovery state and the delivered amount', () => {
+    const recovery = {
+      reserveSalt: 'reserve-salt', initialReserveAmount: '1000000', reserveMaxAmount: '5000000',
+      latestReserveAuthSig: 'reserve-signature', latestReserveDeadline: 1900000000,
+      reserveAuthPending: true, confirmedReserveAmount: '1000000', deliveredAmount: '100000',
+    };
+    const channel = makeChannel({ ...recovery, authMax: '850000' });
+    store.upsertChannel(channel);
+    store.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getChannel(channel.sessionId)).toMatchObject(recovery);
+    store.upsertChannel({ ...store.getChannel(channel.sessionId)!, deliveredAmount: '850000', reserveAuthPending: false });
+    store.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getChannel(channel.sessionId)).toMatchObject({ deliveredAmount: '850000', reserveAuthPending: false });
+  });
+
+  it('upgrades a version-five database without changing existing channels', () => {
+    const channel = makeChannel();
+    store.upsertChannel(channel);
+    store.close();
+    const legacyDatabase = new Database(join(tempDir, 'sessions.db'));
+    legacyDatabase.exec('ALTER TABLE payment_channels DROP COLUMN payment_recovery; DELETE FROM schema_version WHERE version = 6');
+    legacyDatabase.close();
+    store = new ChannelStore(tempDir);
+    expect(store.getChannel(channel.sessionId)).toMatchObject(channel);
+    expect(store.getChannel(channel.sessionId)?.deliveredAmount).toBeUndefined();
+    store.upsertChannel({ ...store.getChannel(channel.sessionId)!, deliveredAmount: '850000' });
+    expect(store.getChannel(channel.sessionId)?.deliveredAmount).toBe('850000');
   });
 
   it('test_updateTokensDelivered: increment tokens, verify', () => {

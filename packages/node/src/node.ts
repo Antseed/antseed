@@ -17,6 +17,7 @@ import type {
 } from "./types/http.js";
 import type { ConnectionConfig } from "./types/connection.js";
 import { MeteringStorage } from "./metering/storage.js";
+import { ResourceOwnershipStore } from "./resources/resource-ownership-store.js";
 import { ReceiptGenerator } from "./metering/receipt-generator.js";
 import {
   SellerSessionTracker,
@@ -209,6 +210,8 @@ export interface NodePaymentsConfig {
   maxPerRequestUsdc?: string;
   /** Maximum total USDC the buyer will reserve in a single SpendingAuth (base units). Default: "10000000" ($10.00). */
   maxReserveAmountUsdc?: string;
+  /** Maximum USDC the buyer pays for one video generation (base units). Default: "5000000" ($5.00). */
+  maxVideoRequestUsdc?: string;
   /** Disable per-service buyer attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
@@ -358,6 +361,7 @@ export class AntseedNode extends EventEmitter {
   private _keepalives = new Map<PeerId, KeepaliveManager>();
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
+  private _resourceOwnership: ResourceOwnershipStore | null = null;
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -686,6 +690,15 @@ export class AntseedNode extends EventEmitter {
         // ignore close errors
       }
       this._metering = null;
+    }
+
+    if (this._resourceOwnership) {
+      try {
+        this._resourceOwnership.close();
+      } catch {
+        // ignore close errors
+      }
+      this._resourceOwnership = null;
     }
 
     if (this._verificationStorage) {
@@ -1552,6 +1565,11 @@ export class AntseedNode extends EventEmitter {
     } catch (err) {
       debugWarn(`[Node] Metering storage unavailable: ${err instanceof Error ? err.message : err}`);
     }
+    try {
+      this._resourceOwnership = new ResourceOwnershipStore(join(dataDir, "metering.db"));
+    } catch (err) {
+      debugWarn(`[Node] Resource ownership storage unavailable; video services will be refused: ${err instanceof Error ? err.message : err}`);
+    }
 
     if (this._metering) {
       this._receiptGenerator = new ReceiptGenerator({
@@ -1708,6 +1726,7 @@ export class AntseedNode extends EventEmitter {
       channelsClient: this._channelsClient,
       announcer: this._announcer,
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
+      resourceOwnershipStore: this._resourceOwnership,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),
@@ -1786,6 +1805,7 @@ export class AntseedNode extends EventEmitter {
           defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
           maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
           maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
+          maxVideoRequestUsdc: BigInt(payments.maxVideoRequestUsdc ?? "5000000"),  // $5.00 default per video
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
           dataDir: paymentsDir,
         };

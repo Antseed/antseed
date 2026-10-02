@@ -32,11 +32,13 @@ import { parseResponseUsage } from './response-usage.js';
 import { computeCostUsdc, type ServicePricing } from './pricing.js';
 import { formatUsdc } from './usdc-utils.js';
 import { parseJsonObject, tryParseJsonObject } from '@antseed/protocol/json-codec';
+import { nativeVideoAcceptance, nativeVideoRoute } from '@antseed/api-adapter';
 import type { UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
   captureUnitBillingContext,
   computeFinalUnitBilling,
+  estimateUnitRequestCost,
   extractUnitResponseUsage,
   type FinalUnitBillingResult,
 } from './unit-billing.js';
@@ -60,6 +62,17 @@ export interface BuyerNegotiatorConfig {
 
 /** How long to wait for a seller's CloseChannelResult before giving up. */
 const CLOSE_REQUEST_TIMEOUT_MS = 60_000;
+/** Delay between chain reads while waiting for a seller's video top-up to land. */
+const VIDEO_TOPUP_POLL_MS = 1_000;
+/** Maximum time to wait for a seller's video top-up before failing the request. */
+const VIDEO_TOPUP_TIMEOUT_MS = 45_000;
+/**
+ * Fallback for AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS when the contract
+ * cannot be read. The live value is owner-configurable (Base mainnet: 6500),
+ * so it is read from the contract and cached; the fallback uses the contract's
+ * default, which only makes the serious fee larger, never too small to unlock topUp().
+ */
+const DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS = 8_500n;
 
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
@@ -138,6 +151,10 @@ export class BuyerPaymentNegotiator {
   private readonly _bufferedPaymentRequired = new Map<string, PaymentRequiredPayload>();
   /** Per-peer mutex to prevent concurrent payment negotiations. */
   private readonly _negotiationLocks = new Map<string, Promise<void>>();
+  /** Cached AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS. */
+  private _topUpThresholdBps: bigint | null = null;
+  /** Serializes video top-ups per seller so concurrent creates share one channel safely. */
+  private readonly _videoHeadroomLocks = new Map<string, Promise<void>>();
   /** Peers that have sent their first request after session establishment. */
   private readonly _firstRequestSent = new Set<string>();
   /** Per-peer last response cost, raw content, and latency from the seller. */
@@ -268,16 +285,34 @@ export class BuyerPaymentNegotiator {
     route: SelectedBillingRoute | null,
   ): void {
     if (route) {
-      const captured = captureUnitBillingContext({
-        sellerPeerId: route.sellerPeerId,
-        provider: route.provider,
-        service: route.service,
-        serviceApiProtocol: route.serviceApiProtocol,
-        request,
-      });
+      const isVideo = Boolean(nativeVideoRoute(request));
+      let captured;
+      let estimatedCost = 0n;
+      try {
+        captured = captureUnitBillingContext({
+          sellerPeerId: route.sellerPeerId,
+          provider: route.provider,
+          service: route.service,
+          serviceApiProtocol: route.serviceApiProtocol,
+          request,
+        });
+        if (isVideo && captured.requestFacts.kind === 'video' && route.unitModel) {
+          estimatedCost = estimateUnitRequestCost(route.unitModel, captured.context, captured.requestUsage);
+        }
+      } catch (cause) {
+        if (!isVideo) throw cause;
+        throw buyerFault(cause instanceof Error ? cause.message : 'Invalid video request', 'invalid-request', { cause });
+      }
+      if (estimatedCost > this._bpm.maxVideoRequestUsdc) {
+        throw buyerFault(
+          `Video costs ${formatUsdc(estimatedCost)} USDC, limit is ${formatUsdc(this._bpm.maxVideoRequestUsdc)} USDC`,
+          'buyer-budget-too-low',
+        );
+      }
       this._bpm.trackRequestBilling(request.requestId, {
         context: captured.context,
         requestFacts: captured.requestFacts,
+        ...(estimatedCost > 0n ? { estimatedCostUsdc: estimatedCost } : {}),
         ...(route.unitModel ? { unitModel: route.unitModel } : {}),
         ...(route.tokenPricing ? { tokenPricing: route.tokenPricing } : {}),
       });
@@ -316,6 +351,125 @@ export class BuyerPaymentNegotiator {
     // Skip if cost data was already consumed by post-response auth
     if (!this._lastResponseCost.has(peer.peerId)) return;
     await this._sendPerRequestAuth(peer.peerId, conn);
+  }
+
+  /**
+   * Make sure a paid video create fits into the reserve locked on-chain.
+   *
+   * Called only after the seller answered the create with 402
+   * video_reserve_required, never before the first send: the advance below
+   * is settled on-chain and cannot be refunded, so it must not be paid for a
+   * create the seller rejects.
+   *
+   * If the video does not fit, raise the channel to `delivered cost + video
+   * price + maxReserveAmountUsdc` with a single topUp(), or only to
+   * `delivered cost + video price` when deposits cannot cover that buffer.
+   * topUp() only succeeds once TOP_UP_SETTLED_THRESHOLD_BPS of the current
+   * deposit is settled, so the buyer first signs an ordinary SpendingAuth
+   * early (a video advance). The advance is always smaller than the video
+   * price; the video's own charge then brings the signed cumulative to
+   * exactly delivered cost, so nothing is paid twice. No-ops without an
+   * established channel.
+   */
+  async ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
+    const previous = this._videoHeadroomLocks.get(peer.peerId) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(() => this._ensureVideoHeadroom(peer, conn, requestId));
+    const tail = run.catch(() => {});
+    this._videoHeadroomLocks.set(peer.peerId, tail);
+    try {
+      return await run;
+    } finally {
+      if (this._videoHeadroomLocks.get(peer.peerId) === tail) this._videoHeadroomLocks.delete(peer.peerId);
+    }
+  }
+
+  private async _ensureVideoHeadroom(peer: BuyerPeerView, conn: BuyerConnection, requestId: string): Promise<void> {
+    // No active payment channel yet: the normal 402 negotiation opens it, and
+    // the seller asks for a larger reserve on the retried create if needed.
+    if (!this._lockedPeers.has(peer.peerId)) return;
+    const videoCost = this._bpm.getRequestBilling(requestId)?.estimatedCostUsdc;
+    if (!videoCost || !this._channelsClient) return;
+
+    await this.drainPendingNeedAuth();
+    const session = this._bpm.getActiveSession(peer.peerId);
+    if (!session) return;
+
+    const channel = await this._channelsClient.getSession(session.sessionId);
+    if (channel.status != null && channel.status !== 1) {
+      throw buyerFault('Video payment channel is no longer active', 'buyer-session-state');
+    }
+    const deposit = channel.deposit;
+    await this._bpm.reconcileReserveAmount(peer.peerId, deposit);
+    const currentCumulative = this._bpm.getCumulativeAmount(peer.peerId);
+    // Videos accepted earlier are charged on delivery; their price stays reserved.
+    const delivered = this._bpm.getDeliveredAmount(peer.peerId) + this._bpm.getPendingVideoTotal(peer.peerId);
+    if (delivered + videoCost <= deposit) return;
+
+    const balance = await this._bpm.getBalance();
+    const minimumCeiling = delivered + videoCost;
+    if (balance.available < minimumCeiling - deposit) {
+      throw buyerFault(
+        `Insufficient deposits for this video: ${formatUsdc(minimumCeiling - deposit - balance.available)} USDC more needed`,
+        'buyer-deposits-insufficient',
+      );
+    }
+    // Keep one normal reserve step of headroom after the video so existing and
+    // follow-up chats on this channel are not blocked by a fully used reserve.
+    const bufferedCeiling = minimumCeiling + this._bpm.maxReserveAmountUsdc;
+    const targetCeiling = balance.available >= bufferedCeiling - deposit ? bufferedCeiling : minimumCeiling;
+
+    const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
+    const thresholdBps = await this._topUpSettledThresholdBps();
+    const settledForTopUp = (deposit * thresholdBps + 9_999n) / 10_000n;
+    if (settledForTopUp > currentCumulative) {
+      await this._bpm.signVideoAdvance(peer.peerId, requestId, settledForTopUp, videoCost, deposit, pmux);
+    }
+    await this._bpm.topUpReserve(peer.peerId, pmux, targetCeiling);
+    await this._waitForVideoTopUp(peer.peerId, session.sessionId, targetCeiling);
+  }
+
+  /** Contract share of the deposit that must be settled before topUp(), in basis points. */
+  private async _topUpSettledThresholdBps(): Promise<bigint> {
+    if (this._topUpThresholdBps != null) return this._topUpThresholdBps;
+    try {
+      const value = await this._channelsClient?.getTopUpSettledThresholdBps?.();
+      if (typeof value === 'bigint' && value > 0n && value <= 10_000n) {
+        this._topUpThresholdBps = value;
+        return value;
+      }
+    } catch (error) {
+      debugWarn(`[BuyerNegotiator] Could not read TOP_UP_SETTLED_THRESHOLD_BPS: ${error instanceof Error ? error.message : error} — using ${DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS}`);
+    }
+    return DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS;
+  }
+
+  private async _waitForVideoTopUp(peerId: string, channelId: string, targetCeiling: bigint): Promise<void> {
+    const deadline = Date.now() + VIDEO_TOPUP_TIMEOUT_MS;
+    for (;;) {
+      await new Promise((resolve) => setTimeout(resolve, VIDEO_TOPUP_POLL_MS));
+      let channel;
+      try {
+        channel = await this._channelsClient!.getSession(channelId);
+      } catch (error) {
+        if (Date.now() >= deadline) throw buyerFault('Unable to confirm the video top-up before timeout', 'buyer-reserve-topup-timeout', { cause: error });
+        continue;
+      }
+      if (channel.status != null && channel.status !== 1) {
+        throw buyerFault('Video payment channel closed before the request was sent', 'buyer-session-state');
+      }
+      const onChainDeposit = channel.deposit;
+      if (onChainDeposit >= targetCeiling) {
+        await this._bpm.reconcileReserveAmount(peerId, onChainDeposit);
+        debugLog(`[BuyerNegotiator] Video top-up confirmed for ${peerId.slice(0, 12)}...: deposit=${onChainDeposit}`);
+        return;
+      }
+      if (Date.now() >= deadline) {
+        throw buyerFault(
+          `Seller did not confirm the video spending limit in time (deposit=${formatUsdc(onChainDeposit)} USDC, needed ${formatUsdc(targetCeiling)} USDC)`,
+          'buyer-reserve-topup-timeout',
+        );
+      }
+    }
   }
 
   /**
@@ -716,12 +870,25 @@ export class BuyerPaymentNegotiator {
     // Prefer session pricing (from PaymentRequired negotiation, includes service-specific rates)
     // over peer-level defaults which may be different from the actual service pricing.
     const unitModel = billingEntry?.unitModel;
+    if (requestFacts?.kind === 'video' && billingEntry) {
+      const { video } = requestFacts;
+      // A video is never paid on acceptance: remember the job and sign its
+      // price only after the finished video is delivered.
+      if (video.action === 'create') {
+        const jobId = nativeVideoAcceptance(video.protocol, response);
+        if (jobId) {
+          const { observedUnitUsage: _observed, ...entry } = billingEntry;
+          this._bpm.trackVideoJob(peer.peerId, video.protocol, jobId, entry);
+        }
+      }
+      return;
+    }
     let unitBilling: FinalUnitBillingResult | null = null;
-    if (unitModel && billingEntry) {
+    if (unitModel && billingEntry && requestFacts) {
       try {
         unitBilling = computeFinalUnitBilling(unitModel, billingEntry.context, response, requestFacts);
       } catch (err) {
-        const observed = extractUnitResponseUsage(response, requestFacts, billingEntry.context.serviceApiProtocol);
+        const observed = extractUnitResponseUsage(billingEntry.context.serviceApiProtocol, response, requestFacts);
         if (requestId) {
           this._bpm.recordObservedUnitUsage(requestId, observed.usage);
         }

@@ -90,6 +90,8 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'start your local LLM runtime (no API key required)';
     case 'typesafe':
       return 'export TYPESAFE_API_KEY=<key>';
+    case 'venice-video':
+      return 'export VENICE_VIDEO_API_KEY=<seller-api-key>';
     default:
       return `set the credentials required by ${pluginName}`;
   }
