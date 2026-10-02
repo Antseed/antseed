@@ -27,10 +27,11 @@ it('advertises Venice video services and requires seller configuration', () => {
   expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ outputs: ['video'] });
 });
 
-it('relays queue bodies unchanged with seller auth and without AntSeed headers', async () => {
+it('relays queue bodies without the AntSeed service field, with seller auth and without AntSeed headers', async () => {
   const fetchMock = vi.fn().mockResolvedValue(Response.json({ model: 'wan-2.5', queue_id: 'queue-1' }));
   vi.stubGlobal('fetch', fetchMock);
-  const body = Buffer.from(` ${JSON.stringify({ model: 'wan-2.5', prompt: 'cat', image_url: 'data:image/png;base64,aW1hZ2U=' })}\n`);
+  const fields = { model: 'wan-2.5', prompt: 'cat', image_url: 'data:image/png;base64,aW1hZ2U=' };
+  const body = Buffer.from(JSON.stringify({ ...fields, service: 'wan-2.5' }));
   const response = await (plugin.createProvider(config) as Provider).handleRequest({
     ...request('/api/v1/video/queue?api_key=buyer', {}, { authorization: 'buyer-key', 'x-antseed-buyer-peer-id': 'buyer' }), body,
   });
@@ -39,7 +40,7 @@ it('relays queue bodies unchanged with seller auth and without AntSeed headers',
   expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
   expect(init.headers).toMatchObject({ authorization: 'Bearer seller-secret' });
   expect(Object.keys(init.headers).some(key => key.startsWith('x-antseed-'))).toBe(false);
-  expect(Buffer.from(init.body)).toEqual(body);
+  expect(JSON.parse(Buffer.from(init.body).toString())).toEqual(fields);
 });
 
 it('rejects unsupported endpoints, services, and non-streamed retrieves before calling Venice', async () => {

@@ -199,42 +199,7 @@ describe('HttpRelay', () => {
     expect(forwarded.get('image')).toBeInstanceOf(Blob);
   });
 
-  it.each([undefined, false, true])('preserveRequestBody=%s controls body transformations without bypassing auth or filtering', async (preserveRequestBody) => {
-    fetchMock.mockResolvedValueOnce(new Response('{}', { status: 200 }));
-    const responses: SerializedHttpResponse[] = [];
-    const relay = new HttpRelay(makeConfig({
-      preserveRequestBody,
-      serviceRewriteMap: { 'claude-sonnet-4-20250514': 'upstream-model' },
-      injectJsonFields: { injected: true },
-    }), { onResponse: response => responses.push(response) });
-    const body = Buffer.from(' \n{ "model": "claude-sonnet-4-20250514", "service": "claude-sonnet-4-20250514", "custom": {"value":1e2} }\n');
-    await relay.handleRequest(makeRequest({ body, headers: { 'content-type': 'application/json', authorization: 'buyer-secret', 'x-antseed-provider': 'internal' } }));
-    expect(responses[0]?.statusCode).toBe(200);
-    const options = fetchMock.mock.calls[0]![1];
-    expect(options.headers['authorization']).toBeUndefined();
-    expect(options.headers['x-api-key']).toBe('sk-test-key');
-    expect(options.headers['x-antseed-provider']).toBeUndefined();
-    if (preserveRequestBody) {
-      expect(Buffer.from(options.body)).toEqual(body);
-    } else {
-      expect(JSON.parse(Buffer.from(options.body).toString())).toEqual({ model: 'upstream-model', custom: { value: 100 }, injected: true });
-    }
-  });
-
-  it('keeps timeouts and releases concurrency when preserving request bodies', async () => {
-    fetchMock.mockImplementationOnce((_url: string, options: RequestInit) => new Promise((_resolve, reject) => {
-      options.signal!.addEventListener('abort', () => reject(new Error('aborted')), { once: true });
-    }));
-    const responses: SerializedHttpResponse[] = [];
-    const relay = new HttpRelay(makeConfig({ preserveRequestBody: true, timeoutMs: 10 }), { onResponse: response => responses.push(response) });
-    await relay.handleRequest(makeRequest());
-    expect(responses[0]?.statusCode).toBe(502);
-    expect(Buffer.from(responses[0]!.body).toString()).toContain('timed out after 10ms');
-    expect(relay.getActiveCount()).toBe(0);
-    expect(fetchMock).toHaveBeenCalledTimes(1);
-  });
-
-  it.each([false, true])('enforces concurrency limit with preserveRequestBody=%s', async (preserveRequestBody) => {
+  it('enforces concurrency limit', async () => {
     // Create a fetch that blocks until we resolve it
     let resolveFirst!: (value: Response) => void;
     const firstFetch = new Promise<Response>((resolve) => { resolveFirst = resolve; });
@@ -246,7 +211,7 @@ describe('HttpRelay', () => {
       onResponse: (res) => responses.push(res),
     };
 
-    const relay = new HttpRelay(makeConfig({ maxConcurrency: 1, preserveRequestBody }), callbacks);
+    const relay = new HttpRelay(makeConfig({ maxConcurrency: 1 }), callbacks);
 
     // Start first request (fills concurrency) — do NOT await
     const p1 = relay.handleRequest(makeRequest({ requestId: 'req-1' }));

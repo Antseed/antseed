@@ -77,7 +77,6 @@ const plugin: AntseedProviderPlugin = {
         authHeaderValue: `Bearer ${apiKey}`,
         maxConcurrency,
         allowedServices: services,
-        preserveRequestBody: true,
         redirect: 'error',
         stripHeaderPrefixes: ['x-antseed-'],
       },

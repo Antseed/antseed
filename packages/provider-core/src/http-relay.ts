@@ -8,7 +8,6 @@ import { stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-head
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
 export interface RelayConfig {
-  preserveRequestBody?: boolean;
   redirect?: 'error' | 'follow' | 'manual';
   baseUrl: string;
   authHeaderName: string;
@@ -241,7 +240,7 @@ export class HttpRelay {
       // Normalize the requested service into the upstream model for both JSON
       // and multipart Images API requests. Multipart edits otherwise bypass
       // alias rewriting and some upstreams report the model as missing.
-      if (!this._config.preserveRequestBody && swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD') {
+      if (swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD') {
         const contentType = getHeader(swappedRequest.headers, 'content-type');
         if (/^multipart\/form-data/i.test(contentType.trim())) {
           const requestedService = getHeader(swappedRequest.headers, 'x-antseed-service').trim()
