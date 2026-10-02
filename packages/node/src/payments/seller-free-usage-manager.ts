@@ -377,6 +377,16 @@ export class SellerFreeUsageManager {
     opts: { retry?: boolean } = {},
   ): void {
     if (!session.pendingRecord || session.flushPromise) return;
+    if (opts.retry && session.deadline * 1000 <= Date.now()) {
+      // The contract rejects records after the channel deadline, so retrying can never succeed.
+      debugWarn(
+        `[SellerFreeUsage] Dropping unrecorded usage for ${buyerPeerId.slice(0, 12)}... ` +
+        `channel=${session.channelId.slice(0, 18)}... sequence=${session.pendingRecord.sequence}: channel expired`,
+      );
+      session.pendingRecord = null;
+      session.recordsSinceFlush = 0;
+      return;
+    }
     if (!opts.retry && session.recordsSinceFlush >= this._recordBatchSize) {
       this._clearFlushTimer(session);
       void this._flushPendingRecord(buyerPeerId, session);
