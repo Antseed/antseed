@@ -1,0 +1,146 @@
+---
+slug: when-does-prompt-caching-save-money
+title: "When Does Prompt Caching Actually Save Money?"
+authors: [antseed]
+tags: [prompt caching, cost, API pricing, LLM API, developer tools]
+description: "Prompt caching is sold as a 90% discount. The real number depends on a write premium most guides skip. Here is the break-even math, with the vendors' own rates."
+keywords: [when does prompt caching save money, prompt caching, prompt caching cost, cached input tokens, prompt caching break even, llm cost optimization]
+image: /og-image.jpg
+date: 2026-09-01
+---
+
+import Head from '@docusaurus/Head';
+
+export const cachingFaqLd = {
+  '@context': 'https://schema.org',
+  '@type': 'FAQPage',
+  mainEntity: [
+    {
+      '@type': 'Question',
+      name: 'When does prompt caching save money?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'It depends on whether the provider charges a premium to write the cache. Where a cache write costs 1.25x the base input rate and a read costs 0.1x, you are ahead from the second use of that prefix. Where a write costs 2x, you need three uses. Where there is no write premium at all, which is the case on several models, you are ahead from the very first reuse.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How much does prompt caching actually reduce a bill?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'It reduces the cached portion of input by up to 90%, not the whole bill. Output tokens are never cached and are usually priced five times higher than input. In a worked 20-turn example on Claude Opus 5 rates, caching cut input cost by 82% but the total bill by 67%, because output was untouched.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'What invalidates a prompt cache hit?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'A cache hit needs an exact prefix match. Changing the model, the tool definitions, the output format, reasoning effort or verbosity settings, or any content before the cache breakpoint will all miss. A timestamp or a session id near the top of a system prompt is enough to break every hit.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'How long does a prompt cache last?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Minutes by default, and reads typically refresh the window. Anthropic offers a 5-minute cache at a 1.25x write premium and a 1-hour cache at 2x. OpenAI retains for 30 minutes on GPT-5.6 and later, with in-memory or 24-hour options on earlier models. A steady stream of requests keeps a short cache alive indefinitely.',
+      },
+    },
+    {
+      '@type': 'Question',
+      name: 'Does prompt caching change the model output?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'No. Caching reuses the computed state for a prefix the model has already processed. The same tokens produce the same computation, so results are unaffected. It is a billing and latency optimisation, not a change to how the model behaves.',
+      },
+    },
+  ],
+};
+
+<Head>
+  <script type="application/ld+json">{JSON.stringify(cachingFaqLd)}</script>
+</Head>
+
+Prompt caching gets sold as a 90% discount on input tokens. That number is real, and it is also the ceiling rather than the outcome.
+
+So when does prompt caching save money? It turns on a detail most guides skip entirely: on several providers, writing to the cache costs **more** than a normal input token.
+
+Get the arithmetic right and caching is one of the largest cost levers available on an agent workload. Get it wrong and you can pay a premium for a cache nobody reads twice.
+
+<!-- truncate -->
+
+## What is prompt caching?
+
+It is the provider storing the processed state of a prompt prefix so it does not have to process it again.
+
+A model turns your input into an internal representation before it generates anything. That step is expensive and it is identical every time the same text arrives. Caching keeps the result of that work for a stable prefix, so the next request carrying the same prefix skips it and pays a much lower rate for those tokens.
+
+The relevant word is *prefix*. Caching works from the start of the prompt forward, which is why prompt structure matters as much as the setting.
+
+## When does prompt caching actually save money?
+
+From the second use, the third use, or the first, depending entirely on the write premium.
+
+Providers price this in two shapes. Some charge extra to write the cache and very little to read it. Others charge nothing extra to write and simply bill cached tokens at a lower rate.
+
+Anthropic [publishes multipliers](https://platform.claude.com/docs/en/about-claude/pricing) against the base input rate: a 5-minute cache write costs 1.25x, a 1-hour write costs 2x, and a read costs 0.1x. OpenAI's [caching guide](https://developers.openai.com/api/docs/guides/prompt-caching) describes the same 1.25x write and 0.1x read shape for GPT-5.6 and later, while earlier models carry a reduced cached-input rate with no write charge at all. Both checked 1 September 2026.
+
+Run the break-even on each. Call *N* the number of requests that use the prefix, and compare against paying the base rate every time:
+
+| Write premium | Read rate | Cached cost for N uses | Ahead from |
+|---|---|---|---|
+| None | 0.1x | 1 + 0.1(N−1) | the 1st reuse |
+| 1.25x (5-minute) | 0.1x | 1.25 + 0.1(N−1) | the 2nd use |
+| 2x (1-hour) | 0.1x | 2 + 0.1(N−1) | the 3rd use |
+
+The thresholds are low. Two or three uses of a prefix is nothing for an agent that re-sends its system prompt on every turn, which is why caching is close to free money on that shape of traffic.
+
+It is not free money everywhere. A one-shot classifier that sees each document once and never returns to it writes a cache that is never read, and on a 2x write premium that doubles the input cost of every request. The long cache window is the trap here: it looks like the safer option and it carries the higher premium.
+
+## How much does it save on a real bill?
+
+Less than 90%, because output tokens are never cached.
+
+Here is a worked example at Claude Opus 5's published rates — $5.00 per million input, $6.25 to write a 5-minute cache, $0.50 to read it, $25.00 output. Take a 20-turn conversation with an 18,000-token stable prefix, about 500 new input tokens per turn, and 800 output tokens per turn.
+
+| | Without caching | With caching |
+|---|---|---|
+| Prefix tokens | 360,000 at $5.00 = $1.800 | 18,000 written at $6.25, then 19 reads at $0.50 = $0.283 |
+| New input | 10,000 at $5.00 = $0.050 | 10,000 at $5.00 = $0.050 |
+| Output | 16,000 at $25.00 = $0.400 | 16,000 at $25.00 = $0.400 |
+| **Total** | **$2.25** | **$0.73** |
+
+Input cost falls 82%. The bill falls 67%. The gap between those two numbers is output, which caching does not touch and which is priced five times higher than input on almost every model.
+
+That ratio is the thing to internalise. On workloads that read a lot and write a little, caching takes two thirds off the bill. On workloads that generate long responses from short prompts, it barely registers. We worked through what that same asymmetry does to a monthly agent bill in [our breakdown of Claude Code pricing](/blog/claude-code-pricing-breakeven/).
+
+## What breaks a cache hit?
+
+An exact prefix match is required, and the list of things that count as a change is longer than people expect.
+
+Switching model breaks it. So does changing tool definitions, the output format, reasoning effort, or verbosity settings. And any content before the breakpoint, however small.
+
+That last one is where real money leaks. A timestamp at the top of a system prompt, a session id, a randomised greeting, a "today's date is" line — each of these changes the first tokens of every request and produces a 100% miss rate on a cache you are paying a write premium to populate. The symptom is a bill that looks like caching is off, because effectively it is.
+
+There is also a minimum length. OpenAI's guide puts the cacheable prefix floor at 1,024 tokens for GPT-5.6 and later, and 2,048 for earlier models. Below that, nothing is cached and the setting does nothing at all.
+
+## Where should the stable content go?
+
+At the top, in descending order of how rarely it changes.
+
+The ordering rule follows directly from prefix matching: **static content first, variable content last.** System instructions, tool definitions, and any documents or knowledge base content belong at the start. The user's actual message belongs at the end. Anything that changes per request should sit after everything that does not.
+
+This is worth stating plainly because the intuitive layout is often the opposite. Putting the user's question first reads more naturally and costs you every cache hit in the conversation.
+
+## What prompt caching does not do
+
+It does not change the output. The same tokens produce the same computation, so a cache hit is a billing and latency event rather than a behavioural one.
+
+It does not survive indefinitely. Default windows are measured in minutes, though a read typically refreshes the window, so steady traffic keeps a short cache alive. Anthropic offers 5-minute and 1-hour options; OpenAI retains for 30 minutes on GPT-5.6 and later, with in-memory or 24-hour retention on earlier models.
+
+It does not make an expensive model cheap. A cached Opus request is still an Opus request on the output side. Caching narrows the gap between models on input cost, which occasionally makes a larger model competitive on a read-heavy workload, but it does not close it.
+
+And it does not remove the need to check what a given provider charges. The multipliers above are stable, but base rates move, and the cached-input rate is the number that matters most for agent traffic while being the one least often quoted in a comparison. Vendors publish it; comparison posts frequently don't, and [where you buy inference changes it too](/blog/llm-api-without-account/). If you want to compare cached rates across providers directly, they belong in the same table as the headline rate — see how we [expose cached input alongside base pricing](/docs/pricing).
+
+The multipliers are the durable part of all this. Prices change; the arithmetic of a 1.25x write against a 0.1x read does not, and it is the only calculation that tells you whether caching is worth turning on for the workload in front of you.

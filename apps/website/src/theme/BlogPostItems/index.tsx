@@ -21,6 +21,7 @@ const PINNED_YEAR = 2090;
 const DEFAULT_OG_IMAGE = '/og-image.jpg';
 
 const COVER_SLUGS = new Set([
+  'when-does-prompt-caching-save-money',
   'buyer-protection',
   'announcing-antseed-non-profit-foundation',
   'seller-pools-reputation-tokenomics',
