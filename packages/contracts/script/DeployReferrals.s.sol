@@ -7,14 +7,15 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
 
 /**
  * @title DeployReferrals
- * @notice Deploys the emission-funded referral rewards controller.
+ * @notice Deploys the two-sided referral program (bindings, activity-based invites,
+ *         emission-funded referrer and referee rewards).
  *
  * Required env:
  *   DEPLOYER_PRIVATE_KEY
  *   EMISSIONS_GATE
  *   USAGE_ACCOUNTING
  *   ANTSEED_DEPOSITS
- *   ATTRIBUTION_USAGE      — AntseedAttributionUsage ledger (referrer points)
+ *   ATTRIBUTION_USAGE      — AntseedAttributionUsage ledger (referrer/referee points, first-usage epochs)
  *   ANTSEED_STATS          — the AntseedStatsV2 deployment that forwards bindings
  *
  * Usage:

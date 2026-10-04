@@ -12,7 +12,7 @@ interface IAntseedAttributionUsageAccounting is IAntseedUsageAccounting {
 }
 
 interface IAntseedAttributionReferrals {
-    function referrerOf(address buyer) external view returns (address);
+    function referralOf(address buyer) external view returns (address referrer, uint256 boundAtEpoch);
 }
 
 interface IAntseedAttributionDeposits {
@@ -22,10 +22,23 @@ interface IAntseedAttributionDeposits {
 /**
  * @title AntseedAttributionUsage
  * @notice Recognized usage attributed per epoch to (a) the client software
- *         that produced it and (b) the wallet that referred the buyer.
+ *         that produced it, (b) the wallet that referred the buyer and (c) the
+ *         referred buyer itself (the referee) during its welcome window.
  *         Clients are ERC-8004 agent ids; referrers are wallets bound in
  *         AntseedReferrals. Reward controllers split their epoch buckets by
  *         these points.
+ *
+ *         Two-sided referrals: every point a referred buyer earns after the
+ *         binding is credited to its referrer. During the binding epoch and
+ *         the `REFEREE_BONUS_EPOCHS` epochs after it, the same points are also
+ *         credited to the buyer as referee. Both kinds of credit share the one
+ *         referral bucket pro rata (`totalReferralPointsByEpoch`), so while a
+ *         referee is in its window the referrer and the referee each earn half
+ *         of that buyer's share; afterwards the referrer earns all of it.
+ *
+ *         First usage: the ledger also remembers the epoch of each buyer's
+ *         first recognized usage (`firstUsageEpoch`), which AntseedReferrals
+ *         uses to accept bindings only from new buyers.
  *
  *         Points here are the same weighted points AntseedUsageAccounting
  *         records for the buyer — policy-scaled and pool-weighted, so wash
@@ -72,6 +85,12 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     ///         have fully elapsed, so no credit may land there afterwards.
     uint256 public constant CREDIT_GRACE_EPOCHS = 1;
 
+    /// @notice Epochs after the binding epoch during which a referred buyer
+    ///         is also credited as referee (12 weekly epochs, about 90 days
+    ///         including the binding epoch). The window bounds what a
+    ///         self-referral through a sibling wallet can capture.
+    uint256 public constant REFEREE_BONUS_EPOCHS = 12;
+
     IAntseedAttributionUsageAccounting public immutable usageAccounting;
     IERC8004Registry public immutable identityRegistry;
     IAntseedAttributionDeposits public immutable deposits;
@@ -92,9 +111,19 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     mapping(uint256 epoch => uint256 points) public totalReferrerPointsByEpoch;
     mapping(address referrer => uint256 points) public referrerTotalPoints;
 
+    mapping(uint256 epoch => mapping(address referee => uint256 points)) public refereeEpochPoints;
+    mapping(uint256 epoch => uint256 points) public totalRefereePointsByEpoch;
+    mapping(address referee => uint256 points) public refereeTotalPoints;
+
+    /// @dev Epoch of the buyer's first recognized usage plus one (zero: none
+    ///      observed yet). Usage that predates the ledger is recorded as epoch 0.
+    mapping(address buyer => uint256 epochPlusOne) private _firstUsage;
+
     event ClientUsageCredited(uint256 indexed epoch, uint256 indexed clientAgentId, address indexed buyer, uint256 points);
     event UnattributedClientUsage(uint256 indexed epoch, address indexed buyer, uint256 points);
     event ReferrerUsageCredited(uint256 indexed epoch, address indexed referrer, address indexed buyer, uint256 points);
+    event RefereeUsageCredited(uint256 indexed epoch, address indexed referee, address indexed referrer, uint256 points);
+    event FirstUsageRecorded(address indexed buyer, uint256 indexed epoch);
     event UsageDroppedWhilePaused(address indexed buyer, uint256 points);
     event RecorderUpdated(address indexed recorder);
     event ReferralsUpdated(address indexed referrals);
@@ -175,6 +204,20 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         return (points, cursor.clientAgentId, _creditEpoch(cursor.epoch));
     }
 
+    /// @notice The referral bucket's epoch total: referrer plus referee credits.
+    function totalReferralPointsByEpoch(uint256 epoch) external view returns (uint256) {
+        return totalReferrerPointsByEpoch[epoch] + totalRefereePointsByEpoch[epoch];
+    }
+
+    /// @notice Epoch of the buyer's first recognized usage. `seen` is false
+    ///         while none has been observed. Usage that already existed when
+    ///         the ledger first observed the buyer reports epoch 0.
+    function firstUsageEpoch(address buyer) external view returns (bool seen, uint256 epoch) {
+        uint256 stored = _firstUsage[buyer];
+        if (stored == 0) return (false, 0);
+        return (true, stored - 1);
+    }
+
     /// @notice Oldest epoch that can still receive credits.
     function oldestOpenEpoch() public view returns (uint256) {
         uint256 current = usageAccounting.currentEpoch();
@@ -186,6 +229,12 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     /// @dev Move the observation forward and return the growth since the
     ///      previous one. The first observation only sets the baseline: usage
     ///      before attribution existed is not credited to anyone.
+    ///
+    ///      Also records the buyer's first recognized usage. Cumulative points
+    ///      only grow, so the baseline leaves zero exactly once: the growth then
+    ///      belongs to settlements made in the cursor's epoch, or, on the very
+    ///      first observation, to usage predating the ledger (epoch 0). Later
+    ///      calls never reach the extra storage access.
     function _advance(address buyer, Cursor storage cursor) internal returns (uint256 delta) {
         uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
         uint256 baseline = cursor.weightedPoints;
@@ -193,16 +242,21 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         // stay far below that, but never revert a settlement over it.
         if (current > type(uint128).max) current = type(uint128).max;
         cursor.weightedPoints = uint128(current);
+        if (baseline == 0 && current != 0 && _firstUsage[buyer] == 0) {
+            uint256 firstEpoch = cursor.initialized ? cursor.epoch : 0;
+            _firstUsage[buyer] = firstEpoch + 1;
+            emit FirstUsageRecorded(buyer, firstEpoch);
+        }
         if (cursor.initialized && current > baseline) delta = current - baseline;
     }
 
     /// @dev Credit `delta` to the cursor's client and epoch and to the
-    ///      buyer's referrer.
+    ///      buyer's referral (referrer, and referee while in its window).
     function _credit(address buyer, Cursor storage cursor, uint256 delta) internal {
         if (delta == 0) return;
         uint256 epoch = _creditEpoch(cursor.epoch);
         _creditClient(buyer, cursor.clientAgentId, epoch, delta);
-        _creditReferrer(buyer, epoch, delta);
+        _creditReferral(buyer, cursor.epoch, epoch, delta);
     }
 
     /// @dev The cursor's epoch, unless the controllers already treat it as
@@ -225,18 +279,30 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         emit ClientUsageCredited(epoch, client, buyer, delta);
     }
 
-    /// @dev A referrer who is the buyer's own operator earns nothing: the
-    ///      operator is usually unset when the binding lands, so the
-    ///      self-referral guard has to be re-applied here.
-    function _creditReferrer(address buyer, uint256 epoch, uint256 delta) internal {
+    /// @dev A referrer who is the buyer's own operator, or shares the buyer's
+    ///      operator, earns nothing, and neither does the buyer as referee:
+    ///      operators are usually unset (or changed) after the binding lands,
+    ///      so the self-referral guards have to be re-applied here. The referee window is judged by the epoch the
+    ///      usage settled in, not the (possibly rolled-forward) credit epoch.
+    function _creditReferral(address buyer, uint256 settledEpoch, uint256 epoch, uint256 delta) internal {
         IAntseedAttributionReferrals source = referrals;
         if (address(source) == address(0)) return;
-        address referrer = source.referrerOf(buyer);
-        if (referrer == address(0) || referrer == deposits.getOperator(buyer)) return;
+        (address referrer, uint256 boundAtEpoch) = source.referralOf(buyer);
+        if (referrer == address(0)) return;
+        address buyerOperator = deposits.getOperator(buyer);
+        if (buyerOperator != address(0) && (referrer == buyerOperator || deposits.getOperator(referrer) == buyerOperator)) {
+            return;
+        }
         referrerEpochPoints[epoch][referrer] += delta;
         totalReferrerPointsByEpoch[epoch] += delta;
         referrerTotalPoints[referrer] += delta;
         emit ReferrerUsageCredited(epoch, referrer, buyer, delta);
+
+        if (settledEpoch > boundAtEpoch + REFEREE_BONUS_EPOCHS) return;
+        refereeEpochPoints[epoch][buyer] += delta;
+        totalRefereePointsByEpoch[epoch] += delta;
+        refereeTotalPoints[buyer] += delta;
+        emit RefereeUsageCredited(epoch, buyer, referrer, delta);
     }
 
     /// @dev Zero unless the agent id fits the cursor and has an owner.

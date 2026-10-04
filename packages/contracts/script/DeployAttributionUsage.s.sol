@@ -7,7 +7,7 @@ import { AntseedAttributionUsage } from "../emissions/AntseedAttributionUsage.so
 
 /**
  * @title DeployAttributionUsage
- * @notice Deploys the per-client / per-referrer recognized-usage ledger fed by AntseedStatsV2.
+ * @notice Deploys the per-client / per-referrer / per-referee recognized-usage ledger fed by AntseedStatsV2.
  *
  * Required env:
  *   DEPLOYER_PRIVATE_KEY

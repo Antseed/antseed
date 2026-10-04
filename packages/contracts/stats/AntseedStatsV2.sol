@@ -6,7 +6,7 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 import {IAntseedStats} from "../interfaces/IAntseedStats.sol";
 
 interface IAntseedStatsReferralBinder {
-    function bindReferral(address buyer, address referrer) external;
+    function bindReferral(address buyer, uint256 issuedEpoch, uint256 index, bytes32 r, bytes32 vs) external;
 }
 
 interface IAntseedStatsAttributionUsage {
@@ -22,19 +22,47 @@ interface IAntseedStatsAttributionUsage {
  *         cumulative per-channel metadata, which is decoded, delta-accounted,
  *         and aggregated.
  *
- *         Metadata may carry an attribution tail — `address referrer,
- *         bytes32 clientId` appended after the services array. The tail is
- *         covered by the buyer's SpendingAuth / FreeUsageAuth signature
- *         (metadataHash), so neither the seller nor a relayer can forge it.
- *         Stats forwards the referrer to AntseedReferrals (bound on the buyer's
- *         first settlement that carries it) and every settlement to AntseedAttributionUsage,
- *         which credits the buyer's recognized points to the client that
- *         produced it and to the buyer's referrer. Both are best effort: a
- *         rejected forward never blocks settlement.
+ *         Metadata may carry an attribution tail of five static words in
+ *         the ABI head, between the services-array offset word and the
+ *         services array itself:
+ *
+ *           head word S+0  services offset = (S + 6) * 32   (S + 1 without a tail)
+ *           head word S+1  bytes32 clientId     ERC-8004 agent id of the client (0: none)
+ *           head word S+2  uint256 inviteEpoch  invite issuedEpoch
+ *           head word S+3  uint256 inviteIndex  invite index
+ *           head word S+4  bytes32 inviteR      EIP-2098 compact signature r
+ *           head word S+5  bytes32 inviteVs     EIP-2098 compact signature vs
+ *           then the services array (length word + elements)
+ *
+ *         where S is the number of static head words before the offset (5 for
+ *         SpendingAuth metadata v3, 4 for v1/v2 and FreeUsage v1). In ABI
+ *         terms the metadata is `abi.encode(<head words>, uint256[] services,
+ *         bytes32 clientId, uint256 inviteEpoch, uint256 inviteIndex,
+ *         bytes32 inviteR, bytes32 inviteVs)`. The invite is absent when both
+ *         `inviteR` and `inviteVs` are zero; a bound buyer's client sends
+ *         zeros there (and may keep the tail for clientId attribution).
+ *
+ *         The tail is covered by the buyer's SpendingAuth / FreeUsageAuth
+ *         signature (metadataHash), so neither the seller nor a relayer can
+ *         forge or strip it. Stats forwards a present invite to
+ *         AntseedReferrals (which recovers the referrer and binds) and every
+ *         settlement to AntseedAttributionUsage, which credits the buyer's
+ *         recognized points to the client that produced it and to the
+ *         buyer's referral. Both are best effort: a rejected forward never
+ *         blocks settlement. Any other tail shape (including the retired
+ *         two-word referrer/clientId tail) is ignored entirely.
  */
 contract AntseedStatsV2 is IAntseedStats, Ownable {
 
     // ─── Structs ────────────────────────────────────────────────────
+    struct Attribution {
+        bytes32 clientId;
+        uint256 inviteEpoch;
+        uint256 inviteIndex;
+        bytes32 inviteR;
+        bytes32 inviteVs;
+    }
+
     struct ChannelMetadataSnapshot {
         uint256 inputTokens;
         uint256 outputTokens;
@@ -47,6 +75,8 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     uint256 private constant V3_STATIC_WORDS = 5;
     /// @dev v1/v2 (and FreeUsage v1) head: version, in, out, requests.
     uint256 private constant LEGACY_STATIC_WORDS = 4;
+    /// @dev Attribution tail: clientId, inviteEpoch, inviteIndex, inviteR, inviteVs.
+    uint256 private constant TAIL_WORDS = 5;
 
     // ─── State Variables ────────────────────────────────────────────
     mapping(address => bool) public writers;
@@ -68,7 +98,11 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         uint256 outputTokens,
         uint256 requestCount
     );
-    event ReferralForwarded(address indexed buyer, address indexed referrer, bool bound);
+    /// @notice An invite was forwarded for binding; `reason` is the
+    ///         Referrals error selector when it was rejected (zero when bound).
+    event InviteForwarded(
+        address indexed buyer, uint256 inviteEpoch, uint256 inviteIndex, bool bound, bytes4 reason
+    );
     event ClientForwarded(address indexed buyer, uint256 indexed clientAgentId, bool recorded);
     event ReferralsUpdated(address indexed referrals);
     event AttributionUsageUpdated(address indexed attributionUsage);
@@ -86,7 +120,7 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     }
 
     /// @notice Decode the optional attribution tail. Returns zeros when absent.
-    function decodeAttribution(bytes calldata metadata) external pure returns (address referrer, bytes32 clientId) {
+    function decodeAttribution(bytes calldata metadata) external pure returns (Attribution memory) {
         return _decodeAttribution(metadata);
     }
 
@@ -106,9 +140,11 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         // settlement skipped below for stats purposes would otherwise credit
         // its points to the previous cursor's client and epoch. Forwarded
         // even with a zero client for the same reason.
-        (address referrer, bytes32 clientId) = _decodeAttribution(metadata);
-        _forwardClient(buyer, uint256(clientId));
-        if (referrer != address(0)) _forwardReferral(buyer, referrer);
+        Attribution memory attribution = _decodeAttribution(metadata);
+        _forwardClient(buyer, uint256(attribution.clientId));
+        if (attribution.inviteR != bytes32(0) || attribution.inviteVs != bytes32(0)) {
+            _forwardInvite(buyer, attribution);
+        }
 
         // Token stats: a blob too short for the four legacy head words is
         // malformed for stats purposes (the writer's try/catch would swallow
@@ -153,35 +189,40 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
 
     // ─── Internal Helpers ───────────────────────────────────────────
     /**
-     * @dev The attribution tail grows the ABI head by exactly two words, so
-     *      its presence is detected from the services-array offset: the offset
-     *      equals (staticWords + 1) * 32 without a tail and
-     *      (staticWords + 3) * 32 with one. Offsets are absolute, so decoders
-     *      that stop at the services array read identical values either way.
+     * @dev The attribution tail grows the ABI head by exactly TAIL_WORDS
+     *      words, so its presence is detected from the services-array offset:
+     *      the offset equals (staticWords + 1) * 32 without a tail and
+     *      (staticWords + 1 + TAIL_WORDS) * 32 with one. Offsets are absolute,
+     *      so decoders that stop at the services array read identical values
+     *      either way.
      */
-    function _decodeAttribution(bytes calldata metadata) internal pure returns (address referrer, bytes32 clientId) {
-        if (metadata.length < 32) return (address(0), bytes32(0));
+    function _decodeAttribution(bytes calldata metadata) internal pure returns (Attribution memory a) {
+        if (metadata.length < 32) return a;
         uint256 version = uint256(bytes32(metadata[0:32]));
         uint256 staticWords = version == METADATA_V3 ? V3_STATIC_WORDS : LEGACY_STATIC_WORDS;
         uint256 offsetWord = staticWords * 32;
-        if (metadata.length < offsetWord + 96) return (address(0), bytes32(0));
+        // Head (with tail) plus the services length word.
+        if (metadata.length < offsetWord + (TAIL_WORDS + 2) * 32) return a;
         uint256 servicesOffset = uint256(bytes32(metadata[offsetWord:offsetWord + 32]));
-        if (servicesOffset != (staticWords + 3) * 32) return (address(0), bytes32(0));
-        uint256 referrerWord = uint256(bytes32(metadata[offsetWord + 32:offsetWord + 64]));
-        if (referrerWord >> 160 != 0) return (address(0), bytes32(0)); // not a clean address word
-        referrer = address(uint160(referrerWord));
-        clientId = bytes32(metadata[offsetWord + 64:offsetWord + 96]); // ERC-8004 agent id of the client
+        if (servicesOffset != (staticWords + 1 + TAIL_WORDS) * 32) return a;
+        uint256 t = offsetWord + 32;
+        a.clientId = bytes32(metadata[t:t + 32]);
+        a.inviteEpoch = uint256(bytes32(metadata[t + 32:t + 64]));
+        a.inviteIndex = uint256(bytes32(metadata[t + 64:t + 96]));
+        a.inviteR = bytes32(metadata[t + 96:t + 128]);
+        a.inviteVs = bytes32(metadata[t + 128:t + 160]);
     }
 
-    /// @dev Best effort: a rejected binding (already bound, self-referral,
+    /// @dev Best effort: a rejected invite (bad signature, expired, over
+    ///      quota, used, already bound, self-referral, not a new buyer,
     ///      paused) must never block settlement.
-    function _forwardReferral(address buyer, address referrer) internal {
+    function _forwardInvite(address buyer, Attribution memory a) internal {
         address sink = referrals;
         if (sink == address(0)) return;
-        try IAntseedStatsReferralBinder(sink).bindReferral(buyer, referrer) {
-            emit ReferralForwarded(buyer, referrer, true);
-        } catch {
-            emit ReferralForwarded(buyer, referrer, false);
+        try IAntseedStatsReferralBinder(sink).bindReferral(buyer, a.inviteEpoch, a.inviteIndex, a.inviteR, a.inviteVs) {
+            emit InviteForwarded(buyer, a.inviteEpoch, a.inviteIndex, true, bytes4(0));
+        } catch (bytes memory reason) {
+            emit InviteForwarded(buyer, a.inviteEpoch, a.inviteIndex, false, reason.length >= 4 ? bytes4(reason) : bytes4(0));
         }
     }
 

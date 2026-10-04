@@ -31,9 +31,20 @@ contract AttributionAccountingMock {
 
 contract AttributionReferralsMock {
     mapping(address => address) public referrerOf;
+    mapping(address => uint256) public boundAtEpoch;
+    uint256 public epoch = 20;
+
+    function setEpoch(uint256 value) external {
+        epoch = value;
+    }
 
     function bind(address buyer, address referrer) external {
         referrerOf[buyer] = referrer;
+        boundAtEpoch[buyer] = epoch;
+    }
+
+    function referralOf(address buyer) external view returns (address, uint256) {
+        return (referrerOf[buyer], boundAtEpoch[buyer]);
     }
 }
 
@@ -273,5 +284,115 @@ contract AntseedAttributionUsageTest is Test {
         vm.prank(stats);
         vm.expectRevert(AntseedAttributionUsage.NotRecorder.selector);
         ledger.record(buyer, desktop);
+    }
+
+    function test_refereeIsCreditedAlongsideTheReferrerDuringItsWindow() public {
+        referrals.bind(buyer, referrer); // bound in epoch 20
+        _settle(desktop, 10);
+        _flush();
+        assertEq(ledger.referrerEpochPoints(20, referrer), 10);
+        assertEq(ledger.refereeEpochPoints(20, buyer), 10);
+        assertEq(ledger.totalRefereePointsByEpoch(20), 10);
+        assertEq(ledger.refereeTotalPoints(buyer), 10);
+        assertEq(ledger.totalReferralPointsByEpoch(20), 20); // each side holds half
+        assertEq(ledger.totalClientPointsByEpoch(20), 10); // client credit unaffected
+    }
+
+    function test_refereeWindowEndsAfterTwelveEpochs() public {
+        referrals.bind(buyer, referrer); // bound in epoch 20
+        uint256 last = 20 + ledger.REFEREE_BONUS_EPOCHS();
+
+        accounting.setCurrentEpoch(last);
+        _settle(desktop, 7);
+        accounting.setCurrentEpoch(last + 1);
+        _settle(desktop, 5); // credits the 7 settled in the last window epoch
+        _flush(); // credits the 5 settled after the window
+
+        assertEq(ledger.refereeEpochPoints(last, buyer), 7);
+        assertEq(ledger.referrerEpochPoints(last, referrer), 7);
+        assertEq(ledger.refereeEpochPoints(last + 1, buyer), 0);
+        assertEq(ledger.referrerEpochPoints(last + 1, referrer), 5);
+        assertEq(ledger.totalReferralPointsByEpoch(last + 1), 5);
+    }
+
+    function test_refereeWindowFollowsTheSettlementEpochNotTheRolledCredit() public {
+        referrals.bind(buyer, referrer);
+        uint256 last = 20 + ledger.REFEREE_BONUS_EPOCHS();
+        accounting.setCurrentEpoch(last);
+        _settle(desktop, 9); // settled inside the window
+        accounting.setCurrentEpoch(last + 3); // flushed late: rolls into an open epoch past the window
+        _flush();
+        assertEq(ledger.refereeEpochPoints(last + 2, buyer), 9);
+        assertEq(ledger.referrerEpochPoints(last + 2, referrer), 9);
+    }
+
+    function test_selfReferralThroughTheOperatorCreditsNeitherSide() public {
+        referrals.bind(buyer, referrer);
+        deposits.setOperator(buyer, referrer);
+        _settle(desktop, 10);
+        _flush();
+        assertEq(ledger.totalReferralPointsByEpoch(20), 0);
+        assertEq(ledger.refereeEpochPoints(20, buyer), 0);
+    }
+
+    function test_recordsTheEpochOfFirstRecognizedUsage() public {
+        (bool seen, uint256 epoch) = ledger.firstUsageEpoch(buyer);
+        assertFalse(seen);
+
+        _settle(desktop, 0); // free usage: no recognized points
+        accounting.setCurrentEpoch(21);
+        _settle(desktop, 0);
+        (seen,) = ledger.firstUsageEpoch(buyer);
+        assertFalse(seen);
+
+        accounting.setCurrentEpoch(22);
+        _settle(desktop, 4); // first recognized usage, settled in 22
+        accounting.setCurrentEpoch(24);
+        vm.expectEmit(true, true, false, false);
+        emit AntseedAttributionUsage.FirstUsageRecorded(buyer, 22);
+        _settle(desktop, 3);
+        (seen, epoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(seen);
+        assertEq(epoch, 22);
+
+        _settle(desktop, 1);
+        _flush();
+        (, epoch) = ledger.firstUsageEpoch(buyer);
+        assertEq(epoch, 22); // never moves again
+    }
+
+    function test_usagePredatingTheLedgerCountsAsEpochZero() public {
+        accounting.settle(buyer, 100);
+        _settle(desktop, 0);
+        (bool seen, uint256 epoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(seen);
+        assertEq(epoch, 0);
+    }
+
+    function test_firstUsageIsRecordedWhilePaused() public {
+        ledger.pause();
+        _settle(desktop, 5);
+        _settle(desktop, 0);
+        (bool seen, uint256 epoch) = ledger.firstUsageEpoch(buyer);
+        assertTrue(seen);
+        assertEq(epoch, 20);
+    }
+
+    function test_sharedOperatorCreditsNeitherSide() public {
+        referrals.bind(buyer, referrer);
+        _settle(desktop, 10);
+        deposits.setOperator(buyer, address(0x5A5E));
+        deposits.setOperator(referrer, address(0x5A5E)); // set after the binding
+        _settle(desktop, 5);
+        _flush();
+        assertEq(ledger.totalReferralPointsByEpoch(20), 0);
+        assertEq(ledger.clientEpochPoints(20, desktop), 15);
+
+        // Distinct operators credit both sides again.
+        deposits.setOperator(referrer, address(0x0E1));
+        _settle(desktop, 4);
+        _flush();
+        assertEq(ledger.referrerEpochPoints(20, referrer), 4);
+        assertEq(ledger.refereeEpochPoints(20, buyer), 4);
     }
 }
