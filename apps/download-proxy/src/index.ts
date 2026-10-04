@@ -149,17 +149,14 @@ export default {
     const role = segmentRole(origin.status, origin.headers.get('content-range'));
     if (role.first) {
       emit(env, ctx, startEvent(downloadCtx), gaIds);
+      // Starting the download is enough to remember the network's inviter;
+      // Desktop still asks the user to confirm it.
+      const referrer = url.searchParams.get('ref');
+      if (referrer) ctx.waitUntil(recordReferralDownload(request, env, referrer));
     }
-    const referrer = url.searchParams.get('ref');
     const {readable, done} = trackedStream(origin.body, contentLength);
     ctx.waitUntil(
       done.then(result => {
-        // A referral candidate is only remembered once the installer's last
-        // byte was delivered: a one-byte Range probe must not be enough to
-        // seed a network with an inviter.
-        if (role.final && result.completed && referrer) {
-          ctx.waitUntil(recordReferralDownload(request, env, referrer));
-        }
         if (!role.final) {
           const segment = segmentEvent(downloadCtx, result);
           console.log(JSON.stringify({event: segment.name, ...segment.params, attributed: gaIds.clientId ? 1 : 0}));

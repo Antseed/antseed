@@ -37,8 +37,8 @@ events from a 206 response are flagged `partial=1` in telemetry.
 Referral download URLs may include `?ref=<wallet>`. When the
 `REFERRAL_ATTRIBUTION` KV binding and `REFERRAL_HASH_SECRET` Worker secret are
 configured, the Worker stores the referrer wallet for 48 hours under an HMAC-derived
-network key once the installer's last byte has been delivered (a Range probe is
-not a download). Raw IP addresses are never written to KV or logs.
+network key as soon as a download starts (the response covering byte 0). Raw IP
+addresses are never written to KV or logs.
 
 The network address is a weak signal — an office, campus or carrier NAT shares
 one — so `/referral/match` is a hint, not attribution: each observation is
