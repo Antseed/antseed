@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useState } from 'react';
+import { useCallback, useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { GlobalIcon, Moon02Icon, Sun02Icon, Tick02Icon } from '@hugeicons/core-free-icons';
 import { routesForSelectedModel } from '../../../modules/catalog/view-models';
@@ -9,6 +9,8 @@ import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
 import type { TelemetryStatus } from '../../../../shared/telemetry';
+import type { ReferralStatus } from '../../../types/bridge';
+import { ReferralStatusRow } from '../ReferralStatusRow';
 import { formatUsdShort, VprCard, VprPage, VprSettingRow, VprSlider, VprToggle } from '../vpr/VprKit';
 import { VprPeerAccessDialog } from './VprPeerAccessDialog';
 import { usePublicEndpointModal } from '../tunnels/PublicEndpointModal';
@@ -32,6 +34,17 @@ export function VprPreferencesView({ onSelectView }: Props) {
   const [themeMode, setThemeMode] = useState<ThemeMode>(() => activeThemeMode());
   const [accessOpen, setAccessOpen] = useState(false);
   const [telemetryStatus, setTelemetryStatus] = useState<TelemetryStatus | null>(null);
+  const [referral, setReferral] = useState<ReferralStatus | null>(null);
+
+  // Re-read on entry: a pending invite binds with the first paid or free request.
+  const loadReferral = useCallback(() => {
+    let cancelled = false;
+    void window.antseedDesktop?.referralGetStatus?.()
+      .then((status) => { if (!cancelled) setReferral(status); })
+      .catch(() => {});
+    return () => { cancelled = true; };
+  }, []);
+  useEffect(loadReferral, [loadReferral]);
 
   useEffect(() => {
     let cancelled = false;
@@ -234,6 +247,8 @@ export function VprPreferencesView({ onSelectView }: Props) {
           </VprCard>
         </div>
 
+        <VprReferralSetting status={referral} onRedeemed={loadReferral} />
+
         <div className={styles.appearanceSection}>
           <span className={styles.sectionLabel}>Privacy</span>
           <VprCard className={styles.card}>
@@ -302,5 +317,21 @@ export function VprPreferencesView({ onSelectView }: Props) {
         onClearAllowlist={() => actions.updateVprRoutingPreferences({ allowedPeerIds: [] })}
       />
     </section>
+  );
+}
+
+/**
+ * Who invited this wallet, the invite it carries until bound, or the invite
+ * field. Hidden until known and on networks without referrals.
+ */
+export function VprReferralSetting({ status, onRedeemed }: { status: ReferralStatus | null; onRedeemed?: () => void }) {
+  if (!status || !status.configured) return null;
+  return (
+    <div className={styles.appearanceSection}>
+      <span className={styles.sectionLabel}>Referral</span>
+      <VprCard className={styles.card}>
+        <ReferralStatusRow status={status} onRedeemed={onRedeemed} />
+      </VprCard>
+    </div>
   );
 }

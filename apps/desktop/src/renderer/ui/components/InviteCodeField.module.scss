@@ -1,0 +1,31 @@
+.row {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+  width: 100%;
+  text-align: left;
+}
+
+.field {
+  flex: 1;
+  min-width: 0;
+
+  :global(.as-field__input) {
+    font-family: var(--font-mono, monospace);
+    font-size: 12px;
+  }
+}
+
+.row > button {
+  /* Align with the input, below the label. */
+  margin-top: 22px;
+  flex-shrink: 0;
+}
+
+.saved {
+  margin: 0;
+  width: 100%;
+  text-align: left;
+  font-size: 12px;
+  color: var(--text-secondary);
+}

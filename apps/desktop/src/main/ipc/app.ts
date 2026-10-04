@@ -24,10 +24,14 @@ import {
   getTelemetryService,
 } from '../telemetry/runtime.js';
 import {
-  acceptReferral,
-  declineReferral,
-  getReferralSetupStatus,
+  checkReferralInvite,
+  createReferralInvite,
+  getRefereeBonus,
+  getReferralInvites,
+  getReferralStatus,
+  redeemReferralInvite,
 } from '../referrals.js';
+import { takePendingInviteLink } from '../deep-links.js';
 import {
   getMainWindow,
 } from '../ui/window.js';
@@ -67,9 +71,13 @@ export function registerAppIpc(): void {
     ...getAppSetupStatus(),
   }));
 
-  ipcMain.handle('referral:get-status', () => getReferralSetupStatus());
-  ipcMain.handle('referral:accept', (_event, referrer: string) => acceptReferral(referrer));
-  ipcMain.handle('referral:decline', () => declineReferral());
+  ipcMain.handle('referral:get-status', () => getReferralStatus());
+  ipcMain.handle('referral:check-invite', (_event, value: string) => checkReferralInvite(String(value ?? '')));
+  ipcMain.handle('referral:redeem-invite', (_event, value: string) => redeemReferralInvite(String(value ?? '')));
+  ipcMain.handle('referral:get-invites', () => getReferralInvites());
+  ipcMain.handle('referral:create-invite', () => createReferralInvite());
+  ipcMain.handle('referral:get-referee', () => getRefereeBonus());
+  ipcMain.handle('referral:take-deep-link', () => takePendingInviteLink());
 
   // Returns the macOS UI language (e.g. 'he', 'ar-EG', 'en-US') as Electron sees
   // it. This is the same locale that drives the system window-chrome direction,

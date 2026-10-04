@@ -5,7 +5,6 @@ import type {
   DesktopPaymentChannelSummary,
   DesktopRewardsSummary,
   LogEvent,
-  ReferralSetupStatus,
   RuntimeProcessState,
 } from '../types/bridge';
 import type { ChatMessage } from '../ui/components/chat/chat-shared';
@@ -485,12 +484,6 @@ export type RendererUiState = {
   appSetupNeeded: boolean;
   appSetupComplete: boolean;
   appSetupStep: string;
-  /**
-   * Referral confirmation state. A 'candidate' is an unanswered question:
-   * the setup screen holds for it and Home keeps showing the card, because
-   * an unanswered candidate is otherwise lost once setup auto-dismisses.
-   */
-  referralSetup: ReferralSetupStatus;
 };
 
 const MAX_LOGS = 2000;
@@ -659,7 +652,6 @@ export function createInitialUiState(): RendererUiState {
     appSetupNeeded: false,
     appSetupComplete: false,
     appSetupStep: '',
-    referralSetup: { state: 'none' },
   };
 }
 

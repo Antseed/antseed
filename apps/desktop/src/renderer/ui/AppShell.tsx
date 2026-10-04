@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { ViewHost } from './components/ViewHost';
 import { SetupScreen } from './components/SetupScreen';
+import { receiveInviteLink } from './components/InviteCodeField';
 import { preloadViews, viewsForPreload } from './components/viewRegistry';
 import { shallowEqual, useUiSelector } from './hooks/useUiSelector';
 import { VIEW_NAMES, type ViewName } from './types';
@@ -40,9 +41,6 @@ export function AppShell() {
     // is actually for. The provisional flag clears exactly when routing
     // confirms a free-backed default (or the user picks a model).
     freeDefaultReady: state.vprRouteSelection.model !== null && !state.vprDefaultModelProvisional,
-    // An unanswered referral question keeps setup open (up to the cap): the
-    // candidate is only offered once and a dismissed card is a lost binding.
-    referralPending: state.referralSetup.state === 'candidate',
   }), shallowEqual);
   const [activeView, setActiveView] = useState<ViewName>('home');
   const [setupVisible, setSetupVisible] = useState(false);
@@ -113,7 +111,7 @@ export function AppShell() {
     // trusted free seller (or none at all) must not lock the user out. The
     // Home "Finding free peers…" hint carries the search on from there. Only
     // an unfinished plugin install may exceed the cap.
-    if (hasServices && snap.freeDefaultReady && !snap.referralPending) {
+    if (hasServices && snap.freeDefaultReady) {
       const timer = setTimeout(() => {
         setSetupVisible(false);
         setSetupDismissed(true);
@@ -131,7 +129,7 @@ export function AppShell() {
       }, Math.max(0, SETUP_MAX_VISIBLE_MS - (Date.now() - shownAt)));
       return () => clearTimeout(timer);
     }
-  }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, snap.referralPending, hasServices, setupDismissed]);
+  }, [snap.appSetupStatusKnown, snap.appSetupNeeded, snap.appSetupComplete, snap.freeDefaultReady, hasServices, setupDismissed]);
 
   const showSetup = setupVisible;
 
@@ -140,6 +138,21 @@ export function AppShell() {
       if (!(VIEW_NAMES as readonly string[]).includes(viewName)) return;
       handleSelectView(viewName as ViewName);
     });
+  }, [handleSelectView]);
+
+  // antseed://invite/<invite>: prefill the invite field (setup screen, or
+  // Rewards once the app is in use; Preferences shares the same field).
+  const showSetupRef = useRef(showSetup);
+  showSetupRef.current = showSetup;
+  useEffect(() => {
+    const bridge = window.antseedDesktop;
+    const open = (invite: string | null) => {
+      if (!invite) return;
+      receiveInviteLink(invite);
+      if (!showSetupRef.current) handleSelectView('rewards');
+    };
+    void bridge?.referralTakeDeepLink?.().then(open).catch(() => {});
+    return bridge?.onReferralDeepLink?.(open);
   }, [handleSelectView]);
 
   useEffect(() => {

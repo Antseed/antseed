@@ -509,8 +509,17 @@ const api = {
     return ipcRenderer.invoke('app:get-setup-status') as Promise<{ needed: boolean; complete: boolean }>;
   },
   referralGetStatus: () => ipcRenderer.invoke('referral:get-status'),
-  referralAccept: (referrer: string) => ipcRenderer.invoke('referral:accept', referrer),
-  referralDecline: () => ipcRenderer.invoke('referral:decline'),
+  referralCheckInvite: (value: string) => ipcRenderer.invoke('referral:check-invite', value),
+  referralRedeemInvite: (value: string) => ipcRenderer.invoke('referral:redeem-invite', value),
+  referralGetInvites: () => ipcRenderer.invoke('referral:get-invites'),
+  referralCreateInvite: () => ipcRenderer.invoke('referral:create-invite'),
+  referralGetReferee: () => ipcRenderer.invoke('referral:get-referee'),
+  referralTakeDeepLink: () => ipcRenderer.invoke('referral:take-deep-link'),
+  onReferralDeepLink(handler: (invite: string) => void): () => void {
+    const listener = (_: unknown, invite: string) => handler(invite);
+    ipcRenderer.on('referral:deep-link', listener);
+    return () => ipcRenderer.off('referral:deep-link', listener);
+  },
   getTeeStatus(): Promise<unknown> {
     return ipcRenderer.invoke('tee:status');
   },

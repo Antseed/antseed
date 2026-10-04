@@ -167,7 +167,7 @@ export function formatUsd(value: unknown, fractionDigits = 2): string {
 export function formatUsdcAmount(value: unknown): string {
   const numeric = safeNumber(value, 0);
   if (numeric > 0 && numeric < 0.01) return '<0.01';
-  return numeric.toFixed(2);
+  return numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /* Credits balance for the shell pill: always 2dp (e.g. "0.00");
@@ -176,7 +176,7 @@ export function formatCredits(value: string): string {
   const numeric = Number(value);
   if (!Number.isFinite(numeric)) return value || '0.00';
   if (numeric > 0 && numeric < 0.01) return '<0.01';
-  return numeric.toFixed(2);
+  return numeric.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
 }
 
 /* Compact token totals for the brand stat tiles ("656.9M"). Accepts
