@@ -119,6 +119,55 @@ export interface IndexedParticipant { address: string; currentEpoch: number; sel
 /** Network settlement volume per epoch from the explorer's epoch metrics (covers legacy epochs too). */
 export interface IndexedEpochMetric { epoch: number; volumeUsdc: string; requests: string; }
 
+/** One buyer a referrer brought in (`/api/referrals/:referrer`). ANTS in base units. */
+export interface IndexedReferredBuyer {
+  buyer: string;
+  boundEpoch: number | null;
+  points: string;
+  /** Claimed, or payable now. */
+  ants: string;
+  /** Points in epochs that are not claimable yet. */
+  pendingPoints: string;
+}
+/**
+ * A referrer's invites for the current epoch: its quota and the invites
+ * already bound (`used` counts them, `usedIndices` lists them; empty when
+ * Antscan reports only a count).
+ */
+export interface IndexedInvites { epoch: number; quota: number; used: number; usedIndices: number[]; }
+/** A referrer's rewards as indexed by Antscan; `available` is false when Antscan does not index referrals. */
+export interface IndexedReferrer {
+  available: boolean;
+  /** Antscan's wall-clock epoch, when reported. */
+  currentEpoch: number | null;
+  /** Null when Antscan does not report invites (older explorer). */
+  invites: IndexedInvites | null;
+  referredCount: number;
+  /** ANTS payable now across claimable epochs (base units). */
+  payable: string;
+  /** Epochs with a payable reward, oldest first. */
+  claimableEpochs: number[];
+  buyers: IndexedReferredBuyer[];
+}
+/**
+ * Who referred a buyer and its referee bonus (`/api/referrals/buyer/:buyer`);
+ * `referrer` is null while unbound. `refereeWindowEnd` is the last epoch the
+ * buyer earns the referee half in; payable amounts are ANTS base units.
+ */
+export interface IndexedReferralBinding {
+  available: boolean;
+  referrer: string | null;
+  boundEpoch: number | null;
+  refereeWindowEnd: number | null;
+  refereePayable: string;
+  refereeClaimableEpochs: number[];
+  /** Antscan's wall-clock epoch, when reported. */
+  currentEpoch: number | null;
+}
+/** Builder rewards for one client agent (`/api/builders`). */
+export interface IndexedBuilderAgent { agentId: number; points: string; pendingPoints: string; claimed: string; payable: string; claimableEpochs: number[]; }
+export interface IndexedBuilders { available: boolean; agents: IndexedBuilderAgent[]; }
+
 export interface Indexer {
   rewardPositions?(owner: string, outstanding?: boolean): Promise<RewardPositions>;
   displaySnapshot?(epoch: number): Promise<DisplaySnapshot>;
@@ -132,6 +181,9 @@ export interface Indexer {
   sellerEpochs(epochs?: number): Promise<Map<string, IndexedSellerEpoch[]>>;
   participant(address: string, epochs?: number): Promise<IndexedParticipant>;
   epochMetrics(): Promise<IndexedEpochMetric[]>;
+  referrer?(address: string): Promise<IndexedReferrer>;
+  referralBinding?(buyer: string): Promise<IndexedReferralBinding>;
+  builders?(agentIds: number[]): Promise<IndexedBuilders>;
 }
 
 export class IndexerError extends Error {
@@ -243,6 +295,32 @@ const toSellerEpoch = (row: Record<string, unknown>): IndexedSellerEpoch => ({
   weightedPoints: str(row['weightedPoints']),
   requests: str(row['requests']),
 });
+const epochList = (value: unknown): number[] => (Array.isArray(value) ? value.map(num).filter((epoch) => Number.isSafeInteger(epoch) && epoch >= 0) : []);
+const amount = (value: unknown): string => decimalOrNull(value) ?? '0';
+/**
+ * `invites: { epoch, quota, activityPoints, used, usedIndexes }`: `used`
+ * counts the bound invites, `usedIndexes` lists them (older shapes may send
+ * `used` as the index list itself).
+ */
+const toInvites = (value: unknown): IndexedInvites | null => {
+  if (!value || typeof value !== 'object') return null;
+  const row = value as Record<string, unknown>;
+  const epoch = countOrNull(row['epoch']);
+  const quota = countOrNull(row['quota']);
+  if (epoch === null || quota === null) return null;
+  const usedIndices = [...new Set(epochList(Array.isArray(row['usedIndexes']) ? row['usedIndexes'] : row['used']))].sort((a, b) => a - b);
+  const used = Math.max(countOrNull(row['used']) ?? 0, usedIndices.length);
+  return { epoch, quota, used, usedIndices };
+};
+const toBuilderAgent = (row: Record<string, unknown>): IndexedBuilderAgent => ({
+  agentId: num(row['agentId']),
+  points: amount(row['points']),
+  pendingPoints: amount(row['pendingPoints']),
+  claimed: amount(row['claimed']),
+  payable: amount(row['payable']),
+  claimableEpochs: epochList(row['claimableEpochs']),
+});
+
 const toBuyerEpoch = (row: Record<string, unknown>): IndexedBuyerEpoch => ({
   buyer: lower(row['buyer']) ?? '',
   epoch: num(row['epoch']),
@@ -386,6 +464,49 @@ export class AntscanIndexer implements Indexer {
   async epochMetrics(): Promise<IndexedEpochMetric[]> {
     const raw = await this.get<Record<string, unknown>[]>('/api/epochs');
     return (raw ?? []).map((row) => ({ epoch: num(row['epoch']), volumeUsdc: str(row['volumeUsdc']), requests: str(row['requests']) }));
+  }
+
+  async referrer(address: string): Promise<IndexedReferrer> {
+    const raw = await this.get<Record<string, unknown>>(`/api/referrals/${address.toLowerCase()}`);
+    return {
+      available: raw['available'] === true,
+      currentEpoch: countOrNull(raw['currentEpoch']),
+      invites: toInvites(raw['invites']),
+      referredCount: num(raw['referredCount']),
+      payable: amount(raw['payable']),
+      claimableEpochs: epochList(raw['claimableEpochs']),
+      buyers: (Array.isArray(raw['buyers']) ? raw['buyers'] as Record<string, unknown>[] : []).map((row) => ({
+        buyer: lower(row['buyer']) ?? '',
+        boundEpoch: optional(row['boundEpoch'], num),
+        points: amount(row['points']),
+        ants: amount(row['ants']),
+        pendingPoints: amount(row['pendingPoints']),
+      })),
+    };
+  }
+
+  async referralBinding(buyer: string): Promise<IndexedReferralBinding> {
+    const raw = await this.get<Record<string, unknown>>(`/api/referrals/buyer/${buyer.toLowerCase()}`);
+    const referrer = typeof raw['referrer'] === 'string' && /^0x[0-9a-fA-F]{40}$/.test(raw['referrer']) ? raw['referrer'] : null;
+    return {
+      available: raw['available'] === true,
+      referrer,
+      boundEpoch: referrer ? optional(raw['boundEpoch'], num) : null,
+      refereeWindowEnd: referrer ? countOrNull(raw['refereeWindowEnd']) : null,
+      refereePayable: referrer ? amount(raw['refereePayable']) : '0',
+      refereeClaimableEpochs: referrer ? epochList(raw['refereeClaimableEpochs']) : [],
+      currentEpoch: countOrNull(raw['currentEpoch']),
+    };
+  }
+
+  async builders(agentIds: number[]): Promise<IndexedBuilders> {
+    const ids = [...new Set(agentIds)].sort((a, b) => a - b);
+    if (ids.length === 0) return { available: true, agents: [] };
+    const raw = await this.get<Record<string, unknown>>(`/api/builders?agentIds=${ids.join(',')}`);
+    return {
+      available: raw['available'] === true,
+      agents: (Array.isArray(raw['agents']) ? raw['agents'] as Record<string, unknown>[] : []).map(toBuilderAgent),
+    };
   }
 }
 

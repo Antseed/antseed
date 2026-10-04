@@ -64,6 +64,11 @@ export function useJobs(): JobsValue {
   return value;
 }
 
+/** Known jobs, or none outside a JobsProvider (for passive readers such as a card watching for a finished job). */
+export function useJobList(): JobView[] {
+  return useContext(JobsContext)?.jobs ?? [];
+}
+
 const TITLES: Record<string, string> = {
   stake: 'Stake',
   move: 'Move stake',
@@ -80,6 +85,9 @@ const TITLES: Record<string, string> = {
   'seller-register': 'Register seller',
   'claim-starter': 'Claim starter',
   'referral-claim': 'Claim referral rewards',
+  'referee-claim': 'Claim invite bonus',
+  'builder-claim': 'Claim builder rewards',
+  'builder-register': 'Register client agent',
 };
 
 /** Human title for a job kind ("stake" → "Stake"); unknown kinds are capitalised. */

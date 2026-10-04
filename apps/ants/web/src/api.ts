@@ -9,6 +9,10 @@ import type {
   ProofStatusView,
   RewardsView,
   ReferralView,
+  RefereeView,
+  CreatedInviteView,
+  ReferredBuyersView,
+  BuildersView,
   SellerView,
   SellerModelsView,
   UsageView,
@@ -135,6 +139,10 @@ export const api = {
   positions: () => get<PositionsView>('/api/positions'),
   rewards: () => get<RewardsView>('/api/rewards'),
   referral: () => get<ReferralView>('/api/referrals'),
+  referredBuyers: () => get<ReferredBuyersView>('/api/referrals/buyers'),
+  referee: () => get<RefereeView>('/api/referrals/referee'),
+  createInvite: () => post<CreatedInviteView>('/api/referrals/invite', {}),
+  builders: (agentIds: number[]) => get<BuildersView>(`/api/builders?agentIds=${agentIds.join(',')}`),
   pools: () => get<PoolsView>('/api/pools'),
   sellerModels: async (address: string) => {
     try {

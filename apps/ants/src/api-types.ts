@@ -386,15 +386,91 @@ export interface SellerView {
   } | null;
 }
 
+/** Invites for the current epoch: `used` counts bound invites plus those already handed out from this install. */
+export interface InviteAllowanceView {
+  epoch: number;
+  quota: number;
+  used: number;
+  left: number;
+}
+
 export interface ReferralView {
   available: boolean;
-  /** Share link: antseed.com/?ref=<wallet>. */
-  referralUrl: string | null;
   /** ANTS payable now across claimable epochs (base units). */
   payable: string;
   /** Epochs with a payable reward, oldest first. */
   claimableEpochs: number[];
   referredCount: number;
+  /** Null when Antscan does not report invites. */
+  invites: InviteAllowanceView | null;
+}
+
+/** A freshly signed invite (`POST /api/referrals/invite`). */
+export interface CreatedInviteView {
+  /** Shareable invite string (base64url). */
+  invite: string;
+  /** https://antseed.com/invite/<invite> */
+  link: string;
+  epoch: number;
+  index: number;
+  quota: number;
+  /** Invites left this epoch after this one. */
+  left: number;
+  /** First epoch in which the invite no longer binds. */
+  expiresEpoch: number;
+}
+
+/** The buyer account as a referee: its inviter and the two-sided bonus. */
+export interface RefereeView {
+  available: boolean;
+  /** Null while not bound. */
+  referrer: string | null;
+  boundEpoch: number | null;
+  /** Last epoch of the bonus window. */
+  windowEnd: number | null;
+  /** Weeks of bonus left, counting the current one; null when unknown. */
+  weeksLeft: number | null;
+  /** ANTS payable now (base units), paid to the buyer's operator. */
+  payable: string;
+  claimableEpochs: number[];
+}
+
+export interface ReferredBuyerView {
+  buyer: string;
+  /** Epoch the referral was bound in; null when the binding predates the scan. */
+  boundEpoch: number | null;
+  /** Weighted usage points credited to you for this buyer. */
+  points: string;
+  /** ANTS earned from this buyer (base units): claimed plus payable now. */
+  ants: string;
+  /** Points in epochs that are not claimable yet. */
+  pendingPoints: string;
+}
+
+export interface ReferredBuyersView {
+  available: boolean;
+  /** Highest earning first. */
+  buyers: ReferredBuyerView[];
+}
+
+export interface BuilderAgentView {
+  agentId: number;
+  /** ERC-8004 owner the rewards are paid to; null when the id is not registered. */
+  owner: string | null;
+  /** The dashboard wallet owns this agent. */
+  owned: boolean;
+  /** Which first-party Antseed client this id is in chain config, if any. */
+  firstParty: 'cli' | 'desktop' | null;
+  /** ANTS payable now across claimable epochs (base units). */
+  payable: string;
+  /** Epochs with a payable reward, oldest first; each is its own claim transaction. */
+  claimableEpochs: number[];
+}
+
+export interface BuildersView {
+  available: boolean;
+  /** Requested ids plus the chain's first-party client ids this wallet owns. */
+  agents: BuilderAgentView[];
 }
 
 export interface JobStep { at: number; label: string; hash?: string; }
@@ -426,3 +502,4 @@ export interface StakeUsageRequest { side: 'seller' | 'buyer'; epochs: number; s
 /** Restake staker + seller usage (+ buyer usage when operator) rewards in one job; `targetAgentId` moves the new positions into that pool. */
 export interface CompoundRequest { includeBuyer?: boolean; epochs: number; targetAgentId?: number; stakeAgentId?: number; }
 export interface SubmitProofRequest { artifact: unknown; }
+export interface BuilderClaimRequest { agentId: number; }
