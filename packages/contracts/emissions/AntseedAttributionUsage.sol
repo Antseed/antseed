@@ -132,19 +132,19 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     ///         paused the cursor still moves; the growth it passes over is
     ///         dropped (attribution is off), not deferred.
     function record(address buyer, uint256 clientAgentId) external {
-        if (msg.sender != recorder || recorder == address(0)) revert NotRecorder();
+        if (msg.sender != recorder) revert NotRecorder();
         if (buyer == address(0)) revert InvalidAddress();
 
         Cursor storage cursor = _cursors[buyer];
-        if (paused()) {
-            (uint256 baseline, uint256 current) = _observe(buyer, cursor);
-            if (cursor.initialized && current > baseline) emit UsageDroppedWhilePaused(buyer, current - baseline);
-        } else {
-            _credit(buyer, cursor);
+        uint256 delta = _advance(buyer, cursor);
+        if (!paused()) {
+            _credit(buyer, cursor, delta);
+        } else if (delta != 0) {
+            emit UsageDroppedWhilePaused(buyer, delta);
         }
 
         cursor.clientAgentId = uint64(_registeredClient(clientAgentId));
-        cursor.epoch = uint32(_accountingEpoch());
+        cursor.epoch = uint32(_atLeastFirstRewarded(usageAccounting.currentEpoch()));
         cursor.initialized = true;
     }
 
@@ -153,7 +153,7 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     function flush(address[] calldata buyers) external whenNotPaused {
         for (uint256 i = 0; i < buyers.length; i++) {
             Cursor storage cursor = _cursors[buyers[i]];
-            if (cursor.initialized) _credit(buyers[i], cursor);
+            if (cursor.initialized) _credit(buyers[i], cursor, _advance(buyers[i], cursor));
         }
     }
 
@@ -178,36 +178,31 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
     /// @notice Oldest epoch that can still receive credits.
     function oldestOpenEpoch() public view returns (uint256) {
         uint256 current = usageAccounting.currentEpoch();
-        uint256 open = current > CREDIT_GRACE_EPOCHS ? current - CREDIT_GRACE_EPOCHS : 0;
-        uint256 first = usageAccounting.firstRewardedEpoch();
-        return open < first ? first : open;
+        return _atLeastFirstRewarded(current > CREDIT_GRACE_EPOCHS ? current - CREDIT_GRACE_EPOCHS : 0);
     }
 
     // ─── Internal ────────────────────────────────────────────────────
 
-    /// @dev Credit growth since the cursor's last observation to the cursor's
-    ///      client and epoch and to the buyer's referrer, then move the
-    ///      observation forward. The first observation only sets the baseline:
-    ///      usage before attribution existed is not credited to anyone.
-    function _credit(address buyer, Cursor storage cursor) internal {
-        (uint256 baseline, uint256 current) = _observe(buyer, cursor);
-        if (!cursor.initialized || current <= baseline) return;
-
-        uint256 delta = current - baseline;
-        uint256 epoch = _creditEpoch(cursor.epoch);
-        _creditClient(buyer, cursor.clientAgentId, epoch, delta);
-        _creditReferrer(buyer, epoch, delta);
-    }
-
-    /// @dev Move the observation forward without crediting; returns the
-    ///      points observed before and after.
-    function _observe(address buyer, Cursor storage cursor) internal returns (uint256 baseline, uint256 current) {
-        current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
-        baseline = cursor.weightedPoints;
+    /// @dev Move the observation forward and return the growth since the
+    ///      previous one. The first observation only sets the baseline: usage
+    ///      before attribution existed is not credited to anyone.
+    function _advance(address buyer, Cursor storage cursor) internal returns (uint256 delta) {
+        uint256 current = usageAccounting.buyerUsageTotal(buyer).weightedPoints;
+        uint256 baseline = cursor.weightedPoints;
         // Cursor packs into uint128; the accounting's cumulative weighted points
         // stay far below that, but never revert a settlement over it.
         if (current > type(uint128).max) current = type(uint128).max;
         cursor.weightedPoints = uint128(current);
+        if (cursor.initialized && current > baseline) delta = current - baseline;
+    }
+
+    /// @dev Credit `delta` to the cursor's client and epoch and to the
+    ///      buyer's referrer.
+    function _credit(address buyer, Cursor storage cursor, uint256 delta) internal {
+        if (delta == 0) return;
+        uint256 epoch = _creditEpoch(cursor.epoch);
+        _creditClient(buyer, cursor.clientAgentId, epoch, delta);
+        _creditReferrer(buyer, epoch, delta);
     }
 
     /// @dev The cursor's epoch, unless the controllers already treat it as
@@ -254,9 +249,8 @@ contract AntseedAttributionUsage is Ownable2Step, Pausable {
         }
     }
 
-    /// @dev The epoch the accounting will record this settlement under.
-    function _accountingEpoch() internal view returns (uint256) {
-        uint256 epoch = usageAccounting.currentEpoch();
+    /// @dev The accounting records nothing before its first rewarded epoch.
+    function _atLeastFirstRewarded(uint256 epoch) internal view returns (uint256) {
         uint256 first = usageAccounting.firstRewardedEpoch();
         return epoch < first ? first : epoch;
     }

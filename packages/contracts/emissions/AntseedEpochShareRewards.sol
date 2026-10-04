@@ -114,12 +114,11 @@ abstract contract AntseedEpochShareRewards is Ownable2Step, Pausable, Reentrancy
     ///      flag rather than `frozenTotalPoints != 0` so a frozen zero (an
     ///      epoch settled as remainder) is distinguishable from unset.
     function _freezeEpochTotal(uint256 epoch) internal returns (uint256 total) {
-        if (!epochFrozen[epoch]) {
-            frozenTotalPoints[epoch] = _ledgerTotal(epoch);
-            epochFrozen[epoch] = true;
-            emit EpochTotalFrozen(epoch, frozenTotalPoints[epoch]);
-        }
-        return frozenTotalPoints[epoch];
+        if (epochFrozen[epoch]) return frozenTotalPoints[epoch];
+        total = _ledgerTotal(epoch);
+        frozenTotalPoints[epoch] = total;
+        epochFrozen[epoch] = true;
+        emit EpochTotalFrozen(epoch, total);
     }
 
     function _emissionsReserve() internal view returns (address reserve) {

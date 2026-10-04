@@ -5,7 +5,6 @@ import {AntseedEpochShareRewards} from "../emissions/AntseedEpochShareRewards.so
 
 interface IAntseedReferralUsageAccounting {
     function currentEpoch() external view returns (uint256);
-    function buyerUsageTotal(address buyer) external view returns (uint256 points, uint256 weightedPoints);
 }
 
 interface IAntseedReferralDeposits {
@@ -86,12 +85,11 @@ contract AntseedReferrals is AntseedEpochShareRewards {
     ///         buyer's first attributed settlement; the referrer value was
     ///         signed by the buyer via metadataHash.
     function bindReferral(address buyer, address referrer) external whenNotPaused {
-        if (msg.sender != binder || binder == address(0)) revert NotBinder();
+        if (msg.sender != binder) revert NotBinder();
         if (buyer == address(0) || referrer == address(0)) revert InvalidAddress();
         if (referrerOf[buyer] != address(0)) revert ReferralAlreadyBound();
 
-        address operator = deposits.getOperator(buyer);
-        if (referrer == buyer || (operator != address(0) && referrer == operator)) revert SelfReferral();
+        if (referrer == buyer || referrer == deposits.getOperator(buyer)) revert SelfReferral();
 
         uint256 epoch = usageAccounting.currentEpoch();
         referrerOf[buyer] = referrer;
@@ -105,7 +103,7 @@ contract AntseedReferrals is AntseedEpochShareRewards {
 
     /// @notice Mint a referrer's share of an epoch's bucket to the referrer.
     function claim(address referrer, uint256 epoch) external nonReentrant whenNotPaused {
-        _claimReferrer(referrer, epoch);
+        _claimReferrer(referrer, epoch, attributionUsage.referrerEpochPoints(epoch, referrer));
     }
 
     /// @notice Claim several epochs at once; epochs with nothing to pay are skipped.
@@ -114,7 +112,7 @@ contract AntseedReferrals is AntseedEpochShareRewards {
         for (uint256 i = 0; i < epochs.length; i++) {
             uint256 points = attributionUsage.referrerEpochPoints(epochs[i], referrer);
             if (_pending(epochs[i], _key(referrer), points) == 0) continue;
-            paid += _claimReferrer(referrer, epochs[i]);
+            paid += _claimReferrer(referrer, epochs[i], points);
         }
         if (paid == 0) revert NothingToClaim();
     }
@@ -130,8 +128,7 @@ contract AntseedReferrals is AntseedEpochShareRewards {
 
     // ─── Internal ────────────────────────────────────────────────────
 
-    function _claimReferrer(address referrer, uint256 epoch) internal returns (uint256 amount) {
-        uint256 points = attributionUsage.referrerEpochPoints(epoch, referrer);
+    function _claimReferrer(address referrer, uint256 epoch, uint256 points) internal returns (uint256 amount) {
         uint256 total;
         (amount, total) = _claimShare(epoch, _key(referrer), points, referrer);
         emit ReferralRewardClaimed(referrer, epoch, points, total, amount);

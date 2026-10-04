@@ -108,15 +108,14 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         // even with a zero client for the same reason.
         (address referrer, bytes32 clientId) = _decodeAttribution(metadata);
         _forwardClient(buyer, uint256(clientId));
-        if (referrer != address(0)) {
-            _forwardReferral(buyer, referrer);
-        }
+        if (referrer != address(0)) _forwardReferral(buyer, referrer);
 
         // Token stats: a blob too short for the four legacy head words is
         // malformed for stats purposes (the writer's try/catch would swallow
         // a revert here, but only after the forwards above have landed).
         if (metadata.length < LEGACY_STATIC_WORDS * 32) return;
-        (uint256 cumulativeInputTokens, uint256 cumulativeOutputTokens, uint256 cumulativeRequestCount) = _decodeMetadata(metadata);
+        (, uint256 cumulativeInputTokens, uint256 cumulativeOutputTokens, uint256 cumulativeRequestCount) =
+            abi.decode(metadata, (uint256, uint256, uint256, uint256));
 
         ChannelMetadataSnapshot storage snapshot = _channelSnapshots[channelId];
         if (
@@ -153,15 +152,6 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     }
 
     // ─── Internal Helpers ───────────────────────────────────────────
-    function _decodeMetadata(bytes calldata metadata)
-        internal
-        pure
-        returns (uint256 cumulativeInputTokens, uint256 cumulativeOutputTokens, uint256 cumulativeRequestCount)
-    {
-        (, cumulativeInputTokens, cumulativeOutputTokens, cumulativeRequestCount) =
-            abi.decode(metadata, (uint256, uint256, uint256, uint256));
-    }
-
     /**
      * @dev The attribution tail grows the ABI head by exactly two words, so
      *      its presence is detected from the services-array offset: the offset
@@ -183,8 +173,8 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
         clientId = bytes32(metadata[offsetWord + 64:offsetWord + 96]); // ERC-8004 agent id of the client
     }
 
-    /// @dev Best effort: a rejected binding (already bound, prior usage,
-    ///      self-referral, paused) must never block settlement.
+    /// @dev Best effort: a rejected binding (already bound, self-referral,
+    ///      paused) must never block settlement.
     function _forwardReferral(address buyer, address referrer) internal {
         address sink = referrals;
         if (sink == address(0)) return;

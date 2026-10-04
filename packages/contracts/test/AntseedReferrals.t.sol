@@ -9,20 +9,6 @@ import { EmissionsGateMock } from "./mocks/EmissionsGateMock.sol";
 
 contract ReferralUsageAccountingMock {
     uint256 public currentEpoch = 10;
-    mapping(address => uint256) public usage;
-
-    function setCurrentEpoch(uint256 epoch) external {
-        currentEpoch = epoch;
-    }
-
-    function setUsage(address buyer, uint256 points) external {
-        usage[buyer] = points;
-    }
-
-    function buyerUsageTotal(address buyer) external view returns (uint256 points, uint256 weightedPoints) {
-        points = usage[buyer];
-        weightedPoints = points;
-    }
 }
 
 contract ReferralDepositsMock {
@@ -159,8 +145,6 @@ contract AntseedReferralsTest is Test {
     }
 
     function test_bindRejectsSelfReferralAndRebinding() public {
-        // Prior usage is no bar: the ledger only credits usage after the bind.
-        accounting.setUsage(buyer, 1);
         vm.prank(binder);
         vm.expectRevert(AntseedReferrals.SelfReferral.selector);
         referrals.bindReferral(buyer, buyer);
