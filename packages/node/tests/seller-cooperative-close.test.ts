@@ -221,8 +221,8 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     manager.recordSpend(CHANNEL_ID, 400_000n);
 
     // Attribution confirmed after the last advancing auth: same cumulative,
-    // metadata now carries the referrer / client tail.
-    const attributed = { ...metadataFor(400_000n), attribution: { referrer: '0x' + '11'.repeat(20) } };
+    // metadata now carries the client / invite tail.
+    const attributed = { ...metadataFor(400_000n), attribution: { clientId: '0x' + '00'.repeat(31) + '2a' } };
     const request = await buildCloseRequest(buyer, 400_000n, attributed);
     const result = await manager.handleCloseChannelRequest(buyer.peerId, request, mux);
 
@@ -237,7 +237,7 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
     manager.recordSpend(CHANNEL_ID, 400_000n);
 
-    const attributed = { ...metadataFor(400_000n), attribution: { referrer: '0x' + '11'.repeat(20) } };
+    const attributed = { ...metadataFor(400_000n), attribution: { clientId: '0x' + '00'.repeat(31) + '2a' } };
     const resigned = await buildSpendingAuth(buyer, 400_000n, attributed);
     expect(await manager.handleSpendingAuth(buyer.peerId, resigned, mux)).toBe('accepted');
     expect(store.getChannel(CHANNEL_ID)!.latestMetadata).toBe(resigned.metadata);

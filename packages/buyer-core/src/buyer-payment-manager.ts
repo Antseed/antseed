@@ -337,7 +337,7 @@ export class BuyerPaymentManager {
     return this._config.disableMetadataV2Services === true;
   }
 
-  /** Replace the referrer / client attribution appended to future signed metadata. */
+  /** Replace the client / invite attribution appended to future signed metadata. */
   setAttribution(attribution: UsageAttribution | undefined): void {
     this._attribution = attribution;
   }
@@ -1023,7 +1023,7 @@ export class BuyerPaymentManager {
 
     // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig.
     // The hash must cover the metadata actually sent: with attribution set the
-    // zero metadata carries a referrer / client tail, so it is not ZERO_METADATA_HASH.
+    // zero metadata carries a client / invite tail, so it is not ZERO_METADATA_HASH.
     paymentMux.sendSpendingAuth({
       channelId,
       cumulativeAmount: '0',

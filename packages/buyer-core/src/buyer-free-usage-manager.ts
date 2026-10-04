@@ -85,7 +85,7 @@ export class BuyerFreeUsageManager {
     return this._config.disableMetadataV2Services === true;
   }
 
-  /** Replace the referrer / client attribution appended to future signed metadata. */
+  /** Replace the client / invite attribution appended to future signed metadata. */
   setAttribution(attribution: UsageAttribution | undefined): void {
     this._attribution = attribution;
   }

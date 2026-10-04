@@ -90,8 +90,41 @@ export { UsageAccountingClient } from './evm/usage-accounting-client.js';
 export type { UsageAccountingClientConfig, UsagePoints, UsageTotals } from './evm/usage-accounting-client.js';
 export { UsageRewardsClient } from './evm/usage-rewards-client.js';
 export type { UsageRewardsClientConfig, DynamicUsageConfig } from './evm/usage-rewards-client.js';
-export { ReferralsClient } from './evm/referrals-client.js';
-export type { ReferralsClientConfig, ReferralEpochReward } from './evm/referrals-client.js';
+export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type ReferralEpochReward, type InviteFailure, type InvitePreview } from './evm/referrals-client.js';
+export {
+  INVITE_DEEP_LINK_BASE,
+  INVITE_LINK_BASE,
+  INVITE_VALIDITY_EPOCHS,
+  REFEREE_BONUS_EPOCHS,
+  checkInvite,
+  decodeInvite,
+  encodeInvite,
+  inviteDigest,
+  inviteExpiryEpoch,
+  inviteFailureMessage,
+  inviteLink,
+  nextInviteIndex,
+  recoverInviter,
+  signInvite,
+  type InviteCheck,
+  type InviteDomain,
+} from './invites.js';
+export {
+  clearReferralInvite,
+  issuedInviteIndices,
+  normalizeReferrer,
+  pendingInvite,
+  readReferralState,
+  recordIssuedInvite,
+  referralStateMtimeMs,
+  saveReferralInvite,
+  syncReferralState,
+  writeReferralState,
+  type ReferralLookup,
+  type ReferralState,
+} from './referral-state.js';
+export { ClientRewardsClient } from './evm/client-rewards-client.js';
+export type { ClientRewardsClientConfig, ClientEpochReward } from './evm/client-rewards-client.js';
 export { SellerPoolsClient, estimateEarlyExit, positionState, projectedEarlyExitSlashBps } from './evm/seller-pools-client.js';
 export type { SellerPoolsClientConfig, SellerPoolPosition, EarlyExitEstimate, SellerPoolConfig, PositionPowerSegment, PositionState } from './evm/seller-pools-client.js';
 export { SellerPoolsRewardsClient } from './evm/seller-pools-rewards-client.js';

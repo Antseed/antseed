@@ -70,6 +70,8 @@ export interface ChainConfig {
   depositRelayAddress?: string;
   /** AntseedReferrals contract: emission-funded referral rewards (bindings land via AntseedStatsV2). */
   referralsAddress?: string;
+  /** AntseedClientRewards contract: the builders program, emission rewards per client ERC-8004 agent. */
+  clientRewardsAddress?: string;
   /**
    * ERC-8004 agent ids registered for the first-party clients. Buyers append
    * their client's id to signed settlement metadata so AntseedClientUsage can
@@ -197,6 +199,7 @@ export function resolveChainConfig(overrides?: {
   pointsPolicyRegistryAddress?: string;
   depositRelayAddress?: string;
   referralsAddress?: string;
+  clientRewardsAddress?: string;
 }): ChainConfig {
   const base = getChainConfig(overrides?.chainId);
   // If the caller overrode the primary rpcUrl without providing their own
@@ -233,6 +236,7 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.pointsPolicyRegistryAddress ? { pointsPolicyRegistryAddress: overrides.pointsPolicyRegistryAddress } : {}),
     ...(overrides?.depositRelayAddress ? { depositRelayAddress: overrides.depositRelayAddress } : {}),
     ...(overrides?.referralsAddress ? { referralsAddress: overrides.referralsAddress } : {}),
+    ...(overrides?.clientRewardsAddress ? { clientRewardsAddress: overrides.clientRewardsAddress } : {}),
   };
 }
 

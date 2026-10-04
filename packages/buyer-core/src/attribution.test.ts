@@ -3,17 +3,15 @@ import { clientIdFromAgentId, decodeMetadataAttribution, encodeMetadata, ZERO_ME
 import { advanceUsageMetadata } from './channel-usage-accounting.js';
 
 describe('usage attribution through metadata advancement', () => {
-  const attribution = { referrer: `0x${'11'.repeat(20)}`, clientId: clientIdFromAgentId(42) };
+  const invite = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
+  const attribution = { clientId: clientIdFromAgentId(42), invite };
   const delta = { amount: 10n, inputTokens: 5n, cachedInputTokens: 0n, outputTokens: 3n, requests: 1n, outputImages: 0n };
 
   it('carries attribution from the previous metadata into the advanced one', () => {
     const first = advanceUsageMetadata({ ...ZERO_METADATA, attribution }, 'openai:gpt-4o', delta);
     const second = advanceUsageMetadata(first, 'openai:gpt-4o', delta);
     expect(second.attribution).toEqual(attribution);
-    expect(decodeMetadataAttribution(encodeMetadata(second))).toEqual({
-      referrer: '0x1111111111111111111111111111111111111111',
-      clientId: attribution.clientId,
-    });
+    expect(decodeMetadataAttribution(encodeMetadata(second))).toEqual({ clientId: attribution.clientId, invite });
     expect(second.services?.length).toBe(1);
     expect(second.cumulativeRequestCount).toBe(2n);
   });

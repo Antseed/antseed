@@ -167,7 +167,40 @@ export { SellerRegistryClient, SellerRegistrationVerificationError, type SellerR
 export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards, type RewardTransactionRecorder } from './payments/reward-claims.js';
 export { PositionInitClient, type PositionInitClientConfig } from './payments/evm/position-init-client.js';
 export { EmissionsGateClient, GATE_MINTERS, gateMinterId, type EmissionsGateClientConfig, type GateMinter } from './payments/evm/emissions-gate-client.js';
-export { ReferralsClient, type ReferralsClientConfig, type ReferralEpochReward } from './payments/evm/referrals-client.js';
+export { ReferralsClient, inviteFailureOf, type ReferralsClientConfig, type ReferralEpochReward, type InviteFailure, type InvitePreview } from './payments/evm/referrals-client.js';
+export {
+  INVITE_DEEP_LINK_BASE,
+  INVITE_LINK_BASE,
+  INVITE_VALIDITY_EPOCHS,
+  REFEREE_BONUS_EPOCHS,
+  checkInvite,
+  decodeInvite,
+  encodeInvite,
+  inviteDigest,
+  inviteExpiryEpoch,
+  inviteFailureMessage,
+  inviteLink,
+  nextInviteIndex,
+  recoverInviter,
+  signInvite,
+  type InviteCheck,
+  type InviteDomain,
+} from './payments/invites.js';
+export {
+  clearReferralInvite,
+  issuedInviteIndices,
+  normalizeReferrer,
+  pendingInvite,
+  readReferralState,
+  recordIssuedInvite,
+  referralStateMtimeMs,
+  saveReferralInvite,
+  syncReferralState,
+  writeReferralState,
+  type ReferralLookup,
+  type ReferralState,
+} from './payments/referral-state.js';
+export { ClientRewardsClient, type ClientRewardsClientConfig, type ClientEpochReward } from './payments/evm/client-rewards-client.js';
 export { WashTradingRegistryClient, validateSellerProofArtifact, sellerProofId, type WashTradingRegistryClientConfig, type WashTradingSellerStatus, type WashTradingProofStatus, type WashTradingRegistryConfig, type SellerProofArtifact, type SellerProofSubmissionStep, type BlockAuthenticationChunk, type BlockReference } from './payments/evm/wash-trading-registry-client.js';
 export { PointsPolicyRegistryClient, type PointsPolicyRegistryClientConfig } from './payments/evm/points-policy-registry-client.js';
 export { SellerRewardsPoolClient, type SellerRewardsPoolClientConfig } from './payments/evm/seller-rewards-pool-client.js';
@@ -215,6 +248,9 @@ export {
   computeMetadataHash,
   encodeMetadata,
   decodeMetadataAttribution,
+  attributionTailAbi,
+  makeReferralsDomain,
+  INVITE_TYPES,
   clientIdFromAgentId,
   clientAgentId,
   computeFreeUsageMetadataHash,
@@ -238,6 +274,7 @@ export type {
   SignedReceiveAuthorization,
   SpendingAuthMetadata,
   UsageAttribution,
+  ReferralInvite,
   SpendingAuthServiceMetadata,
   FreeUsageMetadata,
   FreeUsageServiceMetadata,

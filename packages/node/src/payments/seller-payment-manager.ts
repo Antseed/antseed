@@ -726,7 +726,7 @@ export class SellerPaymentManager {
             return 'rejected';
           }
           // Same cumulative, different metadata: the buyer re-signed after
-          // its attribution changed (an inviter confirmed mid-session). The
+          // its attribution changed (an invite redeemed mid-session). The
           // seller settles with whatever blob it holds, so keep the fresher one.
           this._adoptResignedAuth(channelId, {
             spendingAuthSig: payload.spendingAuthSig,

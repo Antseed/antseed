@@ -218,8 +218,9 @@ export interface NodePaymentsConfig {
   referralsAddress?: string;
   /**
    * Buyer-side attribution appended to every signed SpendingAuth / FreeUsage
-   * metadata blob: the referrer wallet (bound on-chain by AntseedStats on the
-   * buyer's first settlement) and the bytes32 client id of this software.
+   * metadata blob: the bytes32 client id of this software and, until the
+   * referral is bound, the invite (bound on-chain by AntseedStatsV2 on the
+   * buyer's first settlement that carries it).
    */
   attribution?: UsageAttribution;
 }
@@ -2326,7 +2327,7 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
-   * Update the referrer / client attribution appended to every buyer-signed
+   * Update the client / invite attribution appended to every buyer-signed
    * settlement metadata blob (see NodePaymentsConfig.attribution). Takes
    * effect on the next signed auth; nothing on-chain is touched here.
    */
