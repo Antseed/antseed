@@ -102,7 +102,13 @@
     overflow-wrap: anywhere;
     line-height: 18px;
   }
-  .icon { flex-shrink: 0; }
+  /* With a marked token, wrap the command at spaces and break only the token. */
+  .cmd:has(.token) { overflow-wrap: normal; }
+  .token { word-break: break-all; }
+  /* Prompt and copy icon sit on the first line of a wrapped command. */
+  .chip { align-items: flex-start; }
+  .prompt { line-height: 18px; }
+  .icon { flex-shrink: 0; margin-top: 1px; }
 }
 
 /* On the ink closing bands */

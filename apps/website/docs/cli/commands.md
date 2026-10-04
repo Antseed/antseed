@@ -68,6 +68,18 @@ antseed ants verify proof <proofId>   Proof submission progress
 Every dashboard action maps to one of these commands; the dashboard runs on
 `127.0.0.1` and signs with the node wallet.
 
+### Referrals
+
+```bash title="referral"
+antseed referral invite               Create a single-use invite link from this week's quota (valid 4 weeks, new wallets only)
+antseed referral redeem <invite|link> Use an invite for 12 weeks of bonus $ANTS; binds with your first paid or free request
+antseed referral status               Your inviter and invite bonus, invites left this week, and the people you invited
+```
+
+Each command takes `--json`. Invites come from your previous week's activity
+(none below 1 USDC of buying or selling; otherwise 3 plus one per 10 USDC, up
+to 20). See the [referrals guide](/docs/guides/referrals).
+
 ### Buying (consuming)
 
 ```bash title="buyer"
