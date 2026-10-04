@@ -1793,7 +1793,7 @@ export class AntseedNode extends EventEmitter {
           maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
           maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
-          ...(payments.attribution ? { attribution: payments.attribution } : {}),
+          attribution: payments.attribution,
           dataDir: paymentsDir,
         };
         this._buyerPaymentManager = new BuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore, this._sellerAddressResolver ?? undefined);
@@ -2060,7 +2060,7 @@ export class AntseedNode extends EventEmitter {
             freeUsageContractAddress: freeUsageConfig.freeUsageContractAddress,
             defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900,
             disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
-            ...(payments.attribution ? { attribution: payments.attribution } : {}),
+            attribution: payments.attribution,
           },
           this._sellerAddressResolver ?? undefined,
           this._channelStore ?? undefined,
@@ -2326,16 +2326,6 @@ export class AntseedNode extends EventEmitter {
   }
 
   /**
-   * Offer a signed deposit-sweep request to connected relayers ONE AT A TIME.
-   * Broadcasting to everyone makes relayers race the same EIP-3009 nonce and
-   * the losers burn gas on reverted transactions; offering sequentially gives
-   * each relayer an uncontested window. Candidates are shuffled so no single
-   * relayer always gets first refusal. A relayer that reports 'rejected' (or
-   * stays silent past `perPeerTimeoutMs`) forfeits its turn; 'submitted' or
-   * 'confirmed' ends the round. Progress still arrives as 'sweep:receipt'
-   * events, and the wire protocol is unchanged — relayers need no upgrade.
-   */
-  /**
    * Update the referrer / client attribution appended to every buyer-signed
    * settlement metadata blob (see NodePaymentsConfig.attribution). Takes
    * effect on the next signed auth; nothing on-chain is touched here.
@@ -2345,6 +2335,16 @@ export class AntseedNode extends EventEmitter {
     this._buyerFreeUsageManager?.setAttribution(attribution);
   }
 
+  /**
+   * Offer a signed deposit-sweep request to connected relayers ONE AT A TIME.
+   * Broadcasting to everyone makes relayers race the same EIP-3009 nonce and
+   * the losers burn gas on reverted transactions; offering sequentially gives
+   * each relayer an uncontested window. Candidates are shuffled so no single
+   * relayer always gets first refusal. A relayer that reports 'rejected' (or
+   * stays silent past `perPeerTimeoutMs`) forfeits its turn; 'submitted' or
+   * 'confirmed' ends the round. Progress still arrives as 'sweep:receipt'
+   * events, and the wire protocol is unchanged — relayers need no upgrade.
+   */
   async dispatchSweepRequest(
     payload: SweepRequestPayload,
     opts?: { perPeerTimeoutMs?: number },

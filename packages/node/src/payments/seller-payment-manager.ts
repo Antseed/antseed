@@ -1839,12 +1839,11 @@ export class SellerPaymentManager {
    * different metadata blob. The buyer only re-signs an unchanged cumulative
    * when its attribution tail changed, and that tail reaches chain solely
    * through the metadata the seller submits with settle()/close().
-   * Returns true when the held auth was replaced.
    */
-  private _adoptResignedAuth(channelId: string, auth: LatestAuth): boolean {
+  private _adoptResignedAuth(channelId: string, auth: LatestAuth): void {
     const current = this._latestAuth.get(channelId);
-    if (!current || current.cumulativeAmount !== auth.cumulativeAmount) return false;
-    if (current.metadataHash.toLowerCase() === auth.metadataHash.toLowerCase()) return false;
+    if (!current || current.cumulativeAmount !== auth.cumulativeAmount) return;
+    if (current.metadataHash.toLowerCase() === auth.metadataHash.toLowerCase()) return;
 
     this._latestAuth.set(channelId, auth);
     const stored = this._channelStore.getChannel(channelId);
@@ -1856,7 +1855,6 @@ export class SellerPaymentManager {
       this._channelStore.upsertChannel(stored);
     }
     debugLog(`[SellerPayment] Adopted re-signed metadata at cumulative=${auth.cumulativeAmount} for ${channelId.slice(0, 18)}...`);
-    return true;
   }
 
   // ── CloseRequested handling ───────────────────────────────────

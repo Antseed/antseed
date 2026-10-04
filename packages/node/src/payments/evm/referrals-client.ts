@@ -64,8 +64,8 @@ export class ReferralsClient extends BaseEvmClient {
 
   /** Buyers bound to `referrer`, from ReferralBound logs. */
   async referredBuyers(referrer: string, fromBlock: number | bigint = 0): Promise<string[]> {
-    const filter = this.contract().filters['ReferralBound']!(null, referrer);
-    const logs = await this.contract().queryFilter(filter, fromBlock);
+    const contract = this.contract();
+    const logs = await contract.queryFilter(contract.filters['ReferralBound']!(null, referrer), fromBlock);
     const buyers = new Set<string>();
     for (const log of logs) {
       if ('args' in log && typeof log.args?.[0] === 'string') buyers.add(log.args[0]);

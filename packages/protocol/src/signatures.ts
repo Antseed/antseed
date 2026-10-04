@@ -194,8 +194,6 @@ export function clientAgentId(clientId: string): bigint {
   return BigInt(clientId);
 }
 
-const ATTRIBUTION_ABI_TYPES = ['address', 'bytes32'];
-
 /**
  * ABI types and values for a metadata blob's optional attribution tail.
  * Returns empty arrays when nothing is set, so the encoding is unchanged.
@@ -205,7 +203,7 @@ function attributionTail(attribution: UsageAttribution | undefined): { types: st
   const clientId = attribution?.clientId ?? ZeroHash;
   if (!/^0x[0-9a-fA-F]{64}$/.test(clientId)) throw new Error('clientId must be a bytes32 hex string');
   if (referrer === ZeroAddress && clientId === ZeroHash) return { types: [], values: [] };
-  return { types: ATTRIBUTION_ABI_TYPES, values: [referrer, clientId] };
+  return { types: ['address', 'bytes32'], values: [referrer, clientId] };
 }
 
 /**
