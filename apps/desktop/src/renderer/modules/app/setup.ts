@@ -34,10 +34,7 @@ export function initAppSetupModule({ uiState, bridge }: AppSetupModuleOptions) {
 
   // Ask once per launch whether a referral candidate is waiting. The main
   // process persists the answer, so this is a no-op after the user decided.
-  void bridge.referralGetStatus?.().then((status) => {
-    uiState.referralSetup = status;
-    notifyUiStateChanged();
-  }).catch(() => {});
+  void bridge.referralGetStatus?.().then(setReferralSetupStatus).catch(() => {});
 
   const unsubStep = bridge.onAppSetupStep?.((data) => {
     uiState.appSetupStep = data.label;

@@ -13,6 +13,7 @@ type ReferralObservation = { referrer: string; seenAt: number };
 type ReferralRecord = { observations: ReferralObservation[]; expiresAt: number };
 
 const ATTRIBUTION_TTL_SECONDS = 48 * 60 * 60;
+const ATTRIBUTION_TTL_MS = ATTRIBUTION_TTL_SECONDS * 1000;
 const MAX_OBSERVATIONS = 4;
 const ADDRESS_PATTERN = /^0x[0-9a-fA-F]{40}$/;
 
@@ -41,16 +42,20 @@ async function attributionKey(request: Request, secret: string): Promise<string 
 }
 
 function parseRecord(raw: string | null, now: number): ReferralRecord {
-  if (!raw) return { observations: [], expiresAt: now + ATTRIBUTION_TTL_SECONDS * 1000 };
   try {
-    const parsed = JSON.parse(raw) as ReferralRecord;
-    if (!Array.isArray(parsed.observations) || parsed.expiresAt <= now) {
-      return { observations: [], expiresAt: now + ATTRIBUTION_TTL_SECONDS * 1000 };
-    }
-    return parsed;
+    const parsed = JSON.parse(raw ?? '') as ReferralRecord;
+    if (Array.isArray(parsed.observations) && parsed.expiresAt > now) return parsed;
   } catch {
-    return { observations: [], expiresAt: now + ATTRIBUTION_TTL_SECONDS * 1000 };
+    // Missing or corrupt record: start fresh.
   }
+  return { observations: [], expiresAt: now + ATTRIBUTION_TTL_MS };
+}
+
+function jsonResponse(body: unknown): Response {
+  return new Response(JSON.stringify(body), {
+    status: 200,
+    headers: { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' },
+  });
 }
 
 export async function recordReferralDownload(
@@ -70,7 +75,7 @@ export async function recordReferralDownload(
     .slice(0, MAX_OBSERVATIONS);
   await env.REFERRAL_ATTRIBUTION.put(
     key,
-    JSON.stringify({ observations, expiresAt: now + ATTRIBUTION_TTL_SECONDS * 1000 } satisfies ReferralRecord),
+    JSON.stringify({ observations, expiresAt: now + ATTRIBUTION_TTL_MS } satisfies ReferralRecord),
     { expirationTtl: ATTRIBUTION_TTL_SECONDS },
   );
 }
@@ -88,19 +93,16 @@ export async function matchReferral(
   env: ReferralAttributionEnv,
   now = Date.now(),
 ): Promise<Response> {
-  const headers = { 'cache-control': 'no-store', 'content-type': 'application/json; charset=utf-8' };
-  if (!env.REFERRAL_ATTRIBUTION || !env.REFERRAL_HASH_SECRET) {
-    return new Response(JSON.stringify({ match: null }), { status: 200, headers });
-  }
+  const noMatch = jsonResponse({ match: null });
+  if (!env.REFERRAL_ATTRIBUTION || !env.REFERRAL_HASH_SECRET) return noMatch;
   const key = await attributionKey(request, env.REFERRAL_HASH_SECRET);
-  if (!key) return new Response(JSON.stringify({ match: null }), { status: 200, headers });
+  if (!key) return noMatch;
 
   const record = parseRecord(await env.REFERRAL_ATTRIBUTION.get(key), now);
-  const latest = record.observations[0];
-  if (!latest) return new Response(JSON.stringify({ match: null }), { status: 200, headers });
+  const [latest, ...remaining] = record.observations;
+  if (!latest) return noMatch;
   const distinctReferrers = new Set(record.observations.map(item => item.referrer)).size;
 
-  const remaining = record.observations.filter(item => item !== latest);
   if (remaining.length === 0) {
     await env.REFERRAL_ATTRIBUTION.delete(key);
   } else {
@@ -110,12 +112,12 @@ export async function matchReferral(
       { expirationTtl: Math.max(60, Math.ceil((record.expiresAt - now) / 1000)) },
     );
   }
-  return new Response(JSON.stringify({
+  return jsonResponse({
     match: {
       referrer: latest.referrer,
       confidence: distinctReferrers === 1 ? 'probable' : 'low',
       matchedBy: 'network',
       expiresAt: record.expiresAt,
     },
-  }), { status: 200, headers });
+  });
 }

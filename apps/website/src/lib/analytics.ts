@@ -125,7 +125,7 @@ export function captureReferrer(): void {
   try { window.sessionStorage.setItem(REFERRAL_STORAGE_KEY, referrer); } catch { /* storage may be disabled */ }
 }
 
-export function withReferralAttribution(href: string): string {
+function withReferralAttribution(href: string): string {
   if (typeof window === 'undefined') return href;
   try {
     const url = new URL(href);
