@@ -13,17 +13,20 @@ import { clientIdFromAgentId, type ReferralsClient } from '@antseed/node'
  *             ↘ declined
  */
 export type ReferralState = {
-  state: 'candidate' | 'accepted' | 'declined' | 'bound'
+  state: 'none' | 'candidate' | 'accepted' | 'declined' | 'bound'
   referrer?: string
   confidence?: 'probable' | 'low'
   /** ISO timestamp of the last transition. */
   updatedAt?: string
 }
 
-/** First-party client kinds with an ERC-8004 agent id in chain config. */
-export type ClientKind = 'cli' | 'desktop'
+type ClientAgentOptions = {
+  clientAgentId?: number | undefined
+  /** First-party client agent ids from chain config. */
+  clientAgentIds?: { cli?: number; desktop?: number } | undefined
+}
 
-export function referralStatePath(dataDir: string): string {
+function referralStatePath(dataDir: string): string {
   return join(dataDir, 'referral.json')
 }
 
@@ -40,8 +43,7 @@ export async function writeReferralState(dataDir: string, state: ReferralState):
   const filePath = referralStatePath(dataDir)
   await mkdir(dirname(filePath), { recursive: true })
   const temporaryPath = `${filePath}.tmp`
-  const body = { ...state, updatedAt: new Date().toISOString() }
-  await writeFile(temporaryPath, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 })
+  await writeFile(temporaryPath, `${JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 })
   await rename(temporaryPath, filePath)
 }
 
@@ -71,30 +73,23 @@ export function pendingReferrer(state: ReferralState | null): string | null {
  * client kind (ANTSEED_CLIENT_KIND, set to "desktop" by Desktop; "cli"
  * otherwise). Without any of those the metadata carries no client word.
  */
-export function resolveBuyerAttribution(options: {
+export function resolveBuyerAttribution(options: ClientAgentOptions & {
   referralState: ReferralState | null
-  clientAgentId?: number | undefined
-  clientAgentIds?: { cli?: number; desktop?: number } | undefined
   env?: NodeJS.ProcessEnv
 }): { referrer?: string; clientId?: string } {
-  const env = options.env ?? process.env
   const referrer = pendingReferrer(options.referralState)
-  const agentId = resolveClientAgentId(options, env)
+  const agentId = resolveClientAgentId(options, options.env ?? process.env)
   return {
     ...(referrer ? { referrer } : {}),
     ...(agentId ? { clientId: clientIdFromAgentId(agentId) } : {}),
   }
 }
 
-function resolveClientAgentId(
-  options: { clientAgentId?: number | undefined; clientAgentIds?: { cli?: number; desktop?: number } | undefined },
-  env: NodeJS.ProcessEnv,
-): number | undefined {
+function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEnv): number | undefined {
   const fromEnv = Number.parseInt(env['ANTSEED_CLIENT_AGENT_ID'] ?? '', 10)
   if (Number.isInteger(fromEnv) && fromEnv > 0) return fromEnv
   if (options.clientAgentId && options.clientAgentId > 0) return options.clientAgentId
-  const kind: ClientKind = env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli'
-  const fromChain = options.clientAgentIds?.[kind]
+  const fromChain = options.clientAgentIds?.[env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli']
   return fromChain && fromChain > 0 ? fromChain : undefined
 }
 

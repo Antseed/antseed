@@ -26,7 +26,7 @@ export type ReferralSetupStatus = {
 };
 
 type StoredReferralState = {
-  state: 'candidate' | 'accepted' | 'declined' | 'bound';
+  state: 'none' | 'candidate' | 'accepted' | 'declined' | 'bound';
   referrer?: string;
   confidence?: ReferralConfidence;
   updatedAt?: string;
@@ -56,13 +56,14 @@ async function readState(): Promise<StoredReferralState | null> {
   }
 }
 
-async function writeState(state: StoredReferralState): Promise<void> {
+async function saveState(state: StoredReferralState): Promise<StoredReferralState> {
   const filePath = statePath();
   await mkdir(path.dirname(filePath), { recursive: true });
   const temporaryPath = `${filePath}.tmp`;
   const body = { ...state, updatedAt: new Date().toISOString() };
   await writeFile(temporaryPath, `${JSON.stringify(body, null, 2)}\n`, { mode: 0o600 });
   await rename(temporaryPath, filePath);
+  return state;
 }
 
 async function referralsClient(): Promise<ReferralsClient | null> {
@@ -88,12 +89,6 @@ async function boundReferrer(client: ReferralsClient): Promise<string | null> {
   }
 }
 
-async function markBound(referrer: string): Promise<StoredReferralState> {
-  const state: StoredReferralState = { state: 'bound', referrer };
-  await writeState(state);
-  return state;
-}
-
 export async function getReferralSetupStatus(): Promise<ReferralSetupStatus> {
   const client = await referralsClient();
   // Referrals are dark on this network: never show the card.
@@ -102,7 +97,7 @@ export async function getReferralSetupStatus(): Promise<ReferralSetupStatus> {
   const stored = await readState();
   if (stored?.state === 'accepted') {
     const bound = await boundReferrer(client);
-    return bound ? markBound(bound) : stored;
+    return bound ? saveState({ state: 'bound', referrer: bound }) : stored;
   }
   if (stored) return stored;
 
@@ -113,23 +108,22 @@ export async function getReferralSetupStatus(): Promise<ReferralSetupStatus> {
       match?: { referrer?: string; confidence?: ReferralConfidence } | null;
     };
     const referrer = normalizeReferrer(payload.match?.referrer);
-    if (!referrer) return NO_REFERRAL;
-    const candidate: StoredReferralState = {
+    // A definitive "no match" is remembered: each match consumes the
+    // network's single-use candidate, so an install must ask only once or it
+    // would take candidates meant for new installs on the same network.
+    if (!referrer) return await saveState({ state: 'none' });
+    return await saveState({
       state: 'candidate',
       referrer,
       confidence: payload.match?.confidence === 'low' ? 'low' : 'probable',
-    };
-    await writeState(candidate);
-    return candidate;
+    });
   } catch {
     return NO_REFERRAL;
   }
 }
 
 export async function declineReferral(): Promise<ReferralSetupStatus> {
-  const state: StoredReferralState = { state: 'declined' };
-  await writeState(state);
-  return state;
+  return saveState({ state: 'declined' });
 }
 
 export async function acceptReferral(rawReferrer: string): Promise<ReferralSetupStatus> {
@@ -143,10 +137,7 @@ export async function acceptReferral(rawReferrer: string): Promise<ReferralSetup
       throw new Error('A wallet cannot refer itself.');
     }
     const bound = await boundReferrer(client);
-    if (bound) return markBound(bound);
-    const state: StoredReferralState = { state: 'accepted', referrer };
-    await writeState(state);
-    return state;
+    return await saveState(bound ? { state: 'bound', referrer: bound } : { state: 'accepted', referrer });
   } catch (error) {
     return { state: 'error', referrer, error: error instanceof Error ? error.message : String(error) };
   }
