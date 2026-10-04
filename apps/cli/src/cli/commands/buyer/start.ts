@@ -7,11 +7,11 @@ import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, DepositsClient, ReferralsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, readReferralState, referralStateMtimeMs, resolveChainConfig, syncReferralState } from '@antseed/node'
 import type { NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { readReferralState, referralStateMtimeMs, resolveBuyerAttribution, syncReferralState } from '../../referral-state.js'
+import { referralLookup as buyerReferralLookup, resolveBuyerAttribution } from '../../referral-state.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -295,17 +295,12 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       })
       const settlementEnabled = settlementEnv ?? true
 
-      // Referrer / client attribution appended to every buyer-signed
-      // settlement metadata blob. AntseedStats binds the referrer on-chain at
-      // the first settlement (paid or free); the daemon only has to carry it.
-      const referralsClient = chainConfig.referralsAddress
-        ? new ReferralsClient({
-            rpcUrl: chainConfig.rpcUrl,
-            ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
-            contractAddress: chainConfig.referralsAddress,
-            evmChainId: chainConfig.evmChainId,
-          })
-        : null
+      // Client / invite attribution appended to every buyer-signed settlement
+      // metadata blob. AntseedStatsV2 binds a redeemed invite on-chain at the
+      // first settlement (paid or free) that carries it; the daemon only has
+      // to carry it. Whether it is bound yet comes from Antscan, not an RPC read.
+      const explorerApiUrl = cryptoOverrides?.explorerApiUrl ?? chainConfig.explorerApiUrl
+      const referralLookup = buyerReferralLookup({ referralsAddress: chainConfig.referralsAddress, explorerApiUrl })
       const attributionOptions = {
         clientAgentId: effectiveBuyerConfig.clientAgentId,
         clientAgentIds: chainConfig.clientAgentIds,
@@ -430,29 +425,29 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         process.exit(1)
       }
 
-      // Keep the signed attribution in step with referral.json (Desktop
-      // writes it when the user confirms an inviter, possibly after the daemon
-      // started) and drop the referrer once the chain shows it bound. The
-      // file's mtime short-circuits the poll only while no referrer is being
-      // carried: binding happens on-chain without touching the file, and every
-      // settlement that still carries a bound referrer costs the seller a
-      // reverting bindReferral call.
+      // Keep the signed attribution in step with referral.json (`antseed
+      // referral redeem` or Desktop writes it, possibly after the daemon
+      // started) and drop the invite once Antscan shows it bound. The file's
+      // mtime short-circuits the poll only while no invite is carried: binding
+      // happens on-chain without touching the file, and every settlement that
+      // still carries a bound invite costs the seller a reverting bindReferral
+      // call inside AntseedStatsV2.
       let attributionTimer: NodeJS.Timeout | null = null
       if (paymentsConfig?.enabled) {
         const buyerAddress = node.identity!.wallet.address
         let lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-        let lastReferrer = initialAttribution.referrer
+        let carrying = !!initialAttribution.invite
         const refreshAttribution = async (force: boolean) => {
-          if (!force && !lastReferrer && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
-          const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralsClient)
+          if (!force && !carrying && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
+          const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralLookup)
           lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
           const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
-          if (attribution.referrer && attribution.referrer !== lastReferrer) {
-            console.log(chalk.dim(`Referral: carrying inviter ${attribution.referrer.slice(0, 10)}… until the first settlement binds it on-chain.`))
-          } else if (!attribution.referrer && lastReferrer) {
-            console.log(chalk.dim('Referral: inviter is bound on-chain; no longer carried in signed metadata.'))
+          if (attribution.invite && (force || !carrying)) {
+            console.log(chalk.dim(`Referral: carrying the invite from ${referralState?.referrer?.slice(0, 10) ?? 'your inviter'}… until a settlement binds it on-chain.`))
+          } else if (!attribution.invite && carrying && referralState?.state === 'bound') {
+            console.log(chalk.dim('Referral: invite is bound on-chain; no longer carried in signed metadata.'))
           }
-          lastReferrer = attribution.referrer
+          carrying = !!attribution.invite
           node.setBuyerAttribution(attribution)
         }
         void refreshAttribution(true).catch(() => {})

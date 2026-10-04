@@ -16,6 +16,7 @@ import { registerWrappedToolCommands } from './commands/wrapped-tools.js';
 import { registerSystemProxyCommands } from './commands/system-proxy/index.js';
 import { registerTunnelCommands } from './commands/tunnel/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
+import { registerReferralCommands } from './commands/referral.js';
 
 loadEnvFromFiles();
 
@@ -46,5 +47,6 @@ registerWrappedToolCommands(program);
 registerSystemProxyCommands(program);
 registerTunnelCommands(program);
 registerAntsCommands(program);
+registerReferralCommands(program);
 
 program.parse(process.argv);

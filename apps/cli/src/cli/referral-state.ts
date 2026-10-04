@@ -1,24 +1,11 @@
-import { readFile, rename, writeFile, mkdir, stat } from 'node:fs/promises'
-import { join, dirname } from 'node:path'
-import { ZeroAddress, getAddress } from 'ethers'
-import { clientIdFromAgentId, type ReferralsClient } from '@antseed/node'
+import { referralBindingFromExplorer } from '@antseed/ants'
+import { clientIdFromAgentId, pendingInvite, type ReferralInvite, type ReferralLookup, type ReferralState } from '@antseed/node'
 
 /**
- * Referral state shared between Desktop (which asks the user to confirm the
- * inviter during first-run setup) and the buyer daemon (which appends the
- * confirmed referrer to the metadata it signs, so AntseedStats binds it on
- * the first settlement that carries it). Lives at `<dataDir>/referral.json`.
- *
- *   candidate → accepted → bound
- *             ↘ declined
+ * CLI side of the referral flow. The state file and its transitions live in
+ * @antseed/node (shared with Desktop); this resolves the attribution the
+ * buyer daemon appends to the metadata it signs.
  */
-export type ReferralState = {
-  state: 'none' | 'candidate' | 'accepted' | 'declined' | 'bound'
-  referrer?: string
-  confidence?: 'probable' | 'low'
-  /** ISO timestamp of the last transition. */
-  updatedAt?: string
-}
 
 type ClientAgentOptions = {
   clientAgentId?: number | undefined
@@ -26,47 +13,19 @@ type ClientAgentOptions = {
   clientAgentIds?: { cli?: number; desktop?: number } | undefined
 }
 
-function referralStatePath(dataDir: string): string {
-  return join(dataDir, 'referral.json')
+/** Antscan lookup of the buyer's bound referrer (no RPC), or null without referrals or an explorer. */
+export function referralLookup(chain: { referralsAddress?: string | undefined; explorerApiUrl?: string | undefined }): ReferralLookup | null {
+  const { referralsAddress, explorerApiUrl } = chain
+  return referralsAddress && explorerApiUrl ? (buyer) => referralBindingFromExplorer(explorerApiUrl, buyer) : null
 }
 
-export async function readReferralState(dataDir: string): Promise<ReferralState | null> {
-  try {
-    const parsed = JSON.parse(await readFile(referralStatePath(dataDir), 'utf8')) as ReferralState
-    return parsed && typeof parsed.state === 'string' ? parsed : null
-  } catch {
-    return null
-  }
-}
-
-export async function writeReferralState(dataDir: string, state: ReferralState): Promise<void> {
-  const filePath = referralStatePath(dataDir)
-  await mkdir(dirname(filePath), { recursive: true })
-  const temporaryPath = `${filePath}.tmp`
-  await writeFile(temporaryPath, `${JSON.stringify({ ...state, updatedAt: new Date().toISOString() }, null, 2)}\n`, { mode: 0o600 })
-  await rename(temporaryPath, filePath)
-}
-
-export async function referralStateMtimeMs(dataDir: string): Promise<number | null> {
-  try {
-    return (await stat(referralStatePath(dataDir))).mtimeMs
-  } catch {
-    return null
-  }
-}
-
-/** Accepted-but-not-yet-bound referrer, checksummed; null otherwise. */
-export function pendingReferrer(state: ReferralState | null): string | null {
-  if (state?.state !== 'accepted' || !state.referrer) return null
-  try {
-    return getAddress(state.referrer)
-  } catch {
-    return null
-  }
+export function shortWallet(address: string): string {
+  return `${address.slice(0, 6)}…${address.slice(-4)}`
 }
 
 /**
- * Resolve the attribution the buyer appends to signed settlement metadata.
+ * Resolve the attribution the buyer appends to signed settlement metadata:
+ * the redeemed invite until it is bound, and the client.
  *
  * The client is an ERC-8004 agent id: ANTSEED_CLIENT_AGENT_ID (third-party
  * clients), then `buyer.clientAgentId`, then the chain-config id for this
@@ -76,12 +35,12 @@ export function pendingReferrer(state: ReferralState | null): string | null {
 export function resolveBuyerAttribution(options: ClientAgentOptions & {
   referralState: ReferralState | null
   env?: NodeJS.ProcessEnv
-}): { referrer?: string; clientId?: string } {
-  const referrer = pendingReferrer(options.referralState)
+}): { clientId?: string; invite?: ReferralInvite } {
+  const invite = pendingInvite(options.referralState)
   const agentId = resolveClientAgentId(options, options.env ?? process.env)
   return {
-    ...(referrer ? { referrer } : {}),
     ...(agentId ? { clientId: clientIdFromAgentId(agentId) } : {}),
+    ...(invite ? { invite } : {}),
   }
 }
 
@@ -91,22 +50,4 @@ function resolveClientAgentId(options: ClientAgentOptions, env: NodeJS.ProcessEn
   if (options.clientAgentId && options.clientAgentId > 0) return options.clientAgentId
   const fromChain = options.clientAgentIds?.[env['ANTSEED_CLIENT_KIND'] === 'desktop' ? 'desktop' : 'cli']
   return fromChain && fromChain > 0 ? fromChain : undefined
-}
-
-/**
- * Re-read the state file and, when an accepted referral is already bound
- * on-chain, record that so the daemon stops carrying the referrer.
- */
-export async function syncReferralState(
-  dataDir: string,
-  buyer: string,
-  client: ReferralsClient | null,
-): Promise<ReferralState | null> {
-  const state = await readReferralState(dataDir)
-  if (state?.state !== 'accepted' || !client) return state
-  const bound = await client.referrerOf(buyer).catch(() => null)
-  if (!bound || bound === ZeroAddress) return state
-  const boundState: ReferralState = { state: 'bound', referrer: bound }
-  await writeReferralState(dataDir, boundState).catch(() => {})
-  return boundState
 }

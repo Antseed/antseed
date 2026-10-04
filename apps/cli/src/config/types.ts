@@ -315,6 +315,8 @@ export interface PaymentsCLIConfig {
     depositRelayAddress?: string;
     /** Deployed AntseedReferrals contract address (referral rewards). */
     referralsAddress?: string;
+    /** Deployed AntseedClientRewards contract address (builders program rewards). */
+    clientRewardsAddress?: string;
     /** Default lock amount per session in human-readable USDC (e.g. "1" = 1 USDC) */
     defaultLockAmountUSDC?: string;
   };

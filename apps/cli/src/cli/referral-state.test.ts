@@ -1,47 +1,19 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
-import { mkdtemp, rm } from 'node:fs/promises';
-import { tmpdir } from 'node:os';
-import { join } from 'node:path';
-import {
-  pendingReferrer,
-  readReferralState,
-  resolveBuyerAttribution,
-  writeReferralState,
-} from './referral-state.js';
+import { encodeInvite } from '@antseed/node';
+import { resolveBuyerAttribution } from './referral-state.js';
 
 const REFERRER = '0x1111111111111111111111111111111111111111';
-
-test('referral state round-trips through the data dir', async (t) => {
-  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-referral-'));
-  t.after(() => rm(dataDir, { recursive: true, force: true }));
-
-  assert.equal(await readReferralState(dataDir), null);
-  await writeReferralState(dataDir, { state: 'accepted', referrer: REFERRER });
-  const stored = await readReferralState(dataDir);
-  assert.equal(stored?.state, 'accepted');
-  assert.equal(stored?.referrer, REFERRER);
-  assert.ok(stored?.updatedAt);
-});
-
-test('only accepted referrals are carried as pending referrers', () => {
-  assert.equal(pendingReferrer({ state: 'accepted', referrer: REFERRER }), REFERRER);
-  assert.equal(pendingReferrer({ state: 'candidate', referrer: REFERRER }), null);
-  assert.equal(pendingReferrer({ state: 'bound', referrer: REFERRER }), null);
-  assert.equal(pendingReferrer({ state: 'declined' }), null);
-  assert.equal(pendingReferrer({ state: 'accepted', referrer: 'not-an-address' }), null);
-  assert.equal(pendingReferrer(null), null);
-});
+const INVITE = { epoch: 42n, index: 7n, r: `0x${'aa'.repeat(32)}`, vs: `0x${'bb'.repeat(32)}` };
 
 test('buyer attribution resolves the client agent id from env, config, then chain config', () => {
   const chain = { cli: 11, desktop: 12 };
   const fromEnv = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: { ANTSEED_CLIENT_AGENT_ID: '7' } });
   assert.equal(BigInt(fromEnv.clientId!), 7n);
-  assert.equal(fromEnv.referrer, undefined);
+  assert.equal(fromEnv.invite, undefined);
 
-  const fromConfig = resolveBuyerAttribution({ referralState: { state: 'accepted', referrer: REFERRER }, clientAgentId: 5, clientAgentIds: chain, env: {} });
+  const fromConfig = resolveBuyerAttribution({ referralState: null, clientAgentId: 5, clientAgentIds: chain, env: {} });
   assert.equal(BigInt(fromConfig.clientId!), 5n);
-  assert.equal(fromConfig.referrer, REFERRER);
 
   const cli = resolveBuyerAttribution({ referralState: null, clientAgentIds: chain, env: {} });
   assert.equal(BigInt(cli.clientId!), 11n);
@@ -49,5 +21,15 @@ test('buyer attribution resolves the client agent id from env, config, then chai
   assert.equal(BigInt(desktop.clientId!), 12n);
 
   const none = resolveBuyerAttribution({ referralState: null, env: {} });
-  assert.equal(none.clientId, undefined);
+  assert.deepEqual(none, {});
+});
+
+test('buyer attribution carries a pending invite until it is bound, keeping the client', () => {
+  const invited = resolveBuyerAttribution({ referralState: { state: 'invited', invite: encodeInvite(INVITE), referrer: REFERRER }, clientAgentId: 5, env: {} });
+  assert.deepEqual(invited.invite, INVITE);
+  assert.equal(BigInt(invited.clientId!), 5n);
+
+  const bound = resolveBuyerAttribution({ referralState: { state: 'bound', referrer: REFERRER }, clientAgentId: 5, env: {} });
+  assert.equal(bound.invite, undefined);
+  assert.equal(BigInt(bound.clientId!), 5n);
 });
