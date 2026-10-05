@@ -166,7 +166,7 @@ In Desktop image chats, follow-up prompts use `/v1/images/edits` only when the s
 
 ## Claude Code
 
-**Recommended:** launch Claude Code from the AI VPN's **Apps** view — it detects the installed tool, wires it to the proxy, and handles peer and model routing automatically.
+**Recommended:** connect Claude Code from the AI VPN's **Apps** view. Antseed updates `~/.claude/settings.json` so new and running Claude Code sessions use the `antseed` model alias, which follows the model selected in the AI VPN. Disconnecting restores the settings Antseed changed. While connected, plain `claude` requests go through Antseed instead of your Anthropic login.
 
 CLI alternative — the `antseed claude` wrapper resolves the running buyer proxy, sets `ANTHROPIC_BASE_URL` and a placeholder `ANTHROPIC_API_KEY` for the child process, and forwards the rest of your flags to Claude Code:
 
@@ -184,6 +184,8 @@ export ANTHROPIC_BASE_URL=http://localhost:8377
 export ANTHROPIC_API_KEY=antseed   # any non-empty placeholder
 claude --model kimi-k2.6           # or <peerId>@kimi-k2.6
 ```
+
+Use `--model antseed` with the wrapper or manual setup to follow the AI VPN selection instead of pinning a concrete model.
 
 Claude Code sends requests to `/v1/messages`. Bare model ids use automatic routing and conversation affinity; explicitly prefixed model ids remain hard-pinned. The proxy translates to the selected seller's native format when needed.
 
