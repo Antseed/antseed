@@ -152,7 +152,7 @@ describe('Full Payment Flow Integration', () => {
     return { sessionId };
   }
 
-  it.each(['success', 'insufficient-balance'] as const)('video advance and top-up exchange: %s', async (outcome) => {
+  it.each(['success', 'insufficient-balance'] as const)('video reserve batch exchange: %s', async (outcome) => {
     const sellerPeerId = sellerIdentity.peerId;
     const buyerPeerId = buyerIdentity.peerId;
     const channelId = await buyer.authorizeSpending(sellerPeerId, buyerMux, 0n, 1_000_000n, TEST_PRICING);
@@ -176,15 +176,18 @@ describe('Full Payment Flow Integration', () => {
     vi.spyOn(buyer, 'getBalance').mockResolvedValue({ available: 10_000_000n, reserved: 1_000_000n });
     buyerMux.sentSpendingAuths.length = 0;
 
-    // Early note: an ordinary SpendingAuth the seller accepts ahead of delivery.
-    await buyer.signVideoAdvance(sellerPeerId, 'video-request', 850_000n, 4_200_000n, 1_000_000n, buyerMux);
-    const advance = decodeSpendingAuth(encodeSpendingAuth(buyerMux.sentSpendingAuths[0]!));
-    expect(advance.cumulativeAmount).toBe('850000');
-    expect(await seller.handleSpendingAuth(buyerPeerId, advance, sellerMux)).toBe('accepted');
+    await buyer.signAndSendReserveBatch(
+      sellerPeerId,
+      'video-request',
+      850_000n,
+      4_200_000n,
+      1_000_000n,
+      5_100_000n,
+      buyerMux,
+    );
+    const topUp = decodeSpendingAuth(encodeSpendingAuth(buyerMux.sentSpendingAuths[0]!));
+    expect(topUp.reserveBatch?.cumulativeAmount).toBe('850000');
     expect(seller.getCumulativeSpend(channelId)).toBe(100_000n);
-
-    await buyer.topUpReserve(sellerPeerId, buyerMux, 5_100_000n);
-    const topUp = decodeSpendingAuth(encodeSpendingAuth(buyerMux.sentSpendingAuths[1]!));
     const topUpSpy = vi.spyOn(seller.channelsClient, 'topUp');
     if (outcome === 'success') topUpSpy.mockResolvedValue('0xtopup');
     else topUpSpy.mockRejectedValue(new Error('execution reverted: InsufficientBalance'));

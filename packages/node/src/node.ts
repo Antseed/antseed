@@ -1392,6 +1392,9 @@ export class AntseedNode extends EventEmitter {
       inputTokens: s.inputTokens,
       cachedInputTokens: s.cachedInputTokens,
       outputTokens: s.outputTokens,
+      outputImages: s.outputImages,
+      videoGenerations: s.videoGenerations,
+      videoSeconds: s.videoSeconds,
       requestCount: s.requestCount,
     }));
     return {

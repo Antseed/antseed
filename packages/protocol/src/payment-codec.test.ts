@@ -21,6 +21,15 @@ describe('payment payload codec', () => {
       reserveSalt: '0x' + 'ee'.repeat(32),
       reserveMaxAmount: '500000',
       reserveDeadline: 1900000000,
+      reserveBatch: {
+        cumulativeAmount: '325000',
+        metadataHash: '0x' + '11'.repeat(32),
+        metadata: '0x' + '22'.repeat(64),
+        spendingAuthSig: '0x' + '33'.repeat(65),
+        maxAmount: '4200000',
+        deadline: 1900000001,
+        reserveAuthSig: '0x' + '44'.repeat(65),
+      },
     };
     expect(decodeSpendingAuth(encodeSpendingAuth(payload))).toEqual(payload);
   });
@@ -49,6 +58,12 @@ describe('payment payload codec', () => {
       requestId: 'req-2',
       inputUsdPerMillion: 3000,
       outputUsdPerMillion: 15000,
+      reservePlan: {
+        currentReserveAmount: '500000',
+        requiredCumulativeAmount: '325000',
+        finalReserveAmount: '4200000',
+        requestCost: '4200000',
+      },
     };
     expect(decodePaymentRequired(encodePaymentRequired(required))).toMatchObject(required);
     const ack = { channelId: '0x' + 'ab'.repeat(32) };

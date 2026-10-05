@@ -4,7 +4,7 @@ import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
 import { decodeFrame } from '../src/p2p/message-protocol.js';
-import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from '../src/types/protocol.js';
+import { MessageType, PAYMENT_CODE_CHANNEL_EXHAUSTED } from '../src/types/protocol.js';
 import { ANTSEED_ATTEST_PATH, type Prover, type SellerRequest } from '../src/interfaces/plugin.js';
 import { ResourceOwnershipStore } from '../src/resources/resource-ownership-store.js';
 import { mkdtempSync } from 'node:fs';
@@ -65,7 +65,6 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(),
     hasInFlightRequests: () => false,
     hasClosingChannel: () => false,
-    expectSeriousFee: vi.fn(),
     ...overrides,
   };
 }
@@ -276,10 +275,12 @@ describe('native video job ownership', () => {
         expect(response.statusCode).toBe(402);
         expect(bodyOf(response)).toMatchObject({
           error: 'payment_required',
-          code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED,
-          estimatedRequestCost: '2000000',
-          remainingLockedReserve: '900000',
-          reserveMaxAmount: '1000000',
+          reservePlan: {
+            currentReserveAmount: '1000000',
+            requiredCumulativeAmount: '850000',
+            finalReserveAmount: '2100000',
+            requestCost: '2000000',
+          },
         });
         expect(provider.handleRequest).not.toHaveBeenCalled();
         expect(recordSpend).not.toHaveBeenCalled();
@@ -310,7 +311,12 @@ describe('native video job ownership', () => {
         }) });
         const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
         expect(response.statusCode).toBe(402);
-        expect(bodyOf(response).code).toBe(PAYMENT_CODE_VIDEO_RESERVE_REQUIRED);
+        expect(bodyOf(response).reservePlan).toMatchObject({
+          currentReserveAmount: '1000000',
+          requiredCumulativeAmount: '850000',
+          finalReserveAmount: '2000000',
+          requestCost: '2000000',
+        });
         expect(provider.handleRequest).not.toHaveBeenCalled();
         expect(settleSession).not.toHaveBeenCalled();
       } finally { store.close(); }
@@ -329,7 +335,11 @@ describe('native video job ownership', () => {
       try {
         const response = await create(buyer);
         expect(response.statusCode).toBe(402);
-        expect(bodyOf(response)).toMatchObject({ code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED, remainingLockedReserve: '799999' });
+        expect(bodyOf(response).reservePlan).toMatchObject({
+          currentReserveAmount: '1000000',
+          requiredCumulativeAmount: '850000',
+          finalReserveAmount: '1000001',
+        });
         expect(provider.handleRequest).not.toHaveBeenCalled();
       } finally { store.close(); }
     });

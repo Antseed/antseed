@@ -22,7 +22,7 @@ import {
   estimateTokensFromBytes,
 } from './payments/pricing.js';
 import { debugLog, debugWarn } from './utils/debug.js';
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_CHANNEL_EXHAUSTED, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from './types/protocol.js';
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_CHANNEL_EXHAUSTED, type PaymentRequiredPayload, type ReserveAuthorizationPlan } from './types/protocol.js';
 import { VerificationMux } from './verification/verification-mux.js';
 import { createResponseAuthPayload, createStreamingResponseHash } from './verification/response-auth.js';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/protocol/http';
@@ -85,6 +85,7 @@ interface SellerBillingContext {
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
 const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
+const DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS = 8_500n;
 /** Per-buyer rate limit for the free attestation route. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
@@ -281,6 +282,18 @@ export class SellerRequestHandler {
       try {
       const isFreeService = videoRoute?.action === 'retrieve' || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
+      let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
+      try {
+        requestCostEstimate = requestBilling
+          ? this._estimateRequestCostUsdc(request, requestBilling, requestPricing, unitBillingModel)
+          : null;
+      } catch (err) {
+        const message = err instanceof Error ? err.message : String(err);
+        debugWarn(`[SellerHandler] Rejecting unbillable request: ${message}`);
+        this._sendJsonError(mux, request.requestId, 503, 'billing_tier_unmatched', `Seller billing configuration cannot price this request: ${message}`);
+        return;
+      }
+      const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
 
       if (isFreeService && this._deps.sellerFreeTierLimiter) {
         const requestedService = this._extractRequestedService(request) ?? 'unknown';
@@ -351,10 +364,18 @@ export class SellerRequestHandler {
         if (isFreeService) {
           debugLog(`[SellerHandler] Free service for ${buyerPeerId.slice(0, 12)}... — skipping 402 / payment channel`);
         } else {
-          const requirements = spm?.getPaymentRequirements(
+          const baseRequirements = spm?.getPaymentRequirements(
             request.requestId, buyerPeerId, requestPricing,
           );
-          if (requirements) {
+          if (baseRequirements) {
+            let requirements: PaymentRequiredPayload = baseRequirements;
+            const initialReserve = BigInt(baseRequirements.suggestedAmount);
+            if (videoRoute?.action === 'create' && estimatedRequestCost > initialReserve) {
+              requirements = {
+                ...baseRequirements,
+                reservePlan: await this._buildReservePlan(initialReserve, estimatedRequestCost, estimatedRequestCost),
+              };
+            }
             debugLog(`[SellerHandler] No payment session for ${buyerPeerId.slice(0, 12)}... — sending 402 + PaymentRequired`);
             const paymentBody = JSON.stringify({
               error: 'payment_required',
@@ -363,6 +384,7 @@ export class SellerRequestHandler {
               ...(requirements.inputUsdPerMillion != null ? { inputUsdPerMillion: requirements.inputUsdPerMillion } : {}),
               ...(requirements.outputUsdPerMillion != null ? { outputUsdPerMillion: requirements.outputUsdPerMillion } : {}),
               ...(requirements.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: requirements.cachedInputUsdPerMillion } : {}),
+              ...(requirements.reservePlan ? { reservePlan: requirements.reservePlan } : {}),
             });
             mux.sendProxyResponse({
               requestId: request.requestId,
@@ -441,29 +463,6 @@ export class SellerRequestHandler {
               debugLog(`[SellerHandler] Caught up before 402 for ${buyerPeerId.slice(0, 12)}... (spent=${spent} accepted=${accepted})`);
             }
           }
-          let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
-          try {
-            requestCostEstimate = requestBilling
-              ? this._estimateRequestCostUsdc(request, requestBilling, requestPricing, unitBillingModel)
-              : null;
-          } catch (err) {
-            const message = err instanceof Error ? err.message : String(err);
-            debugWarn(`[SellerHandler] Rejecting unbillable request: ${message}`);
-            mux.sendProxyResponse({
-              requestId: request.requestId,
-              statusCode: 503,
-              headers: { 'content-type': 'application/json' },
-              body: new TextEncoder().encode(JSON.stringify({
-                error: {
-                  message: `Seller billing configuration cannot price this request: ${message}`,
-                  type: 'billing_configuration_error',
-                  code: 'billing_tier_unmatched',
-                },
-              })),
-            });
-            return;
-          }
-          const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
           // Accepted videos are charged on download; keep their price reserved.
           const reservedForVideos = this._pendingVideoCharges(session.sessionId);
           const committed = spent + reservedForVideos;
@@ -488,6 +487,34 @@ export class SellerRequestHandler {
             && reserveMax > 0n
             && estimatedRequestCost > 0n
             && estimatedRequestCost > effectiveEstimateLimit;
+
+          if (videoNeedsLargerReserve && !isBlocked && spent <= accepted) {
+            const reservePlan = await this._buildReservePlan(
+              reserveMax,
+              committed + estimatedRequestCost,
+              estimatedRequestCost,
+            );
+            const requirements: PaymentRequiredPayload = {
+              ...spm.getPaymentRequirements(request.requestId, buyerPeerId, requestPricing),
+              channelId: session.sessionId,
+              reservePlan,
+            };
+            debugLog(`[SellerHandler] Request needs reserve ${reservePlan.finalReserveAmount} before execution`);
+            mux.sendProxyResponse({
+              requestId: request.requestId,
+              statusCode: 402,
+              headers: { 'content-type': 'application/json' },
+              body: new TextEncoder().encode(JSON.stringify({
+                error: 'payment_required',
+                minBudgetPerRequest: requirements.minBudgetPerRequest,
+                suggestedAmount: requirements.suggestedAmount,
+                channelId: session.sessionId,
+                reservePlan,
+              })),
+            });
+            this._sendPaymentRequiredBestEffort(paymentMux, requirements, buyerPeerId, 'budget-exhausted');
+            return;
+          }
 
           if (isBlocked || (spent > 0n && (spent > accepted || isAtExactSpendLimit)) || estimatedCostExceedsLockedReserve) {
             const baseRequirements = spm.getPaymentRequirements(
@@ -571,26 +598,6 @@ export class SellerRequestHandler {
             return;
           }
 
-          if (videoNeedsLargerReserve) {
-            // The buyer answers with a serious fee before the top-up. It may only
-            // be cashed together with the reserve increase inside topUp().
-            spm.expectSeriousFee(session.sessionId);
-            debugLog(`[SellerHandler] Video create for ${buyerPeerId.slice(0, 12)}... needs a larger reserve (estimatedRequestCost=${estimatedRequestCost} remainingLockedReserve=${remainingLockedReserve} reserveMax=${reserveMax}) — returning 402 ${PAYMENT_CODE_VIDEO_RESERVE_REQUIRED}`);
-            mux.sendProxyResponse({
-              requestId: request.requestId,
-              statusCode: 402,
-              headers: { "content-type": "application/json" },
-              body: new TextEncoder().encode(JSON.stringify({
-                error: 'payment_required',
-                code: PAYMENT_CODE_VIDEO_RESERVE_REQUIRED,
-                channelId: session.sessionId,
-                estimatedRequestCost: estimatedRequestCost.toString(),
-                remainingLockedReserve: remainingLockedReserve.toString(),
-                reserveMaxAmount: reserveMax.toString(),
-              })),
-            });
-            return;
-          }
         }
       }
 
@@ -894,7 +901,7 @@ export class SellerRequestHandler {
 
   /**
    * Charge a video once, when the buyer first receives the finished file.
-   * The serious fee paid before generation already covers part of the price,
+   * The threshold amount settled during reserve top-up already covers part of the price,
    * so the buyer signs only the rest.
    */
   private _chargeDeliveredVideo(
@@ -1169,6 +1176,27 @@ export class SellerRequestHandler {
       cost: estimateUnitRequestCost(model, requestBilling.context, requestBilling.requestUsage),
       inputTokens: 0,
       maxOutputTokens: 0,
+    };
+  }
+
+  private async _buildReservePlan(
+    currentReserveAmount: bigint,
+    finalReserveAmount: bigint,
+    requestCost: bigint,
+  ): Promise<ReserveAuthorizationPlan> {
+    let thresholdBps = DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS;
+    try {
+      const configured = await this._deps.channelsClient?.getTopUpSettledThresholdBps();
+      if (configured != null && configured > 0n && configured <= 10_000n) thresholdBps = configured;
+    } catch (err) {
+      debugWarn(`[SellerHandler] Failed to read top-up threshold; using ${thresholdBps}: ${err instanceof Error ? err.message : err}`);
+    }
+    const requiredCumulativeAmount = (currentReserveAmount * thresholdBps + 9_999n) / 10_000n;
+    return {
+      currentReserveAmount: currentReserveAmount.toString(),
+      requiredCumulativeAmount: requiredCumulativeAmount.toString(),
+      finalReserveAmount: finalReserveAmount.toString(),
+      requestCost: requestCost.toString(),
     };
   }
 

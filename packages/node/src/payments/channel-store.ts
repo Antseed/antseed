@@ -49,6 +49,8 @@ export interface BuyerServiceUsageTotal {
   /** Includes OUTPUT_IMAGE_TOKEN_EQUIVALENT credits for generated images. */
   outputTokens: string; // bigint as string
   outputImages: string; // bigint as string
+  videoGenerations: string; // bigint as string
+  videoSeconds: string; // bigint as string
   requestCount: number;
 }
 
@@ -114,6 +116,8 @@ export class ChannelStore {
           cumulativeOutputTokens: total.cumulativeOutputTokens,
           cumulativeRequestCount: total.cumulativeRequestCount,
           cumulativeOutputImages: total.cumulativeOutputImages ?? '0',
+          cumulativeVideoGenerations: total.cumulativeVideoGenerations ?? '0',
+          cumulativeVideoSeconds: total.cumulativeVideoSeconds ?? '0',
           updatedAt: total.updatedAt,
         });
       }
@@ -231,11 +235,13 @@ export class ChannelStore {
         INSERT INTO payment_channel_service_totals (
           session_id, service_id, cumulative_amount, cumulative_input_tokens,
           cumulative_cached_input_tokens, cumulative_output_tokens,
-          cumulative_request_count, cumulative_output_images, updated_at
+          cumulative_request_count, cumulative_output_images,
+          cumulative_video_generations, cumulative_video_seconds, updated_at
         ) VALUES (
           @sessionId, @serviceId, @cumulativeAmount, @cumulativeInputTokens,
           @cumulativeCachedInputTokens, @cumulativeOutputTokens,
-          @cumulativeRequestCount, @cumulativeOutputImages, @updatedAt
+          @cumulativeRequestCount, @cumulativeOutputImages,
+          @cumulativeVideoGenerations, @cumulativeVideoSeconds, @updatedAt
         )
       `),
       getServiceTotals: this._db.prepare(
@@ -277,7 +283,6 @@ export class ChannelStore {
         reserveAuthPending: channel.reserveAuthPending,
         confirmedReserveAmount: channel.confirmedReserveAmount,
         deliveredAmount: channel.deliveredAmount,
-        seriousFeeExpected: channel.seriousFeeExpected,
       }),
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
@@ -519,7 +524,8 @@ export class ChannelStore {
       .prepare(`
         SELECT t.service_id, t.cumulative_amount, t.cumulative_input_tokens,
                t.cumulative_cached_input_tokens, t.cumulative_output_tokens,
-               t.cumulative_request_count, t.cumulative_output_images
+               t.cumulative_request_count, t.cumulative_output_images,
+               t.cumulative_video_generations, t.cumulative_video_seconds
         FROM payment_channel_service_totals t
         JOIN payment_channels c ON c.session_id = t.session_id
         WHERE c.role = ? AND c.buyer_evm_addr = ?
@@ -532,17 +538,33 @@ export class ChannelStore {
         cumulative_output_tokens: string;
         cumulative_request_count: string;
         cumulative_output_images: string;
+        cumulative_video_generations: string;
+        cumulative_video_seconds: string;
       }>;
 
     const byService = new Map<string, {
-      amount: bigint; input: bigint; cached: bigint; output: bigint; requests: bigint; images: bigint;
+      amount: bigint;
+      input: bigint;
+      cached: bigint;
+      output: bigint;
+      requests: bigint;
+      images: bigint;
+      videoGenerations: bigint;
+      videoSeconds: bigint;
     }>();
     const toBigInt = (value: string): bigint => {
       try { return BigInt(value || '0'); } catch { return 0n; }
     };
     for (const row of rows) {
       const entry = byService.get(row.service_id) ?? {
-        amount: 0n, input: 0n, cached: 0n, output: 0n, requests: 0n, images: 0n,
+        amount: 0n,
+        input: 0n,
+        cached: 0n,
+        output: 0n,
+        requests: 0n,
+        images: 0n,
+        videoGenerations: 0n,
+        videoSeconds: 0n,
       };
       entry.amount += toBigInt(row.cumulative_amount);
       entry.input += toBigInt(row.cumulative_input_tokens);
@@ -550,6 +572,8 @@ export class ChannelStore {
       entry.output += toBigInt(row.cumulative_output_tokens);
       entry.requests += toBigInt(row.cumulative_request_count);
       entry.images += toBigInt(row.cumulative_output_images);
+      entry.videoGenerations += toBigInt(row.cumulative_video_generations);
+      entry.videoSeconds += toBigInt(row.cumulative_video_seconds);
       byService.set(row.service_id, entry);
     }
     return Array.from(byService.entries()).map(([serviceId, entry]) => ({
@@ -559,6 +583,8 @@ export class ChannelStore {
       cachedInputTokens: entry.cached.toString(),
       outputTokens: entry.output.toString(),
       outputImages: entry.images.toString(),
+      videoGenerations: entry.videoGenerations.toString(),
+      videoSeconds: entry.videoSeconds.toString(),
       requestCount: Number(entry.requests),
     }));
   }
@@ -572,6 +598,8 @@ export class ChannelStore {
       cumulativeOutputTokens: BigInt(total.cumulativeOutputTokens),
       cumulativeRequestCount: BigInt(total.cumulativeRequestCount),
       cumulativeOutputImages: BigInt(total.cumulativeOutputImages ?? '0'),
+      cumulativeVideoGenerations: BigInt(total.cumulativeVideoGenerations ?? '0'),
+      cumulativeVideoSeconds: BigInt(total.cumulativeVideoSeconds ?? '0'),
     }));
   }
 
@@ -583,6 +611,8 @@ export class ChannelStore {
       cumulativeRequestCount: BigInt(channel.requestCount),
       // No channel column for images — recovered from the per-service rows.
       cumulativeOutputImages: services.reduce((sum, s) => sum + s.cumulativeOutputImages, 0n),
+      cumulativeVideoGenerations: services.reduce((sum, s) => sum + (s.cumulativeVideoGenerations ?? 0n), 0n),
+      cumulativeVideoSeconds: services.reduce((sum, s) => sum + (s.cumulativeVideoSeconds ?? 0n), 0n),
       services,
     };
   }
@@ -598,6 +628,8 @@ export class ChannelStore {
       cumulativeOutputTokens: service.cumulativeOutputTokens.toString(),
       cumulativeRequestCount: service.cumulativeRequestCount.toString(),
       cumulativeOutputImages: (service.cumulativeOutputImages ?? 0n).toString(),
+      cumulativeVideoGenerations: (service.cumulativeVideoGenerations ?? 0n).toString(),
+      cumulativeVideoSeconds: (service.cumulativeVideoSeconds ?? 0n).toString(),
     }));
   }
 
@@ -656,6 +688,8 @@ interface ServiceTotalRow {
   cumulative_output_tokens: string;
   cumulative_request_count: string;
   cumulative_output_images: string;
+  cumulative_video_generations: string;
+  cumulative_video_seconds: string;
   updated_at: number;
 }
 
@@ -710,6 +744,8 @@ function rowToServiceTotal(row: ServiceTotalRow): StoredChannelServiceTotal {
     cumulativeOutputTokens: row.cumulative_output_tokens,
     cumulativeRequestCount: row.cumulative_request_count,
     cumulativeOutputImages: row.cumulative_output_images ?? '0',
+    cumulativeVideoGenerations: row.cumulative_video_generations ?? '0',
+    cumulativeVideoSeconds: row.cumulative_video_seconds ?? '0',
     updatedAt: row.updated_at,
   };
 }

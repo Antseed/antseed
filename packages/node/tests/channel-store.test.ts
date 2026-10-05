@@ -348,6 +348,8 @@ describe('ChannelStore', () => {
         cumulativeOutputTokens: '200',
         cumulativeRequestCount: '3',
         cumulativeOutputImages: '2',
+        cumulativeVideoGenerations: '1',
+        cumulativeVideoSeconds: '8',
       }]);
       // Rows written before migration 005 hydrate without the images field.
       store.replaceServiceTotals(free.sessionId, [{
@@ -367,6 +369,8 @@ describe('ChannelStore', () => {
       expect(totals[0].cachedInputTokens).toBe('100');
       expect(totals[0].outputTokens).toBe('500');
       expect(totals[0].outputImages).toBe('2');
+      expect(totals[0].videoGenerations).toBe('1');
+      expect(totals[0].videoSeconds).toBe('8');
       expect(totals[0].requestCount).toBe(5);
     });
 

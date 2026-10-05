@@ -30,7 +30,7 @@ import {
   extractRequestBodyFields,
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, PAYMENT_CODE_VIDEO_RESERVE_REQUIRED } from '@antseed/protocol/messages';
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import { buyerFault, peerFault } from './errors.js';
 import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
 
@@ -396,30 +396,7 @@ export class BuyerRequestHandler {
       );
     });
 
-    const paidVideoCreate = Boolean(negotiator)
-      && !isFreeService
-      && !externalSpendingAuth
-      && videoRoute?.action === 'create';
-    // Send the video create first and top up only when the seller asks for it.
-    // Raising the reserve signs an early SpendingAuth (the video advance) that
-    // the seller settles on-chain during topUp(), so it cannot be taken back.
-    // Topping up before the seller answers would pay that advance even for a
-    // create the seller rejects.
-    // The seller replies 402 video_reserve_required only after those checks,
-    // and never starts a video that the locked reserve cannot pay for.
-    // If the seller says the reserve is too small for this paid video create
-    // (402 video_reserve_required), pay the serious fee, top up the reserve,
-    // and send the create once more. Any other response is returned unchanged.
-    const retryAfterVideoTopUp = async (res: SerializedHttpResponse): Promise<SerializedHttpResponse> => {
-      if (!paidVideoCreate || !isVideoReserveRequired402(res)) return res;
-      await negotiator!.ensureVideoHeadroom(peer, conn, req.requestId);
-      startTime = Date.now();
-      return executeRequest();
-    };
-
-    // Path 1: first send. If a channel already exists but is too small for the
-    // video, top up and send once more. (No channel yet → the normal 402 below opens one.)
-    const response = await retryAfterVideoTopUp(await executeRequest());
+    const response = await executeRequest();
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -446,7 +423,6 @@ export class BuyerRequestHandler {
       response.statusCode === 402
       && negotiator
       && !externalSpendingAuth
-      && !isVideoReserveRequired402(response)
       && (!videoRoute || isPaymentRequired402(response))
     ) {
       const result = await negotiator.handle402(response, peer, conn, req);
@@ -454,9 +430,7 @@ export class BuyerRequestHandler {
         return adaptPeerResponse(result.response);
       }
       startTime = Date.now();
-      // Path 2: a channel was just opened above. It has the normal reserve size,
-      // so the video may still not fit; if so, top up and send once more.
-      const retriedResponse = await retryAfterVideoTopUp(await executeRequest());
+      const retriedResponse = await executeRequest();
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
@@ -706,17 +680,6 @@ export function stripPeerControlledResponseHeaders(
   return Object.keys(headers).length === Object.keys(response.headers).length
     ? response
     : { ...response, headers };
-}
-
-/** True when the seller asks for a larger reserve before it starts a video create. */
-function isVideoReserveRequired402(response: SerializedHttpResponse): boolean {
-  if (response.statusCode !== 402) return false;
-  try {
-    const parsed = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
-    return parsed.error === 'payment_required' && parsed.code === PAYMENT_CODE_VIDEO_RESERVE_REQUIRED;
-  } catch {
-    return false;
-  }
 }
 
 /** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */

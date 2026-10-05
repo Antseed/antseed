@@ -31,15 +31,15 @@ import type { SpendingAuthPayload } from '../src/types/protocol.js';
  * negotiator, connected by an in-memory framed transport. Only the chain is
  * faked: one shared channel record that reserve()/topUp()/close() mutate and
  * getSession() reads, following AntseedChannels semantics (topUp settles the
- * signed serious fee and requires TOP_UP_SETTLED_THRESHOLD_BPS (8500 here) of
- * the old deposit to be settled first).
+ * threshold authorization and requires TOP_UP_SETTLED_THRESHOLD_BPS (8500 here)
+ * of the old deposit to be settled first).
  */
 
 const VIDEO_PRICE = 4_200_000n;
 const VIDEO_FILE = mp4Video(5_000);
 const CHAT_DELIVERED = 100_000n;
 const FIRST_RESERVE = 1_000_000n;
-const BUFFERED_CEILING = CHAT_DELIVERED + VIDEO_PRICE + FIRST_RESERVE;
+const REQUIRED_CEILING = CHAT_DELIVERED + VIDEO_PRICE;
 const ADVANCE = 850_000n;
 // Output-only chat pricing: 1,000 completion tokens at $100/M = $0.10.
 const CHAT_PRICING = { inputUsdPerMillion: 0, outputUsdPerMillion: 100 };
@@ -319,14 +319,14 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
   }
 
-  it('pays the serious fee inside topUp(), and charges the rest only after the video is delivered', async () => {
+  it('settles the threshold authorization inside topUp(), then charges the rest after delivery', async () => {
     const h = setup();
     await openChannelWithChat(h);
 
     const response = await h.send(h.videoRequest('video-1'));
     await h.settle();
 
-    // Accepted, not delivered: only the serious fee is paid, and only on-chain
+    // Accepted, not delivered: only the threshold authorization is settled
     // inside topUp(). Nothing more is owed yet.
     expect(h.chain.settled).toBe(ADVANCE);
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
@@ -341,8 +341,8 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.providerCreates).toHaveLength(1);
     expect(h.topUp).toHaveBeenCalledOnce();
     expect(h.topUp.mock.calls[0]![2]).toBe(ADVANCE);
-    expect(h.topUp.mock.calls[0]![5]).toBe(BUFFERED_CEILING);
-    expect(h.chain.deposit).toBe(BUFFERED_CEILING);
+    expect(h.topUp.mock.calls[0]![5]).toBe(REQUIRED_CEILING);
+    expect(h.chain.deposit).toBe(REQUIRED_CEILING);
 
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
@@ -394,10 +394,10 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.close.mock.calls[0]![2]).toBe(CHAT_DELIVERED);
   });
 
-  it('times out a slow top-up without resending, then retries without a second advance once it lands', async () => {
+  it('times out a slow top-up without resending, then retries without a second batch once it lands', async () => {
     const h = setup({ topUpBehavior: 'slow' });
     await openChannelWithChat(h);
-    const isAdvance = (auth: SpendingAuthPayload) => auth.cumulativeAmount === ADVANCE.toString() && auth.reserveMaxAmount == null;
+    const isReserveBatch = (auth: SpendingAuthPayload) => auth.reserveBatch?.cumulativeAmount === ADVANCE.toString();
 
     // Only the buyer's 45s top-up wait runs on fake time; the transport keeps
     // real async delivery through setImmediate.
@@ -416,13 +416,13 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
 
     expect(h.providerCreates).toHaveLength(0);
     expect(h.topUp).toHaveBeenCalledOnce();
-    expect(h.sentAuths.filter(isAdvance)).toHaveLength(1);
+    expect(h.sentAuths.filter(isReserveBatch)).toHaveLength(1);
     expect(h.chain.deposit).toBe(FIRST_RESERVE);
 
     // The slow top-up transaction lands, then the user retries the same create.
     h.releaseTopUp();
     await advance(1_000);
-    expect(h.chain.deposit).toBe(BUFFERED_CEILING);
+    expect(h.chain.deposit).toBe(REQUIRED_CEILING);
 
     const retry = h.send(h.videoRequest('video-1-retry'));
     await advance(5_000);
@@ -432,7 +432,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(response.statusCode).toBe(200);
     expect(h.providerCreates).toHaveLength(1);
     expect(h.topUp).toHaveBeenCalledOnce();
-    expect(h.sentAuths.filter(isAdvance)).toHaveLength(1);
+    expect(h.sentAuths.filter(isReserveBatch)).toHaveLength(1);
     const download = h.send(h.retrieveRequest('retrieve-1', 'job-1'));
     await advance(1_000);
     expect((await download).statusCode).toBe(200);
@@ -456,7 +456,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
   });
 
-  it('keeps only the serious fee when the video is never delivered', async () => {
+  it('keeps only the threshold amount when the video is never delivered', async () => {
     const h = setup();
     await openChannelWithChat(h);
     await h.send(h.videoRequest('video-1'));
@@ -469,7 +469,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.chain).toMatchObject({ settled: ADVANCE, status: 2 });
   });
 
-  it('never cashes the serious fee on its own when the buyer disconnects before the top-up', async () => {
+  it('never cashes the threshold authorization alone when the buyer disconnects before top-up', async () => {
     const h = setup({ topUpBehavior: 'slow' });
     await openChannelWithChat(h);
     const pending = h.send(h.videoRequest('video-1')).catch(() => {});

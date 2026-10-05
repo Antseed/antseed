@@ -95,6 +95,18 @@ export function decodeSpendingAuth(data: Uint8Array): SpendingAuthPayload {
   if (typeof obj.reserveSalt === 'string') result.reserveSalt = obj.reserveSalt;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
   if (typeof obj.reserveDeadline === 'number') result.reserveDeadline = obj.reserveDeadline;
+  if (typeof obj.reserveBatch === 'object' && obj.reserveBatch !== null) {
+    const batch = obj.reserveBatch as Record<string, unknown>;
+    result.reserveBatch = {
+      cumulativeAmount: requireStringField(batch, 'cumulativeAmount'),
+      metadataHash: requireStringField(batch, 'metadataHash'),
+      metadata: requireStringField(batch, 'metadata'),
+      spendingAuthSig: requireStringField(batch, 'spendingAuthSig'),
+      maxAmount: requireStringField(batch, 'maxAmount'),
+      deadline: requireFiniteNumberField(batch, 'deadline'),
+      reserveAuthSig: requireStringField(batch, 'reserveAuthSig'),
+    };
+  }
   return result;
 }
 
@@ -168,6 +180,15 @@ export function decodePaymentRequired(data: Uint8Array): PaymentRequiredPayload 
   if (typeof obj.channelId === 'string') result.channelId = obj.channelId;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
   if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED) result.code = obj.code;
+  if (typeof obj.reservePlan === 'object' && obj.reservePlan !== null) {
+    const plan = obj.reservePlan as Record<string, unknown>;
+    result.reservePlan = {
+      currentReserveAmount: requireStringField(plan, 'currentReserveAmount'),
+      requiredCumulativeAmount: requireStringField(plan, 'requiredCumulativeAmount'),
+      finalReserveAmount: requireStringField(plan, 'finalReserveAmount'),
+      requestCost: requireStringField(plan, 'requestCost'),
+    };
+  }
   return result;
 }
 

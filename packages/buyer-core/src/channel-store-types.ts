@@ -64,15 +64,9 @@ export interface StoredChannel {
   confirmedReserveAmount?: string | null;
   /**
    * Cumulative amount owed for delivered work. Below authMax only while a
-   * video advance is outstanding; the gap covers the next charges.
+   * threshold authorization is outstanding; the gap covers the next charges.
    */
   deliveredAmount?: string | null;
-  /**
-   * Seller only: a 402 video_reserve_required was sent, so the next auth above
-   * delivered spend is a serious fee for topUp() only. Persisted so a restart
-   * cannot turn that fee into an ordinary, closable auth.
-   */
-  seriousFeeExpected?: boolean;
   createdAt: number;
   updatedAt: number;
 }
@@ -87,6 +81,10 @@ export interface StoredChannelServiceTotal {
   cumulativeRequestCount: string; // bigint as string
   /** bigint as string; optional — rows/callers predating migration 005 default to '0'. */
   cumulativeOutputImages?: string;
+  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  cumulativeVideoGenerations?: string;
+  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  cumulativeVideoSeconds?: string;
   updatedAt: number;
 }
 

@@ -110,6 +110,16 @@ export interface SpendingAuthPayload {
   reserveSalt?: string;
   reserveMaxAmount?: string;
   reserveDeadline?: number;
+  /** Threshold SpendingAuth and final ReserveAuth executed together with a reserve change. */
+  reserveBatch?: {
+    cumulativeAmount: string;
+    metadataHash: string;
+    metadata: string;
+    spendingAuthSig: string;
+    maxAmount: string;
+    deadline: number;
+    reserveAuthSig: string;
+  };
 }
 
 /**
@@ -201,19 +211,23 @@ export interface PaymentRequiredPayload {
    * to internal phrasing. Only set on irrecoverable 402s today.
    */
   code?: PaymentRequiredCode;
+  /** Complete reserve requirement for an expensive request such as video. */
+  reservePlan?: ReserveAuthorizationPlan;
+}
+
+export interface ReserveAuthorizationPlan {
+  /** Reserve currently locked, or the initial reserve requested for a fresh channel. */
+  currentReserveAmount: string;
+  /** Cumulative SpendingAuth required by the contract before topUp(). */
+  requiredCumulativeAmount: string;
+  /** Final on-chain reserve ceiling required before the request may start. */
+  finalReserveAmount: string;
+  /** Independently verifiable estimated price of this request. */
+  requestCost: string;
 }
 
 export const PAYMENT_CODE_CHANNEL_EXHAUSTED = 'channel_exhausted' as const;
 export type PaymentRequiredCode = typeof PAYMENT_CODE_CHANNEL_EXHAUSTED;
-
-/**
- * HTTP 402 body code for a new, valid video create that costs more than the
- * reserve still locked on the channel. The channel stays open: the buyer
- * raises the reserve (video advance + top-up) and resends the same create.
- * Sellers send it only after request validation, so buyers never top up for
- * a create that would not start a job.
- */
-export const PAYMENT_CODE_VIDEO_RESERVE_REQUIRED = 'video_reserve_required' as const;
 
 /**
  * Seller tells buyer that the current cumulative authorization is insufficient.
