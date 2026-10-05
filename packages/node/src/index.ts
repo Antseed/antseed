@@ -118,7 +118,9 @@ export {
   type PeerVerificationLink,
 } from './discovery/verification-links.js';
 export { MetadataServer, type MetadataServerConfig } from './discovery/metadata-server.js';
+export { parseVerifierCapabilities, normalizeAdvertisedVerifierIds, advertisesTeeSupport } from './discovery/verifier-capabilities.js';
 export { parsePublicAddress, MAX_PUBLIC_ADDRESS_LENGTH, type ParsedPublicAddress } from './discovery/public-address.js';
+export { sanitizePeerDisplayName } from './discovery/display-name.js';
 export {
   buildNetworkServiceOffers,
   inferServiceProtocol,
@@ -129,6 +131,7 @@ export {
   type NetworkServiceOffer,
 } from './discovery/service-catalog.js';
 export { MeteringStorage } from './metering/storage.js';
+export type { FreeTierConsumption } from './metering/storage.js';
 export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
@@ -242,6 +245,8 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
@@ -305,6 +310,17 @@ export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
 // Reputation
 export { UptimeTracker } from './reputation/uptime-tracker.js';
 export {
+  computeTrustScore, historyCurve, trustScore, shareCurve, SHARE_CURVE_RANGE,
+  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS,
+  type TrustBreakdown,
+} from './reputation/trust-score.js';
+export {
+  IdentityHistoryCollector, scoreIdentityHistory,
+  IDENTITY_HISTORY_VERSION, IDENTITY_HISTORY_TTL_MS, IDENTITY_GITHUB_MAX_POINTS, IDENTITY_DOMAIN_MAX_POINTS,
+  type IdentityHistoryEvidence, type IdentityHistory, type IdentityScore,
+} from './reputation/identity-history.js';
+export { TrustSignalsClient, type TrustSignals, type TrustSignalsAddresses } from './payments/evm/trust-signals-client.js';
+export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
@@ -312,22 +328,8 @@ export {
   type ModelReputationSource,
 } from './reputation/model-reputation.js';
 export {
-  computeOnChainTrust,
-  computeOnChainTrustBreakdown,
   buildSybilContext,
   computeOnChainSybilRisk,
-  computeOnChainScore,
-  scoreFromTrust,
-  computeOnChainReputationScore,
-  ON_CHAIN_TRUST_TICKET_TARGET_USDC,
-  ON_CHAIN_TRUST_TICKET_MIN,
-  ON_CHAIN_TRUST_TICKET_MAX,
-  ON_CHAIN_TRUST_RECENCY_FRESH_DAYS,
-  ON_CHAIN_TRUST_RECENCY_STALE_DAYS,
-  ON_CHAIN_TRUST_RECENCY_DORMANT_FACTOR,
-  ON_CHAIN_TRUST_STAKE_THRESHOLD_USDC,
-  ON_CHAIN_TRUST_NO_STAKE_FACTOR,
-  ON_CHAIN_SCORE_LOG_CAP_EXPONENT,
   SYBIL_WEIGHT_SUBFLOOR_TICKET,
   SYBIL_WEIGHT_BURN_RATE,
   SYBIL_WEIGHT_NARROW_CUSTOM,
@@ -340,11 +342,10 @@ export {
   SYBIL_YOUNG_CHANNEL_FLOOR,
   SYBIL_YOUNG_CHANNEL_SATURATION,
   SYBIL_ADVERTISED_CHEAP_INPUT_USD_PER_MILLION,
-  type OnChainTrustBreakdown,
   type SybilContext,
   type SybilRiskResult,
   type SybilFlag,
-} from './reputation/on-chain-reputation.js';
+} from './reputation/sybil-risk.js';
 export type { UptimeWindow, PeerUptimeRecord } from './reputation/uptime-tracker.js';
 export { ReportManager } from './reputation/report-manager.js';
 export type { PeerReport, ReportReason, ReportEvidence, ReportStatus } from './types/report.js';

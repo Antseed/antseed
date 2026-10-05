@@ -78,7 +78,7 @@ docs/protocol/      Protocol specification and plugin templates
 ```
 
 ## Tech Stack
-- **Runtime**: Node.js >=20, ES modules throughout
+- **Development runtime**: Node.js 24 (pinned in `.nvmrc` and Volta), ES modules throughout. Published package engine ranges and Electron's embedded runtime are separate from this development pin.
 - **Language**: TypeScript 5.x with strict mode
 - **Package Manager**: pnpm workspaces
 - **Build**: tsc for libraries, Vite for web apps and Electron renderer

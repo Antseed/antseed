@@ -10,7 +10,6 @@ import { loadConfig } from '../../../config/loader.js';
 import {
   AntseedNode,
   buildNetworkServiceOffers,
-  computeOnChainReputationScore,
   type NetworkServiceOffer,
   type PeerInfo,
 } from '@antseed/node';
@@ -210,8 +209,9 @@ function resolveBestPaidPricing(peer: PeerInfo): { input: number | null; output:
   return { input: bestInput, output: bestOutput };
 }
 
+/** Buyer trust score (0-100) as computed by the node; the CLI never re-scores. */
 function effectiveOnChainReputationScore(peer: PeerInfo): number | null {
-  return peer.onChainReputationScore ?? computeOnChainReputationScore(peer);
+  return peer.onChainReputationScore ?? null;
 }
 
 const BROWSE_SYBIL_WARN_THRESHOLD = 0.30;
@@ -221,11 +221,16 @@ function isPeerSybilRisky(peer: PeerInfo): boolean {
     && peer.onChainSybilRisk >= BROWSE_SYBIL_WARN_THRESHOLD;
 }
 
+/** Proven wash trader per `AntseedWashTradingRegistry`; the trust score is 0. */
+function isPeerWashFlagged(peer: PeerInfo): boolean {
+  return peer.onChainWashFlagged === true;
+}
+
 function formatReputationScore(peer: PeerInfo): string {
   const score = effectiveOnChainReputationScore(peer);
   if (score == null) return chalk.dim('—');
   const formatted = (score / 10).toFixed(1);
-  const warn = isPeerSybilRisky(peer) ? chalk.red('⚠ ') : '';
+  const warn = isPeerSybilRisky(peer) || isPeerWashFlagged(peer) ? chalk.red('⚠ ') : '';
   if (score >= 80) return warn + chalk.green(formatted);
   if (score >= 50) return warn + chalk.cyan(formatted);
   if (score > 0)   return warn + chalk.yellow(formatted);
@@ -506,6 +511,10 @@ function renderCompactTable(peers: PeerInfo[], hasChainData: boolean): void {
   console.log(table.toString());
   if (!hasChainData) {
     console.log(chalk.dim('  Sessions / Volume / Last settled are dim — configure chain RPC to enable on-chain verification.'));
+  }
+  const washFlagged = peers.filter(isPeerWashFlagged);
+  if (washFlagged.length > 0) {
+    console.log(`  ${chalk.red('⚠')} ${chalk.red(`${washFlagged.length} peer(s) are proven wash traders (on-chain registry) — trust 0`)}${chalk.dim(`: ${washFlagged.map((peer) => peer.peerId.slice(0, 12)).join(', ')}`)}`);
   }
   const anySybilWarn = peers.some(isPeerSybilRisky);
   if (anySybilWarn) {

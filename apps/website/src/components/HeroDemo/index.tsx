@@ -1,5 +1,5 @@
 /**
- * HeroDemo — the live VPR demo animation from the hero prototype
+ * HeroDemo — the live AI VPN demo animation from the hero prototype
  * (antseed-website.vercel.app), ported 1:1 from its Remotion
  * composition: a 2048×1152 scene at 30 fps over 582 frames.
  *
@@ -19,7 +19,7 @@ import {
   type ReactNode,
 } from 'react';
 
-export const DEMO_FPS = 30;
+const DEMO_FPS = 30;
 export const DEMO_TOTAL_FRAMES = 582;
 
 /* ---------- timeline beats (the prototype's `i9`) ---------- */
@@ -159,7 +159,7 @@ function fadeOut(frame: number) {
 function useOut() {
   const frame = useFrame();
   const shut = useShutdown();
-  return fadeOut(shut !== null ? shut : frame);
+  return fadeOut(shut ?? frame);
 }
 
 function growth(frame: number, start: number, end: number) {
@@ -170,6 +170,21 @@ function growth(frame: number, start: number, end: number) {
 
 function phaseT(frame: number, start: number, end: number) {
   return frame < start || frame > end ? null : (frame - start) / (end - start);
+}
+
+interface Flow {
+  start: number;
+  end: number;
+  reverse: boolean;
+}
+
+/* the flow pulse running at `frame` with its 0..1 progress, if any */
+function activeFlow(frame: number, flows: Flow[]): {f: Flow; t: number} | null {
+  for (const f of flows) {
+    const t = phaseT(frame, f.start, f.end);
+    if (t !== null) return {f, t};
+  }
+  return null;
 }
 
 function dashOffset(t: number, dash: number, len: number, reverse: boolean) {
@@ -187,7 +202,7 @@ const asset = (name: string) => `/img/demo/${name}`;
    Mobile composition — one centred column instead of the wide scene.
    The chat windows drop out; what is left is the story of a single
    request, stacked top -> bottom in the order the timeline already
-   tells it: the VPR, the price it got, the network it got it from.
+   tells it: the AI VPN, the price it got, the network it got it from.
 
    Hierarchy comes from nested widths — card 524 < routing pill 580 <
    network bar 636, in even 56px steps — so the card stays the
@@ -240,49 +255,64 @@ function Caret() {
   );
 }
 
-function PlusIcon({size, color, strokeWidth}: {size: number; color: string; strokeWidth: number}) {
+interface IconProps {
+  size: number;
+  color: string;
+  strokeWidth: number;
+}
+
+/* 24-unit stroked icon frame shared by the chat chrome glyphs below */
+function StrokeIcon({size, color, strokeWidth, children}: IconProps & {children: ReactNode}) {
   return (
     <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
-      <path d="M5 12h14" />
-      <path d="M12 5v14" />
+      {children}
     </svg>
   );
 }
 
-function MicIcon({size, color, strokeWidth}: {size: number; color: string; strokeWidth: number}) {
+function PlusIcon(props: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <StrokeIcon {...props}>
+      <path d="M5 12h14" />
+      <path d="M12 5v14" />
+    </StrokeIcon>
+  );
+}
+
+function MicIcon(props: IconProps) {
+  return (
+    <StrokeIcon {...props}>
       <path d="M12 19v3" />
       <path d="M19 10v2a7 7 0 0 1-14 0v-2" />
       <rect x="9" y="2" width="6" height="13" rx="3" />
-    </svg>
+    </StrokeIcon>
   );
 }
 
-function ArrowUpIcon({size, color, strokeWidth}: {size: number; color: string; strokeWidth: number}) {
+function ArrowUpIcon(props: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <StrokeIcon {...props}>
       <path d="m5 12 7-7 7 7" />
       <path d="M12 19V5" />
-    </svg>
+    </StrokeIcon>
   );
 }
 
-function GlobeIcon({size, color, strokeWidth}: {size: number; color: string; strokeWidth: number}) {
+function GlobeIcon(props: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <StrokeIcon {...props}>
       <circle cx="12" cy="12" r="9.25" />
       <path d="M2.75 12h18.5" />
       <path d="M12 2.75a13.5 13.5 0 0 1 0 18.5 13.5 13.5 0 0 1 0-18.5" />
-    </svg>
+    </StrokeIcon>
   );
 }
 
-function ChevronDownIcon({size, color, strokeWidth}: {size: number; color: string; strokeWidth: number}) {
+function ChevronDownIcon(props: IconProps) {
   return (
-    <svg width={size} height={size} viewBox="0 0 24 24" fill="none" stroke={color} strokeWidth={strokeWidth} strokeLinecap="round" strokeLinejoin="round">
+    <StrokeIcon {...props}>
       <path d="m6 9 6 6 6-6" />
-    </svg>
+    </StrokeIcon>
   );
 }
 
@@ -314,6 +344,20 @@ function ChatApp({
   const typing = frame >= typingStart && frame < msgEnd;
   const responding = frame >= respStart && frame < respEnd;
   const sent = frame >= msgEnd;
+
+  let composer: ReactNode;
+  if (typing) {
+    composer = (
+      <>
+        {PROMPT.slice(0, typedChars)}
+        {blink && <Caret />}
+      </>
+    );
+  } else if (frame < typingStart) {
+    composer = <>Write a message...{blink ? '|' : ' '}</>;
+  } else {
+    composer = 'Write a message...';
+  }
 
   return (
     <div
@@ -422,16 +466,7 @@ function ChatApp({
             gap: 8,
           }}>
           <span style={{fontSize: 22, color: typing ? INK : MUTED, fontFamily: DEMO_FONT, minHeight: 22}}>
-            {typing ? (
-              <>
-                {PROMPT.slice(0, typedChars)}
-                {blink && <Caret />}
-              </>
-            ) : frame < typingStart ? (
-              <>Write a message...{blink ? '|' : ' '}</>
-            ) : (
-              'Write a message...'
-            )}
+            {composer}
           </span>
           <div style={{display: 'flex', alignItems: 'center', justifyContent: 'space-between'}}>
             <PlusIcon size={32} color={MUTED} strokeWidth={1.8} />
@@ -459,7 +494,7 @@ function ChatApp({
 }
 
 /* ============================================================
-   VPR card with power button (`av`)
+   AI VPN card with power button (`av`)
    ============================================================ */
 function VprCard({
   left = 1110,
@@ -477,12 +512,7 @@ function VprCard({
 
   // How far the loop's own closing beat has run: the manual shutdown drives the
   // exact same curves, just from a virtual frame instead of the scene frame.
-  const closing = interp(
-    shut !== null ? shut : frame,
-    [B.fadeOutStart, B.fadeOutEnd],
-    [1, 0],
-    easeOutExp,
-  );
+  const closing = interp(shut ?? frame, [B.fadeOutStart, B.fadeOutEnd], [1, 0], easeOutExp);
   const powerOn =
     interp(frame, [B.powerBtnOnStart, B.powerBtnOnEnd], [0, 1], easeOutExp) * closing;
   const press =
@@ -497,11 +527,7 @@ function VprCard({
   const surface =
     120 * interp(frame, [B.surfaceStart, B.surfaceEnd], [0, 1], easeInOutCubic);
   const mask = `radial-gradient(circle at 50% 20.2%, #000 ${Math.max(0, surface - 26)}%, rgba(0,0,0,0) ${surface}%)`;
-  const cardOpacity = interp(
-    shut !== null ? shut : frame,
-    [B.fadeOutStart, B.fadeOutEnd],
-    [1, 0],
-  );
+  const cardOpacity = interp(shut ?? frame, [B.fadeOutStart, B.fadeOutEnd], [1, 0]);
   const glowPulse = 0.5 - 0.5 * Math.cos((frame / 40) * Math.PI);
   const btnLeft = 184;
   const btnTop = 52.896;
@@ -573,7 +599,7 @@ function VprCard({
             onClick={onToggle}
             onPointerEnter={() => setHover(true)}
             onPointerLeave={() => setHover(false)}
-            aria-label={powerOn > 0.5 ? 'Turn the VPR demo off' : 'Turn the VPR demo on'}
+            aria-label={powerOn > 0.5 ? 'Turn the AI VPN demo off' : 'Turn the AI VPN demo on'}
             aria-pressed={powerOn > 0.5}
             style={{
               position: 'absolute',
@@ -618,9 +644,7 @@ function UpperConnector() {
   if (grow <= 0 || out <= 0) return null;
   const dash = `${84 * grow} 84`;
   const offset = -(84 * (1 - grow));
-  const active = flows
-    .map((f) => ({f, t: phaseT(frame, f.start, f.end)}))
-    .find((e) => e.t !== null);
+  const active = activeFlow(frame, flows);
   return (
     <svg width={172} height={24} viewBox="0 0 86 12" style={{position: 'absolute', left: 594, top: 364, overflow: 'visible', opacity: out}}>
       <defs>
@@ -633,7 +657,7 @@ function UpperConnector() {
       </defs>
       <path d={UPPER_PATH} fill="none" stroke="#059669" strokeWidth={1.5} strokeLinecap="round" strokeDasharray={dash} strokeDashoffset={offset} opacity={0.55} />
       <path d={UPPER_PATH} fill="none" stroke="#A7F3D0" strokeWidth={2.5} strokeLinecap="round" strokeDasharray={dash} strokeDashoffset={offset} opacity={0.7} filter="url(#cl2-glow-tight)" />
-      {grow >= 1 && active && active.t !== null && (
+      {grow >= 1 && active && (
         <>
           <path d={UPPER_PATH} fill="none" stroke="#ECFDF5" strokeWidth={7} strokeLinecap="round" strokeDasharray="24 84" strokeDashoffset={dashOffset(active.t, 24, 84, active.f.reverse)} opacity={0.28 * pulseFade(active.t)} filter="url(#cl2-flow)" />
           <path d={UPPER_PATH} fill="none" stroke="#FFFFFF" strokeWidth={2.5} strokeLinecap="round" strokeDasharray="12 84" strokeDashoffset={dashOffset(active.t, 12, 84, active.f.reverse)} opacity={0.7 * pulseFade(active.t)} filter="url(#cl2-glow-tight)" />
@@ -654,9 +678,7 @@ function LowerConnector() {
   const out = useOut();
   if (grow <= 0 || out <= 0) return null;
   const dash = `${79 * grow} 79`;
-  const active = flows
-    .map((f) => ({f, t: phaseT(frame, f.start, f.end)}))
-    .find((e) => e.t !== null);
+  const active = activeFlow(frame, flows);
   return (
     <svg width={40} height={158} viewBox="0 0 20 79" style={{position: 'absolute', left: 1004, top: 756, overflow: 'visible', opacity: out}}>
       <defs>
@@ -669,7 +691,7 @@ function LowerConnector() {
       </defs>
       <path d={LOWER_PATH} fill="none" stroke="#059669" strokeWidth={1.5} strokeLinecap="round" strokeDasharray={dash} strokeDashoffset={0} opacity={0.55} />
       <path d={LOWER_PATH} fill="none" stroke="#A7F3D0" strokeWidth={3} strokeLinecap="round" strokeDasharray={dash} strokeDashoffset={0} opacity={0.75} filter="url(#vcl2-glow-tight)" />
-      {grow >= 1 && active && active.t !== null && (
+      {grow >= 1 && active && (
         <>
           <path d={LOWER_PATH} fill="none" stroke="#ECFDF5" strokeWidth={9} strokeLinecap="round" strokeDasharray="22 79" strokeDashoffset={dashOffset(active.t, 22, 79, active.f.reverse)} opacity={0.3 * pulseFade(active.t)} filter="url(#vcl2-flow)" />
           <path d={LOWER_PATH} fill="none" stroke="#FFFFFF" strokeWidth={3} strokeLinecap="round" strokeDasharray="11 79" strokeDashoffset={dashOffset(active.t, 11, 79, active.f.reverse)} opacity={0.75 * pulseFade(active.t)} filter="url(#vcl2-glow-tight)" />
@@ -689,9 +711,7 @@ function SavingConnector() {
   const out = useOut();
   if (grow <= 0 || out <= 0) return null;
   const dash = `${98 * grow} 98`;
-  const active = flows
-    .map((f) => ({f, t: phaseT(frame, f.start, f.end)}))
-    .find((e) => e.t !== null);
+  const active = activeFlow(frame, flows);
   return (
     <svg width={200} height={24} viewBox="0 0 100 12" style={{position: 'absolute', left: 1286, top: 364, overflow: 'visible', opacity: out}}>
       <defs>
@@ -704,7 +724,7 @@ function SavingConnector() {
       </defs>
       <path d={SAVING_PATH} fill="none" stroke="#059669" strokeWidth={1.5} strokeLinecap="round" strokeDasharray={dash} strokeDashoffset={0} opacity={0.55} />
       <path d={SAVING_PATH} fill="none" stroke="#A7F3D0" strokeWidth={2.5} strokeLinecap="round" strokeDasharray={dash} strokeDashoffset={0} opacity={0.7} filter="url(#sc2-glow-tight)" />
-      {grow >= 1 && active && active.t !== null && (
+      {grow >= 1 && active && (
         <>
           <path d={SAVING_PATH} fill="none" stroke="#ECFDF5" strokeWidth={7} strokeLinecap="round" strokeDasharray="26 98" strokeDashoffset={dashOffset(active.t, 26, 98, active.f.reverse)} opacity={0.28 * pulseFade(active.t)} filter="url(#sc2-flow)" />
           <path d={SAVING_PATH} fill="none" stroke="#FFFFFF" strokeWidth={2.5} strokeLinecap="round" strokeDasharray="13 98" strokeDashoffset={dashOffset(active.t, 13, 98, active.f.reverse)} opacity={0.7 * pulseFade(active.t)} filter="url(#sc2-glow-tight)" />
@@ -735,7 +755,7 @@ function StackConnector({
   top: number;
   len: number;
   grow: {start: number; end: number};
-  flows: {start: number; end: number; reverse: boolean}[];
+  flows: Flow[];
 }) {
   const frame = useFrame();
   const grow = growth(frame, growBeats.start, growBeats.end);
@@ -743,9 +763,7 @@ function StackConnector({
   if (grow <= 0 || out <= 0) return null;
   const d = `M 20 0 L 20 ${len}`;
   const dash = `${len * grow} ${len}`;
-  const active = flows
-    .map((f) => ({f, t: phaseT(frame, f.start, f.end)}))
-    .find((e) => e.t !== null);
+  const active = activeFlow(frame, flows);
   return (
     <svg
       width={40}
@@ -762,7 +780,7 @@ function StackConnector({
       </defs>
       <path d={d} fill="none" stroke="#059669" strokeWidth={3} strokeLinecap="round" strokeDasharray={dash} opacity={0.55} />
       <path d={d} fill="none" stroke="#A7F3D0" strokeWidth={6} strokeLinecap="round" strokeDasharray={dash} opacity={0.75} filter={`url(#${id}-tight)`} />
-      {grow >= 1 && active && active.t !== null && (
+      {grow >= 1 && active && (
         <>
           <path d={d} fill="none" stroke="#ECFDF5" strokeWidth={18} strokeLinecap="round" strokeDasharray={`44 ${len}`} strokeDashoffset={dashOffset(active.t, 44, len, active.f.reverse)} opacity={0.3 * pulseFade(active.t)} filter={`url(#${id}-flow)`} />
           <path d={d} fill="none" stroke="#FFFFFF" strokeWidth={6} strokeLinecap="round" strokeDasharray={`22 ${len}`} strokeDashoffset={dashOffset(active.t, 22, len, active.f.reverse)} opacity={0.75 * pulseFade(active.t)} filter={`url(#${id}-tight)`} />
@@ -773,7 +791,7 @@ function StackConnector({
 }
 
 /* ============================================================
-   AntSeed network searching bar (`al`)
+   Antseed network searching bar (`al`)
    ============================================================ */
 function NetworkBar({
   opacity = 1,
@@ -985,7 +1003,7 @@ function MobileScene({onToggle}: {onToggle?: () => void}) {
 
   return (
     <div style={{position: 'absolute', inset: 0}}>
-      {/* 1 — the VPR itself: 524 wide, centred, the anchor of the column */}
+      {/* 1 — the AI VPN itself: 524 wide, centred, the anchor of the column */}
       <VprCard left={M_CX - 262} top={0} onToggle={onToggle} />
 
       {/* 2 — routing + model roulette, sized to cover the card's baked-in
@@ -1018,7 +1036,7 @@ function MobileScene({onToggle}: {onToggle?: () => void}) {
         scale={M_TOKENS_S * tokens.scale}
       />
 
-      {/* 4 — VPR -> network, with the anonymous relay sitting on the line.
+      {/* 4 — AI VPN -> network, with the anonymous relay sitting on the line.
              The node stays small enough that the wire still reads either
              side of it — it is a stop on the line, not a break in it. */}
       <StackConnector
@@ -1185,6 +1203,7 @@ export function HeroDemo({
   frameRef,
   shutdownRef,
   className,
+  compact = false,
 }: {
   /** Shared frame counter (read by the hero dot canvas each rAF). */
   frameRef?: MutableRefObject<number>;
@@ -1194,20 +1213,24 @@ export function HeroDemo({
    */
   shutdownRef?: MutableRefObject<number>;
   className?: string;
+  /** Force the stacked single-column scene regardless of viewport width
+      (used when the demo shares the hero row with the copy). */
+  compact?: boolean;
 }) {
   const hostRef = useRef<HTMLDivElement>(null);
   const [frame, setFrame] = useState(0);
   const [shut, setShut] = useState<number | null>(null);
   const [interactive, setInteractive] = useState(false);
   const [scale, setScale] = useState(0.5);
-  const [mobile, setMobile] = useState(false);
+  const [mobileMq, setMobileMq] = useState(false);
+  const mobile = compact || mobileMq;
   const modeRef = useRef<PowerMode>('running');
   const originRef = useRef(0); // clock origin (ms) — frame 0 of the loop
   const frozenRef = useRef(0); // scene frame held during shutdown
   const shutStartRef = useRef(0);
 
   /**
-   * Power button. While the VPR reads as on, a click plays the loop's closing
+   * Power button. While the AI VPN reads as on, a click plays the loop's closing
    * beat over the frozen frame and parks the demo off; otherwise it restarts
    * the loop at the button press so the whole opening replays.
    */
@@ -1226,7 +1249,7 @@ export function HeroDemo({
 
   useEffect(() => {
     const mq = window.matchMedia('(max-width: 768px)');
-    const update = () => setMobile(mq.matches);
+    const update = () => setMobileMq(mq.matches);
     update();
     mq.addEventListener('change', update);
     return () => mq.removeEventListener('change', update);

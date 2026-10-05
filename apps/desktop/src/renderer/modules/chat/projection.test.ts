@@ -35,7 +35,7 @@ const autoSelection: VprRouteSelection = {
   peerId: null,
 };
 
-test('returns null when VPR selection has no model', () => {
+test('returns null when AI VPN selection has no model', () => {
   assert.equal(findChatOptionForVprSelection([option()], { model: null, mode: 'auto', peerId: null }), null);
 });
 
@@ -90,14 +90,14 @@ function discoverRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
     lifetimeLastSessionAt: null,
     onChainChannelCount: null,
     agentId: 1,
-    stakeUsdc: '0',
+    poolStakeAnts: 0,
     onChainActiveChannelCount: 0,
     onChainGhostCount: 0,
     onChainTotalVolumeUsdc: '0',
     onChainLastSettledAt: 0,
     effectiveReputationScore: 75,
     onChainReputationScore: null,
-    onChainTrustScore: null,
+    washFlagged: null,
     onChainSybilRisk: null,
     onChainSybilFlags: [],
     networkRequests: null,
@@ -136,7 +136,6 @@ test('auto mode does not bypass the minimum reputation gate', () => {
   const rows = [discoverRow({
     effectiveReputationScore: 49,
     onChainReputationScore: 49,
-    onChainTrustScore: 49,
   })];
 
   assert.equal(

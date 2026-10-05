@@ -23,7 +23,7 @@
 <path opacity="0.15" d="M21.7002 7.69995L23.1002 14" stroke="#1FD87A" stroke-width="0.52" stroke-linecap="round"/>
 <path opacity="0.15" d="M4.8999 14L5.5999 21" stroke="#1FD87A" stroke-width="0.52" stroke-linecap="round"/>
 <path opacity="0.15" d="M23.0999 14L22.3999 21" stroke="#1FD87A" stroke-width="0.52" stroke-linecap="round"/>
-<!-- VPR text — translated to x=30, vertically centered (y offset = (28-11)/2 = 8.5), same cap grid and stroke weight as the ant mark -->
+<!-- AI VPN text — translated to x=30, vertically centered (y offset = (28-11)/2 = 8.5), same cap grid and stroke weight as the ant mark -->
 <g transform="translate(30, 8.5)">
 <path d="M2.87394 10.7628L0 0.237196H1.77376L3.88431 8.29054L5.99487 0.237196H7.76863L4.89468 10.7628H2.87394Z" fill="currentColor"/>
 <g transform="translate(9.33, 0)">

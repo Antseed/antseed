@@ -11,11 +11,12 @@ export function Toasts() {
     <div className="toasts" role="region" aria-label="Transaction notifications">
       {toasts.map((toast) => (
         <div key={toast.id} className={`toast toast--${toast.tone}`} role={toast.tone === 'danger' ? 'alert' : 'status'}>
-          <StatusIcon status={toast.tone === 'danger' ? 'failed' : 'done'} />
+          <StatusIcon status={toast.tone === 'danger' ? 'failed' : toast.tone === 'info' ? 'running' : 'done'} />
           <div className="toast-body">
             <div className="toast-title">{toast.title}</div>
             {toast.body ? <div className="toast-text">{toast.body}</div> : null}
             {toast.hash ? <TxLink hash={toast.hash} /> : null}
+            {toast.link ? <a className="toast-link" href={toast.link.href}>{toast.link.label} →</a> : null}
           </div>
           <IconButton label="Dismiss" className="toast-close" onClick={() => dismissToast(toast.id)}>
             <CloseIcon />

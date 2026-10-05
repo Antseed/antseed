@@ -264,7 +264,7 @@ function rememberedPinFor(provider: string, serviceId: string): string | null {
 function actionSelectVprModel(provider: string, serviceId: string, peerId: string | null = null): void {
   const entry = findCatalogEntry(uiState.vprModelCatalog, provider, serviceId);
   if (!entry) return;
-  // Image models are internal-chat tools, not VPR defaults. Restore a
+  // Image models are internal-chat tools, not AI VPN defaults. Restore a
   // remembered explicit seller pin when the model page hands the model to
   // chat; clearing Auto removes that remembered pin first.
   if (entry.kind === 'image') {
@@ -548,10 +548,10 @@ async function actionStopConnect(): Promise<void> {
   notifyUiStateChanged();
   setRuntimeActivity('warn', 'Stopping buyer runtime...', 8_000);
   try {
-    // Stopping routing also disconnects connected apps — their configs are
-    // restored so requests go direct again instead of failing against a
-    // stopped runtime while the UI still says "Connected".
-    await bridge?.systemProxyStop?.().catch(() => undefined);
+    // Stopping the buyer is an offline state, not a disconnect: connected
+    // apps keep their configs and rows and pick the buyer back up when it
+    // returns. App configs are only removed when the user disconnects the
+    // app itself (issue #1016).
     await stop('connect');
     await refreshAll('manual');
   } catch (err) {
@@ -559,6 +559,13 @@ async function actionStopConnect(): Promise<void> {
     appendSystemLog(`Action failed: ${message}`);
     setRuntimeActivity('bad', `Action failed: ${message}`, 8_000);
   }
+}
+
+async function actionRestartConnect(): Promise<void> {
+  try {
+    await actionStopConnect();
+  } catch { /* may not be running */ }
+  await actionStartConnect();
 }
 
 async function actionStartAll(): Promise<void> {
@@ -609,6 +616,7 @@ async function actionClearLogs(): Promise<void> {
 registerActions({
   startConnect: () => { recordUserAction('runtime_start', 'connection'); return actionStartConnect(); },
   stopConnect: () => { recordUserAction('runtime_stop', 'connection'); return actionStopConnect(); },
+  restartConnect: actionRestartConnect,
   startAll: () => { recordUserAction('runtime_start', 'home'); return actionStartAll(); },
   stopAll: () => { recordUserAction('runtime_stop', 'home'); return actionStopAll(); },
   refreshAll: () => { recordUserAction('discovery_refresh', 'unknown'); return refreshAll('manual'); },

@@ -120,7 +120,7 @@ describe('BuyerRequestHandler payments-inactive 402 handling', () => {
     expect(parsed.error.peer_status).toBe(402);
     expect(parsed.error.message).toBe([
       'Oops, peer could not complete the request.',
-      'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+      'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
       'Original Response: {"message":"No billing tier matches this request.","status":402}',
     ].join('\n'));
   });
@@ -182,7 +182,7 @@ describe('BuyerRequestHandler payments-inactive 402 handling', () => {
     expect(parsed.error.peer_status).toBe(429);
     expect(parsed.error.message).toBe([
       'Oops, pinned peer could not complete the request.',
-      'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+      'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
       'Original Response: {"message":"Insufficient balance or no resource package. Please recharge.","status":429}',
     ].join('\n'));
   });

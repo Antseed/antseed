@@ -1,5 +1,3 @@
-@use './vpr/chip';
-
 .shell {
   display: grid;
   grid-template-columns: 88px minmax(0, 1fr);
@@ -132,17 +130,6 @@
      The carve-out must live on this static wrapper, not the animated pill:
      compositor-animated elements don't reliably register app-region rects. */
   -webkit-app-region: no-drag;
-}
-
-.creditsPill {
-  @include chip.chip-text;
-  display: block;
-  max-width: 180px;
-}
-
-.creditsPill:hover,
-.creditsPill:focus-visible {
-  @include chip.chip-hover;
 }
 
 /* Scroll-away: the pill tracks the view's first 56px of scroll (its top

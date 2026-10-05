@@ -1,5 +1,6 @@
-import { Contract, type AbstractSigner } from 'ethers';
+import { Contract, Interface, type AbstractSigner } from 'ethers';
 import { BaseEvmClient } from './base-evm-client.js';
+import { multicallRead, type MulticallRequest } from './multicall.js';
 
 export interface SellerPoolsClientConfig {
   rpcUrl: string;
@@ -81,6 +82,14 @@ const SELLER_POOLS_ABI = [
   'function stakerAgentActiveStake(address staker, uint256 agentId) external view returns (uint256)',
 ] as const;
 
+const SELLER_POOLS_IFACE = new Interface(SELLER_POOLS_ABI);
+
+function requiredRead(results: Array<unknown[] | null>, index: number, method: string): unknown[] {
+  const result = results[index];
+  if (!result) throw new Error(`Seller pool read failed: ${method}. Retry when the RPC is available.`);
+  return result;
+}
+
 export class SellerPoolsClient extends BaseEvmClient {
   private readonly antsTokenAddress: string;
   constructor(config: SellerPoolsClientConfig) {
@@ -127,11 +136,39 @@ export class SellerPoolsClient extends BaseEvmClient {
     return { id, owner: result[0], agentId: Number(result[1]), amount: result[2], weightAmount: result[3], stakeStartEpoch: Number(result[4]), stakeEndEpoch: Number(result[5]), closedAtEpoch: Number(result[6]), withdrawn: result[7] };
   }
   async positionsBatch(ids: number[]): Promise<SellerPoolPosition[]> {
-    const positions: SellerPoolPosition[] = [];
-    for (let offset = 0; offset < ids.length; offset += 16) {
-      positions.push(...await Promise.all(ids.slice(offset, offset + 16).map((id) => this.position(id))));
-    }
-    return positions;
+    const results = await multicallRead(this.provider, ids.map(id => ({ target: this.contractAddress, iface: SELLER_POOLS_IFACE, method: 'positions', args: [id] })));
+    return ids.map((id, index) => {
+      const result = requiredRead(results, index, `positions(${id})`) as [string, bigint, bigint, bigint, bigint, bigint, bigint, boolean];
+      return { id, owner: result[0], agentId: Number(result[1]), amount: result[2], weightAmount: result[3], stakeStartEpoch: Number(result[4]), stakeEndEpoch: Number(result[5]), closedAtEpoch: Number(result[6]), withdrawn: result[7] };
+    });
+  }
+  /** `maxLockedNext` is the max-lock state from the next epoch, where enable/disable changes take effect. */
+  async positionStatusesBatch(positions: SellerPoolPosition[], currentEpoch: number): Promise<Array<{ withdrawableEpoch: number; maxLocked: boolean; maxLockedNext: boolean; slashBps: number | null }>> {
+    const requests: MulticallRequest[] = [];
+    const add = (method: string, args: number[]): number => {
+      requests.push({ target: this.contractAddress, iface: SELLER_POOLS_IFACE, method, args });
+      return requests.length - 1;
+    };
+    const indices = positions.map(position => {
+      const open = !position.withdrawn && position.closedAtEpoch === 0;
+      return {
+        withdrawable: add('positionWithdrawableEpoch', [position.id]),
+        maxLock: open ? add('positionMaxLockPowerAtEpoch', [position.id, Math.max(currentEpoch, position.stakeStartEpoch)]) : null,
+        maxLockNext: open ? add('positionMaxLockPowerAtEpoch', [position.id, Math.max(currentEpoch + 1, position.stakeStartEpoch)]) : null,
+        slash: open ? add('earlyExitSlashBps', [position.id]) : null,
+      };
+    });
+    const results = await multicallRead(this.provider, requests);
+    const read = (index: number): bigint => requiredRead(results, index, requests[index]!.method)[0] as bigint;
+    return indices.map(({ withdrawable, maxLock, maxLockNext, slash }) => {
+      const withdrawableEpoch = Number(read(withdrawable));
+      return {
+        withdrawableEpoch,
+        maxLocked: maxLock !== null && read(maxLock) !== 0n,
+        maxLockedNext: maxLockNext !== null && read(maxLockNext) !== 0n,
+        slashBps: slash !== null && currentEpoch >= withdrawableEpoch ? Number(read(slash)) : null,
+      };
+    });
   }
   async positionWithdrawableEpoch(id: number): Promise<number> { return Number(await this.contract().getFunction('positionWithdrawableEpoch')(id)); }
   async earlyExitSlashBps(id: number): Promise<number> { return Number(await this.contract().getFunction('earlyExitSlashBps')(id)); }
@@ -154,12 +191,9 @@ export class SellerPoolsClient extends BaseEvmClient {
   async nextPositionId(): Promise<number> { return Number(await this.contract().getFunction('nextPositionId')()); }
   stakingSource(): Promise<string> { return this.contract().getFunction('stakingSource')(); }
   async poolConfig(): Promise<SellerPoolConfig> {
-    const contract = this.contract();
-    const [minStakeEpochs, maxStakeEpochs, stakeActivationDelay, maxSlashBps, minEarlyExitSlashBps, restakedRewardWeightBonusBps, moveWeightPenaltyBps] = await Promise.all([
-      contract.getFunction('minStakeEpochs')(), contract.getFunction('MAX_STAKE_EPOCHS')(), contract.getFunction('stakeActivationDelay')(),
-      contract.getFunction('maxSlashBps')(), contract.getFunction('minEarlyExitSlashBps')(),
-      contract.getFunction('restakedRewardWeightBonusBps')(), contract.getFunction('moveWeightPenaltyBps')(),
-    ]) as bigint[];
+    const methods = ['minStakeEpochs', 'MAX_STAKE_EPOCHS', 'stakeActivationDelay', 'maxSlashBps', 'minEarlyExitSlashBps', 'restakedRewardWeightBonusBps', 'moveWeightPenaltyBps'];
+    const results = await multicallRead(this.provider, methods.map(method => ({ target: this.contractAddress, iface: SELLER_POOLS_IFACE, method })));
+    const [minStakeEpochs, maxStakeEpochs, stakeActivationDelay, maxSlashBps, minEarlyExitSlashBps, restakedRewardWeightBonusBps, moveWeightPenaltyBps] = methods.map((method, index) => requiredRead(results, index, method)[0] as bigint);
     return {
       minStakeEpochs: Number(minStakeEpochs), maxStakeEpochs: Number(maxStakeEpochs), stakeActivationDelay: Number(stakeActivationDelay),
       maxSlashBps: Number(maxSlashBps), minEarlyExitSlashBps: Number(minEarlyExitSlashBps),

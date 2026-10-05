@@ -501,7 +501,7 @@ export function VprHomeView({ onSelectView }: Props) {
      exist the user knows the flow (the full list lives on the Apps page). */
   const appsPitch = (conversations === null ? !expectChats : conversations.length === 0) ? (
     <div className={styles.appsGroup}>
-      <p className={styles.appsLabel}>Use AntSeed on your favorite app</p>
+      <p className={styles.appsLabel}>Use Antseed on your favorite app</p>
 
       <div className={styles.toolList}>
         {/* Same lead items as the Apps tab (Telegram, Claude, Cursor), then
@@ -721,7 +721,7 @@ export function VprHomeView({ onSelectView }: Props) {
                   <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={18} strokeWidth={2} />
                   <span>
                     <strong>{restartProfiles.length === 1 ? restartProfiles[0]!.displayName : `${restartProfiles.length} apps`} need a restart</strong>
-                    <small>Restart to apply the VPR connection.</small>
+                    <small>Restart to apply the AI VPN connection.</small>
                   </span>
                 </button>
                 <button

@@ -44,21 +44,21 @@ const HELP_TOPICS: HelpTopic[] = [
     articles: [
       {
         key: 'what-is',
-        label: 'What the VPR does',
-        intro: 'The Virtual Private Router is like a VPN for AI: it routes AI requests from the tools you already use through the AntSeed network.',
+        label: 'What the AI VPN does',
+        intro: 'The AI VPN is like a VPN for AI: it routes AI requests from the tools you already use through the Antseed network.',
         sections: [
           {
             heading: 'Keep using your normal tools',
-            body: 'Connect apps such as coding assistants and AI clients, then keep working in their familiar interfaces while the VPR handles routing in the background.',
+            body: 'Connect apps such as coding assistants and AI clients, then keep working in their familiar interfaces while the AI VPN handles routing in the background.',
           },
           {
             heading: 'Choose how requests route',
-            body: 'The VPR discovers sellers, applies your model, price, and trust preferences, and handles pay-per-request settlement from your credits.',
+            body: 'The AI VPN discovers sellers, applies your model, price, and trust preferences, and handles pay-per-request settlement from your credits.',
           },
         ],
         links: [
-          { label: 'Read the complete VPR guide', url: VPR_GUIDE_URL },
-          { label: 'Understand the AntSeed protocol', url: `${DOCS_BASE_URL}/overview` },
+          { label: 'Read the complete AI VPN guide', url: VPR_GUIDE_URL },
+          { label: 'Understand the Antseed protocol', url: `${DOCS_BASE_URL}/overview` },
         ],
       },
       {
@@ -72,14 +72,14 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Stopping the router',
-            body: 'Stopping the router prevents connected apps from sending new requests through AntSeed. It does not remove their saved connection settings.',
+            body: 'Stopping the router prevents connected apps from sending new requests through Antseed. It does not remove their saved connection settings.',
           },
         ],
-        links: [{ label: 'Start and use the VPR', url: `${VPR_GUIDE_URL}#start-the-router` }],
+        links: [{ label: 'Start and use the AI VPN', url: `${VPR_GUIDE_URL}#start-the-router` }],
       },
       {
         key: 'chat',
-        label: 'Chat inside the VPR',
+        label: 'Chat inside the AI VPN',
         intro: 'Use the built-in chat when you want to talk to a network model without opening another tool. Start from the Home prompt or open Chat directly.',
         sections: [
           {
@@ -91,12 +91,12 @@ const HELP_TOPICS: HelpTopic[] = [
             body: 'View chats opens your conversation list. You can return to previous chats, start a clean chat with the current model, and search messages in the active conversation.',
           },
         ],
-        links: [{ label: 'Use the built-in VPR chat', url: `${VPR_GUIDE_URL}#chat-inside-the-vpr` }],
+        links: [{ label: 'Use the built-in AI VPN chat', url: `${VPR_GUIDE_URL}#chat-inside-the-vpr` }],
       },
       {
         key: 'apps',
         label: 'Connect your apps',
-        intro: 'Open Connected apps and select a detected tool. The VPR updates a supported config file or routes the app through its local proxy.',
+        intro: 'Open Connected apps and select a detected tool. The AI VPN updates a supported config file or routes the app through its local proxy.',
         sections: [
           {
             heading: 'Restart when prompted',
@@ -108,7 +108,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
         ],
         links: [
-          { label: 'Connect apps with the VPR', url: `${VPR_GUIDE_URL}#connect-an-ai-app` },
+          { label: 'Connect apps with the AI VPN', url: `${VPR_GUIDE_URL}#connect-an-ai-app` },
           { label: 'Open tool-specific integration guides', url: INTEGRATIONS_URL },
         ],
       },
@@ -157,7 +157,7 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'api',
         label: 'Use the local API',
-        intro: 'While the router is running, the VPR exposes an OpenAI- and Anthropic-compatible API at http://localhost:8377 for tools, SDKs, scripts, and curl.',
+        intro: 'While the router is running, the AI VPN exposes an OpenAI- and Anthropic-compatible API at http://localhost:8377 for tools, SDKs, scripts, and curl.',
         sections: [
           {
             heading: 'Browse available models',
@@ -169,11 +169,11 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Choose the route',
-            body: 'Use model "antseed" to follow the model selected in VPR, a catalog model id for automatic seller selection, or <peerId>@<model> to pin one seller.',
+            body: 'Use model "antseed" to follow the model selected in AI VPN, a catalog model id for automatic seller selection, or <peerId>@<model> to pin one seller.',
           },
         ],
         links: [
-          { label: 'Use the VPR local API', url: `${VPR_GUIDE_URL}#use-the-local-api` },
+          { label: 'Use the AI VPN local API', url: `${VPR_GUIDE_URL}#use-the-local-api` },
           { label: 'Open the complete API guide', url: `${DOCS_BASE_URL}/guides/using-the-api` },
         ],
       },
@@ -246,20 +246,20 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'prompt-visibility',
         label: 'Who can see my requests?',
-        intro: 'AntSeed is anonymous by default: sellers receive a pseudonymous peer or wallet identity, not an AntSeed account, name, email, or personal profile.',
+        intro: 'Antseed is anonymous by default: sellers receive a pseudonymous peer or wallet identity, not Antseed account, name, email, or personal profile.',
         sections: [
           {
             heading: 'Identity and content are separate',
-            body: 'A standard seller can process the prompt it serves, but AntSeed does not tell the seller who you are. Verified TEE routes can add stronger content confidentiality.',
+            body: 'A standard seller can process the prompt it serves, but Antseed does not tell the seller who you are. Verified TEE routes can add stronger content confidentiality.',
           },
           {
             heading: 'What stays local',
-            body: 'VPR configuration, connected-app setup, routing state, and local activity data remain on your device unless a feature explicitly sends them elsewhere.',
+            body: 'AI VPN configuration, connected-app setup, routing state, and local activity data remain on your device unless a feature explicitly sends them elsewhere.',
           },
         ],
         links: [
           { label: 'Privacy and seller visibility', url: `${VPR_GUIDE_URL}#privacy-transport-and-seller-trust` },
-          { label: 'Review AntSeed security boundaries', url: `${DOCS_BASE_URL}/security` },
+          { label: 'Review Antseed security boundaries', url: `${DOCS_BASE_URL}/security` },
         ],
       },
       {
@@ -269,7 +269,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'WebRTC is the fallback',
-            body: 'WebRTC DataChannels are used when a peer advertises WebRTC but cannot use direct encrypted TCP. WebRTC is not the primary VPR transport.',
+            body: 'WebRTC DataChannels are used when a peer advertises WebRTC but cannot use direct encrypted TCP. WebRTC is not the primary AI VPN transport.',
           },
           {
             heading: 'App connection is separate',
@@ -284,11 +284,11 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'certificate',
         label: 'Trust the local certificate',
-        intro: 'Apps connected through local HTTPS interception must trust the certificate authority the VPR generates on your computer.',
+        intro: 'Apps connected through local HTTPS interception must trust the certificate authority the AI VPN generates on your computer.',
         sections: [
           {
             heading: 'When it is needed',
-            body: 'Only intercepted HTTPS apps need the certificate. Apps configured to call the local VPR API directly do not.',
+            body: 'Only intercepted HTTPS apps need the certificate. Apps configured to call the local AI VPN API directly do not.',
           },
           {
             heading: 'Certificate errors',
@@ -325,7 +325,7 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'balance',
         label: 'Add and understand credits',
-        intro: 'Credits are USDC on Base deposited for your VPR signing identity. Paid requests consume credits through bounded seller payment channels.',
+        intro: 'Credits are USDC on Base deposited for your AI VPN signing identity. Paid requests consume credits through bounded seller payment channels.',
         sections: [
           {
             heading: 'Available and reserved',
@@ -337,7 +337,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
         ],
         links: [
-          { label: 'Manage VPR credits', url: `${VPR_GUIDE_URL}#credits-and-payments` },
+          { label: 'Manage AI VPN credits', url: `${VPR_GUIDE_URL}#credits-and-payments` },
           { label: 'Read the complete payments guide', url: `${DOCS_BASE_URL}/guides/payments` },
           { label: 'Verify official USDC addresses', url: 'https://developers.circle.com/stablecoins/usdc-contract-addresses' },
         ],
@@ -349,7 +349,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'Channel switchovers',
-            body: 'When a channel budget is exhausted, the VPR normally settles it and opens another automatically. One retry may be enough during the switchover.',
+            body: 'When a channel budget is exhausted, the AI VPN normally settles it and opens another automatically. One retry may be enough during the switchover.',
           },
           {
             heading: 'Inspect or close channels',
@@ -380,7 +380,7 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'identity',
         label: 'Signer and funding wallet',
-        intro: 'The VPR signing identity authorizes protocol messages and bounded channel spending. It is separate from the wallet used to fund credits.',
+        intro: 'The AI VPN signing identity authorizes protocol messages and bounded channel spending. It is separate from the wallet used to fund credits.',
         sections: [
           {
             heading: 'Desktop key storage',
@@ -388,7 +388,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Bounded exposure',
-            body: 'A funding wallet can deposit for the signer without giving the VPR control of that wallet. Signed channel authorizations are seller-specific, capped, and time-limited.',
+            body: 'A funding wallet can deposit for the signer without giving the AI VPN control of that wallet. Signed channel authorizations are seller-specific, capped, and time-limited.',
           },
         ],
         links: [{ label: 'Signer security boundaries', url: `${DOCS_BASE_URL}/security#signing-identity-vs-funding-wallet` }],
@@ -406,7 +406,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'Claiming',
-            body: 'When claims are available, the VPR opens a secure browser flow for the authorized wallet signature.',
+            body: 'When claims are available, the AI VPN opens a secure browser flow for the authorized wallet signature.',
           },
           {
             heading: 'No guarantees',
@@ -414,7 +414,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
         ],
         links: [
-          { label: 'Understand VPR rewards', url: `${VPR_GUIDE_URL}#rewards` },
+          { label: 'Understand AI VPN rewards', url: `${VPR_GUIDE_URL}#rewards` },
           { label: 'Read the ANTS token overview', url: 'https://antseed.com/ants-token' },
         ],
       },
@@ -435,7 +435,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Check network controls',
-            body: 'Security software may be blocking peer connections. AntSeed prefers encrypted TCP and uses WebRTC DataChannels as a fallback; WebRTC is not its only transport.',
+            body: 'Security software may be blocking peer connections. Antseed prefers encrypted TCP and uses WebRTC DataChannels as a fallback; WebRTC is not its only transport.',
           },
         ],
         links: [{ label: 'Troubleshoot missing peers and models', url: `${VPR_GUIDE_URL}#no-peers-or-models-are-listed` }],
@@ -447,7 +447,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'Check overrides',
-            body: 'Confirm the app is not overriding the base URL or API settings written by the VPR.',
+            body: 'Confirm the app is not overriding the base URL or API settings written by the AI VPN.',
           },
           {
             heading: 'Check compatibility',
@@ -462,7 +462,7 @@ const HELP_TOPICS: HelpTopic[] = [
       {
         key: 'tls',
         label: 'Certificate or SSL errors',
-        intro: 'An intercepted HTTPS app must trust the current certificate generated by the VPR.',
+        intro: 'An intercepted HTTPS app must trust the current certificate generated by the AI VPN.',
         sections: [
           {
             heading: 'Trust and restart',
@@ -470,7 +470,7 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Old certificate',
-            body: 'If an older AntSeed certificate is still trusted, trusting the current certificate replaces it for future intercepted connections.',
+            body: 'If an older Antseed certificate is still trusted, trusting the current certificate replaces it for future intercepted connections.',
           },
         ],
         links: [{ label: 'Fix certificate errors', url: `${VPR_GUIDE_URL}#an-app-reports-a-certificate-or-ssl-error` }],
@@ -482,7 +482,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'Channel switchovers',
-            body: 'When a channel is exhausted, the VPR normally settles it and opens another automatically. Retry the request once before changing configuration.',
+            body: 'When a channel is exhausted, the AI VPN normally settles it and opens another automatically. Retry the request once before changing configuration.',
           },
           {
             heading: 'Inspect Activity',
@@ -498,7 +498,7 @@ const HELP_TOPICS: HelpTopic[] = [
         sections: [
           {
             heading: 'Refresh the route',
-            body: 'Re-select the model in the VPR. If the error persists, disconnect and reconnect the app to refresh its model and endpoint state.',
+            body: 'Re-select the model in the AI VPN. If the error persists, disconnect and reconnect the app to refresh its model and endpoint state.',
           },
           {
             heading: 'Check the pin',
@@ -546,11 +546,11 @@ const HELP_TOPICS: HelpTopic[] = [
           },
           {
             heading: 'Useful bug details',
-            body: 'Include the VPR version, operating system, affected app, expected result, actual result, and redacted diagnostics.',
+            body: 'Include the AI VPN version, operating system, affected app, expected result, actual result, and redacted diagnostics.',
           },
         ],
         links: [
-          { label: 'Collect VPR diagnostics', url: `${VPR_GUIDE_URL}#collect-diagnostics` },
+          { label: 'Collect AI VPN diagnostics', url: `${VPR_GUIDE_URL}#collect-diagnostics` },
           { label: 'Open a GitHub issue', url: GITHUB_ISSUES_URL },
         ],
       },
@@ -684,7 +684,7 @@ export function VprHelpView({ onSelectView }: Props) {
       .map((event) => `[${event.mode}] ${event.line}`)
       .join('\n');
     const report = [
-      `AntSeed VPR v${appVersion}`,
+      `Antseed AI VPN v${appVersion}`,
       `Status: ${snap.networkHealth} | ${snap.connectBadgeLabel} | Port ${snap.proxyPort}`,
       `Network: ${snap.peers} peers, ${snap.serviceCount} services`,
       `Model: ${snap.modelLabel ?? 'none selected'}`,
@@ -783,7 +783,7 @@ export function VprHelpView({ onSelectView }: Props) {
 
   function renderRootPage() {
     return (
-      <VprPage title="Help & Support" backFallback="home">
+      <VprPage title="Help & Support" backFallback="credits">
       <div className={styles.stack}>
 
         <div className={styles.section}>
@@ -814,7 +814,7 @@ export function VprHelpView({ onSelectView }: Props) {
         </div>
 
         <div className={styles.section}>
-          <p className={styles.sectionLabel}>VPR</p>
+          <p className={styles.sectionLabel}>AI VPN</p>
           <VprCard>
             {HELP_TOPICS.map((entry) => (
               <button
@@ -829,7 +829,7 @@ export function VprHelpView({ onSelectView }: Props) {
             ))}
             <button type="button" className={styles.row} onClick={() => openExternal(VPR_GUIDE_URL)}>
               <span className={styles.rowText}>
-                <span className={styles.rowLabel}>Complete VPR guide</span>
+                <span className={styles.rowLabel}>Complete AI VPN guide</span>
                 <span className={styles.rowHint}>Full setup, security, payments and troubleshooting</span>
               </span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />

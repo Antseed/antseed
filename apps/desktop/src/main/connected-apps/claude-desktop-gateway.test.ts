@@ -86,7 +86,7 @@ test('health endpoint answers with the gateway marker header', async () => {
   });
 });
 
-test('/v1/models without a picker snapshot serves only the AntSeed Auto entry', async () => {
+test('/v1/models without a picker snapshot serves only the Antseed Auto entry', async () => {
   await withGateway(async (gateway) => {
     const res = await gatewayFetch(gateway, '/v1/models');
     assert.equal(res.status, 200);
@@ -94,7 +94,7 @@ test('/v1/models without a picker snapshot serves only the AntSeed Auto entry', 
     assert.equal(body.has_more, false);
     assert.equal(body.first_id, body.data[0]!['id']);
     assert.equal(body.data.length, 1);
-    assert.equal(body.data[0]!['display_name'], 'AntSeed Auto');
+    assert.equal(body.data[0]!['display_name'], 'Antseed Auto');
     assert.equal(body.data[0]!['anthropic_family_tier'], 'fable');
     assert.equal(body.data[0]!['is_family_default'], true);
   });
@@ -115,7 +115,7 @@ test('/v1/models advertises curated picker models behind the remaining Claude id
     assert.deepEqual(
       body.data.map((model) => [model['id'], model['display_name'], model['anthropic_family_tier']]),
       [
-        ['claude-fable-5', 'AntSeed Auto', 'fable'],
+        ['claude-fable-5', 'Antseed Auto', 'fable'],
         ['claude-opus-5', 'GLM 5.2', 'opus'],
         ['claude-sonnet-5', 'GPT 5.6 Sol', 'sonnet'],
         ['claude-sonnet-4-6', 'DeepSeek Flash', 'sonnet'],
@@ -132,7 +132,7 @@ test('/v1/models advertises curated picker models behind the remaining Claude id
 test('slot bindings stay stable when the picker reorders', async () => {
   // Claude caches the catalog it fetched — an id it shows as one model must
   // keep routing to that model even after the picker order changes (e.g. the
-  // user switches the VPR selection, which moves entries to the front).
+  // user switches the AI VPN selection, which moves entries to the front).
   let picker: ClaudeGatewayModel[] = [
     { label: 'GLM 5.2', model: 'glm-5.2' },
     { label: 'GPT 5.6 Sol', model: 'gpt-5.6-sol' },
@@ -144,7 +144,7 @@ test('slot bindings stay stable when the picker reorders', async () => {
       return body.data.map((model) => [model.id, model.display_name]);
     };
     assert.deepEqual(await catalog(), [
-      ['claude-fable-5', 'AntSeed Auto'],
+      ['claude-fable-5', 'Antseed Auto'],
       ['claude-opus-5', 'GLM 5.2'],
       ['claude-sonnet-5', 'GPT 5.6 Sol'],
     ]);
@@ -155,7 +155,7 @@ test('slot bindings stay stable when the picker reorders', async () => {
     ];
     // Same bindings after the reorder — nothing swaps slots.
     assert.deepEqual(await catalog(), [
-      ['claude-fable-5', 'AntSeed Auto'],
+      ['claude-fable-5', 'Antseed Auto'],
       ['claude-opus-5', 'GLM 5.2'],
       ['claude-sonnet-5', 'GPT 5.6 Sol'],
     ]);
@@ -184,7 +184,7 @@ test('a slot freed by a departed model is rebound to a new one', async () => {
     const res = await gatewayFetch(gateway, '/v1/models');
     const body = await res.json() as { data: { id: string; display_name: string }[] };
     assert.deepEqual(body.data.map((model) => [model.id, model.display_name]), [
-      ['claude-fable-5', 'AntSeed Auto'],
+      ['claude-fable-5', 'Antseed Auto'],
       // GLM left the picker, so its slot went to the newcomer; GPT kept its slot.
       ['claude-opus-5', 'Qwen4 235B'],
       ['claude-sonnet-5', 'GPT 5.6 Sol'],
@@ -210,7 +210,7 @@ test('slot bindings persist across gateway restarts and survive an empty picker'
     const res = await fetch(`http://127.0.0.1:${second.port}/v1/models`);
     const body = await res.json() as { data: { id: string; display_name: string }[] };
     assert.deepEqual(body.data.map((model) => [model.id, model.display_name]), [
-      ['claude-fable-5', 'AntSeed Auto'],
+      ['claude-fable-5', 'Antseed Auto'],
       ['claude-opus-5', 'GLM 5.2'],
     ]);
     await fetch(`http://127.0.0.1:${second.port}/v1/messages`, {
@@ -236,7 +236,7 @@ test('a network model matching a Claude slot id claims that slot', async () => {
     const res = await gatewayFetch(gateway, '/v1/models');
     const body = await res.json() as { data: { id: string; display_name: string }[] };
     assert.deepEqual(body.data.map((model) => [model.id, model.display_name]), [
-      ['claude-fable-5', 'AntSeed Auto'],
+      ['claude-fable-5', 'Antseed Auto'],
       // glm binds first in picker order, but the network Opus offer takes its
       // namesake slot so the id Claude sends means exactly that model.
       ['claude-opus-5', 'Claude Opus 5'],
@@ -310,7 +310,7 @@ test('/v1/messages/count_tokens forwards without the routing note', async () => 
   });
 });
 
-test('/v1/messages appends the AntSeed routing note to the system prompt', async () => {
+test('/v1/messages appends the Antseed routing note to the system prompt', async () => {
   await withGateway(async (gateway, buyer) => {
     const send = async (extra: Record<string, unknown>) => {
       await gatewayFetch(gateway, '/v1/messages', {
@@ -324,7 +324,7 @@ test('/v1/messages appends the AntSeed routing note to the system prompt', async
     // Claude's own system string is kept; the note rides at the end.
     const withSystem = await send({ model: 'claude-opus-5', system: 'You are a helpful assistant.', messages: [] });
     assert.ok((withSystem['system'] as string).startsWith('You are a helpful assistant.'));
-    assert.ok((withSystem['system'] as string).includes('delivered through the AntSeed peer-to-peer network'));
+    assert.ok((withSystem['system'] as string).includes('delivered through the Antseed peer-to-peer network'));
 
     // Block-array system prompts get the note as a trailing text block, so
     // earlier cache breakpoints stay valid.
@@ -337,11 +337,11 @@ test('/v1/messages appends the AntSeed routing note to the system prompt', async
     assert.equal(systemBlocks.length, 2);
     assert.deepEqual(systemBlocks[0], { type: 'text', text: 'base', cache_control: { type: 'ephemeral' } });
     assert.equal(systemBlocks[1]!.type, 'text');
-    assert.ok(systemBlocks[1]!.text.includes('AntSeed peer-to-peer network'));
+    assert.ok(systemBlocks[1]!.text.includes('Antseed peer-to-peer network'));
 
     // No system prompt at all still gets the note.
     const bare = await send({ model: 'antseed', messages: [] });
-    assert.ok((bare['system'] as string).includes('AntSeed peer-to-peer network'));
+    assert.ok((bare['system'] as string).includes('Antseed peer-to-peer network'));
   });
 });
 

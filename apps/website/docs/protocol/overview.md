@@ -8,7 +8,7 @@ hide_title: true
 
 # Protocol Overview
 
-AntSeed is a fully decentralized protocol for buying and selling AI services directly between peers, without any central server, marketplace, or intermediary. Nodes discover each other, negotiate terms, stream results, meter token usage, settle payments, and build reputation — all through direct peer-to-peer communication.
+Antseed is a fully decentralized protocol for buying and selling AI services directly between peers, without any central server, marketplace, or intermediary. Nodes discover each other, negotiate terms, stream results, meter token usage, settle payments, and build reputation — all through direct peer-to-peer communication.
 
 ## Architecture
 
@@ -58,5 +58,5 @@ points count, including the historical wash-trading filter. A reward exclusion
 does not itself reverse a payment or slash principal.
 
 :::info Provider Compliance
-AntSeed is designed for providers who build differentiated services on top of AI APIs — not for raw resale of API keys or subscription credentials. Subscription-based provider plugins are for local testing only. Providers are independent operators and are solely responsible for their infrastructure, outputs, logs, privacy practices, data handling, security, sanctions/export compliance, tax obligations, applicable AI laws, and upstream API provider terms.
+Antseed is designed for providers who build differentiated services on top of AI APIs — not for raw resale of API keys or subscription credentials. Subscription-based provider plugins are for local testing only. Providers are independent operators and are solely responsible for their infrastructure, outputs, logs, privacy practices, data handling, security, sanctions/export compliance, tax obligations, applicable AI laws, and upstream API provider terms.
 :::

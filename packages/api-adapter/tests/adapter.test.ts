@@ -1215,6 +1215,9 @@ describe('transformRequest responses to chat', () => {
     expect(body.tools).toEqual([{
       type: 'function',
       function: { name: 'search', description: 'Search the web', parameters: { type: 'object' } },
+    }, {
+      type: 'function',
+      function: { name: 'final_answer', parameters: { properties: {}, type: 'object' } },
     }]);
     expect(body.tool_choice).toBe('auto');
   });
@@ -1533,7 +1536,7 @@ describe('transformResponse chat to responses', () => {
     expect(output[0].id).toBe('msg_chatcmpl-abc_1');
     expect(output[0].role).toBe('assistant');
     expect(output[0].status).toBe('completed');
-    expect(output[0].phase).toBe('final_answer');
+    expect(output[0].phase).toBeUndefined();
 
     const content = output[0].content as Array<Record<string, unknown>>;
     expect(content[0]).toEqual({
@@ -2104,6 +2107,66 @@ describe('createStreamingAdapter chat to responses', () => {
 
     expect(JSON.parse(messageDone!.data).item.phase).toBe('commentary');
     expect(JSON.parse(completed!.data).response.output[0].phase).toBe('commentary');
+  });
+
+  it('tells Codex to stop when chat-only models use the explicit final-answer tool', () => {
+    const finalText = 'The test suite now covers both cases.';
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'kimi-k3',
+        instructions: 'Continue working with tools until done.',
+        input: [{ type: 'message', role: 'user', content: [{ type: 'input_text', text: 'Add tests.' }] }],
+        tools: [{ type: 'function', name: 'exec_command', parameters: { type: 'object' } }],
+      })),
+    });
+    const transformed = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' })!;
+    const chatResponse = makeOpenAIResponse({
+      body: new TextEncoder().encode(JSON.stringify({
+        id: 'chatcmpl-interim',
+        model: 'kimi-k3',
+        choices: [{ index: 0, finish_reason: 'tool_calls', message: { role: 'assistant', content: finalText, tool_calls: [{ id: 'call_final', type: 'function', function: { name: 'final_answer', arguments: '{}' } }] } }],
+        usage: { prompt_tokens: 20, completion_tokens: 7 },
+      })),
+    });
+    const adapted = adaptResponseForTest('openai-chat-completions', 'openai-responses', chatResponse, { fallbackModel: 'kimi-k3' });
+    const body = JSON.parse(new TextDecoder().decode(adapted.body)) as Record<string, unknown>;
+
+    expect(JSON.parse(new TextDecoder().decode(transformed.request.body)).messages[0].content)
+      .toContain('include the next tool call');
+    expect(body.end_turn).toBe(true);
+  });
+
+  it('tells Codex to continue after unmarked chat text responses', () => {
+    const chatResponse = makeOpenAIResponse({
+      body: new TextEncoder().encode(JSON.stringify({
+        id: 'chatcmpl-final',
+        model: 'kimi-k3',
+    choices: [{ index: 0, finish_reason: 'stop', message: { role: 'assistant', content: 'The test suite now covers both cases.' } }],
+        usage: { prompt_tokens: 20, completion_tokens: 9 },
+      })),
+    });
+    const adapted = adaptResponseForTest('openai-chat-completions', 'openai-responses', chatResponse, { fallbackModel: 'kimi-k3' });
+    const body = JSON.parse(new TextDecoder().decode(adapted.body)) as Record<string, unknown>;
+
+    expect(body.end_turn).toBe(false);
+  });
+
+  it('converts unmarked chat text streams into explicit tool terminations', () => {
+    const adapter = createStreamAdapterForTest('openai-chat-completions', 'openai-responses', '');
+    const chunks = adapter.adaptChunk({
+      requestId: 'req-interim-stream',
+      data: new TextEncoder().encode(
+        'data: {"id":"chatcmpl-final-stream","model":"kimi-k3","choices":[{"delta":{"content":"The test suite now covers both cases."},"finish_reason":"stop"}]}\n\n'
+        + 'data: [DONE]\n\n',
+      ),
+      done: true,
+    });
+    const events = parseSseEvents(chunks.map((chunk) => new TextDecoder().decode(chunk.data)).join(''));
+    const completed = events.find((event) => event.event === 'response.completed');
+
+    const response = JSON.parse(completed!.data).response;
+    expect(response.end_turn).toBe(true);
+    expect(response.output[0].type).toBe('message');
   });
 
   it('emits response.created first and avoids phantom text items for tool-only streams', () => {

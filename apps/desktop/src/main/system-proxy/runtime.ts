@@ -487,7 +487,17 @@ export type SystemProxyStartRequest = {
   profileSwitch?: boolean;
   /** Overrides the 5s default — launch restore allows a slow cold start. */
   readyTimeoutMs?: number;
+  /** Set by the launch-time reconnect only: it must not count as a user
+      action that takes the runtime over from the retry loop. */
+  launchRestore?: boolean;
 };
+
+/**
+ * Bumped by every user-driven connect or disconnect. The launch-time
+ * reconnect compares it across its retries: a change means the user took
+ * over the runtime while it was backing off, and the loop must stand down.
+ */
+let userRuntimeActions = 0;
 
 export function routeForTool(opts: SystemProxyStartRequest, profileName: string): { peerId: string; model: string; services: string[] } {
   const route = opts.toolRoutes?.[profileName];
@@ -514,6 +524,7 @@ export function routeForTool(opts: SystemProxyStartRequest, profileName: string)
 }
 
 export async function startSystemProxyRuntime(opts: SystemProxyStartRequest): Promise<RuntimeProcessState | null> {
+  if (!opts.launchRestore) userRuntimeActions += 1;
   systemProxyStartsInFlight += 1;
   try {
     return await startSystemProxyRuntimeInner(opts);
@@ -543,7 +554,7 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
     const profile = SYSTEM_PROXY_PROFILES.find((p) => p.name === name);
     if (profile?.configPatch) {
       removeConfigPatch(profile.configPatch, systemProxyWslTargetsPath());
-      deps().appendLog('system-proxy', 'system', `${profile.label}: removed AntSeed provider from config`);
+      deps().appendLog('system-proxy', 'system', `${profile.label}: removed Antseed provider from config`);
     }
   }
 
@@ -584,7 +595,7 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
       }
       // The patched config carries only the routed-model alias; the buyer
       // resolves it to the default route posted above, so the model picked in
-      // the floating pill / VPR applies to running tool sessions.
+      // the floating pill / AI VPN applies to running tool sessions.
       applyConfigPatch(profile.configPatch, defaultRoute.peerId, buyerProxyPort, systemProxyWslTargetsPath());
       deps().appendLog('system-proxy', 'system', `${profile.label}: connected by config patch (peer=${shortTrayPeerId(defaultRoute.peerId)}, model=${defaultRoute.model || 'auto'} via selection)`);
     } catch (err) {
@@ -616,6 +627,15 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
   );
 
   let state: RuntimeProcessState | null = null;
+  // A proxy that fails to come up is an outage, not a disconnect: the config
+  // patches above point at the buyer proxy, not at this process, so the apps
+  // they connect keep working and must keep their configs and their rows.
+  // Only the proxy-routed profiles are dropped from the active set (their
+  // proxy is not there), and only the transport is torn down — the OS must
+  // never be left pointing at a proxy that isn't listening. Removing every
+  // app config here used to turn a slow cold start or an unstable network
+  // into "all apps disconnected, configs gone" (issue #1016).
+  let proxyStartError: Error | null = null;
   if (proxyProfiles.length > 0) {
     state = await deps().processManager.start({
       mode: 'system-proxy',
@@ -632,15 +652,21 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
         deps().processManager.getState().find((entry) => entry.mode === 'system-proxy')
       ));
     } catch (err) {
-      await stopSystemProxyRuntime(true).catch(() => undefined);
-      throw err;
+      proxyStartError = err instanceof Error ? err : new Error(String(err));
+      state = null;
+      await deps().processManager.stop('system-proxy').catch(() => undefined);
+      await clearSystemProxyTransportSettings(port).catch(() => undefined);
+      await unlink(systemProxyPidPath()).catch(() => undefined);
+      deps().appendLog('system-proxy', 'system', `System Proxy start failed — keeping connected app configs in place: ${proxyStartError.message}`);
     }
-    if (!opts.profileSwitch) {
+    if (!opts.profileSwitch && !proxyStartError) {
       lastSystemProxySetupAt = Date.now();
     }
   }
 
-  const appliedProfiles = allProfiles.filter((name) => !failedConfigPatchProfiles.has(name));
+  const appliedProfiles = allProfiles.filter((name) => (
+    !failedConfigPatchProfiles.has(name) && (proxyStartError === null || isConfigPatchProfileName(name))
+  ));
   const appliedConfigPatchProfiles = configPatchProfiles.filter((name) => !failedConfigPatchProfiles.has(name));
   // The Claude gateway only has a reason to exist while a claude-desktop
   // profile is connected — stop it on disconnect (and on connect failure, so
@@ -661,14 +687,19 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
     defaultModel: opts.defaultModel,
     toolRoutes: opts.toolRoutes,
     activeProfileNames: appliedProfiles,
-    running: proxyProfiles.length > 0 ? state?.running === true : appliedConfigPatchProfiles.length > 0,
+    running: proxyProfiles.length > 0 && !proxyStartError ? state?.running === true : appliedConfigPatchProfiles.length > 0,
   } as RuntimeProcessState & Record<string, unknown>;
   await setActiveSystemProxyState(nextState);
   // Last, so the relaunched app reads config patches already on disk and a
   // proxy already listening.
-  await restartConnectedApps(newlyConnectedProfiles.filter((name) => !failedConfigPatchProfiles.has(name)));
+  await restartConnectedApps(newlyConnectedProfiles.filter((name) => appliedProfiles.includes(name)));
   const disconnectedProfiles = [...previousProfiles].filter((name) => !allProfiles.includes(name));
   await restartConnectedApps(disconnectedProfiles);
+  if (proxyStartError) {
+    // The config-patched apps are connected and persisted; the proxy the
+    // rest of the batch needs is not, and that must reach the caller's UI.
+    throw proxyStartError;
+  }
   if (newProfileConnectError) {
     // The survivors are connected and persisted; the profile this call was
     // asked to add still failed, and that must reach the caller's UI.
@@ -686,26 +717,30 @@ export async function restartSystemProxyRuntime(opts: SystemProxyStartRequest): 
  * Launch-time reconnect of the previous session's connected apps. Cold starts
  * are slow (native modules, P2P bootstrap) and a quick relaunch can find the
  * old instance still holding the port, so this allows a generous ready
- * timeout and retries. A failed start wipes the persisted state file (that is
- * correct for explicit disconnects), so if every attempt fails the profiles
- * are re-persisted — the next launch retries instead of silently forgetting
- * which apps were connected.
+ * timeout and retries. A failed start keeps the config-patched apps
+ * connected but drops the proxy-routed profiles from the persisted state, so
+ * if every attempt fails the full profile set is re-persisted — the next
+ * launch retries instead of silently forgetting which apps were connected.
  */
 export async function restoreSystemProxyProfilesAtLaunch(opts: SystemProxyStartRequest): Promise<void> {
   const persisted = readSystemProxyRuntimeMetadata();
+  const owner = userRuntimeActions;
   const attempts = 3;
   for (let attempt = 1; attempt <= attempts; attempt += 1) {
-    // A manual connect while we were backing off owns the runtime now.
-    if (attempt > 1 && activeSystemProxyState !== null) return;
+    // A manual connect or disconnect while we were backing off owns the
+    // runtime now. (A failed attempt itself leaves the config-patched apps
+    // connected and their state persisted, so a non-null state is no longer
+    // a sign of user action.)
+    if (attempt > 1 && userRuntimeActions !== owner) return;
     try {
-      await startSystemProxyRuntime({ ...opts, readyTimeoutMs: 20_000 });
+      await startSystemProxyRuntime({ ...opts, readyTimeoutMs: 20_000, launchRestore: true });
       return;
     } catch (err) {
       deps().appendLog('system-proxy', 'system', `System Proxy auto-start attempt ${attempt}/${attempts} failed: ${err instanceof Error ? err.message : String(err)}`);
       if (attempt < attempts) await new Promise((resolve) => setTimeout(resolve, 3_000 * attempt));
     }
   }
-  if (activeSystemProxyState !== null) return;
+  if (userRuntimeActions !== owner) return;
   await mkdir(systemProxyDataDir(), { recursive: true }).catch(() => undefined);
   await writeFile(systemProxyDesktopStatePath(), JSON.stringify(persisted), 'utf8').catch(() => undefined);
   // Reconnect is being retried next launch, not now — so the OS must not be
@@ -715,6 +750,7 @@ export async function restoreSystemProxyProfilesAtLaunch(opts: SystemProxyStartR
 }
 
 export async function stopSystemProxyRuntime(clearSettings: boolean): Promise<RuntimeProcessState | null> {
+  if (clearSettings) userRuntimeActions += 1;
   const metadata = readSystemProxyRuntimeMetadata();
   const setupProfileNames = knownSetupProfileNames(metadata);
   const state = await deps().processManager.stop('system-proxy');

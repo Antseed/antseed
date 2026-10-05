@@ -113,12 +113,10 @@ export function ConfigView({ onSelectView }: ConfigViewProps) {
       cryptoChainId: chainId,
     });
     setDirty(false);
-    // Restart buyer runtime to pick up new config
+    // Restart buyer runtime to pick up new config. Connected apps stay
+    // connected across the restart — a restart is not a disconnect.
     try {
-      await actions.stopConnect();
-    } catch { /* may not be running */ }
-    try {
-      await actions.startConnect();
+      await actions.restartConnect();
     } catch { /* will auto-start on next request */ }
   }
 

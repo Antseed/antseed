@@ -2,9 +2,9 @@
 
 ## Overview
 
-`DiemStakingProxy` is a Solidity contract on Base that lets DIEM token holders pool their stake, re-stake it into Venice (for API inference credit), and share the resulting AntSeed seller revenue (USDC + ANTS) pro-rata.
+`DiemStakingProxy` is a Solidity contract on Base that lets DIEM token holders pool their stake, re-stake it into Venice (for API inference credit), and share the resulting Antseed seller revenue (USDC + ANTS) pro-rata.
 
-Venice's DIEM token (`0xf4d9…a024`) is both an ERC20 and its own staking contract — `stake(uint256)` / `initiateUnstake(uint256)` / `unstake()` live on the token itself. The proxy re-stakes via that same contract, acts as the permanent on-chain seller address for AntSeed, and relays channel actions through an operator EOA. It also implements ERC-1271 so Venice's API-key issuance flow can verify signed challenges against the operator.
+Venice's DIEM token (`0xf4d9…a024`) is both an ERC20 and its own staking contract — `stake(uint256)` / `initiateUnstake(uint256)` / `unstake()` live on the token itself. The proxy re-stakes via that same contract, acts as the permanent on-chain seller address for Antseed, and relays channel actions through an operator EOA. It also implements ERC-1271 so Venice's API-key issuance flow can verify signed challenges against the operator.
 
 The on-chain seller changes from "peerId's derived EVM address" to "the proxy contract address". Buyers learn this at runtime from a signed `SellerDelegation` attestation the peer publishes in its metadata.
 
@@ -125,7 +125,7 @@ Cache TTL: 5 minutes. Rotation detection: when the cached `operator` value no lo
 
 ## Reward accounting
 
-The DIEM pool applies a 10% fee before USDC reaches the staking pool. That fee flows to the Protocol Reserve to strengthen the AntSeed ecosystem and ANTS. The remaining USDC is streamed pro-rata to stakers.
+The DIEM pool applies a 10% fee before USDC reaches the staking pool. That fee flows to the Protocol Reserve to strengthen the Antseed ecosystem and ANTS. The remaining USDC is streamed pro-rata to stakers.
 
 Two parallel streams: `usdcStream` and `antsStream`. Each uses the Uniswap StakingRewards pattern:
 
@@ -161,12 +161,12 @@ Venice's DIEM contract imposes a cooldown on unstake (currently 1 day; admin-set
 
 ## Deployment runbook
 
-Prerequisites: Base mainnet (or Sepolia); owner EOA with ETH for gas; operator EOA for channel ops; USDC for AntSeed staking minimum.
+Prerequisites: Base mainnet (or Sepolia); owner EOA with ETH for gas; operator EOA for channel ops; USDC for Antseed staking minimum.
 
 1. **Deploy `DiemStakingProxy`** with constructor args:
    - `_diem`: `0xf4d97f2da56e8c3098f3a8d538db630a2606a024` (DIEM — both ERC20 and staking contract)
    - `_usdc`: Base USDC (mainnet: `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913`)
-   - `_ants`: AntSeed ANTS token address (check `packages/node/chain-config.json`)
+   - `_ants`: Antseed ANTS token address (check `packages/node/chain-config.json`)
    - `_channels`: real `AntseedChannels` address (not the proxy itself)
    - `_emissions`: `AntseedEmissionsV2` address
    - `_antseedStaking`: `AntseedStaking` address (needed so the owner can later recover the seller stake via `withdrawAntseedStake`)
@@ -187,7 +187,7 @@ Prerequisites: Base mainnet (or Sepolia); owner EOA with ETH for gas; operator E
 6. **Configure the seller peer**:
    - In the seller CLI config (`~/.antseed/config.json` or equivalent), set `payments.crypto.channelsContractAddress` to the **proxy address** (not the real `AntseedChannels` address). The seller's `ChannelsClient` will now call `reserve/topUp/settle/close` on the proxy.
    - Set `payments.sellerDelegation.sellerContract` to the proxy address.
-   - The peer identity wallet (loaded from the normal AntSeed identity store) signs `SellerDelegation`. No separate operator private key / env var is introduced — the `operator` set on the proxy **must** equal the peer identity's EVM address.
+   - The peer identity wallet (loaded from the normal Antseed identity store) signs `SellerDelegation`. No separate operator private key / env var is introduced — the `operator` set on the proxy **must** equal the peer identity's EVM address.
 
 7. **Restart the seller peer**. Verify:
    - Peer metadata on announce includes `sellerDelegation` (check decoded metadata output).
@@ -199,7 +199,7 @@ Prerequisites: Base mainnet (or Sepolia); owner EOA with ETH for gas; operator E
 - **Rotate operator**: because the operator is the peer identity, rotation is a two-step process — (a) generate a new peer identity (start the new peer instance), (b) owner calls `setOperator(newPeerIdentityAddress)` on the proxy. Event `OperatorRotated(old, new)`. Buyers re-verify within ≤5 min (resolver cache TTL). The new peer's announcer automatically publishes a fresh `SellerDelegation` signed by the new identity; older signatures no longer verify. Shift traffic from old to new peer as desired.
 - **Change reward duration**: call `setRewardsDuration(streamIndex, seconds)` where `streamIndex` is `0` for USDC, `1` for ANTS. Only valid while the stream's `periodFinish` has passed. To force a window close, wait out the existing period or pause settles.
 - **Venice cooldown changes** propagate automatically — `cooldownDuration()` is read from Venice on each `initiateUnstake`. Existing pending withdrawals retain the `unlockAt` set at the time of their request.
-- **Decommission / recover seller stake**: owner calls `withdrawAntseedStake(recipient)` to invoke `AntseedStaking.unstake()` on the proxy and forward the recovered USDC to `recipient`. AntseedStaking enforces "no active channels" itself. Slashed amounts (if any) stay with AntSeed's protocol reserve. This USDC is owner capital, not staker reward — it does not flow through the reward streams.
+- **Decommission / recover seller stake**: owner calls `withdrawAntseedStake(recipient)` to invoke `AntseedStaking.unstake()` on the proxy and forward the recovered USDC to `recipient`. AntseedStaking enforces "no active channels" itself. Slashed amounts (if any) stay with Antseed's protocol reserve. This USDC is owner capital, not staker reward — it does not flow through the reward streams.
 - **Emissions claim cadence**: operator chooses when to call `operatorClaimEmissions(epochs[])`. Claiming more frequently smooths reward rate spikes but costs gas per tx. Weekly is a reasonable default; monthly acceptable.
 
 ## Out of scope / known limitations

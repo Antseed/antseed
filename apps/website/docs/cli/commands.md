@@ -25,7 +25,7 @@ antseed seller start --base-rpc-url <url>
                                       Use a custom Base RPC URL for this run
 antseed seller register               Register peer identity on-chain (ERC-8004)
 antseed seller stake <ants> --epochs <n>
-                                      Stake ANTS only (requires the upgrade)
+                                      Stake ANTS only (optional; requires the upgrade)
 antseed seller legacy stake <amount>  Stake USDC as a provider (pre-cutover, min $10)
 antseed seller legacy unstake         Withdraw legacy USDC stake
 antseed seller legacy claim-starter   Claim the legacy-seller starter ANTS position
@@ -77,6 +77,7 @@ antseed buyer deposit                       Show funding address + QR; incoming 
 antseed buyer sweep                   Gaslessly sweep hot-wallet USDC into deposits (fixed relay fee)
 antseed buyer deposit --onchain <usdc>  Direct on-chain deposit from the hot wallet (requires ETH for gas)
 antseed buyer withdraw <amount>       Withdraw USDC from deposits
+antseed buyer set-authorized-wallet   Connect and authorize an external wallet (`--self` for the buyer wallet)
 antseed buyer activity                Activity summary: tokens, spend history, savings, channels, claimable ANTS
 antseed buyer balance                 Check wallet and deposit balance
 antseed network browse                Browse peers, models, and pricing (same catalog as /v1/models)

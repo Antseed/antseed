@@ -54,7 +54,9 @@ export interface ChainCryptoOverrides {
  * The `stakingAddress` + `identityRegistryAddress` wiring is critical: without
  * them `AntseedNode._initializePayments` never creates a `StakingClient` /
  * `IdentityClient`, which gates the on-chain verification loop in
- * `discoverPeers()`.
+ * `discoverPeers()`. The seller-pools, usage-accounting and wash-trading
+ * registry addresses feed the `TrustSignalsClient` behind the buyer trust
+ * score; without them the usage, stake and wash parts of `peer.trust` stay null.
  */
 export function buildPaymentsConfig(
   cryptoOverrides: ChainCryptoOverrides | undefined,
@@ -83,6 +85,9 @@ export function buildPaymentsConfig(
       ...(resolved.verificationContractAddress
         ? { verificationContractAddress: resolved.verificationContractAddress }
         : {}),
+      ...(resolved.sellerPoolsAddress ? { sellerPoolsAddress: resolved.sellerPoolsAddress } : {}),
+      ...(resolved.usageAccountingAddress ? { usageAccountingAddress: resolved.usageAccountingAddress } : {}),
+      ...(resolved.washTradingRegistryAddress ? { washTradingRegistryAddress: resolved.washTradingRegistryAddress } : {}),
     };
     return paymentsConfig;
   } catch {

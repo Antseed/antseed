@@ -1,6 +1,6 @@
 {
   "name": "@antseed/protocol",
-  "version": "0.1.4",
+  "version": "0.1.5",
   "description": "AntSeed wire protocol: message types, frame/HTTP/payment codecs, and EIP-712 payment signatures. Portable — no Node-only dependencies",
   "type": "module",
   "files": [

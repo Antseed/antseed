@@ -4,7 +4,7 @@ import { useAuthorizedWallet } from '../context/AuthorizedWalletContext';
 import { PayCheckoutDeposit } from '../components/PayCheckoutDeposit';
 import { PayCheckoutWithdraw } from '../components/PayCheckoutWithdraw';
 import { PayChannelClose } from '../components/PayChannelClose';
-import { PayClaimRewards } from '../components/PayClaimRewards';
+import { openRewardsDashboard } from '../api';
 import { Button } from '../components/Button';
 import { notifyPaymentCompleted } from '../api';
 import { truncateAddress } from '../utils/format';
@@ -49,8 +49,8 @@ const COPY: Record<PayPageAction, { eyebrow: string; title: string; subtitle: st
   },
   claim: {
     eyebrow: 'Network rewards',
-    title: 'Claim $ANTS',
-    subtitle: 'Claim the $ANTS you earned from network usage.',
+    title: 'Rewards dashboard',
+    subtitle: 'Buyer rewards and staking now live in the ANTS dashboard.',
   },
   'close-channel': {
     eyebrow: 'Payment channel',
@@ -74,6 +74,14 @@ function LockIcon() {
  * app (or the CLI); the browser is only opened to sign.
  */
 export function PayPage({ action, amount: amountParam, channelId, popup, config, balance, buyerEvmAddress, refreshBalance }: PayPageProps) {
+  const [rewardsError, setRewardsError] = useState<string | null>(null);
+  const [openingRewards, setOpeningRewards] = useState(false);
+  const openRewards = async () => {
+    setOpeningRewards(true); setRewardsError(null);
+    try { await openRewardsDashboard(); }
+    catch (error) { setRewardsError(error instanceof Error ? error.message : String(error)); }
+    finally { setOpeningRewards(false); }
+  };
   const [done, setDone] = useState(false);
   const [doneTxHash, setDoneTxHash] = useState<string | null>(null);
   const [amount, setAmount] = useState(() =>
@@ -264,7 +272,8 @@ export function PayPage({ action, amount: amountParam, channelId, popup, config,
                 {action === 'claim' && (
                   <>
                     <p className="pay-checkout-subtitle">{copy.subtitle}</p>
-                    <PayClaimRewards config={config} onDone={handleDeposited} />
+                    <Button disabled={openingRewards} onClick={() => void openRewards()}>{openingRewards ? 'Opening…' : 'Open rewards dashboard ↗'}</Button>
+                    {rewardsError ? <p role="alert">{rewardsError}</p> : null}
                   </>
                 )}
                 {action === 'close-channel' && (

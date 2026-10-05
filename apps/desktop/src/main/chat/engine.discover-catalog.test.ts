@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildDiscoverRows, normalizeChatServiceCatalogEntries } from './service-discovery.js';
 
 import {
   buildChatServiceCatalogFromNetworkModels,
@@ -8,6 +9,56 @@ import {
 
 const venicePeerId = '9'.repeat(40);
 const flashPeerId = 'f'.repeat(40);
+
+test('TEE advertisements survive live, persisted, normalization and discovery projections', async () => {
+  const offer = {
+    peerId: venicePeerId, provider: 'openai', serviceId: 'gpt-test', protocol: 'openai-chat-completions',
+    advertisedVerifierIds: [' Antseed-Verifier ', 'antseed-verifier', null, 'bad id'],
+  };
+  const live = buildChatServiceCatalogFromNetworkModels({ data: [{ peers: [offer] }] });
+  const persisted = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: venicePeerId, providers: ['openai'], services: ['gpt-test'],
+    capabilities: ['verifier.antseed-verifier'],
+  }] });
+  for (const entries of [live, persisted]) {
+    assert.deepEqual(entries[0]?.advertisedVerifierIds, ['antseed-verifier']);
+    const normalized = normalizeChatServiceCatalogEntries(entries);
+    assert.deepEqual(normalized[0]?.advertisedVerifierIds, ['antseed-verifier']);
+    const rows = await buildDiscoverRows(normalized, new Map(), {}, new Map());
+    assert.deepEqual(rows[0]?.advertisedVerifierIds, ['antseed-verifier']);
+  }
+  for (const advertisedVerifierIds of [undefined, null, 'antseed-verifier', ['bad id', null]]) {
+    const entries = buildChatServiceCatalogFromNetworkModels({ data: [{ peers: [{ ...offer, advertisedVerifierIds }] }] });
+    assert.deepEqual(entries[0]?.advertisedVerifierIds, []);
+  }
+});
+
+test('persisted catalog uses the buyer trust score and falls back to the seller-reported score', () => {
+  const protocols = { openai: { services: { 'example-model': ['openai-chat-completions'] } } };
+  const scored = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 70, reputationScore: 99,
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(scored[0]?.effectiveReputationScore, 70);
+
+  const zero = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 0, reputationScore: 99,
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(zero[0]?.effectiveReputationScore, 0);
+
+  const unscored = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'], reputationScore: 42,
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(unscored[0]?.effectiveReputationScore, 42);
+
+  const unknown = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'],
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(unknown[0]?.effectiveReputationScore, null);
+});
 
 function modelsPayload(): unknown {
   return {

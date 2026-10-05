@@ -7,7 +7,7 @@ hide_title: true
 
 # Security
 
-AntSeed separates a buyer's deposit balance from the node wallet. USDC committed
+Antseed separates a buyer's deposit balance from the node wallet. USDC committed
 to service payments is held by `AntseedDeposits`; the node signs spending
 authorizations. Incoming USDC can be swept from the node wallet into the deposit
 contract through a gasless authorization.

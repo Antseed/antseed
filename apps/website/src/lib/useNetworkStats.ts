@@ -2,7 +2,7 @@ import {useEffect, useState} from 'react';
 import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
 
 /**
- * Live network stats from Antscan (the AntSeed Base explorer), replacing
+ * Live network stats from Antscan (the Antseed Base explorer), replacing
  * hand-updated numbers in marketing copy. Fetches the on-chain
  * `networkSnapshot` from Antscan's public GraphQL API (CORS: *) and
  * formats values in the site's compact style ("95B+", "$188K+").

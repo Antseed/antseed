@@ -4,9 +4,12 @@ import {
   openAIResponsesFunctionCallId,
   openAIResponsesMessageId,
   parseJsonSafe,
+  RESPONSES_FINAL_ANSWER_TOOL,
   toStringContent,
   type TokenUsage,
 } from './utils.js';
+
+const RESPONSES_FINAL_ANSWER_TOOL_RE = /(?:^|\n\s*)tool\s+final_answer\s*\{\s*\}\s*(?:\n|$)/g;
 
 export interface CanonicalFunctionTool {
   name: string;
@@ -93,6 +96,7 @@ export interface CanonicalLlmResponse {
   model: string;
   output: CanonicalOutputItem[];
   stopReason: string | null;
+  endTurn?: boolean;
   usage: TokenUsage;
 }
 
@@ -181,7 +185,11 @@ export function renderCanonicalRequestToOpenAIChatBody(
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
-  const tools = renderCanonicalToolsToOpenAIChat(request.tools);
+  const tools = renderCanonicalToolsToOpenAIChat(
+    options.preserveResponsesAgentSemantics && request.tools?.length
+      ? [...request.tools, { name: RESPONSES_FINAL_ANSWER_TOOL, parameters: { type: 'object', properties: {} } }]
+      : request.tools,
+  );
   const toolChoice = renderCanonicalToolChoiceToOpenAIChat(request.toolChoice);
   assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata) body.metadata = request.metadata;
@@ -498,10 +506,31 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   }
 
   const input = body.input;
+  const normalizedInput = Array.isArray(input)
+    ? input.map((item) => {
+      if (!item || typeof item !== 'object' || Array.isArray(item)) return item;
+      const msg = item as Record<string, unknown>;
+      if (msg.type !== 'message' || msg.role !== 'assistant' || !Array.isArray(msg.content)) return item;
+      const text = msg.content.map((part) => {
+        if (!part || typeof part !== 'object') return '';
+        const value = (part as Record<string, unknown>).text;
+        return typeof value === 'string' ? value : '';
+      }).join('');
+      if (!RESPONSES_FINAL_ANSWER_TOOL_RE.test(text)) return item;
+      return {
+        ...msg,
+        content: [{
+          type: 'output_text',
+          text: text.replace(RESPONSES_FINAL_ANSWER_TOOL_RE, '').trim(),
+          ...(Array.isArray(msg.annotations) ? { annotations: msg.annotations } : {}),
+        }],
+      };
+    })
+    : input;
   if (typeof input === 'string') {
     request.input.push({ type: 'message', role: 'user', content: [{ type: 'text', text: input }] });
-  } else if (Array.isArray(input)) {
-    for (const item of input) {
+  } else if (Array.isArray(normalizedInput)) {
+    for (const item of normalizedInput) {
       if (!item || typeof item !== 'object') continue;
       const msg = item as Record<string, unknown>;
       const type = typeof msg.type === 'string' ? msg.type : '';
@@ -576,7 +605,7 @@ export function normalizeOpenAIChatResponseBody(
   const toolCalls = Array.isArray(message.tool_calls) ? message.tool_calls : [];
   const output: CanonicalOutputItem[] = [];
   if (text.length > 0) {
-    output.push({ type: 'text', text, phase: toolCalls.length > 0 ? 'commentary' : 'final_answer' });
+    output.push({ type: 'text', text, phase: toolCalls.length > 0 ? 'commentary' : undefined });
   }
   for (const [index, rawToolCall] of toolCalls.entries()) {
     if (!rawToolCall || typeof rawToolCall !== 'object') continue;
@@ -584,6 +613,7 @@ export function normalizeOpenAIChatResponseBody(
     const fn = toolCall.function && typeof toolCall.function === 'object'
       ? toolCall.function as Record<string, unknown>
       : {};
+    if (fn.name === RESPONSES_FINAL_ANSWER_TOOL) continue;
     output.push({
       type: 'function_call',
       id: typeof toolCall.id === 'string' && toolCall.id.length > 0 ? toolCall.id : `call_${index + 1}`,
@@ -594,7 +624,21 @@ export function normalizeOpenAIChatResponseBody(
 
   const usage = extractUsage(body);
   const stopReason = typeof firstChoice.finish_reason === 'string' ? firstChoice.finish_reason : null;
-  return { id, model, output, stopReason, usage };
+  return {
+    id,
+    model,
+    output,
+    stopReason,
+    endTurn: toolCalls.some((toolCall) => {
+      const fn = toolCall.function && typeof toolCall.function === 'object'
+        ? toolCall.function as Record<string, unknown>
+        : {};
+      return fn.name === RESPONSES_FINAL_ANSWER_TOOL;
+    })
+      ? true
+      : false,
+    usage,
+  };
 }
 
 export function normalizeOpenAIResponsesResponseBody(
@@ -752,6 +796,7 @@ export function renderCanonicalResponseToOpenAIResponsesBody(response: Canonical
     created_at: Math.floor(Date.now() / 1000),
     output,
     output_text: text,
+    ...(response.endTurn !== undefined ? { end_turn: response.endTurn } : {}),
     usage: openAIResponsesUsage(response.usage),
   };
 }

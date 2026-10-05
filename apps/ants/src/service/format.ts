@@ -2,7 +2,8 @@ const ANTS_DECIMALS = 18n;
 const ONE_ANTS = 10n ** ANTS_DECIMALS;
 
 /** Format 18-decimal base units with up to `fractionDigits` fraction digits (trailing zeros trimmed). */
-export function formatAnts(baseUnits: bigint | string, fractionDigits = 4): string {
+export function formatAnts(baseUnits: bigint | string | null, fractionDigits = 4): string {
+  if (baseUnits === null) return 'unavailable';
   const value = typeof baseUnits === 'string' ? BigInt(baseUnits) : baseUnits;
   const negative = value < 0n;
   const abs = negative ? -value : value;

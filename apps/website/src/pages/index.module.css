@@ -86,6 +86,134 @@
   }
 }
 
+/* ---- split hero (copy left, AI VPN demo right) — wide viewports only ---- */
+@media (min-width: 997px) {
+  .heroSplit {
+    text-align: left;
+    padding-top: 16px;
+    padding-bottom: 16px;
+  }
+
+  .heroSplitInner {
+    display: grid;
+    grid-template-columns: minmax(0, 1fr) clamp(330px, 33%, 372px);
+    grid-template-areas:
+      'copy demo'
+      'stats stats';
+    grid-template-rows: auto auto;
+    column-gap: 56px;
+    align-items: center;
+    align-content: center;
+    max-width: 1120px;
+  }
+
+  .heroCopy {
+    grid-area: copy;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    align-self: center;
+  }
+
+  .heroSplit .heroTitle {
+    white-space: normal;
+    font-size: clamp(44px, 4.4vw, 62px);
+    line-height: 1.08;
+    margin-bottom: 20px;
+  }
+
+  .heroSplit .heroSub {
+    margin-bottom: 20px;
+  }
+
+  /* static subtitle (split hero) — same type as the rotating line, but
+     allowed to wrap */
+  .heroSubStatic {
+    max-width: 500px;
+    text-wrap: balance;
+    margin: 0 0 28px;
+    font-size: 18px;
+    line-height: 26px;
+    font-weight: 500;
+    color: var(--as-text);
+  }
+
+  .heroSplit .heroLead {
+    max-width: 48ch;
+    margin: 20px 0 0;
+    font-size: 15px;
+    line-height: 23px;
+    font-weight: 400;
+    color: var(--as-text-2, var(--as-text));
+    opacity: 0.85;
+  }
+
+  .heroSplit .heroTitleBreak {
+    display: block;
+  }
+
+  .heroSplit .heroSubTrack,
+  .heroSplit .heroSubLine {
+    align-items: flex-start;
+    justify-content: flex-start;
+  }
+
+  .heroSplit .ctaBlock {
+    align-items: flex-start;
+  }
+
+
+  .heroSplit .statsRow {
+    grid-area: stats;
+    align-self: start;
+    justify-self: center;
+    display: grid;
+    grid-template-columns: repeat(4, auto);
+    justify-content: center;
+    gap: clamp(24px, 4vw, 64px);
+    margin-top: 4px;
+  }
+
+  .heroSplit .stat {
+    align-items: center;
+    text-align: center;
+  }
+
+  .heroSplit .statValue {
+    font-size: 30px;
+    line-height: 40px;
+  }
+
+  .heroSplit .statLabel {
+    white-space: nowrap;
+  }
+
+  .demoFrameSplit {
+    grid-area: demo;
+    margin-top: 0;
+    transform: none;
+    max-width: none;
+    justify-self: end;
+    align-self: start;
+  }
+}
+
+/* forced two-line headline only applies in the wide split layout */
+.heroTitleBreak {
+  display: none;
+}
+
+/* explainer line under the subtitle (split hero); centred when stacked */
+.heroLead {
+  max-width: 40ch;
+  margin: 0 auto 20px;
+  font-size: 16px;
+  line-height: 24px;
+  font-weight: 400;
+  color: var(--as-text);
+  opacity: 0.85;
+}
+
 /* rotating subtitle — fixed line height so phrases slide vertically */
 .heroSub {
   position: relative;
@@ -98,6 +226,20 @@
   font-weight: 500;
   color: var(--as-text);
   margin-bottom: 24px;
+}
+
+/* Phrases stay on one line (the slide relies on a fixed 1.6em row), so
+   scale the type down on narrow screens instead of wrapping. Sized so
+   the longest phrase (~24em) clears the 16px hero padding at 375px. */
+@media (max-width: 640px) {
+  .useSwitchBtn {
+    padding: 6px 10px;
+    font-size: 12px;
+  }
+
+  .heroSub {
+    font-size: clamp(11px, 3.7vw, 18px);
+  }
 }
 
 .heroSubTrack {
@@ -124,11 +266,156 @@
   gap: 8px;
 }
 
+/* hero use switch: app / CLI / agent */
+.useSwitch {
+  display: inline-flex;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 2px;
+  padding: 3px;
+  margin-bottom: 28px;
+  border: 1px solid var(--as-line);
+  border-radius: 999px;
+  background: var(--as-soil-2);
+}
+
+.useSwitchBtn {
+  border: none;
+  background: none;
+  border-radius: 999px;
+  padding: 4px 12px;
+  font-family: var(--as-font-ui);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 600;
+  color: var(--as-text-2);
+  cursor: pointer;
+  transition: background 0.15s ease, color 0.15s ease;
+}
+
+.useSwitchBtn:hover {
+  color: var(--as-heading);
+}
+
+/* Higher specificity than .useSwitchBtn: the production minifier reorders
+   equal-specificity rules, which let `background: none` cancel the active
+   state. */
+.useSwitchBtn.useSwitchBtnActive,
+.useSwitchBtn.useSwitchBtnActive:hover {
+  background: var(--as-ink);
+  color: #FFFFFF;
+}
+
+.usePanel {
+  width: 100%;
+  max-width: 600px;
+}
+
+.heroTerminal {
+  width: 100%;
+  text-align: left;
+  padding-bottom: 8px;
+}
+
+.heroTerminalBody {
+  margin: 8px 0 0;
+  padding: 8px;
+  background: none;
+  border: none;
+  border-radius: 0;
+  font-family: var(--as-font-data);
+  font-size: 12px;
+  line-height: 20px;
+  color: #FFFFFF;
+  white-space: pre-wrap;
+  word-break: break-all;
+}
+
+.useCopyBtn {
+  margin-left: auto;
+  border: 1px solid rgba(255, 255, 255, 0.18);
+  background: rgba(255, 255, 255, 0.06);
+  color: #FFFFFF;
+  border-radius: 999px;
+  padding: 3px 10px;
+  font-family: var(--as-font-ui);
+  font-size: 11px;
+  line-height: 16px;
+  font-weight: 600;
+  cursor: pointer;
+}
+
+.useCopyBtn:hover {
+  background: rgba(255, 255, 255, 0.12);
+}
+
+.useLink {
+  color: var(--as-green-deep);
+  text-decoration: underline;
+  text-underline-offset: 2px;
+}
+
+.useNote {
+  margin-top: 6px;
+  font-size: 13px;
+  line-height: 18px;
+  font-weight: 500;
+  color: var(--as-text-2);
+}
+
 .ctaCaption {
   font-size: 12px;
   line-height: 16px;
   font-weight: 500;
   color: var(--as-text);
+}
+
+/* Download button with the versions link beside it; caption below */
+.ctaRow {
+  display: inline-flex;
+  align-items: center;
+  gap: 18px;
+  flex-wrap: wrap;
+}
+
+.ctaRow + .ctaCaption {
+  margin-top: 6px;
+  color: var(--as-text-2);
+  font-size: 13px;
+  line-height: 18px;
+}
+
+/* small green check before the caption so it reads as a feature, not a footnote */
+.ctaCheck {
+  display: inline-flex;
+  align-items: center;
+  gap: 7px;
+}
+
+.ctaCheck i {
+  display: inline-block;
+  width: 14px;
+  height: 14px;
+  border-radius: 50%;
+  background: var(--as-green-dim, rgba(16, 185, 129, 0.12));
+  position: relative;
+  flex-shrink: 0;
+}
+
+.ctaCheck i::after {
+  content: '';
+  position: absolute;
+  left: 4.5px;
+  top: 2.5px;
+  width: 3.5px;
+  height: 6.5px;
+  border: solid var(--as-green-deep);
+  border-width: 0 1.6px 1.6px 0;
+  transform: rotate(45deg);
+}
+
+@media (max-width: 640px) {
+  .ctaRow { justify-content: center; }
 }
 
 /* demo — the live composition floats directly on the hero, no chrome */
@@ -137,6 +424,187 @@
   max-width: 1024px;
   margin-top: 56px;
   transform: translateY(-24px);
+}
+
+/* Shared grid footprint prevents layout jumps while the hero views crossfade. */
+.heroVisualStack {
+  position: relative;
+  aspect-ratio: 660 / 800;
+  min-width: 0;
+  container-type: inline-size;
+}
+.heroVisualLayer {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  min-width: 0;
+  opacity: 0;
+  visibility: hidden;
+  pointer-events: none;
+  transform: translateY(12px) scale(.985);
+  transition: opacity 350ms ease, transform 450ms cubic-bezier(.22, 1, .36, 1), visibility 450ms;
+}
+/* Compact app scene: 660 × 924, with its 524 × 648 card at (68, 0).
+   Use the identical bounds for both replacement cards at every viewport. */
+.heroVisualLayer:not(:first-child) {
+  inset: 0 auto auto 10.3030303%;
+  width: 79.3939394%;
+  height: 98.1818182cqw;
+}
+/* The CLI and agent cards use the full slot width (same footprint as the app
+   scene incl. its pill). The CLI card also takes the full height so the whole
+   command list fits; the agent card keeps its own height because its install
+   drawer hangs below it. */
+.heroVisualLayer[data-view="cli"],
+.heroVisualLayer[data-view="agent"] {
+  inset: 0 auto auto 0;
+  width: 100%;
+  padding: 0 12px;
+  box-sizing: border-box;
+}
+.heroVisualLayer[data-view="cli"] {
+  height: auto;
+  padding: 0 12px;
+}
+/* The agent card has no drawer any more, so it can fill the slot like the app scene. */
+.heroVisualLayer[data-view="agent"] {
+  height: 100%;
+  padding: 0 12px 8px;
+}
+.heroVisualLayer:not(:first-child) > * {
+  height: 100%;
+  box-sizing: border-box;
+}
+.heroVisualLayer .heroTerminal {
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  height: 100%;
+}
+.heroVisualLayer .heroTerminalBody {
+  flex: 1;
+  min-height: 0;
+  overflow: visible;
+  font-size: 14px;
+  line-height: 1.65;
+}
+.cliSteps {
+  display: flex;
+  flex-shrink: 0;
+  gap: 5px;
+  border-top: 1px solid #ffffff20;
+  padding-top: 8px;
+}
+.cliSteps button {
+  display: flex;
+  flex: 1;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  min-height: 44px;
+  padding: 4px;
+  border: 0;
+  border-radius: 8px;
+  background: transparent;
+  color: #a9bcb0;
+  font: 11px var(--as-font-ui);
+  cursor: pointer;
+}
+.cliSteps button[aria-pressed='true'] { background: #16a66a24; color: #65e7ac; }
+.cliSteps button:focus-visible { outline: 2px solid #65e7ac; }
+.cliSteps button span { opacity: .65; }
+@container (max-width: 360px) {
+  .cliSteps button { font-size: 10px; gap: 3px; }
+  .heroVisualStack .heroVisualLayer .heroTerminalBody { font-size: 13px; line-height: 1.45; padding-block: 4px; }
+  .heroVisualLayer .tDots { display: none; }
+}
+.heroVisualLayer .terminalBar { flex-wrap: wrap; }
+.heroVisualLayer .terminalStatus,
+.heroVisualLayer .useCopyBtn { font-size: 13px; }
+.heroVisualLayer .heroTerminalBody .tComment { color: #a9bcb0; }
+.heroVisualActive {
+  opacity: 1;
+  visibility: visible;
+  pointer-events: auto;
+  transform: translateY(0) scale(1);
+}
+.heroCtaStack {
+  display: grid;
+  width: 100%;
+  min-width: 0;
+  max-width: 100%;
+}
+.heroCtaPane {
+  grid-area: 1 / 1;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  visibility: hidden;
+  opacity: 0;
+  pointer-events: none;
+  transition: opacity 200ms ease;
+}
+.heroCtaPane[data-active='true'] {
+  visibility: visible;
+  opacity: 1;
+  pointer-events: auto;
+}
+.heroCtaPane > a,
+.heroCtaPane > .ctaBlock > a:first-child {
+  min-width: 220px;
+  min-height: 48px;
+  justify-content: center;
+}
+.heroCopy { min-width: 0; }
+@media (max-width: 996px) { .useSwitchBtn { min-height: 40px; } }
+.useSwitchBtn:focus-visible { outline: 2px solid var(--as-green); outline-offset: 3px; }
+@media (min-width: 997px) {
+  .heroCtaPane { align-items: flex-start; }
+}
+@media (max-width: 996px) {
+  /* Flatten the copy column so the tabs and CTA can sit below the animation:
+     title, subtitle, animation, tabs, CTA, stats. */
+  .heroSplit .heroCopy { display: contents; }
+  .heroSplit .heroCopy > .heroTitle { order: 1; }
+  .heroSplit .heroCopy > .heroSubStatic { order: 2; }
+  .heroSplit .heroVisualStack { order: 3; }
+  .heroSplit .heroCopy > .useSwitch { order: 4; margin: 28px 0 16px; }
+  .heroSplit .heroCopy > .ctaBlock { order: 5; width: 100%; }
+  .heroSplit .statsRow { order: 6; }
+  .heroSplit .heroVisualStack {
+    width: 100%;
+    max-width: 520px;
+    margin: 24px auto 0;
+    transform: none;
+  }
+  .heroSplit .heroSubStatic { max-width: 40ch; margin-inline: auto; }
+}
+@media (max-width: 480px) {
+  .heroCopy > .ctaBlock { width: 100%; }
+  .heroCopy .useSwitch {
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    width: 100%;
+    max-width: 380px;
+    border-radius: 20px;
+  }
+  .heroCopy .useSwitchBtn {
+    padding: 8px 5px;
+    font-size: 12px;
+    line-height: 17px;
+    border-radius: 16px;
+  }
+  .heroCtaPane .useNote { font-size: 12px; line-height: 18px; }
+  .heroVisualLayer .terminalBar { gap: 6px; padding: 0; }
+  .heroVisualLayer .terminalStatus { font-size: 12px; }
+  .heroVisualLayer .useCopyBtn { font-size: 12px; min-height: 36px; }
+  .heroVisualLayer .heroTerminalBody { padding: 8px 0; font-size: 14px; word-break: normal; overflow-wrap: anywhere; }
+}
+@media (prefers-reduced-motion: reduce) {
+  .heroVisualLayer { transition: none; transform: none; }
 }
 
 /* stats — value: Geist Bold 36/48 −1px · label: 16/24 Medium ink */
@@ -252,6 +720,19 @@
 
 /* Google/Meta fall back to plain <img> (external SVG) — currentColor
    can't reach into those, so force the same white silhouette via filter. */
+.marqueeLockup {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+}
+.marqueeWordmark {
+  font-family: var(--as-font-app);
+  font-size: 17px;
+  line-height: 20px;
+  font-weight: 600;
+  letter-spacing: -0.01em;
+  white-space: nowrap;
+}
 .marqueeItem img {
   height: 100%;
   width: auto;
@@ -532,7 +1013,7 @@
   font-size: 16px;
   line-height: 24px;
   font-weight: 600;
-  color: var(--as-live-text);
+  color: var(--as-heading);
 }
 
 .bestBadge {
@@ -543,16 +1024,17 @@
   font-size: 12px;
   line-height: 16px;
   font-weight: 500;
-  color: var(--as-live-text);
-  background: var(--as-badge-green-bg);
+  /* neutral on purpose — the savings figure is the only green in the row */
+  color: var(--as-text-2);
+  background: var(--as-soil-0);
   border-radius: 8px;
   padding: 0 8px 0 4px;
   white-space: nowrap;
 }
 
 :global(html[data-theme='dark']) .bestBadge {
-  background: rgba(16, 185, 129, 0.16);
-  color: var(--as-primary-3);
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--as-text-2);
 }
 
 .priceBestSub {
@@ -580,9 +1062,9 @@
 }
 
 .priceSave strong {
-  font-size: 18px;
+  font-size: 20px;
   line-height: 24px;
-  font-weight: 600;
+  font-weight: 700;
   color: var(--as-live-text);
 }
 
@@ -902,6 +1384,64 @@
 /* ============================================================
    RUNS ON YOUR COMPUTER
    ============================================================ */
+/* ---- who it's for — text-only persona cards ---- */
+.whoGrid {
+  margin-top: 40px;
+}
+
+/* soil card with a white art panel, per the design system card-*.svg */
+.whoCard {
+  display: flex;
+  flex-direction: column;
+  min-width: 0;
+  background: var(--as-soil-0);
+  border-radius: 28px;
+  padding: 24px 24px 20px;
+}
+
+/* The art's height comes from the SVG viewBox, not an aspect-ratio box:
+   WebKit resolves a percent-height SVG inside an aspect-ratio parent
+   cyclically and blows the card up to tens of thousands of pixels. */
+.whoArt {
+  width: 100%;
+  min-width: 0;
+  background: #fff;
+  border-radius: 16px;
+  padding: 12px 8px;
+  box-sizing: border-box;
+}
+
+.whoArt svg {
+  display: block;
+  width: 100%;
+  height: auto;
+  overflow: visible;
+}
+
+.whoKicker {
+  display: block;
+  margin: 24px 0 0;
+  font-family: 'Geist Mono Variable', 'Geist Mono', ui-monospace, monospace;
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.18em;
+  text-transform: uppercase;
+  color: var(--as-green-deep);
+}
+
+/* copy block stretches so the three links sit on one baseline */
+.whoCard .featureCopy {
+  display: flex;
+  flex-direction: column;
+  flex: 1;
+  padding: 24px 0 0;
+}
+
+.whoCard .featureCopy p {
+  flex: 1;
+}
+
 .runsTitle {
   font-family: var(--as-font-display);
   font-weight: 500;
@@ -1072,6 +1612,7 @@
   background: var(--as-void);
   padding: 80px 16px;
   overflow: hidden;
+  scroll-margin-top: var(--ifm-navbar-height);
 }
 
 .darkSection::before {
@@ -1322,7 +1863,14 @@
 
 .stepsSection {
   position: relative;
+  overflow: hidden;
   padding: 96px 16px;
+  background: var(--as-soil-1);
+}
+
+.stepsSection .sectionInner {
+  position: relative;
+  z-index: 1;
 }
 
 .stepsAnt {
@@ -1337,6 +1885,16 @@
   z-index: 0;
 }
 
+.stepsLead {
+  max-width: 820px;
+  margin: 0 auto 40px;
+  text-align: center;
+  font-size: 18px;
+  line-height: 26px;
+  font-weight: 500;
+  color: var(--as-text);
+}
+
 .stepsTitle {
   font-family: var(--as-font-display);
   font-size: clamp(32px, 3.4vw, 48px);
@@ -1345,25 +1903,31 @@
   letter-spacing: -1px;
   text-align: center;
   color: var(--as-heading);
-  margin: 0 0 32px;
+  margin: 0 0 20px;
 }
 
 .stepsGrid {
   position: relative;
-  display: grid;
-  grid-template-columns: repeat(3, 1fr);
-  gap: 12px;
-  max-width: 720px;
-  margin: 0 auto;
   z-index: 1;
 }
 
+/* step cards reuse the illustrated "runs" card chrome (white card, soft
+   illustration well); the copy block only adds the numbered head */
 .stepCard {
   border: 1px solid var(--as-line);
-  border-radius: 24px;
-  background: var(--as-soil-2);
-  padding: 16px;
-  min-height: 216px;
+}
+
+/* two of the three illustrations carry their own grey well; give the well
+   to all of them so the row reads as one set */
+.stepCard .runsIlloWell img {
+  background: var(--as-soil-0);
+  border-radius: 16px;
+}
+
+.stepCard .runsIlloWell svg {
+  display: block;
+  width: 100%;
+  height: auto;
 }
 
 .stepHead {
@@ -1419,7 +1983,27 @@
    ============================================================ */
 .sellSection {
   position: relative;
-  padding: 40px 16px 96px;
+  padding: 96px 16px;
+  overflow: hidden;
+}
+
+/* desktop: the ant-dots backdrop runs behind the glass card, as it does on
+   the live homepage where the steps section's ant spills into this one */
+.sellAnt {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  top: 20px;
+  width: 700px;
+  height: 784px;
+  opacity: 0.5;
+  pointer-events: none;
+  z-index: 0;
+}
+
+.sellSection .sectionInner {
+  position: relative;
+  z-index: 1;
 }
 
 .sellCardWrap {
@@ -1685,6 +2269,14 @@
   margin: 0 0 32px;
 }
 
+.finalBtnRow {
+  display: flex;
+  justify-content: center;
+  align-items: center;
+  gap: 12px;
+  flex-wrap: wrap;
+}
+
 .ctaCaptionLight {
   font-size: 12px;
   line-height: 16px;
@@ -1707,7 +2299,7 @@
   }
 
   .stepCard {
-    min-height: 160px;
+    min-height: 0;
   }
 
   .privacyGrid {
@@ -1904,6 +2496,10 @@
     padding: 64px 16px;
   }
 
+  .sellAnt {
+    display: none;
+  }
+
   .sellAntMobile {
     display: block;
     position: absolute;
@@ -1940,4 +2536,50 @@
   .finalCta {
     padding: 80px 16px;
   }
+}
+
+/* ---------- Pillars strip (homepage) ---------- */
+.pillars {
+  display: grid;
+  grid-template-columns: repeat(5, minmax(0, 1fr));
+  gap: 16px;
+  margin-top: 40px;
+}
+.pillar {
+  padding: 24px 20px;
+  background: var(--as-soil-1);
+  border: 1px solid var(--as-line);
+  border-radius: 20px;
+}
+.pillar h3 {
+  font-family: var(--as-font-display);
+  font-size: 18px;
+  line-height: 24px;
+  font-weight: 600;
+  letter-spacing: -0.02em;
+  margin: 0 0 8px;
+  color: var(--as-heading);
+}
+.pillar p {
+  font-size: 14px;
+  line-height: 22px;
+  font-weight: 500;
+  color: var(--as-text-2);
+  margin: 0;
+}
+.pillar a {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  color: var(--as-heading);
+  font-weight: 600;
+  text-decoration: none;
+}
+.pillar a:hover { text-decoration: underline; }
+@media (max-width: 996px) {
+  .pillars { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .pillar:last-child { grid-column: 1 / -1; }
+}
+@media (max-width: 560px) {
+  .pillars { grid-template-columns: 1fr; }
 }

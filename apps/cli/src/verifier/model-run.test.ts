@@ -385,6 +385,37 @@ test('target eligibility applies buyer reputation and pricing before audit', () 
   })
 })
 
+test('target eligibility uses buyer trust signals instead of seller-reported reputation', () => {
+  assert.deepEqual(classifyVerificationTarget(peer({
+    reputationScore: 0,
+    onChainChannelCount: 100,
+    onChainTotalVolumeUsdcMicros: 100_000_000,
+    onChainUsageEpoch: 1,
+    onChainUsageShareBps: 10_000,
+    onChainPoolPowerShareBps: 10_000,
+  }), 'gpt-5.6-sol', { ...targetPolicy, minReputation: 75 }), {
+    eligible: true,
+    service: 'GPT-5.6-SOL',
+  })
+})
+
+test('target eligibility respects the wash-trading trust veto', () => {
+  assert.deepEqual(classifyVerificationTarget(peer({
+    reputationScore: 100,
+    onChainChannelCount: 100,
+    onChainTotalVolumeUsdcMicros: 100_000_000,
+    onChainUsageEpoch: 1,
+    onChainUsageShareBps: 10_000,
+    onChainPoolPowerShareBps: 10_000,
+    onChainWashFlagged: true,
+  }), 'gpt-5.6-sol', { ...targetPolicy, minReputation: 1 }), {
+    eligible: false,
+    code: 'reputation_below_minimum',
+    service: 'GPT-5.6-SOL',
+    reason: 'peer reputation 0 is below buyer minimum 1',
+  })
+})
+
 test('target eligibility tolerates persisted partial metadata without provider announcements', () => {
   const persistedPeer = peer({
     metadata: { capabilities: [CONNECTION_CAPABILITY_RESPONSE_AUTH_V1] } as PeerInfo['metadata'],

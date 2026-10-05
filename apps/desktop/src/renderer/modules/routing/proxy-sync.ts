@@ -25,7 +25,7 @@ export function buyerDefaultRoutePayload(
   return { service: target.model };
 }
 
-/** Resolve the current VPR selection to a concrete peer + model target. */
+/** Resolve the current AI VPN selection to a concrete peer + model target. */
 function resolveRouteTarget(uiState: RendererUiState): VprRouteTarget | null {
   const selection = uiState.vprRouteSelection;
   if (!selection.model) return null;
@@ -33,7 +33,7 @@ function resolveRouteTarget(uiState: RendererUiState): VprRouteTarget | null {
     entry.provider === selection.model?.provider && entry.serviceId === selection.model.serviceId
   ));
   // Connected apps and the buyer's default alias currently issue text/chat
-  // requests. Leave their existing route untouched when VPR selects an image
+  // requests. Leave their existing route untouched when AI VPN selects an image
   // model; chat's per-conversation selection remains the text fallback.
   if (selectedEntry?.kind === 'image') return null;
   const canonicalServiceId = selectedEntry?.serviceId ?? selection.model.serviceId;
@@ -90,7 +90,7 @@ async function startProfilesOnRoute(
 }
 
 /**
- * Push the current VPR selection to the buyer proxy's default route
+ * Push the current AI VPN selection to the buyer proxy's default route
  * (`POST /_antseed/route`), keeping the proxy the single routing authority:
  * the `antseed` model alias and headless frontends (the Telegram bridge)
  * resolve their peer from this route instead of re-deriving it. Best-effort —
@@ -110,7 +110,7 @@ export async function syncBuyerDefaultRoute(
 }
 
 /**
- * Re-point the running system proxy at the current VPR route selection.
+ * Re-point the running system proxy at the current AI VPN route selection.
  *
  * Without this, changing the default model (Home dropdown, model view Apply,
  * floating pill) re-pins the buyer to the new model's peer while connected
@@ -138,7 +138,7 @@ export async function applyVprRouteToConnectedProxy(
 }
 
 /**
- * Connect a single app profile on the current VPR route (joining any
+ * Connect a single app profile on the current AI VPN route (joining any
  * profiles already connected). Used by the Home screen's one-click app
  * buttons.
  */

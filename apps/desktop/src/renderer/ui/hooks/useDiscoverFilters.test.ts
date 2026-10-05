@@ -15,7 +15,7 @@ function mkRow(i: number, chat: boolean): DiscoverRow {
     lifetimeSessions: chat ? i : 0, lifetimeRequests: 0, lifetimeInputTokens: 0, lifetimeOutputTokens: 0,
     lifetimeFirstSessionAt: null, lifetimeLastSessionAt: chat ? i * 1000 : null,
     onChainChannelCount: null,
-    agentId: 1, stakeUsdc: String(i * 1_000_000),
+    agentId: 1, poolStakeAnts: i,
     onChainActiveChannelCount: 0, onChainGhostCount: 0, onChainTotalVolumeUsdc: '0', onChainLastSettledAt: 0,
     onChainReputationScore: null,
     networkRequests: null, networkInputTokens: null, networkOutputTokens: null,
@@ -29,7 +29,7 @@ test('pipeline: filter → sort → paginate on 25 rows', () => {
     search: '', categorySet: new Set(), peerSet: new Set(),
     maxInputPrice: MAX_INPUT_PRICE_SLIDER_USD,
     maxOutputPrice: MAX_OUTPUT_PRICE_SLIDER_USD,
-    minStakeUsdc: 0,
+    minStakeAnts: 0,
     minReputationScore: 0,
   });
   expect(filtered).toHaveLength(25);
@@ -50,7 +50,7 @@ test('pipeline: stake + reputation filters', () => {
     search: '', categorySet: new Set(), peerSet: new Set(),
     maxInputPrice: MAX_INPUT_PRICE_SLIDER_USD,
     maxOutputPrice: MAX_OUTPUT_PRICE_SLIDER_USD,
-    minStakeUsdc: 50,
+    minStakeAnts: 50,
     minReputationScore: 50,
   });
   expect(filtered).toHaveLength(1);

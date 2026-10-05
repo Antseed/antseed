@@ -23,7 +23,7 @@ const DEFAULT_MODEL_ROUTING_PREFERENCES = {
 };
 ```
 
-`minTrustScore` and the allow/block lists determine eligibility. Eligible offers are ordered using trust, token or image price, cached-input pricing coverage, recent failures, cooldowns, and free-peer preference. The buyer proxy watches `buyer.routingPreferences` in `config.json`, so desktop preference changes also affect connected apps and direct API calls without maintaining a second routing implementation.
+`minTrustScore` and the allow/block lists determine eligibility against the buyer's [trust score](/docs/reputation#trust-score). Eligible offers are ordered using trust, token or image price, cached-input pricing coverage, recent failures, cooldowns, and free-peer preference. The buyer proxy watches `buyer.routingPreferences` in `config.json`, so desktop preference changes also affect connected apps and direct API calls without maintaining a second routing implementation.
 
 ## Default Scoring Weights
 
@@ -34,7 +34,7 @@ const DEFAULT_WEIGHTS = {
   price:       0.30,   // lower price scores higher (inverted min-max)
   latency:     0.25,   // lower latency scores higher (EMA)
   capacity:    0.20,   // more available capacity scores higher
-  reputation:  0.10,   // higher reputation scores higher (0-100)
+  reputation:  0.10,   // higher trust score scores higher (0-100)
   freshness:   0.10,   // recently seen peers score higher
   reliability: 0.05,   // lower failure rate scores higher
 } as const;

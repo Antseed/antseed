@@ -71,6 +71,7 @@ function makeConn(sentFrames: Uint8Array[]): any {
       sentFrames.push(frame);
     },
     hasRemoteCapability: () => false,
+    remoteAddress: '203.0.113.7',
   };
 }
 
@@ -614,6 +615,93 @@ describe('SellerRequestHandler payment pricing selection', () => {
     expect(responseFrames).toHaveLength(1);
     const response = decodeHttpResponse(responseFrames[0]!.message.payload);
     expect(response.statusCode).toBe(200);
+  });
+
+  it('enforces the configured free tier before forwarding another free request', async () => {
+    const provider = makeProvider(0, 0, { name: 'free-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    const consume = vi.fn()
+      .mockReturnValueOnce({ allowed: true, remaining: 0, retryAfterMs: 0, limitedBy: null, buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' })
+      .mockReturnValueOnce({ allowed: false, remaining: 0, retryAfterMs: 12_500, limitedBy: 'ip', buyerAddress: `0x${'b'.repeat(40)}`, remoteIp: '203.0.113.7' });
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: null,
+      sellerFreeTierLimiter: { maxRequestsPerAddress: 1, maxRequestsPerIp: 3, windowMs: 60_000, consume } as any,
+      sessionTracker: null,
+      channelsClient: null,
+      announcer: null,
+      emit: () => false,
+    });
+
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(
+      makeConn(sentFrames),
+      'b'.repeat(40),
+      { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any,
+    );
+    for (const requestId of ['free-1', 'free-2']) {
+      await mux.handleFrame({
+        type: MessageType.HttpRequest,
+        messageId: sentFrames.length + 1,
+        payload: encodeHttpRequest({
+          requestId,
+          method: 'POST',
+          path: '/v1/chat/completions',
+          headers: { 'content-type': 'application/json' },
+          body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
+        }),
+      });
+    }
+
+    expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(consume).toHaveBeenCalledTimes(2);
+    expect(consume).toHaveBeenCalledWith({ buyerPeerId: 'b'.repeat(40), service: 'local-test', remoteIp: '203.0.113.7' });
+    const responses = sentFrames.map((frame) => decodeHttpResponse(decodeFrame(frame)!.message.payload));
+    expect(responses.map((response) => response.statusCode)).toEqual([200, 429]);
+    expect(responses[1]!.headers['retry-after']).toBe('13');
+    expect(JSON.parse(new TextDecoder().decode(responses[1]!.body))).toMatchObject({
+      error: { code: 'free_tier_exhausted' },
+      limitedBy: 'ip',
+      limit: 3,
+      windowMs: 60_000,
+      retryAfterSeconds: 13,
+    });
+  });
+
+  it('does not apply the free-tier allowance to paid requests', async () => {
+    const provider = makeProvider(1, 1, { name: 'paid-tier', services: ['local-test'] });
+    provider.handleRequest = vi.fn(async (req) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify({ ok: true })) }));
+    const consume = vi.fn();
+    const handler = makeSellerRequestHandler({
+      providers: [provider],
+      sellerPaymentManager: makeSpmMock(),
+      sellerFreeTierLimiter: { maxRequestsPerAddress: 1, windowMs: 60_000, consume } as any,
+      sessionTracker: null,
+      channelsClient: {} as any,
+      announcer: null,
+      emit: () => false,
+    });
+
+    const sentFrames: Uint8Array[] = [];
+    const { mux } = handler.handleConnection(
+      makeConn(sentFrames),
+      'b'.repeat(40),
+      { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any,
+    );
+    await mux.handleFrame({
+      type: MessageType.HttpRequest,
+      messageId: 1,
+      payload: encodeHttpRequest({
+        requestId: 'paid-1',
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'local-test' })),
+      }),
+    });
+
+    expect(provider.handleRequest).toHaveBeenCalledOnce();
+    expect(consume).not.toHaveBeenCalled();
   });
 
   it('skips the first-time buyer 402 when the requested service has a free override on a paid provider', async () => {

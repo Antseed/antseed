@@ -15,7 +15,7 @@ import {
 } from '@antseed/fingerprints'
 import {
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
-  computeOnChainReputationScore,
+  trustScore,
   type PeerInfo,
   type StoredResponseAuth,
   type TokenPricingUsdPerMillion,
@@ -258,7 +258,7 @@ export function classifyVerificationTarget(
     }
   }
 
-  const reputation = computeOnChainReputationScore(peer) ?? peer.reputationScore ?? 0
+  const reputation = trustScore(peer) ?? peer.reputationScore ?? 0
   if (reputation < policy.minReputation) {
     return {
       eligible: false,

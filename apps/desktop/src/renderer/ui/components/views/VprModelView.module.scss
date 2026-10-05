@@ -298,10 +298,12 @@
 }
 
 .sellerRow {
+  position: relative;
   width: 100%;
   min-height: 54px;
   display: flex;
-  align-items: center;
+  flex-direction: column;
+  align-items: stretch;
   gap: 8px;
   padding: 8px 16px 8px 12px;
   border: none;
@@ -315,6 +317,40 @@
   text-align: left;
   cursor: pointer;
   transition: background 0.12s ease;
+}
+
+.sellerSelect {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  padding: 0;
+  border: 0;
+  border-radius: 0;
+  background: transparent;
+  color: inherit;
+  text-align: left;
+  font: inherit;
+  cursor: pointer;
+}
+
+.sellerSelect:focus-visible {
+  outline: 2px solid var(--text-muted);
+  outline-offset: -2px;
+}
+
+.sellerContent {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  pointer-events: none;
+}
+
+.sellerVerification {
+  display: inline-flex;
+  flex: 0 0 auto;
+  pointer-events: auto;
 }
 
 /* The active row leads with the checkmark, tucked closer to the edge (Figma pl-8). */
@@ -350,14 +386,108 @@
 
 .sellerName {
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 4px;
   min-width: 0;
-  overflow: hidden;
   font-size: 14px;
   font-weight: 500;
   line-height: 20px;
   white-space: nowrap;
+}
+
+.sellerNameLabel {
+  min-width: 0;
+  max-width: 100%;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.sellerIdentityBadges {
+  display: inline-flex;
+  align-items: center;
+  gap: 3px;
+  flex: 0 0 auto;
+  pointer-events: auto;
+}
+
+.sellerProxyBadge,
+.sellerVerificationBadge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  flex: 0 0 auto;
+  width: 16px;
+  height: 16px;
+  padding: 0;
+  border: 0;
+  border-radius: 4px;
+  background: transparent;
+  line-height: 0;
+  cursor: pointer;
+  transition: color 0.12s ease, background 0.12s ease;
+}
+
+.sellerProxyBadge {
+  color: var(--text-muted);
+
+  &:hover,
+  &:focus-visible {
+    color: var(--text-primary);
+  }
+}
+
+.sellerVerificationBadge {
+  color: #059669;
+
+  &:hover,
+  &:focus-visible {
+    color: #047857;
+    background: rgba(5, 150, 105, 0.08);
+  }
+}
+
+.sellerProxyBadge:focus-visible,
+.sellerVerificationBadge:focus-visible {
+  outline: 2px solid var(--accent);
+  outline-offset: 1px;
+}
+
+.sellerVerificationBadgeDomain {
+  color: #0284c7;
+
+  &:hover,
+  &:focus-visible {
+    color: #0369a1;
+    background: rgba(2, 132, 199, 0.08);
+  }
+}
+
+.sellerVerificationBadgeGithub {
+  color: var(--text-primary);
+
+  &:hover,
+  &:focus-visible {
+    color: var(--accent);
+  }
+}
+
+.sellerVerificationDescription {
+  max-width: 240px;
+  color: var(--text-secondary);
+  line-height: 1.35;
+}
+
+:global(.dark-theme) {
+  .sellerVerificationBadgeDomain {
+    color: #38bdf8;
+
+    &:hover,
+    &:focus-visible {
+      color: #7dd3fc;
+      background: rgba(56, 189, 248, 0.12);
+    }
+  }
 }
 
 .sellerMeta {

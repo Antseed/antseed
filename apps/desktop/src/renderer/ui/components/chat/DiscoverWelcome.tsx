@@ -73,9 +73,11 @@ type CardItem = {
   inputUsdPerMillion: number | null;
   outputUsdPerMillion: number | null;
   cachedInputUsdPerMillion: number | null;
-  reputationScore: number | null; // 0-100 displayed score (sybil-attenuated)
+  reputationScore: number | null; // 0-100 trust score (model-adjusted when available)
   channelCount: number;       // on-chain, from AntseedChannels.getAgentStats
   volumeUsdc: number;         // settled on-chain USDC volume
+  poolStakeAnts: number;      // ANTS staked in the seller pool this epoch
+  washFlagged: boolean | null; // AntseedWashTradingRegistry verdict; null when unavailable
   sybilRisk: number | null;
   sybilFlags: string[];
   lifetimeRequests: number;   // network-wide (mainnet) or local buyer total (fallback)
@@ -164,6 +166,8 @@ function buildCards(options: ChatServiceOptionEntry[]): CardItem[] {
       reputationScore: null,
       channelCount: 0,
       volumeUsdc: 0,
+      poolStakeAnts: 0,
+      washFlagged: null,
       sybilRisk: null,
       sybilFlags: [],
       lifetimeRequests: 0,
@@ -222,9 +226,11 @@ function buildCardsFromRows(rows: DiscoverRow[]): CardItem[] {
       inputUsdPerMillion: row.inputUsdPerMillion,
       outputUsdPerMillion: row.outputUsdPerMillion,
       cachedInputUsdPerMillion: row.cachedInputUsdPerMillion,
-      reputationScore: row.onChainReputationScore,
+      reputationScore: row.effectiveReputationScore ?? row.onChainReputationScore,
       channelCount: row.onChainActiveChannelCount,
       volumeUsdc: Number(row.onChainTotalVolumeUsdc) / 1_000_000,
+      poolStakeAnts: row.poolStakeAnts,
+      washFlagged: row.washFlagged,
       sybilRisk: row.onChainSybilRisk,
       sybilFlags: row.onChainSybilFlags,
       lifetimeRequests: pickRequests(row),
@@ -503,7 +509,7 @@ export function DiscoverWelcome({ serviceOptions, onStartChatting }: DiscoverWel
     filterState.peerSet.size > 0 ||
     filterState.maxInputPrice < MAX_INPUT_PRICE_SLIDER_USD ||
     filterState.maxOutputPrice < MAX_OUTPUT_PRICE_SLIDER_USD ||
-    filterState.minStakeUsdc > 0 ||
+    filterState.minStakeAnts > 0 ||
     filterState.minReputationScore !== DEFAULT_MIN_REPUTATION_SCORE;
 
   const hasNetworkData = serviceOptions.length > 0 || rows.length > 0;
@@ -525,7 +531,7 @@ export function DiscoverWelcome({ serviceOptions, onStartChatting }: DiscoverWel
     filterState.peerSet,
     filterState.maxInputPrice,
     filterState.maxOutputPrice,
-    filterState.minStakeUsdc,
+    filterState.minStakeAnts,
     filterState.minReputationScore,
     filterState.sortKey,
   ]);
@@ -858,20 +864,24 @@ function Card({
               align="right"
               content={(
                 <>
-                  <strong>On-chain reputation score</strong>
+                  <strong>On-chain trust score</strong>
                   <span>Settled volume: {formatVolumeUsdc(item.volumeUsdc)} USDC.</span>
                   <span>{formatCompact(item.channelCount)} settled session{item.channelCount === 1 ? '' : 's'}.</span>
                   <span>Avg channel value: {reputationTooltip.avgChannelUsdc} USDC.</span>
+                  <span>Pool stake: {formatCompact(item.poolStakeAnts)} ANTS.</span>
+                  {item.washFlagged === true && (
+                    <span>⛔ Flagged as a proven wash trader by the on-chain registry.</span>
+                  )}
                   {sybilHasSignals(item) && (
                     <span>
                       ⚠ Sybil risk signals: {item.sybilFlags.map(formatSybilFlag).join(', ')}.
                     </span>
                   )}
-                  <span>Score combines settled sessions, volume, recency, stake, and sybil risk.</span>
+                  <span>Trust = settled service history (up to 50) + last epoch usage share (up to 20) + this epoch power share (up to 10) + verified identity (up to 20); proven wash traders score 0.</span>
                 </>
               )}
             >
-              <span className={`${styles.cardScoreBadge}${lowReputation ? ` ${styles.cardScoreBadgeWarn}` : ''}`} tabIndex={0}>
+              <span className={`${styles.cardScoreBadge}${lowReputation || item.washFlagged === true ? ` ${styles.cardScoreBadgeWarn}` : ''}`} tabIndex={0}>
                 {formatReputationScore(item.reputationScore)}
                 <span className={styles.cardScoreStar} aria-hidden="true">★</span>
                 {lowReputation && <span className={styles.cardScoreLowText}>Low</span>}
@@ -879,8 +889,14 @@ function Card({
             </InfoTooltip>
           </div>
         </div>
-        <div className={`${styles.cardStats}${lowReputation || sybilHasSignals(item) ? ` ${styles.cardStatsWarning}` : ''}`}>
-          {sybilIsAlarming(item) ? (
+        <div className={`${styles.cardStats}${lowReputation || sybilHasSignals(item) || item.washFlagged === true ? ` ${styles.cardStatsWarning}` : ''}`}>
+          {item.washFlagged === true ? (
+            /* Registry verdict outranks the local sybil heuristic: a filled
+               pill (reusing the tag-warn styling) rather than plain warn text. */
+            <span className={`${styles.tag} ${styles.tagWarn}`} title="Flagged as a proven wash trader by the on-chain registry">
+              ⛔ Wash trader
+            </span>
+          ) : sybilIsAlarming(item) ? (
             <span>⚠ Suspected wash activity: {item.sybilFlags.map(formatSybilFlag).join(', ')}</span>
           ) : sybilHasSignals(item) ? (
             <span>⚠ Sybil risk signals: {item.sybilFlags.map(formatSybilFlag).join(', ')}</span>

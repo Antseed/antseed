@@ -279,7 +279,7 @@
   margin: 0;
 }
 
-/* ---------- key/value table (economics, on-chain facts) ---------- */
+/* ---------- key/value table (economics, onchain facts) ---------- */
 .factTable {
   background: var(--as-soil-2);
   border: 1px solid var(--as-line);

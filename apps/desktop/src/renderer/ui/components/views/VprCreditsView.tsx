@@ -3,7 +3,7 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowRight01Icon, CreditCardIcon, Download01Icon, SquareLock01Icon, Upload01Icon, Wallet01Icon } from '@hugeicons/core-free-icons';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
-import { formatCredits, shortAddress } from '../../../core/format';
+import { shortAddress } from '../../../core/format';
 import { formatCompactTokens, VprCard, VprPage, VprStatRow, VprStatTile } from '../vpr/VprKit';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
@@ -27,7 +27,6 @@ export function VprCreditsView({ onSelectView }: Props) {
     evmAddress: state.creditsEvmAddress,
     operatorAddress: state.creditsOperatorAddress,
     usage: state.creditsBuyerUsage,
-    rewards: state.creditsRewards,
   }), shallowEqual);
   // Local to the button: background pollers (floating pill, payment events)
   // also refresh the summary, and mirroring their in-flight state here made
@@ -112,23 +111,6 @@ export function VprCreditsView({ onSelectView }: Props) {
 
         <VprCard className={styles.rewardsCard}>
           <span className={styles.rewardsText}>
-            <strong>Network rewards</strong>{' '}
-            {snap.rewards?.available
-              ? `${formatCredits(snap.rewards.pendingAnts)} ANTS pending this epoch from your usage.`
-              : 'Earn ANTS from your usage once rewards go live on this chain.'}
-          </span>
-          <button
-            type="button"
-            className={styles.rewardsLink}
-            onClick={() => onSelectView?.('rewards')}
-          >
-            <span>Rewards</span>
-            <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
-          </button>
-        </VprCard>
-
-        <VprCard className={styles.rewardsCard}>
-          <span className={styles.rewardsText}>
             <strong>Payment channels</strong>{' '}
             {`${snap.usage?.activeChannels ?? 0} active — see settlements or close a channel.`}
           </span>
@@ -190,6 +172,21 @@ export function VprCreditsView({ onSelectView }: Props) {
               {refreshing ? 'Refreshing...' : 'Refresh'}
             </button>
           </div> */}
+        </VprCard>
+
+        <VprCard className={styles.rewardsCard}>
+          <span className={styles.rewardsText}>
+            <strong>Help &amp; support</strong>{' '}
+            Guides, troubleshooting, and diagnostics.
+          </span>
+          <button
+            type="button"
+            className={styles.rewardsLink}
+            onClick={() => onSelectView?.('help')}
+          >
+            <span>Help</span>
+            <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
+          </button>
         </VprCard>
       </div>
       </VprPage>

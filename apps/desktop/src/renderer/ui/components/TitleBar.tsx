@@ -3,7 +3,7 @@ import { VprLogo } from './VprLogo';
 import type { UpdateStatus } from '../../types/bridge';
 import styles from './TitleBar.module.scss';
 
-const DEFAULT_UPDATE_INSTALL_HINT = 'Quit AntSeed, reopen, and try again.';
+const DEFAULT_UPDATE_INSTALL_HINT = 'Quit Antseed, reopen, and try again.';
 
 export function TitleBar() {
   const [updateState, setUpdateState] = useState<

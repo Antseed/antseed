@@ -44,6 +44,12 @@ export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
     description: 'Local LLM provider (Ollama, llama.cpp)',
     package: '@antseed/provider-local-llm',
   },
+  {
+    name: 'typesafe',
+    type: 'provider',
+    description: 'TypeSafe System One decision-model provider (API key)',
+    package: '@antseed/provider-typesafe',
+  },
 ]
 
 export const TRUSTED_ROUTER_PLUGINS: TrustedPlugin[] = [

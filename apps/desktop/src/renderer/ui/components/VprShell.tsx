@@ -3,8 +3,8 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import type { BadgeTone } from '../../core/state';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
+import { useTeeBackgroundVerification } from '../hooks/useTeeVerification';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
-import { formatCredits } from '../../core/format';
 import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
 import { navViews } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
@@ -13,12 +13,13 @@ import { NetworkAlertBanner } from './NetworkAlertBanner';
 import { UpdateBanner } from './UpdateBanner';
 import { PublicEndpointModalProvider } from './tunnels/PublicEndpointModal';
 import { VprNavContext } from './vpr/VprNavContext';
+import { VprHeaderActions } from './vpr/VprHeaderActions';
 import styles from './VprShell.module.scss';
 
 /* Views built on VprPage carry the credits pill inside their pinned header,
-   so the shell's floating pill would duplicate it. Home and chat keep the
-   floating one. */
+   so the shell's floating pill would duplicate it. */
 const VIEWS_WITH_HEADER_CREDITS: ReadonlySet<ViewName> = new Set([
+  'chat',
   'explore',
   'model',
   'tools',
@@ -57,6 +58,7 @@ function networkStatusClassName(networkHealth: string): string {
 }
 
 export function VprShell({ activeView, onSelectView, onNavigateBack, children }: VprShellProps) {
+  useTeeBackgroundVerification();
   const snap = useUiSelector((state) => ({
     headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     connectBadgeLabel: state.connectBadge.label,
@@ -93,7 +95,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           clicks working; interactive elements overlapping it opt out with
           -webkit-app-region: no-drag. */}
       <div className={styles.dragStrip} aria-hidden="true" />
-      <nav className={styles.sidebar} aria-label="VPR navigation">
+      <nav className={styles.sidebar} aria-label="AI VPN navigation">
         <div className={styles.navGroup}>
           {mainNavEntries.map(({ view, nav }) => {
             const active = activeView === view;
@@ -149,14 +151,11 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             no-drag hole and swallow its clicks. */}
         {!VIEWS_WITH_HEADER_CREDITS.has(activeView) && (
           <div className={styles.creditsPillSlot}>
-            <button
-              type="button"
+            <VprHeaderActions
               className={styles.creditsPill}
-              title="Add credits"
-              onClick={() => onSelectView('deposit')}
-            >
-              ${formatCredits(snap.headlineBalanceUsdc)}
-            </button>
+              credits={snap.headlineBalanceUsdc}
+              onSelectView={onSelectView}
+            />
           </div>
         )}
         <NetworkAlertBanner />

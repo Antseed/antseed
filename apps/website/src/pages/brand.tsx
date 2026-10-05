@@ -126,12 +126,12 @@ export default function BrandPage(): JSX.Element {
   return (
     <Layout
       title="Brand"
-      description="A lightweight reference for the AntSeed identity: logo, color, typography, visual language, and the principles behind it."
+      description="A lightweight reference for the Antseed identity: logo, color, typography, visual language, and the principles behind it."
     >
       <PageHero
         kicker="Brand"
-        title={<>The AntSeed identity, <em>at a glance.</em></>}
-        lead="AntSeed is an open peer-to-peer network for AI services. Our visual identity reflects the same principles as the protocol itself: openness, precision, transparency, and simplicity."
+        title={<>The Antseed identity, <em>at a glance.</em></>}
+        lead="Antseed is an open peer-to-peer network for AI services. Our visual identity reflects the same principles as the protocol itself: openness, precision, transparency, and simplicity."
         animatedDots
       />
 
@@ -258,7 +258,7 @@ export default function BrandPage(): JSX.Element {
         <Reveal>
           <SectionHeader
             title="Visual Language"
-            lead="AntSeed visuals are inspired by decentralized networks and collective intelligence. Simple geometric forms, subtle dot patterns, and clean technical lines communicate openness without unnecessary complexity."
+            lead="Antseed visuals are inspired by decentralized networks and collective intelligence. Simple geometric forms, subtle dot patterns, and clean technical lines communicate openness without unnecessary complexity."
           />
         </Reveal>
         <Reveal>
@@ -295,7 +295,7 @@ export default function BrandPage(): JSX.Element {
             </div>
             <div className={styles.motifCard}>
               <div className={`${styles.motifSwatch} ${styles.motifSwatchGradient}`} />
-              <h3>AntSeed gradient</h3>
+              <h3>Antseed gradient</h3>
               <p>The signature green gradient - accents, CTAs, and moments that need energy.</p>
             </div>
           </div>

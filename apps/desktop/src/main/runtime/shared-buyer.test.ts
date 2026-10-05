@@ -4,7 +4,7 @@ import test from 'node:test';
 import { ProcessManager } from './process-manager.js';
 import { isCompatibleSharedBuyer, refreshSharedBuyerAttachment } from './shared-buyer.js';
 
-test('isCompatibleSharedBuyer accepts the AntSeed status endpoint', async () => {
+test('isCompatibleSharedBuyer accepts the Antseed status endpoint', async () => {
   const server = createServer((_request, response) => {
     response.writeHead(200, { 'content-type': 'application/json' });
     response.end(JSON.stringify({ ok: true }));

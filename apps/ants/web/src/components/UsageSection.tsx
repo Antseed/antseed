@@ -41,7 +41,7 @@ export function UsageSection() {
 
   return (
     <Panel
-      title="Usage"
+      title="Your usage · historical network comparisons"
       actions={
         <>
           <label className="check small">
@@ -63,6 +63,7 @@ export function UsageSection() {
     >
       {page.error && !data ? <ErrorBox error={page.error} onRetry={page.refresh} /> : null}
       {page.error && data ? <div className="status-line">Refresh failed: {page.error}</div> : null}
+      {data && <p className="hint">{data.source === 'indexer' ? 'Historical rows are indexed data and may lag the current contract snapshot.' : 'Historical rows are unavailable without the explorer; current totals are read from the chain.'}{data.sourceError ? ` ${data.sourceError}` : ''}</p>}
       <Facts
         items={[
           ['Your buyer points', data ? formatInt(data.totals.buyerPoints) : '…'],

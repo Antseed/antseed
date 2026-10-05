@@ -3,7 +3,7 @@ slug: llm-api-without-account
 title: "LLM APIs Without an Account: What Each One Actually Asks For"
 authors: [antseed]
 tags: [privacy, API, no signup, developer tools, AI infrastructure, P2P]
-description: "Which LLM APIs really work without an account? We checked ten, from Pollinations to AntSeed, and recorded exactly what each one asks you to hand over instead."
+description: "Which LLM APIs really work without an account? We checked ten, from Pollinations to Antseed, and recorded exactly what each one asks you to hand over instead."
 keywords: [llm api without account, ai api no signup, llm api no api key, free ai api without registration, openai compatible api no account, anonymous ai api, chatgpt api alternative no account]
 image: /og-image.jpg
 date: 2026-08-18
@@ -33,10 +33,10 @@ export const llmApiFaqLd = {
     },
     {
       '@type': 'Question',
-      name: 'Do I need crypto to use AntSeed?',
+      name: 'Do I need crypto to use Antseed?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: "No — you don't need to already hold crypto. AntSeed settles in USDC on Base, but the desktop app has a card checkout (Stripe-backed, US region for now) that funds your balance from a card without you touching crypto directly, alongside the crypto-native path. AntSeed itself doesn't hand out free trial credit, though individual providers can and do price their own services at $0.",
+        text: "No — you don't need to already hold crypto. Antseed settles in USDC on Base, but the desktop app has a card checkout (Stripe-backed, US region for now) that funds your balance from a card without you touching crypto directly, alongside the crypto-native path. Antseed itself doesn't hand out free trial credit, though individual providers can and do price their own services at $0.",
       },
     },
     {
@@ -70,13 +70,13 @@ This is a search for an **LLM API without an account**, not a search for a free 
 
 ## The short answer
 
-Two providers need zero account for basic use: Pollinations' original text endpoint and LLM7, which accepts the literal string `unused` as an API key. AntSeed needs no personal identity but does need a funded wallet before your first call. Puter needs no key from the developer, but the end user gets prompted to log into a Puter account to cover the cost. Everything else on this list — OpenRouter's free tier, Google AI Studio, Groq, Cloudflare Workers AI, GitHub Models, and Hugging Face's Inference API — markets itself as easy and free, and every one of them requires an account before you get a real completion.
+Two providers need zero account for basic use: Pollinations' original text endpoint and LLM7, which accepts the literal string `unused` as an API key. Antseed needs no personal identity but does need a funded wallet before your first call. Puter needs no key from the developer, but the end user gets prompted to log into a Puter account to cover the cost. Everything else on this list — OpenRouter's free tier, Google AI Studio, Groq, Cloudflare Workers AI, GitHub Models, and Hugging Face's Inference API — markets itself as easy and free, and every one of them requires an account before you get a real completion.
 
 ## How we checked this
 
-Checked 18 August 2026. "No account" here means a request that returns a real completion with no email confirmation, no OAuth redirect, and no dashboard visit — not a homepage claim. Every entry below is checked against that provider's current, primary documentation or quickstart, linked so you can verify it yourself and rerun the same request. The AntSeed section is our own product's documented flow, cross-checked here against our install and payments docs directly. We did not load-test any of these or measure uptime over time; this is about the signup step, not throughput.
+Checked 18 August 2026. "No account" here means a request that returns a real completion with no email confirmation, no OAuth redirect, and no dashboard visit — not a homepage claim. Every entry below is checked against that provider's current, primary documentation or quickstart, linked so you can verify it yourself and rerun the same request. The Antseed section is our own product's documented flow, cross-checked here against our install and payments docs directly. We did not load-test any of these or measure uptime over time; this is about the signup step, not throughput.
 
-Say the quiet part plainly: AntSeed is ours, and we placed it by the actual friction it has — a funded wallet, not an account, which is neither free nor invisible. A roundup that flatters its own product doesn't survive a reader with a terminal open.
+Say the quiet part plainly: Antseed is ours, and we placed it by the actual friction it has — a funded wallet, not an account, which is neither free nor invisible. A roundup that flatters its own product doesn't survive a reader with a terminal open.
 
 ## The comparison table
 
@@ -86,7 +86,7 @@ Sorted by ascending friction, not alphabetically. "What you hand over instead" i
 |---|---|---|---|---|---|
 | [Pollinations](https://github.com/pollinations/pollinations/blob/main/APIDOCS.md) (text endpoint) | No | IP address, no persistent ID | Free | Partial (simple GET endpoint) | Their newer `/v1` endpoint now wants a bearer key |
 | [LLM7](https://github.com/chigwell/llm7.io) | No (`unused` as key) | IP address, shared rate bucket | Free | Yes | 30 RPM anonymous; email gets you 120 RPM |
-| [AntSeed](/docs/guides/payments) | No (funded wallet instead) | A public, pseudonymous wallet address | USDC pre-deposit — card or crypto | Yes | No account, but real money up front |
+| [Antseed](/docs/guides/payments) | No (funded wallet instead) | A public, pseudonymous wallet address | USDC pre-deposit — card or crypto | Yes | No account, but real money up front |
 | [Puter](https://developer.puter.com/tutorials/free-llm-api/) | No for the developer | The end user's own Puter login | End user pays via their account | No (custom SDK) | The "no account" is yours, not your users' |
 | [OpenRouter](https://openrouter.ai) free tier | Yes (email, GitHub, or Google) | An email or federated identity | Free, rate-limited | Yes | 20 req/min, 1,000/day; no card needed |
 | [Groq](https://console.groq.com) | Yes (email, verified) | A verified email address | Free tier, no card | Yes | Email verification step before first key |
@@ -122,9 +122,9 @@ The word `unused` in the Authorization header is not a placeholder you're suppos
 
 ## Tier 2: no account, but you fund a wallet
 
-### AntSeed
+### Antseed
 
-This is where the honesty has to be sharper, because it's our product. AntSeed doesn't ask for an account. It asks for a funded wallet, which is a different kind of friction, not an absent one.
+This is where the honesty has to be sharper, because it's our product. Antseed doesn't ask for an account. It asks for a funded wallet, which is a different kind of friction, not an absent one.
 
 Install:
 
@@ -147,9 +147,9 @@ curl http://localhost:8377/v1/chat/completions \
 
 No API key header is checked by the local proxy. Tools that insist on sending one can send any placeholder string and it will be ignored.
 
-Payment settles in USDC on Base mainnet: [install the AntSeed CLI](/docs/install), then pre-deposit before your first paid request. [How USDC settlement works](/docs/guides/payments) covers the crypto-native funding paths — exchange withdrawal, another wallet, a card on-ramp — and the desktop app separately offers a built-in card checkout that funds the same balance without you needing to already hold crypto. Prices are quoted per provider as `inputUsdPerMillion` and `outputUsdPerMillion`, and providers can set either to zero. One detail worth knowing: any address can fund a node's deposit — a team treasury, a hardware wallet, an exchange withdrawal — without that funding source ever touching the node's private key.
+Payment settles in USDC on Base mainnet: [install the Antseed CLI](/docs/install), then pre-deposit before your first paid request. [How USDC settlement works](/docs/guides/payments) covers the crypto-native funding paths — exchange withdrawal, another wallet, a card on-ramp — and the desktop app separately offers a built-in card checkout that funds the same balance without you needing to already hold crypto. Prices are quoted per provider as `inputUsdPerMillion` and `outputUsdPerMillion`, and providers can set either to zero. One detail worth knowing: any address can fund a node's deposit — a team treasury, a hardware wallet, an exchange withdrawal — without that funding source ever touching the node's private key.
 
-State the cost of admission plainly: you need a funded balance — card or crypto — before AntSeed does anything for you. That's the trade for not needing a login.
+State the cost of admission plainly: you need a funded balance — card or crypto — before Antseed does anything for you. That's the trade for not needing a login.
 
 ## Tier 3: "no signup" that is actually a signup
 
@@ -159,7 +159,7 @@ Puter's pitch is real but easy to misread. As a developer embedding Puter.js, yo
 
 ### OpenRouter, Groq, Hugging Face, GitHub Models, Google AI Studio, Cloudflare Workers AI
 
-None of these are dishonest about requiring a signup — that's not the complaint. The complaint is with roundups that file them under "no account needed" because the free tier doesn't ask for a credit card. A free tier is not a no-account tier. Every one of these needs an identity of some kind before your first real request: an email for OpenRouter or Groq, a Google account for AI Studio, a GitHub account and scoped token for GitHub Models, an account and access token for Hugging Face, and — the heaviest of the group — a verified Cloudflare account, an API token, and an Account ID for Workers AI. If your actual requirement is "no signup screen," these all fail it, whatever the pricing page says. If [AntSeed compared to OpenRouter](/vs/openrouter) is the tradeoff you're weighing, note that OpenRouter's friction is an account; AntSeed's is a wallet.
+None of these are dishonest about requiring a signup — that's not the complaint. The complaint is with roundups that file them under "no account needed" because the free tier doesn't ask for a credit card. A free tier is not a no-account tier. Every one of these needs an identity of some kind before your first real request: an email for OpenRouter or Groq, a Google account for AI Studio, a GitHub account and scoped token for GitHub Models, an account and access token for Hugging Face, and — the heaviest of the group — a verified Cloudflare account, an API token, and an Account ID for Workers AI. If your actual requirement is "no signup screen," these all fail it, whatever the pricing page says. If [Antseed compared to OpenRouter](/vs/openrouter) is the tradeoff you're weighing, note that OpenRouter's friction is an account; Antseed's is a wallet.
 
 ## Keyless isn't the same as an anonymous AI API
 
@@ -168,8 +168,8 @@ An API can drop the login form entirely and still not give you that property, be
 ## Which one should you actually use
 
 - **Prototyping and throwaway scripts** — Pollinations or LLM7. Zero setup, and the rate limits won't bother a script you run twice.
-- **CI, where you can't store a secret** — LLM7's `unused` key or AntSeed with a funded wallet, since neither needs a stored credential that can leak.
-- **Work you don't want tied to a corporate identity** — AntSeed, because the wallet is pseudonymous by default and isn't linked to a company Google Workspace or GitHub org.
+- **CI, where you can't store a secret** — LLM7's `unused` key or Antseed with a funded wallet, since neither needs a stored credential that can leak.
+- **Work you don't want tied to a corporate identity** — Antseed, because the wallet is pseudonymous by default and isn't linked to a company Google Workspace or GitHub org.
 - **Production traffic** — honestly, most of this list is the wrong tool. Keyless gateways don't publish SLAs, and free tiers from the big providers throttle exactly when you need them not to. Pay someone, one way or another.
 
 That last one matters more than it sounds. A roundup that recommends its own product for every row isn't one you should trust, and we're not going to be that roundup.
@@ -184,9 +184,9 @@ No. Keyless means you didn't create an account. Anonymous means the provider can
 
 Not a free one, and be skeptical of anyone claiming otherwise. Production-grade privacy from identification generally means paying with something other than an identity — a funded wallet rather than a login — which is a different tradeoff than a free keyless endpoint, not the same thing with better branding.
 
-### Do I need crypto to use AntSeed?
+### Do I need crypto to use Antseed?
 
-No — you don't need to already hold crypto. AntSeed settles in USDC on Base, but the desktop app has a card checkout (Stripe-backed, US region for now) that funds your balance from a card without you touching crypto directly, alongside the crypto-native path. AntSeed itself doesn't hand out free trial credit, though individual providers can and do price their own services at $0.
+No — you don't need to already hold crypto. Antseed settles in USDC on Base, but the desktop app has a card checkout (Stripe-backed, US region for now) that funds your balance from a card without you touching crypto directly, alongside the crypto-native path. Antseed itself doesn't hand out free trial credit, though individual providers can and do price their own services at $0.
 
 ### Are no-account LLM APIs against the model providers' terms?
 
@@ -198,4 +198,4 @@ It varies by provider and is rarely spelled out for free tiers. Absence of a log
 
 ---
 
-Nobody on this list is giving you anonymity for free. Every option, including ours, has you hand something over — an IP address, a rate-limit bucket, a browser session, or a funded wallet. The honest way to pick one is to decide which of those you'd rather give up, not to keep searching for the option that asks for nothing, because it doesn't exist. If a funded wallet and no login is the trade you'd take, [get started](/get-started) with AntSeed.
+Nobody on this list is giving you anonymity for free. Every option, including ours, has you hand something over — an IP address, a rate-limit bucket, a browser session, or a funded wallet. The honest way to pick one is to decide which of those you'd rather give up, not to keep searching for the option that asks for nothing, because it doesn't exist. If a funded wallet and no login is the trade you'd take, [get started](/get-started) with Antseed.

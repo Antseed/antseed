@@ -36,7 +36,7 @@ const PREVIEW_MODELS: Array<{ brand: BrandKey; label: string; chip: string; free
 
 const SCENE_DURATION_SECONDS = 4;
 const PREVIEW_SCENES = [
-  { caption: 'Turn it on — your VPR joins the network', icon: SquarePowerIcon },
+  { caption: 'Turn it on — your AI VPN joins the network', icon: SquarePowerIcon },
   { caption: 'Chat with any model, pay per use', icon: BubbleChatIcon },
   { caption: 'The latest models, free ones included', icon: DiscoverCircleIcon },
   { caption: 'Connect the apps you already use', icon: ConnectIcon },
@@ -47,7 +47,7 @@ function sceneDelay(index: number): string {
 }
 
 /**
- * Miniature VPR window that plays as a walkthrough-loader: the nav rail on
+ * Miniature AI VPN window that plays as a walkthrough-loader: the nav rail on
  * the left, the main pane cycling Home → Models → Apps → Chat at the app's
  * real portrait proportions, and a caption line underneath narrating each
  * scene. Pure CSS timing — one 16s period, 4s per scene, elements staggered
@@ -65,7 +65,7 @@ export function SetupAppPreview() {
         ))}
       </div>
       <div className={styles.frame}>
-        {/* The rail's active tab follows the scene on stage: VPR → Models →
+        {/* The rail's active tab follows the scene on stage: AI VPN → Models →
             Apps → Chat, on the same 16s clock as the scenes. */}
         <div className={styles.rail}>
           {PREVIEW_SCENES.map(({ caption, icon }, index) => (
@@ -97,7 +97,7 @@ export function SetupAppPreview() {
               </span>
             </div>
             {/* App pills + usage: your tools connect here, and the Saving
-                tile is the point — using AntSeed saves money. */}
+                tile is the point — using Antseed saves money. */}
             <div className={styles.pillRow}>
               {PREVIEW_APPS.slice(0, 4).map((app) => (
                 <span key={app.brand} className={styles.pill}>
@@ -124,7 +124,7 @@ export function SetupAppPreview() {
           {/* Scene 2 — Chat: the first question, answered. */}
           <div className={`${styles.scene} ${styles.sceneChat}`}>
             <span className={styles.sceneTitle}>Chat</span>
-            <div className={`${styles.bubble} ${styles.bubbleUser}`}>What is AntSeed?</div>
+            <div className={`${styles.bubble} ${styles.bubbleUser}`}>What is Antseed?</div>
             <div className={`${styles.bubble} ${styles.bubbleTyping}`}><span /><span /><span /></div>
             <div className={`${styles.bubble} ${styles.bubbleAnswer}`}>
               A peer-to-peer network of AI models — each request routes to the best seller, and you only pay for what you use.
@@ -155,7 +155,7 @@ export function SetupAppPreview() {
                 </span>
               </div>
             ))}
-            <span className={styles.appsHint}>Requests route through your VPR</span>
+            <span className={styles.appsHint}>Requests route through your AI VPN</span>
           </div>
 
         </div>

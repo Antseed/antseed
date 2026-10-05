@@ -1,5 +1,5 @@
 import { Skeleton } from './ui';
-import { Fragment, type ReactNode } from 'react';
+import type { ReactNode } from 'react';
 
 export interface Column<T> {
   key: string;
@@ -8,6 +8,7 @@ export interface Column<T> {
   align?: 'left' | 'right';
   mono?: boolean;
   title?: string;
+  sortDirection?: 'ascending' | 'descending' | 'none';
   className?: string;
 }
 
@@ -18,24 +19,19 @@ interface Props<T> {
   empty?: ReactNode;
   loading?: boolean;
   onRowClick?: (row: T) => void;
-  isSelected?: (row: T) => boolean;
-  /** Extra class per row (e.g. muted pools). */
-  rowClass?: (row: T) => string | undefined;
-  /** When it returns a node for a row, that node is rendered in a full-width line under the row. */
-  renderDetail?: (row: T) => ReactNode;
   footer?: ReactNode;
 }
 
-export function Table<T>({ columns, rows, rowKey, empty, loading, onRowClick, isSelected, rowClass, renderDetail, footer }: Props<T>) {
+export function Table<T>({ columns, rows, rowKey, empty, loading, onRowClick, footer }: Props<T>) {
   const cellClass = (column: Column<T>) =>
     [column.align === 'right' ? 'num' : '', column.mono ? 'mono' : '', column.className ?? ''].filter(Boolean).join(' ') || undefined;
   return (
-    <div className="table-wrap">
+    <div className="table-wrap" tabIndex={0} role="region" aria-label="Data table; scroll horizontally to see all columns">
       <table className="table">
         <thead>
           <tr>
             {columns.map((column) => (
-              <th key={column.key} className={[column.align === 'right' ? 'num' : '', column.className ?? ''].filter(Boolean).join(' ') || undefined} title={column.title}>
+              <th key={column.key} className={[column.align === 'right' ? 'num' : '', column.className ?? ''].filter(Boolean).join(' ') || undefined} title={column.title} aria-sort={column.sortDirection}>
                 {column.label}
               </th>
             ))}
@@ -60,27 +56,15 @@ export function Table<T>({ columns, rows, rowKey, empty, loading, onRowClick, is
               </td>
             </tr>
           ) : null}
-          {rows.map((row, index) => {
-            const selected = isSelected?.(row) ?? false;
-            const detail = renderDetail?.(row);
-            const classes = [onRowClick ? 'clickable' : '', selected ? 'selected' : '', detail ? 'expanded' : '', rowClass?.(row) ?? ''].filter(Boolean).join(' ') || undefined;
-            return (
-              <Fragment key={rowKey(row)}>
-                <tr className={classes} onClick={onRowClick ? () => onRowClick(row) : undefined}>
-                  {columns.map((column) => (
-                    <td key={column.key} className={cellClass(column)}>
-                      {column.render(row, index)}
-                    </td>
-                  ))}
-                </tr>
-                {detail ? (
-                  <tr className="detail-row">
-                    <td colSpan={columns.length}>{detail}</td>
-                  </tr>
-                ) : null}
-              </Fragment>
-            );
-          })}
+          {rows.map((row, index) => (
+            <tr key={rowKey(row)} className={onRowClick ? 'clickable' : undefined} onClick={onRowClick ? () => onRowClick(row) : undefined}>
+              {columns.map((column) => (
+                <td key={column.key} className={cellClass(column)}>
+                  {column.render(row, index)}
+                </td>
+              ))}
+            </tr>
+          ))}
         </tbody>
         {footer ? <tfoot>{footer}</tfoot> : null}
       </table>

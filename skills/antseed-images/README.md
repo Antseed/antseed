@@ -1,13 +1,13 @@
 # antseed-images
 
-Generate images from text prompts through AntSeed's network-wide image model routing.
+Generate images from text prompts through Antseed's network-wide image model routing.
 
 ## Install
 
 With the [GitHub CLI](https://cli.github.com/) (v2.90.0+):
 
 ```bash
-gh skill install AntSeed/antseed antseed-images
+gh skill install Antseed/antseed antseed-images
 ```
 
 Add `--scope user` to install it for every project supported by your agent, or use `--agent <agent>` to target one agent.
@@ -16,7 +16,7 @@ You can also point an agent directly at [`SKILL.md`](SKILL.md).
 
 ## Prerequisites
 
-AntSeed Desktop or `antseed buyer start` must be running, and the buyer must have sufficient deposited USDC. The skill uses the local buyer proxy, normally at `http://127.0.0.1:8377`.
+Antseed Desktop or `antseed buyer start` must be running, and the buyer must have sufficient deposited USDC. The skill uses the local buyer proxy, normally at `http://127.0.0.1:8377`.
 
 ## Parameters
 

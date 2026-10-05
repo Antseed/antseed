@@ -7,6 +7,7 @@ export type Theme = 'dark' | 'light';
 export interface AppValue {
   config: DashboardConfig;
   overview: OverviewView | null;
+  overviewError?: string | null;
   theme: Theme;
   toggleTheme: () => void;
 }

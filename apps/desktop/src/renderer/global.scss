@@ -1,11 +1,11 @@
 /* ===================================================================
-   AntSeed Desktop — Light / Dark Theme
+   Antseed Desktop — Light / Dark Theme
    Light theme is default. Add class "dark-theme" to <body> for dark.
    =================================================================== */
 
 :root {
   /* ---------- Light theme (default) ----------
-     Brand palette from the AntSeed Figma guideline: warm cream surfaces
+     Brand palette from the Antseed Figma guideline: warm cream surfaces
      (surface/0 #fbf9f4, surface/1 white), deep green primary (#008359)
      with the brighter brand emerald (#10b981) reserved for fills. */
   --bg-primary: #fbf9f4;
@@ -1275,7 +1275,7 @@ select.form-input {
    The Modal primitive ships the dashboard's `--as-*` look (bordered
    header, boxed close button, generous padding). Restyle it once here
    with the app's tokens so every desktop modal — confirms, settings,
-   pickers — matches the VPR views without per-dialog overrides.
+   pickers — matches the AI VPN views without per-dialog overrides.
    Selectors are nested under `.as-modal` / `.as-modal-overlay` so they
    outrank the primitive's own rules whatever the stylesheet order.
    =================================================================== */

@@ -4,6 +4,8 @@ import type { ChatPermissionMode, RawChatAttachment, ToolApprovalDecision } from
 export type AppActions = {
   startConnect: () => Promise<void>;
   stopConnect: () => Promise<void>;
+  /** Stop + start the buyer; connected apps stay connected across it. */
+  restartConnect: () => Promise<void>;
   startAll: () => Promise<void>;
   stopAll: () => Promise<void>;
   refreshAll: () => Promise<void>;

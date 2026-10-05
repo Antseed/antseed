@@ -106,7 +106,7 @@ export function adaptPeerFaultErrorResponse(
   const originalMessage = details.message ?? 'No additional details were provided.';
   const message = [
     `Oops, ${peerLabel} could not complete the request.`,
-    'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+    'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
     `Original Response: ${JSON.stringify({ message: originalMessage, status: response.statusCode })}`,
   ].join('\n');
   const error = {

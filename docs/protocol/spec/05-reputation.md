@@ -2,7 +2,7 @@
 
 ## Overview
 
-The reputation system enables buyers to make informed peer selection decisions without relying on a central authority. The current implementation derives reputation from buyer-readable on-chain settlement stats and uses local runtime metrics only for routing tie-breakers such as latency and failure cooldowns.
+The reputation system enables buyers to make informed peer selection decisions without relying on a central authority. The current implementation is a buyer-computed **trust score** (0-100) derived from the seller pool's share of recognized usage and of staking power, and wash-trading verdicts, read from the chain, plus public history of verified identities; local runtime metrics are used only for routing tie-breakers such as latency and failure cooldowns. The formula, sources, and limits are documented in the [Reputation reference](../../../apps/website/docs/protocol/reputation.md#trust-score).
 
 There is no central reputation authority.
 
@@ -52,7 +52,7 @@ All factors are min-max normalised across the eligible candidate pool before wei
 reputationFactor = peerReputation / 100
 ```
 
-When a peer has no `reputationScore`, the value **0** is used (treated as unknown/unverified). When on-chain channel stats are available, official routers compute the effective reputation from `AntseedChannels` before falling back to locally reported scores. That on-chain score is multi-factor: settled USDC volume carries the largest weight, completed channels, average channel value, recent settlement, and seller stake age also contribute, and ghost-channel rate applies a penalty.
+When a peer has no `reputationScore`, the value **0** is used (treated as unknown/unverified). Official routers use the buyer-computed trust score (`trust = washFlagged ? 0 : history + usage + power + identity`, weights 50 / 20 / 10 / 20) before falling back to the locally reported score. `history` comes from the lifetime settled channel count and volume in `AntseedChannels`; ghost count and the local sybil warning remain display-only.
 
 ### Minimum Reputation Filter
 
@@ -66,7 +66,7 @@ Router plugins apply a minimum reputation filter before scoring. In `@antseed/ro
 Model-only requests also apply `buyer.routingPreferences.minTrustScore`, default
 **60**, plus allow/block lists and price limits. The filters are distinct:
 `minPeerReputation: 0` does not disable the model-routing trust gate. See the
-[routing reference](../../../apps/website/docs/protocol/reputation.md#buyer-route-scoring)
+[routing reference](../../../apps/website/docs/protocol/reputation.md#routing)
 for the ranking rules. Routing preferences are not on-chain reward policies.
 
 ## Local Runtime Signals
@@ -80,7 +80,7 @@ Official routers keep local runtime metrics for candidate scoring and operationa
 | Current load / capacity | Prefers peers with available concurrency |
 | Freshness | Prefers recently observed peers |
 
-These signals are buyer-local and transient. They help choose between otherwise eligible candidates, while the durable reputation path remains: buyer-computed on-chain reputation first, optional `PeerInfo.reputationScore` fallback second, and `0` for unknown reputation.
+These signals are buyer-local and transient. They help choose between otherwise eligible candidates, while the durable reputation path remains: buyer-computed trust score first, optional `PeerInfo.reputationScore` fallback second, and `0` for unknown reputation.
 
 ---
 
@@ -145,10 +145,10 @@ A peer's DHT-published reputation is computed by aggregating all attestations ab
 
 | Aspect                  | Current                                      | Phase 2 (Future)                        |
 |-------------------------|----------------------------------------------|-----------------------------------------|
-| Data source             | On-chain settlements + optional reported score | DHT-published signed attestations       |
+| Data source             | Recognized-usage share, pool power share, wash registry, verified identity history; optional reported score fallback | DHT-published signed attestations       |
 | Storage                 | Chain data, local peer cache                 | DHT (distributed)                       |
-| Trust model             | Buyer-verifiable settlement history          | Transitive trust with decay             |
-| Sybil resistance        | Seller staking + settlement cost             | Staking-weighted attestations           |
+| Trust model             | Buyer-verifiable chain reads + verified identities | Transitive trust with decay             |
+| Sybil resistance        | Recognized-usage cost, wash-trading registry, lock-weighted pool stake | Staking-weighted attestations           |
 | Score range             | 0-100                                        | 0-100                                   |
 | Selection weight        | Model-route ranking; generic scorer uses 10% | Router-defined                          |
 | Minimum threshold       | Model routing: 60; lower-level filter: 0     | Not specified                           |

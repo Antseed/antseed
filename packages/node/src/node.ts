@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
+import { computeTrustScore } from './reputation/trust-score.js';
+import { TrustSignalsClient } from './payments/evm/trust-signals-client.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
@@ -82,6 +85,8 @@ import {
   FreeUsageClient,
   BuyerFreeUsageManager,
   SellerFreeUsageManager,
+  SellerFreeTierLimiter,
+  type SellerFreeTierConfig,
   StakingClient,
   ChannelStore,
   CHANNEL_KIND,
@@ -90,6 +95,7 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
+import { sanitizePeerDisplayName } from "./discovery/display-name.js";
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js";
@@ -106,13 +112,18 @@ import {
 } from "./buyer-request-handler.js";
 import {
   buildSybilContext,
-  computeOnChainScore,
-  computeOnChainScoreWithRisk,
   computeOnChainSybilRisk,
-  computeOnChainTrust,
   type SybilContext,
-} from "./reputation/on-chain-reputation.js";
+} from "./reputation/sybil-risk.js";
 import { buyerFault } from "./errors.js";
+
+/** Store the trust score on the peer; leaves the fields untouched when the peer is unscored. */
+function applyTrust(peer: PeerInfo): void {
+  const trust = computeTrustScore(peer);
+  if (!trust) return;
+  peer.trust = trust;
+  peer.onChainReputationScore = trust.score;
+}
 
 export type { Provider, ProviderStreamCallbacks };
 export type { Router };
@@ -172,8 +183,14 @@ export interface NodePaymentsConfig {
   usdcAddress?: string;
   /** ERC-8004 IdentityRegistry contract address */
   identityRegistryAddress?: string;
-  /** AntseedStaking contract address */
+  /** AntseedSellerRegistry (or legacy AntseedStaking) contract address: seller → agent id. */
   stakingAddress?: string;
+  /** AntseedSellerPools contract address (buyer trust score: pool staking power). */
+  sellerPoolsAddress?: string;
+  /** AntseedUsageAccounting contract address (buyer trust score: recognized usage per epoch). */
+  usageAccountingAddress?: string;
+  /** AntseedWashTradingRegistry contract address (buyer trust score: proven wash traders). */
+  washTradingRegistryAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
   /** Default maximum USDC per spending auth. Default: 500000 ($0.50) */
@@ -252,6 +269,10 @@ export interface NodeConfig {
   dhtOperationTimeoutMs?: number;
   /** Optional seller-side payment runtime wiring. */
   payments?: NodePaymentsConfig;
+  /** Optional per-address request limit for zero-priced seller services. */
+  freeTier?: SellerFreeTierConfig;
+  /** Seller free-usage on-chain record batching. */
+  freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default). */
   relayer?: NodeRelayerConfig;
   /** Optional buyer-side verification storage and sampling settings. */
@@ -309,7 +330,7 @@ const EMPTY_BUYER_USAGE: BuyerUsageTotals = {
   services: [],
 };
 
-const EXTERNAL_VERIFICATION_RESULT_TTL_MS = 15 * 60_000;
+const EXTERNAL_VERIFICATION_RESULT_TTL_MS = IDENTITY_HISTORY_TTL_MS;
 
 /** How long one relayer gets exclusive first refusal on a sweep offer before
  *  it passes to the next candidate. The relayer replies 'submitted' right
@@ -346,7 +367,10 @@ export class AntseedNode extends EventEmitter {
   private _freeUsageClient: FreeUsageClient | null = null;
   private _buyerFreeUsageManager: BuyerFreeUsageManager | null = null;
   private _sellerFreeUsageManager: SellerFreeUsageManager | null = null;
+  private _sellerFreeTierLimiter: SellerFreeTierLimiter | null = null;
   private _stakingClient: StakingClient | null = null;
+  /** Batched reader for the on-chain inputs of the buyer trust score. */
+  private _trustSignalsClient: TrustSignalsClient | null = null;
   private _sellerAddressResolver: SellerAddressResolver | null = null;
   private _identityClient: IdentityClient | null = null;
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
@@ -385,6 +409,7 @@ export class AntseedNode extends EventEmitter {
   private _partialPeerEnrichmentChain: Promise<void> = Promise.resolve();
   /** Serializes non-blocking external claim verification for discovered peers. */
   private _externalVerificationChain: Promise<void> = Promise.resolve();
+  private _identityHistoryCollector: IdentityHistoryCollector | undefined;
   private _externalVerificationCache = new Map<PeerId, {
     claimsKey: string;
     checkedAtMs: number;
@@ -697,7 +722,9 @@ export class AntseedNode extends EventEmitter {
     this._freeUsageClient = null;
     this._buyerFreeUsageManager = null;
     this._sellerFreeUsageManager = null;
+    this._sellerFreeTierLimiter = null;
     this._stakingClient = null;
+    this._trustSignalsClient = null;
     this._identityClient = null;
     this._sellerAddressResolver = null;
     this._buyerPaymentManager = null;
@@ -802,12 +829,12 @@ export class AntseedNode extends EventEmitter {
   }
 
   private _queuePartialPeerEnrichment(peers: PeerInfo[]): void {
-    if (peers.length === 0 || !this._channelsClient || !this._stakingClient) {
+    if (peers.length === 0 || !this._trustSignalsClient) {
       return;
     }
-    const peersToEnrich = peers.map((peer) => ({ ...peer }));
+    const peersToEnrich = peers;
     this._partialPeerEnrichmentChain = this._partialPeerEnrichmentChain.then(async () => {
-      if (!this._started || !this._channelsClient || !this._stakingClient) {
+      if (!this._started || !this._trustSignalsClient) {
         return;
       }
       await this._enrichPeersWithOnChainStats(peersToEnrich);
@@ -845,6 +872,7 @@ export class AntseedNode extends EventEmitter {
     const queued: PeerInfo[] = [];
     const nowMs = Date.now();
     for (const peer of peers) {
+      if (this._externalVerificationInFlight.size >= 512) break;
       const claimsKey = this._externalVerificationClaimsKey(peer);
       if (!claimsKey) continue;
       const cacheKey = `${peer.peerId}:${claimsKey}`;
@@ -858,7 +886,7 @@ export class AntseedNode extends EventEmitter {
         continue;
       }
       this._externalVerificationInFlight.add(cacheKey);
-      queued.push({ ...peer });
+      queued.push(peer);
     }
     if (queued.length === 0) return;
 
@@ -916,17 +944,19 @@ export class AntseedNode extends EventEmitter {
         domains,
         github,
       };
+      this._identityHistoryCollector ??= new IdentityHistoryCollector();
+      results.identityHistory = await this._identityHistoryCollector.collect(results);
+      if (this._externalVerificationCache.size >= 512) {
+        this._externalVerificationCache.delete(this._externalVerificationCache.keys().next().value!);
+      }
       this._externalVerificationCache.set(peer.peerId, {
         claimsKey,
         checkedAtMs,
         results,
       });
-      const verifiedPeer: PeerInfo = { ...peer, verificationResults: results };
-      const risk = typeof verifiedPeer.onChainSybilRisk === 'number'
-        ? verifiedPeer.onChainSybilRisk
-        : 0;
-      verifiedPeer.onChainReputationScore = computeOnChainScoreWithRisk(verifiedPeer, risk) ?? verifiedPeer.onChainReputationScore;
-      return verifiedPeer;
+      peer.verificationResults = results;
+      applyTrust(peer);
+      return peer;
     } catch (err) {
       debugWarn(`[Node] External verification failed for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
       return null;
@@ -957,7 +987,7 @@ export class AntseedNode extends EventEmitter {
    * enriches its results, so volume / last-settled / ghost counts are
    * available when chain RPC is configured.
    */
-  async findPeer(peerId: string): Promise<PeerInfo | null> {
+  async findPeer(peerId: string, options?: { awaitExternalVerification?: boolean }): Promise<PeerInfo | null> {
     if (!this._peerLookup) {
       throw buyerFault("Node not started or not in buyer mode", "node-not-started");
     }
@@ -987,7 +1017,11 @@ export class AntseedNode extends EventEmitter {
     );
     const peer = this._lookupResultToPeerInfo(best);
     this._attachCachedExternalVerificationResults([peer]);
-    this._queueExternalVerification([peer]);
+    if (options?.awaitExternalVerification && !peer.verificationResults && this._externalVerificationClaimsKey(peer)) {
+      await this._verifyExternalClaimsForPeer(peer);
+    } else {
+      this._queueExternalVerification([peer]);
+    }
     await this._enrichPeersWithOnChainStats([peer]);
     return peer;
   }
@@ -1005,98 +1039,83 @@ export class AntseedNode extends EventEmitter {
    * configured — callers can safely invoke this regardless.
    */
   private async _enrichPeersWithOnChainStats(peers: PeerInfo[]): Promise<void> {
-    if (!this._channelsClient || !this._stakingClient || peers.length === 0) {
+    const client = this._trustSignalsClient;
+    if (!client || peers.length === 0) {
       return;
     }
-    const channelsClient = this._channelsClient;
-    const stakingClient = this._stakingClient;
     const resolver = this._sellerAddressResolver;
-    const DISCOVERY_RPC_CONCURRENCY = 8;
-    // Throttle on-chain reads across rapid discovery cycles. 60s is short
-    // enough that freshness feels real-time in the UI, and long enough that
-    // back-to-back `discoverPeers()` calls don't hammer the RPC endpoint.
-    const ON_CHAIN_STATS_TTL_MS = 60_000;
+    // Every stale peer is read in one batched pass (two Multicall3 round
+    // trips), so the refresh interval bounds RPC usage per discovery cycle
+    // instead of the peer count.
+    const ON_CHAIN_STATS_TTL_MS = 120_000;
     const nowMs = Date.now();
-    const queue = peers.slice();
     const peersWithCompleteStats = new Set<PeerInfo>();
-    const verifyOne = async (p: PeerInfo): Promise<void> => {
-      if (
-        typeof p.onChainStatsFetchedAt === 'number'
-        && nowMs - p.onChainStatsFetchedAt < ON_CHAIN_STATS_TTL_MS
-      ) {
+    const stale: Array<{ peer: PeerInfo; address: string }> = [];
+    for (const p of peers) {
+      if (typeof p.onChainStatsFetchedAt === 'number' && nowMs - p.onChainStatsFetchedAt < ON_CHAIN_STATS_TTL_MS) {
         peersWithCompleteStats.add(p);
-        return;
+        continue;
       }
       try {
-        const evmAddress = resolver
+        const address = resolver
           ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
           : peerIdToAddress(p.peerId);
-        const [agentId, stake, stakedAt] = await Promise.all([
-          stakingClient.getAgentId(evmAddress),
-          stakingClient.getStake(evmAddress).catch(() => null),
-          stakingClient.getStakedAt(evmAddress).catch(() => null),
-        ]);
-        const stats = await channelsClient.getAgentStats(agentId);
-        if (stake === null || stakedAt === null) {
-          return;
-        }
-        p.onChainAgentId = agentId;
-        p.onChainStakeUsdcMicros = stake <= BigInt(Number.MAX_SAFE_INTEGER)
-          ? Number(stake)
-          : Number.MAX_SAFE_INTEGER;
-        p.onChainChannelCount = stats.channelCount;
-        p.onChainGhostCount = stats.ghostCount;
-        // totalVolumeUsdc is base-6 USDC. Clamp to safe-int range before
-        // narrowing to Number — ~9M USDC fits Number.MAX_SAFE_INTEGER.
-        const volumeMicros = stats.totalVolumeUsdc;
-        p.onChainTotalVolumeUsdcMicros = volumeMicros <= BigInt(Number.MAX_SAFE_INTEGER)
-          ? Number(volumeMicros)
-          : Number.MAX_SAFE_INTEGER;
-        p.onChainLastSettledAtSec = stats.lastSettledAt;
-        // Some migrated/facade staking accounts return zero for `stakedAt`,
-        // and transient RPC failures used to be coerced to zero as well. A
-        // zero read must not erase a previously verified positive timestamp.
-        if (typeof stakedAt === 'number' && Number.isFinite(stakedAt) && stakedAt > 0) {
-          p.onChainStakedAtSec = stakedAt;
-        }
-        p.onChainStatsFetchedAt = Date.now();
-        peersWithCompleteStats.add(p);
+        stale.push({ peer: p, address });
       } catch {
-        // Per-peer verification failure — preserve the previous complete
-        // snapshot, or leave a newly discovered peer unenriched.
+        // Unresolvable seller address: leave the previous snapshot in place.
       }
-    };
-    const workers: Array<Promise<void>> = [];
-    for (let i = 0; i < Math.min(DISCOVERY_RPC_CONCURRENCY, queue.length); i++) {
-      workers.push((async () => {
-        for (;;) {
-          const next = queue.shift();
-          if (!next) return;
-          await verifyOne(next);
-        }
-      })());
     }
-    await Promise.all(workers);
-
-    this._applyTrustAndSybil(peers, peersWithCompleteStats);
+    if (stale.length === 0) {
+      this._applyTrust(peers, peersWithCompleteStats);
+      return;
+    }
+    let signals: Awaited<ReturnType<TrustSignalsClient['read']>>;
+    try {
+      signals = await client.read(stale.map((entry) => entry.address));
+    } catch (err) {
+      debugWarn(`[Node] On-chain trust signal read failed: ${err instanceof Error ? err.message : err}`);
+      this._applyTrust(peers, peersWithCompleteStats);
+      return;
+    }
+    for (const { peer: p, address } of stale) {
+      const read = signals.get(address);
+      // A peer without an agent id (or a failed batch entry) keeps its
+      // previous complete snapshot, or stays unenriched when newly discovered.
+      if (!read) continue;
+      p.onChainAgentId = read.agentId;
+      if (read.channelCount !== undefined) p.onChainChannelCount = read.channelCount;
+      if (read.ghostCount !== undefined) p.onChainGhostCount = read.ghostCount;
+      if (read.totalVolumeUsdcMicros !== undefined) p.onChainTotalVolumeUsdcMicros = read.totalVolumeUsdcMicros;
+      if (read.lastSettledAtSec !== undefined) p.onChainLastSettledAtSec = read.lastSettledAtSec;
+      if (read.usageEpoch !== undefined) {
+        p.onChainUsageEpoch = read.usageEpoch;
+        p.onChainUsageShareBps = read.usageShareBps;
+        p.onChainUsageLastEpochUsdcMicros = read.usageLastEpochUsdcMicros;
+      }
+      if (read.poolStakeAnts !== undefined) p.onChainPoolStakeAnts = read.poolStakeAnts;
+      if (read.poolPowerShareBps !== undefined) p.onChainPoolPowerShareBps = read.poolPowerShareBps;
+      if (read.washFlagged !== undefined) p.onChainWashFlagged = read.washFlagged;
+      if (read.washShareBps !== undefined) p.onChainWashShareBps = read.washShareBps;
+      p.onChainStatsFetchedAt = Date.now();
+      peersWithCompleteStats.add(p);
+    }
+    this._applyTrust(peers, peersWithCompleteStats);
   }
 
-  private _applyTrustAndSybil(peers: PeerInfo[], peersToUpdate?: ReadonlySet<PeerInfo>): void {
+  /** Recompute the trust score and the display-only sybil heuristic. */
+  private _applyTrust(peers: PeerInfo[], peersToUpdate?: ReadonlySet<PeerInfo>): void {
     if (peers.length === 0) return;
     const ctx: SybilContext | undefined = peers.length >= 2
       ? buildSybilContext(peers)
       : undefined;
     for (const p of peers) {
       if (peersToUpdate && !peersToUpdate.has(p)) continue;
-      const trust = computeOnChainTrust(p);
-      if (trust === null) continue;
-      p.onChainTrustScore = trust;
-      if (ctx) {
+      if (ctx && typeof p.onChainChannelCount === 'number') {
         const sybil = computeOnChainSybilRisk(p, ctx);
         p.onChainSybilRisk = sybil.risk;
         p.onChainSybilFlags = sybil.flags;
       }
-      p.onChainReputationScore = computeOnChainScore(p, ctx) ?? undefined;
+      applyTrust(p);
     }
   }
 
@@ -1555,6 +1574,9 @@ export class AntseedNode extends EventEmitter {
       },
     );
 
+    this._sellerFreeTierLimiter = this._config.freeTier
+      ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
+      : null;
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
 
@@ -1668,6 +1690,14 @@ export class AntseedNode extends EventEmitter {
       );
     }
 
+    const sellerFreeTierLimiter = this._sellerFreeTierLimiter;
+    if (sellerFreeTierLimiter) {
+      debugLog(`[Node] Seller free tier enabled: ${sellerFreeTierLimiter.describe()}`);
+      if (!this._metering) {
+        debugWarn('[Node] Seller free-tier limits are using in-memory accounting because metering storage is unavailable; counters reset on restart.');
+      }
+    }
+
     // Create seller request handler
     this._sellerHandler = new SellerRequestHandler({
       identity,
@@ -1675,6 +1705,7 @@ export class AntseedNode extends EventEmitter {
       provers: this._provers,
       sellerPaymentManager: this._sellerPaymentManager,
       sellerFreeUsageManager: this._sellerFreeUsageManager,
+      sellerFreeTierLimiter,
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
@@ -1886,7 +1917,7 @@ export class AntseedNode extends EventEmitter {
     if (this._sellerFreeUsageManager) {
       const freeUsage = this._sellerFreeUsageManager;
       paymentMux.onFreeUsageOpen((payload) => {
-        freeUsage.handleOpen(buyerPeerId, payload, paymentMux);
+        freeUsage.handleOpen(buyerPeerId, payload, paymentMux, conn.remoteAddress ?? null);
       });
       paymentMux.onFreeUsageAuth((payload) => {
         freeUsage.handleAuth(buyerPeerId, payload, paymentMux);
@@ -2016,20 +2047,21 @@ export class AntseedNode extends EventEmitter {
           ...(fallbackRpcUrls ? { fallbackRpcUrls } : {}),
           freeUsageContractAddress: payments.freeUsageAddress,
           chainId: payments.chainId ?? 8453,
+          ...(this._config.freeUsage ?? {}),
         };
         this._buyerFreeUsageManager = new BuyerFreeUsageManager(
           this._identity,
           {
             chainId: freeUsageConfig.chainId,
             freeUsageContractAddress: freeUsageConfig.freeUsageContractAddress,
-            defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900,
+            defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
             disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
           },
           this._sellerAddressResolver ?? undefined,
           this._channelStore ?? undefined,
         );
         if (this._config.role === 'seller') {
-          this._sellerFreeUsageManager = new SellerFreeUsageManager(this._identity, freeUsageConfig);
+          this._sellerFreeUsageManager = new SellerFreeUsageManager(this._identity, freeUsageConfig, this._sellerFreeTierLimiter);
         }
       }
     }
@@ -2044,6 +2076,16 @@ export class AntseedNode extends EventEmitter {
         ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
       });
       debugLog(`[Node] StakingClient initialized (contract=${payments.stakingAddress.slice(0, 10)}...)`);
+    }
+    if (this._channelsClient && payments.stakingAddress && payments.channelsAddress) {
+      this._trustSignalsClient = new TrustSignalsClient(this._channelsClient.provider, {
+        sellerRegistry: payments.stakingAddress,
+        channels: payments.channelsAddress,
+        ...(payments.sellerPoolsAddress ? { sellerPools: payments.sellerPoolsAddress } : {}),
+        ...(payments.usageAccountingAddress ? { usageAccounting: payments.usageAccountingAddress } : {}),
+        ...(payments.washTradingRegistryAddress ? { washTradingRegistry: payments.washTradingRegistryAddress } : {}),
+      });
+      debugLog(`[Node] TrustSignalsClient initialized (pools=${Boolean(payments.sellerPoolsAddress)} usage=${Boolean(payments.usageAccountingAddress)} wash=${Boolean(payments.washTradingRegistryAddress)})`);
     }
 
     // Initialize IdentityClient (ERC-8004 IdentityRegistry)
@@ -2397,6 +2439,7 @@ export class AntseedNode extends EventEmitter {
   }
 
   private _lookupResultToPeerInfo(result: LookupResult): PeerInfo {
+    const displayName = sanitizePeerDisplayName(result.metadata.displayName);
     const providers = result.metadata.providers.map((p) => p.provider);
     const firstProvider = result.metadata.providers[0];
     const providerPricingEntries: NonNullable<PeerInfo["providerPricing"]> = {};
@@ -2488,7 +2531,7 @@ export class AntseedNode extends EventEmitter {
 
     return {
       peerId: result.metadata.peerId,
-      displayName: result.metadata.displayName,
+      displayName,
       // `metadata.timestamp` is signed by the seller and can reflect the
       // seller's wall clock, not this buyer's. Freshness validation in
       // PeerLookup already handles seller/buyer clock skew using the HTTP Date

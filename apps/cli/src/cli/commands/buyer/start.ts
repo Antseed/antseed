@@ -319,9 +319,15 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // on-chain verification loop in AntseedNode.discoverPeers() is
           // skipped entirely, so `onChainTotalVolumeUsdcMicros` and
           // `onChainLastSettledAtSec` never populate on PeerInfo (and end up
-          // as `null` in buyer.state.json).
+          // as `null` in buyer.state.json). The seller-pools, usage-accounting
+          // and wash-trading-registry addresses feed the TrustSignalsClient
+          // behind the buyer trust score (`onChainReputationScore` + `trust`);
+          // without them the usage, stake and wash parts of the score stay null.
           ...(chainConfig.stakingContractAddress ? { stakingAddress: chainConfig.stakingContractAddress } : {}),
           ...(chainConfig.identityRegistryAddress ? { identityRegistryAddress: chainConfig.identityRegistryAddress } : {}),
+          ...(chainConfig.sellerPoolsAddress ? { sellerPoolsAddress: chainConfig.sellerPoolsAddress } : {}),
+          ...(chainConfig.usageAccountingAddress ? { usageAccountingAddress: chainConfig.usageAccountingAddress } : {}),
+          ...(chainConfig.washTradingRegistryAddress ? { washTradingRegistryAddress: chainConfig.washTradingRegistryAddress } : {}),
           chainId: chainConfig.evmChainId,
           defaultDepositAmountUSDC: cryptoOverrides?.defaultLockAmountUSDC
             ? String(Math.round(parseFloat(cryptoOverrides.defaultLockAmountUSDC) * 1_000_000))

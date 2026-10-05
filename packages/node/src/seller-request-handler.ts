@@ -10,6 +10,7 @@ import type { Identity } from './p2p/identity.js';
 import type { ChannelsClient } from './payments/evm/channels-client.js';
 import type { SellerPaymentManager } from './payments/seller-payment-manager.js';
 import type { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
+import type { FreeTierDecision, SellerFreeTierLimiter } from './payments/seller-free-tier-limiter.js';
 import { ProxyMux } from './proxy/proxy-mux.js';
 import type { PeerConnection } from './p2p/connection-manager.js';
 import type {
@@ -50,6 +51,7 @@ export interface SellerRequestHandlerDeps {
   provers?: Prover[];
   sellerPaymentManager: SellerPaymentManager | null;
   sellerFreeUsageManager?: SellerFreeUsageManager | null;
+  sellerFreeTierLimiter?: SellerFreeTierLimiter | null;
   sessionTracker: SellerSessionTracker | null;
   channelsClient: ChannelsClient | null;
   announcer: PeerAnnouncer | null;
@@ -237,6 +239,66 @@ export class SellerRequestHandler {
         : undefined;
       const isFreeService = isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
+
+      if (isFreeService && this._deps.sellerFreeTierLimiter) {
+        const requestedService = this._extractRequestedService(request) ?? 'unknown';
+        let decision: FreeTierDecision;
+        try {
+          decision = this._deps.sellerFreeTierLimiter.consume({
+            buyerPeerId,
+            service: requestedService,
+            remoteIp: conn.remoteAddress ?? null,
+          });
+        } catch (err) {
+          const message = err instanceof Error ? err.message : String(err);
+          debugWarn(`[SellerHandler] Free-tier accounting failed for ${buyerPeerId.slice(0, 12)}...: ${message}`);
+          mux.sendProxyResponse({
+            requestId: request.requestId,
+            statusCode: 503,
+            headers: { 'content-type': 'application/json', 'retry-after': '5' },
+            body: new TextEncoder().encode(JSON.stringify({
+              error: {
+                message: 'Seller free-tier accounting is temporarily unavailable.',
+                type: 'service_unavailable_error',
+                code: 'free_tier_unavailable',
+              },
+            })),
+          });
+          return;
+        }
+        if (!decision.allowed) {
+          const retryAfterSeconds = Math.max(1, Math.ceil(decision.retryAfterMs / 1000));
+          const limiter = this._deps.sellerFreeTierLimiter;
+          const limitedBy = decision.limitedBy ?? 'address';
+          const limit = limitedBy === 'ip' ? limiter.maxRequestsPerIp : limiter.maxRequestsPerAddress;
+          debugLog(
+            `[SellerHandler] Free tier exhausted for ${decision.buyerAddress} ip=${decision.remoteIp ?? 'unknown'} ` +
+            `(limitedBy=${limitedBy}, limit=${limit}, windowMs=${limiter.windowMs})`,
+          );
+          mux.sendProxyResponse({
+            requestId: request.requestId,
+            statusCode: 429,
+            headers: {
+              'content-type': 'application/json',
+              'retry-after': String(retryAfterSeconds),
+            },
+            body: new TextEncoder().encode(JSON.stringify({
+              error: {
+                message: limitedBy === 'ip'
+                  ? 'This seller free tier has been exhausted for your IP address.'
+                  : 'This seller free tier has been exhausted for your buyer address.',
+                type: 'rate_limit_error',
+                code: 'free_tier_exhausted',
+              },
+              limitedBy,
+              limit,
+              windowMs: limiter.windowMs,
+              retryAfterSeconds,
+            })),
+          });
+          return;
+        }
+      }
 
       // Reject with 402 if no active payment session and channels client is configured.
       const spm = this._deps.sellerPaymentManager;

@@ -1,6 +1,6 @@
 # @antseed/website
 
-Marketing and documentation website for AntSeed.
+Marketing and documentation website for Antseed.
 
 ## Development
 

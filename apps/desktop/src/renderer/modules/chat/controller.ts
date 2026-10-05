@@ -362,7 +362,8 @@ export function initChatModule({
     }
 
     try {
-      const result = await bridge.creditsGetInfo();
+      // Decides whether a 402 can be retried right away: never from cache.
+      const result = await bridge.creditsGetInfo({ fresh: true });
       if (!result.ok || !result.data) {
         return parseFloat(uiState.creditsAvailableUsdc || '0');
       }
@@ -2868,7 +2869,7 @@ export function initChatModule({
     const nextRouteMode = routeMode ?? (peerId ? 'pinned' : 'auto');
     const pinnedPeerId = nextRouteMode === 'pinned' ? peerId : '';
 
-    // Write the explicit pick through to the VPR route selection so the two
+    // Write the explicit pick through to the AI VPN route selection so the two
     // never disagree about which model+peer a new conversation targets. The
     // service options are per-peer entries, so a dropdown pick is a peer pin.
     if (nextServiceId) {

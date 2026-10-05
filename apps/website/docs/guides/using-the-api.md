@@ -7,16 +7,16 @@ hide_title: true
 
 # Using the API
 
-Once connected to the AntSeed network, your buyer proxy exposes a local API at `http://localhost:8377`. Point any AI tool at this endpoint — the proxy handles peer discovery, routing, and payments transparently.
+Once connected to the Antseed network, your buyer proxy exposes a local API at `http://localhost:8377`. Point any AI tool at this endpoint — the proxy handles peer discovery, routing, and payments transparently.
 
 There are two ways to get that proxy running:
 
-- **VPR desktop app (recommended)** — download from [antseed.com](https://antseed.com). While the app is open it runs the buyer proxy at `http://localhost:8377` for you, and its **Apps** view detects tools like Claude Code and Codex on your machine and launches them already wired to AntSeed. Its routing preferences are saved into the same buyer config used by the proxy, so internal chat, connected apps, and direct API calls use the same Price + Trust policy. Deposits and peer browsing live in the same UI.
+- **AI VPN desktop app (recommended)** — download from [antseed.com](https://antseed.com). While the app is open it runs the buyer proxy at `http://localhost:8377` for you, and its **Apps** view detects tools like Claude Code and Codex on your machine and launches them already wired to Antseed. Its routing preferences are saved into the same buyer config used by the proxy, so internal chat, connected apps, and direct API calls use the same Price + Trust policy. Deposits and peer browsing live in the same UI.
 - **CLI** — `antseed buyer start`, for headless machines, servers, and scripts. The Quick Start below covers this path.
 
 Everything in this guide works identically against both.
 
-If the client runs outside this computer—or uses a hosted backend that cannot reach `localhost`—open the VPR's **Agents** view and [connect a remote agent](/docs/guides/agents#connect-a-remote-agent).
+If the client runs outside this computer—or uses a hosted backend that cannot reach `localhost`—open the AI VPN's **Agents** view and [connect a remote agent](/docs/guides/agents#connect-a-remote-agent).
 
 ## Quick Start (CLI)
 
@@ -53,9 +53,9 @@ Model-only requests automatically rank compatible offers using your Price + Trus
 
 `antseed buyer start` does not require a pre-existing `~/.antseed/config.json`. If the file is missing, the CLI starts with built-in defaults such as router `local` and proxy port `8377`. The proxy binds to `127.0.0.1` only — it is never exposed to your LAN.
 
-## Follow the VPR model picker with `model: "antseed"`
+## Follow the AI VPN model picker with `model: "antseed"`
 
-Clients connected to the VPR desktop proxy can send the special model alias `antseed`. The proxy replaces it at request time with the model or explicit seller route currently selected in VPR, so changing the picker updates already-configured clients without rewriting their config files.
+Clients connected to the AI VPN desktop proxy can send the special model alias `antseed`. The proxy replaces it at request time with the model or explicit seller route currently selected in AI VPN, so changing the picker updates already-configured clients without rewriting their config files.
 
 ```json
 {
@@ -67,7 +67,7 @@ Clients connected to the VPR desktop proxy can send the special model alias `ant
 
 The alias is useful for agent clients with a single default-model setting, including the [Hermes](/integrations/hermes) and [OpenClaw](/integrations/openclaw) configurations. The API key only needs to be non-empty when a client requires one; the local proxy does not authenticate it.
 
-`antseed` is a VPR-controlled alias, not a model in the network catalog. If VPR has not selected a route, the proxy returns `no_default_route`. Headless CLI buyers should normally request a concrete catalog model such as `deepseek-v4-flash`. To bypass the VPR selection for one request, use `"model": "<peerId>@<serviceId>"`.
+`antseed` is an AI VPN-controlled alias, not a model in the network catalog. If AI VPN has not selected a route, the proxy returns `no_default_route`. Headless CLI buyers should normally request a concrete catalog model such as `deepseek-v4-flash`. To bypass the AI VPN selection for one request, use `"model": "<peerId>@<serviceId>"`.
 
 ## Automatic routing and explicit pins
 
@@ -104,13 +104,13 @@ curl -s http://localhost:8377/v1/models | jq '.data[].id'
 curl -s 'http://localhost:8377/v1/models?type=images' | jq '.data[] | {id, peers: [.peers[].peerId]}'
 ```
 
-`GET /v1/models` is answered locally from the buyer's discovered-peer cache and covers the **whole network** — no peer pin required. Cosmetic names and conservative aliases such as `claude-opus-5` and `opus-5` are grouped into one entry, whose `aliases` array includes normalized observed names and the compact canonical key (for example `['claude-opus-5', 'opus-5', 'opus5']`). Established model families also merge numeric-version punctuation and conservative flattened vendor prefixes, so names such as `gpt-5.6-sol`, `gpt-56-sol`, and `openai-gpt-56-sol` resolve to the same entry; Claude `coding-only` aliases merge into their base model, while meaningful variants such as `fast` and `web` remain distinct. Each entry keeps an observed `id` for compatibility and exposes a protocol-wide preferred `name` for display, so every GPT 5.6 alias renders consistently as names such as `GPT 5.6 Sol` or `GPT 5.6 Luna`. It also lists the model `type` (`text` or `image`) and a `peers` array with every seller serving it. A peer appears at most once per canonical model: when the same peer advertises equivalent aliases through one or more providers, AntSeed retains only its cheapest known offer while preserving that offer's actual provider, protocol, and `serviceId` for routing. Each peer offer also includes reputation, pricing, categories, and seller-reported capabilities such as context window, output limit, modalities, reasoning, tool use, structured output, and supported parameters. Offers use the same shared Price + Trust ordering as automatic buyer routing, including the minimum-trust eligibility gate, cached-price adjustment, pricing, cooldowns, and recent failures. Filter with `?type=text` or `?type=images`, or look up a single model with `GET /v1/models/<id>`. Sending an API request with only one of these model names automatically selects from that ranked offer set; a saved conversation affinity can prefer its previous healthy seller over the first catalog offer. Route to a specific offer explicitly with `<peerId>@<serviceId>` using values from that same `peers[]` item.
+`GET /v1/models` is answered locally from the buyer's discovered-peer cache and covers the **whole network** — no peer pin required. Cosmetic names and conservative aliases such as `claude-opus-5` and `opus-5` are grouped into one entry, whose `aliases` array includes normalized observed names and the compact canonical key (for example `['claude-opus-5', 'opus-5', 'opus5']`). Established model families also merge numeric-version punctuation and conservative flattened vendor prefixes, so names such as `gpt-5.6-sol`, `gpt-56-sol`, and `openai-gpt-56-sol` resolve to the same entry; Claude `coding-only` aliases merge into their base model, while meaningful variants such as `fast` and `web` remain distinct. Each entry keeps an observed `id` for compatibility and exposes a protocol-wide preferred `name` for display, so every GPT 5.6 alias renders consistently as names such as `GPT 5.6 Sol` or `GPT 5.6 Luna`. It also lists the model `type` (`text`, `image`, or `decision`) and a `peers` array with every seller serving it. A peer appears at most once per canonical model: when the same peer advertises equivalent aliases through one or more providers, Antseed retains only its cheapest known offer while preserving that offer's actual provider, protocol, and `serviceId` for routing. Each peer offer also includes reputation, pricing, categories, and seller-reported capabilities such as context window, output limit, modalities, reasoning, tool use, structured output, and supported parameters. Offers use the same shared Price + Trust ordering as automatic buyer routing, including the minimum-trust eligibility gate, cached-price adjustment, pricing, cooldowns, and recent failures. Filter with `?type=text`, `?type=images`, or `?type=decisions`, or look up a single model with `GET /v1/models/<id>`. Sending an API request with only one of these model names automatically selects from that ranked offer set; a saved conversation affinity can prefer its previous healthy seller over the first catalog offer. Route to a specific offer explicitly with `<peerId>@<serviceId>` using values from that same `peers[]` item.
 
 Model-level `context_length`, `max_output_tokens`, modalities, capability booleans, and `supported_parameters` are conservative guarantees for model-only routing: numeric limits use the lowest value, lists use the intersection, and booleans are `true` only when every offer explicitly reports support. If any offer omits a field, that model-level field is omitted rather than treating unknown as unsupported. `capability_coverage` reports how many offers supplied each field, while `supported_protocols` is the union of protocols available across sellers. The full per-peer capabilities remain authoritative when selecting a particular seller.
 
-If one peer advertises multiple service ids that normalize to the same model, AntSeed keeps a single offer for that peer: the lowest-priced alias. Text offers compare `inputUsdPerMillion + outputUsdPerMillion`; image offers compare `minImageUsdPerImage`; an explicitly known price beats an unknown price. All observed names remain in the model's `aliases`, and model-only routing rewrites requests to the retained seller service id.
+If one peer advertises multiple service ids that normalize to the same model, Antseed keeps a single offer for that peer: the lowest-priced alias. Text offers compare `inputUsdPerMillion + outputUsdPerMillion`; image offers compare `minImageUsdPerImage`; an explicitly known price beats an unknown price. All observed names remain in the model's `aliases`, and model-only routing rewrites requests to the retained seller service id.
 
-Cached-input pricing is treated as model-specific metadata completeness. If at least one offer for a model advertises `cachedInputUsdPerMillion`, an offer that omits it receives a 50% reduction to its effective reputation for that model because its real cost can be materially higher for cache-heavy workloads. This remains a soft penalty: an exceptionally stronger peer can still outrank a weaker peer with complete cached pricing. If no offer for the model advertises cached-input pricing, AntSeed assumes the model may not support caching and applies no penalty. `reputationScore` remains the raw trust/reputation value, while `effectiveReputationScore` shows the normalized model-specific score used for ordering and model-only routing.
+Cached-input pricing is treated as model-specific metadata completeness. If at least one offer for a model advertises `cachedInputUsdPerMillion`, an offer that omits it receives a 50% reduction to its effective reputation for that model because its real cost can be materially higher for cache-heavy workloads. This remains a soft penalty: an exceptionally stronger peer can still outrank a weaker peer with complete cached pricing. If no offer for the model advertises cached-input pricing, Antseed assumes the model may not support caching and applies no penalty. `reputationScore` remains the raw trust/reputation value, while `effectiveReputationScore` shows the normalized model-specific score used for ordering and model-only routing.
 
 The desktop's **Auto** route stores the selected model without a peer id. Telegram model selections, automatic in-app chats, and connected apps configured with the `antseed` model alias therefore use the same shared Price + Trust policy, cooldown avoidance, and peer fallback. Recognized conversations softly prefer the seller that actually served their previous turn while it remains healthy and eligible. Explicitly choosing a seller in the desktop stores `<peerId>@<serviceId>` instead and intentionally keeps that route single-peer.
 
@@ -166,7 +166,7 @@ In Desktop image chats, follow-up prompts use `/v1/images/edits` only when the s
 
 ## Claude Code
 
-**Recommended:** launch Claude Code from the VPR's **Apps** view — it detects the installed tool, wires it to the proxy, and handles peer and model routing automatically.
+**Recommended:** connect Claude Code from the AI VPN's **Apps** view. Antseed updates `~/.claude/settings.json` so new and running Claude Code sessions use the `antseed` model alias, which follows the model selected in the AI VPN. Disconnecting restores the settings Antseed changed. While connected, plain `claude` requests go through Antseed instead of your Anthropic login.
 
 CLI alternative — the `antseed claude` wrapper resolves the running buyer proxy, sets `ANTHROPIC_BASE_URL` and a placeholder `ANTHROPIC_API_KEY` for the child process, and forwards the rest of your flags to Claude Code:
 
@@ -185,11 +185,13 @@ export ANTHROPIC_API_KEY=antseed   # any non-empty placeholder
 claude --model kimi-k2.6           # or <peerId>@kimi-k2.6
 ```
 
+Use `--model antseed` with the wrapper or manual setup to follow the AI VPN selection instead of pinning a concrete model.
+
 Claude Code sends requests to `/v1/messages`. Bare model ids use automatic routing and conversation affinity; explicitly prefixed model ids remain hard-pinned. The proxy translates to the selected seller's native format when needed.
 
 ## Codex
 
-**Recommended:** launch Codex from the VPR's **Apps** view, which supplies the provider config and routing for you.
+**Recommended:** launch Codex from the AI VPN's **Apps** view, which supplies the provider config and routing for you.
 
 CLI alternative — recent Codex versions (0.40+) ignore `OPENAI_BASE_URL` and `OPENAI_API_KEY`, so use the wrapper for automatic per-run config:
 
@@ -204,7 +206,7 @@ Or create `~/.codex/antseed.config.toml` and launch with `codex --profile antsee
 
 ## OpenCode
 
-**Recommended:** launch OpenCode from the VPR's **Apps** view. CLI alternative:
+**Recommended:** launch OpenCode from the AI VPN's **Apps** view. CLI alternative:
 
 ```bash
 antseed opencode --model gpt-oss-120b
@@ -348,7 +350,7 @@ Extra buyer config is optional. Add it only for advanced customization such as p
 }
 ```
 
-`routingPreferences` controls model-only automatic routing and is shared with the desktop VPR. `minTrustScore` is a hard eligibility gate; set it to `0` only if you intentionally want unscored and lower-trust peers considered. `allowedPeerIds` restricts automatic routing to that list when non-empty, while `blockedPeerIds` always excludes matches. The running proxy watches `config.json` and reloads valid routing-preference changes without a restart.
+`routingPreferences` controls model-only automatic routing and is shared with the desktop AI VPN. `minTrustScore` is a hard eligibility gate; set it to `0` only if you intentionally want unscored and lower-trust peers considered. `allowedPeerIds` restricts automatic routing to that list when non-empty, while `blockedPeerIds` always excludes matches. The running proxy watches `config.json` and reloads valid routing-preference changes without a restart.
 
 With a config file like that in place, the startup command is still just:
 
@@ -360,7 +362,7 @@ antseed buyer start
 
 The local proxy at `127.0.0.1:8377` does not validate an API key. Authentication and payments are handled by the protocol using your node's identity key and on-chain USDC deposits, so local tools that require an API-key field can use any non-empty placeholder.
 
-The VPR's public endpoint is different: it requires the generated `antseed_...` key as `Authorization: Bearer <API_KEY>`. Configure it from **VPR → Agents → Define your internet-accessible AntSeed endpoint** and follow the [Public HTTPS Tunnels guide](/docs/guides/public-tunnels).
+The AI VPN's public endpoint is different: it requires the generated `antseed_...` key as `Authorization: Bearer <API_KEY>`. Configure it from **AI VPN → Agents → Define your internet-accessible Antseed endpoint** and follow the [Public HTTPS Tunnels guide](/docs/guides/public-tunnels).
 
 ## Monitor Buyer Usage
 
@@ -376,10 +378,11 @@ See [Metrics](/docs/guides/metrics) for buyer spend, channel, request, token, an
 
 If you're using Pi, Codex or another agent, these skills can walk you through the full setup:
 
-- [`antseed/antseed-pi`](https://github.com/AntSeed/pi-antseed) — Use the AntSeed local buyer proxy as a model provider in pi.
+- [`antseed/antseed-pi`](https://github.com/AntSeed/pi-antseed) — Use the Antseed local buyer proxy as a model provider in pi.
 - [`@skills/join-buyer`](https://github.com/AntSeed/antseed/tree/main/skills/join-buyer) — step-by-step buyer setup for Claude Code agents
 - [`@skills/antseed-images`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-images) — discover image models from `/v1/models?type=images` and generate through automatic model-only peer routing
-- [`@skills/openclaw-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed) — connect OpenClaw to AntSeed as a buyer
-- [`@skills/hermes-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) — connect Hermes Agent through the local VPR or its authenticated public endpoint
+- [`@skills/antseed-decisions`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-decisions) — discover decision models from `/v1/models?type=decisions` and ask typed `choice`, `score`, and `noul` questions through `/v1/systemone`
+- [`@skills/openclaw-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed) — connect OpenClaw to Antseed as a buyer
+- [`@skills/hermes-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) — connect Hermes Agent through the local AI VPN or its authenticated public endpoint
 
 See the maintained [OpenClaw integration](/integrations/openclaw) and [Hermes integration](/integrations/hermes) for current upstream-compatible configuration examples.

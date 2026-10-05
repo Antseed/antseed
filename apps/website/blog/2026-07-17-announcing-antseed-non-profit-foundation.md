@@ -1,9 +1,9 @@
 ---
 slug: announcing-antseed-non-profit-foundation
-title: "Announcing the AntSeed Non-Profit Foundation"
+title: "Announcing the Antseed Non-Profit Foundation"
 authors: [antseed]
 date: 2026-07-17
-description: "We've established a non-profit Foundation to steward the AntSeed ecosystem. Here's why, what it holds, and what we're committing to."
+description: "We've established a non-profit Foundation to steward the Antseed ecosystem. Here's why, what it holds, and what we're committing to."
 tags: ["foundation", "governance", "ecosystem"]
 keywords: [foundation, antseed]
 image: /og-image.jpg
@@ -19,7 +19,7 @@ We established a non-profit Foundation to steward the ecosystem. Its mission is 
 
 ## The "why" is simple
 
-We don't want a company controlling the AntSeed ecosystem.
+We don't want a company controlling the Antseed ecosystem.
 
 It is our view that networks that matter shouldn't live or die by the incentives of a single private entity. A company answers to shareholders. A Foundation answers to the mission and the community it exists to serve. That difference shapes every decision that follows.
 
@@ -41,7 +41,7 @@ The Foundation we're creating is designed to steward the ecosystem by utilising 
 
 This shows up in the smallest, most everyday decisions.
 
-The contributors wake up every morning with one master to serve: the network. In the product world, the question that drives every decision is "what are you optimising for?" and here the answer is always the same. The AntSeed ecosystem. Not the dollar value flowing back to a Labs company.
+The contributors wake up every morning with one master to serve: the network. In the product world, the question that drives every decision is "what are you optimising for?" and here the answer is always the same. The Antseed ecosystem. Not the dollar value flowing back to a Labs company.
 
 That single alignment changes everything. In an ecosystem where there is no Labs entity and the network is the most important element, incentives stop being utilised in a manner that benefits the few and start benefiting the network contributors, the people who actually own and use it.
 
@@ -66,6 +66,6 @@ No "trust us." Just receipts, every month. Our first transparency report will la
 
 This is about giving the ecosystem the best possible chance to become genuinely community-owned and self-sustaining. The establishment of the Foundation isn't the finish line. The Foundation shall seek to become the enabler of a growing and flourishing ecosystem where Network Contributors, including the Foundation, build together.
 
-So from now on, call us the AntSeed Foundation.
+So from now on, call us the Antseed Foundation.
 
 Let's build. 🐜

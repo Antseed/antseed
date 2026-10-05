@@ -38,6 +38,10 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
     description: 'OpenAI’s coding agent for building, reviewing, and shipping software.',
     websiteUrl: 'https://openai.com/codex/',
   },
+  'claude-code': {
+    description: 'Anthropic’s terminal coding agent, routed through the model selected in the AI VPN.',
+    websiteUrl: 'https://code.claude.com/docs/en/overview',
+  },
   t3code: {
     description: 'A desktop interface for running multiple coding agents in parallel.',
     websiteUrl: 'https://github.com/pingdotgg/t3code',
@@ -74,8 +78,8 @@ function appInfo(profile: SystemProxyProfileSummary): { description: string; web
   const domain = profile.domains[0];
   return {
     description: profile.custom
-      ? 'A custom AI application routed through AntSeed.'
-      : `${profile.displayName} is configured to use AntSeed for AI requests.`,
+      ? 'A custom AI application routed through Antseed.'
+      : `${profile.displayName} is configured to use Antseed for AI requests.`,
     ...(domain ? { websiteUrl: `https://${domain}` } : {}),
   };
 }
@@ -236,7 +240,7 @@ export function VprToolsView() {
     void testGui();
   }, [hasConnectedProxyProfile, testGui]);
 
-  // Every connected app follows the default VPR route; the model itself is
+  // Every connected app follows the default AI VPN route; the model itself is
   // resolved live by the buyer (the `antseed` alias), so there are no per-app
   // model overrides here anymore.
   const startProfiles = useCallback(async (names: string[]): Promise<boolean> => {
@@ -700,7 +704,7 @@ export function VprToolsView() {
                   <>
                     <p className={styles.caHint}>
                       {caTrust === 'stale'
-                        ? 'An older AntSeed certificate is still trusted on this device — trust the current one to replace it, otherwise intercepted apps fail with an SSL certificate error.'
+                        ? 'An older Antseed certificate is still trusted on this device — trust the current one to replace it, otherwise intercepted apps fail with an SSL certificate error.'
                         : 'Apps whose HTTPS traffic is intercepted trust a certificate generated locally on this device. It never leaves your machine — inspect it any time.'}
                     </p>
                     <button type="button" className={styles.caPath} onClick={() => { void copyCaPath(); }} title={caInfo.path}>
@@ -764,7 +768,7 @@ export function VprToolsView() {
         onClose={() => setHelpOpen(false)}
         size="sm"
         title="Connected apps"
-        subtitle="How VPR works with your tools"
+        subtitle="How AI VPN works with your tools"
         bodyClassName={styles.settingsBody}
       >
         <section className={styles.settingSection}>
@@ -772,8 +776,8 @@ export function VprToolsView() {
             <span className={styles.settingTitle}>What connecting does</span>
           </div>
           <p className={styles.settingHint}>
-            Connecting an app routes its AI requests through VPR. The app works exactly
-            as usual — its model calls are served by the AntSeed network and paid from
+            Connecting an app routes its AI requests through AI VPN. The app works exactly
+            as usual — its model calls are served by the Antseed network and paid from
             your balance instead of a subscription or API key. Click an app&apos;s name
             any time to open it.
           </p>
@@ -783,7 +787,7 @@ export function VprToolsView() {
             <span className={styles.settingTitle}>How apps connect</span>
           </div>
           <p className={styles.settingHint}>
-            Most tools are pointed at VPR through a small change to their own config
+            Most tools are pointed at AI VPN through a small change to their own config
             file — written locally on Connect and removed again on Disconnect (a backup
             of the original is kept next to it). Apps marked HTTPS proxy are instead
             intercepted on this device, which needs the locally generated certificate
@@ -796,7 +800,7 @@ export function VprToolsView() {
             <span className={styles.settingTitle}>Models and chats</span>
           </div>
           <p className={styles.settingHint}>
-            Connected apps follow the model selected on the VPR home screen. Each chat
+            Connected apps follow the model selected on the AI VPN home screen. Each chat
             then sticks to the model that served its first request — pin a different
             one per chat from Recent chats or the floating pill.
           </p>
@@ -807,7 +811,7 @@ export function VprToolsView() {
           </div>
           <p className={styles.settingHint}>
             Add any other app by the API URL it calls — its requests are redirected to
-            VPR on this device (localhost). Each app&apos;s gear opens its settings:
+            AI VPN on this device (localhost). Each app&apos;s gear opens its settings:
             the application to open, the client names that attribute its chats, and
             Disconnect or Remove.
           </p>
@@ -884,8 +888,8 @@ export function VprToolsView() {
                     </div>
                     <p className={styles.settingHint}>
                       {connected
-                        ? `${settingsProfile.displayName}'s AI requests currently route through VPR. Disconnecting restores its direct connection.${settingsDirty ? ' Saving these changes disconnects it first — reconnect from the apps list.' : ''}`
-                        : `Connect from the apps list to route ${settingsProfile.displayName}'s AI requests through VPR — served by the AntSeed network and paid from your balance.`}
+                        ? `${settingsProfile.displayName}'s AI requests currently route through AI VPN. Disconnecting restores its direct connection.${settingsDirty ? ' Saving these changes disconnects it first — reconnect from the apps list.' : ''}`
+                        : `Connect from the apps list to route ${settingsProfile.displayName}'s AI requests through AI VPN — served by the Antseed network and paid from your balance.`}
                     </p>
                   </section>
 
@@ -894,7 +898,7 @@ export function VprToolsView() {
                       <span className={styles.settingTitle}>Application</span>
                     </div>
                     <p className={styles.settingHint}>
-                      The installed application VPR launches for {settingsProfile.displayName} —
+                      The installed application AI VPN launches for {settingsProfile.displayName} —
                        used by the restart button and when jumping back into a chat session.
                     </p>
                     <button
@@ -918,7 +922,7 @@ export function VprToolsView() {
                       <span className={styles.settingTitle}>Request identity</span>
                     </div>
                     <p className={styles.settingHint}>
-                      VPR matches requests to {settingsProfile.displayName} by the client name they
+                      AI VPN matches requests to {settingsProfile.displayName} by the client name they
                       carry on the wire — the User-Agent product or session header, like{' '}
                       <code>opencode</code> or <code>codex</code>. Separate multiple names with commas.
                     </p>
@@ -947,7 +951,7 @@ export function VprToolsView() {
                         <span className={styles.settingTitle}>Remove</span>
                       </div>
                       <p className={styles.settingHint}>
-                        Removes {settingsProfile.displayName} from VPR — its requests go directly
+                        Removes {settingsProfile.displayName} from AI VPN — its requests go directly
                         to {settingsProfile.domains[0] ?? 'the API'} again.
                       </p>
                       <div className={styles.settingActions}>
@@ -956,7 +960,7 @@ export function VprToolsView() {
                           className={styles.settingDanger}
                           disabled={actionBusy === settingsProfile.name || busy !== null}
                           onClick={() => {
-                            if (window.confirm(`Remove ${settingsProfile.displayName}? Its requests will no longer route through VPR.`)) {
+                            if (window.confirm(`Remove ${settingsProfile.displayName}? Its requests will no longer route through AI VPN.`)) {
                               setSettingsFor(null);
                               void removeCustomApp(settingsProfile.name, connected);
                             }
@@ -1019,7 +1023,7 @@ export function VprToolsView() {
           </span>
         ) : 'Add custom app'}
         subtitle={addPane.pane === 'apps' ? undefined
-          : addStep === 1 ? 'Route another app through VPR'
+          : addStep === 1 ? 'Route another app through AI VPN'
           : addStep === 2 ? 'Trust the HTTPS certificate'
           : 'Connect the app'}
         bodyClassName={styles.settingsBody}
@@ -1069,8 +1073,8 @@ export function VprToolsView() {
                   <span className={styles.settingTag}>Required</span>
                 </div>
                 <p className={styles.settingHint}>
-                  AI requests the app sends to this URL are redirected to VPR on this
-                  device (localhost) and served by the AntSeed network instead.
+                  AI requests the app sends to this URL are redirected to AI VPN on this
+                  device (localhost) and served by the Antseed network instead.
                 </p>
                 <input
                   type="text"
@@ -1135,8 +1139,8 @@ export function VprToolsView() {
                 </div>
                 <p className={styles.settingHint}>
                   {caTrust === 'stale'
-                    ? 'An older AntSeed certificate is still trusted on this device — trust the current one to replace it, otherwise the app fails with an SSL certificate error.'
-                    : 'Custom apps connect over HTTPS intercepted on this device, which needs the certificate generated locally by AntSeed to be trusted. It never leaves your machine.'}
+                    ? 'An older Antseed certificate is still trusted on this device — trust the current one to replace it, otherwise the app fails with an SSL certificate error.'
+                    : 'Custom apps connect over HTTPS intercepted on this device, which needs the certificate generated locally by Antseed to be trusted. It never leaves your machine.'}
                 </p>
                 {caInfo?.path ? (
                   <button type="button" className={styles.caPath} onClick={() => { void copyCaPath(); }} title={caInfo.path}>
@@ -1173,8 +1177,8 @@ export function VprToolsView() {
                     <span className={styles.settingTitle}>Ready to connect</span>
                   </div>
                   <p className={styles.settingHint}>
-                    Connecting routes {addedLabel}&apos;s AI requests through VPR — served by
-                    the AntSeed network and paid from your balance. The app opens after
+                    Connecting routes {addedLabel}&apos;s AI requests through AI VPN — served by
+                    the Antseed network and paid from your balance. The app opens after
                     connecting; start a new session there so it picks up the routing.
                   </p>
                   {addedProfile ? (

@@ -202,6 +202,30 @@ test('buildSellerPluginRuntimeEnv sets LOCAL_LLM_BASE_URL for local LLM provider
   assert.equal(runtimeEnv['OPENAI_BASE_URL'], undefined);
 });
 
+test('buildSellerPluginRuntimeEnv maps base URL and API key to TYPESAFE_* for the typesafe plugin', () => {
+  const config = createDefaultConfig();
+  config.seller.providers = {
+    decisions: {
+      plugin: 'typesafe',
+      baseUrl: 'https://api.example.test',
+      apiKeyEnv: 'TEST_DECISIONS_KEY',
+      services: {
+        'jev-latest': {},
+      },
+    },
+  };
+  process.env['TEST_DECISIONS_KEY'] = 'ts-key';
+  try {
+    const runtimeEnv = buildSellerPluginRuntimeEnv(config.seller, 'decisions');
+    assert.equal(runtimeEnv['TYPESAFE_BASE_URL'], 'https://api.example.test');
+    assert.equal(runtimeEnv['TYPESAFE_API_KEY'], 'ts-key');
+    assert.equal(runtimeEnv['OPENAI_BASE_URL'], undefined);
+    assert.equal(runtimeEnv['OPENAI_API_KEY'], undefined);
+  } finally {
+    delete process.env['TEST_DECISIONS_KEY'];
+  }
+});
+
 test('assertSellerPrerequisites fails when no services are configured', async () => {
   const config = createDefaultConfig();
   const seller = config.seller;

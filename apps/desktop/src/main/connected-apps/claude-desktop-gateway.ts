@@ -19,8 +19,8 @@ import {
  * and Claude's picker only accepts Anthropic's shape with family tiers. So
  * the gateway answers the catalog itself (see CLAUDE_MODEL_SLOTS) and
  * forwards the message routes to the buyer proxy with the model rewritten to
- * what its slot was advertised for — "AntSeed Auto" follows the route
- * selected in the desktop (floating pill / VPR), so it drives Claude
+ * what its slot was advertised for — "Antseed Auto" follows the route
+ * selected in the desktop (floating pill / AI VPN), so it drives Claude
  * conversations live without a config rewrite.
  *
  * Plain HTTP reverse proxy on 127.0.0.1: Claude terminates its own gateway
@@ -36,7 +36,7 @@ export const CLAUDE_GATEWAY_HEALTH_HEADER = 'x-antseed-claude-gateway';
  * Anthropic family — so network models are advertised behind Claude's own
  * ids, with the real model name as the display name (exactly how Ollama's
  * gateway does it). Five ids means at most five entries: the first slot is
- * always "AntSeed Auto" (the route selected in the desktop), the rest carry
+ * always "Antseed Auto" (the route selected in the desktop), the rest carry
  * the top of the desktop's curated model picker. Advertised in Claude's
  * preferred order.
  */
@@ -47,7 +47,7 @@ const CLAUDE_MODEL_SLOTS: readonly { id: string; family: string; createdAt: stri
   { id: 'claude-sonnet-4-6', family: 'sonnet', createdAt: '2025-11-18T00:00:00Z', familyDefault: false },
   { id: 'claude-haiku-4-5-20251001', family: 'haiku', createdAt: '2025-10-01T00:00:00Z', familyDefault: true },
 ];
-const CLAUDE_GATEWAY_MODEL_LABEL = 'AntSeed Auto';
+const CLAUDE_GATEWAY_MODEL_LABEL = 'Antseed Auto';
 
 /** A model offered to Claude's picker: display label + the model the buyer
     proxy should route when Claude picks it. */
@@ -88,7 +88,7 @@ export type ClaudeDesktopGatewayOptions = {
   /** Curated picker models for the catalog slots; defaults to the shared
       source injected via setClaudeDesktopGatewayModelSource. */
   readonly listModels?: () => readonly ClaudeGatewayModel[];
-  /** Where slot bindings persist. Claude caches the catalog across AntSeed
+  /** Where slot bindings persist. Claude caches the catalog across Antseed
       restarts, so a fresh gateway must keep meaning the same models for the
       ids Claude already knows — without this file every app restart would
       rebind slots from the current picker order and silently re-point them. */
@@ -226,7 +226,7 @@ export class ClaudeDesktopGateway {
   }
 
   /**
-   * Slot assignments: "AntSeed Auto" always holds the first slot; curated
+   * Slot assignments: "Antseed Auto" always holds the first slot; curated
    * picker models occupy the rest. Bindings are sticky per model, not
    * positional: Claude caches the catalog it fetched, so the id it sends
    * with a message must keep meaning the model it displayed — a picker
@@ -365,7 +365,7 @@ export class ClaudeDesktopGateway {
           res.destroy();
           return;
         }
-        writeAnthropicError(res, 502, 'api_error', 'AntSeed is not reachable — open the AntSeed desktop app and try again.');
+        writeAnthropicError(res, 502, 'api_error', 'Antseed is not reachable — open the Antseed desktop app and try again.');
       });
       // A request's own 'close' fires once its body is consumed — only a
       // response that closes before finishing means Claude went away.
@@ -384,7 +384,7 @@ export class ClaudeDesktopGateway {
  * meaningful error.
  *
  * With `routingNote`, a short note is appended to the system prompt saying
- * the conversation runs through the AntSeed network. Claude Desktop's own
+ * the conversation runs through the Antseed network. Claude Desktop's own
  * system prompt asserts a Claude identity the model trusts over anything a
  * gateway writes, so no identity correction is attempted — the note only
  * flags that infrastructure context may not reflect the serving model.
@@ -412,7 +412,7 @@ export function rewriteModel(
   return Buffer.from(JSON.stringify(request), 'utf8');
 }
 
-const ROUTING_NOTE = 'Note from AntSeed: this conversation is delivered through the AntSeed peer-to-peer '
+const ROUTING_NOTE = 'Note from Antseed: this conversation is delivered through the Antseed peer-to-peer '
   + 'network, not directly through Anthropic. Environment metadata comes from the Claude client '
   + 'infrastructure and may not describe the model actually serving the conversation.';
 

@@ -164,6 +164,29 @@ export type VprModelCatalogEntry = {
   baselineOutputUsdPerMillion?: number | null;
 };
 
+/**
+ * Renderer-side mirror of `TrustBreakdown` from `@antseed/node`
+ * (`packages/node/src/reputation/trust-score.ts`). The renderer only imports
+ * `@antseed/node` subpath modules, so the shape is restated here.
+ *
+ *   trust = washFlagged ? 0 : history + usage + power + identity
+ *   (weights 50 / 20 / 10 / 20)
+ */
+export type TrustBreakdown = {
+  /** Final trust score, 0-100. */
+  score: number;
+  /** Settled service history; `null` when channel stats are unavailable. */
+  history: { score: number; channelCount: number; totalVolumeUsdcMicros: number } | null;
+  /** Last epoch's share of all pools' usage points; `null` when usage accounting data is unavailable. */
+  usage: { score: number; shareBps: number; epoch: number } | null;
+  /** Current epoch's share of all pools' staking power; `null` when pool data is unavailable. */
+  power: { score: number; shareBps: number; epoch: number } | null;
+  /** Verified-identity part; `null` when no verified identity has usable history. */
+  identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
+  /** Wash-trading registry verdict; `null` when the registry is unavailable. */
+  washFlagged: boolean | null;
+};
+
 export type DiscoverVerificationLink = {
   kind: 'domain' | 'github';
   label: string;
@@ -174,6 +197,7 @@ export type DiscoverVerificationLink = {
 };
 
 export type DiscoverRow = {
+  advertisedVerifierIds?: string[];
   // Identity
   rowKey: string;              // `${peerId}:${serviceId}`
   serviceId: string;
@@ -220,19 +244,24 @@ export type DiscoverRow = {
   // Peer metadata
   onChainChannelCount: number | null;
 
-  // On-chain staking (AntseedStaking)
+  // On-chain staking (AntseedStakingPools)
   agentId: number;
-  stakeUsdc: string;            // bigint as string, 6-decimal USDC
+  /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
+  poolStakeAnts: number;
 
   // On-chain agent stats (AntseedChannels.getAgentStats)
   onChainActiveChannelCount: number;
   onChainGhostCount: number;
   onChainTotalVolumeUsdc: string;
   onChainLastSettledAt: number;
-  onChainReputationScore: number | null; // displayed 0-100 score
-  onChainTrustScore: number | null;
+  /** Buyer-computed trust score, 0-100 (see `TrustBreakdown`). */
+  onChainReputationScore: number | null;
   /** Model-specific 0-100 reputation after pricing-completeness adjustments. */
   effectiveReputationScore?: number | null;
+  /** Parts that make up `onChainReputationScore`; `null`/absent when the buyer has not scored the peer. */
+  trust?: TrustBreakdown | null;
+  /** `AntseedWashTradingRegistry` verdict; `null` when the registry was unavailable. */
+  washFlagged: boolean | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
 

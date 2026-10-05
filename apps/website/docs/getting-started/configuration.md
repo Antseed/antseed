@@ -7,7 +7,7 @@ hide_title: true
 
 # Configuration
 
-AntSeed stores configuration at `~/.antseed/config.json`. This file is the normal source of truth for your node.
+Antseed stores configuration at `~/.antseed/config.json`. This file is the normal source of truth for your node.
 
 The intended workflow is:
 
@@ -109,7 +109,7 @@ antseed seller start
 
 ## Override Precedence
 
-When the same setting exists in multiple places, AntSeed resolves it in this order:
+When the same setting exists in multiple places, Antseed resolves it in this order:
 
 1. CLI flags for the current command
 2. Environment variables
@@ -147,7 +147,7 @@ Prefer `--data-dir` in service/systemd scripts. `ANTSEED_DATA_DIR` is equivalent
 | Section | Description |
 |---|---|
 | `identity` | Display name |
-| `seller` | Per-provider service offerings (plugin, pricing, capabilities, unit billing, categories, upstream model mapping), reserve floor, max concurrent buyers, agent directory |
+| `seller` | Per-provider service offerings (plugin, pricing, capabilities, unit billing, categories, upstream model mapping), free-tier limits, reserve floor, max concurrent buyers, agent directory |
 | `buyer` | Max pricing thresholds, proxy port, DHT peer refresh interval |
 | `payments` | Chain ID (`base-mainnet` by default) |
 | `network` | Bootstrap nodes |
@@ -161,6 +161,11 @@ Everything a seller announces lives under `seller.providers[name]`. The key unde
   "seller": {
     "reserveFloor": 10,
     "maxConcurrentBuyers": 50,
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "maxRequestsPerIp": 300,
+      "windowMs": 86400000
+    },
     "providers": {
       "together": {
         "plugin": "openai",
@@ -294,6 +299,67 @@ antseed config seller set providers.together.services.deepseek-v3.1.categories '
 antseed config seller set providers.together.services.deepseek-v3.1.capabilities '{"contextWindow":128000,"inputs":["text"],"toolUse":true}'
 ```
 
+## Free-Tier Limits
+
+A service is free only when its token prices and any unit-billing components are all zero. By default, free services remain unlimited for backward compatibility. Sellers can apply a persistent request allowance across all fully zero-priced services, keyed by buyer address, by remote IP, or both:
+
+```json
+{
+  "seller": {
+    "freeTier": {
+      "maxRequestsPerAddress": 100,
+      "maxRequestsPerIp": 300,
+      "windowMs": 86400000
+    }
+  }
+}
+```
+
+This example allows each buyer address 100 free requests, and each remote IP 300 free requests, in a sliding 24-hour window. A request is served only while every configured limit still has headroom, and only served requests count. The counters are seller-wide, so switching between free models or reconnecting does not reset them. Usage is stored in the seller's `metering.db` and survives restarts. Once exhausted, the seller returns HTTP `429` with `code: "free_tier_exhausted"`, a `limitedBy` field (`"address"` or `"ip"`), and a `Retry-After` header; paid services are unaffected.
+
+| Limit | Keyed on | Strength | Caveat |
+|-------|----------|----------|--------|
+| `maxRequestsPerAddress` | The buyer's identity address | Precise per user | A user can create another identity to get a fresh allowance |
+| `maxRequestsPerIp` | The connecting IP (IPv6 grouped by /64) | Survives identity rotation | Users behind one NAT or carrier-grade NAT share the allowance; VPN pools spread it |
+
+At least one of the two must be set. When using both, set the IP limit higher than the address limit so shared networks are not cut off by a single heavy user. Neither replaces economic gating: use nonzero service pricing when stronger protection is required. The IP limit only sees the address that connects to the seller, so a seller behind a proxy or relay sees the proxy's IP instead of the buyer's.
+
+Configure it from the CLI or edit `config.json` directly:
+
+```bash
+antseed config seller set freeTier.maxRequestsPerAddress 100
+antseed config seller set freeTier.maxRequestsPerIp 300
+antseed config seller set freeTier.windowMs 86400000
+```
+
+Omit `windowMs` to use the 24-hour default. Remove `seller.freeTier` to restore unlimited zero-priced service access.
+
+## Free-Usage Transactions
+
+Free requests are still recorded on-chain so buyers earn usage credit, and the seller pays the gas for those transactions. A buyer opens a free-usage channel (one `open` transaction), the seller writes accumulated usage to it (`record` transactions), and the channel is closed when the buyer asks or its deadline passes. Buyers on node 0.2.126 or newer open channels with a 1-hour deadline; older clients use 15 minutes.
+
+The seller controls how often usage is written:
+
+```json
+{
+  "seller": {
+    "freeUsage": {
+      "recordBatchSize": 16,
+      "recordFlushIntervalMs": 900000
+    }
+  }
+}
+```
+
+A `record` transaction is sent as soon as `recordBatchSize` free requests have accumulated on a channel, or after `recordFlushIntervalMs` milliseconds since the first unrecorded request, whichever comes first. The flush always happens before the channel deadline, because records submitted after it are rejected by the contract. Raising either value means fewer transactions per active buyer; usage is never dropped, only written later. The defaults are 16 requests and 15 minutes.
+
+```bash
+antseed config seller set freeUsage.recordBatchSize 64
+antseed config seller set freeUsage.recordFlushIntervalMs 3600000
+```
+
+Both values must be positive integers; `recordFlushIntervalMs` must be at least 1000.
+
 ## Model Health Checks
 
 Seller health checks probe supported text protocols immediately at startup and periodically afterward. After repeated failures, the service is temporarily removed from discovery; its capability and billing metadata disappear with it and return when the service recovers.
@@ -316,7 +382,7 @@ See the [metadata v12 upgrade guide](/docs/guides/metadata-v12-upgrade) before u
 
 ## Buyer Settings
 
-Model-only requests use one shared Price + Trust policy in the CLI buyer proxy and the desktop VPR. The defaults are:
+Model-only requests use one shared Price + Trust policy in the CLI buyer proxy and the desktop AI VPN. The defaults are:
 
 ```json
 {
@@ -332,7 +398,7 @@ Model-only requests use one shared Price + Trust policy in the CLI buyer proxy a
 }
 ```
 
-`minTrustScore` is a hard eligibility gate. At the default `60`, sellers below 60 and sellers without a usable score are not selected automatically. CLI-only buyers can lower it, or set it to `0` to disable the gate. `allowedPeerIds` becomes an allowlist when non-empty; `blockedPeerIds` always excludes matching sellers. Peer ids may include or omit the `0x` prefix.
+`minTrustScore` is a hard eligibility gate on the buyer-computed [trust score](/docs/reputation#trust-score). At the default `60`, sellers below 60 and sellers without a usable score are not selected automatically. CLI-only buyers can lower it, or set it to `0` to disable the gate. `allowedPeerIds` becomes an allowlist when non-empty; `blockedPeerIds` always excludes matching sellers. Peer ids may include or omit the `0x` prefix.
 
 Eligible offers are ranked using trust, token or image price, cached-input pricing coverage, recent failures, cooldowns, and `preferFreePeers`. `maxInputUsdPerMillion` is a strong price preference in that ranking; the separate hierarchical `maxPricing` policy remains the hard price-cap mechanism:
 
@@ -445,7 +511,7 @@ Do not redirect the well-known URL; verifiers require the proof to be served dir
 
 ### GitHub proof
 
-Create a public repository and place `antseed.json` at the repository root. AntSeed fetches:
+Create a public repository and place `antseed.json` at the repository root. Antseed fetches:
 
 ```text
 https://raw.githubusercontent.com/<username>/<repository>/HEAD/antseed.json
@@ -475,6 +541,7 @@ Provider plugins authenticate with their upstream AI service. Credentials live i
 | `openai` | `OPENAI_API_KEY` | Set `providers.<name>.baseUrl` in config.json for Together/OpenRouter/etc. |
 | `claude-code` | keychain | Reads from `claude-code` secure storage |
 | `local-llm` | none | Ollama/llama.cpp |
+| `typesafe` | `TYPESAFE_API_KEY` | System One decision models (`POST /v1/systemone`). Set `providers.<name>.baseUrl` for a compatible upstream. |
 
 The separation is intentional:
 
@@ -518,7 +585,7 @@ See the [`@antseed/ant-agent` README](https://github.com/AntSeed/antseed/tree/ma
 | Priority | Method | Best for |
 |---|---|---|
 | 1 | `ANTSEED_IDENTITY_HEX` env var | CLI and server deployments |
-| 2 | Desktop keychain (Electron `safeStorage`) | AntSeed Desktop app |
+| 2 | Desktop keychain (Electron `safeStorage`) | Antseed Desktop app |
 | 3 | Custom `IdentityStore` | KMS/HSM integrations |
 | 4 | `~/.antseed/identity.key` (plaintext) | Not recommended for production |
 

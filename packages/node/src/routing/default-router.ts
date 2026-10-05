@@ -1,7 +1,7 @@
 import type { Router } from '../interfaces/buyer-router.js';
 import type { PeerInfo } from '../types/peer.js';
 import type { SerializedHttpRequest } from '../types/http.js';
-import { computeOnChainReputationScore } from '../reputation/on-chain-reputation.js';
+import { normalizedModelReputationScore } from '../reputation/model-reputation.js';
 
 export interface DefaultRouterConfig {
   minReputation?: number;  // Default: 0 (no reputation gate)
@@ -43,17 +43,6 @@ export class DefaultRouter implements Router {
   }
 
   private _effectiveReputation(peer: PeerInfo): number {
-    const onChainScore = computeOnChainReputationScore(peer);
-    if (onChainScore != null) {
-      return onChainScore;
-    }
-    if (this._isFiniteNonNegative(peer.reputationScore)) {
-      return peer.reputationScore;
-    }
-    return 0;
-  }
-
-  private _isFiniteNonNegative(value: number | undefined): value is number {
-    return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+    return normalizedModelReputationScore(peer) ?? 0;
   }
 }

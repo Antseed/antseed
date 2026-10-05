@@ -55,9 +55,9 @@ const ROWS: Array<{dim: string; antseed: string; openrouter: string}> = [
 
 // 49 chars. The previous title ran to 65 and truncated in the SERP, losing the
 // end of the phrase Google had to work with.
-const TITLE = 'OpenRouter Alternative: P2P, No Account | AntSeed';
+const TITLE = 'OpenRouter Alternative: P2P, No Account | Antseed';
 const DESCRIPTION =
-  'AntSeed is a permissionless, peer-to-peer alternative to OpenRouter. Any provider can join. Requests go direct. Pay per request in USDC - no central account.';
+  'Antseed is a permissionless, peer-to-peer alternative to OpenRouter. Any provider can join. Requests go direct. Pay per request in USDC - no central account.';
 
 export default function VsOpenRouter(): JSX.Element {
   return (
@@ -75,38 +75,38 @@ export default function VsOpenRouter(): JSX.Element {
             mainEntity: [
               {
                 '@type': 'Question',
-                name: 'What is the main difference between AntSeed and OpenRouter?',
+                name: 'What is the main difference between Antseed and OpenRouter?',
                 acceptedAnswer: {
                   '@type': 'Answer',
                   text:
-                    "OpenRouter is a centralized aggregator; AntSeed is a peer-to-peer network. OpenRouter curates which providers are listed and routes every request through their servers. AntSeed lets any provider join permissionlessly, and requests go directly from the buyer's local gateway to the provider.",
+                    "OpenRouter is a centralized aggregator; Antseed is a peer-to-peer network. OpenRouter curates which providers are listed and routes every request through their servers. Antseed lets any provider join permissionlessly, and requests go directly from the buyer's local gateway to the provider.",
                 },
               },
               {
                 '@type': 'Question',
-                name: 'Do I need an account to use AntSeed?',
+                name: 'Do I need an account to use Antseed?',
                 acceptedAnswer: {
                   '@type': 'Answer',
                   text:
-                    'No. AntSeed has no sign-up, no email, and no platform-issued API keys. A local gateway connects you to the peer-to-peer network, and payments settle on-chain in USDC.',
+                    'No. Antseed has no sign-up, no email, and no platform-issued API keys. A local gateway connects you to the peer-to-peer network, and payments settle on-chain in USDC.',
                 },
               },
               {
                 '@type': 'Question',
-                name: 'How does AntSeed handle payments compared to OpenRouter?',
+                name: 'How does Antseed handle payments compared to OpenRouter?',
                 acceptedAnswer: {
                   '@type': 'Answer',
                   text:
-                    "OpenRouter uses credit card top-ups and holds provider earnings until a payout. AntSeed settles each request on-chain in USDC, directly to the provider's wallet. There is no platform escrow.",
+                    "OpenRouter uses credit card top-ups and holds provider earnings until a payout. Antseed settles each request on-chain in USDC, directly to the provider's wallet. There is no platform escrow.",
                 },
               },
               {
                 '@type': 'Question',
-                name: 'Is AntSeed OpenAI SDK compatible like OpenRouter?',
+                name: 'Is Antseed OpenAI SDK compatible like OpenRouter?',
                 acceptedAnswer: {
                   '@type': 'Answer',
                   text:
-                    'Yes. Point the OpenAI SDK base_url at your local AntSeed gateway (http://localhost:8377/v1 by default). Existing OpenAI or OpenRouter code works with no changes beyond the URL.',
+                    'Yes. Point the OpenAI SDK base_url at your local Antseed gateway (http://localhost:8377/v1 by default). Existing OpenAI or OpenRouter code works with no changes beyond the URL.',
                 },
               },
             ],
@@ -118,7 +118,7 @@ export default function VsOpenRouter(): JSX.Element {
         kicker="OpenRouter alternative"
         title="A permissionless, peer-to-peer alternative to OpenRouter."
         lead="Same OpenAI-compatible API. Any provider can join. Pay per request in USDC. No central account, independent providers, open peer-to-peer routing.">
-        <Button to="/docs/install" arrow>Install AntSeed</Button>
+        <Button to="/docs/install" arrow>Install Antseed</Button>
         <Button href="https://antseedstats.com/network" variant="ghost">Live pricing</Button>
       </PageHero>
 
@@ -126,7 +126,7 @@ export default function VsOpenRouter(): JSX.Element {
         <Reveal className={styles.table}>
           <div className={styles.tableHead}>
             <div className={styles.colDim} />
-            <div className={styles.colAnt}>AntSeed</div>
+            <div className={styles.colAnt}>Antseed</div>
             <div className={styles.colOr}>OpenRouter</div>
           </div>
           {ROWS.map((row) => (
@@ -142,7 +142,7 @@ export default function VsOpenRouter(): JSX.Element {
       <Section>
         <div className={styles.listGrid}>
           <Reveal className={styles.listCard}>
-            <h2 className={styles.listTitle}>When to pick AntSeed</h2>
+            <h2 className={styles.listTitle}>When to pick Antseed</h2>
             <ul className={styles.list}>
               <li>You want to run inference without creating another SaaS account.</li>
               <li>You're building an agent that needs to pay for its own inference.</li>

@@ -1,6 +1,6 @@
 {
   "name": "@antseed/node",
-  "version": "0.2.118",
+  "version": "0.2.128",
   "description": "Antseed Network protocol SDK — P2P inference marketplace",
   "type": "module",
   "files": [
@@ -41,6 +41,14 @@
       "import": "./dist/types/index.js",
       "types": "./dist/types/index.d.ts"
     },
+    "./verifier-capabilities": {
+      "import": "./dist/discovery/verifier-capabilities.js",
+      "types": "./dist/discovery/verifier-capabilities.d.ts"
+    },
+    "./tee-status": {
+      "import": "./dist/verification/tee-status.js",
+      "types": "./dist/verification/tee-status.d.ts"
+    },
     "./model-identity": {
       "import": "./dist/model-identity.js",
       "types": "./dist/model-identity.d.ts"
@@ -49,9 +57,9 @@
       "import": "./dist/routing/model-route-ranking.js",
       "types": "./dist/routing/model-route-ranking.d.ts"
     },
-    "./on-chain-reputation": {
-      "import": "./dist/reputation/on-chain-reputation.js",
-      "types": "./dist/reputation/on-chain-reputation.d.ts"
+    "./trust-score": {
+      "import": "./dist/reputation/trust-score.js",
+      "types": "./dist/reputation/trust-score.d.ts"
     }
   },
   "scripts": {

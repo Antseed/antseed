@@ -15,13 +15,14 @@ describe('ViewCache', () => {
     expect(loads).toBe(1);
   });
 
-  it('runs different views one after another, in request order', async () => {
+  it('serves pools while an unrelated reward read is still blocked', async () => {
     const cache = new ViewCache();
-    const order: string[] = [];
-    const slow = cache.read('pools', async () => { order.push('pools:start'); await tick(); await tick(); order.push('pools:end'); return 1; });
-    const fast = cache.read('positions', async () => { order.push('positions:start'); order.push('positions:end'); return 2; });
-    await Promise.all([slow, fast]);
-    expect(order).toEqual(['pools:start', 'pools:end', 'positions:start', 'positions:end']);
+    let finish!: (value: number) => void;
+    const slow = cache.read('rewards', () => new Promise<number>(resolve => { finish = resolve; }));
+    const fast = cache.read('pools', async () => 'pools ready');
+    expect(await fast).toBe('pools ready');
+    finish(1);
+    expect(await slow).toBe(1);
   });
 
   it('does not cache failures and keeps serving after one', async () => {
@@ -44,4 +45,17 @@ describe('ViewCache', () => {
     await long.read('overview', load);
     expect(loads).toBe(4);
   });
+});
+
+it('does not serve an in-flight result from the previous wallet after invalidation', async () => {
+  const cache = new ViewCache();
+  let finish!: (value: string) => void;
+  const old = cache.read('positions', () => new Promise<string>(resolve => { finish = resolve; }));
+  await Promise.resolve();
+  cache.invalidate();
+  const current = cache.read('positions', async () => 'wallet B');
+  finish('wallet A');
+  expect(await old).toBe('wallet A');
+  expect(await current).toBe('wallet B');
+  expect(await cache.read('positions', async () => 'unexpected')).toBe('wallet B');
 });

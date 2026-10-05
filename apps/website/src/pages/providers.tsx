@@ -22,34 +22,22 @@ import {
 } from '@hugeicons/core-free-icons';
 
 /* ── FAQ ─────────────────────────────────────────────────────── */
-const FAQ_DATA = [
+const PROVIDER_FAQ = [
   {
     q: 'Does the network see my backend, model choice, or routing logic?',
-    a: 'The network only sees what you announce: your service names, pricing, capability tags, and on-chain reputation. Your backend URL, model provider, routing strategy, system prompt, and fine-tune weights are intended to remain under your control. You are responsible for securing your own node, credentials, logs, and provider infrastructure.',
+    a: 'The network only sees what you announce: your service names, pricing, capability tags, and onchain reputation. Your backend URL, model provider, routing strategy, system prompt, and fine-tune weights stay under your control. You are responsible for securing your own node, credentials, logs, and infrastructure.',
   },
   {
     q: 'What provider types can I run?',
-    a: 'Three: Raw Inference (serve a model or proxy an existing API), Routing Service (select providers on behalf of buyers and receive payment per routed request), or AI Agent (wrap domain expertise as a named always-on service). A single node can run all three simultaneously at different price tiers.',
+    a: 'Three: Raw Inference (serve a model or proxy an existing API), Routing Service (select providers on behalf of buyers and receive payment per routed request), or AI Agent (wrap domain expertise as a named always-on service). A single node can run all three at once, each at its own price.',
   },
   {
     q: 'Does my node need to run 24/7?',
-    a: 'No. Providers announce uptime windows in their metadata. When you go offline, the network routes around you. Your on-chain reputation persists across sessions.',
+    a: 'No. Providers announce uptime windows in their listing. When you go offline, the network routes around you. Your onchain reputation persists across sessions.',
   },
   {
     q: 'How do payments actually reach me?',
-    a: 'Buyers lock USDC in on-chain escrow on Base before a session starts. Requests flow freely during the session. When the session ends (or idles for 10 minutes), settlement executes on-chain and USDC lands in your wallet automatically. No invoicing, no billing cycles.',
-  },
-  {
-    q: 'Are seller ANTS incentives claimable now?',
-    a: 'Seller ANTS emissions are currently tracked but routed into a dedicated Provider Pool and locked. They are not freely claimable yet. Future claimability is expected after stronger validation, audit, attestation, and proof systems are introduced, and may be subject to verification or slashing.',
-  },
-  {
-    q: 'Can I use any model underneath?',
-    a: 'Yes. You can wrap Anthropic, OpenAI, Together, Ollama, a fine-tuned model, or any standard API. The network only sees what you deliver - not your backend.',
-  },
-  {
-    q: 'Can I serve multiple capability types from one node?',
-    a: 'Yes. A single AntSeed node can advertise multiple services - raw inference on one model, a routing service with custom logic, and an AI Agent, all at different price tiers. Each service is announced independently to the DHT.',
+    a: 'The buyer reserves a USDC budget onchain before the first request, then signs a running total after each response. Your node settles that total on Base when the channel closes or after 10 minutes idle, and the USDC lands in your wallet automatically. No invoicing, no billing cycles. <a href="/docs/faq">More questions in the FAQ →</a>',
   },
 ];
 
@@ -67,7 +55,7 @@ const PATHS = [
   {
     title: 'Raw Inference',
     icon: <HugeiconsIcon icon={ServerStack01Icon} size={24} strokeWidth={1.6} aria-hidden="true" />,
-    body: 'You run a model or proxy an upstream API - Ollama, a fine-tune, a local GPU, OpenAI, Together. Point AntSeed at it with one config entry and announce it to the network. Buyers choose you based on price, latency, and on-chain reputation; payments depend on demand and successful settlement.',
+    body: 'You run a model or proxy an upstream API - Ollama, a fine-tune, a local GPU, OpenAI, Together. Point Antseed at it with one config entry and announce it to the network. Buyers choose you based on price, latency, and onchain reputation; payments depend on demand and successful settlement.',
     points: ['Any model or backend', 'Set your own price per token', 'Reputation built per delivery'],
   },
   {
@@ -96,7 +84,7 @@ const PUBLIC_FACTS = [
   'Your service names',
   'Your price per token or per request',
   'Your capability tags (TEE, domain, model family…)',
-  'Your on-chain reputation score',
+  'Your onchain reputation score',
   'Your latency percentiles',
   'Your uptime window',
 ];
@@ -113,18 +101,18 @@ const PRIVATE_FACTS = [
 const PAY_STEPS = [
   {
     step: '1',
-    title: 'Buyer locks funds',
-    body: 'USDC is locked in the AntSeedEscrow smart contract on Base before the session starts. Requests flow freely while funds are escrowed.',
+    title: 'The buyer reserves',
+    body: 'Before the first request, the buyer signs a reservation that locks USDC in the deposits contract on Base. It caps what you can collect on that channel.',
   },
   {
     step: '2',
-    title: 'You deliver, receipts are signed',
-    body: 'Each request generates a provider-signed receipt with exact token counts, cost, and a cryptographic signature. Both sides have proof.',
+    title: 'You deliver, the buyer authorizes',
+    body: 'After each response the buyer signs the running total you may collect, and your node signs a receipt with the exact usage. No onchain transaction per request.',
   },
   {
     step: '3',
-    title: 'Settlement executes on-chain',
-    body: 'On session end (or 10 min idle), the escrow contract computes final cost from signed receipts, sends your payout to your wallet, and refunds unused funds to the buyer.',
+    title: 'You settle on Base',
+    body: 'Your node submits the latest authorization when the channel closes or after 10 minutes idle. The USDC lands in your wallet and the unused budget returns to the buyer.',
   },
 ];
 
@@ -138,13 +126,6 @@ const ECONOMICS = [
   {label: 'Your payout', value: '96% of what buyers pay, direct to your wallet in USDC'},
   {label: 'Payment methods', value: 'Buyers pay in USDC or by card - your payout is always USDC'},
   {label: 'Settlement chain', value: 'Base mainnet'},
-];
-
-const REPUTATION = [
-  {label: 'Success rate', desc: 'Percentage of requests delivered and settled on-chain'},
-  {label: 'Latency p50 / p99', desc: 'Measured per delivery, visible to buyers pre-route'},
-  {label: 'Token accuracy', desc: 'Signed receipts verify exact token counts on both sides'},
-  {label: 'Uptime', desc: 'Historical availability across announced service windows'},
 ];
 
 const CLI_SNIPPET = `# Point at any OpenAI-compatible endpoint
@@ -187,18 +168,17 @@ const CONFIG_SNIPPET = `{
 }`;
 
 const WALLET_SNIPPET = `antseed seller status         # earnings, peers, wallet address
-antseed seller stake <amt>    # stake USDC to become discoverable
-antseed seller unstake        # withdraw your stake`;
+antseed seller register       # register on-chain; all you need to sell
+antseed seller stake <ants> --epochs <n>  # optional: stake ANTS for rewards`;
 
 /* ── MAIN PAGE ───────────────────────────────────────────────── */
 export default function Providers(): JSX.Element {
   return (
     <Layout
       title="Become a Provider"
-      description="Build an AntSeed provider for your AI capability. Providers are independent operators responsible for their own infrastructure, policies, compliance, and data handling."
+      description="Build an Antseed provider for your AI capability. Providers are independent operators responsible for their own infrastructure, policies, compliance, and data handling."
     >
       <PageHero
-        kicker="Providers"
         title={
           <>
             Serve AI on the open market.<br />
@@ -207,8 +187,8 @@ export default function Providers(): JSX.Element {
         }
         lead="Set your price. Announce to the network. Receive USDC for settled deliveries - whether you run a model, a routing service, or a specialized agent."
       >
-        <Button to="/docs/guides/become-a-provider" arrow>Become a provider</Button>
-        <Button to="/docs/install" variant="ghost">Install AntSeed</Button>
+        <Button to="/docs/guides/become-a-provider" arrow>Read the provider guide</Button>
+        <Button to="/docs/install" variant="ghost">Install the CLI</Button>
       </PageHero>
 
       {/* ── THREE WAYS TO PROVIDE ── */}
@@ -230,9 +210,6 @@ export default function Providers(): JSX.Element {
                   <li key={point}>{point}</li>
                 ))}
               </ul>
-              <LinkArrow to="/docs/guides/become-a-provider" className={styles.pathLink}>
-                Become a provider
-              </LinkArrow>
             </Reveal>
           ))}
         </div>
@@ -240,22 +217,10 @@ export default function Providers(): JSX.Element {
         <Reveal className={styles.compliance} delay={120}>
           <span className={styles.complianceIcon} aria-hidden="true">!</span>
           <div className={styles.complianceBody}>
-            <p className={styles.complianceTitle}>Provider compliance</p>
             <p>
-              AntSeed is designed for providers who build differentiated services -
-              such as TEE-secured inference, domain-specific skills or agents,
-              fine-tuned models, or managed product experiences. Simply reselling
-              raw API access or subscription credentials is <strong>not</strong> the
-              intended use and may violate your upstream provider's terms of service.
-            </p>
-            <p>
-              Providers are independent operators and are solely responsible for their models,
-              infrastructure, outputs, logs, privacy practices, data handling,
-              security, sanctions/export compliance, tax obligations, applicable AI laws,
-              and upstream API provider terms.
-            </p>
-            <p>
-              Seller-side ANTS emissions are currently tracked but locked in a dedicated Provider Pool while AntSeed develops stronger validation and proof systems. Fake usage, sybil behavior, or incentive extraction may be excluded or subject to future slashing.
+              Providers must add value on top of upstream APIs: TEE-secured inference, agents,
+              fine-tunes, or managed products. Reselling raw API access or subscription
+              credentials is <strong>not</strong> allowed.
             </p>
           </div>
         </Reveal>
@@ -298,7 +263,7 @@ export default function Providers(): JSX.Element {
         <Reveal>
           <SectionHeader
             title="One JSON file. Full control."
-            lead="No code to write. Point AntSeed at an OpenAI-compatible endpoint, set your prices and categories, and offer capacity to buyers."
+            lead="No code to write. Point Antseed at an OpenAI-compatible endpoint, set your prices and categories, and offer capacity to buyers."
           />
         </Reveal>
         <div className={styles.codeGrid}>
@@ -318,7 +283,7 @@ export default function Providers(): JSX.Element {
               Your backend URL, API key, and routing logic are intended to remain under your control.
               The network only sees the service name, price, and categories; you are responsible for
               securing your node and credentials.{' '}
-              <LinkArrow to="/docs/config">Full config reference</LinkArrow>
+              <LinkArrow to="/docs/config">Read the config reference</LinkArrow>
             </p>
           </Reveal>
         </div>
@@ -329,7 +294,7 @@ export default function Providers(): JSX.Element {
         <Reveal>
           <SectionHeader
             title="Direct settlement. No invoicing."
-            lead="Buyers lock funds before a session. You deliver. Settlement executes on-chain automatically."
+            lead="The buyer reserves a budget. You deliver and the buyer authorizes. You settle on Base."
           />
         </Reveal>
         <Reveal className={styles.payFlow}>
@@ -358,7 +323,7 @@ export default function Providers(): JSX.Element {
           <p className={styles.walletNote}>
             Your EVM wallet is derived automatically from your node's secp256k1 identity key.
             Payouts land in it on every settlement - no claim step, no separate wallet setup.{' '}
-            <LinkArrow to="/docs/payments">Full payment docs</LinkArrow>
+            <LinkArrow to="/docs/payments">Read the payment protocol</LinkArrow>
           </p>
         </Reveal>
       </Section>
@@ -368,23 +333,38 @@ export default function Providers(): JSX.Element {
         <Reveal>
           <SectionHeader
             title="Build reputation that compounds."
-            lead="Every delivery is recorded on-chain. Your reputation belongs to your wallet. No platform can revoke it."
+            lead="Every delivery is recorded onchain. Your reputation belongs to your wallet. No platform can revoke it."
           />
         </Reveal>
-        <div className={styles.repGrid}>
-          {REPUTATION.map((r, i) => (
-            <Reveal key={r.label} className={styles.repCard} delay={i * 80}>
-              <p className={styles.repLabel}>{r.label}</p>
-              <p>{r.desc}</p>
-            </Reveal>
-          ))}
-        </div>
-        <Reveal delay={160}>
+        <Reveal delay={80}>
           <p className={styles.repNote}>
-            Any buyer can build their own access and routing rules on top of on-chain stats.
-            Providers with strong track records may command higher prices and receive more traffic,
-            depending on buyer and router preferences.
+            Every settled delivery is recorded onchain against your wallet: success rate, latency,
+            token accuracy from signed receipts, and uptime across the windows you announce. Buyers
+            and routers read those stats when they rank you, so a strong track record brings more
+            traffic and can command a higher price.{' '}
+            <LinkArrow to="/docs/reputation">How trust is computed</LinkArrow>
           </p>
+        </Reveal>
+      </Section>
+
+      {/* ── BEFORE YOU START ── */}
+      <Section width="md">
+        <Reveal className={styles.compliance}>
+          <span className={styles.complianceIcon} aria-hidden="true">!</span>
+          <div className={styles.complianceBody}>
+            <p className={styles.complianceTitle}>Before you start</p>
+            <p>
+              Providers are independent operators and are solely responsible for their models,
+              infrastructure, outputs, logs, privacy practices, data handling, security,
+              sanctions/export compliance, tax obligations, applicable AI laws, and upstream API
+              provider terms.
+            </p>
+            <p>
+              Provider-side ANTS emissions are currently tracked but locked in a dedicated Provider
+              Pool while Antseed develops stronger validation and proof systems. Fake usage, sybil
+              behavior, or incentive extraction may be excluded or subject to future slashing.
+            </p>
+          </div>
         </Reveal>
       </Section>
 
@@ -394,23 +374,22 @@ export default function Providers(): JSX.Element {
           <SectionHeader title="Common questions" />
         </Reveal>
         <Reveal delay={80}>
-          <Faq items={FAQ_DATA} />
+          <Faq items={PROVIDER_FAQ} />
         </Reveal>
       </Section>
 
       {/* ── CLOSING CTA ── */}
       <FinalCta
         title="Ready to provide?"
-        sub="Install AntSeed, configure your provider, and offer AI capacity as an independent operator."
+        sub="Install the CLI, configure your provider, and offer AI capacity as an independent operator."
         note={
           <>
             <a href="/docs/lightpaper">Read the lightpaper</a>
-            <a href="/docs/payments">Payment protocol</a>
-            <a href="/docs/faq">FAQ</a>
+            <a href="/docs/payments">Read the payment protocol</a>
+            <a href="/docs/faq">Read the FAQ</a>
           </>
         }>
-        <Button to="/docs/install" variant="white" size="lg" arrow>Get started</Button>
-        <Button to="/docs/guides/become-a-provider" variant="light" size="lg">Become a provider</Button>
+        <Button to="/docs/guides/become-a-provider" variant="white" size="lg" arrow>Read the provider guide</Button>
       </FinalCta>
     </Layout>
   );

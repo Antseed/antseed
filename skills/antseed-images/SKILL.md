@@ -1,15 +1,15 @@
 ---
 name: antseed-images
-description: Generate images from text prompts through the user's local AntSeed buyer proxy. Use when the user asks to create, generate, or make an image with AntSeed, with or without a specific image model.
+description: Generate images from text prompts through the user's local Antseed buyer proxy. Use when the user asks to create, generate, or make an image with Antseed, with or without a specific image model.
 ---
 
-# AntSeed Images
+# Antseed Images
 
-Generate an image through the user's local AntSeed buyer proxy using network-wide model discovery and automatic peer routing.
+Generate an image through the user's local Antseed buyer proxy using network-wide model discovery and automatic peer routing.
 
 ## Prerequisites
 
-- AntSeed Desktop or `antseed buyer start` must be running.
+- Antseed Desktop or `antseed buyer start` must be running.
 - The buyer must have enough deposited USDC for an eligible seller serving the selected model.
 - The default buyer endpoint is `http://127.0.0.1:8377`. Use a different port only when the user provides one.
 
@@ -78,4 +78,4 @@ If the response contains `data[0].url` instead, download it immediately to the o
 - `model_not_found`: refresh `/v1/models?type=images` and resolve the requested id or alias again.
 - HTTP `402`: the buyer needs additional deposited USDC or payment-channel capacity.
 - HTTP `502`: no policy-allowed serving peer completed the request after proxy routing and fallback.
-- Connection refused: start AntSeed Desktop or `antseed buyer start`.
+- Connection refused: start Antseed Desktop or `antseed buyer start`.

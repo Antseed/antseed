@@ -37,13 +37,13 @@ function discoverRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
     lifetimeLastSessionAt: null,
     onChainChannelCount: null,
     agentId: 1,
-    stakeUsdc: '0',
+    poolStakeAnts: 0,
     onChainActiveChannelCount: 0,
     onChainGhostCount: 0,
     onChainTotalVolumeUsdc: '0',
     onChainLastSettledAt: 0,
     onChainReputationScore: null,
-    onChainTrustScore: 75,
+    washFlagged: null,
     effectiveReputationScore: 75,
     onChainSybilRisk: null,
     onChainSybilFlags: [],
@@ -203,9 +203,9 @@ test('filters the catalog to free models only', () => {
 
 test('seller ordering matches effective reputation instead of raw trust', () => {
   const routes = [
-    discoverRow({ peerId: 'flash', onChainTrustScore: 10_432, onChainReputationScore: 100, effectiveReputationScore: 50 }),
-    discoverRow({ peerId: 'apex', onChainTrustScore: 895, onChainReputationScore: 78.4, effectiveReputationScore: 78.4 }),
-    discoverRow({ peerId: 'venice', onChainTrustScore: 5_428, onChainReputationScore: 98.3, effectiveReputationScore: 98.3 }),
+    discoverRow({ peerId: 'flash', onChainReputationScore: 100, effectiveReputationScore: 50 }),
+    discoverRow({ peerId: 'apex', onChainReputationScore: 78.4, effectiveReputationScore: 78.4 }),
+    discoverRow({ peerId: 'venice', onChainReputationScore: 98.3, effectiveReputationScore: 98.3 }),
   ];
 
   assert.deepEqual(routes.sort(compareModelRoutesByReputation).map((route) => route.peerId), [

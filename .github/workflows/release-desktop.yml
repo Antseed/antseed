@@ -113,7 +113,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -156,8 +156,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           # electron-builder accepts base64-encoded content directly in CSC_LINK.
           CSC_LINK: ${{ secrets.MAC_CSC_LINK }}
           CSC_KEY_PASSWORD: ${{ secrets.MAC_CSC_KEY_PASSWORD }}
@@ -212,7 +210,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       # windows-latest ships with Python + VS Build Tools, needed by
@@ -261,8 +259,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           # WIN_SIGN_EMAIL comes from the job-level env; both are read by
           # apps/desktop/scripts/win-sign.cjs (the win.sign hook).
           WIN_SIGN_OTP: ${{ secrets.WIN_SIGN_OTP }}
@@ -342,7 +338,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
 
       - name: Install dependencies
@@ -370,8 +366,6 @@ jobs:
         working-directory: apps/desktop
         env:
           GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          # Baked into the renderer bundle by vite.config.ts (Fun deposit CTA).
-          ANTSEED_FUNKIT_API_KEY: ${{ secrets.ANTSEED_FUNKIT_API_KEY }}
           USE_SYSTEM_FPM: ${{ matrix.arch == 'arm64' }}
         run: |
           if [ "${{ inputs.dry_run }}" = "true" ]; then

@@ -1,6 +1,6 @@
 {
   "name": "@antseed/router-local",
-  "version": "0.1.45",
+  "version": "0.1.46",
   "description": "Antseed local router plugin — Claude Code, Aider, Continue.dev",
   "type": "module",
   "files": [

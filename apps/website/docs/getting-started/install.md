@@ -7,42 +7,66 @@ hide_title: true
 
 # Install
 
+There are two ways to run Antseed on your machine. Both give you the same
+thing: a local endpoint at `http://localhost:8377` that your tools talk to.
+
+- **The AI VPN desktop app**: a model picker, card top-ups, and an Apps
+  view that launches your tools through Antseed. Best if you want a UI.
+- **The Antseed CLI**: the same endpoint from a terminal, on a laptop or a
+  server. Also what you run to become a provider.
+
+## Desktop App (AI VPN)
+
+The AI VPN bundles the CLI, a chat interface, and encrypted identity storage
+via the OS keychain. Pick your installer on the
+[latest release page](https://github.com/AntSeed/antseed/releases/latest),
+or use the OS-aware download button on [antseed.com](https://antseed.com).
+
+- **macOS**: `.dmg` for Apple Silicon (arm64) and Intel (x64). Signed and
+  notarized; no Gatekeeper warning.
+- **Windows**: `.exe` installer for x64. Currently unsigned; Windows
+  SmartScreen will ask you to confirm on first run (click *More info* →
+  *Run anyway*).
+- **Linux**: `.AppImage` and `.deb` for x64 and arm64.
+
+No account is needed. Free models work right away; paid models need a
+top-up by card or USDC from inside the app.
+
 ## CLI
 
-AntSeed requires Node.js 20+ and works on macOS, Linux, and Windows (WSL).
+Antseed requires Node.js 20+ and works on macOS, Linux, and Windows (WSL).
 
 ```bash
 npm install -g @antseed/cli
-```
-
-Set up your node:
-
-```bash
-antseed seller setup
-```
-
-Verify:
-
-```bash
 antseed --version
 ```
 
-## Desktop App
+Then pick what you want to do:
 
-AntSeed Desktop (the VPR) is a standalone app that bundles the CLI, a
-chat interface, and encrypted identity storage via the OS keychain.
+### Use AI through Antseed
 
-**Downloads:**
+Start your local endpoint:
 
-- **macOS** — `.dmg` for Apple Silicon (arm64) and Intel (x64). Signed and
-  notarized; no Gatekeeper warning.
-- **Windows** — `.exe` NSIS installer for x64 and arm64. Currently
-  unsigned; Windows SmartScreen will ask you to confirm on first run
-  (click *More info* → *Run anyway*).
-- **Linux** — not yet packaged. Run the CLI directly for now.
+```bash
+antseed buyer start
+# Proxy listening on http://localhost:8377
+```
 
-Pick your installer on the [latest release page](https://github.com/AntSeed/antseed/releases/latest),
-or use the OS-aware download buttons on [antseed.com](https://antseed.com).
+Point any OpenAI- or Anthropic-compatible tool at it, or launch one through
+the wrappers: `antseed claude`, `antseed codex`, `antseed opencode`.
+Free models need nothing else; for paid models run `antseed buyer deposit`.
+Full walkthrough: [Using the API](/docs/guides/using-the-api).
+
+### Serve AI on Antseed
+
+Set up a provider node:
+
+```bash
+antseed seller setup
+antseed seller start
+```
+
+Full walkthrough: [Become a Provider](/docs/guides/become-a-provider).
 
 ## Identity
 
