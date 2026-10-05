@@ -8,6 +8,8 @@ A routing seller advertises a service with API protocol `model-routing` and
 a completed-request unit billing model (see
 [unit-billing-services.md](unit-billing-services.md)).
 
+Bodies carry no version field; breaking changes use a new path version (`/v1/`).
+
 ## Endpoints
 
 | Endpoint | Cost | Purpose |
@@ -19,7 +21,6 @@ a completed-request unit billing model (see
 
 ```json
 {
-  "version": 1,
   "revision": "2026-09-30.1",
   "supportedServiceIds": ["gpt-5.5", "claude-sonnet-4-6", "kimi-k2.6"],
   "preferences": {
@@ -56,42 +57,57 @@ Request:
 
 ```json
 {
-  "version": 1,
   "service": "alpha-route",
   "revision": "2026-09-30.1",
   "preferences": { "tradeoff": "7" },
-  "input": { "text": "Refactor this function", "estimatedTokens": 1200 },
+  "request": {
+    "messages": [
+      { "role": "system", "content": "You are a coding agent." },
+      { "role": "user", "content": "Refactor this function" }
+    ],
+    "tools": [{ "type": "function", "function": { "name": "read_file", "parameters": { "type": "object" } } }],
+    "max_tokens": 4096
+  },
   "candidates": [
     {
       "model": "gpt-5.5",
       "peer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
       "provider": "openai",
       "price": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cachedInputUsdPerMillion": 0.125 },
-      "expectedCachedInputTokens": 900
+      "expected_usage": { "cache_read_tokens": 900 }
     }
   ]
 }
 ```
 
 - `service` is the purchased routing service ID.
-- `input.text` is the latest user message; `estimatedTokens` is the buyer's
-  estimate for the whole prompt.
+- `request` is the full inference request as an
+  [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)
+  body (system prompt, history, tool calls and results, tools, images), the same
+  convention as the [Inference Routing Protocol](https://github.com/inference-routing/spec)
+  `request`. Anthropic Messages and OpenAI Responses requests are converted with the
+  `@antseed/api-adapter` request adapters before sending; the buyer still sends the
+  original request to the recommended seller. `model`, `stream` and `stream_options`
+  are omitted, since the router never forwards the request. Content with no Chat
+  Completions equivalent (Anthropic thinking and document blocks, cache markers) is
+  dropped.
 - `candidates` are the exact destinations the buyer allows, after its own
-  trust, price and pin filters. `expectedCachedInputTokens` is the buyer's
-  estimate of prompt tokens that destination can serve from its cache.
+  trust, price and pin filters. `expected_usage.cache_read_tokens` is the buyer's
+  estimate of prompt tokens that destination can serve from its cache, observed from
+  earlier turns of the same conversation (Inference Routing Protocol `expected_usage`).
+  Absent means 0, so buyers omit `expected_usage` when nothing was observed.
 
 Response:
 
 ```json
 {
-  "version": 1,
   "recommendations": [
     { "model": "gpt-5.5", "peer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "provider": "openai" }
   ]
 }
 ```
 
-The rank response has only `version` and `recommendations`. The buyer keeps recommendations that exactly match a sent candidate, in the
+The rank response has only `recommendations`. The buyer keeps recommendations that exactly match a sent candidate, in the
 router's order. Duplicates and entries with fields other than `model`, `peer`
 and `provider` are dropped. If none remain, the response is rejected and not paid.
 
@@ -114,6 +130,9 @@ Non-success responses are not charged.
 4. Validate the response (a well-formed ranking is billed as one completed request) and
    send the inference to the first recommendation. Later recommendations are
    fallbacks for retryable inference errors.
+
+The router receives the whole conversation, so buyers should only select routers
+they would trust with that content.
 
 The buyer-side implementation is the built-in `ModelRoutingClient` in
 `@antseed/router-core`. It is selected by the advertised `model-routing`

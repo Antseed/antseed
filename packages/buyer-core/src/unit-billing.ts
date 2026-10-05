@@ -91,7 +91,7 @@ const routingBillingAdapter: UnitBillingAdapter = {
   }),
   measure: (response) => {
     const parsed = response.statusCode >= 200 && response.statusCode < 300 ? parseJsonObject(response.body) : null;
-    const ranked = parsed?.version === 1 && Array.isArray(parsed.recommendations) && parsed.recommendations.length > 0;
+    const ranked = Array.isArray(parsed?.recommendations) && parsed.recommendations.length > 0;
     return { usage: { units: { completed_requests: ranked ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
   },
 };

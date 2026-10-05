@@ -4,6 +4,8 @@ import {
   MODEL_ROUTING_PROTOCOL,
   MODEL_ROUTING_RANK_PATH,
   RoutingDescriptionChangedError,
+  detectRequestServiceApiProtocol,
+  renderRequestBodyAsOpenAIChat,
   validateRoutingDescribeResponse,
   validateRoutingRankRequest,
   validateRoutingRankResponse,
@@ -13,6 +15,7 @@ import {
   type RoutingCandidateV1,
   type RoutingDescribeContext,
   type RoutingDescribeResponseV1,
+  type RoutingInferenceRequestV1,
   type RoutingRankRequestV1,
   type RoutingServiceTarget,
   type RoutingUsageObservation,
@@ -20,7 +23,6 @@ import {
 } from '@antseed/node'
 import { CacheObservations } from './cache-observations.js'
 
-const MAX_INPUT_TEXT_CHARS = 8192
 const MAX_CACHED_CONVERSATIONS = 500
 
 /** The last paid recommendation per conversation, reused while the turn and its inputs are unchanged. */
@@ -51,9 +53,20 @@ export function latestUserText(body: Record<string, unknown>): string {
   return typeof body.input === 'string' ? body.input : ''
 }
 
-/** Keeps the start and end of long prompts, where instructions usually live. */
-function truncateMiddle(text: string, maxChars: number): string {
-  return text.length <= maxChars ? text : text.slice(0, maxChars / 2) + text.slice(-maxChars / 2)
+/**
+ * The request being routed as an OpenAI Chat Completions body. Anthropic Messages and Responses
+ * bodies run through the same adapters used for dispatch. `model` and `stream` are dropped:
+ * routers ignore them and never forward the request.
+ */
+export function routingInferenceRequest(request: SerializedHttpRequest, body: Record<string, unknown>): RoutingInferenceRequestV1 {
+  const protocol = detectRequestServiceApiProtocol(request)
+  const chat = protocol ? renderRequestBodyAsOpenAIChat(protocol, body) : null
+  if (!chat) throw new Error('Routing supports Chat Completions, Anthropic Messages and Responses requests')
+  delete chat.model
+  delete chat.stream
+  delete chat.stream_options
+  if (!Array.isArray(chat.messages) || chat.messages.length === 0) throw new Error('Routing requires at least one message')
+  return chat as RoutingInferenceRequestV1
 }
 
 /** The selected router peer, checked to advertise this exact model-routing service. */
@@ -113,7 +126,7 @@ export class ModelRoutingClient {
     const text = latestUserText(body)
     if (!text.trim()) throw new Error('Routing requires user text in messages or Responses input')
     if (!context.candidates.length) throw new Error('No eligible candidates supported by this router')
-    const rankRequest = this.buildRankRequest(body, text, context)
+    const rankRequest = this.buildRankRequest(routingInferenceRequest(request, body), context)
     validateRoutingRankRequest(rankRequest, context.description)
 
     // Tool-loop continuations repeat the same user turn: reuse its recommendation instead of paying again.
@@ -134,25 +147,29 @@ export class ModelRoutingClient {
     return routes
   }
 
-  private buildRankRequest(body: Record<string, unknown>, text: string, context: RouteSelectionContext): RoutingRankRequestV1 {
-    const estimatedTokens = Math.ceil(encodeJson(body.messages ?? body.input ?? text).length / 4)
+  private buildRankRequest(inference: RoutingInferenceRequestV1, context: RouteSelectionContext): RoutingRankRequestV1 {
+    // Rough prompt size (characters / 4), used only to cap expected cache reuse.
+    const estimatedTokens = Math.ceil(encodeJson(inference.messages).length / 4)
     return {
-      version: 1,
       service: context.routingService.serviceId,
       revision: context.description.revision,
       preferences: context.preferences,
-      input: { text: truncateMiddle(text, MAX_INPUT_TEXT_CHARS), estimatedTokens },
-      candidates: context.candidates.map((candidate): RoutingCandidateV1 => ({
-        model: candidate.serviceId,
-        peer: candidate.peerId,
-        provider: candidate.provider,
-        price: {
-          inputUsdPerMillion: candidate.inputUsdPerMillion,
-          outputUsdPerMillion: candidate.outputUsdPerMillion,
-          ...(candidate.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: candidate.cachedInputUsdPerMillion } : {}),
-        },
-        expectedCachedInputTokens: this.observations.expectedCachedInputTokens(context.conversationKey, candidate, estimatedTokens),
-      })),
+      request: inference,
+      candidates: context.candidates.map((candidate): RoutingCandidateV1 => {
+        const cacheReadTokens = this.observations.expectedCachedInputTokens(context.conversationKey, candidate, estimatedTokens)
+        return {
+          model: candidate.serviceId,
+          peer: candidate.peerId,
+          provider: candidate.provider,
+          price: {
+            inputUsdPerMillion: candidate.inputUsdPerMillion,
+            outputUsdPerMillion: candidate.outputUsdPerMillion,
+            ...(candidate.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: candidate.cachedInputUsdPerMillion } : {}),
+          },
+          // Absent means 0, so only send what was observed.
+          ...(cacheReadTokens > 0 ? { expected_usage: { cache_read_tokens: cacheReadTokens } } : {}),
+        }
+      }),
     }
   }
 

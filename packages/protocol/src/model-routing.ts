@@ -7,7 +7,6 @@ export const MODEL_ROUTING_RANK_PATH = '/v1/routing/rank';
 
 /** Free description of a router: the models it understands and the settings it accepts. */
 export type RoutingDescribeResponseV1 = {
-  version: 1;
   revision: string;
   supportedServiceIds: string[];
   preferences: RoutingPreferenceSchema;
@@ -25,16 +24,30 @@ export type RoutingCandidateV1 = {
     outputUsdPerMillion: number;
     cachedInputUsdPerMillion?: number;
   };
-  expectedCachedInputTokens: number;
+  /**
+   * What the buyer already knows about usage on this candidate (Inference Routing Protocol
+   * `expected_usage`). `cache_read_tokens`: prompt tokens this exact peer/provider/model is
+   * expected to serve from its prompt cache. Absent means 0.
+   */
+  expected_usage?: { cache_read_tokens?: number };
+};
+
+/**
+ * The inference request being routed, as an OpenAI Chat Completions body (same convention as
+ * the Inference Routing Protocol's `request`). Buyers convert Anthropic Messages and Responses
+ * bodies before sending. Routers ignore `model` and `stream`; they never forward it.
+ */
+export type RoutingInferenceRequestV1 = {
+  messages: Array<{ role: string; [key: string]: unknown }>;
+  [key: string]: unknown;
 };
 
 export type RoutingRankRequestV1 = {
-  version: 1;
   /** AntSeed routing service ID being purchased; sellers use it to match the paid offer. */
   service: string;
   revision: string;
   preferences: RoutingPreferences;
-  input: { text: string; estimatedTokens: number };
+  request: RoutingInferenceRequestV1;
   candidates: RoutingCandidateV1[];
 };
 
@@ -45,7 +58,6 @@ export type RoutingRecommendationV1 = {
 };
 
 export type RoutingRankResponseV1 = {
-  version: 1;
   recommendations: RoutingRecommendationV1[];
 };
 
@@ -69,6 +81,14 @@ function price(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
 }
 
+const CHAT_ROLES = new Set(['developer', 'system', 'user', 'assistant', 'tool', 'function']);
+
+/** A Chat Completions body with at least one message, each with a known role. */
+function chatRequest(value: unknown): value is RoutingInferenceRequestV1 {
+  return object(value) && Array.isArray(value.messages) && value.messages.length > 0
+    && value.messages.every(message => object(message) && typeof message.role === 'string' && CHAT_ROLES.has(message.role));
+}
+
 function count(value: unknown): value is number {
   return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
 }
@@ -79,7 +99,7 @@ export function routingCandidateKey(entry: { model: string; peer: string; provid
 }
 
 export function validateRoutingDescribeResponse(value: unknown): asserts value is RoutingDescribeResponseV1 {
-  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'revision', 'supportedServiceIds', 'preferences', 'name', 'description'])
+  if (!object(value) || !onlyKeys(value, ['revision', 'supportedServiceIds', 'preferences', 'name', 'description'])
     || !text(value.revision, 128) || !Array.isArray(value.supportedServiceIds)
     || !value.supportedServiceIds.every(entry => text(entry))
     || new Set(value.supportedServiceIds).size !== value.supportedServiceIds.length
@@ -90,13 +110,20 @@ export function validateRoutingDescribeResponse(value: unknown): asserts value i
   validateRoutingPreferenceSchema(value.preferences);
 }
 
+/** Optional `expected_usage`; `cache_read_tokens` is optional and defaults to 0. */
+function expectedUsage(value: unknown): boolean {
+  if (value === undefined) return true;
+  return object(value) && onlyKeys(value, ['cache_read_tokens'])
+    && (value.cache_read_tokens === undefined || count(value.cache_read_tokens));
+}
+
 function validateCandidate(value: unknown): asserts value is RoutingCandidateV1 {
-  if (!object(value) || !onlyKeys(value, ['model', 'peer', 'provider', 'price', 'expectedCachedInputTokens'])
+  if (!object(value) || !onlyKeys(value, ['model', 'peer', 'provider', 'price', 'expected_usage'])
     || !text(value.model) || !peerId(value.peer) || !text(value.provider, 128)
     || !object(value.price) || !onlyKeys(value.price, ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion'])
     || !price(value.price.inputUsdPerMillion) || !price(value.price.outputUsdPerMillion)
     || (value.price.cachedInputUsdPerMillion !== undefined && !price(value.price.cachedInputUsdPerMillion))
-    || !count(value.expectedCachedInputTokens)) {
+    || !expectedUsage(value.expected_usage)) {
     throw new Error('Invalid model-routing candidate');
   }
 }
@@ -107,9 +134,8 @@ function validateCandidate(value: unknown): asserts value is RoutingCandidateV1 
  */
 export function validateRoutingRankRequest(value: unknown, description: RoutingDescribeResponseV1): asserts value is RoutingRankRequestV1 {
   validateRoutingDescribeResponse(description);
-  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'service', 'revision', 'preferences', 'input', 'candidates'])
-    || !text(value.service) || typeof value.revision !== 'string' || !object(value.input) || !onlyKeys(value.input, ['text', 'estimatedTokens'])
-    || typeof value.input.text !== 'string' || !value.input.text.trim() || !count(value.input.estimatedTokens)
+  if (!object(value) || !onlyKeys(value, ['service', 'revision', 'preferences', 'request', 'candidates'])
+    || !text(value.service) || typeof value.revision !== 'string' || !chatRequest(value.request)
     || !Array.isArray(value.candidates) || value.candidates.length === 0) {
     throw new Error('Invalid model-routing rank request');
   }
@@ -132,7 +158,7 @@ export function validateRoutingRankRequest(value: unknown, description: RoutingD
  * Throws when the response shape is invalid or no entry survives.
  */
 export function validateRoutingRankResponse(value: unknown, candidates: readonly RoutingCandidateV1[]): RoutingRecommendationV1[] {
-  if (!object(value) || value.version !== 1 || !onlyKeys(value, ['version', 'recommendations'])
+  if (!object(value) || !onlyKeys(value, ['recommendations'])
     || !Array.isArray(value.recommendations) || value.recommendations.length === 0) {
     throw new Error('Invalid model-routing rank response');
   }

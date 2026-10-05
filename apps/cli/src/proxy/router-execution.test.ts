@@ -7,7 +7,7 @@ import { RoutingDescriptionChangedError, type RoutingDescribeResponseV1, type Ro
 
 const emptySchema: RoutingPreferenceSchema = {}
 function describeRouter(supportedServiceIds: string[], preferences = emptySchema, revision = 'rev-1'): RoutingDescribeResponseV1 {
-  return { version: 1, revision, supportedServiceIds, preferences }
+  return { revision, supportedServiceIds, preferences }
 }
 
 const peer = {

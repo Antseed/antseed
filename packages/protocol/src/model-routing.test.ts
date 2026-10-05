@@ -12,26 +12,25 @@ const peerA = 'a'.repeat(40);
 const peerB = 'b'.repeat(40);
 
 const alpha: RoutingDescribeResponseV1 = {
-  version: 1, revision: 'alpha-1', name: 'Alpha', supportedServiceIds: ['claude-sonnet-4-6', 'kimi-k3'],
+  revision: 'alpha-1', name: 'Alpha', supportedServiceIds: ['claude-sonnet-4-6', 'kimi-k3'],
   preferences: { tradeoff: { title: 'Tradeoff', options: ['1', '3', '5', '7', '9'], default: '5' } },
 };
 
 const beta: RoutingDescribeResponseV1 = {
-  version: 1, revision: 'beta-1', name: 'Beta Router', supportedServiceIds: ['claude-haiku-4-5-20251001', 'kimi-k3'],
+  revision: 'beta-1', name: 'Beta Router', supportedServiceIds: ['claude-haiku-4-5-20251001', 'kimi-k3'],
   preferences: { policy: { title: 'Routing policy',
       options: ['balanced', 'cost_efficient', 'capability_heavy', 'domain_skills'], default: 'balanced' } },
 };
 
 const candidates: RoutingCandidateV1[] = [
   { model: 'claude-sonnet-4-6', peer: peerA, provider: 'anthropic',
-    price: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.3 }, expectedCachedInputTokens: 10_000 },
-  { model: 'kimi-k3', peer: peerB, provider: 'moonshot', price: { inputUsdPerMillion: 0.8, outputUsdPerMillion: 3 },
-    expectedCachedInputTokens: 0 },
+    price: { inputUsdPerMillion: 3, outputUsdPerMillion: 15, cachedInputUsdPerMillion: 0.3 }, expected_usage: { cache_read_tokens: 10_000 } },
+  { model: 'kimi-k3', peer: peerB, provider: 'moonshot', price: { inputUsdPerMillion: 0.8, outputUsdPerMillion: 3 } },
 ];
 
 function route(overrides: Partial<RoutingRankRequestV1> = {}): RoutingRankRequestV1 {
-  return { version: 1, service: 'route', revision: 'alpha-1', preferences: { tradeoff: '7' },
-    input: { text: 'Refactor this module', estimatedTokens: 12_000 }, candidates: structuredClone(candidates), ...overrides };
+  return { service: 'route', revision: 'alpha-1', preferences: { tradeoff: '7' },
+    request: { messages: [{ role: 'user', content: 'Refactor this module' }] }, candidates: structuredClone(candidates), ...overrides };
 }
 
 describe('model-routing describe', () => {
@@ -42,7 +41,7 @@ describe('model-routing describe', () => {
 
   it('rejects malformed descriptions', () => {
     for (const invalid of [
-      { ...alpha, version: 2 }, { ...alpha, revision: '' }, { ...alpha, supportedServiceIds: ['kimi-k3', 'kimi-k3'] },
+      { ...alpha, revision: '' }, { ...alpha, supportedServiceIds: ['kimi-k3', 'kimi-k3'] },
       { ...alpha, supportedServiceIds: 'kimi-k3' }, { ...alpha, extra: true },
       { ...alpha, preferences: { tradeoff: { options: [1, 3] } } }, { ...alpha, preferences: { tradeoff: { options: ['1'], type: 'string' } } },
     ]) expect(() => validateRoutingDescribeResponse(invalid)).toThrow();
@@ -63,15 +62,19 @@ describe('model-routing rank request', () => {
     expect(() => validateRoutingRankRequest(route({ preferences: { tradeoff: '2' } }), alpha)).toThrow();
     expect(() => validateRoutingRankRequest(route({ preferences: { policy: 'balanced' } }), alpha)).toThrow('unknown');
     expect(() => validateRoutingRankRequest(route({ candidates: [] }), alpha)).toThrow();
-    expect(() => validateRoutingRankRequest(route({ input: { text: ' ', estimatedTokens: 1 } }), alpha)).toThrow();
-    expect(() => validateRoutingRankRequest(route({ candidates: [{ ...candidates[0]!, expectedCachedInputTokens: -1 }] }), alpha)).toThrow('candidate');
+    expect(() => validateRoutingRankRequest(route({ request: { messages: [] } }), alpha)).toThrow();
+    expect(() => validateRoutingRankRequest(route({ request: { messages: [{ role: 'human', content: 'hi' }] } }), alpha)).toThrow();
+    expect(() => validateRoutingRankRequest({ ...route(), input: { text: 'legacy', estimatedTokens: 1 } }, alpha)).toThrow();
+    expect(() => validateRoutingRankRequest(route({ candidates: [{ ...candidates[0]!, expected_usage: { cache_read_tokens: -1 } }] }), alpha)).toThrow('candidate');
+    expect(() => validateRoutingRankRequest(route({ candidates: [{ ...candidates[0]!, expected_usage: { cache_read_tokens: 1.5 } }] }), alpha)).toThrow('candidate');
+    expect(() => validateRoutingRankRequest(route({ candidates: [{ ...candidates[0]!, expected_usage: {} }] }), alpha)).not.toThrow();
     expect(() => validateRoutingRankRequest(route({ candidates: [{ ...candidates[0]!, peer: 'not-a-peer' }] }), alpha)).toThrow('candidate');
   });
 });
 
 describe('model-routing rank response', () => {
   it('keeps exact sent candidates in router order and drops the rest', () => {
-    const response = { version: 1, recommendations: [
+    const response = { recommendations: [
       { model: 'kimi-k3', peer: peerA, provider: 'moonshot' },
       { model: 'kimi-k3', peer: peerB, provider: 'moonshot', reasoningEffort: 'high' },
       { model: 'kimi-k3', peer: peerB, provider: 'moonshot' },
@@ -85,9 +88,9 @@ describe('model-routing rank response', () => {
   });
 
   it('rejects malformed responses and responses with no sent candidate', () => {
-    expect(() => validateRoutingRankResponse({ version: 1, recommendations: [] }, candidates)).toThrow('Invalid');
-    expect(() => validateRoutingRankResponse({ version: 1, recommendations: [{ model: 'x', peer: peerA, provider: 'y' }] }, candidates)).toThrow('no recommendation');
-    expect(() => validateRoutingRankResponse({ version: 1, recommendations: [candidates[0]], details: { confidence: 0.9 } }, candidates)).toThrow('Invalid');
-    expect(() => validateRoutingRankResponse({ recommendations: [candidates[0]] }, candidates)).toThrow('Invalid');
+    expect(() => validateRoutingRankResponse({ recommendations: [] }, candidates)).toThrow('Invalid');
+    expect(() => validateRoutingRankResponse({ recommendations: [{ model: 'x', peer: peerA, provider: 'y' }] }, candidates)).toThrow('no recommendation');
+    expect(() => validateRoutingRankResponse({ recommendations: [candidates[0]], details: { confidence: 0.9 } }, candidates)).toThrow('Invalid');
+    expect(() => validateRoutingRankResponse({ version: 1, recommendations: [candidates[0]] }, candidates)).toThrow('Invalid');
   });
 });

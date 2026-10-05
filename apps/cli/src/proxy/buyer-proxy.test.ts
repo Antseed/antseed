@@ -74,7 +74,7 @@ test('the buyer switches between a model and a model-routing service without rep
   ;(proxy as any)._mergeStateFile = async () => {}
   const initial = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/route' }))
   assert.deepEqual(JSON.parse(initial.body), { ok: true, model: null, router: null })
-  const description = { version: 1, revision: 'alpha-rev-1', supportedServiceIds: ['model-a'], preferences: {
+  const description = { revision: 'alpha-rev-1', supportedServiceIds: ['model-a'], preferences: {
     tradeoff: { options: ['1', '5', '9'], default: '5' },
   } }
   const requests: SerializedHttpRequest[] = []
@@ -91,14 +91,14 @@ test('the buyer switches between a model and a model-routing service without rep
       const payload = JSON.parse(Buffer.from(request.body).toString())
       assert.deepEqual(payload.preferences, { tradeoff: '9' })
       assert.equal(payload.service, 'alpha-route')
-      assert.equal(payload.version, 1)
+      assert.equal(payload.version, undefined)
       assert.equal(payload.revision, 'alpha-rev-1')
-      assert.equal(payload.input.text, 'Hello')
+      assert.deepEqual(payload.request, { messages: [{ role: 'user', content: 'Hello' }] })
       assert.deepEqual(payload.candidates.map((candidate: { model: string; peer: string; provider: string }) => [candidate.model, candidate.peer, candidate.provider]),
         [['model-a', inferencePeer.peerId, 'openai']])
-      assert.equal(payload.candidates[0].expectedCachedInputTokens, 0)
+      assert.equal(payload.candidates[0].expected_usage, undefined)
       const response = { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from(JSON.stringify({
-        version: 1, recommendations: [{ model: 'model-a', peer: inferencePeer.peerId, provider: 'openai' }],
+        recommendations: [{ model: 'model-a', peer: inferencePeer.peerId, provider: 'openai' }],
       })) }
       return response
     }
@@ -1225,7 +1225,7 @@ function makeProxyResponse(): {
 const TEST_ROUTER_MODELS = ['model-a', 'model-b', 'gpt-4o']
 
 function describeWith(preferences: RoutingPreferenceSchema, supportedServiceIds = TEST_ROUTER_MODELS): ModelRoutingClientApi['describe'] {
-  return async () => ({ version: 1, revision: 'test-rev', supportedServiceIds, preferences })
+  return async () => ({ revision: 'test-rev', supportedServiceIds, preferences })
 }
 
 function makeBuyerProxyWithPeers(

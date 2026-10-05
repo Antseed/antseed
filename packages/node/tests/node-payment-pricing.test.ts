@@ -11,9 +11,9 @@ const ATTEST_ID = 'antseed-verifier';
 const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 
 describe('completed-request seller payments', () => {
-  const candidate = { model: 'model-a', peer: 'a'.repeat(40), provider: 'openai', price: { inputUsdPerMillion: 1, outputUsdPerMillion: 3 }, expectedCachedInputTokens: 0 };
-  const body = { version: 1, service: 'alpha-route', revision: 'r1', preferences: { tradeoff: '5' }, input: { text: 'Help with code', estimatedTokens: 3 }, candidates: [candidate] };
-  const result = { version: 1, recommendations: [{ model: candidate.model, peer: candidate.peer, provider: candidate.provider }] };
+  const candidate = { model: 'model-a', peer: 'a'.repeat(40), provider: 'openai', price: { inputUsdPerMillion: 1, outputUsdPerMillion: 3 } };
+  const body = { service: 'alpha-route', revision: 'r1', preferences: { tradeoff: '5' }, request: { messages: [{ role: 'user', content: 'Help with code' }] }, candidates: [candidate] };
+  const result = { recommendations: [{ model: candidate.model, peer: candidate.peer, provider: candidate.provider }] };
   function setup(overrides: Record<string, unknown> = {}) {
     let spend = 0n;
     const provider = makeProvider(10, 10, { name: 'alpha', services: ['alpha-route', 'image'] });
