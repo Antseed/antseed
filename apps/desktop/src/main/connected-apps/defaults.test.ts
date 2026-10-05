@@ -10,7 +10,7 @@ function names(profiles: readonly unknown[]): string[] {
   return profiles.map((profile) => (profile as Record<string, unknown>)['name'] as string);
 }
 
-const DEFAULT_NAMES = ['opencode', 'codex', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed'];
+const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed'];
 
 test('default app profiles are config-patch entries with unique names', () => {
   assert.deepEqual(names(DEFAULT_APP_PROFILES), DEFAULT_NAMES);
@@ -42,6 +42,20 @@ test('Claude Desktop patches the third-party profile and opens Claude on connect
   const patch = profile['configPatch'] as Record<string, unknown>;
   assert.equal(patch['format'], 'claude-desktop');
   assert.equal(typeof patch['thirdPartyDir'], 'string');
+});
+
+test('Claude Code and T3 Code use distinct conversation sources', () => {
+  const claudeCode = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 'claude-code');
+  const t3code = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 't3code');
+  assert.deepEqual(claudeCode?.['toolSlugs'], ['claude-code']);
+  assert.deepEqual(claudeCode?.['configPatch'], {
+    format: 'claude-code',
+    configPath: '~/.claude/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}',
+    installProbe: 'claude',
+  });
+  assert.deepEqual(t3code?.['toolSlugs'], ['t3code']);
 });
 
 test('GooeyPi patches the shared Pi config without requiring pi on PATH', () => {
@@ -105,6 +119,6 @@ test('mergeWithDefaultAppProfiles lets external profiles override same-name defa
     { name: 'opencode', displayName: 'OpenCode (private override)' },
   ];
   const merged = mergeWithDefaultAppProfiles(external);
-  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed']);
+  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed']);
   assert.equal((merged[1] as Record<string, unknown>)['displayName'], 'OpenCode (private override)');
 });
