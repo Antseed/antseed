@@ -584,7 +584,7 @@ function mergeThinkingBlocks(blocks: ContentBlock[], fallbackIndex = 0): Content
   };
 }
 
-const VIDEO_GENERATION_COMMAND = /antseed_video\.py["']?\s+generate\b/;
+const VIDEO_GENERATION_COMMAND = /antseed_video\.mjs["']?\s+generate\b/;
 
 export function isRunningVideoGenerationTool(block: ContentBlock): boolean {
   if (block.type !== 'tool_use' || block.status !== 'running') return false;

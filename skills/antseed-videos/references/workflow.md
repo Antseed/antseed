@@ -5,7 +5,7 @@
 Inspect the selected model first:
 
 ```bash
-python3 scripts/antseed_video.py options --model "$model"
+node scripts/antseed_video.mjs options --model "$model"
 ```
 
 Ask in one compact message. Include only choices advertised by at least one seller:
@@ -63,7 +63,7 @@ If the requested length is longer than the longest advertised duration, for exam
    - If only `first_frame` is supported, generate segment 1 from the start keyframe. Extract its last frame, then start the next segment from it:
 
      ```bash
-     python3 scripts/antseed_video.py frame --video seg1.mp4 --position last --output seg1-last.png
+     node scripts/antseed_video.mjs frame --video seg1.mp4 --position last --output seg1-last.png
      ```
 
    - If no frames are supported, generate independent segments and tell the user the cuts will not be continuous.
@@ -76,7 +76,7 @@ If the requested length is longer than the longest advertised duration, for exam
 Use the exact choices for selection:
 
 ```bash
-python3 scripts/antseed_video.py select \
+node scripts/antseed_video.mjs select \
   --model "$model" \
   --prompt-file prompt.txt \
   --duration 10 \
@@ -95,7 +95,7 @@ If no seller is compatible, show the alternatives returned by the helper. Do not
 Run with the same options and the confirmed seller:
 
 ```bash
-python3 scripts/antseed_video.py generate \
+node scripts/antseed_video.mjs generate \
   --model "$model" \
   --peer "$peer_id" \
   --prompt-file prompt.txt \
@@ -114,7 +114,7 @@ If the create fails without a job id, do not create again on your own. Report th
 If generation times out after acceptance, use the returned job id:
 
 ```bash
-python3 scripts/antseed_video.py download --model "$model" --job-id "$job_id" --output generated-video.mp4
+node scripts/antseed_video.mjs download --model "$model" --job-id "$job_id" --output generated-video.mp4
 ```
 
 ## Errors

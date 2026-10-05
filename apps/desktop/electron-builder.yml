@@ -75,9 +75,6 @@ extraResources:
     to: skills/antseed-images
   - from: ../../skills/antseed-videos
     to: skills/antseed-videos
-    filter:
-      - "**/*"
-      - "!**/__pycache__/**"
   - from: cli-dist/
     to: cli-dist/
     filter:

@@ -22,7 +22,7 @@ test('failed or non-media tools render nothing extra', () => {
 });
 
 test('a running skill video job shows the generation placeholder', () => {
-  const command = 'python3 /x/skills/antseed-videos/scripts/antseed_video.py generate --model m --peer p --output a.mp4';
+  const command = 'node /x/skills/antseed-videos/scripts/antseed_video.mjs generate --model m --peer p --output a.mp4';
   assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'running', input: { command } }), true);
   assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'success', input: { command } }), false);
   assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'running', input: { command: command.replace('generate', 'options') } }), false);
