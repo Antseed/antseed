@@ -69,11 +69,30 @@ export interface StoredResponseAuth extends ResponseAuthPayload {
   receivedAt: number;
   verified: boolean;
   verificationError: string | null;
+  requestPreimage?: Uint8Array | null;
+  responsePreimage?: Uint8Array | null;
 }
 
 /** Sink for seller-signed per-response receipts (sqlite on node, optional elsewhere). */
 export interface ResponseAuthSink {
   insertResponseAuth(record: StoredResponseAuth): void;
+}
+
+export interface StoredRequestCost {
+  requestId: string;
+  sellerPeerId: string;
+  service: string;
+  channelId: string;
+  authorizedCostUsdc: bigint;
+  inputTokens: bigint;
+  outputTokens: bigint;
+  source: 'need-auth' | 'response';
+  recordedAt: number;
+}
+
+/** Optional sink for request-attributed costs accepted by the buyer. */
+export interface RequestCostSink {
+  insertRequestCost(record: StoredRequestCost): void;
 }
 
 export interface ResponseAuthSampleInput {

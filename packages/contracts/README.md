@@ -701,6 +701,25 @@ States: `ready` (M001 active, at least one install missing), `active`,
 
 ## Configuration
 
+### Verification Registry
+
+`AntseedVerification` stores compact, service-level verifier results. Each result contains
+only an ERC-8004 `agentId`, a normalized `serviceHash`, and a `SAME`, `DIFF`, or
+`UNDETERMINED` verdict. The bundle's single `evidenceHash` commits to the complete
+off-chain audit, including the tested claim, KBF configuration, statistical details,
+and supporting artifacts. Results remain readable through `verificationResult()`.
+
+The registry does not contain reward, punishment, aggregation, or remediation logic.
+Separate points, slashing, routing, or reward contracts can read its bundles and stored
+results. This lets verification submissions run in shadow mode before any consequence
+or verifier reward policy is enabled.
+
+A future verification accounting contract can accept an `evidenceHash`, read
+`verificationBundle(evidenceHash)` to confirm the verifier, submission time, and
+result count, inspect each `verificationResult(evidenceHash, index)`, and keep its own
+consumed-hash mapping before applying a separately governed reward formula. Deploying
+that contract is not required for registry-only shadow mode.
+
 Administrative parameters use their contract's dedicated setters where available.
 The emissions gate's schedule constants are immutable; do not treat legacy
 owner-configurable emissions parameters as configuration for the standard gate.

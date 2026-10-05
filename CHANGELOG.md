@@ -35,6 +35,12 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Added `antseed verifier run --peer <peerId>` for targeted KBF audits. A single-model run now audits only that discovered peer, `--all` limits the run to configured models advertised by that peer, resume runs intersect unresolved audits with the selector, and missing or incompatible peer selections fail explicitly instead of producing an empty successful run.
+
+- Added registry-only model verification shadow mode: approved verifiers can anchor service-level results containing only the seller agent, service hash, and verdict, while one bundle evidence hash commits to the complete off-chain audit. Points, slashing, emissions, and verifier rewards remain intentionally deferred to separate future consumers of the registry.
+
+- Contracts: added M003's single-phase verification registry deployment to the existing migration pipeline, with resumable deployment/approvals and canonical SDK/CLI address generation. No emission allocation or points policy changes.
+
 - Desktop AI VPN: add Claude Code CLI to Connected Apps. Connecting updates `~/.claude/settings.json` to route Claude Code through the local buyer with the AI VPN-selected `antseed` model alias; disconnecting restores the Antseed-managed settings. Claude Code and T3 Code conversations are now attributed separately.
 - Website: added lANTS Market to the ecosystem page — a community-built board and USDC market for lANTS staking positions on Antseed, with a card and onchain preview. No other copy or layout changes.
 - Website: blog post "How to Earn From Your Local AI Model With Antseed" (`/blog/earn-from-your-local-ai-model`) on offering an Ollama, llama.cpp, or other OpenAI-compatible local model through `@antseed/provider-local-llm`, with per-service pricing and concurrency limits.
@@ -215,6 +221,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- KBF audits now classify successful authenticated batches with no parseable final answers as unavailable instead of counting every empty answer as a model mismatch. Fully malformed sellers therefore remain `UNDETERMINED` and excluded from reference voting, while wrong numeric answers and selective omissions in otherwise parseable batches still count as discrepancies.
 - Contracts: M002 rejects a `LAST_LOCKED_EPOCH` override that omits legacy deposits; documents the no-mixed-payouts-per-seller requirement and covers late pre-migration claims and repeated pool withdrawals.
 - Desktop no longer shows routing as on before it actually is. The Home power button, hero status, footer status strip, and floating pill lit up as soon as the buyer process was spawned — on first launch and when turning routing back on — even though the local proxy was not yet accepting connections. They now stay in a "Starting..." state until the proxy port answers a reachability probe (re-checked every second during startup), and only then switch to on/Running.
 - Desktop's footer status strip no longer reports the network as "Healthy" after routing is stopped — network stats kept their last DHT snapshot, so the strip read "Healthy | Stopped". It now shows "Offline" while the buyer runtime is stopped, and the "Stopped" state is shown in red like other error states.
@@ -382,6 +389,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Fixed KBF audits treating authenticated blank `finish_reason: "length"` responses as final results when providers omitted or inconsistently reported token details. The audit runner now replays that exact seller batch once while preserving both request IDs and attempt costs; generic malformed output is still not retried.
 - Fixed image SpendingAuth service attribution when a budget/headroom authorization races ahead of the delivered response. Headroom-only messages no longer consume the request accounting slot, and the eventual image charge is attributed exactly once to the requested service with one request and zero synthetic text tokens.
 - OpenAI-compatible sellers now recognize Venice image-generation model families such as Flux, Qwen Image, Nano Banana, Recraft, Seedream, and Krea as `openai-images` services, so they advertise image output capabilities and route through image endpoints instead of Chat Completions.
 - Fixed three "Read more in the docs" links in the desktop VPR Help view opening 404 pages (`/docs/getting-started/intro`, `/docs/getting-started/configuration`, `/docs/guides/pricing`). They now point at the docs' published slugs (`/docs/`, `/docs/config`, `/docs/pricing`).

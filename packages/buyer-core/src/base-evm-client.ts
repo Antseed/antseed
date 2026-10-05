@@ -83,9 +83,19 @@ export abstract class BaseEvmClient {
     method: string,
     ...args: unknown[]
   ): Promise<string> {
+    return this._execWriteAt(this._contractAddress, signer, abi, method, ...args);
+  }
+
+  protected async _execWriteAt(
+    contractAddress: string,
+    signer: AbstractSigner,
+    abi: InterfaceAbi,
+    method: string,
+    ...args: unknown[]
+  ): Promise<string> {
     const connected = this._ensureConnected(signer);
     const signerAddress = await connected.getAddress();
-    const contract = new Contract(this._contractAddress, abi, connected);
+    const contract = new Contract(contractAddress, abi, connected);
     const populated = await contract.getFunction(method).populateTransaction(...args);
     const tx = await this._sendBuffered(connected, signerAddress, populated);
     const receipt = await tx.wait();

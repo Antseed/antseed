@@ -56,5 +56,26 @@ export function createDefaultConfig(): AntseedConfig {
     network: {
       bootstrapNodes: [],
     },
+    verifier: {
+      probeRequestTimeoutMs: 120_000,
+      responseAuthWaitTimeoutMs: 35_000,
+      auditMaxConcurrentModels: 3,
+      auditMaxConcurrentPeersPerModel: 4,
+      auditMaxConcurrentBatches: 12,
+      auditMaxConcurrentBatchesPerPeer: 2,
+      auditConcurrencyPromotionLatencyMs: 30_000,
+      auditPeerTimeoutMs: 600_000,
+      contrastSelection: {
+        inputWeight: 0.9,
+        maxPriceRatio: 0.3,
+        maxModels: 3,
+      },
+      referenceMaxConcurrentRequests: 4,
+      referenceMaxConcurrentRequestsPerModel: 3,
+      referenceMinimumProbeCount: 100,
+      referenceMaximumProbeCount: 500,
+      referenceProbeStep: 10,
+      referenceMinimumStatisticalPower: 0.9,
+    },
   };
 }

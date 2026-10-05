@@ -27,6 +27,7 @@ export const contractFields = {
   identityRegistry: 'identityRegistryAddress',
   stats: 'statsContractAddress',
   depositRelay: 'depositRelayAddress',
+  verification: 'verificationContractAddress',
   emissionsGate: 'emissionsGateAddress',
   sellerPools: 'sellerPoolsAddress',
   sellerRegistry: 'sellerRegistryAddress',

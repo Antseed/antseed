@@ -49,7 +49,7 @@ export function createResponseAuthPayload(input: ResponseAuthInput, signer: Wall
     responseStartedAt: input.responseStartedAt,
     responseCompletedAt: input.responseCompletedAt,
   };
-  const signature = bytesToHex(signData(signer, buildResponseAuthSigningBytes(payload)));
+  const signature = bytesToHex(signData(signer, encodeResponseAuthSigningPayload(payload)));
   return { ...payload, signature };
 }
 
@@ -93,7 +93,7 @@ export function verifyResponseAuth(
     validSignature = verifySignature(
       normalizePeerId(expected.sellerPeerId),
       signature,
-      buildResponseAuthSigningBytes(unsigned),
+      encodeResponseAuthSigningPayload(unsigned),
     );
   } catch {
     validSignature = false;
@@ -113,7 +113,9 @@ export function hashResponse(response: SerializedHttpResponse): string {
   return keccak256(encodeHttpResponse(stripStreamingHeader(response)));
 }
 
-function buildResponseAuthSigningBytes(payload: Omit<ResponseAuthPayload, 'signature'>): Uint8Array {
+export function encodeResponseAuthSigningPayload(
+  payload: Omit<ResponseAuthPayload, 'signature'>,
+): Uint8Array {
   const encoder = new TextEncoder();
   const fields = [
     RESPONSE_AUTH_DOMAIN,

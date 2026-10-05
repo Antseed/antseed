@@ -82,6 +82,13 @@ export interface PeerInfo {
   currentLoad?: number;
   /** On-chain ERC-8004 agent ID, resolved through the seller registry. */
   onChainAgentId?: number;
+  /** Effective on-chain seller address resolved and verified for payment flows. */
+  onChainSellerAddress?: string;
+  /**
+   * On-chain seller stake in micro-USDC from `AntseedStaking.getStake`.
+   * Read by the buyer directly from the chain.
+   */
+  onChainStakeUsdcMicros?: number;
   /** Buyer-computed trust score (0-100). See `computeTrustScore`. */
   onChainReputationScore?: number;
   /** Parts that make up `onChainReputationScore`. */

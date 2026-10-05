@@ -11,6 +11,7 @@ import type { Identity } from '../src/p2p/identity.js';
 import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
+import { VerificationStorage } from '../src/verification/storage.js';
 
 const enc = new TextEncoder();
 
@@ -366,6 +367,36 @@ describe('BuyerPaymentManager', () => {
 
     // Buyer estimate used as cost, cumulative = 0 + estimate
     expect(BigInt(payload.cumulativeAmount)).toBe(SAMPLE_ESTIMATE.cost);
+  });
+
+  it('signPerRequestAuth persists the accepted request cost by caller request ID', async () => {
+    const verificationStorage = new VerificationStorage(join(tempDir, 'verification.db'));
+    manager = new BuyerPaymentManager(identity, makeConfig(tempDir), store, undefined, verificationStorage);
+    manager.setSigner(Wallet.createRandom());
+    const sellerPeerId = fakePeerId('seller-cost-receipt');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+
+    const sellerClaim = SAMPLE_ESTIMATE.cost / 2n;
+    await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost: sellerClaim,
+      reportedInputTokens: 100n,
+      reportedOutputTokens: 20n,
+      service: 'model-a',
+      requestId: 'request-cost-1',
+    });
+
+    expect(verificationStorage.getRequestCost('request-cost-1')).toMatchObject({
+      requestId: 'request-cost-1',
+      sellerPeerId,
+      service: 'model-a',
+      authorizedCostUsdc: sellerClaim,
+      inputTokens: 100n,
+      outputTokens: 20n,
+      source: 'response',
+    });
+    verificationStorage.close();
   });
 
   it('signPerRequestAuth ensures monotonic increase', async () => {

@@ -66,6 +66,8 @@ export interface ChainConfig {
   networkStatsUrl?: string;
   /** Public REST API of the chain explorer (Antscan). Serves per-seller on-chain stats at /api/sellers. */
   explorerApiUrl?: string;
+  /** AntseedVerification contract address. */
+  verificationContractAddress?: string;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
 }
@@ -177,6 +179,7 @@ export function resolveChainConfig(overrides?: {
   legacyStakingContractAddress?: string;
   legacyEmissionsV1ContractAddress?: string;
   antsTokenAddress?: string;
+  verificationContractAddress?: string;
   emissionsGateAddress?: string;
   sellerPoolsAddress?: string;
   sellerRegistryAddress?: string;
@@ -212,6 +215,9 @@ export function resolveChainConfig(overrides?: {
     ...(overrides?.legacyStakingContractAddress ? { legacyStakingContractAddress: overrides.legacyStakingContractAddress } : {}),
     ...(overrides?.legacyEmissionsV1ContractAddress ? { legacyEmissionsV1ContractAddress: overrides.legacyEmissionsV1ContractAddress } : {}),
     ...(overrides?.antsTokenAddress ? { antsTokenAddress: overrides.antsTokenAddress } : {}),
+    ...(overrides?.verificationContractAddress
+      ? { verificationContractAddress: overrides.verificationContractAddress }
+      : {}),
     ...(overrides?.emissionsGateAddress ? { emissionsGateAddress: overrides.emissionsGateAddress } : {}),
     ...(overrides?.sellerPoolsAddress ? { sellerPoolsAddress: overrides.sellerPoolsAddress } : {}),
     ...(overrides?.sellerRegistryAddress ? { sellerRegistryAddress: overrides.sellerRegistryAddress } : {}),

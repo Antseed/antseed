@@ -19,6 +19,7 @@ import type { ResponseAuthSink } from './interfaces.js';
 import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth } from './response-auth.js';
+import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
@@ -48,6 +49,8 @@ export interface RequestExecutionOptions {
   controlPlane?: boolean;
   /** Present peer failures as coming from an explicitly pinned route. */
   pinned?: boolean;
+  /** Persist exact signed request/response preimages for portable verifier evidence. */
+  captureResponseAuthPreimages?: boolean;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -107,6 +110,10 @@ export class BuyerRequestHandler {
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
+    const expectedResponseAuthChannelId =
+      typeof negotiator?.bpm?.getActiveSession === 'function'
+        ? negotiator.bpm.getActiveSession(peer.peerId)?.sessionId ?? null
+        : null;
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
     }
@@ -383,7 +390,15 @@ export class BuyerRequestHandler {
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
-      this._recordResponseAuth(peer, req, retriedResponse, requestedService, verificationMux);
+      this._recordResponseAuth(
+        peer,
+        req,
+        retriedResponse,
+        requestedService,
+        verificationMux,
+        expectedResponseAuthChannelId,
+        options?.captureResponseAuthPreimages === true,
+      );
       return adaptPeerResponse(retriedResponse);
     }
 
@@ -391,7 +406,15 @@ export class BuyerRequestHandler {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
 
-    this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
+    this._recordResponseAuth(
+      peer,
+      req,
+      response,
+      requestedService,
+      verificationMux,
+      expectedResponseAuthChannelId,
+      options?.captureResponseAuthPreimages === true,
+    );
     return adaptPeerResponse(response);
   }
 
@@ -423,6 +446,8 @@ export class BuyerRequestHandler {
     response: SerializedHttpResponse,
     requestedService: string | undefined,
     verificationMux: VerificationMux,
+    expectedChannelId: string | null,
+    capturePreimages: boolean,
   ): void {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
       return;
@@ -430,7 +455,6 @@ export class BuyerRequestHandler {
 
     const storage = this._deps.verificationStorage;
     const advertisedService = requestedService ?? 'unknown';
-    const expectedChannelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
     const responseAuthPromise = verificationMux.waitForResponseAuth(
       request.requestId,
       this._config.responseAuthTimeoutMs ?? DEFAULT_RESPONSE_AUTH_GRACE_MS,
@@ -458,6 +482,10 @@ export class BuyerRequestHandler {
           receivedAt: Date.now(),
           verified: verification.valid,
           verificationError: verification.reason ?? null,
+          requestPreimage: capturePreimages ? encodeHttpRequest(request) : null,
+          responsePreimage: capturePreimages
+            ? encodeHttpResponse(stripStreamingHeader(response))
+            : null,
         });
 
         void this._deps.verificationSampler?.maybeStoreResponseAuthSample({

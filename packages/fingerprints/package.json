@@ -1,0 +1,21 @@
+{
+  "name": "@antseed/fingerprints",
+  "version": "0.1.0",
+  "description": "Pure verifier math for AntSeed model verification: canonical JSON hashing, KBF fingerprint verifier, cohort consensus verification, probe bank, and audit/evidence schemas",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

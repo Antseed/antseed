@@ -29,6 +29,13 @@ export function tryParseJsonObject(
   }
 }
 
+export function extractServiceFromBody(body: Uint8Array | string): string | undefined {
+  const parsed = tryParseJsonObject(body);
+  const service = parsed?.['service'] ?? parsed?.['model'];
+  if (typeof service === 'string' && service.length > 0) return service;
+  return undefined;
+}
+
 export function hasJsonContentType(headers: Record<string, string>): boolean {
   const contentType = headers['content-type'] ?? headers['Content-Type'] ?? '';
   return contentType.toLowerCase().includes('application/json');

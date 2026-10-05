@@ -9,6 +9,7 @@ import type {
 } from './types.js';
 import { validateServiceMetadata } from './service-metadata.js';
 import { parseHostPort } from './public-address.js';
+import { appendVerifierConfigErrors } from '../verifier/config-schema.js';
 
 const SERVICE_CATEGORY_PATTERN = /^[a-z0-9][a-z0-9-]*$/;
 const MAX_PUBLIC_ADDRESS_LENGTH = 255;
@@ -446,6 +447,8 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   validateVerifications('seller.verifications', config.seller.verifications, errors);
+
+  appendVerifierConfigErrors('verifier', config.verifier, errors);
 
   if (config.relayer !== undefined) {
     if (config.relayer.enabled !== undefined && typeof config.relayer.enabled !== 'boolean') {

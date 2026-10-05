@@ -27,6 +27,7 @@
     "@antseed/ant-agent": "workspace:*",
     "@antseed/ants": "workspace:*",
     "@antseed/api-adapter": "workspace:*",
+    "@antseed/fingerprints": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",
@@ -39,6 +40,7 @@
     "open": "^11.0.0",
     "ora": "^9.3.0",
     "qrcode": "^1.5.4",
+    "zod": "^3.25.76",
     "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {

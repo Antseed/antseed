@@ -36,6 +36,24 @@ export type { IdentityClientConfig } from './evm/identity-client.js';
 export { StakingClient } from './evm/staking-client.js';
 export type { StakingClientConfig } from './evm/staking-client.js';
 
+// Verifier network client
+export {
+  VerifierClient,
+  serviceHash,
+  VERIFIER_VERDICT_UNKNOWN,
+  VERIFIER_VERDICT_SAME,
+  VERIFIER_VERDICT_DIFF,
+  VERIFIER_VERDICT_UNDETERMINED,
+} from './evm/verifier-client.js';
+export type {
+  VerifierClientConfig,
+  VerifierVerdict,
+  VerificationResultInput,
+  SubmitVerificationBundleInput,
+  VerificationBundleSubmittedEvent,
+  AttestationSubmittedEvent,
+} from './evm/verifier-client.js';
+
 export {
   signSpendingAuth,
   signReserveAuth,

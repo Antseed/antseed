@@ -18,6 +18,7 @@ import {
   PositionInitClient,
   EmissionsGateClient,
   ChannelStore,
+  VerifierClient,
   ANTSTokenClient,
   SellerPoolsClient,
   SellerPoolsRewardsClient,
@@ -134,6 +135,7 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   stakingContractAddress?: string;
   identityRegistryAddress?: string;
   emissionsContractAddress?: string;
+  verificationContractAddress?: string;
   legacyEmissionsContractAddress?: string;
   legacyStakingContractAddress?: string;
   legacyEmissionsV1ContractAddress?: string;
@@ -213,6 +215,7 @@ export function requireCryptoConfig(
     washTradingRegistryAddress: crypto.washTradingRegistryAddress || resolved.washTradingRegistryAddress,
     pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
+    verificationContractAddress: crypto.verificationContractAddress || resolved.verificationContractAddress,
     depositRelayAddress: crypto.depositRelayAddress || resolved.depositRelayAddress,
     evmChainId: resolved.evmChainId,
     explorerApiUrl: crypto.explorerApiUrl ?? resolved.explorerApiUrl,
@@ -384,6 +387,22 @@ export function createLegacyStakingClient(config: AntseedConfig): StakingClient 
   return new StakingClient({
     ...contractClientConfig(legacy, requireContractAddress(legacy, 'legacyStakingContractAddress', 'legacyStaking')),
     usdcAddress: crypto.usdcContractAddress,
+  });
+}
+
+/**
+ * Create a VerifierClient from the CLI config.
+ */
+export function createVerifierClient(config: AntseedConfig, overrides?: CryptoConfigOverrides): VerifierClient {
+  const crypto = requireCryptoConfig(config, overrides);
+  if (!crypto.verificationContractAddress) {
+    throw new Error('No verification contract address configured. Set payments.crypto.verificationContractAddress in your config file.');
+  }
+  return new VerifierClient({
+    rpcUrl: crypto.rpcUrl,
+    ...fallbackClientOpts(crypto),
+    contractAddress: crypto.verificationContractAddress,
+    evmChainId: crypto.evmChainId,
   });
 }
 

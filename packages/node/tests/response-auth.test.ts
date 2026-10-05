@@ -166,4 +166,36 @@ describe('ResponseAuth', () => {
       rmSync(tempDir, { recursive: true, force: true });
     }
   });
+
+  it('stores request-attributed accepted costs by request ID', () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'verification-cost-store-test-'));
+    const storage = new VerificationStorage(join(tempDir, 'verification.db'));
+    try {
+      storage.insertRequestCost({
+        requestId: 'request-cost-1',
+        sellerPeerId: '11'.repeat(20),
+        service: 'model-a',
+        channelId: `0x${'22'.repeat(32)}`,
+        authorizedCostUsdc: 123_456n,
+        inputTokens: 100n,
+        outputTokens: 25n,
+        source: 'response',
+        recordedAt: 1234,
+      });
+      expect(storage.getRequestCost('request-cost-1')).toEqual({
+        requestId: 'request-cost-1',
+        sellerPeerId: '11'.repeat(20),
+        service: 'model-a',
+        channelId: `0x${'22'.repeat(32)}`,
+        authorizedCostUsdc: 123_456n,
+        inputTokens: 100n,
+        outputTokens: 25n,
+        source: 'response',
+        recordedAt: 1234,
+      });
+    } finally {
+      storage.close();
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
 });
