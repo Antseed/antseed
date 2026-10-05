@@ -411,6 +411,10 @@ export class BuyerPaymentNegotiator {
         'buyer-deposits-insufficient',
       );
     }
+    const bufferedReserve = required.finalReserveAmount + this._bpm.maxReserveAmountUsdc;
+    const targetReserve = balance.available >= bufferedReserve - deposit
+      ? bufferedReserve
+      : required.finalReserveAmount;
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
     await this._bpm.signAndSendReserveBatch(
@@ -419,10 +423,10 @@ export class BuyerPaymentNegotiator {
       required.requiredCumulativeAmount,
       videoCost,
       deposit,
-      required.finalReserveAmount,
+      targetReserve,
       pmux,
     );
-    await this._waitForVideoTopUp(peer.peerId, session.sessionId, required.finalReserveAmount);
+    await this._waitForVideoTopUp(peer.peerId, session.sessionId, targetReserve);
   }
 
   private _videoRequestCost(

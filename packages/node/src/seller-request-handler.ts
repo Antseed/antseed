@@ -284,7 +284,7 @@ export class SellerRequestHandler {
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
       let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
       try {
-        requestCostEstimate = requestBilling
+        requestCostEstimate = requestBilling && videoRoute?.action !== 'retrieve'
           ? this._estimateRequestCostUsdc(request, requestBilling, requestPricing, unitBillingModel)
           : null;
       } catch (err) {

@@ -50,10 +50,12 @@ describe('BuyerPaymentNegotiator', () => {
 
     function makeNegotiator(available = 3_200_000n) {
       const events: string[] = [];
+      const finalReserve = available >= 4_200_000n ? 5_200_000n : 4_200_000n;
       const getSession = vi.fn()
         .mockResolvedValueOnce({ deposit: 1_000_000n, status: 1 })
-        .mockResolvedValue({ deposit: 4_200_000n, status: 1 });
+        .mockResolvedValue({ deposit: finalReserve, status: 1 });
       const bpm = {
+        maxReserveAmountUsdc: 1_000_000n,
         getActiveSession: vi.fn(() => ({ sessionId: `0x${'1'.repeat(64)}` })),
         getRequestBilling: vi.fn(() => ({
           context: { sellerPeerId: peer.peerId },
@@ -86,12 +88,26 @@ describe('BuyerPaymentNegotiator', () => {
       return { negotiator, bpm, events };
     }
 
-    it('signs the contract threshold and tops up to the exact requested reserve', async () => {
-      const { negotiator, events } = makeNegotiator();
+    it.each([
+      [3_200_000n, 4_200_000n],
+      [4_199_999n, 4_200_000n],
+      [4_200_000n, 5_200_000n],
+    ])('with %s available, keeps the threshold unchanged and reserves %s', async (available, expectedReserve) => {
+      const { negotiator, bpm, events } = makeNegotiator(available);
 
       await negotiator.authorizeReservePlan(peer, connection, requestId, plan());
 
-      expect(events).toEqual(['batch:650000:4200000']);
+      expect(events).toEqual([`batch:650000:${expectedReserve}`]);
+      expect(bpm.reconcileReserveAmount).toHaveBeenLastCalledWith(peer.peerId, expectedReserve);
+    });
+
+    it('rejects a seller-inflated reserve plan even when the buyer can afford a buffer', async () => {
+      const { negotiator, bpm } = makeNegotiator(4_200_000n);
+
+      await expect(negotiator.authorizeReservePlan(peer, connection, requestId, plan({ finalReserveAmount: '5200000' }))).rejects.toMatchObject({
+        code: 'peer-protocol-violation',
+      });
+      expect(bpm.signAndSendReserveBatch).not.toHaveBeenCalled();
     });
 
     it('checks the full additional reserve before signing the advance', async () => {

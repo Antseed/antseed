@@ -129,7 +129,13 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     rmSync(directory, { recursive: true, force: true });
   });
 
-  function setup(options: { topUpBehavior?: 'land' | 'revert' | 'slow' } = {}): Harness {
+  function setup(options: {
+    topUpBehavior?: 'land' | 'revert' | 'slow';
+    videoPricing?: 'flat' | 'per-second' | 'resolution-tiered';
+    processingPolls?: number;
+    availableBalance?: bigint;
+    reserveEstimateOverdraftUsdc?: bigint;
+  } = {}): Harness {
     const buyerIdentity = identity();
     const sellerIdentity = identity();
     const buyerStore = new ChannelStore(join(directory, 'buyer'));
@@ -138,7 +144,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     cleanups.push(() => { buyerStore.close(); sellerStore.close(); ownership.close(); });
 
     vi.spyOn(DepositsClient.prototype, 'getBuyerBalance').mockResolvedValue({
-      available: 20_000_000n, reserved: 0n, lastActivityAt: 0n,
+      available: options.availableBalance ?? 20_000_000n, reserved: 0n, lastActivityAt: 0n,
     });
 
     const common = { rpcUrl: 'http://127.0.0.1:1', chainId: 31337, channelsContractAddress: '0x' + 'cc'.repeat(20) };
@@ -170,6 +176,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     const topUp = vi.spyOn(seller.channelsClient, 'topUp').mockImplementation(async (_signer, _channel, cumulative, _meta, _sig, newMax) => {
       if (topUpBehavior === 'revert') throw new Error('execution reverted: InsufficientBalance');
       if (topUpBehavior === 'slow') await new Promise<void>((resolve) => { releaseTopUp = resolve; });
+      if (cumulative > chain.deposit) throw new Error('execution reverted: InvalidAmount');
       if (cumulative > chain.settled) chain.settled = cumulative;
       if (chain.settled * 10_000n < chain.deposit * 8_500n) throw new Error('execution reverted: TopUpThresholdNotMet');
       chain.deposit = newMax;
@@ -177,6 +184,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     }) as unknown as ReturnType<typeof vi.fn>;
     const close = vi.spyOn(seller.channelsClient, 'close').mockImplementation(async (_signer, _channel, finalAmount) => {
       if (finalAmount < chain.settled) throw new Error('execution reverted: FinalAmountBelowSettled');
+      if (finalAmount > chain.deposit) throw new Error('execution reverted: InvalidAmount');
       chain.settled = finalAmount;
       chain.status = 2;
       return '0xclose';
@@ -193,6 +201,15 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
 
     const providerCreates: SerializedHttpRequest[] = [];
     let jobCounter = 0;
+    let processingPolls = options.processingPolls ?? 0;
+    const videoUnitModel = options.videoPricing === 'resolution-tiered'
+      ? { version: 1 as const, components: [
+        { unit: 'video_seconds' as const, priceUsd: 0.42, match: { resolution: '720p' } },
+        { unit: 'video_seconds' as const, priceUsd: 0.84, match: { resolution: '1080p' } },
+      ] }
+      : options.videoPricing === 'per-second'
+        ? { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.84 }] }
+        : VIDEO_UNIT_MODEL;
     const provider: Provider = {
       name: 'venice',
       services: ['video-model', 'chat-model'],
@@ -201,12 +218,20 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
         services: { 'chat-model': CHAT_PRICING },
       },
       serviceApiProtocols: { 'video-model': ['venice-video'], 'chat-model': ['openai-chat-completions'] },
-      serviceUnitBillingModels: { 'video-model': { 'venice-video': VIDEO_UNIT_MODEL } },
+      serviceUnitBillingModels: { 'video-model': { 'venice-video': videoUnitModel } },
       maxConcurrency: 4,
       getCapacity: () => ({ current: 0, max: 4 }),
       // The finished video streams as a real 5 s MP4, so it passes the delivery check.
       async handleRequestStream(request, callbacks) {
         if (!request.path.endsWith('/video/retrieve')) return provider.handleRequest(request);
+        if (processingPolls > 0) {
+          processingPolls -= 1;
+          return {
+            requestId: request.requestId, statusCode: 200,
+            headers: { 'content-type': 'application/json' },
+            body: Buffer.from(JSON.stringify({ status: 'PROCESSING' })),
+          };
+        }
         const start = {
           requestId: request.requestId, statusCode: 200, body: new Uint8Array(0),
           headers: { 'content-type': 'video/mp4', 'content-length': String(VIDEO_FILE.length), 'x-antseed-streaming': '1', 'x-antseed-video-download': 'video-stream-v1' },
@@ -238,6 +263,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     const sellerHandler = new SellerRequestHandler({
       identity: sellerIdentity, providers: [provider], sellerPaymentManager: seller, sessionTracker: null,
       channelsClient: seller.channelsClient, announcer: null, emit: () => false, resourceOwnershipStore: ownership,
+      reserveEstimateOverdraftUsdc: options.reserveEstimateOverdraftUsdc,
     });
     const { mux: sellerProxy } = sellerHandler.handleConnection(sellerSide, buyerIdentity.peerId, sellerPayment, sellerVerification);
     wireFrames(sellerSide, { proxy: sellerProxy, payment: sellerPayment, verification: sellerVerification });
@@ -269,7 +295,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
       lastSeen: Date.now(),
       providers: ['venice'],
       providerServiceApiProtocols: { venice: { services: { 'video-model': ['venice-video'], 'chat-model': ['openai-chat-completions'] } } },
-      providerServiceUnitBillingModels: { venice: { services: { 'video-model': { 'venice-video': VIDEO_UNIT_MODEL } } } },
+      providerServiceUnitBillingModels: { venice: { services: { 'video-model': { 'venice-video': videoUnitModel } } } },
       providerPricing: { venice: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'chat-model': CHAT_PRICING } } },
     } as unknown as PeerInfo;
 
@@ -282,7 +308,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
         'x-antseed-service': 'video-model',
         'x-antseed-provider': 'venice',
       },
-      body: Buffer.from(JSON.stringify({ model: 'video-model', prompt: 'a cat', duration })),
+      body: Buffer.from(JSON.stringify({ model: 'video-model', prompt: 'a cat', duration, resolution: '1080p' })),
     });
     const retrieveRequest = (requestId: string, queueId: string): SerializedHttpRequest => ({
       requestId,
@@ -296,7 +322,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
       method: 'POST',
       path: '/v1/chat/completions',
       headers: { 'content-type': 'application/json', 'x-antseed-service': 'chat-model', 'x-antseed-provider': 'venice' },
-      body: Buffer.from(JSON.stringify({ model: 'chat-model', messages: [{ role: 'user', content: 'hi' }] })),
+      body: Buffer.from(JSON.stringify({ model: 'chat-model', messages: [{ role: 'user', content: 'hi' }], max_tokens: 1000 })),
     });
 
     return {
@@ -319,6 +345,49 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
   }
 
+  it.each(['new', 'existing'] as const)('keeps an affordable chat buffer on a %s channel while video is pending', async (channelState) => {
+    const existingSpend = channelState === 'existing' ? CHAT_DELIVERED : 0n;
+    const existingReserve = channelState === 'existing' ? FIRST_RESERVE : 0n;
+    const minimumReserve = existingSpend + VIDEO_PRICE;
+    const bufferedReserve = minimumReserve + FIRST_RESERVE;
+    const harness = setup({
+      availableBalance: bufferedReserve - existingReserve,
+      reserveEstimateOverdraftUsdc: 0n,
+    });
+    if (channelState === 'existing') await openChannelWithChat(harness);
+
+    expect((await harness.send(harness.videoRequest('video-buffered'))).statusCode).toBe(200);
+    await harness.settle();
+    expect(harness.chain.deposit).toBe(bufferedReserve);
+    expect(harness.chain.settled).toBe(ADVANCE);
+    expect(harness.buyer.getDeliveredAmount(harness.peer.peerId)).toBe(existingSpend);
+
+    expect((await harness.send(harness.chatRequest('chat-while-video-pending'))).statusCode).toBe(200);
+    await harness.settle();
+    expect(harness.buyer.getDeliveredAmount(harness.peer.peerId)).toBe(existingSpend + CHAT_DELIVERED);
+    expect(harness.close).not.toHaveBeenCalled();
+    expect(harness.topUp).toHaveBeenCalledOnce();
+
+    expect((await harness.send(harness.retrieveRequest('download-buffered', 'job-1'))).statusCode).toBe(200);
+    await harness.settle();
+    await harness.seller.settleSession(harness.buyerIdentity.peerId);
+    expect(harness.chain.settled).toBe(existingSpend + CHAT_DELIVERED + VIDEO_PRICE);
+  });
+
+  it.each(['new', 'existing'] as const)('falls back to the minimum video reserve on a %s channel when the buffer is unaffordable', async (channelState) => {
+    const existingSpend = channelState === 'existing' ? CHAT_DELIVERED : 0n;
+    const existingReserve = channelState === 'existing' ? FIRST_RESERVE : 0n;
+    const minimumReserve = existingSpend + VIDEO_PRICE;
+    const harness = setup({ availableBalance: minimumReserve + FIRST_RESERVE - existingReserve - 1n });
+    if (channelState === 'existing') await openChannelWithChat(harness);
+
+    expect((await harness.send(harness.videoRequest('video-unbuffered'))).statusCode).toBe(200);
+    await harness.settle();
+    expect(harness.chain.deposit).toBe(minimumReserve);
+    expect(harness.chain.settled).toBe(ADVANCE);
+    expect(harness.providerCreates).toHaveLength(1);
+  });
+
   it('settles the threshold authorization inside topUp(), then charges the rest after delivery', async () => {
     const h = setup();
     await openChannelWithChat(h);
@@ -331,6 +400,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.chain.settled).toBe(ADVANCE);
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(ADVANCE);
+    expect(h.topUp).toHaveBeenCalledOnce();
 
     const delivered = await h.send(h.retrieveRequest('retrieve-1', 'job-1'));
     await h.settle();
@@ -341,8 +411,8 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.providerCreates).toHaveLength(1);
     expect(h.topUp).toHaveBeenCalledOnce();
     expect(h.topUp.mock.calls[0]![2]).toBe(ADVANCE);
-    expect(h.topUp.mock.calls[0]![5]).toBe(REQUIRED_CEILING);
-    expect(h.chain.deposit).toBe(REQUIRED_CEILING);
+    expect(h.topUp.mock.calls[0]![5]).toBe(REQUIRED_CEILING + FIRST_RESERVE);
+    expect(h.chain.deposit).toBe(REQUIRED_CEILING + FIRST_RESERVE);
 
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
@@ -422,7 +492,7 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     // The slow top-up transaction lands, then the user retries the same create.
     h.releaseTopUp();
     await advance(1_000);
-    expect(h.chain.deposit).toBe(REQUIRED_CEILING);
+    expect(h.chain.deposit).toBe(REQUIRED_CEILING + FIRST_RESERVE);
 
     const retry = h.send(h.videoRequest('video-1-retry'));
     await advance(5_000);
@@ -440,6 +510,39 @@ describe('video reserve flow over the real buyer and seller stacks', () => {
     expect(h.buyer.getDeliveredAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
   }, 30_000);
+  it.each(['flat', 'per-second', 'resolution-tiered'] as const)('polls and delivers a %s video without repricing or charging twice', async (videoPricing) => {
+    const harness = setup({ videoPricing, processingPolls: 1 });
+    await openChannelWithChat(harness);
+    expect((await harness.send(harness.videoRequest('video-priced'))).statusCode).toBe(200);
+    await harness.settle();
+    const authsBeforePoll = harness.sentAuths.length;
+    const authorizedBeforePoll = harness.buyer.getCumulativeAmount(harness.peer.peerId);
+
+    const processing = await harness.send(harness.retrieveRequest('poll-priced', 'job-1'));
+    expect(processing.statusCode).toBe(200);
+    expect(JSON.parse(Buffer.from(processing.body).toString())).toEqual({ status: 'PROCESSING' });
+    await harness.settle();
+    expect(harness.sentAuths).toHaveLength(authsBeforePoll);
+    expect(harness.buyer.getCumulativeAmount(harness.peer.peerId)).toBe(authorizedBeforePoll);
+    expect(harness.buyer.getDeliveredAmount(harness.peer.peerId)).toBe(CHAT_DELIVERED);
+
+    const delivered = await harness.send(harness.retrieveRequest('download-priced', 'job-1'));
+    expect(delivered.statusCode).toBe(200);
+    expect(delivered.headers['content-type']).toBe('video/mp4');
+    await harness.settle();
+    expect(harness.buyer.getDeliveredAmount(harness.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
+    expect(harness.buyer.getCumulativeAmount(harness.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
+    const authsAfterDelivery = harness.sentAuths.length;
+
+    expect((await harness.send(harness.retrieveRequest('repeat-priced', 'job-1'))).statusCode).toBe(200);
+    await harness.settle();
+    expect(harness.sentAuths).toHaveLength(authsAfterDelivery);
+    expect(harness.buyer.getDeliveredAmount(harness.peer.peerId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
+    expect(harness.providerCreates).toHaveLength(1);
+    const session = harness.seller.getChannelByPeer(harness.buyerIdentity.peerId)!;
+    expect(harness.seller.getCumulativeSpend(session.sessionId)).toBe(CHAT_DELIVERED + VIDEO_PRICE);
+  });
+
   it('charges a delivered video only once, even when it is downloaded again', async () => {
     const h = setup();
     await openChannelWithChat(h);

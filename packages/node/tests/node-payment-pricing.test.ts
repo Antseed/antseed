@@ -344,10 +344,10 @@ describe('native video job ownership', () => {
       } finally { store.close(); }
     });
 
-    it('rejects an unbillable video before asking for a larger reserve', async () => {
+    it.each([undefined, 'auto', '0s', '-1s'])('rejects an unbillable video with duration %s before asking for a larger reserve', async (duration) => {
       const { provider, create, store } = setup(newDbPath());
       try {
-        const response = await create(buyer, {}, { model: 'video', duration: 'auto' });
+        const response = await create(buyer, {}, { model: 'video', duration });
         expect(response.statusCode).toBe(400);
         expect(bodyOf(response).error.code).toBe('invalid_billing_request');
         expect(provider.handleRequest).not.toHaveBeenCalled();

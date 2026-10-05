@@ -1020,6 +1020,9 @@ export class BuyerPaymentManager {
     if (reservePlan) {
       cumulativeAmount = BigInt(reservePlan.requiredCumulativeAmount);
       finalReserveAmount = BigInt(reservePlan.finalReserveAmount);
+      const balance = await this.getBalance();
+      const bufferedReserve = finalReserveAmount + this._config.maxReserveAmountUsdc;
+      if (balance.available >= bufferedReserve) finalReserveAmount = bufferedReserve;
       const metadataHash = computeMetadataHash(initialMetadata);
       latestSpendingAuthSig = await signSpendingAuth(this._signer, channelsDomain, {
         channelId,
