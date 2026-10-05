@@ -20,14 +20,14 @@ Use these values for the request:
 - `model` — image model id or alias; optional only when the user has not chosen a model yet
 - `prompt` — the user's image description
 - `output` — optional destination path
-- `proxy_url` — optional buyer URL; default `http://127.0.0.1:8377`
+- `proxy_url` — optional buyer URL; default `$ANTSEED_PROXY_URL`, then `http://127.0.0.1:8377`
 
 ## Discover the Image Model
 
 Always fetch the current image catalog before generating:
 
 ```bash
-proxy_url="${proxy_url:-http://127.0.0.1:8377}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
   -H 'authorization: Bearer antseed-desktop' \
   "$proxy_url/v1/models?type=images"

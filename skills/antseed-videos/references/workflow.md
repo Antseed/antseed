@@ -1,0 +1,126 @@
+# Workflow details
+
+## Ask before paying
+
+Inspect the selected model first:
+
+```bash
+python3 scripts/antseed_video.py options --model "$model"
+```
+
+Ask in one compact message. Include only choices advertised by at least one seller:
+
+- **Duration:** list advertised seconds. If no list exists, ask the user for an explicit duration or use the model's automatic duration only when the user accepts it.
+- **Resolution:** list advertised values and recommend the highest. If none is advertised, ask whether to omit it.
+- **Aspect ratio:** list advertised values. Omit it only when the user does not care.
+- **Audio:** ask only when a seller advertises `audio: true`; only then pass `--audio` or `--no-audio`. With `audio: false` or no `audio` field, omit both flags. Some models, such as Flux 3 First/Last Frame, add their own soundtrack and reject an audio setting.
+- **Frames and media:** explain supported and required inputs. Ask whether to upload, generate, or omit optional inputs.
+- **Output:** default to `generated-video.mp4` in the current directory unless the user chooses a path.
+
+Do not ask about options that no seller advertises. Do not infer support from the model name.
+
+## Storyboards and generated frames
+
+When the user asks for creative help, draft:
+
+1. a short script or shot description,
+2. the final video prompt,
+3. a first-frame prompt, and
+4. a last-frame prompt when supported.
+
+Ask for approval before generating images or video. Use `antseed-images` for frames, save them as local PNG, JPEG, or WebP files, and pass those paths to the video helper. Keep both frames visually consistent: same subject, setting, style, and aspect ratio.
+
+Ask the user to approve each saved frame, showing it when the agent environment supports images, before generating the video.
+
+In Antseed Desktop:
+
+- Uploaded images include an `<uploaded-image id="...">` tag and generated images a `<generated-image id="...">` tag. Call `get_chat_image_path` with that id to get a local path.
+- Call `show_media` with a saved frame or video path to show it inline in the chat.
+
+Map the user's start image to `--first-frame` and end image to `--last-frame`. With two images, ask which is the start and which is the end unless the request makes it clear. With one image, use it as the start image unless the user says otherwise.
+
+## Frame support
+
+Check `video.inputs` in `options` output:
+
+- `first_frame` only: the start image is supported, but the end image is not. For an end image, look for a model that lists `last_frame`, for example a first-last-frame model.
+- `first_frame` and `last_frame`: both are supported. Use this for start-to-end transitions and for segment chaining.
+- No `inputs`: text-to-video only. Frames are not accepted.
+
+Never pass a frame to a seller that does not advertise it, and never drop a user-supplied frame without asking.
+
+## Long videos
+
+If the requested length is longer than the longest advertised duration, for example 60 s with 15 s clips, plan segments instead of refusing:
+
+1. Split the length into segments of advertised durations, for example 4 × 15 s.
+2. Write one prompt per segment and one keyframe prompt per boundary: start, after segment 1, ..., end. N segments need N+1 keyframes. Keep subject, style, lighting and aspect ratio consistent.
+3. Get the keyframes:
+   - Use the user's uploaded start and end images as the first and last keyframes.
+   - Generate the inner keyframes with `antseed-images`, show them, and ask for approval.
+4. Pick the model:
+   - Prefer a model that supports both `first_frame` and `last_frame`. Segment *i* uses keyframe *i* as `--first-frame` and keyframe *i+1* as `--last-frame`, so every cut lines up.
+   - If only `first_frame` is supported, generate segment 1 from the start keyframe. Extract its last frame, then start the next segment from it:
+
+     ```bash
+     python3 scripts/antseed_video.py frame --video seg1.mp4 --position last --output seg1-last.png
+     ```
+
+   - If no frames are supported, generate independent segments and tell the user the cuts will not be continuous.
+5. Show the segment plan, model, seller, per-segment price and total price. Ask for one confirmation for the whole plan.
+6. Generate segments **one at a time**. If a segment fails, stop and report. Do not move the remaining segments to another seller without asking.
+7. Stitch the segments with ffmpeg, for example a concat list re-encoded to H.264/AAC, and show the final MP4 when supported. Keep the segment files.
+
+## Select and confirm
+
+Use the exact choices for selection:
+
+```bash
+python3 scripts/antseed_video.py select \
+  --model "$model" \
+  --prompt-file prompt.txt \
+  --duration 10 \
+  --resolution 1080p \
+  --aspect-ratio 16:9 \
+  --first-frame first.png \
+  --last-frame last.png
+```
+
+`select` returns compatible sellers ranked by reputation, then estimated price. If the user wants the cheapest option, pass `--prefer price`. Show the chosen seller id, reputation, and estimated price. Ask for confirmation before generating.
+
+If no seller is compatible, show the alternatives returned by the helper. Do not drop or change a requested option without the user's approval.
+
+## Generate
+
+Run with the same options and the confirmed seller:
+
+```bash
+python3 scripts/antseed_video.py generate \
+  --model "$model" \
+  --peer "$peer_id" \
+  --prompt-file prompt.txt \
+  --duration 10 \
+  --resolution 1080p \
+  --aspect-ratio 16:9 \
+  --first-frame first.png \
+  --last-frame last.png \
+  --output generated-video.mp4
+```
+
+The helper checks the seller again, creates exactly one job, waits, and saves the MP4. Its JSON result is safe to summarize. Show the returned `output` video when the agent environment supports it.
+
+If the create fails without a job id, do not create again on your own. Report the error and ask the user, because a repeated create can start a second paid job.
+
+If generation times out after acceptance, use the returned job id:
+
+```bash
+python3 scripts/antseed_video.py download --model "$model" --job-id "$job_id" --output generated-video.mp4
+```
+
+## Errors
+
+- `402`: buyer needs more deposited USDC or payment-channel capacity.
+- `404` or `video_route_not_found`: unknown job, missing route, or expired file.
+- `409 video_create_in_progress`: another video from this buyer is still being created. Wait for it to finish before creating the next one.
+- `400 unsupported_video_options` or `no_compatible_video_offer`: options do not fit a seller.
+- Connection refused: start Antseed Desktop or `antseed buyer start`.

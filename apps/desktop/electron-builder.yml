@@ -71,6 +71,13 @@ extraResources:
   # extraResources blocks below). The tiny model is no longer bundled — the app
   # downloads it into userData on first transcription (voice-transcription.ts),
   # which cuts ~74 MB from every installer.
+  - from: ../../skills/antseed-images
+    to: skills/antseed-images
+  - from: ../../skills/antseed-videos
+    to: skills/antseed-videos
+    filter:
+      - "**/*"
+      - "!**/__pycache__/**"
   - from: cli-dist/
     to: cli-dist/
     filter:
