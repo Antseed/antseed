@@ -59,6 +59,8 @@ Send the API key as an HTTP bearer token:
 Authorization: Bearer antseed_your_api_key
 ```
 
+To give several people their own keys, each with its own spend limits, usage and optionally its own wallet, see [Shared Gateway API Keys](/docs/guides/gateway-api-keys). Every key created with `antseed gateway key create` also works through the tunnel.
+
 The public gateway accepts the standard `Authorization` header. It does not use `x-api-key`, URL query parameters, cookies, or a key embedded in the hostname. The gateway validates the bearer token and removes it before forwarding the request to the local buyer proxy.
 
 ## Test the connection
@@ -137,6 +139,7 @@ The tunnel gateway intentionally allows only these routes:
 | `POST` | `/v1/responses` | OpenAI Responses API |
 | `POST` | `/v1/images/generations` | Image generation |
 | `POST` | `/v1/images/edits` | Image editing |
+| `GET` | `/v1/key` | Usage and spend limits of the calling key |
 
 Other paths return `404 Not Found`. Requests without the exact bearer key return `401 Unauthorized`.
 
@@ -165,6 +168,8 @@ export ANTSEED_TUNNEL_API_KEY="antseed_generate_a_long_random_secret"
 
 antseed tunnel start --provider ngrok
 ```
+
+`ANTSEED_TUNNEL_API_KEY` is optional once you have created keys with `antseed gateway key create`. When it is set, it is kept as an unlimited key on your default identity.
 
 Use `antseed tunnel status` from another terminal to inspect the active public URL, and `antseed tunnel stop` to stop it.
 

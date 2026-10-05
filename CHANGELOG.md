@@ -6,6 +6,12 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- CLI: `antseed gateway` serves one buyer API to many users. `antseed gateway key create|list|show|limits|revoke` manages API keys (stored hashed, shown once) with optional daily, monthly and lifetime USD spend limits and an expiry. `antseed gateway identity create|list|remove` adds buyer identities with their own wallet, data dir and buyer port, which the gateway starts and supervises; `--new-identity` gives a key its own wallet. Spend is attributed per key from the USDC actually paid to sellers. A key that reaches a limit gets `402` with code `spend_limit_reached`, and key holders can read their usage and remaining limits at `GET /v1/key`. `antseed gateway start` runs the gateway locally, and `antseed tunnel start` now serves every gateway key; its `ANTSEED_TUNNEL_API_KEY` remains valid as an unlimited key and is no longer required once keys exist.
+- CLI buyer: `GET /_antseed/attributed-spend` reports the signed spend of requests tagged by a local front end with `x-antseed-attribution-tag`. The tag is stripped before a request reaches a seller.
+- Docs: add the Shared Gateway API Keys guide.
+
 ### Fixed
 
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.

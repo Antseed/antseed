@@ -88,6 +88,7 @@ import {
   isTitleGenerationRequest,
   parseRequestBodyObject,
 } from './conversation-identity.js'
+import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
 import { ConversationStore } from './conversation-store.js'
 import type { DepositWatcher } from './deposit-watcher.js'
 import {
@@ -843,6 +844,8 @@ export class BuyerProxy {
    * deltas (buyer- and seller-initiated auth both advance the cumulative).
    */
   private readonly _requestConversations = new Map<string, { convId: string; counted: boolean }>()
+  /** Signed spend for requests a local gateway tagged, polled over the control plane. */
+  private readonly _spendAttribution = new SpendAttributionFeed()
 
   constructor(config: BuyerProxyConfig) {
     this._node = config.node
@@ -894,6 +897,7 @@ export class BuyerProxy {
     if (typeof spendEventNode.on === 'function') {
       spendEventNode.on('payment:spend', (event: BuyerSpendEvent) => {
         this._attributeSpend(event)
+        this._spendAttribution.record(event)
       })
     }
 
@@ -1940,6 +1944,13 @@ export class BuyerProxy {
       return
     }
 
+    if (path.startsWith('/_antseed/attributed-spend') && method === 'GET') {
+      const after = Number(new URL(path, 'http://localhost').searchParams.get('after') ?? '0')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, ...this._spendAttribution.page(Number.isFinite(after) ? after : 0) }))
+      return
+    }
+
     if (path.startsWith('/_antseed/buyer-usage') && method === 'GET') {
       const totals = this._node.getBuyerUsageTotals()
       res.writeHead(200, { 'content-type': 'application/json' })
@@ -2238,6 +2249,10 @@ export class BuyerProxy {
     // it never reaches a seller.
     const systemRoutedModel = headers[SYSTEM_ROUTED_MODEL_HEADER] === '1'
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
+    // Internal marker from the API-key gateway: report this request's signed
+    // spend under the gateway's tag. Stripped so it never reaches a seller.
+    const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
+    delete headers[SPEND_ATTRIBUTION_HEADER]
 
     let serializedReq: SerializedHttpRequest = {
       requestId: randomUUID(),
@@ -2246,6 +2261,7 @@ export class BuyerProxy {
       headers,
       body: new Uint8Array(body),
     }
+    if (spendAttributionTag) this._spendAttribution.track(serializedReq.requestId, spendAttributionTag)
     const requiredParameters = parseRequiredParametersHeader(
       serializedReq.headers[REQUIRED_PARAMETERS_HEADER],
     )
