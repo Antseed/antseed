@@ -15,7 +15,6 @@ import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
 } from "./types/http.js";
-import type { ConnectionConfig } from "./types/connection.js";
 import { MeteringStorage } from "./metering/storage.js";
 import { ReceiptGenerator } from "./metering/receipt-generator.js";
 import {
@@ -75,6 +74,7 @@ import type {
 import type { Router } from "./interfaces/buyer-router.js";
 import type { Prover } from "./interfaces/plugin.js";
 import { NatTraversal } from "./p2p/nat-traversal.js";
+import { getOrOpenOutboundConnection } from "./p2p/outbound-connection.js";
 import { signUtf8 } from "./p2p/identity.js";
 import {
   BalanceManager,
@@ -116,6 +116,11 @@ import {
   type SybilContext,
 } from "./reputation/sybil-risk.js";
 import { buyerFault } from "./errors.js";
+import {
+  BuyerIdentityContext,
+  DEFAULT_BUYER_IDENTITY,
+  isValidBuyerIdentityName,
+} from "./buyer-identity-context.js";
 
 /** Store the trust score on the peer; leaves the fields untouched when the peer is unscored. */
 function applyTrust(peer: PeerInfo): void {
@@ -308,6 +313,16 @@ export interface BuyerUsageServicePoint {
   requestCount: number;
 }
 
+/** Request options; `buyerIdentity` picks the wallet that pays (default: the node's own). */
+export interface NodeRequestOptions extends RequestExecutionOptions {
+  buyerIdentity?: string;
+}
+
+export interface BuyerIdentitySummary {
+  name: string;
+  address: string;
+}
+
 export interface BuyerUsageTotals {
   totalRequests: number;
   totalInputTokens: string;
@@ -377,6 +392,8 @@ export class AntseedNode extends EventEmitter {
   private _verificationMuxes = new Map<PeerId, VerificationMux>();
   private _sweepMuxes = new Map<PeerId, SweepMux>();
   private _peerCapabilities = new Map<PeerId, Set<string>>();
+  /** Buyer identities beyond the default one, by name. */
+  private _buyerIdentities = new Map<string, BuyerIdentityContext>();
   /** Seller-side deposit-sweep relayer (initialized when configured + enabled). */
   private _depositRelayer: DepositRelayer | null = null;
   /** Seller-side request handler (provider matching, execution, load tracking). */
@@ -602,6 +619,12 @@ export class AntseedNode extends EventEmitter {
     if (!this._started) {
       return;
     }
+
+    const extraIdentities = [...this._buyerIdentities.values()];
+    this._buyerIdentities.clear();
+    await Promise.all(extraIdentities.map((context) => context.stop().catch((err: unknown) => {
+      debugWarn(`[Node] Failed to stop buyer identity "${context.name}": ${err instanceof Error ? err.message : err}`);
+    })));
 
     // Give in-transit NeedAuth messages time to arrive on the DataChannel,
     // then wait for their handlers to finish. This ensures the seller has a
@@ -1123,7 +1146,12 @@ export class AntseedNode extends EventEmitter {
    * Eagerly open a connection to a peer and wire up the mux.
    * Subsequent sendRequest / sendRequestStream calls will reuse this connection.
    */
-  async connectToPeer(peer: PeerInfo): Promise<void> {
+  async connectToPeer(peer: PeerInfo, buyerIdentity?: string): Promise<void> {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) {
+      await context.connect(peer);
+      return;
+    }
     const conn = await this._getOrCreateConnection(peer);
     this._getOrCreateMux(peer.peerId, conn);
     const negotiator = this._buyerNegotiator;
@@ -1148,8 +1176,11 @@ export class AntseedNode extends EventEmitter {
    */
   async requestChannelClose(
     sellerPeerId: string,
-    opts: { includeAuth?: boolean; timeoutMs?: number } = {},
+    opts: { includeAuth?: boolean; timeoutMs?: number; buyerIdentity?: string } = {},
   ): Promise<CloseChannelResultPayload> {
+    const { buyerIdentity, ...closeOptions } = opts;
+    const context = this._buyerContext(buyerIdentity);
+    if (context) return this._requestIdentityChannelClose(context, sellerPeerId as PeerId, closeOptions);
     const negotiator = this._buyerNegotiator;
     if (!negotiator) {
       throw new Error('Buyer payments are not configured on this node');
@@ -1192,7 +1223,35 @@ export class AntseedNode extends EventEmitter {
       );
     }
 
-    return negotiator.requestChannelClose(peerId, conn, opts);
+    return negotiator.requestChannelClose(peerId, conn, closeOptions);
+  }
+
+  private async _requestIdentityChannelClose(
+    context: BuyerIdentityContext,
+    peerId: PeerId,
+    opts: { includeAuth?: boolean; timeoutMs?: number },
+  ): Promise<CloseChannelResultPayload> {
+    let conn = context.liveConnection(peerId);
+    if (!conn) {
+      const peer = await this.findPeer(peerId);
+      if (!peer) {
+        throw new Error(
+          `Seller ${peerId.slice(0, 12)}... is not connected and could not be found on the network. ` +
+          `A cooperative close needs the seller online — otherwise use the on-chain request-close flow.`,
+        );
+      }
+      conn = await context.connect(peer);
+    }
+    const capabilities = this._peerCapabilities.get(peerId);
+    if (capabilities && capabilities.size > 0
+      && !peerSupportsCooperativeClose({ capabilities: [...capabilities] })) {
+      throw new Error(
+        `Seller ${peerId.slice(0, 12)}... does not support cooperative close ` +
+        `(missing ${CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1}). ` +
+        `Use the on-chain request-close flow instead.`,
+      );
+    }
+    return context.requestChannelClose(peerId, conn, opts);
   }
 
   /**
@@ -1200,7 +1259,7 @@ export class AntseedNode extends EventEmitter {
    * Combines channel store data (authoritative payment/session info) with
    * metering events when available.
    */
-  getMeteringStatsByPeer(sellerPeerId: string): {
+  getMeteringStatsByPeer(sellerPeerId: string, buyerIdentity?: string): {
     // Current session
     totalRequests: number;
     inputTokens: number;
@@ -1220,7 +1279,7 @@ export class AntseedNode extends EventEmitter {
     lifetimeFirstSessionAt: number | null;
     lifetimeLastSessionAt: number | null;
   } | null {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+    const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     const channel = (buyerAddress != null)
       ? (
         this._channelStore?.getActiveChannelByPeerAndBuyer(sellerPeerId, CHANNEL_ROLE.BUYER, buyerAddress)
@@ -1237,7 +1296,7 @@ export class AntseedNode extends EventEmitter {
       : this._channelStore?.getTotalsByPeer(sellerPeerId, CHANNEL_ROLE.BUYER)
       ?? null;
 
-    const liveTotals = this._buyerPaymentManager?.getResponseTokenTotals(sellerPeerId);
+    const liveTotals = paymentManager?.getResponseTokenTotals(sellerPeerId);
     const inputTokens = (liveTotals != null) ? liveTotals.input
       : (channel != null) ? Number(channel.tokensDelivered || '0')
       : 0;
@@ -1250,7 +1309,7 @@ export class AntseedNode extends EventEmitter {
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
-      reservedUsdc: this._buyerPaymentManager?.getReserveCeiling(sellerPeerId)?.toString() ?? null,
+      reservedUsdc: paymentManager?.getReserveCeiling(sellerPeerId)?.toString() ?? null,
       consumedUsdc: channel?.authMax ?? null,
       channelStatus: channel?.status ?? null,
       reservedAt: channel?.reservedAt ?? null,
@@ -1274,12 +1333,12 @@ export class AntseedNode extends EventEmitter {
    * available, return null rather than substituting the unrelated cumulative
    * SpendingAuth amount stored in authMax.
    */
-  getActiveBuyerChannels(): BuyerChannelSummary[] {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+  getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
+    const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
     const stored = this._channelStore.getActiveChannelsByBuyer(CHANNEL_ROLE.BUYER, buyerAddress);
     return stored.map((c) => {
-      const liveReserve = this._buyerPaymentManager?.getReserveCeiling(c.peerId);
+      const liveReserve = paymentManager?.getReserveCeiling(c.peerId);
       return {
         channelId: c.sessionId,
         peerId: c.peerId,
@@ -1302,13 +1361,13 @@ export class AntseedNode extends EventEmitter {
   }
 
   /** All buyer channels (any local status), used for history views. */
-  getAllBuyerChannels(): BuyerChannelSummary[] {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+  getAllBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
+    const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
     const stored = this._channelStore.getAllChannelsByBuyer('buyer', buyerAddress);
     return stored.map((c) => {
       const liveReserve = c.status === CHANNEL_STATUS.ACTIVE
-        ? this._buyerPaymentManager?.getReserveCeiling(c.peerId)
+        ? paymentManager?.getReserveCeiling(c.peerId)
         : null;
       return {
         channelId: c.sessionId,
@@ -1337,8 +1396,8 @@ export class AntseedNode extends EventEmitter {
    * columns are semantically overloaded vs seller rows. Set in
    * buyer-payment-manager.recordAndPersistTokens.
    */
-  getBuyerUsageTotals(): BuyerUsageTotals {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+  getBuyerUsageTotals(buyerIdentity?: string): BuyerUsageTotals {
+    const { address: buyerAddress } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return EMPTY_BUYER_USAGE;
     // Paid channels plus free-usage sessions — both carry real traffic and
     // the desktop usage tiles/float must reflect the sum.
@@ -1398,20 +1457,150 @@ export class AntseedNode extends EventEmitter {
   async sendRequest(
     peer: PeerInfo,
     req: SerializedHttpRequest,
-    options?: RequestExecutionOptions,
+    options?: NodeRequestOptions,
   ): Promise<SerializedHttpResponse> {
-    if (!this._buyerHandler) throw buyerFault("Node not started or not in buyer mode", "node-not-started");
-    return this._buyerHandler.sendRequest(peer, req, undefined, options);
+    return this._dispatchBuyerRequest(peer, req, undefined, options);
   }
 
   async sendRequestStream(
     peer: PeerInfo,
     req: SerializedHttpRequest,
     callbacks: RequestStreamCallbacks,
-    options?: RequestExecutionOptions,
+    options?: NodeRequestOptions,
+  ): Promise<SerializedHttpResponse> {
+    return this._dispatchBuyerRequest(peer, req, callbacks, options);
+  }
+
+  private _dispatchBuyerRequest(
+    peer: PeerInfo,
+    req: SerializedHttpRequest,
+    callbacks: RequestStreamCallbacks | undefined,
+    options: NodeRequestOptions | undefined,
   ): Promise<SerializedHttpResponse> {
     if (!this._buyerHandler) throw buyerFault("Node not started or not in buyer mode", "node-not-started");
-    return this._buyerHandler.sendRequest(peer, req, callbacks, options);
+    const { buyerIdentity, ...executionOptions } = options ?? {};
+    const context = this._buyerContext(buyerIdentity);
+    return context
+      ? context.sendRequest(peer, req, callbacks, executionOptions)
+      : this._buyerHandler.sendRequest(peer, req, callbacks, executionOptions);
+  }
+
+  /** Buyer payment settings shared by every identity; null when payments are off. */
+  private _buyerPaymentConfig(paymentsDir: string): BuyerPaymentConfig | null {
+    const payments = this._config.payments;
+    if (!payments?.enabled || !payments.rpcUrl || !payments.depositsAddress || !payments.channelsAddress || !payments.usdcAddress) {
+      return null;
+    }
+    return {
+      rpcUrl: payments.rpcUrl,
+      ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
+      depositsContractAddress: payments.depositsAddress,
+      channelsContractAddress: payments.channelsAddress,
+      usdcAddress: payments.usdcAddress,
+      identityRegistryAddress: payments.identityRegistryAddress ?? '',
+      chainId: payments.chainId ?? 8453,
+      defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
+      maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
+      maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
+      disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+      dataDir: paymentsDir,
+    };
+  }
+
+  /**
+   * Let this buyer node also pay as another wallet. The identity reuses the
+   * node's discovery, routing and chain clients; sellers see it as its own
+   * buyer with its own connections, channels and deposits. Select it per
+   * request with `buyerIdentity`.
+   */
+  async addBuyerIdentity(name: string, identity: Identity): Promise<BuyerIdentitySummary> {
+    if (!this._started || !this._buyerHandler || !this._identity) {
+      throw new Error("Buyer identities can only be added to a started buyer node");
+    }
+    if (!isValidBuyerIdentityName(name) || name === DEFAULT_BUYER_IDENTITY) {
+      throw new Error(`Invalid buyer identity name "${name}"`);
+    }
+    if (this._buyerIdentities.has(name)) {
+      throw new Error(`Buyer identity "${name}" is already loaded`);
+    }
+    const address = identity.wallet.address.toLowerCase();
+    if (this.buyerIdentities().some((entry) => entry.address.toLowerCase() === address)) {
+      throw new Error(`Wallet ${identity.wallet.address} is already loaded as another buyer identity`);
+    }
+
+    const payments = this._config.payments;
+    const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
+    const context = await BuyerIdentityContext.create({
+      name,
+      identity,
+      paymentConfig: this._buyerPaymentConfig(join(dataDir, "payments")),
+      freeUsage: this._freeUsageClient && payments?.freeUsageAddress
+        ? {
+          chainId: payments.chainId ?? 8453,
+          freeUsageContractAddress: payments.freeUsageAddress,
+          defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
+          disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+        }
+        : null,
+      requestHandler: {
+        requestTimeoutMs: this._config.requestTimeoutMs,
+        maxStreamBufferBytes: this._config.maxStreamBufferBytes,
+        maxStreamDurationMs: this._config.maxStreamDurationMs,
+      },
+      maxUploadBodyBytes: this._config.maxUploadBodyBytes,
+      requireSecureTransport: this._config.requireSecureTransport,
+      shared: {
+        channelStore: this._channelStore,
+        depositsClient: this._depositsClient,
+        channelsClient: this._channelsClient,
+        sellerAddressResolver: this._sellerAddressResolver,
+        verificationStorage: this._verificationStorage,
+        verificationSampler: this._verificationSampler,
+        peerCapabilities: this._peerCapabilities,
+        isChainReachable: () => this._rpcHealth?.reachable ?? true,
+        onChainReadFailure: () => this._rpcHealth?.reportFailure(),
+      },
+      emit: (event, payload) => { this.emit(event, payload); },
+    });
+    this._buyerIdentities.set(name, context);
+    debugLog(`[Node] Buyer identity "${name}" loaded (wallet=${identity.wallet.address.slice(0, 10)}...)`);
+    return { name, address: identity.wallet.address };
+  }
+
+  /** Close an identity's connections, letting sellers settle what they already served. */
+  async removeBuyerIdentity(name: string): Promise<void> {
+    const context = this._buyerIdentities.get(name);
+    if (!context) return;
+    this._buyerIdentities.delete(name);
+    await context.stop();
+  }
+
+  hasBuyerIdentity(name: string): boolean {
+    return name === DEFAULT_BUYER_IDENTITY ? this._identity !== null : this._buyerIdentities.has(name);
+  }
+
+  /** Every identity this node can pay as, the default one first. */
+  buyerIdentities(): BuyerIdentitySummary[] {
+    const identities: BuyerIdentitySummary[] = [];
+    if (this._identity) identities.push({ name: DEFAULT_BUYER_IDENTITY, address: this._identity.wallet.address });
+    for (const context of this._buyerIdentities.values()) {
+      identities.push({ name: context.name, address: context.address });
+    }
+    return identities;
+  }
+
+  private _buyerContext(name: string | undefined): BuyerIdentityContext | null {
+    if (name === undefined || name === DEFAULT_BUYER_IDENTITY) return null;
+    const context = this._buyerIdentities.get(name);
+    if (!context) throw buyerFault(`Unknown buyer identity "${name}"`, "invalid-request");
+    return context;
+  }
+
+  /** Wallet address and payment manager behind an identity name. */
+  private _buyerAccount(name: string | undefined): { address: string | null; paymentManager: BuyerPaymentManager | null } {
+    const context = this._buyerContext(name);
+    if (context) return { address: context.address, paymentManager: context.paymentManager };
+    return { address: this._identity?.wallet.address ?? null, paymentManager: this._buyerPaymentManager };
   }
 
   private _createDHTConfig(port: number, bootstrapNodes: Array<{ host: string; port: number }>): DHTNodeConfig {
@@ -1777,24 +1966,11 @@ export class AntseedNode extends EventEmitter {
         }
       }
       if (this._channelStore) {
-        const buyerPaymentConfig: BuyerPaymentConfig = {
-          rpcUrl: payments.rpcUrl,
-          ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
-          depositsContractAddress: payments.depositsAddress,
-          channelsContractAddress: payments.channelsAddress,
-          usdcAddress: payments.usdcAddress,
-          identityRegistryAddress: payments.identityRegistryAddress ?? '',
-          chainId: payments.chainId ?? 8453,
-          defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
-          maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
-          maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
-          disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
-          dataDir: paymentsDir,
-        };
+        const buyerPaymentConfig = this._buyerPaymentConfig(paymentsDir)!;
         this._buyerPaymentManager = new BuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore, this._sellerAddressResolver ?? undefined);
         // Re-emit per-request spend so callers can attribute it to whatever
         // issued the request — the node only knows the seller and requestId.
-        this._buyerPaymentManager.setSpendListener((event) => this.emit('payment:spend', event));
+        this._buyerPaymentManager.setSpendListener((event) => this.emit('payment:spend', { ...event, buyerIdentity: DEFAULT_BUYER_IDENTITY }));
         debugLog(`[Node] Buyer payment manager initialized (wallet=${identity.wallet.address.slice(0, 10)}... chainId=${buyerPaymentConfig.chainId} deposits=${buyerPaymentConfig.depositsContractAddress.slice(0, 10)}...)`);
 
         // Create negotiator that wraps the BPM with 402 handling and per-request auth
@@ -2197,88 +2373,12 @@ export class AntseedNode extends EventEmitter {
     if (!this._connectionManager || !this._identity) {
       throw buyerFault("Node not started", "node-not-started");
     }
-
-    const existing = this._connectionManager.getConnection(peer.peerId);
-    const peerCapabilities = new Set(peer.capabilities ?? peer.metadata?.capabilities ?? []);
-    this._peerCapabilities.set(peer.peerId, peerCapabilities);
-    let endpointChanged = false;
-
-    // Check if the peer's endpoint has changed (e.g. IP rotation).
-    // Only applies to outbound connections where we registered the endpoint;
-    // inbound connections (peer connected to us) have no registered endpoint
-    // and are not subject to pinned-peer routing.
-    if (existing && peer.publicAddress) {
-      const currentEndpoint = ConnectionManager.resolvePeerEndpoint(peer.peerId);
-      const { host: newHost, port: newPort } = parsePeerAddress(peer.publicAddress);
-      if (currentEndpoint && (currentEndpoint.host !== newHost || currentEndpoint.port !== newPort)) {
-        debugLog(`[Node] Peer ${peer.peerId.slice(0, 12)}... endpoint changed from ${currentEndpoint.host}:${currentEndpoint.port} to ${newHost}:${newPort}, reconnecting`);
-        existing.close();
-        this._peerCapabilities.set(peer.peerId, peerCapabilities);
-        endpointChanged = true;
-      }
-    }
-
-    if (
-      existing && !endpointChanged &&
-      existing.state !== ConnectionState.Closed &&
-      existing.state !== ConnectionState.Failed
-    ) {
-      debugLog(`[Node] Reusing existing connection to ${peer.peerId.slice(0, 12)}... (state=${existing.state})`);
-      // If still connecting, wait for it to reach Open or Authenticated
-      if (existing.state === ConnectionState.Connecting) {
-        debugLog(`[Node] Waiting for connection to open...`);
-        await new Promise<void>((resolve, reject) => {
-          const onState = (state: ConnectionState): void => {
-            if (state === ConnectionState.Open || state === ConnectionState.Authenticated) {
-              existing.off("stateChange", onState);
-              resolve();
-            } else if (state === ConnectionState.Failed || state === ConnectionState.Closed) {
-              existing.off("stateChange", onState);
-              reject(new Error(`Connection to ${peer.peerId} failed`));
-            }
-          };
-          existing.on("stateChange", onState);
-        });
-      }
-      return existing;
-    }
-
-    // Register the peer endpoint so ConnectionManager can resolve it
-    if (peer.publicAddress) {
-      const { host, port } = parsePeerAddress(peer.publicAddress);
-      this._connectionManager.registerPeerEndpoint(peer.peerId, { host, port });
-      debugLog(`[Node] Connecting to ${peer.peerId.slice(0, 12)}... at ${host}:${port}`);
-    } else {
-      debugWarn(`[Node] Peer ${peer.peerId.slice(0, 12)}... has no public address`);
-    }
-
-    const connConfig: ConnectionConfig = {
-      remotePeerId: peer.peerId,
-      isInitiator: true,
-      remoteCapabilities: [...peerCapabilities],
-    };
-
-    const conn = this._connectionManager.createConnection(connConfig);
-
-    // Wait for connection to open
-    await new Promise<void>((resolve, reject) => {
-      const onState = (state: ConnectionState): void => {
-        debugLog(`[Node] Connection state: ${state}`);
-        if (state === ConnectionState.Open || state === ConnectionState.Authenticated) {
-          conn.off("stateChange", onState);
-          resolve();
-        } else if (state === ConnectionState.Failed || state === ConnectionState.Closed) {
-          conn.off("stateChange", onState);
-          reject(new Error(`Connection to ${peer.peerId} failed`));
-        }
-      };
-      conn.on("stateChange", onState);
-    });
-
-    debugLog(`[Node] Connected to ${peer.peerId.slice(0, 12)}... via ${conn.transportDescription}`);
-    this._peerCapabilities.set(peer.peerId, peerCapabilities);
-    this._wireConnection(conn, peer.peerId);
-    return conn;
+    return getOrOpenOutboundConnection(
+      this._connectionManager,
+      peer,
+      this._peerCapabilities,
+      (conn) => this._wireConnection(conn, peer.peerId),
+    );
   }
 
   private _getOrCreateMux(peerId: PeerId, conn: PeerConnection): ProxyMux {
@@ -2591,11 +2691,6 @@ export class AntseedNode extends EventEmitter {
       && pricing.outputUsdPerMillion === 0
       && cachedPrice === 0;
   }
-}
-
-function parsePeerAddress(address: string): { host: string; port: number } {
-  const parts = address.split(":");
-  return { host: parts[0]!, port: parseInt(parts[1] ?? "6882", 10) };
 }
 
 /**

@@ -1,10 +1,11 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
-import { provisionManagedIdentity } from '../../../gateway/identities.js'
+import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
+import { buyerIdentityDir, createBuyerIdentity, loadBuyerIdentity } from '../../../buyer-identities/store.js'
 import { LIMIT_PERIODS, periodStart, type LimitPeriod, type SpendLimits } from '../../../gateway/limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, usdcToDecimalString } from '../../../gateway/money.js'
-import { DEFAULT_IDENTITY_ID, type ApiKeyRecord, type GatewayStore } from '../../../gateway/store.js'
+import type { ApiKeyRecord, GatewayStore } from '../../../gateway/store.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import {
   addLimitOptions,
@@ -24,12 +25,18 @@ function requireKey(store: GatewayStore, id: string): ApiKeyRecord {
   return key
 }
 
-function uniqueIdentityId(store: GatewayStore, base: string): string {
-  if (!store.getIdentity(base)) return base
+async function uniqueIdentityName(dataDir: string, base: string): Promise<string> {
+  if (!await loadBuyerIdentity(dataDir, base)) return base
   for (let suffix = 2; ; suffix += 1) {
     const candidate = `${base.slice(0, 28)}-${suffix}`
-    if (!store.getIdentity(candidate)) return candidate
+    if (!await loadBuyerIdentity(dataDir, candidate)) return candidate
   }
+}
+
+/** Wallet address of an identity, or null for an app-managed default wallet. */
+async function identityAddress(dataDir: string, name: string): Promise<string | null> {
+  if (name === DEFAULT_BUYER_IDENTITY) return null
+  return (await loadBuyerIdentity(dataDir, name))?.wallet.address ?? null
 }
 
 function keyJson(store: GatewayStore, key: ApiKeyRecord) {
@@ -39,7 +46,7 @@ function keyJson(store: GatewayStore, key: ApiKeyRecord) {
     id: key.id,
     label: key.label,
     hint: key.hint,
-    identity: key.identityId,
+    identity: key.buyerIdentity,
     status: key.status,
     source: key.source,
     limitsUsd: Object.fromEntries(LIMIT_PERIODS.map((period) => [period, optionalUsdcToDecimalString(key.limits[period])])),
@@ -62,8 +69,8 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     key.command('create')
       .description('Create an API key; the secret is shown only once')
       .requiredOption('--label <name>', 'who or what the key is for')
-      .option('--identity <id>', 'buyer identity that pays for this key (default: the default identity)')
-      .option('--new-identity [id]', 'create a dedicated buyer identity and wallet for this key')
+      .option('--identity <name>', 'buyer identity that pays for this key (default: the default identity)')
+      .option('--new-identity [name]', 'create a dedicated buyer identity and wallet for this key')
       .option('--expires-in-days <days>', 'expire the key after this many days', parsePositiveInteger)
       .option('--json', 'print machine-readable JSON', false),
     false,
@@ -73,40 +80,42 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       const label = String(options['label']).trim()
       if (!label) throw new Error('--label cannot be empty.')
       if (options['identity'] && options['newIdentity']) throw new Error('Use either --identity or --new-identity, not both.')
-      let identityId = typeof options['identity'] === 'string' ? options['identity'] : DEFAULT_IDENTITY_ID
+      let identityName = typeof options['identity'] === 'string' ? options['identity'] : DEFAULT_BUYER_IDENTITY
       let createdIdentity = false
       if (options['newIdentity']) {
         const requested = typeof options['newIdentity'] === 'string'
           ? options['newIdentity']
-          : uniqueIdentityId(store, slugifyIdentityId(label))
-        identityId = (await provisionManagedIdentity(store, dataDir, requested)).id
+          : await uniqueIdentityName(dataDir, slugifyIdentityId(label))
+        identityName = (await createBuyerIdentity(dataDir, requested)).name
         createdIdentity = true
+      } else if (identityName !== DEFAULT_BUYER_IDENTITY && !await loadBuyerIdentity(dataDir, identityName)) {
+        throw new Error(`Unknown buyer identity "${identityName}". Create it with \`antseed buyer identity create ${identityName}\` or use --new-identity.`)
       }
       const limits: SpendLimits = { daily: null, monthly: null, total: null, ...parseLimitOptions(options) }
       const days = options['expiresInDays'] as number | undefined
       const { key: record, secret } = store.createKey({
         label,
-        identityId,
+        buyerIdentity: identityName,
         limits,
         expiresAt: days ? Date.now() + days * DAY_MS : null,
       })
-      const identity = store.getIdentity(identityId)!
+      const address = await identityAddress(dataDir, identityName)
 
       if (options['json']) {
-        console.log(JSON.stringify({ ...keyJson(store, record), apiKey: secret, identityAddress: identity.address }))
+        console.log(JSON.stringify({ ...keyJson(store, record), apiKey: secret, identityAddress: address }))
         return
       }
       console.log(chalk.green(`Created key ${record.id} (${record.label})`))
       console.log(`${chalk.bold('API key:')} ${secret}`)
       console.log(chalk.yellow('Store it now; it cannot be shown again.'))
-      console.log(`Identity: ${identity.id}${identity.address ? ` (${identity.address})` : ''}`)
+      console.log(`Identity: ${identityName}${address ? ` (${address})` : ''}`)
       console.log(`Limits: ${describeLimits(record)}`)
       if (record.expiresAt !== null) console.log(`Expires: ${new Date(record.expiresAt).toISOString()}`)
       if (createdIdentity) {
         console.log('')
-        console.log(chalk.dim('This key has its own buyer wallet. Fund it before use; the gateway runs its buyer and'))
-        console.log(chalk.dim('sweeps incoming USDC into its credits automatically:'))
-        console.log(chalk.dim(`  antseed --data-dir ${identity.dataDir} buyer deposit --no-watch`))
+        console.log(chalk.dim('This key has its own buyer wallet. Fund it by sending USDC on Base to the address above;'))
+        console.log(chalk.dim('a running buyer deposits it into the identity\'s credits automatically. As a QR code:'))
+        console.log(chalk.dim(`  antseed --data-dir ${buyerIdentityDir(dataDir, identityName)} buyer deposit --no-watch`))
       }
     } finally {
       store.close()
@@ -135,7 +144,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
           table.push([
             record.id,
             record.label,
-            record.identityId,
+            record.buyerIdentity,
             keyStatusLabel(record),
             formatUsdc(spent.daily),
             formatUsdc(spent.monthly),
@@ -154,8 +163,8 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     .description('Show usage and limits for one key')
     .argument('<id>', 'key id')
     .option('--json', 'print machine-readable JSON', false)
-    .action((id: string, options: { json: boolean }) => {
-      const { store } = openGatewayStore(key)
+    .action(async (id: string, options: { json: boolean }) => {
+      const { store, dataDir } = openGatewayStore(key)
       try {
         const record = requireKey(store, id)
         if (options.json) {
@@ -165,10 +174,10 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         const spent = store.periodSpend(record.id)
         const today = store.usageStats(record.id, periodStart('daily', Date.now()))
         const total = store.usageStats(record.id)
-        const identity = store.getIdentity(record.identityId)
+        const address = await identityAddress(dataDir, record.buyerIdentity)
         console.log(`${chalk.bold(record.label)} ${chalk.dim(record.id)}  ${keyStatusLabel(record)}`)
         console.log(`Key: ${record.hint}`)
-        console.log(`Identity: ${record.identityId}${identity?.address ? ` (${identity.address})` : ''}`)
+        console.log(`Identity: ${record.buyerIdentity}${address ? ` (${address})` : ''}`)
         for (const period of LIMIT_PERIODS) {
           const limit = record.limits[period]
           console.log(`${PERIOD_SPEND_LABELS[period]}: ${formatUsdc(spent[period])}${limit === null ? '' : ` of ${formatUsdc(limit)}`}`)

@@ -10,28 +10,27 @@ const POLL_TIMEOUT_MS = 3_000
  */
 export type SpendFeedState = 'reporting' | 'unsupported' | 'unreachable'
 
-export interface SpendFeedTarget {
-  identityId: string
-  port: number
-}
-
 export interface SpendFeedOptions {
-  targets: () => SpendFeedTarget[]
-  onPage: (identityId: string, page: AttributedSpendPage) => void
+  buyerPort: number
+  onPage: (page: AttributedSpendPage) => void
   onLog?: (message: string) => void
   intervalMs?: number
   fetchImpl?: typeof fetch
 }
 
-type Cursor = { bootId: string | null; after: number; state: SpendFeedState }
-
-/** Polls each identity's buyer for the signed spend of gateway-tagged requests. */
+/** Polls the buyer for the signed spend of gateway-tagged requests. */
 export class SpendFeedPoller {
-  private readonly _cursors = new Map<string, Cursor>()
+  private _bootId: string | null = null
+  private _after = 0
+  private _state: SpendFeedState = 'unreachable'
   private _timer: ReturnType<typeof setInterval> | null = null
-  private _polling = false
+  private _polling: Promise<void> | null = null
 
   constructor(private readonly _options: SpendFeedOptions) {}
+
+  get state(): SpendFeedState {
+    return this._state
+  }
 
   start(): void {
     if (this._timer) return
@@ -47,70 +46,60 @@ export class SpendFeedPoller {
     await this.pollOnce()
   }
 
-  state(identityId: string): SpendFeedState {
-    return this._cursors.get(identityId)?.state ?? 'unreachable'
+  /** Concurrent callers share the poll already in flight. */
+  pollOnce(): Promise<void> {
+    this._polling ??= this._drain().finally(() => { this._polling = null })
+    return this._polling
   }
 
-  async pollOnce(): Promise<void> {
-    if (this._polling) return
-    this._polling = true
-    try {
-      await Promise.all(this._options.targets().map((target) => this._poll(target)))
-    } finally {
-      this._polling = false
-    }
-  }
-
-  private async _poll(target: SpendFeedTarget): Promise<void> {
-    const cursor = this._cursors.get(target.identityId) ?? { bootId: null, after: 0, state: 'unreachable' as SpendFeedState }
-    this._cursors.set(target.identityId, cursor)
+  private async _drain(): Promise<void> {
     const fetchImpl = this._options.fetchImpl ?? fetch
     for (;;) {
       let response: Response
       try {
         response = await fetchImpl(
-          `http://127.0.0.1:${target.port}/_antseed/attributed-spend?after=${cursor.after}`,
+          `http://127.0.0.1:${this._options.buyerPort}/_antseed/attributed-spend?after=${this._after}`,
           { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) },
         )
       } catch {
-        this._setState(target.identityId, cursor, 'unreachable')
+        this._setState('unreachable')
         return
       }
       if (response.status === 404) {
-        this._setState(target.identityId, cursor, 'unsupported')
+        this._setState('unsupported')
         return
       }
       if (!response.ok) {
-        this._setState(target.identityId, cursor, 'unreachable')
+        this._setState('unreachable')
         return
       }
       const page = await response.json().catch(() => null) as AttributedSpendPage | null
       if (!page || typeof page.bootId !== 'string' || !Array.isArray(page.events)) {
-        this._setState(target.identityId, cursor, 'unsupported')
+        this._setState('unsupported')
         return
       }
-      this._setState(target.identityId, cursor, 'reporting')
-      if (page.bootId !== cursor.bootId) {
+      this._setState('reporting')
+      if (page.bootId !== this._bootId) {
         // A restarted buyer numbers its events from 1 again.
-        const restarted = cursor.bootId !== null
-        cursor.bootId = page.bootId
-        if (restarted || cursor.after > 0) {
-          cursor.after = 0
+        const restarted = this._bootId !== null
+        this._bootId = page.bootId
+        if (restarted || this._after > 0) {
+          this._after = 0
           continue
         }
       }
-      if (cursor.after > 0 && page.oldestSeq > cursor.after + 1) {
-        this._options.onLog?.(`spend feed for ${target.identityId} dropped events ${cursor.after + 1}-${page.oldestSeq - 1}`)
+      if (this._after > 0 && page.oldestSeq > this._after + 1) {
+        this._options.onLog?.(`spend feed dropped events ${this._after + 1}-${page.oldestSeq - 1}`)
       }
-      this._options.onPage(target.identityId, page)
-      const advanced = page.cursor > cursor.after
-      cursor.after = page.cursor
+      this._options.onPage(page)
+      const advanced = page.cursor > this._after
+      this._after = page.cursor
       if (!advanced || page.events.length === 0) return
     }
   }
 
-  private _setState(identityId: string, cursor: Cursor, state: SpendFeedState): void {
-    if (cursor.state !== state) this._options.onLog?.(`spend feed for ${identityId}: ${state}`)
-    cursor.state = state
+  private _setState(state: SpendFeedState): void {
+    if (this._state !== state) this._options.onLog?.(`spend feed: ${state}`)
+    this._state = state
   }
 }

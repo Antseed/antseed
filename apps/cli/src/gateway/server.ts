@@ -1,12 +1,14 @@
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
+import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { newRequestTag, type GatewayAccounting } from './accounting.js'
 import { parseBearerToken } from './keys.js'
 import { hasSpendLimits, LIMIT_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, usdcToDecimalString } from './money.js'
 import type { SpendFeedState } from './spend-feed.js'
-import type { ApiKeyRecord, GatewayIdentity, GatewayStore } from './store.js'
+import type { ApiKeyRecord, GatewayStore } from './store.js'
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -38,9 +40,10 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
 export interface GatewayServerOptions {
   store: GatewayStore
   accounting: GatewayAccounting
-  /** Port of the buyer proxy for an identity, or null when it has none running. */
-  resolveBuyerPort: (identity: GatewayIdentity) => number | null
-  spendFeedState: (identityId: string) => SpendFeedState
+  buyerPort: number
+  /** Wallet address of a buyer identity, for key holders' usage view. */
+  identityAddress: (buyerIdentity: string) => Promise<string | null>
+  spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
   listenPort?: number
   listenHost?: string
@@ -48,9 +51,9 @@ export interface GatewayServerOptions {
 }
 
 /**
- * Authenticated front door for one or more buyer identities. Each API key
- * maps to an identity's buyer proxy, carries optional spend caps, and gets
- * its signed spend attributed back through the buyer's spend feed.
+ * Authenticated front door to a buyer. Each API key names the buyer identity
+ * (wallet) that pays for it, carries optional spend caps, and gets its signed
+ * spend attributed back through the buyer's spend feed.
  */
 export class GatewayServer {
   private _server: http.Server | null = null
@@ -118,22 +121,16 @@ export class GatewayServer {
     }
 
     if (canonicalPath.startsWith(KEY_INFO_PATH)) {
-      sendJson(res, 200, { data: this._keyInfo(key) })
+      sendJson(res, 200, { data: await this._keyInfo(key) })
       return
     }
-
-    const identity = this._options.store.getIdentity(key.identityId)
-    const buyerPort = identity ? this._options.resolveBuyerPort(identity) : null
-    if (!identity || buyerPort === null) {
-      sendError(res, 503, 'api_error', 'buyer_unavailable', 'The buyer for this API key is not running')
-      return
-    }
+    const buyerPort = this._options.buyerPort
 
     // Caps are only as good as the spend that reaches the ledger, so a key
     // with caps fails closed while its buyer is not reporting spend.
-    if (route.paid && hasSpendLimits(key.limits) && this._options.spendFeedState(identity.id) !== 'reporting') {
+    if (route.paid && hasSpendLimits(key.limits) && this._options.spendFeedState() !== 'reporting') {
       await this._options.refreshSpendFeed()
-      const state = this._options.spendFeedState(identity.id)
+      const state = this._options.spendFeedState()
       if (state !== 'reporting') {
         sendError(res, 503, 'api_error', 'spend_tracking_unavailable', state === 'unsupported'
           ? 'The buyer for this API key does not report spend; upgrade it to enforce spend limits'
@@ -159,14 +156,14 @@ export class GatewayServer {
     this._options.store.startRequest({
       tag,
       keyId: key.id,
-      identityId: identity.id,
+      buyerIdentity: key.buyerIdentity,
       method,
       path: canonicalPath.split('?')[0]!,
       model: sniffModel(body, req.headers['content-type']),
       startedAt: Date.now(),
     })
     this._options.store.touchKey(key.id)
-    this._log(`gateway request: key=${key.id} identity=${identity.id} ${method} ${path} -> ${canonicalPath}`)
+    this._log(`gateway request: key=${key.id} identity=${key.buyerIdentity} ${method} ${path} -> ${canonicalPath}`)
 
     let finished = false
     const finish = (status: number, buyerRequestId: string | null): void => {
@@ -180,7 +177,8 @@ export class GatewayServer {
     for (const [name, value] of Object.entries(req.headers)) {
       const normalized = name.toLowerCase()
       if (normalized === 'host' || normalized === 'authorization' || normalized === 'cookie') continue
-      if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER) continue
+      // The key decides who pays and how spend is tagged, never the client.
+      if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
       if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
       headers[name] = value
     }
@@ -189,6 +187,7 @@ export class GatewayServer {
     headers['content-length'] = String(body.length)
     headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)
     headers[SPEND_ATTRIBUTION_HEADER] = tag
+    if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
 
     const upstream = http.request({
       hostname: '127.0.0.1',
@@ -227,10 +226,10 @@ export class GatewayServer {
     upstream.end(body)
   }
 
-  private _keyInfo(key: ApiKeyRecord) {
+  private async _keyInfo(key: ApiKeyRecord) {
     const spent = this._options.store.periodSpend(key.id)
     const usage = this._options.store.usageStats(key.id)
-    const identity = this._options.store.getIdentity(key.identityId)
+    const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
     const limits = Object.fromEntries(LIMIT_PERIODS.map((period) => {
       const limit = key.limits[period]
       return [period, {
@@ -245,7 +244,7 @@ export class GatewayServer {
       created_at: new Date(key.createdAt).toISOString(),
       expires_at: key.expiresAt === null ? null : new Date(key.expiresAt).toISOString(),
       // The wallet that pays sellers for this key's requests.
-      buyer_address: identity?.address ?? null,
+      buyer_address: buyerAddress,
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),

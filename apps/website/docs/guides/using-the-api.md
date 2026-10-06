@@ -319,6 +319,8 @@ antseed --data-dir "$BUYDIR" buyer start \
 
 Use `--data-dir <path>` in service/systemd scripts because it is explicit. `ANTSEED_DATA_DIR=<path>` is useful for wrappers and local scripts. Do not reuse the same buyer data directory across concurrent processes.
 
+To pay from several wallets on one machine, you don't need a buyer process per wallet. Add buyer identities to one buyer and pick one per request with the `x-antseed-buyer-identity` header. See [buyer identities](/docs/guides/gateway-api-keys#buyer-identities).
+
 If the buyer proxy starts but appears to use stale pins, waits on broad discovery, times out before payment negotiation, or shows sessions/channels in an unexpected place, check the startup log for the resolved data directory and `buyer.state.json` path. `ANTSEED_HOME` is not the CLI state-isolation setting; use `--data-dir` or `ANTSEED_DATA_DIR`.
 
 Extra buyer config is optional. Add it only for advanced customization such as pricing caps, reputation thresholds, bootstrap nodes, or chain settings:

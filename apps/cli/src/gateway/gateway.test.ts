@@ -11,7 +11,9 @@ import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { GatewayServer } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
-import { DEFAULT_IDENTITY_ID, GatewayStore, type GatewayIdentity } from './store.js'
+import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
+import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
+import { GatewayStore } from './store.js'
 
 const NO_LIMITS = { daily: null, monthly: null, total: null }
 
@@ -51,9 +53,9 @@ async function request(port: number, path: string, options: { method?: string; k
  * Stand-in for `antseed buyer start`: answers API routes, records the tag the
  * gateway attaches, and serves the attributed-spend feed for tagged requests.
  */
-async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean } = {}) {
+async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string } = {}) {
   const feed = new SpendAttributionFeed()
-  const captured: Array<{ url: string; auth?: string; source?: string; tag?: string }> = []
+  const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string }> = []
   let requestCounter = 0
   const server = http.createServer((req, res) => {
     if (req.url?.startsWith('/_antseed/attributed-spend')) {
@@ -69,7 +71,9 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean } = {
     req.resume()
     req.on('end', () => {
       const tag = req.headers[SPEND_ATTRIBUTION_HEADER] as string | undefined
+      const identity = req.headers[BUYER_IDENTITY_HEADER] as string | undefined
       captured.push({
+        identity,
         url: req.url ?? '',
         auth: req.headers.authorization,
         source: req.headers['x-antseed-system-proxy-source'] as string | undefined,
@@ -80,6 +84,7 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean } = {
         feed.track(requestId, tag)
         feed.record({
           requestId,
+          buyerIdentity: options.reportIdentity ?? identity ?? DEFAULT_BUYER_IDENTITY,
           sellerPeerId: 'seller',
           amountUsdc: String(options.costUsdc),
           inputTokens: '100',
@@ -99,16 +104,17 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean } = {
 async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs: 50 })
   const feed = new SpendFeedPoller({
-    targets: () => [{ identityId: DEFAULT_IDENTITY_ID, port: buyerPort }],
-    onPage: (identityId, page) => accounting.ingest(identityId, page.bootId, page.events),
+    buyerPort,
+    onPage: (page) => { accounting.ingest(page.bootId, page.events) },
     intervalMs: 60_000,
   })
   const logs: string[] = []
   const server = new GatewayServer({
     store,
     accounting,
-    resolveBuyerPort: (_identity: GatewayIdentity) => buyerPort,
-    spendFeedState: (identityId) => feed.state(identityId),
+    buyerPort,
+    identityAddress: async (name) => (name === 'team-a' ? '0x00000000000000000000000000000000000000aa' : null),
+    spendFeedState: () => feed.state,
     refreshSpendFeed: () => feed.pollOnce(),
     onLog: (message) => logs.push(message),
   })
@@ -153,7 +159,7 @@ test('limits use UTC calendar periods and count in-flight holds', () => {
 test('store keeps keys hashed, syncs the tunnel env key, and records ledger entries idempotently', () => {
   const { store, cleanup } = tempStore()
   try {
-    const { key, secret } = store.createKey({ label: 'Alice', identityId: DEFAULT_IDENTITY_ID, limits: NO_LIMITS, expiresAt: null })
+    const { key, secret } = store.createKey({ label: 'Alice', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
     assert.equal(store.findKeyBySecret(secret)?.id, key.id)
     assert.equal(store.findKeyBySecret(`${secret}x`), null)
     assert.ok(!JSON.stringify(store.listKeys()).includes(secret))
@@ -167,7 +173,7 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
     const entry = {
       kind: 'spend' as const,
       keyId: key.id,
-      identityId: DEFAULT_IDENTITY_ID,
+      buyerIdentity: DEFAULT_BUYER_IDENTITY,
       amountUsdc: 250_000,
       externalRef: 'spend:default:boot:1',
       createdAt: Date.now(),
@@ -188,18 +194,43 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
   }
 })
 
-test('store refuses to remove identities that back keys', () => {
-  const { store, dir, cleanup } = tempStore()
+test('gateway pays with the key\'s buyer identity and ignores the client\'s choice', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer({ costUsdc: 100_000 })
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+  const owner = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
   try {
-    const identity = store.createIdentity({ id: 'team-a', dataDir: join(dir, 'team-a'), buyerPort: store.nextManagedBuyerPort([]), address: null })
-    assert.equal(identity.buyerPort, 8390)
-    assert.equal(store.nextManagedBuyerPort([]), 8391)
-    store.createKey({ label: 'Bob', identityId: 'team-a', limits: NO_LIMITS, expiresAt: null })
-    assert.deepEqual([...store.identitiesWithActiveKeys()], ['team-a'])
-    assert.throws(() => store.removeIdentity('team-a'), /kept for their ledger/)
-    assert.throws(() => store.removeIdentity(DEFAULT_IDENTITY_ID))
-    assert.throws(() => store.createIdentity({ id: 'Bad Name', dataDir: join(dir, 'x'), buyerPort: 8400, address: null }))
+    const spoof = { [BUYER_IDENTITY_HEADER]: 'someone-else' }
+    assert.equal((await request(gateway.port, '/v1/responses', { method: 'POST', key: team.secret, body: '{}', headers: spoof })).status, 200)
+    assert.equal((await request(gateway.port, '/v1/responses', { method: 'POST', key: owner.secret, body: '{}', headers: spoof })).status, 200)
+    assert.deepEqual(buyer.captured.map((entry) => entry.identity), ['team-a', undefined])
+
+    await gateway.feed.pollOnce()
+    assert.equal(store.periodSpend(team.key.id).total, 100_000)
+    assert.equal(store.periodSpend(owner.key.id).total, 100_000)
+
+    const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
+    assert.equal(info.buyer_address, '0x00000000000000000000000000000000000000aa')
   } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('spend signed by a different identity than the key\'s is not booked to the key', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer({ costUsdc: 100_000, reportIdentity: 'other' })
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    assert.equal((await request(gateway.port, '/v1/responses', { method: 'POST', key: team.secret, body: '{}' })).status, 200)
+    await gateway.feed.pollOnce()
+    assert.equal(store.periodSpend(team.key.id).total, 0)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
     cleanup()
   }
 })
@@ -221,7 +252,7 @@ test('spend attribution feed reports only tagged requests and pages by cursor', 
 test('gateway exposes only authenticated supported API routes', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()
-  const { secret } = store.createKey({ label: 'Cursor', identityId: DEFAULT_IDENTITY_ID, limits: NO_LIMITS, expiresAt: null })
+  const { secret } = store.createKey({ label: 'Cursor', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port)
   try {
     assert.equal((await request(gateway.port, '/_antseed/status', { key: secret })).status, 404)
@@ -259,8 +290,8 @@ test('gateway exposes only authenticated supported API routes', async () => {
 test('gateway rejects revoked and expired keys', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()
-  const revoked = store.createKey({ label: 'Old', identityId: DEFAULT_IDENTITY_ID, limits: NO_LIMITS, expiresAt: null })
-  const expired = store.createKey({ label: 'Trial', identityId: DEFAULT_IDENTITY_ID, limits: NO_LIMITS, expiresAt: Date.now() - 1 })
+  const revoked = store.createKey({ label: 'Old', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const expired = store.createKey({ label: 'Trial', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: Date.now() - 1 })
   store.revokeKey(revoked.key.id)
   const gateway = await startGateway(store, buyer.port)
   try {
@@ -282,8 +313,8 @@ test('gateway settles reported spend per key and answers 402 once a cap is reach
   const { store, cleanup } = tempStore()
   // Each request costs $0.40 against a $1.00 daily cap.
   const buyer = await fakeBuyer({ costUsdc: 400_000 })
-  const limited = store.createKey({ label: 'Friend', identityId: DEFAULT_IDENTITY_ID, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
-  const unlimited = store.createKey({ label: 'Owner', identityId: DEFAULT_IDENTITY_ID, limits: NO_LIMITS, expiresAt: null })
+  const limited = store.createKey({ label: 'Friend', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const unlimited = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port, 300_000)
   const send = (key: string) => request(gateway.port, '/v1/chat/completions', { method: 'POST', key, body: '{"model":"deepseek-v4-flash"}' })
   try {
@@ -332,7 +363,7 @@ test('gateway holds block concurrent requests from slipping under a cap', () => 
   const { store, cleanup } = tempStore()
   const accounting = new GatewayAccounting(store, { holdUsdc: 300_000, settleGraceMs: 10 })
   try {
-    const { key } = store.createKey({ label: 'Burst', identityId: DEFAULT_IDENTITY_ID, limits: { daily: 500_000, monthly: null, total: null }, expiresAt: null })
+    const { key } = store.createKey({ label: 'Burst', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 500_000, monthly: null, total: null }, expiresAt: null })
     assert.equal(accounting.admit(key).ok, true)
     assert.equal(accounting.admit(key).ok, true)
     const third = accounting.admit(key)
@@ -347,7 +378,7 @@ test('gateway holds block concurrent requests from slipping under a cap', () => 
 test('free routes neither reserve holds nor count against caps', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()
-  const { key, secret } = store.createKey({ label: 'Poller', identityId: DEFAULT_IDENTITY_ID, limits: { daily: 400_000, monthly: null, total: null }, expiresAt: null })
+  const { key, secret } = store.createKey({ label: 'Poller', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 400_000, monthly: null, total: null }, expiresAt: null })
   const gateway = await startGateway(store, buyer.port, 300_000)
   try {
     for (let index = 0; index < 3; index += 1) {
@@ -365,8 +396,8 @@ test('free routes neither reserve holds nor count against caps', async () => {
 test('gateway fails closed for capped keys when the buyer does not report spend', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer({ spendFeed: false })
-  const capped = store.createKey({ label: 'Capped', identityId: DEFAULT_IDENTITY_ID, limits: { daily: null, monthly: 5_000_000, total: null }, expiresAt: null })
-  const open = store.createKey({ label: 'Open', identityId: DEFAULT_IDENTITY_ID, limits: NO_LIMITS, expiresAt: null })
+  const capped = store.createKey({ label: 'Capped', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: null, monthly: 5_000_000, total: null }, expiresAt: null })
+  const open = store.createKey({ label: 'Open', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port)
   try {
     const response = await request(gateway.port, '/v1/responses', { method: 'POST', key: capped.secret, body: '{}' })

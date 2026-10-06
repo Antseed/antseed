@@ -67,18 +67,21 @@ export class GatewayAccounting {
     hold.timer.unref?.()
   }
 
-  /** Settle spend events reported by one identity's buyer. Unknown tags belong to other clients. */
-  ingest(identityId: string, bootId: string, events: readonly AttributedSpendEvent[]): number {
+  /**
+   * Settle spend events reported by the buyer. Unknown tags belong to other
+   * clients; an event signed by a different identity than the key's is ignored.
+   */
+  ingest(bootId: string, events: readonly AttributedSpendEvent[]): number {
     let recorded = 0
     for (const event of events) {
       const request = this._store.findRequest(event.tag)
-      if (!request || request.identityId !== identityId) continue
+      if (!request || request.buyerIdentity !== event.buyerIdentity) continue
       const inserted = this._store.recordLedgerEntry({
         kind: 'spend',
         keyId: request.keyId,
-        identityId,
+        buyerIdentity: request.buyerIdentity,
         amountUsdc: parseBaseUnits(event.amountUsdc),
-        externalRef: `spend:${identityId}:${bootId}:${event.seq}`,
+        externalRef: `spend:${bootId}:${event.seq}`,
         requestTag: event.tag,
         sellerPeerId: event.sellerPeerId,
         inputTokens: parseBaseUnits(event.inputTokens),

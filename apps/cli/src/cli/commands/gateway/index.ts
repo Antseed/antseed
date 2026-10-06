@@ -4,7 +4,6 @@ import { startGatewayRuntime } from '../../../gateway/runtime.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
-import { registerGatewayIdentityCommands } from './identity.js'
 import { registerGatewayKeyCommands } from './key.js'
 import { DEFAULT_GATEWAY_PORT } from './shared.js'
 
@@ -17,7 +16,7 @@ export function registerGatewayCommands(program: Command): void {
     .description('Run the API-key gateway locally (use `antseed tunnel start` to publish it)')
     .option('--port <number>', 'gateway listen port', parsePositiveInteger, DEFAULT_GATEWAY_PORT)
     .option('--host <host>', 'listen address; use 0.0.0.0 to serve your LAN', '127.0.0.1')
-    .option('--buyer-port <number>', 'buyer port of the default identity (default: buyer.proxyPort from config)', parsePositiveInteger)
+    .option('--buyer-port <number>', 'port of the running buyer (default: buyer.proxyPort from config)', parsePositiveInteger)
     .action(async (options: { port: number; host: string; buyerPort?: number }) => {
       const globalOptions = getGlobalOptions(gateway)
       const runtime = await startGatewayRuntime({
@@ -25,7 +24,7 @@ export function registerGatewayCommands(program: Command): void {
         configPath: globalOptions.config,
         listenPort: options.port,
         listenHost: options.host,
-        ...(options.buyerPort ? { defaultBuyerPort: options.buyerPort } : {}),
+        ...(options.buyerPort ? { buyerPort: options.buyerPort } : {}),
         onLog: (message) => process.stderr.write(`[gateway] ${message}\n`),
       })
       console.log(chalk.green(`API-key gateway listening on http://${options.host}:${runtime.port}/v1`))
@@ -37,5 +36,4 @@ export function registerGatewayCommands(program: Command): void {
     })
 
   registerGatewayKeyCommands(gateway)
-  registerGatewayIdentityCommands(gateway)
 }

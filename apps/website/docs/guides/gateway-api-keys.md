@@ -2,12 +2,12 @@
 sidebar_position: 3
 slug: /guides/gateway-api-keys
 title: Shared Gateway API Keys
-description: Give teammates, customers or friends their own Antseed API keys with per-key spend limits and usage, backed by one shared buyer wallet or a dedicated wallet per key.
+description: Give teammates, customers or friends their own Antseed API keys with per-key spend limits and usage, and let one buyer pay from several wallets.
 ---
 
 # Shared Gateway API Keys
 
-The Antseed CLI can serve one buyer API to many people. Each person or app gets their own API key. Every key has its own usage history, optional spend limits, and a buyer identity (wallet) that pays sellers for its requests.
+The Antseed CLI can serve one buyer API to many people. Each person or app gets their own API key. Every key has its own usage history, optional spend limits, and a buyer identity (wallet) that pays sellers for its requests. All keys run through a single `antseed buyer start`, however many wallets they use.
 
 Use it to:
 
@@ -17,25 +17,30 @@ Use it to:
 
 Keys work with the local gateway (`antseed gateway start`) and with [public HTTPS tunnels](/docs/guides/public-tunnels) (`antseed tunnel start`).
 
-## Identities
+## Buyer identities
 
-An identity is a buyer wallet with its own data directory and local buyer port.
-
-- **`default`** is the identity in your `--data-dir`. You run its buyer yourself with `antseed buyer start` or the AI VPN.
-- **Dedicated identities** are created by the gateway. The gateway starts and supervises their buyers, each on its own port from 8390 up, using your buyer config. A dedicated identity's buyer runs only while at least one active key uses it.
-
-Create one on its own, or together with a key:
+A buyer identity is a wallet the buyer can pay from. Every buyer has the `default` identity, the wallet in your `--data-dir`. You can add more:
 
 ```bash
-antseed gateway identity create team-a
-antseed gateway identity list
+antseed buyer identity create team-a
+antseed buyer identity list --balances
 ```
 
-To fund a dedicated identity, send USDC on Base to its wallet address. While the gateway runs its buyer, incoming USDC is swept into that identity's credits automatically. To show the address and a QR code:
+Extra identities are stored in `<data-dir>/buyer-identities/<name>/identity.key`. A running buyer loads them at startup, or on first use if you create one while it runs. They share the buyer's peer discovery, routing and chain connections. Sellers still see each one as a separate buyer: its own connections, payment channels and deposits.
+
+To fund an identity, send USDC on Base to its wallet address. While the buyer runs, incoming USDC is swept into that identity's credits automatically. To show the address and a QR code:
 
 ```bash
-antseed --data-dir ~/.antseed/gateway/identities/team-a buyer deposit --no-watch
+antseed --data-dir ~/.antseed/buyer-identities/team-a buyer deposit --no-watch
 ```
+
+Any local client can pay as an identity by sending a header to the buyer:
+
+```http
+x-antseed-buyer-identity: team-a
+```
+
+Without the header, requests use `default`. The buyer strips the header before forwarding the request to a seller. `antseed buyer identity remove <name>` stops using an identity and moves its key to `buyer-identities/.archived/` instead of deleting it, since the wallet may still hold credits.
 
 ## Create keys
 
@@ -43,11 +48,11 @@ antseed --data-dir ~/.antseed/gateway/identities/team-a buyer deposit --no-watch
 # Unlimited key on your default identity
 antseed gateway key create --label "My laptop"
 
-# Key with a dedicated wallet and spend caps
+# Key with its own new wallet and spend caps
 antseed gateway key create --label "Alice" --new-identity \
   --daily-limit 2 --monthly-limit 20 --total-limit 100 --expires-in-days 30
 
-# Key on an existing identity
+# Key paid by an existing identity
 antseed gateway key create --label "Bob" --identity team-a --monthly-limit 10
 ```
 
@@ -95,7 +100,7 @@ A key with limits fails closed. If its buyer isn't reachable or doesn't report s
 
 ## Run the gateway
 
-Locally, or on your LAN:
+The gateway forwards every key to your running buyer, so start that first (`antseed buyer start`, or the AI VPN). Then run the gateway locally, or on your LAN:
 
 ```bash
 antseed gateway start                    # http://127.0.0.1:8379/v1
@@ -104,7 +109,7 @@ antseed gateway start --host 0.0.0.0     # serve other machines on your network
 
 Publicly, use a tunnel. `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it. For an existing tunnel, the `ANTSEED_TUNNEL_API_KEY` it was started with is kept as an unlimited key on the default identity.
 
-If you don't run the default buyer on `buyer.proxyPort`, point the gateway at its port with `--buyer-port`.
+If your buyer doesn't listen on `buyer.proxyPort`, point the gateway at it with `--buyer-port`. The gateway sets `x-antseed-buyer-identity` from the key itself; a value sent by the client is ignored.
 
 ## Key holders: check usage
 
@@ -135,7 +140,7 @@ Every other route behaves as described in [Using the API](/docs/guides/using-the
 
 ## Where state lives
 
-- `<data-dir>/gateway/gateway.db`: identities, hashed keys, the request log and the per-key ledger (SQLite).
-- `<data-dir>/gateway/identities/<id>/`: each dedicated identity's wallet (`identity.key`) and buyer state, plus `buyer.log` with its buyer's output.
+- `<data-dir>/gateway/gateway.db`: hashed keys, the request log and the per-key ledger (SQLite).
+- `<data-dir>/buyer-identities/<name>/identity.key`: each extra identity's wallet.
 
 Back up the identity directories. Each one holds a wallet that can hold USDC credits.

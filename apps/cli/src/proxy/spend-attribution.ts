@@ -17,6 +17,8 @@ export interface AttributedSpendEvent {
   seq: number
   tag: string
   requestId: string
+  /** Buyer identity whose wallet signed the spend. */
+  buyerIdentity: string
   sellerPeerId: string
   /** USDC base units newly authorized by this signature. */
   amountUsdc: string
@@ -66,6 +68,7 @@ export class SpendAttributionFeed {
 
   record(event: {
     requestId: string | null
+    buyerIdentity?: string
     sellerPeerId: string
     amountUsdc: string
     inputTokens: string
@@ -80,6 +83,7 @@ export class SpendAttributionFeed {
       seq: this._nextSeq++,
       tag,
       requestId: event.requestId,
+      buyerIdentity: event.buyerIdentity ?? 'default',
       sellerPeerId: event.sellerPeerId,
       amountUsdc: event.amountUsdc,
       inputTokens: event.inputTokens,

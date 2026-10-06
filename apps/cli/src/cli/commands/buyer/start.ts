@@ -8,7 +8,7 @@ import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
-import type { NodePaymentsConfig } from '@antseed/node'
+import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
@@ -16,6 +16,7 @@ import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
 import { DepositWatcher } from '../../../proxy/deposit-watcher.js'
+import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
@@ -457,7 +458,20 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         }
       }
 
+      // Extra buyer identities pay through this same node. Each gets its own
+      // deposit watcher once watchers can run (see below).
+      let createDepositWatcher: ((identity: Identity) => DepositWatcher) | null = null
+      const identityWatchers: DepositWatcher[] = []
+      const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
+        console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
+        if (!createDepositWatcher || effectiveBuyerConfig.autoSweep === false) return
+        const watcher = createDepositWatcher(identity)
+        watcher.startIdle()
+        identityWatchers.push(watcher)
+      })
+
       const proxy = new BuyerProxy({
+        buyerIdentities,
         port: proxyPort,
         node,
         pinnedPeerId,
@@ -508,8 +522,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         proxy.setDepositWatcher(null, watcherAbsence)
       }
       if (ownsProxyListener && paymentsConfig?.enabled && depositRelayAddress) {
-        const identity = node.identity!
-        depositWatcher = new DepositWatcher({
+        createDepositWatcher = (identity) => new DepositWatcher({
           wallet: identity.wallet,
           address: identity.wallet.address,
           depositsClient: new DepositsClient({
@@ -535,10 +548,21 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           },
           getReceipt: async (authNonce) => proxy.getSweepReceipt(authNonce),
         })
+        depositWatcher = createDepositWatcher(node.identity!)
         proxy.setDepositWatcher(depositWatcher)
         if (effectiveBuyerConfig.autoSweep !== false) {
           depositWatcher.startIdle()
           console.log(chalk.dim('Auto-sweep: watching the hot wallet — incoming USDC deposits automatically (buyer.autoSweep=false disables).'))
+        }
+      }
+
+      if (ownsProxyListener) {
+        const loaded = await buyerIdentities.loadAll().catch((err: unknown) => {
+          console.warn(chalk.yellow(`Could not load buyer identities: ${(err as Error).message}`))
+          return []
+        })
+        if (loaded.length > 0) {
+          console.log(chalk.dim(`  Buyer identities: default + ${loaded.map((entry) => entry.name).join(', ')} (select with the x-antseed-buyer-identity header)`))
         }
       }
 
@@ -562,6 +586,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       setupShutdownHandler(async () => {
         nodeSpinner.start('Shutting down...')
         depositWatcher?.stop()
+        for (const watcher of identityWatchers) watcher.stop()
         if (ownsProxyListener) await proxy.stop()
         await node.stop()
         nodeSpinner.succeed('Disconnected. All channels finalized.')

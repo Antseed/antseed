@@ -1,23 +1,9 @@
+import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import Database from 'better-sqlite3'
 import { mkdirSync } from 'node:fs'
 import { join } from 'node:path'
 import { generateApiKey, hashApiKey, apiKeyHint, newKeyId } from './keys.js'
 import { LIMIT_PERIODS, periodStart, type PeriodSpend, type SpendLimits } from './limits.js'
-
-export const DEFAULT_IDENTITY_ID = 'default'
-const IDENTITY_ID_PATTERN = /^[a-z0-9][a-z0-9-]{0,31}$/
-const MANAGED_PORT_RANGE = { first: 8390, last: 8499 }
-
-export interface GatewayIdentity {
-  id: string
-  dataDir: string
-  /** Null for the default identity: its port comes from the buyer config. */
-  buyerPort: number | null
-  /** True when the gateway starts and supervises this identity's buyer. */
-  managed: boolean
-  address: string | null
-  createdAt: number
-}
 
 export type ApiKeySource = 'created' | 'tunnel-env'
 export type ApiKeyStatus = 'active' | 'revoked'
@@ -26,7 +12,8 @@ export interface ApiKeyRecord {
   id: string
   label: string
   hint: string
-  identityId: string
+  /** Buyer identity (wallet) that pays for this key's requests. */
+  buyerIdentity: string
   source: ApiKeySource
   status: ApiKeyStatus
   limits: SpendLimits
@@ -46,7 +33,7 @@ export type LedgerEntryKind = 'spend' | 'credit'
 export interface LedgerEntryInput {
   kind: LedgerEntryKind
   keyId: string
-  identityId: string
+  buyerIdentity: string
   amountUsdc: number
   externalRef: string
   requestTag?: string | null
@@ -61,7 +48,7 @@ export interface LedgerEntryInput {
 export interface GatewayRequestStart {
   tag: string
   keyId: string
-  identityId: string
+  buyerIdentity: string
   method: string
   path: string
   model: string | null
@@ -82,7 +69,7 @@ type KeyRow = {
   id: string
   label: string
   key_hint: string
-  identity_id: string
+  buyer_identity: string
   source: ApiKeySource
   status: ApiKeyStatus
   daily_limit_usdc: number | null
@@ -94,31 +81,14 @@ type KeyRow = {
   last_used_at: number | null
 }
 
-type IdentityRow = {
-  id: string
-  data_dir: string
-  buyer_port: number | null
-  managed: number
-  address: string | null
-  created_at: number
-}
-
 const MIGRATIONS: readonly string[] = [
   `
-  CREATE TABLE identities (
-    id TEXT PRIMARY KEY,
-    data_dir TEXT NOT NULL UNIQUE,
-    buyer_port INTEGER UNIQUE,
-    managed INTEGER NOT NULL DEFAULT 0,
-    address TEXT,
-    created_at INTEGER NOT NULL
-  );
   CREATE TABLE api_keys (
     id TEXT PRIMARY KEY,
     label TEXT NOT NULL,
     key_hash TEXT NOT NULL UNIQUE,
     key_hint TEXT NOT NULL,
-    identity_id TEXT NOT NULL REFERENCES identities(id),
+    buyer_identity TEXT NOT NULL,
     source TEXT NOT NULL DEFAULT 'created',
     status TEXT NOT NULL DEFAULT 'active',
     daily_limit_usdc INTEGER,
@@ -132,7 +102,7 @@ const MIGRATIONS: readonly string[] = [
   CREATE TABLE gateway_requests (
     tag TEXT PRIMARY KEY,
     key_id TEXT NOT NULL,
-    identity_id TEXT NOT NULL,
+    buyer_identity TEXT NOT NULL,
     method TEXT NOT NULL,
     path TEXT NOT NULL,
     model TEXT,
@@ -146,7 +116,7 @@ const MIGRATIONS: readonly string[] = [
     id INTEGER PRIMARY KEY AUTOINCREMENT,
     kind TEXT NOT NULL CHECK (kind IN ('spend', 'credit')),
     key_id TEXT NOT NULL,
-    identity_id TEXT NOT NULL,
+    buyer_identity TEXT NOT NULL,
     amount_usdc INTEGER NOT NULL,
     external_ref TEXT NOT NULL UNIQUE,
     request_tag TEXT,
@@ -165,19 +135,9 @@ export function gatewayDir(dataDir: string): string {
   return join(dataDir, 'gateway')
 }
 
-export function managedIdentityDir(dataDir: string, identityId: string): string {
-  return join(gatewayDir(dataDir), 'identities', identityId)
-}
-
-export function assertIdentityId(id: string): void {
-  if (!IDENTITY_ID_PATTERN.test(id)) {
-    throw new Error('Identity names use lowercase letters, digits and dashes (max 32 characters).')
-  }
-}
-
 /**
- * Durable state for the API-key gateway: buyer identities, keys, request log
- * and the per-key ledger. SQLite in WAL mode so `antseed gateway key …`
+ * Durable state for the API-key gateway: keys, request log and the per-key
+ * ledger. SQLite in WAL mode so `antseed gateway key …`
  * commands can change keys while a gateway process is serving them.
  */
 export class GatewayStore {
@@ -190,7 +150,6 @@ export class GatewayStore {
     this._db.pragma('busy_timeout = 5000')
     this._db.pragma('foreign_keys = ON')
     this._migrate()
-    this._ensureDefaultIdentity(dataDir)
   }
 
   close(): void {
@@ -207,80 +166,16 @@ export class GatewayStore {
     }
   }
 
-  private _ensureDefaultIdentity(dataDir: string): void {
-    this._db.prepare(`
-      INSERT INTO identities (id, data_dir, buyer_port, managed, created_at)
-      VALUES (?, ?, NULL, 0, ?)
-      ON CONFLICT(id) DO UPDATE SET data_dir = excluded.data_dir
-    `).run(DEFAULT_IDENTITY_ID, dataDir, this._now())
-  }
-
-  // ── Identities ──────────────────────────────────────────────────────────
-
-  createIdentity(input: { id: string; dataDir: string; buyerPort: number; address: string | null }): GatewayIdentity {
-    assertIdentityId(input.id)
-    if (this.getIdentity(input.id)) throw new Error(`Identity "${input.id}" already exists.`)
-    this._db.prepare(`
-      INSERT INTO identities (id, data_dir, buyer_port, managed, address, created_at)
-      VALUES (?, ?, ?, 1, ?, ?)
-    `).run(input.id, input.dataDir, input.buyerPort, input.address, this._now())
-    return this.getIdentity(input.id)!
-  }
-
-  setIdentityAddress(id: string, address: string): void {
-    this._db.prepare('UPDATE identities SET address = ? WHERE id = ?').run(address, id)
-  }
-
-  getIdentity(id: string): GatewayIdentity | null {
-    const row = this._db.prepare('SELECT * FROM identities WHERE id = ?').get(id) as IdentityRow | undefined
-    return row ? toIdentity(row) : null
-  }
-
-  listIdentities(): GatewayIdentity[] {
-    const rows = this._db.prepare('SELECT * FROM identities ORDER BY created_at, id').all() as IdentityRow[]
-    return rows.map(toIdentity)
-  }
-
-  /** Only identities that never backed a key can be removed; the ledger references the rest. */
-  removeIdentity(id: string): void {
-    if (id === DEFAULT_IDENTITY_ID) throw new Error('The default identity cannot be removed.')
-    if (!this.getIdentity(id)) throw new Error(`Unknown identity "${id}".`)
-    const keys = this._db.prepare('SELECT COUNT(*) AS count FROM api_keys WHERE identity_id = ?').get(id) as { count: number }
-    if (keys.count > 0) {
-      throw new Error(
-        `Identity "${id}" backs ${keys.count} key(s) and is kept for their ledger. `
-        + 'Once its keys are revoked the gateway stops running its buyer.',
-      )
-    }
-    this._db.prepare('DELETE FROM identities WHERE id = ?').run(id)
-  }
-
-  /** Managed identities the gateway must keep a buyer running for. */
-  identitiesWithActiveKeys(): Set<string> {
-    const rows = this._db.prepare("SELECT DISTINCT identity_id FROM api_keys WHERE status = 'active'").all() as { identity_id: string }[]
-    return new Set(rows.map((row) => row.identity_id))
-  }
-
-  nextManagedBuyerPort(reserved: readonly number[]): number {
-    const used = new Set<number>(reserved)
-    for (const identity of this.listIdentities()) if (identity.buyerPort !== null) used.add(identity.buyerPort)
-    for (let port = MANAGED_PORT_RANGE.first; port <= MANAGED_PORT_RANGE.last; port += 1) {
-      if (!used.has(port)) return port
-    }
-    throw new Error('No free buyer port left for a new identity.')
-  }
-
   // ── Keys ────────────────────────────────────────────────────────────────
 
-  createKey(input: { label: string; identityId: string; limits: SpendLimits; expiresAt: number | null }): { key: ApiKeyRecord; secret: string } {
-    if (!this.getIdentity(input.identityId)) throw new Error(`Unknown identity "${input.identityId}".`)
+  createKey(input: { label: string; buyerIdentity: string; limits: SpendLimits; expiresAt: number | null }): { key: ApiKeyRecord; secret: string } {
     const generated = generateApiKey()
     const id = newKeyId()
     this._db.prepare(`
-      INSERT INTO api_keys (id, label, key_hash, key_hint, identity_id, source, daily_limit_usdc, monthly_limit_usdc, total_limit_usdc, expires_at, created_at)
+      INSERT INTO api_keys (id, label, key_hash, key_hint, buyer_identity, source, daily_limit_usdc, monthly_limit_usdc, total_limit_usdc, expires_at, created_at)
       VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?)
     `).run(
-      id, input.label, generated.hash, generated.hint, input.identityId,
+      id, input.label, generated.hash, generated.hint, input.buyerIdentity,
       input.limits.daily, input.limits.monthly, input.limits.total, input.expiresAt, this._now(),
     )
     return { key: this.getKey(id)!, secret: generated.secret }
@@ -301,9 +196,9 @@ export class GatewayStore {
     }
     const id = newKeyId()
     this._db.prepare(`
-      INSERT INTO api_keys (id, label, key_hash, key_hint, identity_id, source, created_at)
+      INSERT INTO api_keys (id, label, key_hash, key_hint, buyer_identity, source, created_at)
       VALUES (?, 'Tunnel key', ?, ?, ?, 'tunnel-env', ?)
-    `).run(id, hash, apiKeyHint(secret), DEFAULT_IDENTITY_ID, this._now())
+    `).run(id, hash, apiKeyHint(secret), DEFAULT_BUYER_IDENTITY, this._now())
     return this.getKey(id)!
   }
 
@@ -350,9 +245,9 @@ export class GatewayStore {
 
   startRequest(input: GatewayRequestStart): void {
     this._db.prepare(`
-      INSERT INTO gateway_requests (tag, key_id, identity_id, method, path, model, started_at)
+      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, started_at)
       VALUES (?, ?, ?, ?, ?, ?, ?)
-    `).run(input.tag, input.keyId, input.identityId, input.method, input.path, input.model, input.startedAt)
+    `).run(input.tag, input.keyId, input.buyerIdentity, input.method, input.path, input.model, input.startedAt)
   }
 
   finishRequest(tag: string, result: { status: number; buyerRequestId: string | null }): void {
@@ -360,10 +255,10 @@ export class GatewayStore {
       .run(result.status, result.buyerRequestId, this._now(), tag)
   }
 
-  findRequest(tag: string): { keyId: string; identityId: string } | null {
-    const row = this._db.prepare('SELECT key_id, identity_id FROM gateway_requests WHERE tag = ?').get(tag) as
-      { key_id: string; identity_id: string } | undefined
-    return row ? { keyId: row.key_id, identityId: row.identity_id } : null
+  findRequest(tag: string): { keyId: string; buyerIdentity: string } | null {
+    const row = this._db.prepare('SELECT key_id, buyer_identity FROM gateway_requests WHERE tag = ?').get(tag) as
+      { key_id: string; buyer_identity: string } | undefined
+    return row ? { keyId: row.key_id, buyerIdentity: row.buyer_identity } : null
   }
 
   // ── Ledger ──────────────────────────────────────────────────────────────
@@ -376,11 +271,11 @@ export class GatewayStore {
     const signed = entry.kind === 'spend' ? -entry.amountUsdc : entry.amountUsdc
     const result = this._db.prepare(`
       INSERT OR IGNORE INTO ledger_entries
-        (kind, key_id, identity_id, amount_usdc, external_ref, request_tag, seller_peer_id,
+        (kind, key_id, buyer_identity, amount_usdc, external_ref, request_tag, seller_peer_id,
          input_tokens, cached_input_tokens, output_tokens, note, created_at)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
-      entry.kind, entry.keyId, entry.identityId, signed, entry.externalRef,
+      entry.kind, entry.keyId, entry.buyerIdentity, signed, entry.externalRef,
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
       entry.inputTokens ?? 0, entry.cachedInputTokens ?? 0, entry.outputTokens ?? 0,
       entry.note ?? null, entry.createdAt,
@@ -425,23 +320,12 @@ export class GatewayStore {
   }
 }
 
-function toIdentity(row: IdentityRow): GatewayIdentity {
-  return {
-    id: row.id,
-    dataDir: row.data_dir,
-    buyerPort: row.buyer_port,
-    managed: row.managed === 1,
-    address: row.address,
-    createdAt: row.created_at,
-  }
-}
-
 function toKey(row: KeyRow): ApiKeyRecord {
   return {
     id: row.id,
     label: row.label,
     hint: row.key_hint,
-    identityId: row.identity_id,
+    buyerIdentity: row.buyer_identity,
     source: row.source,
     status: row.status,
     limits: {
