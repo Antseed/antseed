@@ -76,7 +76,7 @@ test('verifier artifacts use model-first epoch directories', async () => {
         range: [0, 20], tolerance: { mode: 'absolute', value: 0 },
         acceptedAnswerInterval: { minimum: 10, maximum: 10, inclusive: true },
         referenceId: 'reference:1', referenceConsensus: 10,
-        referenceSelfTest: { answer: 10, match: 1 }, authenticatedSellerAnswerCount: 1,
+        referenceSelfTest: { answers: [10], matches: [1] }, authenticatedSellerAnswerCount: 1,
         referenceMatchCount: 1, referenceMismatchCount: 0, unparsedAnswerCount: 0,
         referenceMatchRate: 1, eligibleSellerAnswerCount: 1, referenceSupportCount: 1,
         referenceRejectCount: 0, referenceSupportRate: 1, referenceDecision: 'CONFIRMED',

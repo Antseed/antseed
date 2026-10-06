@@ -121,6 +121,7 @@ export const VerifierConfigSchema = strictObject({
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
   referenceRetryBaseDelayMs: positiveIntegerSchema.optional(),
   referenceMaxNoProgressRounds: positiveIntegerSchema.optional(),
+  referenceSelfTestRuns: positiveIntegerSchema.optional(),
   referenceMaxConcurrentRequests: positiveIntegerSchema.optional(),
   referenceMaxConcurrentRequestsPerModel: positiveIntegerSchema.optional(),
   referenceMinimumProbeCount: probeCountSchema.optional(),

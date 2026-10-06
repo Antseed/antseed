@@ -70,7 +70,7 @@ function reference(count = 200): KbfReferenceV1 {
     tolerance: { mode: 'absolute' as const, value: 0 },
   }))
   const power = computeBinomialPower({
-    selfHamming: 0, selfTotal: count, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
+    selfHamming: 0, selfTotal: count, probeCount: count, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
   })
   const value: KbfReferenceV1 = {
     version: 2,
@@ -88,7 +88,7 @@ function reference(count = 200): KbfReferenceV1 {
       total: count,
       coverage: 1,
       errorRate: 0,
-      outcomes: probes.map((probe) => ({ probeId: probe.id, answer: probe.consensus, match: 1 })),
+      outcomes: probes.map((probe) => ({ probeId: probe.id, answers: [probe.consensus], matches: [1] })),
     },
     probes,
     selectedProbeCount: count,
@@ -96,7 +96,7 @@ function reference(count = 200): KbfReferenceV1 {
     statisticalPower: power.power,
     statisticalPowerEvidence: {
       test: 'one-sided-binomial', alpha: 0.05, clopperPearsonConfidence: 0.99,
-      selfHamming: 0, selfTotal: count, p0UpperBound: power.p0,
+      selfHamming: 0, selfTotal: count, probeCount: count, p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount,
       power: power.power,
     },
@@ -237,11 +237,11 @@ test('repeated canonical probes merge refreshed contrast and self-test evidence'
     const existing = JSON.parse(await readFile(first.path, 'utf8')) as {
       probes: Array<{
         probe: KbfReferenceV1['probes'][number]
-        selfTest: { answer: number | null; match: 0 | 1 | null }
+        selfTest: { answers: Array<number | null>; matches: Array<0 | 1 | null> }
       }>
     }
     existing.probes[0]!.probe.contrast = { distinguishingModels: ['older-contrast'] }
-    existing.probes[0]!.selfTest = { answer: null, match: null }
+    existing.probes[0]!.selfTest = { answers: [null], matches: [0] }
     await writeFile(first.path, JSON.stringify(existing), 'utf8')
 
     const repeated = await appendReference(directory)
@@ -315,6 +315,41 @@ test('audit reservations reject legacy AntSeed enrollment banks', async () => {
       config: undefined,
       shuffle: <T>(values: readonly T[]) => [...values],
     }), /archive it and rebuild with enrollment \d+/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('bank-selected references pool every self-test run and size power for the audit', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-pooled-'))
+  try {
+    const pooled = reference()
+    pooled.selfTest.outcomes = pooled.probes.map((probe, index) => ({
+      probeId: probe.id,
+      answers: [probe.consensus, index === 0 ? null : probe.consensus, probe.consensus],
+      matches: [1, index === 0 ? 0 : 1, 1],
+    }))
+    pooled.selfTest = { ...pooled.selfTest, hamming: 1, total: 600, coverage: 599 / 600, errorRate: 1 / 600 }
+    const power = computeBinomialPower({
+      selfHamming: 1, selfTotal: 600, probeCount: 200, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
+    })
+    pooled.statisticalPower = power.power
+    pooled.statisticalPowerEvidence = {
+      ...pooled.statisticalPowerEvidence,
+      selfHamming: 1, selfTotal: 600, probeCount: 200, p0UpperBound: power.p0,
+      alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount, power: power.power,
+    }
+    pooled.referenceId = computeReferenceId(pooled)
+    await appendReference(directory, pooled)
+    const reserved = await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
+      service: 'model-a', runId: 'run-a', epoch: '9', shuffle: <T>(values: readonly T[]) => [...values],
+    })
+    const count = reserved.reference.probes.length
+    assert.equal(reserved.reference.selfTest.total, count * 3)
+    assert.equal(reserved.reference.selfTest.hamming, 1)
+    assert.equal(reserved.reference.statisticalPowerEvidence.selfTotal, count * 3)
+    assert.equal(reserved.reference.statisticalPowerEvidence.probeCount, count)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

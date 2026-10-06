@@ -25,8 +25,8 @@ const PROBES: KbfProbe[] = Array.from({ length: 20 }, (_, index) => ({
 function makeReference(overrides: Partial<FingerprintReference> = {}): FingerprintReference {
   const outcomes = PROBES.map((probe) => ({
     probeId: probe.id,
-    answer: probe.consensus,
-    match: 1 as const,
+    answers: [probe.consensus],
+    matches: [1 as const],
   }));
   return {
     version: 1,
@@ -172,8 +172,8 @@ describe('verifyKbf', () => {
     }));
     const outcomes = probes.map((probe) => ({
       probeId: probe.id,
-      answer: probe.consensus,
-      match: 1 as const,
+      answers: [probe.consensus],
+      matches: [1 as const],
     }));
     const reference = makeReference({
       probes,
@@ -188,6 +188,21 @@ describe('verifyKbf', () => {
     expect(fragment.stats.targetHamming).toBe(49);
     expect(fragment.stats.targetTotal).toBe(100);
     expect(fragment.stats.pValueBinomial).toBeLessThan(0.05);
+  });
+
+  it('derives p0 from pooled self-test runs of the audited probes', () => {
+    const outcomes = PROBES.map((probe, index) => ({
+      probeId: probe.id,
+      answers: [probe.consensus, index === 0 ? probe.consensus + 5 : probe.consensus, probe.consensus],
+      matches: [1 as const, index === 0 ? 0 as const : 1 as const, 1 as const],
+    }));
+    const reference = makeReference({
+      selfTest: { hamming: 1, total: PROBES.length * 3, coverage: 1, errorRate: 1 / (PROBES.length * 3), outcomes },
+    });
+    const fragment = verifyKbf(reference, makeObservation(PROBES.map((probe) => probe.consensus)));
+    expect(fragment.verdict).toBe('SAME');
+    expect(fragment.stats.selfHamming).toBe(1);
+    expect(fragment.stats.selfTotal).toBe(PROBES.length * 3);
   });
 
   it('returns UNDETERMINED for transport-unavailable probes', () => {

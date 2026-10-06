@@ -11,6 +11,8 @@ import {
   type KbfReferenceV1,
 } from '../src/index.js';
 
+const RUNS = 3;
+
 function reference(source: KbfReferenceV1['source'] = 'generated'): KbfReferenceV1 {
   const probes = Array.from({ length: 100 }, (_unused, index) => ({
     id: `p-${index}`,
@@ -22,10 +24,15 @@ function reference(source: KbfReferenceV1['source'] = 'generated'): KbfReference
     tolerance: { mode: 'absolute' as const, value: 0.1 },
     advisoryConsensus: false,
   }));
-  const outcomes = probes.map((probe) => ({ probeId: probe.id, answer: probe.consensus, match: 1 as const }));
+  const outcomes = probes.map((probe) => ({
+    probeId: probe.id,
+    answers: Array.from({ length: RUNS }, () => probe.consensus),
+    matches: Array.from({ length: RUNS }, () => 1 as const),
+  }));
   const powerEvidence = computeBinomialPower({
     selfHamming: 0,
-    selfTotal: probes.length,
+    selfTotal: probes.length * RUNS,
+    probeCount: probes.length,
     minimumMismatchDelta: 0.1,
   });
   const value: KbfReferenceV1 = {
@@ -45,7 +52,7 @@ function reference(source: KbfReferenceV1['source'] = 'generated'): KbfReference
     queryProfile: createReferenceQueryProfile({ upstreamModel: 'gpt-5.6-sol-upstream' }),
     selfTest: {
       hamming: 0,
-      total: probes.length,
+      total: probes.length * RUNS,
       coverage: 1,
       errorRate: 0,
       outcomes,
@@ -59,7 +66,8 @@ function reference(source: KbfReferenceV1['source'] = 'generated'): KbfReference
       alpha: 0.05,
       clopperPearsonConfidence: 0.99,
       selfHamming: 0,
-      selfTotal: probes.length,
+      selfTotal: probes.length * RUNS,
+      probeCount: probes.length,
       p0UpperBound: powerEvidence.p0,
       alternativeMismatchRate: powerEvidence.p1,
       criticalMismatchCount: powerEvidence.criticalMismatchCount,
@@ -104,13 +112,20 @@ describe('ReferenceQueryProfileV1', () => {
 });
 
 describe('subsetReferenceSelfTest', () => {
-  it('derives hamming and total only from the exact selected subset', () => {
+  it('pools every run of the exact selected subset', () => {
     const value = reference();
-    value.selfTest.outcomes[2] = { probeId: 'p-2', answer: 999, match: 0 };
-    value.selfTest.outcomes[3] = { probeId: 'p-3', answer: null, match: null };
+    value.selfTest.outcomes[2] = { probeId: 'p-2', answers: [999, 2, 2], matches: [0, 1, 1] };
+    value.selfTest.outcomes[3] = { probeId: 'p-3', answers: [null, 3, 999], matches: [0, 1, 0] };
     const subset = subsetReferenceSelfTest(value, ['p-0', 'p-2', 'p-3']);
-    expect(subset).toMatchObject({ hamming: 2, total: 3, coverage: 2 / 3, errorRate: 2 / 3 });
+    expect(subset).toMatchObject({ hamming: 3, total: 9, coverage: 8 / 9, errorRate: 3 / 9 });
     expect(subset.outcomes.map((outcome) => outcome.probeId)).toEqual(['p-0', 'p-2', 'p-3']);
+  });
+
+  it('excludes unattempted trials from both hamming and total, like target scoring', () => {
+    const value = reference();
+    value.selfTest.outcomes[1] = { probeId: 'p-1', answers: [null, null, 1], matches: [null, 0, 1] };
+    const subset = subsetReferenceSelfTest(value, ['p-0', 'p-1']);
+    expect(subset).toMatchObject({ hamming: 1, total: 5, coverage: 4 / 6, errorRate: 1 / 5 });
   });
 });
 
@@ -189,14 +204,18 @@ describe('validateKbfReferenceV1', () => {
           value.probes.push({ ...template, id: `extra-${index}`, name: `extra-${index}`, consensus: index });
         }
       }
-      value.selfTest.outcomes = value.probes.map((probe) => ({ probeId: probe.id, answer: probe.consensus, match: 1 as const }));
+      value.selfTest.outcomes = value.probes.map((probe) => ({
+        probeId: probe.id, answers: [probe.consensus], matches: [1 as const],
+      }));
       value.selfTest = { ...value.selfTest, hamming: 0, total: count, coverage: 1, errorRate: 0 };
       value.selectedProbeCount = count;
-      const power = computeBinomialPower({ selfHamming: 0, selfTotal: count, minimumMismatchDelta: value.minimumMismatchDelta });
+      const power = computeBinomialPower({
+        selfHamming: 0, selfTotal: count, probeCount: count, minimumMismatchDelta: value.minimumMismatchDelta,
+      });
       value.statisticalPower = power.power;
       value.statisticalPowerEvidence = {
         test: 'one-sided-binomial', alpha: 0.05, clopperPearsonConfidence: 0.99,
-        selfHamming: 0, selfTotal: count, p0UpperBound: power.p0,
+        selfHamming: 0, selfTotal: count, probeCount: count, p0UpperBound: power.p0,
         alternativeMismatchRate: power.p1, criticalMismatchCount: power.criticalMismatchCount, power: power.power,
       };
       value.contrasts = [];
@@ -218,6 +237,7 @@ describe('validateKbfReferenceV1', () => {
     const power = computeBinomialPower({
       selfHamming: value.selfTest.hamming,
       selfTotal: value.selfTest.total,
+      probeCount: value.probes.length,
       minimumMismatchDelta: value.minimumMismatchDelta,
       alpha,
       cpConfidence,
@@ -229,6 +249,7 @@ describe('validateKbfReferenceV1', () => {
       clopperPearsonConfidence: cpConfidence,
       selfHamming: value.selfTest.hamming,
       selfTotal: value.selfTest.total,
+      probeCount: value.probes.length,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
@@ -251,8 +272,8 @@ describe('validateKbfReferenceV1', () => {
     value.selectedProbeCount = value.probes.length;
     value.selfTest.outcomes = value.probes.map((probe, index) => ({
       probeId: probe.id,
-      answer: probe.consensus,
-      match: index < 5 ? 0 as const : 1 as const,
+      answers: [index < 5 ? probe.consensus + 1 : probe.consensus],
+      matches: [index < 5 ? 0 as const : 1 as const],
     }));
     value.selfTest = {
       ...value.selfTest,
@@ -264,6 +285,7 @@ describe('validateKbfReferenceV1', () => {
     const power = computeBinomialPower({
       selfHamming: 5,
       selfTotal: 150,
+      probeCount: 150,
       minimumMismatchDelta: value.minimumMismatchDelta,
       alpha,
       cpConfidence,
@@ -275,6 +297,7 @@ describe('validateKbfReferenceV1', () => {
       clopperPearsonConfidence: cpConfidence,
       selfHamming: 5,
       selfTotal: 150,
+      probeCount: 150,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
@@ -287,6 +310,36 @@ describe('validateKbfReferenceV1', () => {
     expect(power.power).toBeLessThan(0.9);
     expect(() => validateKbfReferenceV1(value)).toThrow(/statisticalPower/);
     expect(() => validateKbfReferenceV1(value, { minimumStatisticalPower: 0.85 })).not.toThrow();
+  });
+
+  it('rejects self-test runs whose match disagrees with the recorded answer', () => {
+    const forged = reference();
+    forged.selfTest.outcomes[0] = { probeId: 'p-0', answers: [999, 0, 0], matches: [1, 1, 1] };
+    forged.referenceId = computeReferenceId(forged);
+    expect(() => validateKbfReferenceV1(forged)).toThrow(/inconsistent with its answer/);
+
+    const ragged = reference();
+    ragged.selfTest.outcomes[0] = { probeId: 'p-0', answers: [0, 0], matches: [1, 1, 1] };
+    ragged.referenceId = computeReferenceId(ragged);
+    expect(() => validateKbfReferenceV1(ragged)).toThrow(/one answer and match per run/);
+  });
+
+  it('computes power for the audit probe count from pooled self-test trials', () => {
+    const pooled = computeBinomialPower({
+      selfHamming: 6, selfTotal: 300, probeCount: 100, minimumMismatchDelta: 0.1,
+    });
+    const single = computeBinomialPower({
+      selfHamming: 2, selfTotal: 100, probeCount: 100, minimumMismatchDelta: 0.1,
+    });
+    expect(pooled.probeCount).toBe(100);
+    expect(pooled.p0).toBeLessThan(single.p0);
+    expect(pooled.criticalMismatchCount).not.toBeNull();
+    expect(pooled.criticalMismatchCount!).toBeLessThanOrEqual(100);
+
+    const value = reference();
+    value.statisticalPowerEvidence.probeCount = value.probes.length * RUNS;
+    value.referenceId = computeReferenceId(value);
+    expect(() => validateKbfReferenceV1(value)).toThrow(/statisticalPowerEvidence/);
   });
 
   it('rejects missing or duplicate per-probe self-test outcomes', () => {

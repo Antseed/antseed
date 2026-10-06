@@ -1,9 +1,12 @@
 import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
+  KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_ENROLLMENT_TEMPERATURES,
   KBF_PROBES_PER_REQUEST,
+  KBF_PROMPT_VARIANT_IDS,
   KBF_REFERENCE_VERSION,
+  aggregateKbfSelfTestOutcomes,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
   computeBinomialPower,
@@ -15,6 +18,7 @@ import {
   validateKbfReferenceV1,
   type KbfProbe,
   type KbfReferenceV1,
+  type ReferenceProbeSelfTestV1,
 } from '@antseed/fingerprints'
 import type {
   VerifierCLIConfig,
@@ -309,11 +313,12 @@ export async function buildModelReference(input: {
     log: input.log,
   })
   let collected: CollectedReferenceProbes | undefined
-  const selfAnswers: Array<number | null> = []
+  const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
+  assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
+  const selfOutcomes: ReferenceProbeSelfTestV1[] = []
   let selected: {
     probes: KbfProbe[]
-    matches: Array<0 | 1 | null>
-    answers: Array<number | null>
+    selfTest: ReturnType<typeof aggregateKbfSelfTestOutcomes>
     power: ReturnType<typeof computeBinomialPower>
   } | null = null
   try {
@@ -331,37 +336,36 @@ export async function buildModelReference(input: {
         log: input.log,
         initial: collected,
       })
-      const additions = collected.probes.slice(selfAnswers.length, targetCount)
+      const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
-        input.log?.(`self-testing ${selfAnswers.length + 1}-${targetCount} of ${targetCount} probes`)
-        selfAnswers.push(...await querySelfTestAnswers(
+        input.log?.(
+          `self-testing ${selfOutcomes.length + 1}-${targetCount} of ${targetCount} probes `
+          + `(${selfTestRuns} runs)`,
+        )
+        selfOutcomes.push(...await querySelfTestOutcomes(
           modelConfig.upstreamModel,
           additions,
+          selfTestRuns,
           query,
           input.log,
         ))
       }
       const probes = collected.probes.slice(0, targetCount)
-      const answers = selfAnswers.slice(0, targetCount)
-      const matches = computeMatchVector(answers, probes)
-        .map((match, index) => answers[index] === null ? null : match)
-      const parsed = answers.filter((answer) => answer !== null).length
-      const hamming = matches.filter((match) => match !== 1).length
-      const coverage = parsed / targetCount
-      const errorRate = hamming / targetCount
+      const selfTest = aggregateKbfSelfTestOutcomes(selfOutcomes.slice(0, targetCount))
       const power = computeBinomialPower({
-        selfHamming: hamming,
-        selfTotal: targetCount,
+        selfHamming: selfTest.hamming,
+        selfTotal: selfTest.total,
+        probeCount: targetCount,
         minimumMismatchDelta: REFERENCE_MINIMUM_MISMATCH_DELTA,
         alpha: REFERENCE_POWER_ALPHA,
         cpConfidence: REFERENCE_POWER_CONFIDENCE,
       })
       input.log?.(
         `reference size ${targetCount}: power ${power.power.toFixed(3)}, `
-        + `self-test ${hamming}/${targetCount}, coverage ${coverage.toFixed(3)}`,
+        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${selfTest.coverage.toFixed(3)}`,
       )
-      if (coverage >= 0.8 && errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower) {
-        selected = { probes, matches, answers, power }
+      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower) {
+        selected = { probes, selfTest, power }
         break
       }
     }
@@ -375,16 +379,7 @@ export async function buildModelReference(input: {
       + `required power ${sizing.minimumStatisticalPower.toFixed(3)}`,
     )
   }
-  const { probes, matches, answers, power } = selected
-  const parsed = answers.filter((answer) => answer !== null).length
-  const hamming = matches.filter((match) => match !== 1).length
-  const selfTest = {
-    hamming,
-    total: probes.length,
-    coverage: parsed / probes.length,
-    errorRate: hamming / probes.length,
-    outcomes: probes.map((probe, index) => ({ probeId: probe.id, answer: answers[index] ?? null, match: matches[index]! })),
-  }
+  const { probes, selfTest, power } = selected
   if (selfTest.coverage < 0.8) {
     await checkpoint.remove()
     throw new Error(`self-test coverage ${selfTest.coverage.toFixed(3)} is below 0.8`)
@@ -413,7 +408,7 @@ export async function buildModelReference(input: {
     source: 'generated',
     generator: {
       name: 'antseed-simple-reference-builder',
-      version: '5',
+      version: '6',
       verifierKind: 'kbf',
       params: {
         sourceId: endpoint.sourceId,
@@ -431,6 +426,7 @@ export async function buildModelReference(input: {
         enrollmentBatchingVersion: 2,
         enrollmentStabilityVersion: 2,
         enrollmentEvidenceVersion: 1,
+        selfTestRuns,
       },
     },
     provenance: {
@@ -449,8 +445,9 @@ export async function buildModelReference(input: {
       test: 'one-sided-binomial',
       alpha: REFERENCE_POWER_ALPHA,
       clopperPearsonConfidence: REFERENCE_POWER_CONFIDENCE,
-      selfHamming: hamming,
-      selfTotal: probes.length,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      probeCount: probes.length,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
@@ -1150,13 +1147,14 @@ async function queryProbeAnswers(
     recoverTerminalEmptyBatches?: boolean
     stabilityDomain?: string
     log?: (message: string) => void
+    variantId?: string
   } = {},
 ): Promise<Array<number | null>> {
   const answers: Array<number | null> = []
   for (let offset = 0; offset < probes.length; offset += KBF_PROBES_PER_REQUEST) {
     const batch = probes.slice(offset, offset + KBF_PROBES_PER_REQUEST)
     const body = {
-      ...buildKbfChatRequestBody(model, batch, { maxTokens: MAX_TOKENS }),
+      ...buildKbfChatRequestBody(model, batch, { maxTokens: MAX_TOKENS, variantId: options.variantId }),
       temperature,
       top_p: 1,
       __antseedReferenceCacheDomain: cacheDomain,
@@ -1183,21 +1181,44 @@ async function queryProbeAnswers(
   return answers
 }
 
-async function querySelfTestAnswers(
+/**
+ * Self-test the reference under audit conditions: each run shuffles the
+ * probes into domain batches of ten and asks every batch with a prompt
+ * variant, so the honest-error baseline includes order and wording effects
+ * that audits see. Shuffles and variant picks are seeded per run so a resumed
+ * build reuses its checkpointed responses. Answers are scored like target
+ * answers (missing or refused = 0); transport failures abort the build, so
+ * no self-test match is null.
+ */
+async function querySelfTestOutcomes(
   model: string,
   probes: readonly KbfProbe[],
+  runs: number,
   query: ReferenceQuery,
   log?: (message: string) => void,
-): Promise<Array<number | null>> {
-  const answers = new Array<number | null>(probes.length).fill(null)
-  const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, identityShuffle)
-  for (const batch of batches) {
-    const batchAnswers = await querySelfTestBatch(model, batch.probes, query, log)
-    for (const [batchIndex, originalIndex] of batch.indexes.entries()) {
-      answers[originalIndex] = batchAnswers[batchIndex] ?? null
+): Promise<ReferenceProbeSelfTestV1[]> {
+  const answersByRun = await allSettledOrThrow(Array.from({ length: runs }, async (_unused, run) => {
+    const seed = `self-test-${run}`
+    const answers = new Array<number | null>(probes.length).fill(null)
+    const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, deterministicShuffle(seed))
+    for (const batch of batches) {
+      const variantId = seededPromptVariantId(seed, batch.probes)
+      const batchAnswers = await querySelfTestBatch(model, batch.probes, query, log, seed, variantId)
+      for (const [batchIndex, originalIndex] of batch.indexes.entries()) {
+        answers[originalIndex] = batchAnswers[batchIndex] ?? null
+      }
     }
-  }
-  return answers
+    return answers
+  }))
+  return probes.map((probe, index) => {
+    const answers = answersByRun.map((runAnswers) => runAnswers[index] ?? null)
+    return { probeId: probe.id, answers, matches: computeMatchVector(answers, answers.map(() => probe)) }
+  })
+}
+
+function seededPromptVariantId(seed: string, probes: readonly KbfProbe[]): string {
+  const hash = canonicalHashBytes32({ seed, probeIds: probes.map((probe) => probe.id) })
+  return KBF_PROMPT_VARIANT_IDS[Number.parseInt(hash.slice(2, 10), 16) % KBF_PROMPT_VARIANT_IDS.length]!
 }
 
 function identityShuffle<T>(values: readonly T[]): T[] {
@@ -1221,10 +1242,12 @@ async function querySelfTestBatch(
   model: string,
   probes: readonly KbfProbe[],
   query: ReferenceQuery,
-  log?: (message: string) => void,
+  log: ((message: string) => void) | undefined,
+  cacheDomain: string,
+  variantId: string,
 ): Promise<Array<number | null>> {
   try {
-    return await queryProbeAnswers(model, probes, 0, 'self-test', query)
+    return await queryProbeAnswers(model, probes, 0, cacheDomain, query, { variantId })
   } catch (error) {
     if (!isTerminalEmptyReferenceError(error)) throw error
     if (probes.length === 1) {
@@ -1233,8 +1256,8 @@ async function querySelfTestBatch(
     }
     const splitAt = Math.ceil(probes.length / 2)
     log?.(`splitting refused ${probes.length}-probe self-test batch into ${splitAt} and ${probes.length - splitAt}`)
-    const left = await querySelfTestBatch(model, probes.slice(0, splitAt), query, log)
-    const right = await querySelfTestBatch(model, probes.slice(splitAt), query, log)
+    const left = await querySelfTestBatch(model, probes.slice(0, splitAt), query, log, cacheDomain, variantId)
+    const right = await querySelfTestBatch(model, probes.slice(splitAt), query, log, cacheDomain, variantId)
     return [...left, ...right]
   }
 }
@@ -1410,7 +1433,7 @@ function summarizeReferenceCosts(responses: ReferenceCachedResponseV1[]): Refere
 }
 
 function referenceRequestPurpose(value: unknown): ReferenceBuildCostPurposeV1['purpose'] {
-  if (value === 'self-test') return 'self-test'
+  if (typeof value === 'string' && value.startsWith('self-test')) return 'self-test'
   if (typeof value === 'string' && value.startsWith('contrast-')) return 'contrast-model'
   if (typeof value === 'string' && value.startsWith('stability-')) return 'target-model'
   return 'candidate-generation'

@@ -4,12 +4,26 @@ import {
   canonicalHashBytes32,
   type KbfProbe,
   type KbfReferenceV1,
+  type ReferenceProbeSelfTestV1,
   type ReferenceQueryProfileV1,
 } from '@antseed/fingerprints'
 import { writeJsonAtomic } from './atomic-files.js'
 import type { ModelVerificationTargetResult } from './model-run.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { safeServiceSlug } from './slug.js'
+
+/** Every self-test run of one probe; empty when the reference lacks the probe. */
+type ReferenceSelfTestRuns = Pick<ReferenceProbeSelfTestV1, 'answers' | 'matches'>
+
+const NO_REFERENCE_SELF_TEST: ReferenceSelfTestRuns = { answers: [], matches: [] }
+
+function selfTestConfirmed(runs: ReferenceSelfTestRuns): boolean {
+  return runs.matches.length > 0 && runs.matches.every((match) => match === 1)
+}
+
+function selfTestMismatched(runs: ReferenceSelfTestRuns): boolean {
+  return runs.matches.some((match) => match === 0)
+}
 
 interface ReferenceIntegrityEvidenceV1 {
   version: 1
@@ -29,7 +43,7 @@ interface ReferenceIntegrityEvidenceV1 {
   }
   probes: Array<{
     probe: KbfProbe
-    referenceSelfTest: { answer: number | null; match: 0 | 1 | null }
+    referenceSelfTest: ReferenceSelfTestRuns
     referenceConsensusConfirmed: boolean
   }>
 }
@@ -119,7 +133,7 @@ export interface ModelProbeConsensusEvidenceV1 {
     }
     referenceId: string
     referenceConsensus: number
-    referenceSelfTest: { answer: number | null; match: 0 | 1 | null }
+    referenceSelfTest: ReferenceSelfTestRuns
     authenticatedSellerAnswerCount: number
     referenceMatchCount: number
     referenceMismatchCount: number
@@ -178,7 +192,7 @@ export interface ModelProbeConsensusEvidenceV1 {
 interface ProbeAccumulator {
   probe: KbfProbe
   referenceId: string
-  referenceSelfTest: { answer: number | null; match: 0 | 1 | null }
+  referenceSelfTest: ReferenceSelfTestRuns
   sellerAnswers: ModelProbeConsensusEvidenceV1['probes'][number]['sellerAnswers']
 }
 
@@ -234,7 +248,7 @@ export async function writeModelProbeConsensusEvidence(input: {
         probeById.set(probe.id, {
           probe,
           referenceId: evidence.reference.referenceId,
-          referenceSelfTest: selfTestByProbeId.get(probe.id) ?? { answer: null, match: null },
+          referenceSelfTest: selfTestByProbeId.get(probe.id) ?? NO_REFERENCE_SELF_TEST,
           sellerAnswers: [],
         })
       }
@@ -543,11 +557,11 @@ function createReferenceIntegrityEvidence(reference: ProxyAuditEvidenceV1['refer
     (reference.selfTest.outcomes ?? []).map((outcome) => [outcome.probeId, outcome]),
   )
   const probes = reference.probes.map((probe) => {
-    const referenceSelfTest = selfTestByProbeId.get(probe.id) ?? { answer: null, match: null }
+    const referenceSelfTest = selfTestByProbeId.get(probe.id) ?? NO_REFERENCE_SELF_TEST
     return {
       probe,
       referenceSelfTest,
-      referenceConsensusConfirmed: referenceSelfTest.match === 1,
+      referenceConsensusConfirmed: selfTestConfirmed(referenceSelfTest),
     }
   })
   return {
@@ -562,9 +576,11 @@ function createReferenceIntegrityEvidence(reference: ProxyAuditEvidenceV1['refer
     selfTest: reference.selfTest,
     summary: {
       totalProbeCount: probes.length,
-      referenceConsensusConfirmedCount: probes.filter((entry) => entry.referenceSelfTest.match === 1).length,
-      referenceSelfMismatchCount: probes.filter((entry) => entry.referenceSelfTest.match === 0).length,
-      referenceSelfMissingCount: probes.filter((entry) => entry.referenceSelfTest.match === null).length,
+      referenceConsensusConfirmedCount: probes.filter((entry) => selfTestConfirmed(entry.referenceSelfTest)).length,
+      referenceSelfMismatchCount: probes.filter((entry) => selfTestMismatched(entry.referenceSelfTest)).length,
+      referenceSelfMissingCount: probes
+        .filter((entry) => !selfTestConfirmed(entry.referenceSelfTest) && !selfTestMismatched(entry.referenceSelfTest))
+        .length,
     },
     probes,
   }

@@ -29,7 +29,7 @@ function audit(
       queryProfile: createReferenceQueryProfile({ upstreamModel: 'upstream/model-a' }),
       statisticalPower: 0.99, statisticalPowerEvidence: { power: 0.99 },
       selfTest: { hamming: 0, total: 1, coverage: 1, errorRate: 0,
-        outcomes: [{ probeId: 'probe-1', answer: 10, match: 1 }] },
+        outcomes: [{ probeId: 'probe-1', answers: [10], matches: [1] }] },
       probes: [{ id: 'probe-1', name: 'probe', domain: 'math', template: 'Value is ___.',
         consensus: 10, range: [0, 20], tolerance: { mode: 'absolute', value: 0 },
         enrollmentEvidence: { temperatures: [0, 0.7, 0.7], answers: [10, 10, 10], rule: 'rounded-exact-agreement' } }],

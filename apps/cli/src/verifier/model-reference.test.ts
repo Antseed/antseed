@@ -7,6 +7,7 @@ import {
   computeBinomialPower,
   computeReferenceId,
   createReferenceQueryProfile,
+  renderKbfProbeLine,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
@@ -62,6 +63,7 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
   const power = computeBinomialPower({
     selfHamming: hamming,
     selfTotal: count,
+    probeCount: count,
     minimumMismatchDelta: 0.1,
     alpha,
     cpConfidence: confidence,
@@ -88,8 +90,8 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
       errorRate: hamming / count,
       outcomes: probes.map((probe, index) => ({
         probeId: probe.id,
-        answer: probe.consensus + (index < hamming ? 0.5 : 0),
-        match: index < hamming ? 0 : 1,
+        answers: [probe.consensus + (index < hamming ? 0.5 : 0)],
+        matches: [index < hamming ? 0 as const : 1 as const],
       })),
     },
     probes,
@@ -102,6 +104,7 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
       clopperPearsonConfidence: confidence,
       selfHamming: hamming,
       selfTotal: count,
+      probeCount: count,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
@@ -130,6 +133,8 @@ function generatedCandidates(prompt: string): string {
     }
   }))
 }
+
+const PROBE_LINE_LABEL = /^(?:\(\d+\)|\d+[.)]|Q\d+:) /
 
 function successfulContent(model: string, prompt: string): string {
   if (prompt.startsWith('Generate ')) return generatedCandidates(prompt)
@@ -470,10 +475,10 @@ test('reference build adaptively isolates and caches a refused self-test probe',
       messages: Array<{ content: string }>
     }
     const prompt = body.messages.at(-1)?.content ?? ''
-    const probeLines = prompt.split('\n').filter((line) => /^\(\d+\) /.test(line))
+    const probeLines = prompt.split('\n').filter((line) => PROBE_LINE_LABEL.test(line))
     if (body.model === 'contrast-test') contrastChecked = true
     if (contrastChecked && body.model === 'upstream-test' && refusedProbeText === null) {
-      refusedProbeText = probeLines[0]?.replace(/^\(1\) /, '') ?? null
+      refusedProbeText = probeLines[0]?.replace(PROBE_LINE_LABEL, '') ?? null
     }
     if (body.model === 'upstream-test'
       && refusedProbeText !== null
@@ -496,7 +501,18 @@ test('reference build adaptively isolates and caches a refused self-test probe',
       log: (message) => logs.push(message),
     })
     assert.equal(built.reference.probes.length, 100)
-    assert.equal(built.reference.selfTest.coverage, 0.99)
+    assert.equal(built.reference.selfTest.total, 300)
+    const refusedProbe = built.reference.probes.find((probe) => renderKbfProbeLine(probe) === refusedProbeText)!
+    const refusedOutcome = built.reference.selfTest.outcomes.find((outcome) => outcome.probeId === refusedProbe.id)!
+    const refusedRuns = refusedOutcome.answers.filter((answer) => answer === null).length
+    assert.ok(refusedRuns >= 1)
+    // Refused runs count as discrepancies, exactly like a missing target answer.
+    assert.deepEqual(
+      refusedOutcome.matches.filter((_match, run) => refusedOutcome.answers[run] === null),
+      new Array(refusedRuns).fill(0),
+    )
+    assert.equal(built.reference.selfTest.hamming, refusedRuns)
+    assert.equal(built.reference.selfTest.coverage, (300 - refusedRuns) / 300)
     assert.equal(refusedBatchSizes.some((size) => size > 1), true)
     assert.equal(refusedBatchSizes.includes(1), true)
     assert.equal(logs.some((message) => /splitting refused \d+-probe self-test batch/.test(message)), true)
@@ -605,9 +621,57 @@ test('loader rejects references outside the configured adaptive sizing policy', 
   }
 })
 
+test('reference self-test repeats shuffled batches with prompt variants for each configured run', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-self-test-runs-'))
+  let contrastChecked = false
+  const selfTestRequests: Array<{ system: string; lines: string[] }> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && body.temperature === 0 && prompt.includes('___')) {
+      selfTestRequests.push({
+        system: body.messages[0]!.content,
+        lines: prompt.split('\n').filter((line) => PROBE_LINE_LABEL.test(line))
+          .map((line) => line.replace(PROBE_LINE_LABEL, '')),
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config({ referenceSelfTestRuns: 2 }),
+      fetchFn,
+    })
+    const { reference } = built
+    assert.equal(reference.probes.length, 100)
+    assert.equal(reference.generator.params.selfTestRuns, 2)
+    assert.equal(reference.selfTest.total, 200)
+    assert.equal(reference.statisticalPowerEvidence.selfTotal, 200)
+    assert.equal(reference.statisticalPowerEvidence.probeCount, 100)
+    assert.equal(reference.selfTest.outcomes.every((outcome) => outcome.matches.length === 2
+      && outcome.answers.length === 2), true)
+    assert.ok(selfTestRequests.length > 0)
+    assert.equal(selfTestRequests.every((request) => request.lines.length <= 10), true)
+    assert.ok(new Set(selfTestRequests.map((request) => request.system)).size > 1)
+    const buildOrder = new Map(reference.probes.map((probe, index) => [renderKbfProbeLine(probe), index]))
+    assert.ok(selfTestRequests.some((request) => request.lines.some((line, index) => index > 0
+      && buildOrder.get(line)! < buildOrder.get(request.lines[index - 1]!)!)), 'self-test must not keep build order')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('adaptive builder selects the first powered prefix', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-adaptive-'))
-  let selfTestMismatchesRemaining = 4
+  // 14 pooled mismatches leave 100 probes (300 trials) just underpowered.
+  let selfTestMismatchesRemaining = 14
   let contrastChecked = false
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as {
@@ -633,8 +697,10 @@ test('adaptive builder selects the first powered prefix', async () => {
   }
   try {
     const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
-    assert.equal(built.reference.probes.length, 120)
-    assert.equal(built.reference.selfTest.hamming, 4)
+    assert.equal(built.reference.probes.length, 110)
+    assert.equal(built.reference.selfTest.hamming, 14)
+    assert.equal(built.reference.selfTest.total, 330)
+    assert.equal(built.reference.statisticalPowerEvidence.probeCount, 110)
     assert.ok(built.reference.statisticalPower >= 0.9)
     assert.equal(built.reference.queryProfile.reasoningStrategy, 'reasoning-effort-none')
     assert.deepEqual(built.reference.queryProfile.requestOverrides, { reasoning_effort: 'none' })

@@ -6,6 +6,7 @@ import {
   type MatchEntry,
 } from '../../types.js';
 import { kbfPromptVariantsHash } from './prompts.js';
+import { matchesTolerance } from './scoring.js';
 import { binomialOneSidedPValue, clopperPearsonUpper } from './stats.js';
 
 /**
@@ -26,6 +27,8 @@ export const KBF_SUPPORTED_PROBE_COUNTS = Object.freeze(
 );
 export const KBF_ENROLLMENT_TEMPERATURES = [0, 0.7, 0.7] as const;
 export const KBF_EXECUTION_TEMPERATURE = 0;
+/** Independent self-test runs per probe (shuffled batches, random prompt variant). */
+export const KBF_DEFAULT_SELF_TEST_RUNS = 3;
 
 export interface ReferenceQueryProfileV1 {
   version: 2;
@@ -54,10 +57,22 @@ export interface ReferenceQueryProfileV1 {
   requestOmissions?: Array<'temperature' | 'top_p'>;
 }
 
+/**
+ * Per-probe self-test outcomes, one entry per run. Each run re-asks the probe
+ * under audit conditions (shuffled domain batches of ten, a random prompt
+ * variant), so the pooled error rate reflects what an honest seller serving
+ * the same model would score.
+ */
 export interface ReferenceProbeSelfTestV1 {
   probeId: string;
-  answer: number | null;
-  match: MatchEntry;
+  /** Parsed answer per run; null when the reference gave no parseable answer. */
+  answers: Array<number | null>;
+  /**
+   * Match per run, scored exactly like a target answer: 1 within tolerance,
+   * 0 discrepancy (including a missing or refused answer), null only when the
+   * run could not be attempted at all.
+   */
+  matches: MatchEntry[];
 }
 
 export interface ReferenceContrastV1 {
@@ -65,6 +80,10 @@ export interface ReferenceContrastV1 {
   distinguishingProbeIds: string[];
 }
 
+/**
+ * Pooled self-test: `hamming` and `total` count individual runs (trials)
+ * across all probes, not probes. `coverage` is parsed answers per trial.
+ */
 export interface KbfReferenceSelfTestV1 {
   hamming: number;
   total: number;
@@ -92,6 +111,8 @@ export interface StatisticalPowerEvidenceV1 {
   clopperPearsonConfidence: number;
   selfHamming: number;
   selfTotal: number;
+  /** Audit probe count the power is computed for (the reference's probe count). */
+  probeCount: number;
   p0UpperBound: number;
   alternativeMismatchRate: number;
   criticalMismatchCount: number | null;
@@ -149,9 +170,15 @@ export function assertMatchingQueryProfile(
   }
 }
 
+/**
+ * Power of the one-sided binomial audit test. p0 comes from the pooled
+ * self-test trials (`selfHamming`/`selfTotal`); the audit itself scores
+ * `probeCount` target answers, so the critical count and power use that n.
+ */
 export function computeBinomialPower(input: {
   selfHamming: number;
   selfTotal: number;
+  probeCount: number;
   minimumMismatchDelta: number;
   alpha?: number;
   cpConfidence?: number;
@@ -161,23 +188,26 @@ export function computeBinomialPower(input: {
   if (!(input.minimumMismatchDelta > 0 && input.minimumMismatchDelta <= 1)) {
     throw new Error('minimumMismatchDelta must be in (0, 1]');
   }
+  if (!Number.isInteger(input.probeCount) || input.probeCount <= 0) {
+    throw new Error('probeCount must be a positive integer');
+  }
   const p0 = clopperPearsonUpper(input.selfHamming, input.selfTotal, cpConfidence);
   const p1 = Math.min(1, p0 + input.minimumMismatchDelta);
   let criticalMismatchCount: number | null = null;
-  for (let mismatches = 0; mismatches <= input.selfTotal; mismatches += 1) {
-    if (binomialOneSidedPValue(mismatches, input.selfTotal, p0) < alpha) {
+  for (let mismatches = 0; mismatches <= input.probeCount; mismatches += 1) {
+    if (binomialOneSidedPValue(mismatches, input.probeCount, p0) < alpha) {
       criticalMismatchCount = mismatches;
       break;
     }
   }
   return {
-    probeCount: input.selfTotal,
+    probeCount: input.probeCount,
     p0,
     p1,
     criticalMismatchCount,
     power: criticalMismatchCount === null
       ? 0
-      : binomialOneSidedPValue(criticalMismatchCount, input.selfTotal, p1),
+      : binomialOneSidedPValue(criticalMismatchCount, input.probeCount, p1),
   };
 }
 
@@ -191,14 +221,42 @@ export function subsetReferenceSelfTest(
     if (!outcome) throw new Error(`reference self-test missing selected probe ${probeId}`);
     return outcome;
   });
-  const parsed = selected.filter((outcome) => outcome.match !== null).length;
-  const hamming = selected.filter((outcome) => outcome.match !== 1).length;
+  return aggregateKbfSelfTestOutcomes(selected);
+}
+
+/**
+ * Pool per-probe self-test runs into the honest-error baseline.
+ *
+ * Null handling mirrors target scoring so p0 and the target statistic count
+ * the same thing: a missing, unparseable, or refused answer is a discrepancy
+ * (0) on both sides, while a null match (the trial could not be attempted)
+ * is excluded from both hamming and total. Reference builders never emit
+ * null matches (a transport failure aborts the build), so in practice every
+ * refusal counts against the reference, which keeps p0 conservative: a
+ * genuine seller that refuses the same probes is not penalised for it.
+ */
+export function aggregateKbfSelfTestOutcomes(
+  outcomes: ReferenceProbeSelfTestV1[],
+): KbfReferenceSelfTestV1 {
+  let trials = 0;
+  let parsed = 0;
+  let total = 0;
+  let hamming = 0;
+  for (const outcome of outcomes) {
+    for (const [run, match] of outcome.matches.entries()) {
+      trials += 1;
+      if (outcome.answers[run] !== null && outcome.answers[run] !== undefined) parsed += 1;
+      if (match === null) continue;
+      total += 1;
+      if (match === 0) hamming += 1;
+    }
+  }
   return {
     hamming,
-    total: selected.length,
-    coverage: selected.length === 0 ? 0 : parsed / selected.length,
-    errorRate: selected.length === 0 ? 0 : hamming / selected.length,
-    outcomes: selected,
+    total,
+    coverage: trials === 0 ? 0 : parsed / trials,
+    errorRate: total === 0 ? 0 : hamming / total,
+    outcomes,
   };
 }
 
@@ -248,6 +306,7 @@ export function validateKbfReferenceV1(
     throw new Error('selfTest outcomes must contain exactly one entry per probe');
   }
   const outcomeIds = new Set<string>();
+  const probesById = new Map(reference.probes.map((probe) => [probe.id, probe]));
   for (const outcome of selfTest.outcomes) {
     object(outcome, 'selfTest outcome');
     nonEmpty(outcome.probeId, 'selfTest outcome probeId');
@@ -255,8 +314,21 @@ export function validateKbfReferenceV1(
       throw new Error(`invalid or duplicate self-test outcome ${outcome.probeId}`);
     }
     outcomeIds.add(outcome.probeId);
-    if (outcome.answer !== null && !Number.isFinite(outcome.answer)) throw new Error('invalid self-test answer');
-    if (outcome.match !== null && outcome.match !== 0 && outcome.match !== 1) throw new Error('invalid self-test match');
+    if (!Array.isArray(outcome.answers) || !Array.isArray(outcome.matches)
+      || outcome.matches.length === 0 || outcome.answers.length !== outcome.matches.length) {
+      throw new Error(`self-test outcome ${outcome.probeId} must have one answer and match per run`);
+    }
+    const probe = probesById.get(outcome.probeId)!;
+    for (const [run, match] of outcome.matches.entries()) {
+      const answer = outcome.answers[run];
+      if (answer !== null && (typeof answer !== 'number' || !Number.isFinite(answer))) {
+        throw new Error('invalid self-test answer');
+      }
+      if (match !== null && match !== 0 && match !== 1) throw new Error('invalid self-test match');
+      if (match !== null && match !== (answer !== null && matchesTolerance(answer, probe) ? 1 : 0)) {
+        throw new Error(`self-test match for ${outcome.probeId} run ${run} is inconsistent with its answer`);
+      }
+    }
   }
   const recomputedSelfTest = subsetReferenceSelfTest(reference, reference.probes.map((probe) => probe.id));
   if (
@@ -285,6 +357,7 @@ export function validateKbfReferenceV1(
   const powerInput = {
     selfHamming: selfTest.hamming,
     selfTotal: selfTest.total,
+    probeCount: reference.probes.length,
     minimumMismatchDelta: reference.minimumMismatchDelta,
     alpha: evidence.alpha,
     cpConfidence: evidence.clopperPearsonConfidence,
@@ -296,6 +369,7 @@ export function validateKbfReferenceV1(
     clopperPearsonConfidence: evidence.clopperPearsonConfidence,
     selfHamming: selfTest.hamming,
     selfTotal: selfTest.total,
+    probeCount: reference.probes.length,
     p0UpperBound: recomputedPower.p0,
     alternativeMismatchRate: recomputedPower.p1,
     criticalMismatchCount: recomputedPower.criticalMismatchCount,

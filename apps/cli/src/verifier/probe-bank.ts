@@ -3,13 +3,13 @@ import { mkdir, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
   KBF_REFERENCE_VERSION,
+  aggregateKbfSelfTestOutcomes,
   canonicalHashBytes32,
   computeBinomialPower,
   computeReferenceId,
   queryProfileHash,
   validateKbfReferenceV1,
   type KbfProbe,
-  type KbfReferenceSelfTestV1,
   type KbfReferenceV1,
   type ReferenceProbeSelfTestV1,
 } from '@antseed/fingerprints'
@@ -22,7 +22,7 @@ import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
 export const BANK_EXHAUSTED = 'BANK_EXHAUSTED'
-const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '5'
+const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '6'
 
 interface BankProbeV1 {
   probe: KbfProbe
@@ -680,10 +680,11 @@ function selectPoweredReference(
     count <= sizing.maximumProbeCount && count <= eligible.length;
     count += sizing.probeStep) {
     const selected = eligible.slice(0, count)
-    const selfTest = aggregateSelfTest(selected.map((entry) => entry.selfTest))
+    const selfTest = aggregateKbfSelfTestOutcomes(selected.map((entry) => entry.selfTest))
     const power = computeBinomialPower({
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
+      probeCount: count,
       minimumMismatchDelta: bank.referenceTemplate.minimumMismatchDelta,
       alpha: bank.statisticalAssumptions.alpha,
       cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
@@ -708,6 +709,7 @@ function selectPoweredReference(
         clopperPearsonConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
         selfHamming: selfTest.hamming,
         selfTotal: selfTest.total,
+        probeCount: count,
         p0UpperBound: power.p0,
         alternativeMismatchRate: power.p1,
         criticalMismatchCount: power.criticalMismatchCount,
@@ -724,18 +726,6 @@ function selectPoweredReference(
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })
   }
   return null
-}
-
-function aggregateSelfTest(outcomes: ReferenceProbeSelfTestV1[]): KbfReferenceSelfTestV1 {
-  const parsed = outcomes.filter((outcome) => outcome.match !== null).length
-  const hamming = outcomes.filter((outcome) => outcome.match !== 1).length
-  return {
-    hamming,
-    total: outcomes.length,
-    coverage: outcomes.length === 0 ? 0 : parsed / outcomes.length,
-    errorRate: outcomes.length === 0 ? 0 : hamming / outcomes.length,
-    outcomes,
-  }
 }
 
 function cryptoShuffle<T>(values: readonly T[]): T[] {
