@@ -110,6 +110,11 @@ When a limit is reached, the gateway answers `402 Payment Required`:
 
 A key with limits fails closed. If its buyer isn't reachable or doesn't report spend, the gateway answers `503` with `spend_tracking_unavailable` instead of serving requests it can't count. Keys without limits are not affected.
 
+Spend counting has two known gaps, both small:
+
+- The buyer keeps spend reports in memory until the gateway reads them, which it does every few seconds. If the buyer crashes, spend signed since the last read is not counted, so a capped key can end up slightly under-counted.
+- A seller can occasionally ask for payment without naming the request it is for. The gateway books that spend to a key only when exactly one key's requests are using that wallet with that seller; otherwise it is left uncounted. Give each key its own identity (`--new-identity`) to avoid this.
+
 `GET /v1/models` and `POST /v1/messages/count_tokens` are answered locally for free. They never count against a limit.
 
 ## Run the gateway
