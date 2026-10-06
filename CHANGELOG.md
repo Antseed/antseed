@@ -17,6 +17,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- API adapter: omit the OpenAI Responses `prompt_cache_key` when converting Codex requests to Chat Completions. This prevents Claude-backed Chat sellers from returning `422 unsupported Chat feature for Claude Messages: prompt_cache_key` after switching models, while preserving Anthropic session cache affinity and native Responses requests.
+
 - Sellers: a listener now accepts up to 64 connections from one IP address, up from 10, so a buyer paying as several identities can reach the same seller with each of them.
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 

@@ -196,10 +196,10 @@ export function renderCanonicalRequestToOpenAIChatBody(
   assignToolsAndToolChoice(body, tools, toolChoice);
   if (request.metadata) body.metadata = request.metadata;
   if (request.user) body.user = request.user;
-  // Routes the request to the cache that holds this conversation's prefix.
-  // Anthropic clients have no such field, so their per-session `user_id`
-  // stands in for it (see normalizeAnthropicMessagesRequestBody).
-  if (request.promptCacheKey) body.prompt_cache_key = request.promptCacheKey;
+  // Chat Completions does not define prompt_cache_key. Keep the Responses-only
+  // field out of Chat requests so Chat-to-Claude bridges do not reject it.
+  // Anthropic session identities remain available for cache affinity here.
+  if (request.promptCacheKey && request.user) body.prompt_cache_key = request.promptCacheKey;
   return body;
 }
 

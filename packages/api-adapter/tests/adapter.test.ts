@@ -357,6 +357,18 @@ describe('prompt cache breakpoints', () => {
     expect(decode(transformed!.request.body).prompt_cache_key).toBe('user_abc_session_f00d');
   });
 
+  it('does not forward a Responses prompt_cache_key to Chat Completions', () => {
+    const transformed = transformRequest(responsesRequest({
+      model: 'claude-sonnet-5',
+      input: 'hello',
+      prompt_cache_key: 'conversation-42',
+    }), { from: 'openai-responses', to: 'openai-chat-completions' });
+
+    const body = decode(transformed!.request.body);
+    expect(body.prompt_cache_key).toBeUndefined();
+    expect(body.messages).toEqual([{ role: 'user', content: 'hello' }]);
+  });
+
   it('omits the chat-completions cache key when the request has no session identity', () => {
     const transformed = transformRequest(anthropicRequest({
       model: 'claude-sonnet',
