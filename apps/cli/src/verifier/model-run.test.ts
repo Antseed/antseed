@@ -113,6 +113,7 @@ async function runTarget(
   auditTimeoutMs = 10_000,
   resume?: ModelVerificationResumeInput,
   checkpointIdentity?: { runId: string; epoch: string; model: string },
+  targetReference: KbfReferenceV1 = reference(count),
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-target-'))
   let requestCount = 0
@@ -286,7 +287,7 @@ async function runTarget(
       },
       target: peer(),
       service: 'GPT-5.6-SOL',
-      reference: reference(count),
+      reference: targetReference,
       auditId: resume ? `0x${'88'.repeat(32)}` : undefined,
       resume,
       checkpointIdentity,
@@ -543,6 +544,26 @@ test('audit batches use recorded crypto-random prompt variants', async () => {
     assert.equal(body.messages[1]?.content.startsWith(variant.task), true)
   }
   assert.ok(used.size > 1, 'expected more than one prompt variant across 50 batches')
+})
+
+test('audits send the canonical body without reference-endpoint settings', async () => {
+  const legacy = reference(100)
+  legacy.queryProfile.reasoningStrategy = 'bare'
+  legacy.queryProfile.requestOverrides = { reasoning_effort: 'none', reasoning: { effort: 'low' } }
+  legacy.queryProfile.requestOmissions = ['temperature', 'top_p']
+  const run = await runTarget(100, 'valid', 0, 'verified', true, 10_000, undefined, undefined, legacy)
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.requests.length, 10)
+  for (const request of run.requests) {
+    const body = JSON.parse(request.body) as Record<string, unknown>
+    assert.equal(body.temperature, 0)
+    assert.equal(body.top_p, 1)
+    assert.equal(body.max_tokens, legacy.queryProfile.maxTokensPerRequest)
+    assert.equal(body.stream, false)
+    assert.equal(body.n, 1)
+    assert.equal(body.reasoning_effort, undefined)
+    assert.equal(body.reasoning, undefined)
+  }
 })
 
 test('proxy runtime retries transient failures', async () => {

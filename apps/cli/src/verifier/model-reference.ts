@@ -13,6 +13,7 @@ import {
   computeMatchVector,
   computeReferenceId,
   createReferenceQueryProfile,
+  type ReferenceEndpointRequestV1,
   matchesTolerance,
   parseKbfAnswers,
   validateKbfReferenceV1,
@@ -393,9 +394,13 @@ export async function buildModelReference(input: {
     maxTokensPerRequest: MAX_TOKENS,
     requestTimeoutMs: timeoutMs,
   })
-  queryProfile.reasoningStrategy = targetReasoningStrategy
-  queryProfile.requestOverrides = targetRequestOverrides
-  queryProfile.requestOmissions = targetRoute.requestOmissions
+  // Endpoint quirks stay out of the query profile: they apply only to requests
+  // sent to the reference endpoint, never to target audits.
+  const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
+    reasoningStrategy: targetReasoningStrategy,
+    requestOverrides: targetRequestOverrides,
+    requestOmissions: targetRoute.requestOmissions,
+  }
   const reference: KbfReferenceV1 = {
     version: KBF_REFERENCE_VERSION,
     kind: 'kbf',
@@ -427,6 +432,7 @@ export async function buildModelReference(input: {
         enrollmentStabilityVersion: 2,
         enrollmentEvidenceVersion: 1,
         selfTestRuns,
+        referenceEndpointRequest,
       },
     },
     provenance: {

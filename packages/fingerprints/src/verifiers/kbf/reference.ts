@@ -49,13 +49,41 @@ export interface ReferenceQueryProfileV1 {
     seed: null;
     responseFormat: 'text';
   };
-  /** Endpoint-specific method used to minimize hidden reasoning output. */
-  reasoningStrategy?: 'reasoning-effort-none' | 'reasoning-effort-minimum-supported' | 'disable-thinking' | 'bare';
-  /** Exact additional request fields applied to reference and target queries. */
+  /**
+   * Legacy location of reference-endpoint request settings. New references
+   * record them in `generator.params.referenceEndpointRequest` instead. They
+   * describe how the reference endpoint was queried and are never applied to
+   * target audits, which send the canonical KBF request body.
+   */
+  reasoningStrategy?: ReferenceReasoningStrategy;
+  /** Legacy: see `reasoningStrategy`. */
   requestOverrides?: Record<string, unknown>;
-  /** Standard request fields intentionally omitted for endpoint compatibility. */
+  /** Legacy: see `reasoningStrategy`. */
   requestOmissions?: Array<'temperature' | 'top_p'>;
 }
+
+export type ReferenceReasoningStrategy =
+  | 'reasoning-effort-none'
+  | 'reasoning-effort-minimum-supported'
+  | 'disable-thinking'
+  | 'bare';
+
+/**
+ * Endpoint-specific settings used only for requests to the reference endpoint
+ * (for example, minimizing hidden reasoning or omitting sampling fields an
+ * endpoint rejects). Recorded in `generator.params.referenceEndpointRequest`
+ * so the reference is reproducible, but outside the query profile, which
+ * describes the measurement protocol that target audits follow.
+ */
+export interface ReferenceEndpointRequestV1 {
+  /** Endpoint-specific method used to minimize hidden reasoning output. */
+  reasoningStrategy: ReferenceReasoningStrategy;
+  /** Exact additional request fields sent to the reference endpoint. */
+  requestOverrides: Record<string, unknown>;
+  /** Standard request fields omitted for reference-endpoint compatibility. */
+  requestOmissions: Array<'temperature' | 'top_p'>;
+}
+
 
 /**
  * Per-probe self-test outcomes, one entry per run. Each run re-asks the probe
@@ -157,6 +185,45 @@ export function createReferenceQueryProfile(input: {
 
 export function queryProfileHash(profile: ReferenceQueryProfileV1): string {
   return canonicalHash(profile);
+}
+
+/**
+ * Reference-endpoint request settings, read from
+ * `generator.params.referenceEndpointRequest` or, for legacy references, from
+ * the query profile. Returns null when neither records them.
+ */
+export function referenceEndpointRequest(
+  reference: Pick<KbfReferenceV1, 'queryProfile' | 'generator'>,
+): ReferenceEndpointRequestV1 | null {
+  const recorded = reference.generator?.params?.referenceEndpointRequest;
+  if (recorded !== undefined && recorded !== null) return recorded as ReferenceEndpointRequestV1;
+  const profile = reference.queryProfile;
+  if (profile.reasoningStrategy === undefined
+    && profile.requestOverrides === undefined
+    && profile.requestOmissions === undefined) {
+    return null;
+  }
+  return {
+    ...(profile.reasoningStrategy !== undefined ? { reasoningStrategy: profile.reasoningStrategy } : {}),
+    ...(profile.requestOverrides !== undefined ? { requestOverrides: profile.requestOverrides } : {}),
+    ...(profile.requestOmissions !== undefined ? { requestOmissions: profile.requestOmissions } : {}),
+  } as ReferenceEndpointRequestV1;
+}
+
+/**
+ * Hash used to decide whether two references were enrolled compatibly: the
+ * query profile with reference-endpoint settings folded back in. This equals
+ * the legacy `queryProfileHash` of references that stored those settings in
+ * the profile, so banks built before the split stay compatible.
+ */
+export function referenceCompatibilityProfileHash(
+  reference: Pick<KbfReferenceV1, 'queryProfile' | 'generator'>,
+): string {
+  const endpointRequest = reference.generator?.params?.referenceEndpointRequest as
+    | ReferenceEndpointRequestV1
+    | undefined;
+  if (!endpointRequest) return queryProfileHash(reference.queryProfile);
+  return canonicalHash({ ...reference.queryProfile, ...endpointRequest });
 }
 
 export function assertMatchingQueryProfile(
@@ -282,6 +349,7 @@ export function validateKbfReferenceV1(
   }
   stringArray(reference.serviceAliases, 'serviceAliases', 1);
   validateQueryProfile(reference.queryProfile);
+  validateReferenceEndpointRequest(reference);
   if (
     !Number.isInteger(reference.selectedProbeCount)
     || reference.selectedProbeCount < KBF_MIN_PROBE_COUNT
@@ -412,18 +480,40 @@ function validateQueryProfile(profile: ReferenceQueryProfileV1): void {
   if (settings.topP !== 1 || settings.seed !== null || settings.responseFormat !== 'text') {
     throw new Error('unsupported generation settings');
   }
-  if (profile.reasoningStrategy !== undefined
+  validateEndpointRequestFields(profile);
+}
+
+function validateEndpointRequestFields(fields: Partial<ReferenceEndpointRequestV1>): void {
+  if (fields.reasoningStrategy !== undefined
     && !['reasoning-effort-none', 'reasoning-effort-minimum-supported', 'disable-thinking', 'bare']
-      .includes(profile.reasoningStrategy)) {
+      .includes(fields.reasoningStrategy)) {
     throw new Error('unsupported reasoning strategy');
   }
-  if (profile.requestOverrides !== undefined) object(profile.requestOverrides, 'requestOverrides');
-  if (profile.requestOmissions !== undefined) {
-    if (!Array.isArray(profile.requestOmissions)
-      || profile.requestOmissions.some((field) => !['temperature', 'top_p'].includes(field))
-      || new Set(profile.requestOmissions).size !== profile.requestOmissions.length) {
+  if (fields.requestOverrides !== undefined) object(fields.requestOverrides, 'requestOverrides');
+  if (fields.requestOmissions !== undefined) {
+    if (!Array.isArray(fields.requestOmissions)
+      || fields.requestOmissions.some((field) => !['temperature', 'top_p'].includes(field))
+      || new Set(fields.requestOmissions).size !== fields.requestOmissions.length) {
       throw new Error('unsupported request omissions');
     }
+  }
+}
+
+function validateReferenceEndpointRequest(reference: KbfReferenceV1): void {
+  const recorded = reference.generator?.params?.referenceEndpointRequest;
+  if (recorded === undefined) return;
+  const request = object(recorded, 'generator.params.referenceEndpointRequest') as Partial<ReferenceEndpointRequestV1>;
+  if (request.reasoningStrategy === undefined
+    || request.requestOverrides === undefined
+    || request.requestOmissions === undefined) {
+    throw new Error('referenceEndpointRequest requires reasoningStrategy, requestOverrides, and requestOmissions');
+  }
+  validateEndpointRequestFields(request);
+  const profile = reference.queryProfile;
+  if (profile.reasoningStrategy !== undefined
+    || profile.requestOverrides !== undefined
+    || profile.requestOmissions !== undefined) {
+    throw new Error('reference endpoint settings must not also appear in the query profile');
   }
 }
 

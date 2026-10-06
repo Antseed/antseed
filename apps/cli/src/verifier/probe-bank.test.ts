@@ -271,6 +271,40 @@ test('probe banks reject incompatible query profiles', async () => {
   }
 })
 
+test('references with split reference-endpoint settings join legacy banks with the same settings', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-endpoint-'))
+  const settings = {
+    reasoningStrategy: 'bare' as const,
+    requestOverrides: {},
+    requestOmissions: ['temperature' as const, 'top_p' as const],
+  }
+  try {
+    const legacy = reference()
+    Object.assign(legacy.queryProfile, settings)
+    legacy.referenceId = computeReferenceId(legacy)
+    await appendReference(directory, legacy)
+
+    const split = reference()
+    split.probes[0]!.id = 'probe-new'
+    split.selfTest.outcomes[0]!.probeId = 'probe-new'
+    split.contrasts[0]!.distinguishingProbeIds[0] = 'probe-new'
+    split.generator = { ...split.generator, params: { referenceEndpointRequest: settings } }
+    split.referenceId = computeReferenceId(split)
+    const appended = await appendReference(directory, split)
+    assert.equal(appended.addedProbeCount, 1)
+
+    const different = reference()
+    different.generator = {
+      ...different.generator,
+      params: { referenceEndpointRequest: { ...settings, requestOmissions: [] } },
+    }
+    different.referenceId = computeReferenceId(different)
+    await assert.rejects(appendReference(directory, different), /incompatible/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('probe banks reject incompatible enrollment algorithms', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-enrollment-'))
   try {

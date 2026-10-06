@@ -8,6 +8,7 @@ import {
   computeReferenceId,
   createReferenceQueryProfile,
   renderKbfProbeLine,
+  referenceEndpointRequest,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
@@ -201,9 +202,12 @@ test('reference build uses minimum mandatory reasoning and persists the target o
     const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, catalog, fetchFn })
     assert.equal(built.reference.probes.length, 100)
     assert.deepEqual(built.reference.serviceAliases, [MODEL, 'model.test-alias'])
-    assert.equal(built.reference.queryProfile.reasoningStrategy, 'reasoning-effort-minimum-supported')
-    assert.deepEqual(built.reference.queryProfile.requestOverrides, {
-      reasoning: { effort: 'low', exclude: true },
+    assert.equal(built.reference.queryProfile.reasoningStrategy, undefined)
+    assert.equal(built.reference.queryProfile.requestOverrides, undefined)
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-minimum-supported',
+      requestOverrides: { reasoning: { effort: 'low', exclude: true } },
+      requestOmissions: [],
     })
     const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
     const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
@@ -279,9 +283,12 @@ test('reference build routes only target requests through a pinned AntSeed peer'
     assert.equal(contrastRequests.every((request) => request.headers['x-antseed-pin-peer'] === undefined), true)
     assert.equal(contrastRequests.every((request) => request.body.temperature !== undefined && request.body.top_p !== undefined), true)
     assert.equal(built.reference.queryProfile.upstreamModel, 'fable-5-coding-only')
-    assert.equal(built.reference.queryProfile.reasoningStrategy, 'bare')
-    assert.deepEqual(built.reference.queryProfile.requestOverrides, {})
-    assert.deepEqual(built.reference.queryProfile.requestOmissions, ['temperature', 'top_p'])
+    assert.equal(built.reference.queryProfile.requestOmissions, undefined)
+    assert.deepEqual(built.reference.generator.params.referenceEndpointRequest, {
+      reasoningStrategy: 'bare',
+      requestOverrides: {},
+      requestOmissions: ['temperature', 'top_p'],
+    })
     assert.equal(built.reference.provenance?.sourceId, `test-source:antseed:${'12'.repeat(20)}:fable-5-coding-only`)
     assert.equal(built.cost.models.find((entry) => entry.model === 'upstream-test')?.inputUsdPerMillion, 0.45)
   } finally {
@@ -702,8 +709,11 @@ test('adaptive builder selects the first powered prefix', async () => {
     assert.equal(built.reference.selfTest.total, 330)
     assert.equal(built.reference.statisticalPowerEvidence.probeCount, 110)
     assert.ok(built.reference.statisticalPower >= 0.9)
-    assert.equal(built.reference.queryProfile.reasoningStrategy, 'reasoning-effort-none')
-    assert.deepEqual(built.reference.queryProfile.requestOverrides, { reasoning_effort: 'none' })
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-none',
+      requestOverrides: { reasoning_effort: 'none' },
+      requestOmissions: [],
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

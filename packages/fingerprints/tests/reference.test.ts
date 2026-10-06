@@ -6,6 +6,8 @@ import {
   createReferenceQueryProfile,
   kbfPromptVariantsHash,
   queryProfileHash,
+  referenceCompatibilityProfileHash,
+  referenceEndpointRequest,
   subsetReferenceSelfTest,
   validateKbfReferenceV1,
   type KbfReferenceV1,
@@ -165,6 +167,44 @@ describe('validateKbfReferenceV1', () => {
     legacy.version = 1;
     legacy.referenceId = computeReferenceId(legacy);
     expect(() => validateKbfReferenceV1(legacy)).toThrow(/schema version 2/);
+  });
+
+  it('validates reference-endpoint settings recorded outside the query profile', () => {
+    const settings = {
+      reasoningStrategy: 'bare' as const,
+      requestOverrides: {},
+      requestOmissions: ['temperature' as const, 'top_p' as const],
+    };
+    const recorded = reference();
+    recorded.generator.params.referenceEndpointRequest = settings;
+    recorded.referenceId = computeReferenceId(recorded);
+    expect(() => validateKbfReferenceV1(recorded)).not.toThrow();
+    expect(referenceEndpointRequest(recorded)).toEqual(settings);
+
+    const legacy = reference();
+    Object.assign(legacy.queryProfile, settings);
+    legacy.referenceId = computeReferenceId(legacy);
+    expect(referenceEndpointRequest(legacy)).toEqual(settings);
+    // Splitting the settings out of the profile keeps enrollment compatibility.
+    expect(referenceCompatibilityProfileHash(recorded)).toBe(queryProfileHash(legacy.queryProfile));
+    expect(referenceCompatibilityProfileHash(recorded)).not.toBe(queryProfileHash(recorded.queryProfile));
+    expect(referenceEndpointRequest(reference())).toBeNull();
+
+    const both = reference();
+    both.generator.params.referenceEndpointRequest = settings;
+    both.queryProfile.requestOmissions = ['temperature'];
+    both.referenceId = computeReferenceId(both);
+    expect(() => validateKbfReferenceV1(both)).toThrow(/must not also appear in the query profile/);
+
+    const incomplete = reference();
+    incomplete.generator.params.referenceEndpointRequest = { reasoningStrategy: 'bare' };
+    incomplete.referenceId = computeReferenceId(incomplete);
+    expect(() => validateKbfReferenceV1(incomplete)).toThrow(/requires reasoningStrategy/);
+
+    const unsupported = reference();
+    unsupported.generator.params.referenceEndpointRequest = { ...settings, reasoningStrategy: 'loud' };
+    unsupported.referenceId = computeReferenceId(unsupported);
+    expect(() => validateKbfReferenceV1(unsupported)).toThrow(/unsupported reasoning strategy/);
   });
 
   it('requires explicit operator trust for imported references', () => {

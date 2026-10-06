@@ -7,7 +7,7 @@ import {
   canonicalHashBytes32,
   computeBinomialPower,
   computeReferenceId,
-  queryProfileHash,
+  referenceCompatibilityProfileHash,
   validateKbfReferenceV1,
   type KbfProbe,
   type KbfReferenceV1,
@@ -740,7 +740,7 @@ function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): s
     model: normalized(model),
     referenceModel: normalized(reference.referenceModel),
     serviceAliases: reference.serviceAliases.map(normalized).sort(),
-    queryProfileHash: queryProfileHash(reference.queryProfile),
+    queryProfileHash: referenceCompatibilityProfileHash(reference),
     provenance: reference.provenance ?? null,
     generator: {
       name: reference.generator.name,

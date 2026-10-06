@@ -1052,17 +1052,19 @@ function buildProxyBatchRequest(
     'x-antseed-pin-peer': target.peerId,
     'x-antseed-capture-response-auth-preimages': '1',
   }
+  // Audits send the canonical KBF body. Reference-endpoint settings (legacy
+  // queryProfile.requestOverrides / requestOmissions / reasoningStrategy) only
+  // describe how the reference endpoint was queried and never reach sellers.
   const requestBody: Record<string, unknown> = {
     ...buildKbfChatRequestBody(service, probes, {
       maxTokens: reference.queryProfile.maxTokensPerRequest,
       variantId: promptVariantId,
     }),
+    temperature: reference.queryProfile.auditTemperature,
     top_p: reference.queryProfile.generationSettings.topP,
     stream: false,
     n: 1,
-    ...(reference.queryProfile.requestOverrides ?? {}),
   }
-  for (const field of reference.queryProfile.requestOmissions ?? []) delete requestBody[field]
   const body = new TextEncoder().encode(JSON.stringify(requestBody))
   const bodyBase64 = Buffer.from(body).toString('base64')
   return {
