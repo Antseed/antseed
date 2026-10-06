@@ -1,76 +1,73 @@
 import { join } from 'node:path'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
+import { normalized } from './utils.js'
 
-export type ModelSubmissionStatus = 'pending' | 'submitted' | 'failed' | 'skipped'
+export type ReportSubmissionStatus = 'pending' | 'submitted' | 'failed'
 
-export interface ModelSubmissionPublicationV1 {
-  provider: 'pinata'
-  status: 'published' | 'failed'
+export interface ReportSubmissionLedgerEntryV1 {
+  digest: string
+  agentId: string
+  auditor: string
+  reportPath: string
   evidenceHash: string
-  cid: string | null
-  uri: string | null
-  pinSize: number | null
-  totalBytes?: number
-  fileCount: number
-  publishedAt: string | null
-  lastAttemptAt: string
-  error: string | null
-}
-
-export interface ModelSubmissionLedgerEntryV1 {
-  model: string
-  evidenceHash: string
-  serviceHashes: string[]
-  evidencePath: string
-  resultCount: number
-  inferenceCostUsdMicros: string
-  referenceCostUsdMicros: string
-  totalAuditCostUsdMicros: string
-  status: ModelSubmissionStatus
+  resultsHash: string
+  evidenceUri: string
+  status: ReportSubmissionStatus
   transactionHash: string | null
   blockNumber: number | null
   error: string | null
   lastAttemptAt: string
-  referenceCostIds: string[]
-  publication?: ModelSubmissionPublicationV1
 }
 
-export interface SubmissionLedgerV1 {
+/** Per chain + contract record of the reports this verifier submitted, keyed by EIP-712 report digest. */
+export interface ReportSubmissionLedgerV1 {
   version: 1
-  kind: 'antseed-verifier-submission-ledger'
-  runId: string
+  kind: 'antseed-verifier-report-submission-ledger'
   chainId: string
   contractAddress: string
-  expectedEpoch: string
   createdAt: string
   updatedAt: string
-  models: Record<string, ModelSubmissionLedgerEntryV1>
+  reports: Record<string, ReportSubmissionLedgerEntryV1>
 }
 
 export function submissionLedgerPath(
   evidenceDir: string,
   chainId: bigint | string,
   contractAddress: string,
-  runId: string,
 ): string {
-  return join(
-    evidenceDir,
-    'submissions',
-    String(chainId),
-    contractAddress.toLowerCase(),
-    `${runId}.json`,
-  )
+  return join(evidenceDir, 'submissions', String(chainId), contractAddress.toLowerCase(), 'reports.json')
 }
 
-export async function readSubmissionLedger(path: string): Promise<SubmissionLedgerV1 | null> {
-  const parsed = await readJsonIfExists<SubmissionLedgerV1>(path)
-  if (parsed && (parsed.version !== 1 || parsed.kind !== 'antseed-verifier-submission-ledger')) {
+export function newSubmissionLedger(chainId: bigint | string, contractAddress: string): ReportSubmissionLedgerV1 {
+  const now = new Date().toISOString()
+  return {
+    version: 1,
+    kind: 'antseed-verifier-report-submission-ledger',
+    chainId: String(chainId),
+    contractAddress,
+    createdAt: now,
+    updatedAt: now,
+    reports: {},
+  }
+}
+
+export async function readSubmissionLedger(
+  path: string,
+  chainId: bigint | string,
+  contractAddress: string,
+): Promise<ReportSubmissionLedgerV1> {
+  const parsed = await readJsonIfExists<ReportSubmissionLedgerV1>(path)
+  if (!parsed) return newSubmissionLedger(chainId, contractAddress)
+  if (parsed.version !== 1 || parsed.kind !== 'antseed-verifier-report-submission-ledger') {
     throw new Error(`unsupported submission ledger: ${path}`)
+  }
+  if (parsed.chainId !== String(chainId) || normalized(parsed.contractAddress) !== normalized(contractAddress)) {
+    throw new Error(`submission ledger ${path} belongs to another chain or contract`)
   }
   return parsed
 }
 
-export async function writeSubmissionLedger(path: string, ledger: SubmissionLedgerV1): Promise<void> {
+export async function writeSubmissionLedger(path: string, ledger: ReportSubmissionLedgerV1): Promise<void> {
   ledger.updatedAt = new Date().toISOString()
   await writeJsonAtomic(path, ledger)
 }

@@ -21,7 +21,7 @@
     "start:seed": "node dist/cli/index.js seed",
     "start:connect": "node dist/cli/index.js connect",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test dist/config/*.test.js dist/cli/commands/**/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/tunnel/*.test.js"
+    "test": "npm run build && node --test dist/config/*.test.js dist/cli/commands/**/*.test.js dist/verifier/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/tunnel/*.test.js"
   },
   "dependencies": {
     "@antseed/ant-agent": "workspace:*",

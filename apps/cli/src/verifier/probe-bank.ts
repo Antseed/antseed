@@ -1,5 +1,5 @@
 import { randomInt } from 'node:crypto'
-import { mkdir } from 'node:fs/promises'
+import { mkdir, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
   KBF_REFERENCE_VERSION,
@@ -615,70 +615,47 @@ function sellerPeerHash(sellerPeerId: string): string {
   return canonicalHashBytes32({ peerId: normalized(sellerPeerId) }).slice(2)
 }
 
-export async function listClaimableReferenceCosts(
-  banksDir: string,
-  model: string,
-  evidenceHash?: string,
-): Promise<ReferenceCostEntryV1[]> {
-  const bank = await readRequiredBank(bankPath(banksDir, model), model)
-  return bank.referenceCosts
-    .filter((entry) => entry.status === 'unclaimed'
-      || (entry.status === 'reserved' && entry.reservedEvidenceHash === evidenceHash))
-    .map((entry) => structuredClone(entry))
-}
-
-export async function reserveReferenceCosts(input: {
-  banksDir: string
-  model: string
-  evidenceHash: string
-  costIds: string[]
-}): Promise<ReferenceCostEntryV1[]> {
-  const path = bankPath(input.banksDir, input.model)
-  const lock = await acquirePidFileLock(join(dirname(path), '.bank.lock'))
-  try {
-    const bank = await readRequiredBank(path, input.model)
-    const requested = new Set(input.costIds)
-    const reserved: ReferenceCostEntryV1[] = []
-    for (const entry of bank.referenceCosts) {
-      if (!requested.has(entry.costId)) continue
-      if (entry.status === 'claimed') throw new Error(`reference cost ${entry.costId} is already claimed`)
-      if (entry.status === 'reserved' && entry.reservedEvidenceHash !== input.evidenceHash) {
-        throw new Error(`reference cost ${entry.costId} is reserved by another bundle`)
+/**
+ * Finds the full probe reference with `referenceId` among the per-seller (and legacy shared)
+ * epoch references of every model bank. Callers must validate the returned value.
+ */
+export async function findEpochProbeReference(banksDir: string, referenceId: string): Promise<unknown | null> {
+  const walk = async (directory: string): Promise<unknown | null> => {
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return null
+      throw error
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        const found = await walk(path)
+        if (found) return found
+        continue
       }
-      entry.status = 'reserved'
-      entry.reservedEvidenceHash = input.evidenceHash
-      reserved.push(structuredClone(entry))
-      requested.delete(entry.costId)
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const value = await readJsonIfExists<EpochProbeReferenceV1 | SellerEpochProbeReferenceV1>(path)
+      if ((value?.kind === 'antseed-kbf-seller-epoch-probe-reference' || value?.kind === 'antseed-kbf-epoch-probe-reference')
+        && value.reference?.referenceId === referenceId) {
+        return structuredClone(value.reference)
+      }
     }
-    if (requested.size > 0) throw new Error(`unknown reference cost IDs: ${[...requested].join(', ')}`)
-    bank.updatedAt = new Date().toISOString()
-    await writeJsonAtomic(path, bank)
-    return reserved
-  } finally {
-    await lock.release()
+    return null
   }
-}
-
-export async function markReferenceCostsClaimed(input: {
-  banksDir: string
-  model: string
-  evidenceHash: string
-  transactionHash: string
-}): Promise<void> {
-  const path = bankPath(input.banksDir, input.model)
-  const lock = await acquirePidFileLock(join(dirname(path), '.bank.lock'))
+  let models: string[]
   try {
-    const bank = await readRequiredBank(path, input.model)
-    for (const entry of bank.referenceCosts) {
-      if (entry.status !== 'reserved' || entry.reservedEvidenceHash !== input.evidenceHash) continue
-      entry.status = 'claimed'
-      entry.claimedTransactionHash = input.transactionHash
-    }
-    bank.updatedAt = new Date().toISOString()
-    await writeJsonAtomic(path, bank)
-  } finally {
-    await lock.release()
+    models = await readdir(banksDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
   }
+  for (const model of models.sort()) {
+    const found = await walk(join(banksDir, model, 'epochs'))
+    if (found) return found
+  }
+  return null
 }
 
 function bankFromReference(model: string, reference: KbfReferenceV1, cost: ReferenceBuildCostV1): ProbeBankV1 {

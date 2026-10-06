@@ -28,19 +28,22 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes registry-only run, reference, status, and submit workflows', () => {
+test('verifier exposes run, reference, status, report, submit, and rewards workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
-  assert.deepEqual(verifier.commands.map((entry) => entry.name()).sort(), ['reference', 'run', 'status', 'submit'])
+  assert.deepEqual(
+    verifier.commands.map((entry) => entry.name()).sort(),
+    ['reference', 'report', 'rewards', 'run', 'status', 'submit'],
+  )
 })
 
-test('verifier submit exposes model-bundle submission controls', () => {
+test('verifier report, submit, and rewards expose the auditor and verifier controls', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
-  const submit = verifier.commands.find((entry) => entry.name() === 'submit')!
-  assert.deepEqual(
-    submit.options.map((option) => option.long),
-    ['--run-id', '--dry-run', '--yes', '--rpc-url', '--publish-ipfs'],
-  )
+  const options = (name: string) => verifier.commands.find((entry) => entry.name() === name)!
+    .options.map((option) => option.long)
+  assert.deepEqual(options('report'), ['--run-id', '--rpc-url', '--publish-ipfs'])
+  assert.deepEqual(options('submit'), ['--report', '--dry-run', '--yes', '--rpc-url'])
+  assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
 })
 
 test('verifier reference exposes only the explicit build workflow', () => {

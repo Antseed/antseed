@@ -16,9 +16,6 @@ import {
   epochProbeReferencePath,
   inspectModelProbeBankPower,
   loadModelAuditReservation,
-  listClaimableReferenceCosts,
-  markReferenceCostsClaimed,
-  reserveReferenceCosts,
   reserveModelAuditReference,
   SELLER_PROBE_SELECTION_METHOD,
   sellerEpochProbeReferencePath,
@@ -663,34 +660,6 @@ test('different sellers reserve independent references concurrently', async () =
     assert.equal(new Set(reservations.map((reservation) => reservation.ledgerPath)).size, 4)
     assert.equal(new Set(reservations.map((reservation) => reservation.reference.referenceId)).size, 4)
     for (const reservation of reservations) assert.equal(reservation.reference.probes.length, 100)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('reference costs reserve and claim exactly once for an evidence hash', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-'))
-  try {
-    await appendReference(directory)
-    const claimable = await listClaimableReferenceCosts(directory, 'model-a')
-    assert.equal(claimable.length, 1)
-    const evidenceHash = `0x${'77'.repeat(32)}`
-    const reserved = await reserveReferenceCosts({
-      banksDir: directory,
-      model: 'model-a',
-      evidenceHash,
-      costIds: claimable.map((entry) => entry.costId),
-    })
-    assert.equal(reserved[0]!.status, 'reserved')
-    assert.equal((await listClaimableReferenceCosts(directory, 'model-a')).length, 0)
-    assert.equal((await listClaimableReferenceCosts(directory, 'model-a', evidenceHash)).length, 1)
-    await markReferenceCostsClaimed({
-      banksDir: directory,
-      model: 'model-a',
-      evidenceHash,
-      transactionHash: `0x${'88'.repeat(32)}`,
-    })
-    assert.equal((await listClaimableReferenceCosts(directory, 'model-a', evidenceHash)).length, 0)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

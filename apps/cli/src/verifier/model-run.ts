@@ -1032,6 +1032,29 @@ function pickKbfPromptVariantId(): string {
   return KBF_PROMPT_VARIANT_IDS[randomInt(KBF_PROMPT_VARIANT_IDS.length)]!
 }
 
+/** Exact buyer-proxy request body for one KBF probe batch; auditors and verifiers rebuild it identically. */
+export function buildKbfProbeRequestBody(
+  service: string,
+  queryProfile: KbfReferenceV1['queryProfile'],
+  probes: readonly KbfProbe[],
+  promptVariantId: string,
+): Uint8Array {
+  // Audits send the canonical KBF body. Reference-endpoint settings (legacy
+  // queryProfile.requestOverrides / requestOmissions / reasoningStrategy) only
+  // describe how the reference endpoint was queried and never reach sellers.
+  const requestBody: Record<string, unknown> = {
+    ...buildKbfChatRequestBody(service, probes, {
+      maxTokens: queryProfile.maxTokensPerRequest,
+      variantId: promptVariantId,
+    }),
+    temperature: queryProfile.auditTemperature,
+    top_p: queryProfile.generationSettings.topP,
+    stream: false,
+    n: 1,
+  }
+  return new TextEncoder().encode(JSON.stringify(requestBody))
+}
+
 function buildProxyBatchRequest(
   context: ProxyVerificationContext,
   target: PeerInfo,
@@ -1052,20 +1075,7 @@ function buildProxyBatchRequest(
     'x-antseed-pin-peer': target.peerId,
     'x-antseed-capture-response-auth-preimages': '1',
   }
-  // Audits send the canonical KBF body. Reference-endpoint settings (legacy
-  // queryProfile.requestOverrides / requestOmissions / reasoningStrategy) only
-  // describe how the reference endpoint was queried and never reach sellers.
-  const requestBody: Record<string, unknown> = {
-    ...buildKbfChatRequestBody(service, probes, {
-      maxTokens: reference.queryProfile.maxTokensPerRequest,
-      variantId: promptVariantId,
-    }),
-    temperature: reference.queryProfile.auditTemperature,
-    top_p: reference.queryProfile.generationSettings.topP,
-    stream: false,
-    n: 1,
-  }
-  const body = new TextEncoder().encode(JSON.stringify(requestBody))
+  const body = buildKbfProbeRequestBody(service, reference.queryProfile, probes, promptVariantId)
   const bodyBase64 = Buffer.from(body).toString('base64')
   return {
     url,
@@ -1291,7 +1301,7 @@ export async function readRunSummary(path: string): Promise<ModelVerificationRun
   return JSON.parse(await readFile(path, 'utf8')) as ModelVerificationRunSummary
 }
 
-function extractCompletionText(body: Uint8Array): string | null {
+export function extractCompletionText(body: Uint8Array): string | null {
   const text = responseText(body)
   try {
     return extractCompletionFromJson(JSON.parse(text) as Record<string, unknown>)

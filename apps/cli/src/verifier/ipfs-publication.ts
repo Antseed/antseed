@@ -2,14 +2,6 @@ import { File } from 'node:buffer'
 import { readdir, readFile } from 'node:fs/promises'
 import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
 import { canonicalJsonStringify, sha256Hex } from '@antseed/fingerprints'
-import {
-  renderModelAuditReports,
-  verifierRunManifestPath,
-  type EpochAuditSummaryV1,
-  type ModelAuditSummaryV1,
-  type VerifierRunManifestV1,
-} from './audit-artifacts.js'
-import type { PreparedModelVerificationBundle } from './submission-bundles.js'
 import { safeServiceSlug } from './slug.js'
 
 const PINATA_UPLOAD_URL = 'https://uploads.pinata.cloud/v3/files'
@@ -28,7 +20,7 @@ export interface PreparedVerificationPublication {
   version: 1
   kind: 'antseed-verifier-ipfs-publication-package'
   runId: string
-  model: string
+  agentId: string
   evidenceHash: string
   packageName: string
   files: VerificationPublicationFile[]
@@ -71,69 +63,42 @@ class PinataUploadError extends Error {
   }
 }
 
-export async function prepareVerificationPublication(input: {
+/**
+ * Packages one agent's audit report evidence for public pinning: the canonical evidence document,
+ * the exported KBF references, and every referenced seller evidence pack (with signed exchanges).
+ * Paths mirror the evidence directory so the document's relative links resolve inside the CID.
+ */
+export async function prepareReportPublication(input: {
   evidenceDir: string
-  manifest: VerifierRunManifestV1
-  modelSummaryPath: string
-  bundle: PreparedModelVerificationBundle
+  runId: string
+  agentId: string
+  evidenceHash: string
+  evidencePath: string
+  evidenceBytes: Uint8Array
+  referencePaths: string[]
+  auditEvidencePaths: string[]
 }): Promise<PreparedVerificationPublication> {
   const evidenceRoot = resolve(input.evidenceDir)
-  const sourceModelRoot = dirname(dirname(dirname(resolve(input.modelSummaryPath))))
-  const publicationPath = (path: string): string => compactPublicationPath(evidenceRoot, sourceModelRoot, path)
-  const epochSummary = await readEpochSummary(input.manifest.summaryPath, input.manifest.runId)
-  const modelEntry = epochSummary.models.find((entry) => entry.model === input.bundle.model)
-  if (!modelEntry) throw new Error(`run summary is missing model ${input.bundle.model}`)
-  const modelSummary = await readModelSummary(input.modelSummaryPath, input.manifest.runId, input.bundle.model)
+  const publicationPath = (path: string): string => portablePath(evidenceRoot, path)
   const files = new Map<string, VerificationPublicationFile>()
-
-  const addFile = async (path: string): Promise<void> => {
-    const bytes = await readFile(path)
-    addPublicationFile(files, publicationPath(path), bytes)
+  addPublicationFile(files, publicationPath(input.evidencePath), input.evidenceBytes)
+  for (const path of [...input.referencePaths].sort()) addPublicationFile(files, publicationPath(path), await readFile(path))
+  for (const evidencePath of [...new Set(input.auditEvidencePaths)].sort()) {
+    for (const path of await listFinalizedFiles(dirname(evidencePath))) {
+      addPublicationFile(files, publicationPath(path), await readFile(path))
+    }
   }
-  const addDirectory = async (directory: string): Promise<void> => {
-    for (const path of await listFinalizedFiles(directory)) await addFile(path)
-  }
-
-  await addFile(verifierRunManifestPath(input.evidenceDir, input.manifest.runId))
-  await addFile(input.manifest.summaryPath)
-  addPublicationFile(
-    files,
-    publicationPath(input.bundle.evidencePath),
-    Buffer.from(canonicalJsonStringify(input.bundle.evidence), 'utf8'),
-  )
-  await addDirectory(dirname(input.modelSummaryPath))
-  for (const path of modelSummary.referenceIntegrityPaths ?? []) await addFile(path)
-
-  const renderedReports = await renderModelAuditReports(input.evidenceDir, input.manifest.epoch, {
-    ...epochSummary,
-    reportPaths: [],
-    models: [modelEntry],
-    failureCount: modelEntry.failureCount,
-    cost: modelEntry.cost,
-    reasonCounts: modelEntry.reasonCounts,
-  })
-  const report = renderedReports.find((entry) => entry.model === input.bundle.model)
-  if (!report) throw new Error(`could not render report for ${input.bundle.model}`)
-  const reportPublicationPath = publicationPath(report.path)
-  addPublicationFile(files, reportPublicationPath, Buffer.from(report.html, 'utf8'))
 
   const sourceFileCount = files.size
-  const archives = compactExchangeFiles(files, reportPublicationPath)
+  const archives = compactExchangeFiles(files)
   const evidenceFiles = [...files.values()].sort((left, right) => left.path.localeCompare(right.path))
-  const indexedBytes = evidenceFiles.reduce((total, file) => total + file.size, 0)
   const publicationIndex = {
     version: 1,
     kind: 'antseed-verifier-ipfs-publication',
-    runId: input.manifest.runId,
-    epoch: input.manifest.epoch,
-    model: input.bundle.model,
-    evidenceHash: input.bundle.evidenceHash,
-    bundlePath: publicationPath(input.bundle.evidencePath),
-    createdAt: input.manifest.completedAt,
-    layout: {
-      modelRoot: 'model',
-      sourceModelRoot: portablePath(evidenceRoot, sourceModelRoot),
-    },
+    runId: input.runId,
+    agentId: input.agentId,
+    evidenceHash: input.evidenceHash,
+    evidencePath: publicationPath(input.evidencePath),
     scope: {
       public: true,
       sellerSignedResponses: true,
@@ -142,7 +107,7 @@ export async function prepareVerificationPublication(input: {
     },
     sourceFileCount,
     fileCount: evidenceFiles.length,
-    totalBytes: indexedBytes,
+    totalBytes: evidenceFiles.reduce((total, file) => total + file.size, 0),
     archives,
     files: evidenceFiles.map((file) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
   }
@@ -157,10 +122,10 @@ export async function prepareVerificationPublication(input: {
   return {
     version: 1,
     kind: 'antseed-verifier-ipfs-publication-package',
-    runId: input.manifest.runId,
-    model: input.bundle.model,
-    evidenceHash: input.bundle.evidenceHash,
-    packageName: `antseed-verification-${safeServiceSlug(input.manifest.runId)}-${safeServiceSlug(input.bundle.model)}`,
+    runId: input.runId,
+    agentId: input.agentId,
+    evidenceHash: input.evidenceHash,
+    packageName: `antseed-verification-${safeServiceSlug(input.runId)}-agent-${safeServiceSlug(input.agentId)}`,
     files: allFiles,
     fileCount: allFiles.length,
     totalBytes: allFiles.reduce((total, file) => total + file.size, 0),
@@ -169,7 +134,6 @@ export async function prepareVerificationPublication(input: {
 
 function compactExchangeFiles(
   files: Map<string, VerificationPublicationFile>,
-  reportPath: string,
 ): VerificationPublicationArchive[] {
   if (files.size + 1 <= PINATA_MAX_MULTIPART_FILES) return []
   const groups = new Map<string, VerificationPublicationFile[]>()
@@ -182,15 +146,11 @@ function compactExchangeFiles(
     groups.set(archivePath, group)
   }
 
-  const replacements = new Map<string, string>()
   const archives = [...groups.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
     .map(([archivePath, exchangeFiles]) => {
       const sortedFiles = exchangeFiles.sort((left, right) => left.path.localeCompare(right.path))
-      for (const file of sortedFiles) {
-        files.delete(file.path)
-        replacements.set(file.path, archivePath)
-      }
+      for (const file of sortedFiles) files.delete(file.path)
       const archive = {
         version: 1,
         kind: 'antseed-verifier-ipfs-file-archive',
@@ -209,30 +169,7 @@ function compactExchangeFiles(
         files: sortedFiles.map((file) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
       }
     })
-
-  const report = files.get(reportPath)
-  if (report && replacements.size > 0) {
-    let html = Buffer.from(report.bytes).toString('utf8')
-    for (const [originalPath, archivePath] of replacements) {
-      html = html.replaceAll(modelRelativePath(originalPath), modelRelativePath(archivePath))
-    }
-    addPublicationFile(files, reportPath, Buffer.from(html, 'utf8'))
-  }
   return archives
-}
-
-function modelRelativePath(path: string): string {
-  return path.startsWith('model/') ? path.slice('model/'.length) : path
-}
-
-function compactPublicationPath(evidenceRoot: string, sourceModelRoot: string, path: string): string {
-  const relativePath = portablePath(evidenceRoot, path)
-  const relativeModelRoot = portablePath(evidenceRoot, sourceModelRoot)
-  if (relativePath === relativeModelRoot) return 'model'
-  if (relativePath.startsWith(`${relativeModelRoot}/`)) {
-    return `model/${relativePath.slice(relativeModelRoot.length + 1)}`
-  }
-  return relativePath
 }
 
 export async function publishVerificationToPinata(
@@ -278,7 +215,7 @@ async function uploadPublication(
   form.append('keyvalues', JSON.stringify({
     kind: 'antseed-verifier-evidence',
     runId: publication.runId,
-    model: publication.model,
+    agentId: publication.agentId,
     evidenceHash: publication.evidenceHash,
   }))
   form.append('cid_version', 'v1')
@@ -344,23 +281,6 @@ async function pinataErrorDetail(response: Response, jwt: string): Promise<strin
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 500)
-}
-
-async function readEpochSummary(path: string, runId: string): Promise<EpochAuditSummaryV1> {
-  const parsed = JSON.parse(await readFile(path, 'utf8')) as EpochAuditSummaryV1
-  if (parsed.version !== 1 || parsed.kind !== 'antseed-verifier-epoch-summary' || parsed.runId !== runId) {
-    throw new Error(`invalid verifier run summary: ${path}`)
-  }
-  return parsed
-}
-
-async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {
-  const parsed = JSON.parse(await readFile(path, 'utf8')) as ModelAuditSummaryV1
-  if (parsed.version !== 1 || parsed.kind !== 'antseed-verifier-model-summary'
-    || parsed.runId !== runId || parsed.model !== model) {
-    throw new Error(`invalid verifier model summary: ${path}`)
-  }
-  return parsed
 }
 
 async function listFinalizedFiles(directory: string): Promise<string[]> {

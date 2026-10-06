@@ -40,10 +40,16 @@ export type { StakingClientConfig } from './evm/staking-client.js';
 export {
   VerifierClient,
   serviceHash,
-  VERIFIER_VERDICT_UNKNOWN,
-  VERIFIER_VERDICT_SAME,
-  VERIFIER_VERDICT_DIFF,
-  VERIFIER_VERDICT_UNDETERMINED,
+  sortServiceResults,
+  hashServiceResults,
+  auditReportDomain,
+  hashAuditReport,
+  signAuditReport,
+  recoverAuditReportSigner,
+  AUDIT_REPORT_TYPES,
+  SERVICE_MODEL_MATCH,
+  SERVICE_PRICE_MATCH,
+  SERVICE_UNDETERMINED,
 } from './evm/verifier-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
@@ -53,11 +59,12 @@ export {
 export type { BlockRangeOptions } from './evm/block-range.js';
 export type {
   VerifierClientConfig,
-  VerifierVerdict,
-  VerificationResultInput,
-  SubmitVerificationBundleInput,
-  VerificationBundleSubmittedEvent,
-  AttestationSubmittedEvent,
+  ServiceResultInput,
+  AuditReportInput,
+  SubmitReportInput,
+  AgentScore,
+  ServiceAuditedEvent,
+  ReportSubmittedEvent,
 } from './evm/verifier-client.js';
 
 export {
