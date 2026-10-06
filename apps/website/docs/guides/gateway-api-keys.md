@@ -126,7 +126,7 @@ curl "$ANTSEED_BASE_URL/key" -H "Authorization: Bearer $ANTSEED_API_KEY"
     "label": "Alice",
     "expires_at": "2026-11-04T17:25:15.251Z",
     "buyer_address": "0x91E1…e474",
-    "usage": { "requests": 42, "spent_usd": "1.204310", "input_tokens": 180233, "cached_input_tokens": 90112, "output_tokens": 20118 },
+    "usage": { "requests": 42, "spent_usd": "1.204310", "topped_up_usd": "5.000000", "input_tokens": 180233, "cached_input_tokens": 90112, "output_tokens": 20118 },
     "limits": {
       "daily": { "limit_usd": "2.000000", "spent_usd": "0.410000", "remaining_usd": "1.590000" },
       "monthly": { "limit_usd": null, "spent_usd": "1.204310", "remaining_usd": null },
@@ -137,6 +137,32 @@ curl "$ANTSEED_BASE_URL/key" -H "Authorization: Bearer $ANTSEED_API_KEY"
 ```
 
 Every other route behaves as described in [Using the API](/docs/guides/using-the-api), with the key sent as `Authorization: Bearer <key>`.
+
+## Top up a key with x402
+
+Key holders can fund their own key with an [x402](https://github.com/coinbase/x402) payment. The USDC goes straight to the key's buyer wallet, and the running buyer deposits it into that identity's credits on its next check, usually within a minute. This works for keys with their own identity (`--identity` or `--new-identity`). Keys paid from your `default` wallet return `403 topup_not_available`.
+
+Turn it on by pointing the gateway at an x402 facilitator that settles the `exact` scheme on Base:
+
+```bash
+export ANTSEED_X402_FACILITATOR_URL="https://your-facilitator.example"
+# Only if the facilitator needs a static Authorization header:
+export ANTSEED_X402_FACILITATOR_AUTHORIZATION="Bearer …"
+
+antseed gateway start          # or: antseed tunnel start
+```
+
+`antseed gateway start` also accepts `--x402-facilitator <url>`, `--topup-min-usd` (default 2) and `--topup-max-usd` (default 500).
+
+The flow is standard x402 v2 over HTTP, so x402 client libraries handle it automatically:
+
+1. `POST /v1/key/topup` with `{"amount_usd": "5"}` and the key as a bearer token.
+2. The gateway answers `402` with a `PAYMENT-REQUIRED` header. It asks for USDC on Base (`eip155:8453`) through an EIP-3009 transfer, paid to the key's buyer wallet.
+3. The client repeats the request with a signed `PAYMENT-SIGNATURE` header.
+4. The gateway checks the amount, payee, validity window and signature. The facilitator then verifies the payment and settles it on-chain.
+5. The answer is `200` with a `PAYMENT-RESPONSE` header and the transaction hash. The top-up is recorded on the key and shows as `topped_up_usd` in `GET /v1/key`.
+
+Top-ups add funds to the wallet. They don't change the key's spend limits. A first deposit into a new wallet must be at least 1 USDC after the relay fee, and anything above the wallet's credit limit stays in the wallet until there is room.
 
 ## Where state lives
 

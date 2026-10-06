@@ -9,11 +9,22 @@ import { GatewayAccounting } from './accounting.js'
 import { generateApiKey } from './keys.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
-import { GatewayServer } from './server.js'
+import { GatewayServer, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GatewayStore } from './store.js'
+import { Wallet } from 'ethers'
+import { randomBytes } from 'node:crypto'
+import {
+  X402Facilitator,
+  decodeHeaderJson,
+  encodeHeaderJson,
+  type PaymentPayload,
+  type PaymentRequired,
+  type SettlementResponse,
+  type X402Asset,
+} from './x402.js'
 
 const NO_LIMITS = { daily: null, monthly: null, total: null }
 
@@ -29,7 +40,7 @@ async function listen(server: http.Server): Promise<number> {
 }
 
 async function request(port: number, path: string, options: { method?: string; key?: string; body?: string; headers?: http.OutgoingHttpHeaders } = {}) {
-  return new Promise<{ status: number; body: string }>((resolve, reject) => {
+  return new Promise<{ status: number; body: string; headers: http.IncomingHttpHeaders }>((resolve, reject) => {
     const req = http.request({
       hostname: '127.0.0.1',
       port,
@@ -42,7 +53,7 @@ async function request(port: number, path: string, options: { method?: string; k
     }, (res) => {
       const chunks: Buffer[] = []
       res.on('data', (chunk: Buffer) => chunks.push(chunk))
-      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8') }))
+      res.on('end', () => resolve({ status: res.statusCode ?? 0, body: Buffer.concat(chunks).toString('utf8'), headers: res.headers }))
     })
     req.on('error', reject)
     req.end(options.body)
@@ -101,7 +112,7 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
   return { port, captured, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
 }
 
-async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000) {
+async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000, topup: GatewayTopupOptions | null = null) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs: 50 })
   const feed = new SpendFeedPoller({
     buyerPort,
@@ -113,6 +124,7 @@ async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 3
     store,
     accounting,
     buyerPort,
+    topup,
     identityAddress: async (name) => (name === 'team-a' ? '0x00000000000000000000000000000000000000aa' : null),
     spendFeedState: () => feed.state,
     refreshSpendFeed: () => feed.pollOnce(),
@@ -418,4 +430,173 @@ test('generated keys are long random antseed secrets', () => {
   assert.notEqual(first.secret, second.secret)
   assert.notEqual(first.hash, first.secret)
   assert.ok(first.hint.startsWith('antseed_') && first.hint.includes('…'))
+})
+
+const TEAM_WALLET = '0x00000000000000000000000000000000000000aa'
+const USDC: X402Asset = {
+  network: 'eip155:8453',
+  chainId: 8453,
+  address: '0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913',
+  name: 'USD Coin',
+  version: '2',
+}
+
+/** Facilitator stand-in: accepts each EIP-3009 nonce once, like the USDC contract. */
+async function fakeFacilitator() {
+  const calls: string[] = []
+  const used = new Set<string>()
+  const server = http.createServer((req, res) => {
+    const chunks: Buffer[] = []
+    req.on('data', (chunk: Buffer) => chunks.push(chunk))
+    req.on('end', () => {
+      const { paymentPayload } = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { paymentPayload: PaymentPayload }
+      const { nonce, from } = paymentPayload.payload.authorization
+      calls.push(req.url ?? '')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      if (req.url === '/verify') {
+        res.end(JSON.stringify(used.has(nonce) ? { isValid: false, invalidReason: 'invalid_transaction_state', payer: from } : { isValid: true, payer: from }))
+        return
+      }
+      used.add(nonce)
+      res.end(JSON.stringify({ success: true, transaction: '0xabc', network: USDC.network, payer: from }))
+    })
+  })
+  const port = await listen(server)
+  return {
+    calls,
+    topup: (): GatewayTopupOptions => ({
+      asset: async () => USDC,
+      facilitator: new X402Facilitator({ url: `http://127.0.0.1:${port}` }),
+      minUsdc: 1_000_000,
+      maxUsdc: 100_000_000,
+    }),
+    close: () => new Promise<void>((resolve) => server.close(() => resolve())),
+  }
+}
+
+async function signPayment(payer: Pick<Wallet, 'address' | 'signTypedData'>, required: PaymentRequired, overrides: Partial<{ value: string; to: string }> = {}): Promise<string> {
+  const accepted = required.accepts[0]!
+  const now = Math.floor(Date.now() / 1000)
+  const authorization = {
+    from: payer.address,
+    to: overrides.to ?? accepted.payTo,
+    value: overrides.value ?? accepted.amount,
+    validAfter: String(now - 5),
+    validBefore: String(now + 300),
+    nonce: `0x${randomBytes(32).toString('hex')}`,
+  }
+  const signature = await payer.signTypedData(
+    { name: USDC.name, version: USDC.version, chainId: USDC.chainId, verifyingContract: USDC.address },
+    {
+      TransferWithAuthorization: [
+        { name: 'from', type: 'address' },
+        { name: 'to', type: 'address' },
+        { name: 'value', type: 'uint256' },
+        { name: 'validAfter', type: 'uint256' },
+        { name: 'validBefore', type: 'uint256' },
+        { name: 'nonce', type: 'bytes32' },
+      ],
+    },
+    authorization,
+  )
+  const payment: PaymentPayload = { x402Version: 2, resource: required.resource, accepted, payload: { signature, authorization } }
+  return encodeHeaderJson(payment)
+}
+
+test('x402 top-up: 402 names the key wallet, a signed payment is settled and credited once', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 300_000, facilitator.topup())
+  const topup = (headers: http.OutgoingHttpHeaders = {}) =>
+    request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}', headers })
+  try {
+    const challenge = await topup()
+    assert.equal(challenge.status, 402)
+    const required = decodeHeaderJson<PaymentRequired>(challenge.headers['payment-required'] as string)!
+    assert.equal(required.x402Version, 2)
+    assert.equal(required.accepts[0]!.payTo.toLowerCase(), TEAM_WALLET)
+    assert.equal(required.accepts[0]!.amount, '5000000')
+    assert.equal(required.accepts[0]!.network, 'eip155:8453')
+
+    const payer = Wallet.createRandom()
+    const signature = await signPayment(payer, required)
+    const paid = await topup({ 'payment-signature': signature })
+    assert.equal(paid.status, 200)
+    assert.equal(JSON.parse(paid.body).data.topped_up_usd, '5.000000')
+    const settlement = decodeHeaderJson<SettlementResponse>(paid.headers['payment-response'] as string)!
+    assert.equal(settlement.success, true)
+    assert.equal(settlement.payer, payer.address)
+    assert.deepEqual(facilitator.calls, ['/verify', '/settle'])
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 5_000_000)
+
+    // Replaying the same authorization fails on-chain and is not credited twice.
+    const replay = await topup({ 'payment-signature': signature })
+    assert.equal(replay.status, 402)
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 5_000_000)
+
+    const info = JSON.parse((await request(gateway.port, '/v1/key', { key: team.secret })).body).data
+    assert.equal(info.usage.topped_up_usd, '5.000000')
+    assert.equal(buyer.captured.length, 0, 'top-ups never reach the buyer')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
+})
+
+test('x402 top-up rejects payments that do not match before asking the facilitator', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 300_000, facilitator.topup())
+  const topup = (headers: http.OutgoingHttpHeaders = {}, body = '{"amount_usd":"5"}') =>
+    request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body, headers })
+  try {
+    const required = decodeHeaderJson<PaymentRequired>((await topup()).headers['payment-required'] as string)!
+    const payer = Wallet.createRandom()
+    const reasonFor = async (signature: string) =>
+      decodeHeaderJson<PaymentRequired>((await topup({ 'payment-signature': signature })).headers['payment-required'] as string)!.error
+
+    assert.equal(await reasonFor(await signPayment(payer, required, { value: '1000000' })), 'invalid_exact_evm_payload_authorization_value_mismatch')
+    assert.equal(await reasonFor(await signPayment(payer, required, { to: Wallet.createRandom().address })), 'invalid_exact_evm_payload_recipient_mismatch')
+    const forged = decodeHeaderJson<PaymentPayload>(await signPayment(payer, required))!
+    forged.payload.authorization.from = Wallet.createRandom().address
+    assert.equal(await reasonFor(encodeHeaderJson(forged)), 'invalid_exact_evm_payload_signature')
+    assert.deepEqual(facilitator.calls, [])
+
+    assert.equal((await topup({}, '{"amount_usd":"0.5"}')).status, 400)
+    assert.equal(store.usageStats(team.key.id).creditedUsdc, 0)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
+})
+
+test('x402 top-up is unavailable without a facilitator or for keys on the operator wallet', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const owner = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const withTopup = await startGateway(store, buyer.port, 300_000, facilitator.topup())
+  const withoutTopup = await startGateway(store, buyer.port)
+  try {
+    const ownerResponse = await request(withTopup.port, '/v1/key/topup', { method: 'POST', key: owner.secret, body: '{"amount_usd":"5"}' })
+    assert.equal(ownerResponse.status, 403)
+    assert.equal(JSON.parse(ownerResponse.body).error.code, 'topup_not_available')
+    const disabled = await request(withoutTopup.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}' })
+    assert.equal(disabled.status, 501)
+  } finally {
+    await withTopup.stop()
+    await withoutTopup.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
 })

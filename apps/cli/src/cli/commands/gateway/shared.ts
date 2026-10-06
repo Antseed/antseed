@@ -3,6 +3,7 @@ import chalk from 'chalk'
 import { LIMIT_PERIODS, type LimitPeriod, type SpendLimits } from '../../../gateway/limits.js'
 import { formatUsdc, parseUsdToUsdc } from '../../../gateway/money.js'
 import { GatewayStore, type ApiKeyRecord } from '../../../gateway/store.js'
+import type { GatewayTopupConfig } from '../../../gateway/runtime.js'
 import { getGlobalOptions } from '../types.js'
 
 export const DEFAULT_GATEWAY_PORT = 8379
@@ -55,6 +56,23 @@ export function keyStatusLabel(key: ApiKeyRecord, now = Date.now()): string {
   if (key.status === 'revoked') return chalk.red('revoked')
   if (key.expiresAt !== null && key.expiresAt <= now) return chalk.yellow('expired')
   return chalk.green('active')
+}
+
+/**
+ * x402 top-ups are on when a facilitator is configured, by flag or
+ * ANTSEED_X402_FACILITATOR_URL. Its credentials only come from the
+ * environment (ANTSEED_X402_FACILITATOR_AUTHORIZATION).
+ */
+export function topupConfig(options: { x402Facilitator?: string; topupMinUsd?: string; topupMaxUsd?: string } = {}): GatewayTopupConfig | undefined {
+  const facilitatorUrl = (options.x402Facilitator ?? process.env['ANTSEED_X402_FACILITATOR_URL'] ?? '').trim()
+  if (!facilitatorUrl) return undefined
+  const facilitatorAuthorization = process.env['ANTSEED_X402_FACILITATOR_AUTHORIZATION']?.trim()
+  return {
+    facilitatorUrl,
+    ...(facilitatorAuthorization ? { facilitatorAuthorization } : {}),
+    ...(options.topupMinUsd ? { minUsd: options.topupMinUsd } : {}),
+    ...(options.topupMaxUsd ? { maxUsd: options.topupMaxUsd } : {}),
+  }
 }
 
 export function slugifyIdentityId(label: string): string {

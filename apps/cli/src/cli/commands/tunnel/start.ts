@@ -8,7 +8,7 @@ import ora from 'ora'
 import { getGlobalOptions } from '../types.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
-import { DEFAULT_GATEWAY_PORT } from '../gateway/shared.js'
+import { DEFAULT_GATEWAY_PORT, topupConfig } from '../gateway/shared.js'
 import { ensureCloudflared } from '../../../tunnel/cloudflared.js'
 import { tunnelDir, tunnelPidFile, tunnelStateFile } from './paths.js'
 
@@ -163,6 +163,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
       }
       let publicUrl = parsePublicUrl(configuredPublicUrl, provider)
 
+      const topup = topupConfig()
       const spinner = ora('Starting authenticated API gateway...').start()
       let gateway: GatewayRuntime
       try {
@@ -172,6 +173,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
           listenPort: gatewayPort,
           buyerPort,
           ...(apiKey ? { environmentApiKey: apiKey } : {}),
+          ...(topup ? { topup } : {}),
           onLog: (message) => process.stderr.write(`[tunnel] ${message}\n`),
         })
       } catch (error) {

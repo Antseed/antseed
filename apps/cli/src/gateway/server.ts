@@ -6,8 +6,23 @@ import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { newRequestTag, type GatewayAccounting } from './accounting.js'
 import { parseBearerToken } from './keys.js'
 import { hasSpendLimits, LIMIT_PERIODS, type LimitBreach } from './limits.js'
-import { formatUsdc, optionalUsdcToDecimalString, usdcToDecimalString } from './money.js'
+import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import type { SpendFeedState } from './spend-feed.js'
+import {
+  PAYMENT_REQUIRED_HEADER,
+  PAYMENT_RESPONSE_HEADER,
+  PAYMENT_SIGNATURE_HEADER,
+  X402_VERSION,
+  buildPaymentRequirements,
+  checkPaymentPayload,
+  decodeHeaderJson,
+  encodeHeaderJson,
+  type PaymentPayload,
+  type PaymentRequired,
+  type PaymentRequirements,
+  type X402Asset,
+  type X402Facilitator,
+} from './x402.js'
 import type { ApiKeyRecord, GatewayStore } from './store.js'
 
 const HOP_BY_HOP = new Set([
@@ -24,10 +39,15 @@ const HOP_BY_HOP = new Set([
 /** Bodies are buffered to read the model for metrics; the buyer buffers them too. */
 const MAX_MODEL_SNIFF_BYTES = 4 * 1024 * 1024
 const KEY_INFO_PATH = '/v1/key'
+const TOPUP_PATH = '/v1/key/topup'
 
-/** `paid` routes reach a seller; the others are answered by the buyer for free. */
-const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: boolean }> = [
-  { method: 'GET', prefix: KEY_INFO_PATH, paid: false },
+/**
+ * `paid` routes reach a seller; the others are answered by the buyer for
+ * free, or (`local`) by the gateway itself.
+ */
+const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: boolean; local?: boolean }> = [
+  { method: 'GET', prefix: KEY_INFO_PATH, paid: false, local: true },
+  { method: 'POST', prefix: TOPUP_PATH, paid: false, local: true },
   { method: 'GET', prefix: '/v1/models', paid: false },
   { method: 'POST', prefix: '/v1/messages', paid: true },
   { method: 'POST', prefix: '/v1/messages/count_tokens', paid: false },
@@ -45,9 +65,18 @@ export interface GatewayServerOptions {
   identityAddress: (buyerIdentity: string) => Promise<string | null>
   spendFeedState: () => SpendFeedState
   refreshSpendFeed: () => Promise<void>
+  /** x402 top-ups into a key's buyer wallet; null disables `POST /v1/key/topup`. */
+  topup?: GatewayTopupOptions | null
   listenPort?: number
   listenHost?: string
   onLog?: (message: string) => void
+}
+
+export interface GatewayTopupOptions {
+  asset: () => Promise<X402Asset>
+  facilitator: X402Facilitator
+  minUsdc: number
+  maxUsdc: number
 }
 
 /**
@@ -120,8 +149,9 @@ export class GatewayServer {
       return
     }
 
-    if (canonicalPath.startsWith(KEY_INFO_PATH)) {
-      sendJson(res, 200, { data: await this._keyInfo(key) })
+    if (route.local) {
+      if (route.prefix === TOPUP_PATH) await this._topup(req, res, key)
+      else sendJson(res, 200, { data: await this._keyInfo(key) })
       return
     }
     const buyerPort = this._options.buyerPort
@@ -226,6 +256,117 @@ export class GatewayServer {
     upstream.end(body)
   }
 
+  /**
+   * x402 top-up: the key holder pays USDC straight to the key's buyer wallet.
+   * The buyer's deposit watcher then sweeps it into that identity's credits.
+   * Without a PAYMENT-SIGNATURE the answer is the 402 an x402 client pays.
+   */
+  private async _topup(req: http.IncomingMessage, res: http.ServerResponse, key: ApiKeyRecord): Promise<void> {
+    const topup = this._options.topup
+    if (!topup) {
+      sendError(res, 501, 'invalid_request_error', 'topup_unavailable', 'This gateway does not accept top-ups')
+      return
+    }
+    if (key.buyerIdentity === DEFAULT_BUYER_IDENTITY) {
+      sendError(res, 403, 'invalid_request_error', 'topup_not_available', 'This key is paid from the operator\'s wallet and cannot be topped up')
+      return
+    }
+    const payTo = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    if (!payTo) {
+      sendError(res, 503, 'api_error', 'buyer_wallet_unknown', 'The wallet behind this API key is not available')
+      return
+    }
+
+    let amountUsdc: number
+    try {
+      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as { amount_usd?: unknown }
+      amountUsdc = parseUsdToUsdc(String(body.amount_usd ?? ''))
+    } catch {
+      sendError(res, 400, 'invalid_request_error', 'invalid_amount', 'Send {"amount_usd": "<USD amount>"}')
+      return
+    }
+    if (amountUsdc < topup.minUsdc || amountUsdc > topup.maxUsdc) {
+      sendError(res, 400, 'invalid_request_error', 'invalid_amount',
+        `Top-ups must be between ${formatUsdc(topup.minUsdc)} and ${formatUsdc(topup.maxUsdc)}`)
+      return
+    }
+
+    const asset = await topup.asset()
+    const requirements = buildPaymentRequirements(asset, payTo, amountUsdc)
+    const proto = firstHeader(req.headers['x-forwarded-proto']) || 'http'
+    const resource = {
+      url: `${proto}://${req.headers.host ?? 'localhost'}${TOPUP_PATH}`,
+      description: `Add ${formatUsdc(amountUsdc)} of credits to API key ${key.id}`,
+      mimeType: 'application/json',
+    }
+    const paymentRequired = (error: string): void => {
+      const body: PaymentRequired = { x402Version: X402_VERSION, error, resource, accepts: [requirements] }
+      res.setHeader(PAYMENT_REQUIRED_HEADER, encodeHeaderJson(body))
+      sendJson(res, 402, body)
+    }
+
+    const signature = firstHeader(req.headers[PAYMENT_SIGNATURE_HEADER])
+    if (!signature) {
+      paymentRequired('PAYMENT-SIGNATURE header is required')
+      return
+    }
+    const payment = decodeHeaderJson<PaymentPayload>(signature)
+    if (!payment) {
+      sendError(res, 400, 'invalid_request_error', 'invalid_payload', 'PAYMENT-SIGNATURE is not base64-encoded JSON')
+      return
+    }
+    const localError = checkPaymentPayload(payment, requirements, asset, Math.floor(Date.now() / 1000))
+    if (localError) {
+      paymentRequired(localError)
+      return
+    }
+    const settled = await this._settleTopup(topup, payment, requirements)
+    if (!settled.success) {
+      this._log(`gateway top-up failed: key=${key.id} reason=${settled.errorReason ?? 'unknown'}`)
+      res.setHeader(PAYMENT_RESPONSE_HEADER, encodeHeaderJson(settled))
+      paymentRequired(settled.errorReason ?? 'unexpected_settle_error')
+      return
+    }
+
+    const authorization = payment.payload.authorization
+    this._options.store.recordLedgerEntry({
+      kind: 'credit',
+      keyId: key.id,
+      buyerIdentity: key.buyerIdentity,
+      amountUsdc,
+      externalRef: `x402:${requirements.network}:${authorization.nonce.toLowerCase()}`,
+      note: `x402 top-up from ${settled.payer || authorization.from}, tx ${settled.transaction}`,
+      createdAt: Date.now(),
+    })
+    this._log(`gateway top-up: key=${key.id} identity=${key.buyerIdentity} amount=${formatUsdc(amountUsdc)} tx=${settled.transaction}`)
+    res.setHeader(PAYMENT_RESPONSE_HEADER, encodeHeaderJson(settled))
+    sendJson(res, 200, {
+      data: {
+        topped_up_usd: usdcToDecimalString(amountUsdc),
+        buyer_address: requirements.payTo,
+        transaction: settled.transaction,
+        network: settled.network,
+        payer: settled.payer || authorization.from,
+        // The buyer sweeps the wallet into its deposits on its next check.
+        credits_available: 'within about a minute',
+      },
+    })
+  }
+
+  private async _settleTopup(topup: GatewayTopupOptions, payment: PaymentPayload, requirements: PaymentRequirements) {
+    const failure = (errorReason: string) => ({
+      success: false, errorReason, transaction: '', network: requirements.network, payer: payment.payload.authorization.from,
+    })
+    try {
+      const verified = await topup.facilitator.verify(payment, requirements)
+      if (!verified.isValid) return failure(verified.invalidReason ?? 'unexpected_verify_error')
+      return await topup.facilitator.settle(payment, requirements)
+    } catch (error) {
+      this._log(`gateway facilitator error: ${error instanceof Error ? error.message : String(error)}`)
+      return failure('unexpected_settle_error')
+    }
+  }
+
   private async _keyInfo(key: ApiKeyRecord) {
     const spent = this._options.store.periodSpend(key.id)
     const usage = this._options.store.usageStats(key.id)
@@ -248,6 +389,7 @@ export class GatewayServer {
       usage: {
         requests: usage.requests,
         spent_usd: usdcToDecimalString(usage.spentUsdc),
+        topped_up_usd: usdcToDecimalString(usage.creditedUsdc),
         input_tokens: usage.inputTokens,
         cached_input_tokens: usage.cachedInputTokens,
         output_tokens: usage.outputTokens,
@@ -323,7 +465,7 @@ function normalizeSource(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
 }
 
-function canonicalizeRoute(method: string, path: string): { path: string; paid: boolean } | null {
+function canonicalizeRoute(method: string, path: string): { path: string; prefix: string; paid: boolean; local: boolean } | null {
   const queryIndex = path.indexOf('?')
   const pathname = (queryIndex === -1 ? path : path.slice(0, queryIndex)).toLowerCase()
   const query = queryIndex === -1 ? '' : path.slice(queryIndex)
@@ -335,5 +477,5 @@ function canonicalizeRoute(method: string, path: string): { path: string; paid: 
   const route = ALLOWED_ROUTES.find((allowed) =>
     allowed.method === method && candidates.has(allowed.prefix),
   )
-  return route ? { path: `${route.prefix}${query}`, paid: route.paid } : null
+  return route ? { path: `${route.prefix}${query}`, prefix: route.prefix, paid: route.paid, local: route.local ?? false } : null
 }
