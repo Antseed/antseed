@@ -684,6 +684,9 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
     const forged = decodeHeaderJson<PaymentPayload>(await signPayment(payer, required))!
     forged.payload.authorization.from = Wallet.createRandom().address
     assert.equal(await reasonFor(encodeHeaderJson(forged)), 'invalid_exact_evm_payload_signature')
+    const malformed = decodeHeaderJson<PaymentPayload>(await signPayment(payer, required))!
+    malformed.payload.authorization.validBefore = 'never'
+    assert.equal(await reasonFor(encodeHeaderJson(malformed)), 'invalid_payload')
     assert.deepEqual(facilitator.calls, [])
 
     assert.equal((await topup({}, '{"amount_usd":"0.5"}')).status, 400)

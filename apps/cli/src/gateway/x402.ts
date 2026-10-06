@@ -128,6 +128,9 @@ export function checkPaymentPayload(
   if (!authorization || typeof signature !== 'string') return 'invalid_payload'
   if (!sameAddress(authorization.to, required.payTo)) return 'invalid_exact_evm_payload_recipient_mismatch'
   if (authorization.value !== required.amount) return 'invalid_exact_evm_payload_authorization_value_mismatch'
+  if (!/^\d+$/.test(String(authorization.validAfter)) || !/^\d+$/.test(String(authorization.validBefore))) {
+    return 'invalid_payload'
+  }
   if (Number(authorization.validAfter) > nowSeconds) return 'invalid_exact_evm_payload_authorization_valid_after'
   // Leave the facilitator enough time to land the transaction.
   if (Number(authorization.validBefore) < nowSeconds + 6) return 'invalid_exact_evm_payload_authorization_valid_before'
