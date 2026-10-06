@@ -14,6 +14,8 @@ const MAX_BUFFERED_EVENTS = 10_000
 const MAX_EVENTS_PER_PAGE = 1000
 /** How long a request's tag is kept for spend signed after the response. */
 const TAG_RETENTION_MS = 60 * 60 * 1000
+/** Spend without a request id goes to the seller's recent tag only if no other tag used it this recently. */
+const UNTAGGED_SPEND_WINDOW_MS = 5 * 60 * 1000
 
 export interface AttributedSpendEvent {
   seq: number
@@ -57,8 +59,8 @@ export class SpendAttributionFeed {
   private readonly _lookup: Database.Statement
   private readonly _prune: Database.Statement
   private readonly _events: AttributedSpendEvent[] = []
-  /** Tag of the latest tagged spend per identity and seller, for spend signed without a request id. */
-  private readonly _lastTagBySeller = new Map<string, string>()
+  /** When each tag last had spend, per identity and seller, for spend signed without a request id. */
+  private readonly _recentTagsBySeller = new Map<string, Map<string, number>>()
   private _nextSeq = 1
 
   constructor(private readonly _now: () => number = () => Date.now()) {
@@ -89,12 +91,18 @@ export class SpendAttributionFeed {
     outputImages: string
   }): void {
     if (!this._tags.open) return
+    const now = this._now()
     const sellerKey = `${event.buyerIdentity ?? 'default'}:${event.sellerPeerId}`
+    const recentTags = this._recentTagsBySeller.get(sellerKey) ?? new Map<string, number>()
+    for (const [recentTag, at] of recentTags) if (at < now - UNTAGGED_SPEND_WINDOW_MS) recentTags.delete(recentTag)
+    // Without a request id the spend can only be attributed when exactly one
+    // tag (one gateway key's request) is using this identity on this seller.
     const tag = event.requestId
       ? (this._lookup.get(event.requestId) as { tag: string } | undefined)?.tag
-      : this._lastTagBySeller.get(sellerKey)
+      : recentTags.size === 1 ? [...recentTags.keys()][0] : undefined
     if (!tag) return
-    this._lastTagBySeller.set(sellerKey, tag)
+    recentTags.set(tag, now)
+    this._recentTagsBySeller.set(sellerKey, recentTags)
     this._events.push({
       seq: this._nextSeq++,
       tag,
@@ -106,7 +114,7 @@ export class SpendAttributionFeed {
       cachedInputTokens: event.cachedInputTokens,
       outputTokens: event.outputTokens,
       outputImages: event.outputImages,
-      at: this._now(),
+      at: now,
     })
     if (this._events.length > MAX_BUFFERED_EVENTS) {
       this._events.splice(0, this._events.length - MAX_BUFFERED_EVENTS)
