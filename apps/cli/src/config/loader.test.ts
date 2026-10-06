@@ -376,6 +376,11 @@ test('loadConfig preserves and validates verifier settings', async () => {
         contrastModels: ['kimi-k3'],
         excludedDomains: ['medical'],
       },
+      'kimi-k3': {
+        upstreamModel: 'moonshot/kimi-k3',
+        contrastModels: ['gpt-5.6-sol'],
+        referenceProvider: { order: ['Provider-A'] },
+      },
     },
   };
   await withTempConfig(JSON.stringify({
@@ -420,6 +425,7 @@ test('loadConfig preserves and validates verifier settings', async () => {
     assert.deepEqual(config.verifier?.referenceEndpoint?.models['gpt-5.6-sol']?.excludedDomains, ['medical']);
     assert.deepEqual(config.verifier?.referenceEndpoint?.models['gpt-5.6-sol']?.serviceAliases, ['gpt-5.6.sol']);
     assert.equal(config.verifier?.referenceEndpoint?.models['gpt-5.6-sol']?.referenceRoute?.service, 'gpt-5.6-sol-reference');
+    assert.deepEqual(config.verifier?.referenceEndpoint?.models['kimi-k3']?.referenceProvider, { order: ['Provider-A'] });
     assert.equal(config.verifier?.referenceMaxRequestsPerBuild, 500);
     assert.equal(config.verifier?.referenceMinimumProbeCount, 120);
     assert.equal(config.verifier?.referenceMaximumProbeCount, 240);
@@ -533,6 +539,24 @@ test('loadConfig rejects invalid verifier settings', async () => {
   } }), async (configPath) => {
     await assert.rejects(loadConfig(configPath), /excludedDomains must not contain duplicates/);
   });
+  for (const [referenceProvider, extra, message] of [
+    [{ order: [] }, {}, /referenceProvider\.order must list at least one provider/],
+    [{ order: ['A', 'a'] }, {}, /referenceProvider\.order must not contain duplicates/],
+    [{ order: ['A'], allowFallbacks: true }, {}, /referenceProvider\.allowFallbacks is not supported/],
+    [{ order: ['A'] }, { referenceRoute: {
+      type: 'antseed', service: 'target', peerId: '12'.repeat(20),
+      pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+    } }, /referenceProvider must be omitted/],
+  ] as const) {
+    await withTempConfig(JSON.stringify({ verifier: {
+      referenceEndpoint: {
+        baseUrl: 'https://reference.example/v1', sourceId: 'test', trust: 'trusted',
+        models: { target: { upstreamModel: 'target', contrastModels: ['contrast'], referenceProvider, ...extra } },
+      },
+    } }), async (configPath) => {
+      await assert.rejects(loadConfig(configPath), message);
+    });
+  }
   for (const [serviceAliases, message] of [
     [['target'], /serviceAliases must not duplicate/],
     [['alias', 'ALIAS'], /serviceAliases must not duplicate/],

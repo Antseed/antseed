@@ -90,6 +90,8 @@ interface ReferenceBuildCheckpointV1 {
 
 interface ReferenceCachedResponseBaseV1 {
   model: string
+  /** Upstream provider that served the response, when the endpoint reports it. */
+  provider?: string | null
   purpose: ReferenceBuildCostPurposeV1['purpose']
   inputTokens: number
   outputTokens: number
@@ -156,6 +158,14 @@ export function createReferenceRequestLimiter(
 type ReferenceQuery = ((model: string, body: Record<string, unknown>) => Promise<string>) & {
   invalidate?: (model: string, body: Record<string, unknown>) => Promise<void>
   costSummary?: () => ReferenceBuildCostV1
+  /** Upstream providers that served this build's responses for a model, in first-seen order. */
+  servedProviders?: (model: string) => string[]
+}
+
+/** OpenRouter provider routing that pins the reference upstream provider. */
+interface ReferenceProviderRouting {
+  order: string[]
+  allow_fallbacks: false
 }
 
 interface ReferenceRequestRoute {
@@ -167,6 +177,7 @@ interface ReferenceRequestRoute {
   pricing?: VerifierModelPricingConfig
   requestOverrides: Record<string, unknown>
   requestOmissions: Array<'temperature' | 'top_p'>
+  providerRouting?: ReferenceProviderRouting
 }
 
 export async function loadModelReference(input: {
@@ -252,6 +263,7 @@ export async function buildModelReference(input: {
         apiKey,
         catalog: input.catalog ?? null,
         referenceRoute: isTarget ? modelConfig.referenceRoute : undefined,
+        referenceProvider: isTarget ? modelConfig.referenceProvider : undefined,
         buyerProxyPort: input.buyerProxyPort,
       })] as const
     }),
@@ -394,6 +406,13 @@ export async function buildModelReference(input: {
     maxTokensPerRequest: MAX_TOKENS,
     requestTimeoutMs: timeoutMs,
   })
+  const servedTargetProviders = query.servedProviders?.(modelConfig.upstreamModel) ?? []
+  if (!targetRoute.providerRouting && servedTargetProviders.length > 1) {
+    input.log?.(
+      `warning: reference provider for ${modelConfig.upstreamModel} changed during the build `
+      + `(${servedTargetProviders.join(', ')}); pin referenceProvider.order for a reproducible reference`,
+    )
+  }
   // Endpoint quirks stay out of the query profile: they apply only to requests
   // sent to the reference endpoint, never to target audits.
   const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
@@ -433,6 +452,14 @@ export async function buildModelReference(input: {
         enrollmentEvidenceVersion: 1,
         selfTestRuns,
         referenceEndpointRequest,
+        ...(targetRoute.type === 'direct' ? {
+          referenceProvider: {
+            pinned: targetRoute.providerRouting
+              ? { order: [...targetRoute.providerRouting.order], allowFallbacks: false }
+              : null,
+            served: servedTargetProviders,
+          },
+        } : {}),
       },
     },
     provenance: {
@@ -846,6 +873,20 @@ function createReferenceQuery(input: {
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
+  const providersByModel = new Map<string, string[]>()
+  const recordProvider = (model: string, provider: string | null | undefined): void => {
+    if (!provider) return
+    const key = normalized(model)
+    const seen = providersByModel.get(key) ?? []
+    if (seen.includes(provider)) return
+    if (seen.length > 0) {
+      input.log?.(
+        `warning: reference provider for ${model} changed mid-build from ${seen.at(-1)} to ${provider}`,
+      )
+    }
+    seen.push(provider)
+    providersByModel.set(key, seen)
+  }
   const query = (async (model: string, body: Record<string, unknown>) => {
     const { __antseedReferenceCacheDomain, ...requestBody } = body
     const route = input.routeForModel(model)
@@ -858,6 +899,7 @@ function createReferenceQuery(input: {
     const cached = input.checkpoint.get(cacheKey)
     if (cached !== undefined) {
       consumed.set(cacheKey, cached)
+      recordProvider(model, cached.provider)
       if (cached.outcome === 'terminal-empty') {
         throw new EmptyReferenceResponseError(
           cached.finishReason,
@@ -885,6 +927,7 @@ function createReferenceQuery(input: {
           outcome: 'success',
           content: response.content,
           model,
+          ...(response.provider ? { provider: response.provider } : {}),
           purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
           inputTokens: response.inputTokens,
           outputTokens: response.outputTokens,
@@ -897,6 +940,7 @@ function createReferenceQuery(input: {
         }
         await input.checkpoint.set(cacheKey, cachedResponse)
         consumed.set(cacheKey, cachedResponse)
+        recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
         return response.content
       } catch (error) {
@@ -941,6 +985,7 @@ function createReferenceQuery(input: {
     await input.checkpoint.delete(cacheKey)
   }
   query.costSummary = () => summarizeReferenceCosts([...consumed.values()])
+  query.servedProviders = (model) => [...(providersByModel.get(normalized(model)) ?? [])]
   return query
 }
 
@@ -1273,7 +1318,7 @@ async function postChatCompletion(
   body: Record<string, unknown>,
   timeoutMs: number,
   fetchFn: typeof fetch,
-): Promise<{ content: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ content: string; inputTokens: number; outputTokens: number; provider: string | null }> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -1307,6 +1352,7 @@ async function postChatCompletion(
       )
     }
     const parsed = await response.json() as {
+      provider?: unknown
       choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown; native_finish_reason?: unknown }>
       usage?: {
         prompt_tokens?: unknown
@@ -1314,6 +1360,8 @@ async function postChatCompletion(
         completion_tokens_details?: { reasoning_tokens?: unknown }
       }
     }
+    const provider = optionalString(parsed.provider)
+    assertPinnedProvider(route, provider)
     const choice = parsed.choices?.[0]
     const content = completionText(choice?.message?.content)
     const inputTokens = nonNegativeInteger(parsed.usage?.prompt_tokens)
@@ -1338,9 +1386,20 @@ async function postChatCompletion(
     if (inputTokens === null || outputTokens === null) {
       throw new Error(`reference endpoint omitted token usage for ${route.model}`)
     }
-    return { content, inputTokens, outputTokens }
+    return { content, inputTokens, outputTokens, provider }
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+function assertPinnedProvider(route: ReferenceRequestRoute, provider: string | null): void {
+  if (!route.providerRouting || provider === null) return
+  const pinned = route.providerRouting.order.map(normalized)
+  if (!pinned.includes(normalized(provider))) {
+    throw new Error(
+      `reference endpoint served ${route.model} from provider ${provider}, `
+      + `outside the pinned providers ${route.providerRouting.order.join(', ')}`,
+    )
   }
 }
 
@@ -1475,6 +1534,7 @@ function resolveReferenceRequestRoute(input: {
   apiKey: string | undefined
   catalog: VerifierModelCatalog | null
   referenceRoute?: ResolvedVerifierModelConfig['referenceRoute']
+  referenceProvider?: ResolvedVerifierModelConfig['referenceProvider']
   buyerProxyPort?: number
 }): ReferenceRequestRoute {
   if (input.referenceRoute?.type === 'antseed') {
@@ -1500,6 +1560,12 @@ function resolveReferenceRequestRoute(input: {
     peerId: input.endpoint.antseedPeerId,
     requestOverrides: resolveReferenceRequestOverrides(input.model, input.catalog),
     requestOmissions: [],
+    ...(input.referenceProvider ? {
+      providerRouting: {
+        order: input.referenceProvider.order.map((provider) => provider.trim()),
+        allow_fallbacks: false,
+      },
+    } : {}),
   }
 }
 
@@ -1510,6 +1576,7 @@ function applyReferenceRouteToBody(
   const routed: Record<string, unknown> = {
     ...body,
     ...route.requestOverrides,
+    ...(route.providerRouting ? { provider: route.providerRouting } : {}),
     model: route.model,
   }
   for (const field of route.requestOmissions) delete routed[field]

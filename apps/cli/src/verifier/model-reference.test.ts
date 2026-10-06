@@ -1351,3 +1351,96 @@ test('reference checkpoint writes recover after a failed write', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+function providerResponse(content: string, provider: string): Response {
+  return new Response(JSON.stringify({
+    provider,
+    choices: [{ message: { content } }],
+    usage: { prompt_tokens: 100, completion_tokens: 20 },
+  }), { headers: { 'content-type': 'application/json' } })
+}
+
+test('reference build pins the target upstream provider and records it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-pin-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  const requestBodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    requestBodies.push(body)
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return providerResponse(successfulContent(body.model, prompt), body.model === 'upstream-test' ? 'Provider-A' : 'Other')
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
+    const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
+    assert.equal(targetBodies.length > 0, true)
+    assert.equal(targetBodies.every((body) => JSON.stringify(body.provider) === JSON.stringify({
+      order: ['Provider-A'],
+      allow_fallbacks: false,
+    })), true)
+    assert.equal(contrastBodies.every((body) => body.provider === undefined), true)
+    assert.deepEqual(built.reference.generator.params.referenceProvider, {
+      pinned: { order: ['Provider-A'], allowFallbacks: false },
+      served: ['Provider-A'],
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build fails when a pinned provider is not the one that served', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-mismatch-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), 'Provider-B')
+  }
+  try {
+    await assert.rejects(
+      buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn }),
+      /outside the pinned providers Provider-A/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('unpinned reference builds record served providers and warn when they change', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-drift-'))
+  const logs: string[] = []
+  let targetRequests = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    assert.equal(body.provider, undefined)
+    const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
+    if (body.model !== 'upstream-test') return response(content)
+    targetRequests += 1
+    return providerResponse(content, targetRequests <= 3 ? 'Provider-A' : 'Provider-B')
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.deepEqual(built.reference.generator.params.referenceProvider, {
+      pinned: null,
+      served: ['Provider-A', 'Provider-B'],
+    })
+    assert.equal(logs.some((message) => /changed mid-build from Provider-A to Provider-B/.test(message)), true)
+    assert.equal(logs.some((message) => /pin referenceProvider\.order/.test(message)), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

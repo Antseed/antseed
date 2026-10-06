@@ -48,6 +48,18 @@ export const VerifierAntseedReferenceRouteSchema = strictObject({
   pricing: VerifierModelPricingSchema,
 })
 
+/**
+ * Pins the reference endpoint's upstream provider (OpenRouter `provider`
+ * routing with `allow_fallbacks: false`), so the reference is always served by
+ * the same hardware and quantization.
+ */
+export const VerifierReferenceProviderSchema = strictObject({
+  order: uniqueStringsSchema(
+    'must be a non-empty string array',
+    'must not contain duplicates',
+  ).refine((values) => values.length > 0, 'must list at least one provider'),
+})
+
 export const VerifierReferenceModelSchema = strictObject({
   enabled: z.boolean().optional(),
   serviceAliases: uniqueStringsSchema(
@@ -57,6 +69,7 @@ export const VerifierReferenceModelSchema = strictObject({
   upstreamModel: nonEmptyStringSchema,
   pricing: VerifierModelPricingSchema.optional(),
   referenceRoute: VerifierAntseedReferenceRouteSchema.optional(),
+  referenceProvider: VerifierReferenceProviderSchema.optional(),
   contrastModels: uniqueStringsSchema(
     'must be a string array when provided',
     'must not contain duplicates',
@@ -173,6 +186,14 @@ export const VerifierConfigSchema = strictObject({
       }
     }
 
+    if (model.referenceProvider && model.referenceRoute) {
+      context.addIssue({
+        code: 'custom',
+        path: [...modelPath, 'referenceProvider'],
+        message: 'must be omitted when referenceRoute sends reference requests through an AntSeed peer',
+      })
+    }
+
     const hasExplicitContrasts = (model.contrastModels?.length ?? 0) > 0
     if ((model.contrastModels?.length ?? 0) > maxContrastModels) {
       context.addIssue({
@@ -210,6 +231,7 @@ export type VerifierCLIConfig = z.infer<typeof VerifierConfigSchema>
 export type VerifierContrastSelectionConfig = z.infer<typeof VerifierContrastSelectionSchema>
 export type VerifierModelPricingConfig = z.infer<typeof VerifierModelPricingSchema>
 export type VerifierAntseedReferenceRouteConfig = z.infer<typeof VerifierAntseedReferenceRouteSchema>
+export type VerifierReferenceProviderConfig = z.infer<typeof VerifierReferenceProviderSchema>
 export type VerifierReferenceModelConfig = z.infer<typeof VerifierReferenceModelSchema>
 export type VerifierContrastModelConfig = z.infer<typeof VerifierContrastModelSchema>
 export type VerifierReferenceEndpointConfig = z.infer<typeof VerifierReferenceEndpointSchema>

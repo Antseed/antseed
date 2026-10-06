@@ -14,6 +14,7 @@ export type {
   VerifierModelPricingConfig,
   VerifierReferenceEndpointConfig,
   VerifierReferenceModelConfig,
+  VerifierReferenceProviderConfig,
 } from '../verifier/config-schema.js';
 
 /**
