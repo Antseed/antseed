@@ -33,8 +33,12 @@ export interface GatewayRuntimeOptions {
   listenHost?: string
   /** Port of the buyer every key is served through; defaults to the config's buyer.proxyPort. */
   buyerPort?: number
-  /** Legacy single key from ANTSEED_TUNNEL_API_KEY, kept as an unlimited default key. */
-  environmentApiKey?: string
+  /**
+   * Legacy single key from ANTSEED_TUNNEL_API_KEY, kept as an unlimited
+   * default key. `null` means the tunnel started without it, which retires
+   * the stored key; omit it to leave that key as it is.
+   */
+  environmentApiKey?: string | null
   /** Accept x402 top-ups into keys' buyer wallets. */
   topup?: GatewayTopupConfig
   onLog?: (message: string) => void
@@ -99,6 +103,8 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     if (options.environmentApiKey) {
       if (options.environmentApiKey.length < 16) throw new Error('ANTSEED_TUNNEL_API_KEY must be at least 16 characters.')
       store.syncEnvironmentKey(options.environmentApiKey)
+    } else if (options.environmentApiKey === null && store.retireEnvironmentKey()) {
+      options.onLog?.('ANTSEED_TUNNEL_API_KEY is unset; revoked the key it created')
     }
     if (store.countActiveKeys() === 0) {
       throw new Error('No active API keys. Create one with `antseed gateway key create --label <name>`.')

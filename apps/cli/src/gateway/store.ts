@@ -214,6 +214,16 @@ export class GatewayStore {
     return this.getKey(id)!
   }
 
+  /**
+   * Revokes the ANTSEED_TUNNEL_API_KEY key once the tunnel starts without the
+   * env var, so unsetting it retires the shared unlimited key. Returns the
+   * revoked key, or null when there was no active one.
+   */
+  retireEnvironmentKey(): ApiKeyRecord | null {
+    const existing = this._db.prepare("SELECT id FROM api_keys WHERE source = 'tunnel-env' AND status = 'active'").get() as { id: string } | undefined
+    return existing ? this.revokeKey(existing.id) : null
+  }
+
   findKeyBySecret(secret: string): ApiKeyRecord | null {
     const row = this._db.prepare('SELECT * FROM api_keys WHERE key_hash = ?').get(hashApiKey(secret)) as KeyRow | undefined
     return row ? toKey(row) : null

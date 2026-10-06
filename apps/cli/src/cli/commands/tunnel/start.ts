@@ -172,7 +172,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
           configPath: globalOptions.config,
           listenPort: gatewayPort,
           buyerPort,
-          ...(apiKey ? { environmentApiKey: apiKey } : {}),
+          environmentApiKey: apiKey || null,
           ...(topup ? { topup } : {}),
           onLog: (message) => process.stderr.write(`[tunnel] ${message}\n`),
         })

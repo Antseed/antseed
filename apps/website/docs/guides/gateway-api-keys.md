@@ -107,7 +107,7 @@ antseed gateway start                    # http://127.0.0.1:8379/v1
 antseed gateway start --host 0.0.0.0     # serve other machines on your network
 ```
 
-Publicly, use a tunnel. `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it. For an existing tunnel, the `ANTSEED_TUNNEL_API_KEY` it was started with is kept as an unlimited key on the default identity.
+Publicly, use a tunnel. `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it. For an existing tunnel, the `ANTSEED_TUNNEL_API_KEY` it was started with is kept as an unlimited key on the default identity. Start the tunnel without `ANTSEED_TUNNEL_API_KEY` to revoke that key.
 
 If your buyer doesn't listen on `buyer.proxyPort`, point the gateway at it with `--buyer-port`. The gateway sets `x-antseed-buyer-identity` from the key itself; a value sent by the client is ignored.
 

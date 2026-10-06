@@ -181,6 +181,10 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
     assert.equal(store.syncEnvironmentKey('antseed_rotated_tunnel_key_2').id, envKey.id)
     assert.equal(store.findKeyBySecret('antseed_legacy_tunnel_key_1'), null)
     assert.equal(store.findKeyBySecret('antseed_rotated_tunnel_key_2')?.id, envKey.id)
+    assert.equal(store.retireEnvironmentKey()?.status, 'revoked')
+    assert.equal(store.retireEnvironmentKey(), null)
+    assert.equal(store.getKey(key.id)?.status, 'active')
+    assert.equal(store.syncEnvironmentKey('antseed_rotated_tunnel_key_2').status, 'active')
 
     const entry = {
       kind: 'spend' as const,
