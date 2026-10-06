@@ -14,6 +14,9 @@ import {
   computeReferenceId,
   createReferenceQueryProfile,
   type ReferenceEndpointRequestV1,
+  type ReferenceContrastDetectionV1,
+  type ReferenceContrastV1,
+  computeContrastDetection,
   matchesTolerance,
   parseKbfAnswers,
   validateKbfReferenceV1,
@@ -75,6 +78,8 @@ interface CollectedReferenceProbes {
   probes: KbfProbe[]
   candidateCount: number
   distinguishingProbeIdsByModel: Map<string, string[]>
+  /** Contrast models that returned a parseable answer, by accepted probe id. */
+  answeredContrastModelsByProbeId?: Map<string, string[]>
   generatedProbeIds: Set<string>
   reserveProbes: KbfProbe[]
   generationRound: number
@@ -333,7 +338,10 @@ export async function buildModelReference(input: {
     probes: KbfProbe[]
     selfTest: ReturnType<typeof aggregateKbfSelfTestOutcomes>
     power: ReturnType<typeof computeBinomialPower>
+    contrasts: ReferenceContrastV1[]
+    contrastDetection: ReferenceContrastDetectionV1[]
   } | null = null
+  let undetectedContrasts: string[] = []
   try {
     for (let targetCount = sizing.minimumProbeCount;
       targetCount <= sizing.maximumProbeCount;
@@ -373,12 +381,32 @@ export async function buildModelReference(input: {
         alpha: REFERENCE_POWER_ALPHA,
         cpConfidence: REFERENCE_POWER_CONFIDENCE,
       })
+      const contrasts = referenceContrasts(modelConfig.contrastModels, collected, probes)
+      const contrastDetection = computeContrastDetection({
+        probeIds: probes.map((probe) => probe.id),
+        contrasts,
+        answeredProbeIds: contrastAnsweredProbeIds(modelConfig.contrastModels, collected),
+        // p0 comes from the pooled self-test runs, as in the audit verdict.
+        selfHamming: selfTest.hamming,
+        selfTotal: selfTest.total,
+        alpha: REFERENCE_POWER_ALPHA,
+        cpConfidence: REFERENCE_POWER_CONFIDENCE,
+      })
+      // A contrast that answered none of the selected probes (for example, an
+      // unavailable model) cannot be tested and does not block the build.
+      undetectedContrasts = contrastDetection
+        .filter((entry) => entry.total > 0 && !entry.detected)
+        .map((entry) => entry.model)
       input.log?.(
         `reference size ${targetCount}: power ${power.power.toFixed(3)}, `
-        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${selfTest.coverage.toFixed(3)}`,
+        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${selfTest.coverage.toFixed(3)}`
+        + (contrastDetection.length > 0
+          ? `, contrasts detected ${contrastDetection.length - undetectedContrasts.length}/${contrastDetection.length}`
+          : ''),
       )
-      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower) {
-        selected = { probes, selfTest, power }
+      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower
+        && undetectedContrasts.length === 0) {
+        selected = { probes, selfTest, power, contrasts, contrastDetection }
         break
       }
     }
@@ -389,10 +417,13 @@ export async function buildModelReference(input: {
   if (!collected || !selected) {
     throw new Error(
       `reference remains underpowered at ${sizing.maximumProbeCount} probes; `
-      + `required power ${sizing.minimumStatisticalPower.toFixed(3)}`,
+      + `required power ${sizing.minimumStatisticalPower.toFixed(3)}`
+      + (undetectedContrasts.length > 0
+        ? `; contrast models that would pass as SAME: ${undetectedContrasts.join(', ')}`
+        : ''),
     )
   }
-  const { probes, selfTest, power } = selected
+  const { probes, selfTest, power, contrasts, contrastDetection } = selected
   if (selfTest.coverage < 0.8) {
     await checkpoint.remove()
     throw new Error(`self-test coverage ${selfTest.coverage.toFixed(3)} is below 0.8`)
@@ -486,11 +517,8 @@ export async function buildModelReference(input: {
       criticalMismatchCount: power.criticalMismatchCount,
       power: power.power,
     },
-    contrasts: modelConfig.contrastModels.map((model) => ({
-      model,
-      distinguishingProbeIds: (collected.distinguishingProbeIdsByModel.get(model) ?? [])
-        .filter((probeId) => probes.some((probe) => probe.id === probeId)),
-    })),
+    contrasts,
+    contrastDetection,
   }
   reference.referenceId = computeReferenceId(reference)
   const validated = validateKbfReferenceV1(reference, {
@@ -500,6 +528,30 @@ export async function buildModelReference(input: {
   await writeJsonAtomic(path, validated)
   const cost = query.costSummary?.() ?? summarizeReferenceCosts([])
   return { reference: validated, path, cost, finalize: () => checkpoint.remove() }
+}
+
+function referenceContrasts(
+  contrastModels: readonly string[],
+  collected: CollectedReferenceProbes,
+  probes: readonly KbfProbe[],
+): ReferenceContrastV1[] {
+  const selectedIds = new Set(probes.map((probe) => probe.id))
+  return contrastModels.map((model) => ({
+    model,
+    distinguishingProbeIds: (collected.distinguishingProbeIdsByModel.get(model) ?? [])
+      .filter((probeId) => selectedIds.has(probeId)),
+  }))
+}
+
+function contrastAnsweredProbeIds(
+  contrastModels: readonly string[],
+  collected: CollectedReferenceProbes,
+): Map<string, Set<string>> {
+  const answered = new Map(contrastModels.map((model) => [model, new Set<string>()]))
+  for (const [probeId, models] of collected.answeredContrastModelsByProbeId ?? []) {
+    for (const model of models) answered.get(model)?.add(probeId)
+  }
+  return answered
 }
 
 export async function collectReferenceProbes(input: {
@@ -524,6 +576,7 @@ export async function collectReferenceProbes(input: {
     probes: [],
     candidateCount: 0,
     distinguishingProbeIdsByModel: new Map(input.contrastModels.map((model) => [model, [] as string[]])),
+    answeredContrastModelsByProbeId: new Map<string, string[]>(),
     generatedProbeIds: new Set<string>(),
     reserveProbes: [],
     generationRound: 0,
@@ -556,7 +609,14 @@ export async function collectReferenceProbes(input: {
     state.candidateCount = state.generatedProbeIds.size
     input.log?.(`generation round ${state.generationRound}: testing ${candidates.length} new candidates for stability`)
     const stable = await certifyStableProbes(input.model, candidates, input.query, input.log, input.shuffle)
-    const contrastOutcomes = await queryContrastOutcomes(stable, input.contrastModels, input.query, input.log)
+    const { outcomes: contrastOutcomes, answered: contrastAnswered } = await queryContrastOutcomes(
+      stable,
+      input.contrastModels,
+      input.query,
+      input.log,
+    )
+    state.answeredContrastModelsByProbeId ??= new Map()
+    for (const [probeId, models] of contrastAnswered) state.answeredContrastModelsByProbeId.set(probeId, models)
     const accepted = stable.filter((probe) => input.contrastModels.length === 0
       || (contrastOutcomes.get(probe.id)?.length ?? 0) > 0)
     const prepared = accepted.map((probe) => {
@@ -700,8 +760,9 @@ async function queryContrastOutcomes(
   contrastModels: readonly string[],
   query: ReferenceQuery,
   log?: (message: string) => void,
-): Promise<Map<string, string[]>> {
+): Promise<{ outcomes: Map<string, string[]>; answered: Map<string, string[]> }> {
   const outcomes = new Map(probes.map((probe) => [probe.id, [] as string[]]))
+  const answered = new Map(probes.map((probe) => [probe.id, [] as string[]]))
   const answersByModel = await allSettledOrThrow(contrastModels.map(async (contrastModel) => {
     log?.(`checking contrast model ${contrastModel}`)
     return queryDomainGroupedProbeAnswers(
@@ -719,10 +780,11 @@ async function queryContrastOutcomes(
     const answers = answersByModel[modelIndex]!
     for (const [index, probe] of probes.entries()) {
       const answer = answers[index] ?? null
+      if (answer !== null) answered.get(probe.id)!.push(contrastModel)
       if (answer !== null && !matchesTolerance(answer, probe)) outcomes.get(probe.id)!.push(contrastModel)
     }
   }
-  return outcomes
+  return { outcomes, answered }
 }
 
 async function generateCandidates(

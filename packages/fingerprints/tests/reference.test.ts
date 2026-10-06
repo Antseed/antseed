@@ -2,6 +2,7 @@ import { describe, expect, it } from 'vitest';
 import {
   assertMatchingQueryProfile,
   computeBinomialPower,
+  computeContrastDetection,
   computeReferenceId,
   createReferenceQueryProfile,
   kbfPromptVariantsHash,
@@ -205,6 +206,52 @@ describe('validateKbfReferenceV1', () => {
     unsupported.generator.params.referenceEndpointRequest = { ...settings, reasoningStrategy: 'loud' };
     unsupported.referenceId = computeReferenceId(unsupported);
     expect(() => validateKbfReferenceV1(unsupported)).toThrow(/unsupported reasoning strategy/);
+  });
+
+  it('validates recorded contrast detection against the binomial audit test', () => {
+    const value = reference();
+    value.contrasts = [
+      { model: 'far', distinguishingProbeIds: value.probes.slice(0, 40).map((probe) => probe.id) },
+      { model: 'close', distinguishingProbeIds: ['p-0', 'p-1'] },
+    ];
+    const detection = computeContrastDetection({
+      probeIds: value.probes.map((probe) => probe.id),
+      contrasts: value.contrasts,
+      selfHamming: value.selfTest.hamming,
+      selfTotal: value.selfTest.total,
+      alpha: 0.05,
+      cpConfidence: 0.99,
+    });
+    expect(detection.map((entry) => [entry.model, entry.mismatches, entry.total, entry.detected]))
+      .toEqual([['far', 40, 100, true], ['close', 2, 100, false]]);
+    value.contrastDetection = detection;
+    value.referenceId = computeReferenceId(value);
+    expect(() => validateKbfReferenceV1(value)).not.toThrow();
+
+    const answered = computeContrastDetection({
+      probeIds: value.probes.map((probe) => probe.id),
+      contrasts: value.contrasts,
+      answeredProbeIds: new Map([['close', new Set(['p-0', 'p-1', 'p-2'])]]),
+      selfHamming: value.selfTest.hamming,
+      selfTotal: value.selfTest.total,
+      alpha: 0.05,
+      cpConfidence: 0.99,
+    });
+    expect(answered[1]).toMatchObject({ mismatches: 2, total: 3 });
+    const narrowed = structuredClone(value);
+    narrowed.contrastDetection = answered;
+    narrowed.referenceId = computeReferenceId(narrowed);
+    expect(() => validateKbfReferenceV1(narrowed)).not.toThrow();
+
+    const flipped = structuredClone(value);
+    flipped.contrastDetection![1]!.detected = true;
+    flipped.referenceId = computeReferenceId(flipped);
+    expect(() => validateKbfReferenceV1(flipped)).toThrow(/contrastDetection is inconsistent/);
+
+    const inflated = structuredClone(value);
+    inflated.contrastDetection![0]!.mismatches = 41;
+    inflated.referenceId = computeReferenceId(inflated);
+    expect(() => validateKbfReferenceV1(inflated)).toThrow(/contrastDetection is inconsistent/);
   });
 
   it('requires explicit operator trust for imported references', () => {

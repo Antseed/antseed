@@ -6,6 +6,7 @@ import {
   aggregateKbfSelfTestOutcomes,
   canonicalHashBytes32,
   computeBinomialPower,
+  computeContrastDetection,
   computeReferenceId,
   referenceCompatibilityProfileHash,
   validateKbfReferenceV1,
@@ -765,6 +766,7 @@ function selectPoweredReference(
   const sizing = resolveReferenceSizingPolicy(config)
   const excludedDomains = excludedVerifierDomains(config, bank.model)
   const eligible = available.filter((entry) => !excludedDomains.has(entry.probe.domain))
+  const testableContrasts = new Set(bank.probes.flatMap((entry) => entry.distinguishingContrastModels))
   for (let count = sizing.minimumProbeCount;
     count <= sizing.maximumProbeCount && count <= eligible.length;
     count += sizing.probeStep) {
@@ -781,6 +783,24 @@ function selectPoweredReference(
     if (selfTest.coverage < 0.8 || selfTest.errorRate > 0.35
       || power.power < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
+    const contrasts = bank.contrastModels.map((model) => ({
+      model,
+      distinguishingProbeIds: selected
+        .filter((entry) => entry.distinguishingContrastModels.includes(model) && selectedIds.has(entry.probe.id))
+        .map((entry) => entry.probe.id),
+    }))
+    const contrastDetection = computeContrastDetection({
+      probeIds: selected.map((entry) => entry.probe.id),
+      contrasts,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      alpha: bank.statisticalAssumptions.alpha,
+      cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+    })
+    // Grow the subset until every testable contrast model would be flagged
+    // DIFF. A contrast that distinguishes no bank probe at all never answered
+    // during enrollment (for example, it was unavailable) and cannot be tested.
+    if (contrastDetection.some((entry) => testableContrasts.has(entry.model) && !entry.detected)) continue
     const reference: KbfReferenceV1 = {
       version: KBF_REFERENCE_VERSION,
       kind: 'kbf',
@@ -804,12 +824,8 @@ function selectPoweredReference(
         criticalMismatchCount: power.criticalMismatchCount,
         power: power.power,
       },
-      contrasts: bank.contrastModels.map((model) => ({
-        model,
-        distinguishingProbeIds: selected
-          .filter((entry) => entry.distinguishingContrastModels.includes(model) && selectedIds.has(entry.probe.id))
-          .map((entry) => entry.probe.id),
-      })),
+      contrasts,
+      contrastDetection,
     }
     reference.referenceId = computeReferenceId(reference)
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })

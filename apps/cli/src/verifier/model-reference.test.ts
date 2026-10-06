@@ -1444,3 +1444,45 @@ test('unpinned reference builds record served providers and warn when they chang
     await rm(directory, { recursive: true, force: true })
   }
 })
+
+test('reference builds record contrast detection and grow until every contrast is flagged', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-contrast-detection-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
+  value.referenceEndpoint!.contrastModelBank!['close-contrast'] = {
+    upstreamModel: 'close-contrast',
+    pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
+    capabilityRank: 2,
+  }
+  // close-contrast misses only every twentieth fact, so small references cannot detect it.
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model !== 'close-contrast') return response(successfulContent(body.model, prompt))
+    return response(testPromptValues(prompt)
+      .map((fact, index) => `(${index + 1}) ${fact % 20 === 0 ? fact + 100_000 : fact}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.ok(built.reference.probes.length > 100)
+    const detection = built.reference.contrastDetection!
+    assert.deepEqual(detection.map((entry) => entry.model), ['contrast-test', 'close-contrast'])
+    assert.equal(detection.every((entry) => entry.detected), true)
+    assert.equal(detection[0]!.mismatches, built.reference.probes.length)
+    assert.equal(detection[1]!.total, built.reference.probes.length)
+
+    const capped = config({ referenceMaximumProbeCount: 100 })
+    capped.referenceEndpoint = value.referenceEndpoint
+    await assert.rejects(
+      buildModelReference({
+        model: MODEL,
+        referencesDir: join(directory, 'capped'),
+        config: capped,
+        fetchFn,
+      }),
+      /contrast models that would pass as SAME: close-contrast/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

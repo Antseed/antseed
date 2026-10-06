@@ -131,6 +131,30 @@ export interface KbfReferenceV1 extends FingerprintReference {
   statisticalPower: number;
   statisticalPowerEvidence: StatisticalPowerEvidenceV1;
   contrasts: ReferenceContrastV1[];
+  /**
+   * Whether each contrast model would be flagged DIFF by the audit's one-sided
+   * binomial test on this probe set, one entry per contrast in the same order.
+   * Validates the assumed `minimumMismatchDelta` power against real
+   * substitutes. Absent on references built before this check existed.
+   */
+  contrastDetection?: ReferenceContrastDetectionV1[];
+}
+
+export interface ReferenceContrastDetectionV1 {
+  model: string;
+  /** Selected probes on which the contrast model's answer missed the consensus. */
+  mismatches: number;
+  /**
+   * Selected probes the contrast answered, mirroring the audit's parsed-answer
+   * denominator. When per-probe answers are unknown (for example, references
+   * drawn from a probe bank) this is the selected probe count, which treats
+   * unanswered probes as matches and can only understate detectability.
+   */
+  total: number;
+  /** One-sided binomial p-value of `mismatches` against the self-test bound p0. */
+  pValue: number;
+  /** pValue < statisticalPowerEvidence.alpha: an audit would return DIFF. */
+  detected: boolean;
 }
 
 export interface StatisticalPowerEvidenceV1 {
@@ -276,6 +300,38 @@ export function computeBinomialPower(input: {
       ? 0
       : binomialOneSidedPValue(criticalMismatchCount, input.probeCount, p1),
   };
+}
+
+/**
+ * Runs the audit's DIFF test on each contrast model's enrolled outcomes: a
+ * contrast mismatches on its distinguishing probes and matches on the other
+ * probes it answered. Without `answeredProbeIds` for a model, every selected
+ * probe counts as answered.
+ */
+export function computeContrastDetection(input: {
+  probeIds: readonly string[];
+  contrasts: readonly ReferenceContrastV1[];
+  answeredProbeIds?: ReadonlyMap<string, ReadonlySet<string>>;
+  selfHamming: number;
+  selfTotal: number;
+  alpha: number;
+  cpConfidence: number;
+}): ReferenceContrastDetectionV1[] {
+  const selected = new Set(input.probeIds);
+  const p0 = clopperPearsonUpper(input.selfHamming, input.selfTotal, input.cpConfidence);
+  return input.contrasts.map((contrast) => {
+    const mismatches = new Set(contrast.distinguishingProbeIds.filter((probeId) => selected.has(probeId))).size;
+    const answered = input.answeredProbeIds?.get(contrast.model);
+    const total = answered
+      ? Math.max(mismatches, [...selected].filter((probeId) => answered.has(probeId)).length)
+      : selected.size;
+    const pValue = contrastDetectionPValue(mismatches, total, p0);
+    return { model: contrast.model, mismatches, total, pValue, detected: pValue < input.alpha };
+  });
+}
+
+function contrastDetectionPValue(mismatches: number, total: number, p0: number): number {
+  return total === 0 ? 1 : binomialOneSidedPValue(mismatches, total, p0);
 }
 
 export function subsetReferenceSelfTest(
@@ -453,6 +509,34 @@ export function validateKbfReferenceV1(
   if (Math.abs(recomputedPower.power - reference.statisticalPower) > 1e-12
     || recomputedPower.power < minimumStatisticalPower) {
     throw new Error('statisticalPower is inconsistent with the selected self-test baseline');
+  }
+  if (reference.contrastDetection !== undefined) {
+    if (!Array.isArray(reference.contrastDetection)) throw new Error('contrastDetection must be an array');
+    // Answered counts are not stored per probe, so `total` is checked for
+    // range and the p-value and verdict are recomputed from it.
+    const expected = computeContrastDetection({
+      probeIds: reference.probes.map((probe) => probe.id),
+      contrasts: reference.contrasts,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      alpha: evidence.alpha,
+      cpConfidence: evidence.clopperPearsonConfidence,
+    });
+    const p0 = clopperPearsonUpper(selfTest.hamming, selfTest.total, evidence.clopperPearsonConfidence);
+    const consistent = reference.contrastDetection.length === expected.length
+      && expected.every((entry, index) => {
+        const actual = reference.contrastDetection![index];
+        if (actual === null || typeof actual !== 'object') return false;
+        if (actual.model !== entry.model || actual.mismatches !== entry.mismatches) return false;
+        if (!Number.isInteger(actual.total) || actual.total < actual.mismatches || actual.total > entry.total) {
+          return false;
+        }
+        const pValue = contrastDetectionPValue(actual.mismatches, actual.total, p0);
+        return typeof actual.pValue === 'number'
+          && Math.abs(actual.pValue - pValue) <= 1e-12
+          && actual.detected === pValue < evidence.alpha;
+      });
+    if (!consistent) throw new Error('contrastDetection is inconsistent with the contrasts and self-test baseline');
   }
   const expectedReferenceId = computeReferenceId(reference);
   if (reference.referenceId !== expectedReferenceId) {

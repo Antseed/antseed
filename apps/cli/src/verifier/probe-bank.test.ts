@@ -305,6 +305,40 @@ test('references with split reference-endpoint settings join legacy banks with t
   }
 })
 
+test('bank selections grow until every contrast model would be flagged DIFF', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-contrast-'))
+  const identityShuffle = <T>(values: readonly T[]) => [...values]
+  try {
+    const value = reference()
+    // contrast-b only misses every fifth probe after the first hundred.
+    value.contrasts.push({
+      model: 'contrast-b',
+      distinguishingProbeIds: value.probes.filter((_probe, index) => index >= 100 && index % 5 === 0)
+        .map((probe) => probe.id),
+    })
+    value.referenceId = computeReferenceId(value)
+    await appendReference(directory, value)
+    const reserved = await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: '11'.repeat(20),
+      service: 'model-a', runId: 'run-a', epoch: '4', shuffle: identityShuffle,
+    })
+    assert.ok(reserved.reference.probes.length > 100)
+    const detection = reserved.reference.contrastDetection!
+    assert.deepEqual(detection.map((entry) => entry.model), ['contrast-a', 'contrast-b'])
+    assert.equal(detection.every((entry) => entry.detected), true)
+    assert.equal(detection[1]!.total, reserved.reference.probes.length)
+
+    const smaller = await inspectModelProbeBankPower({
+      banksDir: directory,
+      model: 'model-a',
+      config: { referenceMaximumProbeCount: 100 },
+    })
+    assert.equal(smaller.selectedProbeCount, null)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('probe banks reject incompatible enrollment algorithms', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-enrollment-'))
   try {
