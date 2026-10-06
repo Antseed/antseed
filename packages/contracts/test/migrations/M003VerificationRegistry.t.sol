@@ -80,7 +80,7 @@ contract M003VerificationRegistryTest is Test {
         uint256 agentId = identity.register();
         IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](1);
         results[0] = IAntseedVerification.ServiceResult({
-            serviceHash: keccak256("model"), referenceId: keccak256("reference"), flags: 3
+            serviceHash: keccak256("model"), modelHash: keccak256("reference"), flags: 3
         });
         IAntseedVerification.AuditReport memory report = IAntseedVerification.AuditReport({
             agentId: agentId,

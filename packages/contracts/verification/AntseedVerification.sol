@@ -16,7 +16,7 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 ///
 ///         Score (formula version 1), over the services in the agreed results:
 ///           passed     = MODEL_MATCH and PRICE_MATCH set, UNDETERMINED clear
-///           breadth    = log2(1 + min(distinct passed referenceIds, maxBreadth)) / log2(1 + maxBreadth)
+///           breadth    = log2(1 + min(distinct passed modelHashes, maxBreadth)) / log2(1 + maxBreadth)
 ///           integrity  = passed / audited
 ///           scoreBps   = BPS * breadth * integrity^4
 ///         Breadth rewards offering more distinct verified models; the steep integrity
@@ -91,7 +91,7 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
         uint256 indexed agentId,
         bytes32 indexed serviceHash,
         address indexed auditor,
-        bytes32 referenceId,
+        bytes32 modelHash,
         uint16 flags,
         bytes32 evidenceHash
     );
@@ -202,7 +202,7 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
                 report.agentId,
                 results[i].serviceHash,
                 auditor,
-                results[i].referenceId,
+                results[i].modelHash,
                 results[i].flags,
                 report.evidenceHash
             );
@@ -269,22 +269,22 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
         uint256 count = results.length;
         if (count == 0) return 0;
 
-        bytes32[] memory passedReferences = new bytes32[](count);
+        bytes32[] memory passedModels = new bytes32[](count);
         uint256 passed;
         uint256 distinct;
         for (uint256 i = 0; i < count; i++) {
             uint16 flags = results[i].flags;
             if (flags & SERVICE_PASSED != SERVICE_PASSED || flags & SERVICE_UNDETERMINED != 0) continue;
             passed++;
-            bytes32 referenceId = results[i].referenceId;
+            bytes32 modelHash = results[i].modelHash;
             bool seen;
             for (uint256 j = 0; j < distinct; j++) {
-                if (passedReferences[j] == referenceId) {
+                if (passedModels[j] == modelHash) {
                     seen = true;
                     break;
                 }
             }
-            if (!seen) passedReferences[distinct++] = referenceId;
+            if (!seen) passedModels[distinct++] = modelHash;
         }
         if (passed == 0) return 0;
 
@@ -393,7 +393,7 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
         bytes32 previous;
         for (uint256 i = 0; i < count; i++) {
             ServiceResult calldata result = results[i];
-            if (result.serviceHash <= previous || result.referenceId == bytes32(0)) revert InvalidResults();
+            if (result.serviceHash <= previous || result.modelHash == bytes32(0)) revert InvalidResults();
             if (result.flags & ~SERVICE_KNOWN_FLAGS != 0) revert InvalidResults();
             previous = result.serviceHash;
         }

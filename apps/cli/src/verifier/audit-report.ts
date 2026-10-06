@@ -14,6 +14,7 @@ import {
   SERVICE_PRICE_MATCH,
   SERVICE_UNDETERMINED,
   hashServiceResults,
+  modelHash,
   serviceHash,
   signAuditReport,
   sortServiceResults,
@@ -104,6 +105,8 @@ export interface AgentServiceEvidenceV1 {
   displayName: string | null
   referenceId: string
   referenceIdBytes32: string
+  /** On-chain model identity: keccak256 of the lowercased reference model. */
+  modelHash: string
   reference: {
     referenceModel: string
     queryProfileHash: string
@@ -500,6 +503,7 @@ export async function prepareAgentAuditReports(input: {
         displayName: result.displayName,
         referenceId,
         referenceIdBytes32: referenceIdBytes32(referenceId),
+        modelHash: modelHash(evidence.reference.referenceModel),
         reference: {
           referenceModel: evidence.reference.referenceModel,
           queryProfileHash: evidence.reference.queryProfileHash,
@@ -540,7 +544,7 @@ export async function prepareAgentAuditReports(input: {
     }
     const results = sortServiceResults(services.map((service) => ({
       serviceHash: service.serviceHash,
-      referenceId: service.referenceIdBytes32,
+      modelHash: service.modelHash,
       flags: service.flags,
     })))
     reports.push({

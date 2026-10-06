@@ -26,6 +26,7 @@ import {
 } from './audit-report.js'
 import {
   FIXTURE_CONFIG,
+  referenceFixture,
   writeSignedAuditRun,
   type FixtureAudit,
 } from './audit-report-fixtures.test-support.js'
@@ -224,7 +225,7 @@ test('verifier refuses a report whose flags overstate the recomputed verdict', a
     report.evidence.services[0]!.flags |= SERVICE_MODEL_MATCH
     report.results = sortServiceResults(report.evidence.services.map((service) => ({
       serviceHash: service.serviceHash,
-      referenceId: service.referenceIdBytes32,
+      modelHash: service.modelHash,
       flags: service.flags,
     })))
     report.resultsHash = hashServiceResults(report.results)
@@ -291,5 +292,18 @@ test('verifier refuses reports signed for another chain or contract', async () =
     })
     assert.match(verified.checks.signature!.detail, /not this verification contract/)
     assert.equal(verified.ok, false)
+  })
+})
+
+test('auditors with different per-seller references agree on the same results hash', async () => {
+  const audit = { agentId: '7', seller: sellers[0]!, model: 'model-a', service: 'model-a', verdict: 'SAME' as const }
+  let first: PreparedAgentAuditReport | undefined
+  await withRun([{ ...audit, reference: referenceFixture('model-a', 10) }], async (fixture) => {
+    first = fixture.prepared.reports[0]
+  })
+  await withRun([{ ...audit, reference: referenceFixture('model-a', 20) }], async (fixture) => {
+    const second = fixture.prepared.reports[0]!
+    assert.notEqual(second.evidence.services[0]!.referenceId, first!.evidence.services[0]!.referenceId)
+    assert.equal(second.resultsHash, first!.resultsHash)
   })
 })

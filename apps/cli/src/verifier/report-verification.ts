@@ -32,6 +32,7 @@ import {
   hashServiceResults,
   recoverAuditReportSigner,
   serviceHash,
+  modelHash,
 } from '@antseed/node/payments'
 import type { VerifierCLIConfig } from '../config/types.js'
 import {
@@ -168,7 +169,7 @@ export async function verifyAuditReportFile(input: {
     for (const result of results) {
       const current = BigInt(result.serviceHash)
       if (current <= previous) throw new CheckFailure('results are not strictly sorted by serviceHash')
-      if (BigInt(result.referenceId) === 0n) throw new CheckFailure('result has a zero referenceId')
+      if (BigInt(result.modelHash) === 0n) throw new CheckFailure('result has a zero modelHash')
       if (!Number.isInteger(result.flags) || (result.flags & ~(SERVICE_MODEL_MATCH | SERVICE_PRICE_MATCH | SERVICE_UNDETERMINED)) !== 0) {
         throw new CheckFailure(`result has unknown flags ${result.flags}`)
       }
@@ -204,9 +205,12 @@ export async function verifyAuditReportFile(input: {
         || normalized(claim.serviceHash) !== normalized(result.serviceHash)) {
         throw new CheckFailure(`service ${claim.service} does not match result ${index}`)
       }
-      if (referenceIdBytes32(claim.referenceId) !== normalized(result.referenceId)
-        || normalized(claim.referenceIdBytes32) !== normalized(result.referenceId)) {
-        throw new CheckFailure(`${claim.service}: referenceId does not match the result`)
+      if (referenceIdBytes32(claim.referenceId) !== normalized(claim.referenceIdBytes32)) {
+        throw new CheckFailure(`${claim.service}: referenceId encoding is inconsistent`)
+      }
+      if (normalized(modelHash(claim.reference.referenceModel)) !== normalized(result.modelHash)
+        || normalized(claim.modelHash) !== normalized(result.modelHash)) {
+        throw new CheckFailure(`${claim.service}: modelHash does not match the audited reference model`)
       }
       if (claim.flags !== result.flags) throw new CheckFailure(`${claim.service}: flags differ from the result`)
       const audit = await verifyProxyAuditEvidenceFile(
@@ -222,7 +226,8 @@ export async function verifyAuditReportFile(input: {
         || audit.target.service !== claim.service) {
         throw new CheckFailure(`${claim.service}: audit evidence targets another seller or service`)
       }
-      if (audit.reference.referenceId !== claim.referenceId) {
+      if (audit.reference.referenceId !== claim.referenceId
+        || audit.reference.referenceModel !== claim.reference.referenceModel) {
         throw new CheckFailure(`${claim.service}: audit evidence used another reference`)
       }
       if (audit.result.verdict !== claim.verdict) throw new CheckFailure(`${claim.service}: claimed verdict differs from audit evidence`)

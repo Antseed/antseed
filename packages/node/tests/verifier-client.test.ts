@@ -19,10 +19,10 @@ const VERIFICATION_ADDRESS = '0x' + '10'.repeat(20);
 
 describe('VerifierClient report ABI', () => {
   const results = [
-    { serviceHash: '0x' + '02'.repeat(32), referenceId: '0x' + 'bb'.repeat(32), flags: SERVICE_MODEL_MATCH },
+    { serviceHash: '0x' + '02'.repeat(32), modelHash: '0x' + 'bb'.repeat(32), flags: SERVICE_MODEL_MATCH },
     {
       serviceHash: '0x' + '01'.repeat(32),
-      referenceId: '0x' + 'aa'.repeat(32),
+      modelHash: '0x' + 'aa'.repeat(32),
       flags: SERVICE_MODEL_MATCH | SERVICE_PRICE_MATCH,
     },
   ];
@@ -35,8 +35,8 @@ describe('VerifierClient report ABI', () => {
     const sorted = sortServiceResults(results);
     expect(sorted.map((result) => result.serviceHash)).toEqual(['0x' + '01'.repeat(32), '0x' + '02'.repeat(32)]);
     const encoded = AbiCoder.defaultAbiCoder().encode(
-      ['tuple(bytes32 serviceHash,bytes32 referenceId,uint16 flags)[]'],
-      [sorted.map((result) => [result.serviceHash, result.referenceId, result.flags])],
+      ['tuple(bytes32 serviceHash,bytes32 modelHash,uint16 flags)[]'],
+      [sorted.map((result) => [result.serviceHash, result.modelHash, result.flags])],
     );
     expect(hashServiceResults(sorted)).toBe(keccak256(encoded));
     expect(hashServiceResults(sorted)).not.toBe(hashServiceResults(results));
@@ -81,7 +81,7 @@ describe('VerifierClient report ABI', () => {
       VERIFICATION_ABI,
       'submitReport',
       report,
-      results.map((result) => [result.serviceHash, result.referenceId, result.flags]),
+      results.map((result) => [result.serviceHash, result.modelHash, result.flags]),
       'ipfs://bafytest',
       '0x1234',
     );
@@ -93,7 +93,7 @@ describe('VerifierClient report ABI', () => {
       'agentId',
       'serviceHash',
       'auditor',
-      'referenceId',
+      'modelHash',
       'flags',
       'evidenceHash',
     ]);

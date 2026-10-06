@@ -9,11 +9,12 @@ import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 ///      per-service results finalizes an agent score that points policies can read.
 interface IAntseedVerification {
     /// @param serviceHash keccak256 of the service name in the seller's signed metadata.
-    /// @param referenceId KBF reference the service was audited against; distinct ids count toward breadth.
+    /// @param modelHash keccak256 of the lowercased model the service was verified as; distinct models count toward breadth.
+    ///        Auditors agree on the model, not on their individual per-seller probe references.
     /// @param flags Bitmask of SERVICE_MODEL_MATCH, SERVICE_PRICE_MATCH and SERVICE_UNDETERMINED.
     struct ServiceResult {
         bytes32 serviceHash;
-        bytes32 referenceId;
+        bytes32 modelHash;
         uint16 flags;
     }
 

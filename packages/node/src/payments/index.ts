@@ -40,6 +40,7 @@ export type { StakingClientConfig } from './evm/staking-client.js';
 export {
   VerifierClient,
   serviceHash,
+  modelHash,
   sortServiceResults,
   hashServiceResults,
   auditReportDomain,

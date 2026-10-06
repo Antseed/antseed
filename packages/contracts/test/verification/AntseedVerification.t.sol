@@ -78,7 +78,7 @@ contract AntseedVerificationTest is Test {
         IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](3);
         for (uint256 i = 0; i < 3; i++) {
             results[i] = IAntseedVerification.ServiceResult({
-                serviceHash: bytes32(i + 1), referenceId: keccak256(abi.encode(i)), flags: PASS
+                serviceHash: bytes32(i + 1), modelHash: keccak256(abi.encode(i)), flags: PASS
             });
         }
         assertEq(verification.computeScoreBps(results), 10_000);
@@ -147,7 +147,7 @@ contract AntseedVerificationTest is Test {
         );
         vm.expectEmit(true, true, true, true);
         emit AntseedVerification.ServiceAudited(
-            agentId, results[0].serviceHash, vm.addr(AUDITOR_A_KEY), results[0].referenceId, PASS, report.evidenceHash
+            agentId, results[0].serviceHash, vm.addr(AUDITOR_A_KEY), results[0].modelHash, PASS, report.evidenceHash
         );
         vm.prank(verifier);
         verification.submitReport(report, results, "ipfs://e", signature);
@@ -293,17 +293,17 @@ contract AntseedVerificationTest is Test {
 
     // ── helpers ──────────────────────────────────────────────────────
 
-    function _results2(uint16 firstFlags, uint16 secondFlags, bytes32 secondReference)
+    function _results2(uint16 firstFlags, uint16 secondFlags, bytes32 secondModel)
         private
         pure
         returns (IAntseedVerification.ServiceResult[] memory results)
     {
         results = new IAntseedVerification.ServiceResult[](2);
         results[0] = IAntseedVerification.ServiceResult({
-            serviceHash: bytes32(uint256(1)), referenceId: keccak256("ref-a"), flags: firstFlags
+            serviceHash: bytes32(uint256(1)), modelHash: keccak256("ref-a"), flags: firstFlags
         });
         results[1] = IAntseedVerification.ServiceResult({
-            serviceHash: bytes32(uint256(2)), referenceId: secondReference, flags: secondFlags
+            serviceHash: bytes32(uint256(2)), modelHash: secondModel, flags: secondFlags
         });
     }
 

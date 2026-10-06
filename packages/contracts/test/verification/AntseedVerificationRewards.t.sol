@@ -152,7 +152,7 @@ contract AntseedVerificationRewardsTest is Test {
         results = new IAntseedVerification.ServiceResult[](count);
         for (uint256 i = 0; i < count; i++) {
             results[i] = IAntseedVerification.ServiceResult({
-                serviceHash: bytes32(i + 1), referenceId: keccak256(abi.encode("ref", i)), flags: flags
+                serviceHash: bytes32(i + 1), modelHash: keccak256(abi.encode("ref", i)), flags: flags
             });
         }
     }

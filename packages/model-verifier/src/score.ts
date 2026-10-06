@@ -17,7 +17,7 @@ const LOG2_MICRO = [
 ] as const
 
 export interface ServiceScoreInput {
-  referenceId: string
+  modelHash: string
   flags: number
 }
 
@@ -33,7 +33,7 @@ export function computeScoreBps(results: readonly ServiceScoreInput[], maxBreadt
   if (results.length === 0) return 0
   const passed = results.filter((result) => servicePassed(result.flags))
   if (passed.length === 0) return 0
-  const distinct = new Set(passed.map((result) => result.referenceId.toLowerCase())).size
+  const distinct = new Set(passed.map((result) => result.modelHash.toLowerCase())).size
   const breadth = Math.min(distinct, maxBreadth)
   const breadthBps = (BigInt(LOG2_MICRO[breadth]!) * BPS) / BigInt(LOG2_MICRO[maxBreadth]!)
   const integrityBps = (BigInt(passed.length) * BPS) / BigInt(results.length)

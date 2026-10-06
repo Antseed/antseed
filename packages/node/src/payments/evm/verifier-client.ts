@@ -35,7 +35,7 @@ export const SERVICE_UNDETERMINED = 4;
 
 export interface ServiceResultInput {
   serviceHash: string;
-  referenceId: string;
+  modelHash: string;
   flags: number;
 }
 
@@ -64,7 +64,7 @@ export interface ServiceAuditedEvent {
   agentId: bigint;
   serviceHash: string;
   auditor: string;
-  referenceId: string;
+  modelHash: string;
   flags: number;
   evidenceHash: string;
   blockNumber: number;
@@ -87,18 +87,18 @@ export interface ReportSubmittedEvent {
 
 export const VERIFICATION_ABI = [
   'function setVerifier(address verifier, bool approved) external',
-  'function submitReport((uint256 agentId,bytes32 metadataHash,bytes32 evidenceHash,bytes32 resultsHash,uint64 auditedAt) report,(bytes32 serviceHash,bytes32 referenceId,uint16 flags)[] results,string evidenceUri,bytes auditorSignature) external',
+  'function submitReport((uint256 agentId,bytes32 metadataHash,bytes32 evidenceHash,bytes32 resultsHash,uint64 auditedAt) report,(bytes32 serviceHash,bytes32 modelHash,uint16 flags)[] results,string evidenceUri,bytes auditorSignature) external',
   'function hashAuditReport((uint256 agentId,bytes32 metadataHash,bytes32 evidenceHash,bytes32 resultsHash,uint64 auditedAt) report) external view returns (bytes32)',
   'function agentScore(uint256 agentId) external view returns ((uint16 scoreBps,uint64 validUntil,uint64 finalizedAt))',
   'function activeScoreBps(uint256 agentId) external view returns (uint256)',
-  'function computeScoreBps((bytes32 serviceHash,bytes32 referenceId,uint16 flags)[] results) external view returns (uint256)',
+  'function computeScoreBps((bytes32 serviceHash,bytes32 modelHash,uint16 flags)[] results) external view returns (uint256)',
   'function reportUsed(bytes32 digest) external view returns (bool)',
   'function claimAuditorRewards(uint256[] epochs) external returns (uint256)',
   'function pendingAuditorReward(address auditor,uint256 epoch) external view returns (uint256)',
   'function registry() external view returns (address)',
   'function approvedVerifiers(address verifier) external view returns (bool)',
   'event ReportSubmitted(uint256 indexed agentId,address indexed auditor,address indexed verifier,bytes32 metadataHash,bytes32 evidenceHash,bytes32 resultsHash,string evidenceUri)',
-  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 referenceId,uint16 flags,bytes32 evidenceHash)',
+  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint16 flags,bytes32 evidenceHash)',
   'event AgentScoreFinalized(uint256 indexed agentId,uint16 scoreBps,uint64 validUntil,bytes32 resultsHash,address[] auditors)',
 ] as const;
 
@@ -112,7 +112,7 @@ export const AUDIT_REPORT_TYPES = {
   ],
 };
 
-const SERVICE_RESULTS_TYPE = ['tuple(bytes32 serviceHash,bytes32 referenceId,uint16 flags)[]'];
+const SERVICE_RESULTS_TYPE = ['tuple(bytes32 serviceHash,bytes32 modelHash,uint16 flags)[]'];
 
 const ANTSEED_REGISTRY_ABI = [
   'function identityRegistry() external view returns (address)',
@@ -124,6 +124,11 @@ const IDENTITY_REGISTRY_ABI = [
 
 export function serviceHash(service: string): string {
   return keccak256(toUtf8Bytes(service.trim().toLowerCase()));
+}
+
+/** Identifies the model a service was verified as; auditors must agree on it for quorum. */
+export function modelHash(model: string): string {
+  return keccak256(toUtf8Bytes(model.trim().toLowerCase()));
 }
 
 /** Orders results the way the contract requires (strictly ascending serviceHash). */
@@ -138,7 +143,7 @@ export function sortServiceResults(results: readonly ServiceResultInput[]): Serv
 /** keccak256(abi.encode(results)), the report's `resultsHash`. */
 export function hashServiceResults(results: readonly ServiceResultInput[]): string {
   return keccak256(AbiCoder.defaultAbiCoder().encode(SERVICE_RESULTS_TYPE, [
-    results.map((result) => [result.serviceHash, result.referenceId, result.flags]),
+    results.map((result) => [result.serviceHash, result.modelHash, result.flags]),
   ]));
 }
 
@@ -195,7 +200,7 @@ export class VerifierClient extends BaseEvmClient {
       VERIFICATION_ABI,
       'submitReport',
       input.report,
-      input.results.map((result) => [result.serviceHash, result.referenceId, result.flags]),
+      input.results.map((result) => [result.serviceHash, result.modelHash, result.flags]),
       input.evidenceUri,
       input.auditorSignature,
     );
@@ -266,7 +271,7 @@ export class VerifierClient extends BaseEvmClient {
         agentId: BigInt(log.args.agentId ?? log.args[0]),
         serviceHash: String(log.args.serviceHash ?? log.args[1]),
         auditor: getAddress(String(log.args.auditor ?? log.args[2])),
-        referenceId: String(log.args.referenceId ?? log.args[3]),
+        modelHash: String(log.args.modelHash ?? log.args[3]),
         flags: Number(log.args.flags ?? log.args[4]),
         evidenceHash: String(log.args.evidenceHash ?? log.args[5]),
         blockNumber: log.blockNumber,
