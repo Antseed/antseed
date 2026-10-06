@@ -102,7 +102,7 @@ export async function prepareVerificationPublication(input: {
     Buffer.from(canonicalJsonStringify(input.bundle.evidence), 'utf8'),
   )
   await addDirectory(dirname(input.modelSummaryPath))
-  if (modelSummary.referenceIntegrityPath) await addFile(modelSummary.referenceIntegrityPath)
+  for (const path of modelSummary.referenceIntegrityPaths ?? []) await addFile(path)
 
   const renderedReports = await renderModelAuditReports(input.evidenceDir, input.manifest.epoch, {
     ...epochSummary,

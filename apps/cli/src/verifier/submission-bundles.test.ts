@@ -180,7 +180,7 @@ test('model bundles account costs once and derive deterministic IDs', async () =
       skipped: [],
       cost: emptyAuditCostSummary(),
       consensusEvidencePath: consensus.consensusPath,
-      referenceIntegrityPath: consensus.referenceIntegrityPath ?? undefined,
+      referenceIntegrityPaths: consensus.referenceIntegrityPaths,
     })
     const manifest: VerifierRunManifestV1 = {
       version: 1,
@@ -223,7 +223,7 @@ test('model bundles account costs once and derive deterministic IDs', async () =
     const second = await prepare()
 
     assert.equal(first.evidenceHash, second.evidenceHash)
-    assert.equal(first.evidence.consensus.referenceId, 'reference-1')
+    assert.deepEqual(first.evidence.consensus.referenceIds, ['reference-1'])
     assert.equal(first.evidence.consensus.summary.probeCount, 1)
     assert.equal(first.evidence.consensus.summary.noResponseReferencePointCount, 1)
     assert.match(first.evidence.consensus.evidenceHash, /^0x[0-9a-f]{64}$/)

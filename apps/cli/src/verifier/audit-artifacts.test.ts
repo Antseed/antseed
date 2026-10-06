@@ -60,7 +60,7 @@ test('verifier artifacts use model-first epoch directories', async () => {
         paymentEvidence: false,
         onChainInclusionProof: false,
       },
-      reference: null,
+      references: [],
       decisionRule: REFERENCE_VOTE_DECISION_RULE,
       summary: {
         probeCount: 1, auditedSellerCount: 1, authenticatedSellerCount: 1, eligibleSellerCount: 1,
@@ -75,7 +75,7 @@ test('verifier artifacts use model-first epoch directories', async () => {
         probeId: 'probe-1', domain: 'math', name: 'test_weight', question: 'The test weight is ___.',
         range: [0, 20], tolerance: { mode: 'absolute', value: 0 },
         acceptedAnswerInterval: { minimum: 10, maximum: 10, inclusive: true },
-        referenceId: 'reference:1', referenceConsensus: 10,
+        referenceIds: ['reference:1'], referenceConsensus: 10,
         referenceSelfTest: { answers: [10], matches: [1] }, authenticatedSellerAnswerCount: 1,
         referenceMatchCount: 1, referenceMismatchCount: 0, unparsedAnswerCount: 0,
         referenceMatchRate: 1, eligibleSellerAnswerCount: 1, referenceSupportCount: 1,
@@ -119,7 +119,7 @@ test('verifier artifacts use model-first epoch directories', async () => {
         evidenceHash: `0x${'34'.repeat(32)}`,
       }], failures: [], skipped: [], cost: emptyAuditCostSummary(),
       consensusEvidencePath: consensusPath,
-      referenceIntegrityPath: referencePath,
+      referenceIntegrityPaths: [referencePath],
     })
     assert.match(modelPath, /epochs\/7\/Model_A\/audits\/run\/summary\.json$/)
     assert.match(

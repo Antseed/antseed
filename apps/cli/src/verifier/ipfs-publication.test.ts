@@ -64,7 +64,7 @@ test('builds a portable finalized model package and excludes operational files',
       failures: [],
       skipped: [],
       cost: emptyAuditCostSummary(),
-      referenceIntegrityPath,
+      referenceIntegrityPaths: [referenceIntegrityPath],
     })
     const epochSummary: EpochAuditSummaryV1 = {
       version: 1,
@@ -257,7 +257,7 @@ function fixtureBundle(
       consensus: {
         evidenceHash: `0x${'22'.repeat(32)}`,
         relativeEvidencePath: 'probe-consensus.json',
-        referenceId: null,
+        referenceIds: [],
         decisionRule: REFERENCE_VOTE_DECISION_RULE,
         summary: {
           probeCount: 0,

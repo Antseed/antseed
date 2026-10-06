@@ -427,7 +427,7 @@ async function writeModelFixture(input: {
     skipped: [],
     cost: emptyAuditCostSummary(),
     consensusEvidencePath: consensus.consensusPath,
-    referenceIntegrityPath: consensus.referenceIntegrityPath ?? undefined,
+    referenceIntegrityPaths: consensus.referenceIntegrityPaths,
   })
   const reference = referenceFixture(input.model)
   await appendModelReferenceToBank({

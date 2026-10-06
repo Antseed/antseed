@@ -43,7 +43,6 @@ import {
   type ModelVerificationSkip,
 } from '../../../verifier/model-run.js'
 import {
-  epochProbeReferencePath,
   loadModelAuditReservation,
   reserveModelAuditReference,
   voidModelAuditReference,
@@ -114,7 +113,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .command('run [model]')
     .description('Verify live peers for one configured model or every enabled model')
     .option('--all', 'verify every enabled configured model')
-    .option('--allow-probe-reuse', 'allow a new epoch reference to reuse probes assigned in earlier epochs')
+    .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
@@ -349,6 +348,9 @@ export function registerVerifierRunCommand(verifier: Command): void {
             console.log(chalk.dim(`${model}: ${targets.length} eligible target(s), ${skipped.length} skipped`))
           }
 
+          // Each seller is audited against its own probe subset, so one run
+          // can span several references drawn from the same bank.
+          const referenceSources = new Map<string, KbfReferenceV1>()
           const outcomes = await mapConcurrently(targets, maxConcurrentPeersPerModel, async (target) => {
             return sellerLimiter.run(target.peer.peerId, async () => {
               const startedAt = new Date().toISOString()
@@ -402,6 +404,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
                   reference = reserved.reference
                   auditId = reserved.auditId
                 }
+                referenceSources.set(reference.referenceId, reference)
                 const advertisedConcurrency = target.peer.maxConcurrency && target.peer.maxConcurrency > 0
                   ? target.peer.maxConcurrency
                   : maxConcurrentBatchesPerPeer
@@ -542,7 +545,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
             model,
             createdAt: modelCompletedAt,
             results,
-            referenceSource: await readEpochReferenceSource(banksDir, model, epoch),
+            referenceSources: [...referenceSources.values()],
           })
           const summaryPath = await writeModelAuditSummary(evidenceDir, epoch, model, {
             version: 1,
@@ -558,7 +561,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
             cost: modelCost,
             reasonCounts,
             consensusEvidencePath: consensusEvidence.consensusPath,
-            referenceIntegrityPath: consensusEvidence.referenceIntegrityPath ?? undefined,
+            referenceIntegrityPaths: consensusEvidence.referenceIntegrityPaths,
           })
           await writeModelAuditManifest({
             directory: modelAuditsDirectory(evidenceDir, epoch, model, runId),
@@ -567,7 +570,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
             model,
             summaryPath,
             consensusPath: consensusEvidence.consensusPath,
-            referenceIntegrityPath: consensusEvidence.referenceIntegrityPath,
+            referenceIntegrityPaths: consensusEvidence.referenceIntegrityPaths,
             results,
           })
           const modelSummary = {
@@ -661,22 +664,6 @@ export function registerVerifierRunCommand(verifier: Command): void {
         await runLock.release()
       }
     })
-}
-
-async function readEpochReferenceSource(
-  banksDir: string,
-  model: string,
-  epoch: string,
-): Promise<KbfReferenceV1 | undefined> {
-  try {
-    const value = JSON.parse(await readFile(epochProbeReferencePath(banksDir, model, epoch), 'utf8')) as {
-      reference?: KbfReferenceV1
-    }
-    return value.reference
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return undefined
-    throw error
-  }
 }
 
 function epochTimestamp(value: number): string {

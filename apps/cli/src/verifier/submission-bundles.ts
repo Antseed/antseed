@@ -84,7 +84,7 @@ export interface ModelVerificationBundleEvidenceV1 {
   consensus: {
     evidenceHash: string
     relativeEvidencePath: string
-    referenceId: string | null
+    referenceIds: string[]
     decisionRule: ModelProbeConsensusEvidenceV1['decisionRule']
     summary: ModelProbeConsensusEvidenceV1['summary']
   }
@@ -273,7 +273,7 @@ export async function prepareModelVerificationBundle(input: {
     consensus: {
       evidenceHash: canonicalHashBytes32(consensus),
       relativeEvidencePath: relative(input.evidenceDir, summary.consensusEvidencePath).split(sep).join('/'),
-      referenceId: consensus.reference?.referenceId ?? null,
+      referenceIds: consensus.references.map((reference) => reference.referenceId),
       decisionRule: consensus.decisionRule,
       summary: consensus.summary,
     },
