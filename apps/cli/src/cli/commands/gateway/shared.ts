@@ -92,6 +92,6 @@ export function topupConfig(options: { x402Facilitator?: string; topupMinUsd?: s
   }
 }
 
-export function slugifyIdentityId(label: string): string {
+export function slugifyIdentityName(label: string): string {
   return label.toLowerCase().replace(/[^a-z0-9]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 32) || 'identity'
 }

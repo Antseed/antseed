@@ -74,6 +74,23 @@ export async function listBuyerIdentities(dataDir: string): Promise<StoredBuyerI
   return identities
 }
 
+/** The default wallet's address, or why the CLI cannot read it. */
+export async function readDefaultWallet(dataDir: string): Promise<{ address: string | null; note: string }> {
+  try {
+    const hex = await new FileIdentityStore(dataDir).load()
+    if (hex && hex.length === 64) return { address: identityFromPrivateKeyHex(hex).wallet.address, note: '' }
+    return { address: null, note: 'created on first buyer start' }
+  } catch {
+    return { address: null, note: 'encrypted by the AI VPN' }
+  }
+}
+
+/** Wallet address of any identity, default included; null when unknown or unreadable. */
+export async function buyerIdentityAddress(dataDir: string, name: string): Promise<string | null> {
+  if (name === DEFAULT_BUYER_IDENTITY) return (await readDefaultWallet(dataDir)).address
+  return (await loadBuyerIdentity(dataDir, name))?.wallet.address ?? null
+}
+
 /** Move an identity aside; its key is kept because the wallet may still hold funds. */
 export async function archiveBuyerIdentity(dataDir: string, name: string): Promise<string> {
   assertBuyerIdentityName(name)

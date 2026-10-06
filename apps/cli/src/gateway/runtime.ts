@@ -1,7 +1,7 @@
-import { DEFAULT_BUYER_IDENTITY, FileIdentityStore, identityFromPrivateKeyHex, resolveChainConfig } from '@antseed/node'
+import { resolveChainConfig } from '@antseed/node'
 import { Contract, JsonRpcProvider } from 'ethers'
 import { loadConfig } from '../config/loader.js'
-import { loadBuyerIdentity } from '../buyer-identities/store.js'
+import { buyerIdentityAddress } from '../buyer-identities/store.js'
 import { GatewayAccounting } from './accounting.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayTopupOptions } from './server.js'
@@ -44,16 +44,6 @@ export interface GatewayRuntime {
   port: number
   store: GatewayStore
   stop: () => Promise<void>
-}
-
-async function readDefaultAddress(dataDir: string): Promise<string | null> {
-  try {
-    const hex = await new FileIdentityStore(dataDir).load()
-    return hex && hex.length === 64 ? identityFromPrivateKeyHex(hex).wallet.address : null
-  } catch {
-    // e.g. an app-encrypted desktop identity the CLI cannot read.
-    return null
-  }
 }
 
 /**
@@ -121,10 +111,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   const addresses = new Map<string, string | null>()
   const identityAddress = async (name: string): Promise<string | null> => {
     if (!addresses.has(name)) {
-      const address = name === DEFAULT_BUYER_IDENTITY
-        ? await readDefaultAddress(options.dataDir)
-        : (await loadBuyerIdentity(options.dataDir, name))?.wallet.address ?? null
-      addresses.set(name, address)
+      addresses.set(name, await buyerIdentityAddress(options.dataDir, name))
     }
     return addresses.get(name) ?? null
   }

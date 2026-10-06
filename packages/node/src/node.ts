@@ -1180,8 +1180,7 @@ export class AntseedNode extends EventEmitter {
   ): Promise<CloseChannelResultPayload> {
     const { buyerIdentity, ...closeOptions } = opts;
     const context = this._buyerContext(buyerIdentity);
-    if (context) return this._requestIdentityChannelClose(context, sellerPeerId as PeerId, closeOptions);
-    const negotiator = this._buyerNegotiator;
+    const negotiator = context ? context.negotiator : this._buyerNegotiator;
     if (!negotiator) {
       throw new Error('Buyer payments are not configured on this node');
     }
@@ -1190,21 +1189,7 @@ export class AntseedNode extends EventEmitter {
     }
 
     const peerId = sellerPeerId as PeerId;
-    let conn = this._connectionManager.getConnection(peerId);
-    if (!conn || (conn.state !== ConnectionState.Open && conn.state !== ConnectionState.Authenticated)) {
-      const peer = await this.findPeer(sellerPeerId);
-      if (!peer) {
-        throw new Error(
-          `Seller ${sellerPeerId.slice(0, 12)}... is not connected and could not be found on the network. ` +
-          `A cooperative close needs the seller online — otherwise use the on-chain request-close flow.`,
-        );
-      }
-      await this.connectToPeer(peer);
-      conn = this._connectionManager.getConnection(peer.peerId);
-      if (!conn) {
-        throw new Error(`Failed to establish a connection to seller ${sellerPeerId.slice(0, 12)}...`);
-      }
-    }
+    const conn = await this._sellerConnectionForClose(peerId, context);
 
     // A seller that predates this feature drops the 0x59 frame silently, so
     // without this the buyer would wait out the full 60s response timeout and
@@ -1226,32 +1211,30 @@ export class AntseedNode extends EventEmitter {
     return negotiator.requestChannelClose(peerId, conn, closeOptions);
   }
 
-  private async _requestIdentityChannelClose(
-    context: BuyerIdentityContext,
-    peerId: PeerId,
-    opts: { includeAuth?: boolean; timeoutMs?: number },
-  ): Promise<CloseChannelResultPayload> {
-    let conn = context.liveConnection(peerId);
-    if (!conn) {
-      const peer = await this.findPeer(peerId);
-      if (!peer) {
-        throw new Error(
-          `Seller ${peerId.slice(0, 12)}... is not connected and could not be found on the network. ` +
-          `A cooperative close needs the seller online — otherwise use the on-chain request-close flow.`,
-        );
-      }
-      conn = await context.connect(peer);
+  /** The paying identity's open connection to a seller, reconnecting when needed. */
+  private async _sellerConnectionForClose(peerId: PeerId, context: BuyerIdentityContext | null): Promise<PeerConnection> {
+    if (context) {
+      const live = context.liveConnection(peerId);
+      if (live) return live;
+    } else {
+      const live = this._connectionManager!.getConnection(peerId);
+      if (live && (live.state === ConnectionState.Open || live.state === ConnectionState.Authenticated)) return live;
     }
-    const capabilities = this._peerCapabilities.get(peerId);
-    if (capabilities && capabilities.size > 0
-      && !peerSupportsCooperativeClose({ capabilities: [...capabilities] })) {
+
+    const peer = await this.findPeer(peerId);
+    if (!peer) {
       throw new Error(
-        `Seller ${peerId.slice(0, 12)}... does not support cooperative close ` +
-        `(missing ${CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1}). ` +
-        `Use the on-chain request-close flow instead.`,
+        `Seller ${peerId.slice(0, 12)}... is not connected and could not be found on the network. ` +
+        `A cooperative close needs the seller online — otherwise use the on-chain request-close flow.`,
       );
     }
-    return context.requestChannelClose(peerId, conn, opts);
+    if (context) return context.connect(peer);
+    await this.connectToPeer(peer);
+    const conn = this._connectionManager!.getConnection(peer.peerId);
+    if (!conn) {
+      throw new Error(`Failed to establish a connection to seller ${peerId.slice(0, 12)}...`);
+    }
+    return conn;
   }
 
   /**

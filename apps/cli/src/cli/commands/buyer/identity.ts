@@ -1,24 +1,13 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
-import { DEFAULT_BUYER_IDENTITY, DepositsClient, FileIdentityStore, identityFromPrivateKeyHex, resolveChainConfig } from '@antseed/node'
+import { DEFAULT_BUYER_IDENTITY, DepositsClient, resolveChainConfig } from '@antseed/node'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { archiveBuyerIdentity, createBuyerIdentity, listBuyerIdentities } from '../../../buyer-identities/store.js'
+import { archiveBuyerIdentity, createBuyerIdentity, listBuyerIdentities, readDefaultWallet } from '../../../buyer-identities/store.js'
 
 function formatUsdc(baseUnits: bigint): string {
   return (Number(baseUnits) / 1_000_000).toFixed(2)
-}
-
-/** The default wallet's address, or why the CLI cannot show it. */
-async function defaultIdentityAddress(dataDir: string): Promise<{ address: string | null; note: string }> {
-  try {
-    const hex = await new FileIdentityStore(dataDir).load()
-    if (hex && hex.length === 64) return { address: identityFromPrivateKeyHex(hex).wallet.address, note: '' }
-    return { address: null, note: 'created on first buyer start' }
-  } catch {
-    return { address: null, note: 'encrypted by the AI VPN' }
-  }
 }
 
 export function registerBuyerIdentityCommands(buyerCmd: Command): void {
@@ -50,7 +39,7 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
     .action(async (options: { balances: boolean; json: boolean }) => {
       const globalOpts = getGlobalOptions(buyerCmd)
       const stored = await listBuyerIdentities(globalOpts.dataDir)
-      const defaultWallet = await defaultIdentityAddress(globalOpts.dataDir)
+      const defaultWallet = await readDefaultWallet(globalOpts.dataDir)
       const rows: Array<{ name: string; address: string | null; available?: string; reserved?: string }> = [
         { name: DEFAULT_BUYER_IDENTITY, address: defaultWallet.address },
         ...stored.map((entry) => ({ name: entry.name, address: entry.address })),

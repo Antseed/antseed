@@ -21,13 +21,11 @@ import {
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import type { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
-import type { CloseChannelResultPayload } from "./types/protocol.js";
 import {
   BuyerRequestHandler,
   type RequestExecutionOptions,
   type RequestStreamCallbacks,
 } from "./buyer-request-handler.js";
-import { buyerFault } from "./errors.js";
 import { debugWarn } from "./utils/debug.js";
 
 /** The identity loaded from the node's own data dir. */
@@ -203,15 +201,6 @@ export class BuyerIdentityContext {
     const conn = this._connectionManager.getConnection(peerId);
     if (!conn) return null;
     return conn.state === ConnectionState.Open || conn.state === ConnectionState.Authenticated ? conn : null;
-  }
-
-  requestChannelClose(
-    peerId: PeerId,
-    conn: PeerConnection,
-    opts: { includeAuth?: boolean; timeoutMs?: number },
-  ): Promise<CloseChannelResultPayload> {
-    if (!this.negotiator) throw buyerFault("Buyer payments are not configured on this node", "node-not-started");
-    return this.negotiator.requestChannelClose(peerId, conn, opts);
   }
 
   async stop(): Promise<void> {

@@ -772,6 +772,11 @@ export async function mergeJsonStateFile(stateDir: string, stateFile: string, pa
   }
 }
 
+function sendUnknownBuyerIdentity(res: ServerResponse): void {
+  res.writeHead(404, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
+}
+
 export class BuyerProxy {
   private readonly _server: Server
   private readonly _node: AntseedNode
@@ -1961,11 +1966,7 @@ export class BuyerProxy {
     if (path.startsWith('/_antseed/channels') && method === 'GET') {
       const all = /[?&]all=1/.test(path)
       const identity = await this._controlPlaneIdentity(path)
-      if (identity === undefined) {
-        res.writeHead(404, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
-        return
-      }
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
       const channels = all
         ? this._node.getAllBuyerChannels(identity ?? undefined)
         : this._node.getActiveBuyerChannels(identity ?? undefined)
@@ -1993,11 +1994,7 @@ export class BuyerProxy {
 
     if (path.startsWith('/_antseed/buyer-usage') && method === 'GET') {
       const identity = await this._controlPlaneIdentity(path)
-      if (identity === undefined) {
-        res.writeHead(404, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
-        return
-      }
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
       const totals = this._node.getBuyerUsageTotals(identity ?? undefined)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, totals, lastActivityAt: this._lastModelActivityAt || null }))
@@ -2008,11 +2005,7 @@ export class BuyerProxy {
     if (meteringMatch && method === 'GET') {
       const sellerPeerId = decodeURIComponent(meteringMatch[1]!)
       const identity = await this._controlPlaneIdentity(path)
-      if (identity === undefined) {
-        res.writeHead(404, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
-        return
-      }
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
       const stats = this._node.getMeteringStatsByPeer(sellerPeerId, identity ?? undefined)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify(stats))

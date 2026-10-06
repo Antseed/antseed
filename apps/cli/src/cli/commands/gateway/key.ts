@@ -2,7 +2,7 @@ import type { Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
-import { buyerIdentityDir, createBuyerIdentity, loadBuyerIdentity } from '../../../buyer-identities/store.js'
+import { buyerIdentityAddress, buyerIdentityDir, createBuyerIdentity, loadBuyerIdentity } from '../../../buyer-identities/store.js'
 import { LIMIT_PERIODS, periodStart, type LimitPeriod, type SpendLimits } from '../../../gateway/limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, usdcToDecimalString } from '../../../gateway/money.js'
 import type { ApiKeyRecord, GatewayStore } from '../../../gateway/store.js'
@@ -13,7 +13,7 @@ import {
   keyStatusLabel,
   openGatewayStore,
   parseLimitOptions,
-  slugifyIdentityId,
+  slugifyIdentityName,
 } from './shared.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -31,12 +31,6 @@ async function uniqueIdentityName(dataDir: string, base: string): Promise<string
     const candidate = `${base.slice(0, 28)}-${suffix}`
     if (!await loadBuyerIdentity(dataDir, candidate)) return candidate
   }
-}
-
-/** Wallet address of an identity, or null for an app-managed default wallet. */
-async function identityAddress(dataDir: string, name: string): Promise<string | null> {
-  if (name === DEFAULT_BUYER_IDENTITY) return null
-  return (await loadBuyerIdentity(dataDir, name))?.wallet.address ?? null
 }
 
 function keyJson(store: GatewayStore, key: ApiKeyRecord) {
@@ -87,7 +81,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       if (options['newIdentity']) {
         const requested = typeof options['newIdentity'] === 'string'
           ? options['newIdentity']
-          : await uniqueIdentityName(dataDir, slugifyIdentityId(label))
+          : await uniqueIdentityName(dataDir, slugifyIdentityName(label))
         identityName = (await createBuyerIdentity(dataDir, requested)).name
         createdIdentity = true
       } else if (identityName !== DEFAULT_BUYER_IDENTITY && !await loadBuyerIdentity(dataDir, identityName)) {
@@ -106,7 +100,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         topupEnabled,
         expiresAt: days ? Date.now() + days * DAY_MS : null,
       })
-      const address = await identityAddress(dataDir, identityName)
+      const address = await buyerIdentityAddress(dataDir, identityName)
 
       if (options['json']) {
         console.log(JSON.stringify({ ...keyJson(store, record), apiKey: secret, identityAddress: address }))
@@ -182,7 +176,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         const spent = store.periodSpend(record.id)
         const today = store.usageStats(record.id, periodStart('daily', Date.now()))
         const total = store.usageStats(record.id)
-        const address = await identityAddress(dataDir, record.buyerIdentity)
+        const address = await buyerIdentityAddress(dataDir, record.buyerIdentity)
         console.log(`${chalk.bold(record.label)} ${chalk.dim(record.id)}  ${keyStatusLabel(record)}`)
         console.log(`Key: ${record.hint}`)
         console.log(`Identity: ${record.buyerIdentity}${address ? ` (${address})` : ''}`)
