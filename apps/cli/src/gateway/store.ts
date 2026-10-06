@@ -17,6 +17,8 @@ export interface ApiKeyRecord {
   source: ApiKeySource
   status: ApiKeyStatus
   limits: SpendLimits
+  /** Whether the key holder may fund the key's wallet with x402 top-ups. */
+  topupEnabled: boolean
   expiresAt: number | null
   createdAt: number
   revokedAt: number | null
@@ -75,6 +77,7 @@ type KeyRow = {
   daily_limit_usdc: number | null
   monthly_limit_usdc: number | null
   total_limit_usdc: number | null
+  topup_enabled: number
   expires_at: number | null
   created_at: number
   revoked_at: number | null
@@ -129,6 +132,9 @@ const MIGRATIONS: readonly string[] = [
   );
   CREATE INDEX ledger_entries_key_time ON ledger_entries(key_id, kind, created_at);
   `,
+  `
+  ALTER TABLE api_keys ADD COLUMN topup_enabled INTEGER NOT NULL DEFAULT 0;
+  `,
 ]
 
 export function gatewayDir(dataDir: string): string {
@@ -168,15 +174,21 @@ export class GatewayStore {
 
   // ── Keys ────────────────────────────────────────────────────────────────
 
-  createKey(input: { label: string; buyerIdentity: string; limits: SpendLimits; expiresAt: number | null }): { key: ApiKeyRecord; secret: string } {
+  createKey(input: {
+    label: string
+    buyerIdentity: string
+    limits: SpendLimits
+    expiresAt: number | null
+    topupEnabled?: boolean
+  }): { key: ApiKeyRecord; secret: string } {
     const generated = generateApiKey()
     const id = newKeyId()
     this._db.prepare(`
-      INSERT INTO api_keys (id, label, key_hash, key_hint, buyer_identity, source, daily_limit_usdc, monthly_limit_usdc, total_limit_usdc, expires_at, created_at)
-      VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?)
+      INSERT INTO api_keys (id, label, key_hash, key_hint, buyer_identity, source, daily_limit_usdc, monthly_limit_usdc, total_limit_usdc, topup_enabled, expires_at, created_at)
+      VALUES (?, ?, ?, ?, ?, 'created', ?, ?, ?, ?, ?, ?)
     `).run(
       id, input.label, generated.hash, generated.hint, input.buyerIdentity,
-      input.limits.daily, input.limits.monthly, input.limits.total, input.expiresAt, this._now(),
+      input.limits.daily, input.limits.monthly, input.limits.total, input.topupEnabled ? 1 : 0, input.expiresAt, this._now(),
     )
     return { key: this.getKey(id)!, secret: generated.secret }
   }
@@ -227,6 +239,12 @@ export class GatewayStore {
     const next = { ...key.limits, ...limits }
     this._db.prepare('UPDATE api_keys SET daily_limit_usdc = ?, monthly_limit_usdc = ?, total_limit_usdc = ? WHERE id = ?')
       .run(next.daily, next.monthly, next.total, id)
+    return this.getKey(id)!
+  }
+
+  setTopupEnabled(id: string, enabled: boolean): ApiKeyRecord {
+    const result = this._db.prepare('UPDATE api_keys SET topup_enabled = ? WHERE id = ?').run(enabled ? 1 : 0, id)
+    if (result.changes === 0) throw new Error(`Unknown key "${id}".`)
     return this.getKey(id)!
   }
 
@@ -333,6 +351,7 @@ function toKey(row: KeyRow): ApiKeyRecord {
       monthly: row.monthly_limit_usdc,
       total: row.total_limit_usdc,
     },
+    topupEnabled: row.topup_enabled === 1,
     expiresAt: row.expires_at,
     createdAt: row.created_at,
     revokedAt: row.revoked_at,

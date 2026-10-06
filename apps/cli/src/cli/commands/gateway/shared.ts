@@ -58,17 +58,34 @@ export function keyStatusLabel(key: ApiKeyRecord, now = Date.now()): string {
   return chalk.green('active')
 }
 
+const FACILITATOR_PRESETS: Record<string, string> = {
+  cdp: 'https://api.cdp.coinbase.com/platform/v2/x402',
+  payai: 'https://facilitator.payai.network',
+}
+const CDP_HOST = 'api.cdp.coinbase.com'
+
 /**
  * x402 top-ups are on when a facilitator is configured, by flag or
- * ANTSEED_X402_FACILITATOR_URL. Its credentials only come from the
- * environment (ANTSEED_X402_FACILITATOR_AUTHORIZATION).
+ * ANTSEED_X402_FACILITATOR_URL: a URL, or `cdp` / `payai`. Credentials only
+ * come from the environment: CDP_API_KEY_ID + CDP_API_KEY_SECRET for
+ * Coinbase CDP, or ANTSEED_X402_FACILITATOR_AUTHORIZATION for a facilitator
+ * with a static token.
  */
 export function topupConfig(options: { x402Facilitator?: string; topupMinUsd?: string; topupMaxUsd?: string } = {}): GatewayTopupConfig | undefined {
-  const facilitatorUrl = (options.x402Facilitator ?? process.env['ANTSEED_X402_FACILITATOR_URL'] ?? '').trim()
-  if (!facilitatorUrl) return undefined
+  const requested = (options.x402Facilitator ?? process.env['ANTSEED_X402_FACILITATOR_URL'] ?? '').trim()
+  if (!requested) return undefined
+  const facilitatorUrl = FACILITATOR_PRESETS[requested.toLowerCase()] ?? requested
   const facilitatorAuthorization = process.env['ANTSEED_X402_FACILITATOR_AUTHORIZATION']?.trim()
+  let cdp: GatewayTopupConfig['cdp']
+  if (new URL(facilitatorUrl).host === CDP_HOST) {
+    const keyId = process.env['CDP_API_KEY_ID']?.trim()
+    const keySecret = process.env['CDP_API_KEY_SECRET']?.trim()
+    if (!keyId || !keySecret) throw new Error('The Coinbase CDP facilitator needs CDP_API_KEY_ID and CDP_API_KEY_SECRET.')
+    cdp = { keyId, keySecret }
+  }
   return {
     facilitatorUrl,
+    ...(cdp ? { cdp } : {}),
     ...(facilitatorAuthorization ? { facilitatorAuthorization } : {}),
     ...(options.topupMinUsd ? { minUsd: options.topupMinUsd } : {}),
     ...(options.topupMaxUsd ? { maxUsd: options.topupMaxUsd } : {}),

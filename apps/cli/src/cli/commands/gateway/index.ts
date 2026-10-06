@@ -17,7 +17,7 @@ export function registerGatewayCommands(program: Command): void {
     .option('--port <number>', 'gateway listen port', parsePositiveInteger, DEFAULT_GATEWAY_PORT)
     .option('--host <host>', 'listen address; use 0.0.0.0 to serve your LAN', '127.0.0.1')
     .option('--buyer-port <number>', 'port of the running buyer (default: buyer.proxyPort from config)', parsePositiveInteger)
-    .option('--x402-facilitator <url>', 'accept x402 top-ups of key wallets, settled by this facilitator (env: ANTSEED_X402_FACILITATOR_URL)')
+    .option('--x402-facilitator <url>', 'accept x402 top-ups of key wallets, settled by this facilitator: a URL, "cdp" or "payai" (env: ANTSEED_X402_FACILITATOR_URL)')
     .option('--topup-min-usd <usd>', 'smallest top-up accepted (default: 2)')
     .option('--topup-max-usd <usd>', 'largest top-up accepted (default: 500)')
     .action(async (options: { port: number; host: string; buyerPort?: number; x402Facilitator?: string; topupMinUsd?: string; topupMaxUsd?: string }) => {

@@ -271,6 +271,10 @@ export class GatewayServer {
       sendError(res, 403, 'invalid_request_error', 'topup_not_available', 'This key is paid from the operator\'s wallet and cannot be topped up')
       return
     }
+    if (!key.topupEnabled) {
+      sendError(res, 403, 'invalid_request_error', 'topup_not_allowed', 'Top-ups are not enabled for this API key')
+      return
+    }
     const payTo = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
     if (!payTo) {
       sendError(res, 503, 'api_error', 'buyer_wallet_unknown', 'The wallet behind this API key is not available')
@@ -384,6 +388,8 @@ export class GatewayServer {
       label: key.label,
       created_at: new Date(key.createdAt).toISOString(),
       expires_at: key.expiresAt === null ? null : new Date(key.expiresAt).toISOString(),
+      // Whether POST /v1/key/topup accepts payments for this key.
+      topup_enabled: key.topupEnabled && key.buyerIdentity !== DEFAULT_BUYER_IDENTITY && Boolean(this._options.topup),
       // The wallet that pays sellers for this key's requests.
       buyer_address: buyerAddress,
       usage: {

@@ -140,19 +140,33 @@ Every other route behaves as described in [Using the API](/docs/guides/using-the
 
 ## Top up a key with x402
 
-Key holders can fund their own key with an [x402](https://github.com/coinbase/x402) payment. The USDC goes straight to the key's buyer wallet, and the running buyer deposits it into that identity's credits on its next check, usually within a minute. This works for keys with their own identity (`--identity` or `--new-identity`). Keys paid from your `default` wallet return `403 topup_not_available`.
-
-Turn it on by pointing the gateway at an x402 facilitator that settles the `exact` scheme on Base:
+Key holders can fund their own key with an [x402](https://github.com/coinbase/x402) payment. The USDC goes straight to the key's buyer wallet, and the running buyer deposits it into that identity's credits on its next check, usually within a minute. You decide which keys accept top-ups. Top-ups are off by default and only possible for keys with their own identity (`--identity` or `--new-identity`):
 
 ```bash
-export ANTSEED_X402_FACILITATOR_URL="https://your-facilitator.example"
-# Only if the facilitator needs a static Authorization header:
-export ANTSEED_X402_FACILITATOR_AUTHORIZATION="Bearer …"
-
-antseed gateway start          # or: antseed tunnel start
+antseed gateway key create --label "Alice" --new-identity --allow-topup
+antseed gateway key topup <id> on     # or off; applies immediately
 ```
 
-`antseed gateway start` also accepts `--x402-facilitator <url>`, `--topup-min-usd` (default 2) and `--topup-max-usd` (default 500).
+Keys paid from your `default` wallet return `403 topup_not_available`, and keys without top-ups enabled return `403 topup_not_allowed`. `GET /v1/key` reports `topup_enabled` so clients can check first.
+
+Turn top-ups on for the gateway by choosing an x402 facilitator that settles the `exact` scheme on Base. The facilitator is your choice; the paying client never sees it.
+
+| Facilitator | Flag value | Credentials |
+|---|---|---|
+| Coinbase CDP | `cdp` | `CDP_API_KEY_ID` and `CDP_API_KEY_SECRET` (a CDP secret API key; each call is signed with it) |
+| PayAI | `payai` | None for its free allowance |
+| Any other x402 facilitator | its base URL | Optional static token in `ANTSEED_X402_FACILITATOR_AUTHORIZATION` |
+
+```bash
+export CDP_API_KEY_ID="…"
+export CDP_API_KEY_SECRET="…"
+antseed gateway start --x402-facilitator cdp
+
+# or, for a tunnel:
+ANTSEED_X402_FACILITATOR_URL=cdp antseed tunnel start --provider cloudflare
+```
+
+`antseed gateway start` also accepts `--topup-min-usd` (default 2) and `--topup-max-usd` (default 500).
 
 The flow is standard x402 v2 over HTTP, so x402 client libraries handle it automatically:
 

@@ -507,7 +507,7 @@ test('x402 top-up: 402 names the key wallet, a signed payment is settled and cre
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
-  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
   const gateway = await startGateway(store, buyer.port, 300_000, facilitator.topup())
   const topup = (headers: http.OutgoingHttpHeaders = {}) =>
     request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}', headers })
@@ -551,7 +551,7 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
-  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
   const gateway = await startGateway(store, buyer.port, 300_000, facilitator.topup())
   const topup = (headers: http.OutgoingHttpHeaders = {}, body = '{"amount_usd":"5"}') =>
     request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body, headers })
@@ -578,12 +578,13 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
   }
 })
 
-test('x402 top-up is unavailable without a facilitator or for keys on the operator wallet', async () => {
+test('x402 top-up is unavailable without a facilitator, for keys on the operator wallet, or when the owner has not allowed it', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
-  const owner = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
-  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+  const owner = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
+  const notAllowed = store.createKey({ label: 'Friend', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
   const withTopup = await startGateway(store, buyer.port, 300_000, facilitator.topup())
   const withoutTopup = await startGateway(store, buyer.port)
   try {
@@ -592,6 +593,15 @@ test('x402 top-up is unavailable without a facilitator or for keys on the operat
     assert.equal(JSON.parse(ownerResponse.body).error.code, 'topup_not_available')
     const disabled = await request(withoutTopup.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}' })
     assert.equal(disabled.status, 501)
+    const blocked = await request(withTopup.port, '/v1/key/topup', { method: 'POST', key: notAllowed.secret, body: '{"amount_usd":"5"}' })
+    assert.equal(blocked.status, 403)
+    assert.equal(JSON.parse(blocked.body).error.code, 'topup_not_allowed')
+    assert.equal(JSON.parse((await request(withTopup.port, '/v1/key', { key: notAllowed.secret })).body).data.topup_enabled, false)
+    assert.equal(JSON.parse((await request(withTopup.port, '/v1/key', { key: team.secret })).body).data.topup_enabled, true)
+
+    store.setTopupEnabled(notAllowed.key.id, true)
+    const allowed = await request(withTopup.port, '/v1/key/topup', { method: 'POST', key: notAllowed.secret, body: '{"amount_usd":"5"}' })
+    assert.equal(allowed.status, 402, 'enabling takes effect without a restart')
   } finally {
     await withTopup.stop()
     await withoutTopup.stop()

@@ -8,6 +8,7 @@ import { GatewayServer, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 import { X402Facilitator, type X402Asset } from './x402.js'
+import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
 
 const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
 // AntseedDeposits takes at least 1 USDC on a first deposit, after the sweep fee.
@@ -17,8 +18,10 @@ const DEFAULT_TOPUP_MAX_USD = '500'
 export interface GatewayTopupConfig {
   /** x402 facilitator base URL (serves POST /verify and /settle). */
   facilitatorUrl: string
-  /** Authorization header value for the facilitator, if it requires one. */
+  /** Fixed Authorization header value, for facilitators that use a static token. */
   facilitatorAuthorization?: string
+  /** Coinbase CDP API key; each facilitator call is signed with it. */
+  cdp?: CdpCredentials
   minUsd?: string
   maxUsd?: string
 }
@@ -89,6 +92,13 @@ function usdcAsset(config: Awaited<ReturnType<typeof loadConfig>>): () => Promis
   }
 }
 
+function facilitatorAuth(config: GatewayTopupConfig): { authorize?: (endpointUrl: string) => string } {
+  const { cdp, facilitatorAuthorization } = config
+  if (cdp) return { authorize: (endpointUrl) => cdpAuthorization(cdp, endpointUrl) }
+  if (facilitatorAuthorization) return { authorize: () => facilitatorAuthorization }
+  return {}
+}
+
 /** Gateway server + spend feed, shared by `antseed gateway start` and `antseed tunnel start`. */
 export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promise<GatewayRuntime> {
   const config = await loadConfig(options.configPath)
@@ -133,10 +143,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   const topup: GatewayTopupOptions | null = options.topup
     ? {
       asset: usdcAsset(config),
-      facilitator: new X402Facilitator({
-        url: options.topup.facilitatorUrl,
-        ...(options.topup.facilitatorAuthorization ? { authorization: options.topup.facilitatorAuthorization } : {}),
-      }),
+      facilitator: new X402Facilitator({ url: options.topup.facilitatorUrl, ...facilitatorAuth(options.topup) }),
       minUsdc: parseUsdToUsdc(options.topup.minUsd ?? DEFAULT_TOPUP_MIN_USD),
       maxUsdc: parseUsdToUsdc(options.topup.maxUsd ?? DEFAULT_TOPUP_MAX_USD),
     }

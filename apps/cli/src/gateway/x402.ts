@@ -147,8 +147,8 @@ export function checkPaymentPayload(
 
 export interface FacilitatorOptions {
   url: string
-  /** Sent as the Authorization header, e.g. `Bearer <token>`. */
-  authorization?: string
+  /** Authorization header for a call to `endpointUrl`, for facilitators that need one. */
+  authorize?: (endpointUrl: string) => string
   fetchImpl?: typeof fetch
 }
 
@@ -166,11 +166,12 @@ export class X402Facilitator {
 
   private async _post(path: 'verify' | 'settle', payment: PaymentPayload, requirements: PaymentRequirements): Promise<unknown> {
     const fetchImpl = this._options.fetchImpl ?? fetch
-    const response = await fetchImpl(`${this._options.url.replace(/\/+$/, '')}/${path}`, {
+    const endpointUrl = `${this._options.url.replace(/\/+$/, '')}/${path}`
+    const response = await fetchImpl(endpointUrl, {
       method: 'POST',
       headers: {
         'content-type': 'application/json',
-        ...(this._options.authorization ? { authorization: this._options.authorization } : {}),
+        ...(this._options.authorize ? { authorization: this._options.authorize(endpointUrl) } : {}),
       },
       body: JSON.stringify({ x402Version: X402_VERSION, paymentPayload: payment, paymentRequirements: requirements }),
       signal: AbortSignal.timeout(path === 'settle' ? 90_000 : 15_000),

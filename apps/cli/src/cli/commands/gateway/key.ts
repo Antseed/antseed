@@ -49,6 +49,7 @@ function keyJson(store: GatewayStore, key: ApiKeyRecord) {
     identity: key.buyerIdentity,
     status: key.status,
     source: key.source,
+    topupEnabled: key.topupEnabled,
     limitsUsd: Object.fromEntries(LIMIT_PERIODS.map((period) => [period, optionalUsdcToDecimalString(key.limits[period])])),
     spentUsd: Object.fromEntries(LIMIT_PERIODS.map((period) => [period, usdcToDecimalString(spent[period])])),
     requests: usage.requests,
@@ -72,6 +73,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       .option('--identity <name>', 'buyer identity that pays for this key (default: the default identity)')
       .option('--new-identity [name]', 'create a dedicated buyer identity and wallet for this key')
       .option('--expires-in-days <days>', 'expire the key after this many days', parsePositiveInteger)
+      .option('--allow-topup', 'let the key holder fund the key\'s wallet with x402 (needs its own identity)', false)
       .option('--json', 'print machine-readable JSON', false),
     false,
   ).action(async (options: Record<string, unknown>) => {
@@ -91,12 +93,17 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       } else if (identityName !== DEFAULT_BUYER_IDENTITY && !await loadBuyerIdentity(dataDir, identityName)) {
         throw new Error(`Unknown buyer identity "${identityName}". Create it with \`antseed buyer identity create ${identityName}\` or use --new-identity.`)
       }
+      const topupEnabled = options['allowTopup'] === true
+      if (topupEnabled && identityName === DEFAULT_BUYER_IDENTITY) {
+        throw new Error('--allow-topup needs a key with its own wallet; add --new-identity or --identity <name>.')
+      }
       const limits: SpendLimits = { daily: null, monthly: null, total: null, ...parseLimitOptions(options) }
       const days = options['expiresInDays'] as number | undefined
       const { key: record, secret } = store.createKey({
         label,
         buyerIdentity: identityName,
         limits,
+        topupEnabled,
         expiresAt: days ? Date.now() + days * DAY_MS : null,
       })
       const address = await identityAddress(dataDir, identityName)
@@ -110,6 +117,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       console.log(chalk.yellow('Store it now; it cannot be shown again.'))
       console.log(`Identity: ${identityName}${address ? ` (${address})` : ''}`)
       console.log(`Limits: ${describeLimits(record)}`)
+      if (record.topupEnabled) console.log('Top-ups: enabled (POST /v1/key/topup)')
       if (record.expiresAt !== null) console.log(`Expires: ${new Date(record.expiresAt).toISOString()}`)
       if (createdIdentity) {
         console.log('')
@@ -178,6 +186,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         console.log(`${chalk.bold(record.label)} ${chalk.dim(record.id)}  ${keyStatusLabel(record)}`)
         console.log(`Key: ${record.hint}`)
         console.log(`Identity: ${record.buyerIdentity}${address ? ` (${address})` : ''}`)
+        console.log(`Top-ups: ${record.topupEnabled ? 'enabled' : 'disabled'}`)
         for (const period of LIMIT_PERIODS) {
           const limit = record.limits[period]
           console.log(`${PERIOD_SPEND_LABELS[period]}: ${formatUsdc(spent[period])}${limit === null ? '' : ` of ${formatUsdc(limit)}`}`)
@@ -207,6 +216,26 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       store.close()
     }
   })
+
+  key.command('topup')
+    .description('Allow or stop x402 top-ups of a key\'s wallet by the key holder')
+    .argument('<id>', 'key id')
+    .argument('<state>', 'on or off')
+    .action((id: string, state: string) => {
+      const { store } = openGatewayStore(key)
+      try {
+        const normalized = state.trim().toLowerCase()
+        if (normalized !== 'on' && normalized !== 'off') throw new Error('State must be "on" or "off".')
+        const record = requireKey(store, id)
+        if (normalized === 'on' && record.buyerIdentity === DEFAULT_BUYER_IDENTITY) {
+          throw new Error('This key pays from the default wallet; only keys with their own identity can be topped up.')
+        }
+        store.setTopupEnabled(id, normalized === 'on')
+        console.log(`Top-ups for ${record.id} (${record.label}): ${normalized === 'on' ? 'enabled' : 'disabled'}.`)
+      } finally {
+        store.close()
+      }
+    })
 
   key.command('revoke')
     .description('Revoke a key immediately')
