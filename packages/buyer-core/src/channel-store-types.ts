@@ -16,6 +16,8 @@ export const CHANNEL_STATUS = {
 export const CHANNEL_KIND = {
   PAID: 'paid',
   FREE: 'free',
+  /** Pays for exactly one request (a video) and is closed once that request is paid or abandoned. */
+  ONE_OFF: 'one_off',
 } as const;
 
 export const CHANNEL_ROLE = {
@@ -67,6 +69,8 @@ export interface StoredChannel {
    * threshold authorization is outstanding; the gap covers the next charges.
    */
   deliveredAmount?: string | null;
+  /** One-off channels only: requestId of the single request this channel pays for. */
+  oneOffRequestId?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -113,6 +117,8 @@ export interface BuyerChannelStore {
     buyerEvmAddr: string,
     channelKind?: ChannelKind,
   ): StoredChannel[];
+  /** The one-off channel opened for this request, in any status. */
+  getOneOffChannelByRequest(peerId: string, role: ChannelRole, requestId: string): StoredChannel | null;
   updateChannelStatus(sessionId: string, status: ChannelStatus, settledAmount?: string): void;
   replaceMetadataServiceTotals(
     sessionId: string,

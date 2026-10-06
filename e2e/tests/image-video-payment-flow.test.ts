@@ -455,7 +455,13 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect(calls.length).toBe(callsBefore);
       expect(calls.filter(call => call.path === '/api/v1/video/queue')).toHaveLength(1);
       expect(manager.getConnection(discoveredSeller.peerId).transportDescription).toBe(transport);
-      await vi.waitFor(() => expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(50_000n));
+      // The video is paid on its own one-off channel, never on the chat session channel.
+      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
+      await vi.waitFor(() => {
+        const videoChannels = (buyerNode as any)._channelStore.listAllChannels(100, 'one_off');
+        expect(videoChannels).toHaveLength(1);
+        expect(videoChannels[0]).toMatchObject({ peerId: discoveredSeller.peerId, authMax: '50000', status: 'settled' });
+      });
       await vi.waitFor(() => {
         const auths = (buyerNode as any)._verificationStorage.listResponseAuthsBySeller(discoveredSeller.peerId);
         expect(auths.filter((auth: any) => !auth.verified).map((auth: any) => auth.verificationError)).toEqual([]);

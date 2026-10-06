@@ -52,7 +52,6 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     recordSpend: vi.fn(),
     getCumulativeSpend: () => 0n,
     getAcceptedCumulative: () => 0n,
-    getReserveMax: () => 1_000_000n,
     getEffectiveReserveMax() {
       return this.getReserveMax();
     },
@@ -65,7 +64,48 @@ function makeSpmMock(overrides: Record<string, unknown> = {}): any {
     endBillableRequest: vi.fn(),
     hasInFlightRequests: () => false,
     hasClosingChannel: () => false,
+    ...oneOffSpmMock(),
     ...overrides,
+  };
+}
+
+/**
+ * One-off channel state for a seller payment manager mock. By default every
+ * video create already has its own open channel covering 10 USDC; pass
+ * `{ opened: false }` to get the 402 + plan path first.
+ */
+function oneOffSpmMock(options: { opened?: boolean; reserve?: bigint } = {}) {
+  const opened = options.opened ?? true;
+  const channels = new Map<string, { sessionId: string; requestCount: number; reserve: bigint }>();
+  const plans = new Map<string, unknown>();
+  const key = (buyer: string, requestId: string) => `${buyer}:${requestId}`;
+  const open = (buyer: string, requestId: string, reserve = options.reserve ?? 10_000_000n) => {
+    const channel = { sessionId: `one-off-${requestId}`, requestCount: 0, reserve };
+    channels.set(key(buyer, requestId), channel);
+    return channel;
+  };
+  const byId = (channelId: string) => [...channels.values()].find((channel) => channel.sessionId === channelId);
+  return {
+    oneOffPlans: plans,
+    openOneOff: open,
+    registerOneOffPlan: vi.fn((buyer: string, requestId: string, plan: unknown) => { plans.set(key(buyer, requestId), plan); }),
+    getOneOffChannelForRequest: (buyer: string, requestId: string) => channels.get(key(buyer, requestId))
+      ?? (opened ? open(buyer, requestId) : null),
+    claimOneOffChannel: (channelId: string) => {
+      const channel = byId(channelId);
+      if (!channel || channel.requestCount > 0) return false;
+      channel.requestCount = 1;
+      return true;
+    },
+    isOneOffChannel: (channelId: string) => byId(channelId) != null,
+    closeOneOffChannel: vi.fn(async () => true),
+    getChannel: (channelId: string) => {
+      const channel = byId(channelId);
+      return channel ? { sessionId: channelId, status: 'active', previousConsumption: channel.reserve.toString() } : null;
+    },
+    getReserveMax(channelId: string) {
+      return byId(channelId)?.reserve ?? 1_000_000n;
+    },
   };
 }
 
@@ -257,224 +297,192 @@ describe('native video job ownership', () => {
       expect((await create(buyer)).statusCode).toBe(400);
       expect(provider.handleRequest).toHaveBeenCalledTimes(1);
       expect(recordSpend.mock.calls.every(([, amount]) => amount === 0n)).toBe(true);
-      expect(store.getPendingChargeTotal('session-1')).toBe(0n);
+      expect(store.getPendingCharge('venice-video', 'task-1', buyer)).toBeNull();
     } finally {
       store.close();
     }
   });
 
-  describe('video creates above the locked reserve', () => {
+  describe('one-off video channels', () => {
     const newDbPath = () => join(mkdtempSync(join(tmpdir(), 'antseed-resources-')), 'metering.db');
     const bigVideo = { model: 'video', duration: '20s' };
     const bodyOf = (response: { body: Uint8Array }) => JSON.parse(new TextDecoder().decode(response.body));
+    const channelsClient = {
+      getFirstSignCap: async () => 1_000_000n,
+      getTopUpSettledThresholdBps: async () => 6_500n,
+    } as any;
 
-    it('asks for a larger reserve without starting the job or closing the channel', async () => {
-      const { provider, recordSpend, create, settleSession, store } = setup(newDbPath(), undefined, { getCumulativeSpend: () => 100_000n, getAcceptedCumulative: () => 100_000n });
+    function setupOneOff(spmOverrides: Record<string, unknown> = {}, opened = false) {
+      const oneOff = oneOffSpmMock({ opened });
+      const provider = makeProvider(0, 0, {
+        name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
+        serviceUnitBillingModels: { video: { 'venice-video': pricing } },
+      });
+      let jobs = 0;
+      provider.handleRequest = vi.fn(async request => ({
+        requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ queue_id: `task-${++jobs}`, status: 'PENDING' })),
+      }));
+      const store = new ResourceOwnershipStore(newDbPath());
+      const settleSession = vi.fn(async () => {});
+      const recordSpend = vi.fn();
+      const spm = makeSpmMock({ recordSpend, settleSession, ...oneOff, ...spmOverrides });
+      const handler = makeSellerRequestHandler({
+        providers: [provider], sellerPaymentManager: spm, channelsClient,
+        sessionTracker: null, announcer: null, emit: () => false, resourceOwnershipStore: store,
+      });
+      const frames: Uint8Array[] = [];
+      const payment = { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any;
+      const { mux } = handler.handleConnection(makeConn(frames), buyer, payment);
+      let messageId = 0;
+      const create = async (requestId: string, body: object = { model: 'video', duration: '8s' }) => {
+        messageId += 1;
+        await mux.handleFrame({ type: MessageType.HttpRequest, messageId, payload: encodeHttpRequest({
+          requestId, method: 'POST', path: '/api/v1/video/queue',
+          headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' },
+          body: Buffer.from(JSON.stringify(body)),
+        }) });
+        return decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
+      };
+      return { provider, store, spm, oneOff, create, payment, recordSpend, settleSession };
+    }
+
+    it('offers a one-off channel plan without starting the job or touching the session channel', async () => {
+      const { provider, create, spm, recordSpend, settleSession, store } = setupOneOff({ getCumulativeSpend: () => 100_000n });
       try {
-        const response = await create(buyer, {}, bigVideo);
+        const response = await create('video-1', bigVideo);
         expect(response.statusCode).toBe(402);
         expect(bodyOf(response)).toMatchObject({
           error: 'payment_required',
-          reservePlan: {
-            currentReserveAmount: '1000000',
-            requiredCumulativeAmount: '850000',
-            finalReserveAmount: '2100000',
+          code: 'one_off_channel_required',
+          oneOffPlan: {
+            purpose: 'video',
+            openingReserveAmount: '1000000',
+            requiredCumulativeAmount: '650000',
+            finalReserveAmount: '2000000',
             requestCost: '2000000',
           },
         });
+        expect(spm.registerOneOffPlan).toHaveBeenCalledWith(buyer, 'video-1', expect.objectContaining({ requestCost: '2000000' }));
         expect(provider.handleRequest).not.toHaveBeenCalled();
         expect(recordSpend).not.toHaveBeenCalled();
         expect(settleSession).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
-    it('asks for a larger reserve even when the reserve estimate overdraft would cover the video', async () => {
-      const provider = makeProvider(0, 0, {
-        name: 'venice', services: ['video'], serviceApiProtocols: { video: ['venice-video'] },
-        serviceUnitBillingModels: { video: { 'venice-video': pricing } },
-      });
-      provider.handleRequest = vi.fn();
-      const store = new ResourceOwnershipStore(newDbPath());
-      const frames: Uint8Array[] = [];
-      const settleSession = vi.fn(async () => {});
-      const handler = makeSellerRequestHandler({
-        providers: [provider], sellerPaymentManager: makeSpmMock({ settleSession }),
-        channelsClient: {} as any, sessionTracker: null, announcer: null, emit: () => false,
-        resourceOwnershipStore: store, reserveEstimateOverdraftUsdc: 5_000_000n,
-      });
+    it('needs no serious fee when the video fits under the first-sign cap', async () => {
+      const { create, store } = setupOneOff();
       try {
-        const { mux } = handler.handleConnection(makeConn(frames), buyer, { sendNeedAuth: vi.fn(), sendPaymentRequired: vi.fn() } as any);
-        await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
-          requestId: 'r', method: 'POST', path: '/api/v1/video/queue',
-          headers: { 'content-type': 'application/json', 'x-antseed-service': 'video' },
-          body: Buffer.from(JSON.stringify(bigVideo)),
-        }) });
-        const response = decodeHttpResponse(decodeFrame(frames.at(-1)!)!.message.payload);
-        expect(response.statusCode).toBe(402);
-        expect(bodyOf(response).reservePlan).toMatchObject({
-          currentReserveAmount: '1000000',
-          requiredCumulativeAmount: '850000',
-          finalReserveAmount: '2000000',
-          requestCost: '2000000',
+        const response = await create('video-small', { model: 'video', duration: '5s' });
+        expect(bodyOf(response).oneOffPlan).toEqual({
+          purpose: 'video',
+          openingReserveAmount: '500000',
+          requiredCumulativeAmount: '0',
+          finalReserveAmount: '500000',
+          requestCost: '500000',
         });
-        expect(provider.handleRequest).not.toHaveBeenCalled();
-        expect(settleSession).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
-    it('starts a video whose price exactly fits the remaining reserve', async () => {
-      const { provider, create, store } = setup(newDbPath(), undefined, { getCumulativeSpend: () => 200_000n, getAcceptedCumulative: () => 200_000n });
+    it('offers a one-off channel even without a session, and ignores the session reserve', async () => {
+      const { create, store } = setupOneOff({ hasSession: () => false, getEffectiveReserveMax: () => 0n });
       try {
-        expect((await create(buyer)).statusCode).toBe(200);
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(402);
+        expect(bodyOf(response).code).toBe('one_off_channel_required');
+      } finally { store.close(); }
+    });
+
+    it('starts the create once its one-off channel is open, and records the charge against it', async () => {
+      const { provider, create, oneOff, store, payment } = setupOneOff();
+      try {
+        expect((await create('video-1', bigVideo)).statusCode).toBe(402);
+        oneOff.openOneOff(buyer, 'video-1');
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(200);
+        expect(provider.handleRequest).toHaveBeenCalledOnce();
+        expect(store.getPendingCharge('venice-video', 'task-1', buyer)).toMatchObject({ channelId: 'one-off-video-1', amount: 2_000_000n });
+        expect(payment.sendNeedAuth).not.toHaveBeenCalled();
+      } finally { store.close(); }
+    });
+
+    it('refuses to reuse a one-off channel for a second create', async () => {
+      const { provider, create, oneOff, store } = setupOneOff();
+      try {
+        oneOff.openOneOff(buyer, 'video-1');
+        expect((await create('video-1')).statusCode).toBe(200);
+        const replay = await create('video-1');
+        expect(replay.statusCode).toBe(409);
+        expect(bodyOf(replay).error.code).toBe('one_off_channel_used');
         expect(provider.handleRequest).toHaveBeenCalledOnce();
       } finally { store.close(); }
     });
 
-    it('asks for a larger reserve when the video is one unit above the remaining reserve', async () => {
-      const { provider, create, store } = setup(newDbPath(), undefined, { getCumulativeSpend: () => 200_001n, getAcceptedCumulative: () => 200_001n });
+    it('refuses a one-off channel whose reserve does not cover the price', async () => {
+      const { provider, create, oneOff, store } = setupOneOff();
       try {
-        const response = await create(buyer);
-        expect(response.statusCode).toBe(402);
-        expect(bodyOf(response).reservePlan).toMatchObject({
-          currentReserveAmount: '1000000',
-          requiredCumulativeAmount: '850000',
-          finalReserveAmount: '1000001',
-        });
+        oneOff.openOneOff(buyer, 'video-1', 1_999_999n);
+        const response = await create('video-1', bigVideo);
+        expect(response.statusCode).toBe(409);
+        expect(bodyOf(response).error.code).toBe('one_off_channel_mismatch');
         expect(provider.handleRequest).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
-    it.each([undefined, 'auto', '0s', '-1s'])('rejects an unbillable video with duration %s before asking for a larger reserve', async (duration) => {
-      const { provider, create, store } = setup(newDbPath());
+    it('closes the one-off channel when the provider does not accept the create', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.handleRequest = vi.fn(async request => ({
+        requestId: request.requestId, statusCode: 400, headers: {}, body: Buffer.from('{"error":{"message":"Invalid parameters"}}'),
+      }));
       try {
-        const response = await create(buyer, {}, { model: 'video', duration });
+        expect((await create('video-1')).statusCode).toBe(400);
+        expect(spm.closeOneOffChannel).toHaveBeenCalledWith('one-off-video-1', 'video not accepted');
+      } finally { store.close(); }
+    });
+
+    it('closes the one-off channel when the provider throws', async () => {
+      const { provider, create, spm, store } = setupOneOff({}, true);
+      provider.handleRequest = vi.fn(async () => { throw new Error('upstream down'); });
+      try {
+        expect((await create('video-1')).statusCode).toBe(500);
+        expect(spm.closeOneOffChannel).toHaveBeenCalledWith('one-off-video-1', 'video create failed');
+      } finally { store.close(); }
+    });
+
+    it.each([undefined, 'auto', '0s', '-1s'])('rejects an unbillable video with duration %s before offering a channel', async (duration) => {
+      const { provider, create, spm, store } = setupOneOff();
+      try {
+        const response = await create('video-1', { model: 'video', duration });
         expect(response.statusCode).toBe(400);
         expect(bodyOf(response).error.code).toBe('invalid_billing_request');
+        expect(spm.registerOneOffPlan).not.toHaveBeenCalled();
         expect(provider.handleRequest).not.toHaveBeenCalled();
       } finally { store.close(); }
     });
 
-    function holdingProvider(provider: Provider) {
-      const releases: Array<(status: number) => void> = [];
-      const started: string[] = [];
+    it('runs several creates from the same buyer in parallel, each on its own channel', async () => {
+      const { provider, create, store } = setupOneOff({}, true);
+      const releases: Array<() => void> = [];
       provider.handleRequest = vi.fn(request => new Promise(resolve => {
-        started.push(request.requestId);
-        releases.push(status => resolve({
-          requestId: request.requestId,
-          statusCode: status,
-          headers: { 'content-type': 'application/json' },
-          body: Buffer.from(status === 200 ? JSON.stringify({ queue_id: `task-${request.requestId}` }) : '{"error":{"message":"upstream failed"}}'),
+        releases.push(() => resolve({
+          requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+          body: Buffer.from(JSON.stringify({ queue_id: `task-${request.requestId}` })),
         }));
       }));
-      return { releases, started };
-    }
-
-    async function waitForStarts(started: string[], count: number) {
-      for (let attempt = 0; attempt < 100 && started.length < count; attempt += 1) await new Promise(resolve => setTimeout(resolve, 5));
-      expect(started).toHaveLength(count);
-    }
-
-    it('allows only one video create per buyer at a time', async () => {
-      const { provider, recordSpend, create, store } = setup(newDbPath());
-      const { releases, started } = holdingProvider(provider);
       try {
-        const first = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 1);
-        const secondPending = create(buyer, {}, { model: 'video', duration: '5s' });
-        await new Promise(resolve => setTimeout(resolve, 20));
-        expect(provider.handleRequest).toHaveBeenCalledOnce();
-        const second = await secondPending;
-        expect(second.statusCode).toBe(409);
-        expect(bodyOf(second).error.code).toBe('video_create_in_progress');
-        expect(bodyOf(second).error.message).toMatch(/only one video can be created per buyer at a time \(a temporary limit\)/);
-        expect(provider.handleRequest).toHaveBeenCalledOnce();
-        releases[0]!(200);
+        const first = create('video-a');
+        const second = create('video-b');
+        for (let attempt = 0; attempt < 100 && releases.length < 2; attempt += 1) await new Promise(resolve => setTimeout(resolve, 5));
+        expect(provider.handleRequest).toHaveBeenCalledTimes(2);
+        releases.forEach(release => release());
         expect((await first).statusCode).toBe(200);
-        expect(recordSpend).toHaveBeenCalledOnce();
-      } finally {
-        releases.forEach(release => release(200));
-        store.close();
-      }
-    });
-
-    it('lets the next video start once the previous create finished', async () => {
-      const { provider, create, store } = setup(newDbPath());
-      const { releases, started } = holdingProvider(provider);
-      try {
-        const first = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 1);
-        releases[0]!(200);
-        expect((await first).statusCode).toBe(200);
-        const next = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 2);
-        releases[1]!(200);
-        expect((await next).statusCode).toBe(200);
-      } finally { store.close(); }
-    });
-
-    it('lets the next video start once the previous create failed upstream', async () => {
-      const { provider, create, store } = setup(newDbPath());
-      const { releases, started } = holdingProvider(provider);
-      try {
-        const first = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 1);
-        releases[0]!(500);
-        expect((await first).statusCode).toBe(500);
-        const next = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 2);
-        releases[1]!(200);
-        expect((await next).statusCode).toBe(200);
-      } finally { store.close(); }
-    });
-
-    it('does not block the next video when a create is rejected before starting', async () => {
-      const { provider, create, store } = setup(newDbPath());
-      const { releases, started } = holdingProvider(provider);
-      try {
-        expect((await create(buyer, {}, bigVideo)).statusCode).toBe(402);
-        expect((await create(buyer, {}, { model: 'video', duration: 'auto' })).statusCode).toBe(400);
-        const next = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 1);
-        releases[0]!(200);
-        expect((await next).statusCode).toBe(200);
-      } finally { store.close(); }
-    });
-
-    it('does not limit other buyers or polls while a create is in flight', async () => {
-      const { provider, create, send, store } = setup(newDbPath());
-      const { releases, started } = holdingProvider(provider);
-      try {
-        const first = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 1);
-        const otherBuyer = create(other, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 2);
-        releases[0]!(200);
-        releases[1]!(200);
-        expect((await first).statusCode).toBe(200);
-        expect((await otherBuyer).statusCode).toBe(200);
-        const second = create(buyer, {}, { model: 'video', duration: '5s' });
-        await waitForStarts(started, 3);
-        const poll = send(buyer, 'POST', '/api/v1/video/retrieve', { model: 'video', queue_id: `task-${started[0]}` });
-        await waitForStarts(started, 4);
-        releases[3]!(200);
-        expect((await poll).statusCode).toBe(200);
-        releases[2]!(200);
         expect((await second).statusCode).toBe(200);
+        expect(store.getPendingCharge('venice-video', 'task-video-a', buyer)?.channelId).toBe('one-off-video-a');
+        expect(store.getPendingCharge('venice-video', 'task-video-b', buyer)?.channelId).toBe('one-off-video-b');
       } finally {
-        releases.forEach(release => release(200));
+        releases.forEach(release => release());
         store.close();
       }
-    });
-
-    it('starts the same create once the top-up raised the locked reserve', async () => {
-      let reserveMax = 1_000_000n;
-      const { provider, create, store } = setup(newDbPath(), undefined, { getReserveMax: () => reserveMax });
-      try {
-        expect((await create(buyer, {}, bigVideo)).statusCode).toBe(402);
-        reserveMax = 3_000_000n;
-        expect((await create(buyer, {}, bigVideo)).statusCode).toBe(200);
-        expect(provider.handleRequest).toHaveBeenCalledOnce();
-      } finally { store.close(); }
     });
   });
 

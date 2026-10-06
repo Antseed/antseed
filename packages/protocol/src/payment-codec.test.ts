@@ -30,8 +30,21 @@ describe('payment payload codec', () => {
         deadline: 1900000001,
         reserveAuthSig: '0x' + '44'.repeat(65),
       },
+      oneOff: { purpose: 'video' as const, requestId: 'req-video' },
     };
     expect(decodeSpendingAuth(encodeSpendingAuth(payload))).toEqual(payload);
+  });
+
+  it('rejects a one-off binding with an unknown purpose', () => {
+    const payload = {
+      channelId: '0x' + 'aa'.repeat(32),
+      cumulativeAmount: '0',
+      metadataHash: '0x' + 'bb'.repeat(32),
+      metadata: '0x',
+      spendingAuthSig: '0x' + 'dd'.repeat(65),
+      oneOff: { purpose: 'chat', requestId: 'req-1' },
+    };
+    expect(() => decodeSpendingAuth(new TextEncoder().encode(JSON.stringify(payload)))).toThrow(/purpose/);
   });
 
   it('round-trips NeedAuth with token accounting fields', () => {
@@ -58,9 +71,11 @@ describe('payment payload codec', () => {
       requestId: 'req-2',
       inputUsdPerMillion: 3000,
       outputUsdPerMillion: 15000,
-      reservePlan: {
-        currentReserveAmount: '500000',
-        requiredCumulativeAmount: '325000',
+      code: 'one_off_channel_required' as const,
+      oneOffPlan: {
+        purpose: 'video' as const,
+        openingReserveAmount: '1000000',
+        requiredCumulativeAmount: '650000',
         finalReserveAmount: '4200000',
         requestCost: '4200000',
       },

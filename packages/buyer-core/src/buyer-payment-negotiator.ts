@@ -9,11 +9,15 @@ import {
   type SerializedHttpResponse,
 } from '@antseed/protocol/http';
 import {
+  computeOneOffChannelPlan,
+  DEFAULT_FIRST_SIGN_CAP,
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
+  PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
   type PaymentRequiredPayload,
   type CloseChannelResultPayload,
-  type ReserveAuthorizationPlan,
+  type OneOffChannelPlan,
 } from '@antseed/protocol/messages';
+import { decodeOneOffChannelPlan } from '@antseed/protocol/payment-codec';
 import type { BuyerPaymentManager } from './buyer-payment-manager.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import type { DepositsClient } from './deposits-client.js';
@@ -63,10 +67,10 @@ export interface BuyerNegotiatorConfig {
 
 /** How long to wait for a seller's CloseChannelResult before giving up. */
 const CLOSE_REQUEST_TIMEOUT_MS = 60_000;
-/** Delay between chain reads while waiting for a seller's video top-up to land. */
-const VIDEO_TOPUP_POLL_MS = 1_000;
-/** Maximum time to wait for a seller's video top-up before failing the request. */
-const VIDEO_TOPUP_TIMEOUT_MS = 45_000;
+/** How long to wait for the seller's AuthAck between chain reads while a one-off channel opens. */
+const ONE_OFF_ACK_POLL_MS = 1_000;
+/** Maximum time to wait for a seller to open a one-off video channel before failing the request. */
+const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
 /**
  * Fallback for AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS when the contract
  * cannot be read. The live value is owner-configurable (Base mainnet: 6500),
@@ -121,13 +125,21 @@ function safeBigInt(value: string): bigint | null {
   }
 }
 
-function isReservePlan(value: unknown): value is ReserveAuthorizationPlan {
-  if (typeof value !== 'object' || value === null) return false;
-  const plan = value as Record<string, unknown>;
-  return typeof plan.currentReserveAmount === 'string'
-    && typeof plan.requiredCumulativeAmount === 'string'
-    && typeof plan.finalReserveAmount === 'string'
-    && typeof plan.requestCost === 'string';
+function parseOneOffPlan(value: unknown): OneOffChannelPlan | null {
+  if (typeof value !== 'object' || value === null || Array.isArray(value)) return null;
+  try {
+    return decodeOneOffChannelPlan(value as Record<string, unknown>);
+  } catch {
+    return null;
+  }
+}
+
+function sameOneOffPlan(a: OneOffChannelPlan, b: OneOffChannelPlan): boolean {
+  return a.purpose === b.purpose
+    && a.openingReserveAmount === b.openingReserveAmount
+    && a.requiredCumulativeAmount === b.requiredCumulativeAmount
+    && a.finalReserveAmount === b.finalReserveAmount
+    && a.requestCost === b.requestCost;
 }
 
 /**
@@ -163,8 +175,10 @@ export class BuyerPaymentNegotiator {
   private readonly _negotiationLocks = new Map<string, Promise<void>>();
   /** Cached AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS. */
   private _topUpThresholdBps: bigint | null = null;
-  /** Serializes reserve plans per seller so concurrent requests share one channel safely. */
-  private readonly _reservePlanLocks = new Map<string, Promise<void>>();
+  /** Cached AntseedChannels FIRST_SIGN_CAP. */
+  private _firstSignCapValue: bigint | null = null;
+  /** Serializes one-off channel openings per request so a request never opens two channels. */
+  private readonly _oneOffLocks = new Map<string, Promise<unknown>>();
   /** Peers that have sent their first request after session establishment. */
   private readonly _firstRequestSent = new Set<string>();
   /** Per-peer last response cost, raw content, and latency from the seller. */
@@ -363,108 +377,91 @@ export class BuyerPaymentNegotiator {
     await this._sendPerRequestAuth(peer.peerId, conn);
   }
 
-  async authorizeReservePlan(
+  /**
+   * Open the one-off channel a seller requires for a video create. The
+   * channel is fresh (new salt), bound to this requestId, and never touches
+   * the buyer's session channel with this seller: chat and image spending
+   * cannot consume the video's reserve, and the seller closes it once the
+   * video is paid or abandoned.
+   */
+  async openOneOffChannelForRequest(
     peer: BuyerPeerView,
     conn: BuyerConnection,
     requestId: string,
-    plan: ReserveAuthorizationPlan,
+    plan: OneOffChannelPlan,
   ): Promise<void> {
-    const previous = this._reservePlanLocks.get(peer.peerId) ?? Promise.resolve();
-    const run = previous.catch(() => {}).then(() => this._authorizeReservePlan(peer, conn, requestId, plan));
+    const key = `${peer.peerId}:${requestId}`;
+    const previous = this._oneOffLocks.get(key) ?? Promise.resolve();
+    const run = previous.catch(() => {}).then(() => this._openOneOffChannel(peer, conn, requestId, plan));
     const tail = run.catch(() => {});
-    this._reservePlanLocks.set(peer.peerId, tail);
+    this._oneOffLocks.set(key, tail);
     try {
       return await run;
     } finally {
-      if (this._reservePlanLocks.get(peer.peerId) === tail) this._reservePlanLocks.delete(peer.peerId);
+      if (this._oneOffLocks.get(key) === tail) this._oneOffLocks.delete(key);
     }
   }
 
-  private async _authorizeReservePlan(
+  private async _openOneOffChannel(
     peer: BuyerPeerView,
     conn: BuyerConnection,
     requestId: string,
-    plan: ReserveAuthorizationPlan,
+    plan: OneOffChannelPlan,
   ): Promise<void> {
-    if (!this._lockedPeers.has(peer.peerId) || !this._channelsClient) {
-      throw buyerFault('Reserve plan requires an active payment channel', 'buyer-session-state');
+    if (!this._channelsClient) {
+      throw buyerFault('One-off video channels require a channels client', 'buyer-session-state');
     }
-    await this.drainPendingNeedAuth();
-    const session = this._bpm.getActiveSession(peer.peerId);
-    if (!session) throw buyerFault('Reserve plan requires an active payment channel', 'buyer-session-state');
-
-    const channel = await this._channelsClient.getSession(session.sessionId);
-    if (channel.status != null && channel.status !== 1) {
-      throw buyerFault('Video payment channel is no longer active', 'buyer-session-state');
+    const existing = this._bpm.getOneOffChannelForRequest(peer.peerId, requestId);
+    if (existing && this._bpm.isOneOffChannelConfirmed(existing)) {
+      throw peerFault('Seller asked for a second payment channel for the same video request', 'peer-protocol-violation');
     }
-    const deposit = channel.deposit;
-    await this._bpm.reconcileReserveAmount(peer.peerId, deposit);
-    const videoCost = this._videoRequestCost(peer.peerId, requestId, plan);
-    const delivered = this._bpm.getDeliveredAmount(peer.peerId) + this._bpm.getPendingVideoTotal(peer.peerId);
-    const required = await this._validateReservePlan(plan, deposit, delivered + videoCost);
-
-    const balance = await this._bpm.getBalance();
-    const additionalReserve = required.finalReserveAmount - deposit;
-    if (balance.available < additionalReserve) {
+    const price = this._videoRequestCost(peer.peerId, requestId, plan);
+    if (price > this._bpm.maxVideoRequestUsdc) {
       throw buyerFault(
-        `Insufficient deposits for this video: ${formatUsdc(additionalReserve - balance.available)} USDC more needed`,
-        'buyer-deposits-insufficient',
+        `Video price ${formatUsdc(price)} USDC is above the configured limit of ${formatUsdc(this._bpm.maxVideoRequestUsdc)} USDC`,
+        'buyer-session-state',
       );
     }
-    const bufferedReserve = required.finalReserveAmount + this._bpm.maxReserveAmountUsdc;
-    const targetReserve = balance.available >= bufferedReserve - deposit
-      ? bufferedReserve
-      : required.finalReserveAmount;
+    const expected = computeOneOffChannelPlan(price, await this._firstSignCap(), await this._topUpSettledThresholdBps());
+    if (!sameOneOffPlan(plan, expected)) {
+      throw peerFault('Seller sent an invalid one-off channel plan', 'peer-protocol-violation');
+    }
 
     const pmux = this.getOrCreatePaymentMux(peer.peerId, conn);
-    await this._bpm.signAndSendReserveBatch(
-      peer.peerId,
-      requestId,
-      required.requiredCumulativeAmount,
-      videoCost,
-      deposit,
-      targetReserve,
-      pmux,
-    );
-    await this._waitForVideoTopUp(peer.peerId, session.sessionId, targetReserve);
+    const channelId = existing ?? await this._bpm.openOneOffChannel(peer.peerId, requestId, plan, pmux, peer.metadata);
+    await this._waitForOneOffChannel(channelId, price);
   }
 
   private _videoRequestCost(
     sellerPeerId: string,
     requestId: string,
-    plan: ReserveAuthorizationPlan,
+    plan: OneOffChannelPlan,
   ): bigint {
     const billing = this._bpm.getRequestBilling(requestId);
     const facts = billing?.requestFacts;
     const videoCost = billing?.estimatedCostUsdc;
     if (!billing || facts?.kind !== 'video' || facts.video.action !== 'create' || billing.context.sellerPeerId !== sellerPeerId || !videoCost) {
-      throw buyerFault('Reserve plan requires a tracked video create', 'buyer-session-state');
+      throw buyerFault('One-off channel requires a tracked video create', 'buyer-session-state');
     }
     if (BigInt(plan.requestCost) !== videoCost) {
-      throw peerFault('Seller reserve plan does not match the buyer video price', 'peer-protocol-violation');
+      throw peerFault('Seller one-off channel plan does not match the buyer video price', 'peer-protocol-violation');
     }
     return videoCost;
   }
 
-  private async _validateReservePlan(
-    plan: ReserveAuthorizationPlan,
-    currentReserveAmount: bigint,
-    expectedFinalReserveAmount: bigint,
-  ): Promise<{ requiredCumulativeAmount: bigint; finalReserveAmount: bigint }> {
-    const plannedCurrentReserve = BigInt(plan.currentReserveAmount);
-    const requiredCumulativeAmount = BigInt(plan.requiredCumulativeAmount);
-    const finalReserveAmount = BigInt(plan.finalReserveAmount);
-    const thresholdBps = await this._topUpSettledThresholdBps();
-    const contractMinimum = (currentReserveAmount * thresholdBps + 9_999n) / 10_000n;
-    if (
-      plannedCurrentReserve !== currentReserveAmount
-      || requiredCumulativeAmount !== contractMinimum
-      || finalReserveAmount !== expectedFinalReserveAmount
-      || finalReserveAmount <= currentReserveAmount
-    ) {
-      throw peerFault('Seller sent an invalid reserve plan', 'peer-protocol-violation');
+  /** AntseedChannels FIRST_SIGN_CAP, the largest reserve a fresh channel may open with. */
+  private async _firstSignCap(): Promise<bigint> {
+    if (this._firstSignCapValue != null) return this._firstSignCapValue;
+    try {
+      const value = await this._channelsClient?.getFirstSignCap?.();
+      if (typeof value === 'bigint' && value > 0n) {
+        this._firstSignCapValue = value;
+        return value;
+      }
+    } catch (error) {
+      debugWarn(`[BuyerNegotiator] Could not read FIRST_SIGN_CAP: ${error instanceof Error ? error.message : error} — using ${DEFAULT_FIRST_SIGN_CAP}`);
     }
-    return { requiredCumulativeAmount, finalReserveAmount };
+    return DEFAULT_FIRST_SIGN_CAP;
   }
 
   /** Contract share of the deposit that must be settled before topUp(), in basis points. */
@@ -482,29 +479,36 @@ export class BuyerPaymentNegotiator {
     return DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS;
   }
 
-  private async _waitForVideoTopUp(peerId: string, channelId: string, targetCeiling: bigint): Promise<void> {
-    const deadline = Date.now() + VIDEO_TOPUP_TIMEOUT_MS;
+  /**
+   * Wait until the seller acknowledges the one-off channel. The chain is read
+   * between waits, so a lost AuthAck still confirms once the full reserve is
+   * visible, and a channel the seller already closed (for example after a
+   * reverted topUp) fails fast instead of waiting out the timeout.
+   */
+  private async _waitForOneOffChannel(channelId: string, price: bigint): Promise<void> {
+    const deadline = Date.now() + ONE_OFF_ACK_TIMEOUT_MS;
     for (;;) {
-      await new Promise((resolve) => setTimeout(resolve, VIDEO_TOPUP_POLL_MS));
+      if (await this._bpm.waitForOneOffAck(channelId, ONE_OFF_ACK_POLL_MS)) return;
       let channel;
       try {
         channel = await this._channelsClient!.getSession(channelId);
       } catch (error) {
-        if (Date.now() >= deadline) throw buyerFault('Unable to confirm the video top-up before timeout', 'buyer-reserve-topup-timeout', { cause: error });
+        if (Date.now() >= deadline) throw buyerFault('Unable to confirm the video payment channel before timeout', 'buyer-reserve-topup-timeout', { cause: error });
         continue;
       }
-      if (channel.status != null && channel.status !== 1) {
-        throw buyerFault('Video payment channel closed before the request was sent', 'buyer-session-state');
-      }
-      const onChainDeposit = channel.deposit;
-      if (onChainDeposit >= targetCeiling) {
-        await this._bpm.reconcileReserveAmount(peerId, onChainDeposit);
-        debugLog(`[BuyerNegotiator] Video top-up confirmed for ${peerId.slice(0, 12)}...: deposit=${onChainDeposit}`);
+      if (this._bpm.isOneOffChannelConfirmed(channelId)) return;
+      if (channel.deposit >= price && (channel.status == null || channel.status === 1)) {
+        await this._bpm.confirmOneOffChannelOnChain(channelId, channel.deposit);
+        debugLog(`[BuyerNegotiator] One-off channel ${channelId.slice(0, 18)}... confirmed on-chain: deposit=${channel.deposit}`);
         return;
+      }
+      if (channel.status != null && channel.status > 1) {
+        this._bpm.retireOneOffChannel(channelId, CHANNEL_STATUS.SETTLED);
+        throw buyerFault('Seller closed the video payment channel before the request was sent', 'buyer-session-state');
       }
       if (Date.now() >= deadline) {
         throw buyerFault(
-          `Seller did not confirm the video spending limit in time (deposit=${formatUsdc(onChainDeposit)} USDC, needed ${formatUsdc(targetCeiling)} USDC)`,
+          `Seller did not open the video payment channel in time (deposit=${formatUsdc(channel.deposit)} USDC, needed ${formatUsdc(price)} USDC)`,
           'buyer-reserve-topup-timeout',
         );
       }
@@ -694,15 +698,12 @@ export class BuyerPaymentNegotiator {
         ...(directPaymentBody.inputUsdPerMillion != null ? { inputUsdPerMillion: Number(directPaymentBody.inputUsdPerMillion) } : {}),
         ...(directPaymentBody.outputUsdPerMillion != null ? { outputUsdPerMillion: Number(directPaymentBody.outputUsdPerMillion) } : {}),
         ...(directPaymentBody.cachedInputUsdPerMillion != null ? { cachedInputUsdPerMillion: Number(directPaymentBody.cachedInputUsdPerMillion) } : {}),
-        ...(isReservePlan(directPaymentBody.reservePlan) ? { reservePlan: directPaymentBody.reservePlan } : {}),
       }
       : null;
     const paymentRequirements = buffered ?? bodyRequirements;
-    const reservePlan = paymentRequirements?.reservePlan;
 
     const requestedReserveAmount = (() => {
       if (!paymentRequirements) return null;
-      if (reservePlan) return safeBigInt(reservePlan.finalReserveAmount);
       const suggested = safeBigInt(paymentRequirements.suggestedAmount);
       if (suggested == null || suggested <= 0n) return null;
       return suggested > this._bpm.maxReserveAmountUsdc ? this._bpm.maxReserveAmountUsdc : suggested;
@@ -771,6 +772,52 @@ export class BuyerPaymentNegotiator {
       };
     };
 
+    const oneOffPlan = directPaymentBody?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
+      ? parseOneOffPlan(directPaymentBody.oneOffPlan)
+      : buffered?.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED
+        ? buffered.oneOffPlan ?? null
+        : null;
+    if (oneOffPlan) {
+      // A video create is paid from its own channel; the session channel (if
+      // any) is left exactly as it is.
+      if (!this._channelsClient || !this._depositsClient) {
+        return returnNegotiationFailure(
+          'deposits_not_configured',
+          'Buyer deposits are not configured, so the video payment channel cannot be opened.',
+          503,
+        );
+      }
+      if (this._isChainReachable && !this._isChainReachable()) {
+        return returnNegotiationFailure(
+          'balance_check_unavailable',
+          'Cannot verify enough deposits for this video while the chain RPC is unavailable.',
+          503,
+        );
+      }
+      const price = safeBigInt(oneOffPlan.requestCost);
+      if (!this._bpm.getOneOffChannelForRequest(peer.peerId, req.requestId)) {
+        try {
+          const balance = await this._depositsClient.getBuyerBalance(this._identity.wallet.address);
+          if (price == null || balance.available < price) {
+            return returnPaymentRequired(
+              'insufficient_deposits',
+              `buyer available deposits ${balance.available} are below the video price ${oneOffPlan.requestCost}`,
+            );
+          }
+        } catch (err) {
+          debugWarn(`[BuyerNegotiator] Failed to check buyer balance for video: ${err instanceof Error ? err.message : err}`);
+          this._onChainReadFailure?.();
+          return returnNegotiationFailure(
+            'balance_check_failed',
+            'Cannot verify enough deposits for this video.',
+            503,
+          );
+        }
+      }
+      await this.openOneOffChannelForRequest(peer, conn, req.requestId, oneOffPlan);
+      return { action: 'retry' };
+    }
+
     // Reconcile any active stored session before opening a fresh reserve.
     const existingSessionBudgetRequest = buffered
       ? BigInt(buffered.minBudgetPerRequest)
@@ -802,11 +849,6 @@ export class BuyerPaymentNegotiator {
       || (requiredCumulativeTarget != null && sellerReserveMax != null && requiredCumulativeTarget > sellerReserveMax);
 
     const hasActiveSession = hadLockedSession || this._bpm.getActiveSession(peer.peerId) != null;
-
-    if (reservePlan && hasActiveSession) {
-      await this.authorizeReservePlan(peer, conn, req.requestId, reservePlan);
-      return { action: 'retry' };
-    }
 
     if (channelExhausted && hasActiveSession) {
       debugLog(
@@ -857,12 +899,6 @@ export class BuyerPaymentNegotiator {
       );
     }
 
-    if (reservePlan && requestedReserveAmount != null) {
-      const initialReserveAmount = BigInt(paymentRequirements!.suggestedAmount);
-      const requestCost = this._videoRequestCost(peer.peerId, req.requestId, reservePlan);
-      await this._validateReservePlan(reservePlan, initialReserveAmount, requestCost);
-    }
-
     // Check on-chain balance before sending ReserveAuth. The seller locks the full
     // reserve ceiling on-chain, so a positive-but-too-small available balance would
     // otherwise make reserve()/topUp() revert with InsufficientBalance and trigger a
@@ -870,13 +906,6 @@ export class BuyerPaymentNegotiator {
     // to be unreachable: the check is best-effort, and negotiation itself only
     // signs off-chain — a seller that can reach the chain still settles fine.
     if (this._isChainReachable && !this._isChainReachable()) {
-      if (reservePlan) {
-        return returnNegotiationFailure(
-          'balance_check_unavailable',
-          'Cannot verify enough deposits for the requested reserve while the chain RPC is unavailable.',
-          503,
-        );
-      }
       debugWarn(
         `[BuyerNegotiator] Chain RPC unreachable — skipping balance precheck for ${peer.peerId.slice(0, 12)}...`,
       );
@@ -894,13 +923,6 @@ export class BuyerPaymentNegotiator {
           );
         }
       } catch (err) {
-        if (reservePlan) {
-          return returnNegotiationFailure(
-            'balance_check_failed',
-            'Cannot verify enough deposits for the requested reserve.',
-            503,
-          );
-        }
         debugWarn(`[BuyerNegotiator] Failed to check buyer balance: ${err instanceof Error ? err.message : err}`);
         this._onChainReadFailure?.();
       }
@@ -945,7 +967,11 @@ export class BuyerPaymentNegotiator {
         const jobId = nativeVideoAcceptance(video.protocol, response);
         if (jobId) {
           const { observedUnitUsage: _observed, ...entry } = billingEntry;
-          this._bpm.trackVideoJob(peer.peerId, video.protocol, jobId, entry);
+          this._bpm.trackVideoJob(peer.peerId, video.protocol, jobId, entry, requestId);
+        } else if (requestId) {
+          // The seller closes the channel of a create it did not accept.
+          const oneOffChannelId = this._bpm.getOneOffChannelForRequest(peer.peerId, requestId);
+          if (oneOffChannelId) this._bpm.retireOneOffChannel(oneOffChannelId);
         }
       }
       return;
@@ -1328,8 +1354,6 @@ export class BuyerPaymentNegotiator {
         pricing,
         pricingMap,
         peer.metadata,
-        requirements.reservePlan,
-        requirements.requestId,
       );
       debugLog(`[BuyerNegotiator] SpendingAuth sent to seller ${peer.peerId.slice(0, 12)}..., waiting for AuthAck...`);
 

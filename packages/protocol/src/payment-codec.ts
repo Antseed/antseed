@@ -1,5 +1,8 @@
 import {
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
+  PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
+  ONE_OFF_CHANNEL_PURPOSE_VIDEO,
+  type OneOffChannelPlan,
   CLOSE_CHANNEL_REJECT_CODES,
   type SpendingAuthPayload,
   type AuthAckPayload,
@@ -107,6 +110,13 @@ export function decodeSpendingAuth(data: Uint8Array): SpendingAuthPayload {
       reserveAuthSig: requireStringField(batch, 'reserveAuthSig'),
     };
   }
+  if (typeof obj.oneOff === 'object' && obj.oneOff !== null) {
+    const oneOff = obj.oneOff as Record<string, unknown>;
+    if (oneOff.purpose !== ONE_OFF_CHANNEL_PURPOSE_VIDEO) {
+      throw new Error('SpendingAuth oneOff.purpose must be "video"');
+    }
+    result.oneOff = { purpose: oneOff.purpose, requestId: requireStringField(oneOff, 'requestId') };
+  }
   return result;
 }
 
@@ -179,17 +189,24 @@ export function decodePaymentRequired(data: Uint8Array): PaymentRequiredPayload 
   if (typeof obj.currentAcceptedCumulative === 'string') result.currentAcceptedCumulative = obj.currentAcceptedCumulative;
   if (typeof obj.channelId === 'string') result.channelId = obj.channelId;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
-  if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED) result.code = obj.code;
-  if (typeof obj.reservePlan === 'object' && obj.reservePlan !== null) {
-    const plan = obj.reservePlan as Record<string, unknown>;
-    result.reservePlan = {
-      currentReserveAmount: requireStringField(plan, 'currentReserveAmount'),
-      requiredCumulativeAmount: requireStringField(plan, 'requiredCumulativeAmount'),
-      finalReserveAmount: requireStringField(plan, 'finalReserveAmount'),
-      requestCost: requireStringField(plan, 'requestCost'),
-    };
+  if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED || obj.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED) result.code = obj.code;
+  if (typeof obj.oneOffPlan === 'object' && obj.oneOffPlan !== null) {
+    result.oneOffPlan = decodeOneOffChannelPlan(obj.oneOffPlan as Record<string, unknown>);
   }
   return result;
+}
+
+export function decodeOneOffChannelPlan(plan: Record<string, unknown>): OneOffChannelPlan {
+  if (plan.purpose !== ONE_OFF_CHANNEL_PURPOSE_VIDEO) {
+    throw new Error('One-off channel plan purpose must be "video"');
+  }
+  return {
+    purpose: plan.purpose,
+    openingReserveAmount: requireStringField(plan, 'openingReserveAmount'),
+    requiredCumulativeAmount: requireStringField(plan, 'requiredCumulativeAmount'),
+    finalReserveAmount: requireStringField(plan, 'finalReserveAmount'),
+    requestCost: requireStringField(plan, 'requestCost'),
+  };
 }
 
 export function decodeNeedAuth(data: Uint8Array): NeedAuthPayload {

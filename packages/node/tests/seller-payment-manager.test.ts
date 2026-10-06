@@ -249,7 +249,7 @@ describe('SellerPaymentManager', () => {
     const payload = await withReserveBatch(initial, buyerIdentity, 650_000n, 5_000_000n);
     vi.spyOn(manager.channelsClient, 'topUp').mockRejectedValue(new Error('top-up failed'));
 
-    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux)).rejects.toThrow('top-up failed');
+    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux)).resolves.toBe('rejected');
 
     expect(manager.channelsClient.close).toHaveBeenCalledWith(
       expect.anything(),
