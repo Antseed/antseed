@@ -41,7 +41,7 @@ export function detectRequestServiceApiProtocol(
     return 'typesafe-systemone';
   }
   const pathOnly = normalizedPath.split('?')[0];
-  if (pathOnly === '/v1/routing/describe' || pathOnly === '/v1/routing/rank') {
+  if (pathOnly === '/v1/routing/models' || pathOnly === '/v1/routing/rank') {
     return 'model-routing';
   }
 

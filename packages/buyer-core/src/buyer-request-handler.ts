@@ -20,6 +20,7 @@ import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth } from './response-auth.js';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { routingServiceFromHeaders } from '@antseed/protocol/model-routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
@@ -477,10 +478,10 @@ export class BuyerRequestHandler {
   }
 }
 
-/** Extract the service/model name from a JSON or multipart request body, or undefined if not found. */
+/** The requested service: the `x-antseed-service` header (routing), else `service`/`model` from a JSON or multipart body. */
 function extractServiceFromBody(request: SerializedHttpRequest): string | undefined {
   const parsed = extractRequestBodyFields(request.headers, request.body);
-  const service = parsed?.service ?? parsed?.model;
+  const service = routingServiceFromHeaders(request.headers) ?? parsed?.service ?? parsed?.model;
   if (typeof service === 'string' && service.length > 0) return service;
   return undefined;
 }

@@ -2,13 +2,8 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import type { ModelRoutingClientApi } from '@antseed/router-core'
-import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, resolveRouterRecommendations, RoutingDescriptionCache } from './router-execution.js'
-import { RoutingDescriptionChangedError, type RoutingDescribeResponseV1, type RoutingPreferenceSchema } from '@antseed/node'
-
-const emptySchema: RoutingPreferenceSchema = {}
-function describeRouter(supportedServiceIds: string[], preferences = emptySchema, revision = 'rev-1'): RoutingDescribeResponseV1 {
-  return { revision, supportedServiceIds, preferences }
-}
+import { RouterCannotRankError } from '@antseed/router-core'
+import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, resolveRouterRecommendations, RoutingModelsCache } from './router-execution.js'
 
 const peer = {
   peerId: 'a'.repeat(40) as PeerInfo['peerId'], providers: ['openai'], lastSeen: Date.now(), reputationScore: 90,
@@ -21,7 +16,7 @@ const request: SerializedHttpRequest = {
 }
 const candidates = () => eligibleRouterCandidates(request, [peer], [], null, () => true)
 
-const describeAll = async () => describeRouter(['model-a', 'model-b'])
+const listAll = async () => ['model-a', 'model-b']
 const routingService = { peerId: peer.peerId, provider: 'routing-vendor', serviceId: 'route' }
 const routerSelection = { kind: 'router' as const, service: routingService }
 const unusedNode = { sendRequest: async () => { throw new Error('unused') } }
@@ -57,63 +52,62 @@ test('a recommendation becomes an ordinary inference request with its own ID', (
   assert.equal(JSON.parse(Buffer.from(request.body).toString()).model, 'antseed')
 })
 
-test('router descriptions restrict candidates, are cached, and refresh once after a changed description', async () => {
-  let description = describeRouter(['model-a'])
-  let describeCalls = 0
-  let staleOnce = false
+test('router model lists restrict candidates, are cached, and refresh once after a 422', async () => {
+  let models = ['model-a']
+  let listCalls = 0
+  let unrankableOnce = false
   const seen: string[][] = []
   const client: ModelRoutingClientApi = {
-    async describe() { describeCalls++; return description },
+    async listModels() { listCalls++; return [...models] },
     async selectRoute(_request, _peers, context) {
       seen.push(context.candidates.map(candidate => candidate.serviceId))
-      assert.equal(context.description.revision, description.revision)
-      if (staleOnce) { staleOnce = false; throw new RoutingDescriptionChangedError() }
+      if (unrankableOnce) { unrankableOnce = false; throw new RouterCannotRankError('cannot rank') }
       return [{ serviceId: 'model-a' }]
     },
   }
-  const descriptions = new RoutingDescriptionCache()
-  const args = { node: unusedNode, client, request, descriptions, peers: [peer],
+  const modelsCache = new RoutingModelsCache()
+  const args = { node: unusedNode, client, request, modelsCache, peers: [peer],
     candidates: [candidates()[0]!, { ...candidates()[0]!, serviceId: 'model-b' }], conversationKey: null,
     signal: new AbortController().signal, selection: routerSelection }
   assert.deepEqual(await executeRouterSelection(args), [{ serviceId: 'model-a', provider: 'openai' }])
   await executeRouterSelection(args)
-  assert.equal(describeCalls, 1)
+  assert.equal(listCalls, 1)
   assert.deepEqual(seen, [['model-a'], ['model-a']])
-  staleOnce = true
+  unrankableOnce = true
   assert.deepEqual(await executeRouterSelection(args), [{ serviceId: 'model-a', provider: 'openai' }])
-  assert.equal(describeCalls, 2)
-  description = describeRouter(['model-z'])
-  await assert.rejects(executeRouterSelection({ ...args, descriptions: new RoutingDescriptionCache() }), /supported by this router/)
+  assert.equal(listCalls, 2)
+  models = ['model-z']
+  await assert.rejects(executeRouterSelection({ ...args, modelsCache: new RoutingModelsCache() }), /supported by this router/)
 })
 
-test('concurrent describes share one request and refresh after invalidation or expiry', async () => {
+test('concurrent model lists share one request and refresh after invalidation or expiry', async () => {
   let calls = 0
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  const client: Pick<ModelRoutingClientApi, 'describe'> = { async describe() { calls++; await gate; return describeRouter(['model-a']) } }
-  const descriptions = new RoutingDescriptionCache()
-  const pending = Promise.all([1, 2, 3].map(() => descriptions.get(client, routingService, [peer], unusedNode)))
+  const client: Pick<ModelRoutingClientApi, 'listModels'> = { async listModels() { calls++; await gate; return ['model-a'] } }
+  const modelsCache = new RoutingModelsCache()
+  const pending = Promise.all([1, 2, 3].map(() => modelsCache.get(client, routingService, [peer], unusedNode)))
   release()
   const results = await pending
   assert.equal(calls, 1)
-  results[0]!.supportedServiceIds.push('mutated')
-  assert.deepEqual((await descriptions.get(client, routingService, [peer], unusedNode)).supportedServiceIds, ['model-a'])
+  results[0]!.push('mutated')
+  assert.deepEqual(await modelsCache.get(client, routingService, [peer], unusedNode), ['model-a'])
   assert.equal(calls, 1)
-  descriptions.invalidate(routingService)
-  await descriptions.get(client, routingService, [peer], unusedNode)
+  modelsCache.invalidate(routingService)
+  await modelsCache.get(client, routingService, [peer], unusedNode)
   assert.equal(calls, 2)
-  const uncached = new RoutingDescriptionCache(0)
+  const uncached = new RoutingModelsCache(0)
   await uncached.get(client, routingService, [peer], unusedNode)
   await uncached.get(client, routingService, [peer], unusedNode)
   assert.equal(calls, 4)
 })
 
-test('describe requests are free control-plane calls to the selected routing peer', async () => {
+test('model-list requests are free control-plane calls to the selected routing peer', async () => {
   const sent: Array<{ peerId: string; options: unknown }> = []
   const client: ModelRoutingClientApi = {
-    async describe(target, peers, context) {
-      await context.sendRequest(peers.find(entry => entry.peerId === target.peerId)!, { ...request, requestId: 'describe', method: 'GET', path: '/v1/routing/describe' })
-      return describeRouter(['model-a'])
+    async listModels(target, peers, context) {
+      await context.sendRequest(peers.find(entry => entry.peerId === target.peerId)!, { ...request, requestId: 'models', method: 'GET', path: '/v1/routing/models' })
+      return ['model-a']
     },
     async selectRoute() { return [{ serviceId: 'model-a' }] },
   }
@@ -134,7 +128,7 @@ test('model allowlists restrict routing candidates and returned recommendations'
   const allowedModels = [{ provider: 'openai', serviceId: 'model-a' }]
   let calls = 0
   let forbiddenOnly = false
-  const client: ModelRoutingClientApi = { describe: describeAll,
+  const client: ModelRoutingClientApi = { listModels: listAll,
     async selectRoute(_request, _peers, context) {
       calls++
       assert.deepEqual(context.candidates.map(({ provider, serviceId }) => ({ provider, serviceId })), allowedModels)
@@ -154,24 +148,24 @@ test('model allowlists restrict routing candidates and returned recommendations'
   assert.equal(calls, before)
 })
 
-test('preferences are validated against the router-supplied schema with defaults before invoking the routing client', async () => {
-  let calls = 0
+test('the selection tradeoff is passed to the routing client, and omitted when unset', async () => {
+  const seen: Array<number | undefined> = []
   const client: ModelRoutingClientApi = {
-    describe: async () => describeRouter(['model-a'], { policy: { options: ['cost', 'quality'], default: 'cost' } }),
+    listModels: async () => ['model-a'],
     async selectRoute(_request, _peers, context) {
-      calls++
-      return [{ serviceId: String(context.preferences.policy === 'quality' ? 'model-a' : 'missing') }]
+      seen.push(context.costQualityTradeoff)
+      assert.equal('costQualityTradeoff' in context, context.costQualityTradeoff !== undefined)
+      return [{ serviceId: 'model-a' }]
     },
   }
   const args = { node: unusedNode, client, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
-  await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, preferences: { policy: 'invalid' } } }), /invalid option/)
-  assert.equal(calls, 0)
-  assert.deepEqual(await executeRouterSelection({ ...args, selection: { ...routerSelection, preferences: { policy: 'quality' } } }), [{ serviceId: 'model-a', provider: 'openai' }])
-  await assert.rejects(executeRouterSelection({ ...args, selection: routerSelection }), /no eligible/)
+  await executeRouterSelection({ ...args, selection: { ...routerSelection, costQualityTradeoff: 0 } })
+  await executeRouterSelection({ ...args, selection: routerSelection })
+  assert.deepEqual(seen, [0, undefined])
 })
 
 test('a declined recommendation fails closed and cancellation applies even if the client ignores it', async () => {
-  const client: ModelRoutingClientApi = { describe: describeAll, selectRoute: async () => null }
+  const client: ModelRoutingClientApi = { listModels: listAll, selectRoute: async () => null }
   const args = { node: unusedNode, client, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal, selection: routerSelection }
   await assert.rejects(executeRouterSelection(args), /no eligible/)
   const abort = new AbortController()
@@ -184,7 +178,7 @@ test('a declined recommendation fails closed and cancellation applies even if th
 test('routing purchases cannot substitute a different routing-service peer', async () => {
   let sent = false
   const client: ModelRoutingClientApi = {
-    describe: describeAll,
+    listModels: listAll,
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, { ...request, requestId: 'routing-request' }, {})
       return [{ serviceId: 'model-a' }]
@@ -209,7 +203,7 @@ test('candidate construction enforces buyer restrictions and required parameters
 test('routing purchases are registered before dispatch with their own request ID', async () => {
   const tracked: string[] = []
   const client: ModelRoutingClientApi = {
-    describe: describeAll,
+    listModels: listAll,
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, { ...request, requestId: 'routing-purchase' }, {})
       return [{ serviceId: 'model-a' }]
@@ -227,7 +221,7 @@ test('routing purchases are registered before dispatch with their own request ID
 
 test('routing purchases cannot reuse the parent inference request ID', async () => {
   const client: ModelRoutingClientApi = {
-    describe: describeAll,
+    listModels: listAll,
     async selectRoute(_request, _peers, context) {
       await context.sendRequest(peer, request, {})
       return [{ serviceId: 'model-a' }]

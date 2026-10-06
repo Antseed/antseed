@@ -11,9 +11,10 @@ const ATTEST_ID = 'antseed-verifier';
 const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 
 describe('completed-request seller payments', () => {
-  const candidate = { model: 'model-a', peer: 'a'.repeat(40), provider: 'openai', price: { inputUsdPerMillion: 1, outputUsdPerMillion: 3 } };
-  const body = { service: 'alpha-route', revision: 'r1', preferences: { tradeoff: '5' }, request: { messages: [{ role: 'user', content: 'Help with code' }] }, candidates: [candidate] };
-  const result = { recommendations: [{ model: candidate.model, peer: candidate.peer, provider: candidate.provider }] };
+  const candidate = { id: 'model-a@a', model: 'model-a', pricing: { input: 1, cache_read: 1, output: 3 } };
+  const body = { request: { messages: [{ role: 'user', content: 'Help with code' }] }, routing: { cost_quality_tradeoff: 5, candidates: [candidate] } };
+  const routingHeaders = { 'x-antseed-provider': 'alpha', 'x-antseed-service': 'alpha-route' };
+  const result = { id: 'rank-1', object: 'routing.ranking', created: 1, router: { id: 'alpha', version: '1' }, ranked: [{ candidate_id: candidate.id }] };
   function setup(overrides: Record<string, unknown> = {}) {
     let spend = 0n;
     const provider = makeProvider(10, 10, { name: 'alpha', services: ['alpha-route', 'image'] });
@@ -33,7 +34,7 @@ describe('completed-request seller payments', () => {
     const send = async (requestId = 'fixed', patch: Partial<SerializedHttpRequest> = {}) => {
       await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
         requestId, method: 'POST', path: '/v1/routing/rank',
-        headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
+        headers: { 'content-type': 'application/json', ...routingHeaders },
         body: new TextEncoder().encode(JSON.stringify(body)), ...patch,
       }) });
       return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
@@ -46,29 +47,31 @@ describe('completed-request seller payments', () => {
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '1000', inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { completed_requests: '1' } } }));
   });
-  it('serves the routing description for free through the provider', async () => {
+  it('serves the routing model list for free through the provider', async () => {
     const harness = setup();
-    const describePath = '/v1/routing/describe?service=alpha-route';
-    expect((await harness.send('describe', { method: 'GET', path: describePath, body: new Uint8Array() })).statusCode).toBe(200);
-    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe(describePath);
+    expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers: routingHeaders, body: new Uint8Array() })).statusCode).toBe(200);
+    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe('/v1/routing/models');
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
-  it('rejects invalid routing description requests before the provider', async () => {
+  it('rejects invalid routing model-list requests before the provider with problem details', async () => {
     const harness = setup();
-    const get = (requestId: string, path: string) => harness.send(requestId, { method: 'GET', path, body: new Uint8Array() });
-    expect((await get('missing', '/v1/routing/describe')).statusCode).toBe(400);
-    expect((await get('not-routing', '/v1/routing/describe?service=image')).statusCode).toBe(404);
+    const get = (requestId: string, headers: Record<string, string>) => harness.send(requestId, { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() });
+    const missing = await get('missing', { 'x-antseed-provider': 'alpha' });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.headers['content-type']).toBe('application/problem+json');
+    expect(JSON.parse(new TextDecoder().decode(missing.body))).toMatchObject({ type: 'urn:irp:problem:invalid-request', status: 400 });
+    expect((await get('not-routing', { 'x-antseed-service': 'image' })).statusCode).toBe(404);
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
   });
-  it('rate limits routing description requests', async () => {
+  it('rate limits routing model-list requests with an IRP 503', async () => {
     const harness = setup();
     const statuses: number[] = [];
     for (let index = 0; index < 11; index += 1) {
-      statuses.push((await harness.send(`describe-${index}`, { method: 'GET', path: '/v1/routing/describe?service=alpha-route', body: new Uint8Array() })).statusCode);
+      statuses.push((await harness.send(`models-${index}`, { method: 'GET', path: '/v1/routing/models', headers: routingHeaders, body: new Uint8Array() })).statusCode);
     }
     expect(statuses.slice(0, 10).every(status => status === 200)).toBe(true);
-    expect(statuses[10]).toBe(429);
+    expect(statuses[10]).toBe(503);
     expect(harness.provider.handleRequest).toHaveBeenCalledTimes(10);
   });
   it('negotiates once before execution and allows retrying that request ID', async () => {

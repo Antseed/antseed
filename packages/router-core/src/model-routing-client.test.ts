@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from 'vitest'
-import { RoutingDescriptionChangedError, type PeerInfo, type RouteSelectionContext, type RoutingDescribeResponseV1, type SerializedHttpRequest } from '@antseed/node'
-import { ModelRoutingClient } from './model-routing-client.js'
+import type { PeerInfo, RouteSelectionContext, SerializedHttpRequest } from '@antseed/node'
+import { ModelRoutingClient, RouterCannotRankError, routingCandidateId } from './model-routing-client.js'
 
 const routerId = 'a'.repeat(40)
 const inferenceId = 'b'.repeat(40)
@@ -10,10 +10,9 @@ const peer = { peerId: routerId, metadata: { version: 12, peerId: routerId, prov
   serviceApiProtocols: { route: ['model-routing'] },
   serviceUnitBillingModels: { route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
 }] } } as unknown as PeerInfo
-const description: RoutingDescribeResponseV1 = {
-  revision: 'rev-1', supportedServiceIds: ['model-a', 'model-b'],
-  preferences: { tradeoff: { options: ['1', '5', '9'], default: '5' } },
-}
+const modelsResponse = { object: 'list', data: [{ id: 'model-a', object: 'model', owned_by: 'x' }, { id: 'model-b', object: 'model' }] }
+const idA = `openai:model-a@${'b'.repeat(40)}`
+const ranking = (ranked: unknown[]) => ({ id: 'rank-1', object: 'routing.ranking', created: 1, router: { id: 'alpha', version: '1' }, ranked })
 const encode = (value: unknown) => new TextEncoder().encode(JSON.stringify(value))
 const decode = (body: Uint8Array) => JSON.parse(new TextDecoder().decode(body))
 
@@ -23,7 +22,7 @@ function request(text = 'Help me'): SerializedHttpRequest {
 }
 
 function setup(respond: (body: any) => { statusCode?: number; body: unknown } = body => ({
-  body: { recommendations: [{ model: body.candidates[0].model, peer: body.candidates[0].peer, provider: body.candidates[0].provider }] },
+  body: ranking([{ candidate_id: body.routing.candidates[0].id }]),
 })) {
   const accepted = vi.fn(() => true)
   const sendRequest = vi.fn<RouteSelectionContext['sendRequest']>(async (_peer, serviceRequest) => {
@@ -31,7 +30,7 @@ function setup(respond: (body: any) => { statusCode?: number; body: unknown } = 
     return { requestId: serviceRequest.requestId, statusCode: reply.statusCode ?? 200, headers: {}, body: encode(reply.body) }
   })
   const context: RouteSelectionContext = {
-    routingService: target, description, preferences: { tradeoff: '9' }, signal: new AbortController().signal, conversationKey: 'chat-1',
+    routingService: target, costQualityTradeoff: 9, signal: new AbortController().signal, conversationKey: 'chat-1',
     candidates: [{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1 }],
     acceptRecommendations: accepted, sendRequest,
   }
@@ -39,30 +38,52 @@ function setup(respond: (body: any) => { statusCode?: number; body: unknown } = 
 }
 
 describe('ModelRoutingClient', () => {
-  it('describes the router through a free request to the selected peer', async () => {
+  it('lists the router models through a free request to the selected peer', async () => {
     const client = new ModelRoutingClient()
     const sendRequest = vi.fn(async (_peer: PeerInfo, serviceRequest: SerializedHttpRequest) =>
-      ({ requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: encode(description) }))
-    expect(await client.describe(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual(description)
-    expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/describe?service=route' })
-    sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ ...description, supportedServiceIds: 'model-a' }) })
-    await expect(client.describe(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('describe response')
+      ({ requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: encode(modelsResponse) }))
+    expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual(['model-a', 'model-b'])
+    expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/models',
+      headers: { 'x-antseed-provider': 'alpha', 'x-antseed-service': 'route' } })
+    sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ ...modelsResponse, data: 'model-a' }) })
+    await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('models response')
+    sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 503, headers: {}, body: encode({ type: 'urn:irp:problem:unavailable', title: 'Unavailable', status: 503, detail: 'Try later.' }) })
+    await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('temporarily unavailable: Try later.')
   })
 
-  it('sends a generic rank request with prices and preferences to the selected provider', async () => {
+  it('sends a plain IRP rank request with the routing service in a header', async () => {
     const state = setup()
     expect(await state.client.selectRoute(request(), [peer], state.context)).toEqual([{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai' }])
     const [, serviceRequest, options] = state.sendRequest.mock.calls[0]!
     expect(serviceRequest.path).toBe('/v1/routing/rank')
     expect(serviceRequest.requestId).not.toBe('inference')
     expect(serviceRequest.headers['x-antseed-provider']).toBe('alpha')
+    expect(serviceRequest.headers['x-antseed-service']).toBe('route')
     expect(options.signal).toBe(state.context.signal)
     expect(decode(serviceRequest.body)).toEqual({
-      service: 'route', revision: 'rev-1', preferences: { tradeoff: '9' },
       request: { messages: [{ role: 'user', content: 'Help me' }] },
-      candidates: [{ model: 'model-a', peer: inferenceId, provider: 'openai',
-        price: { inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1 } }],
+      routing: {
+        cost_quality_tradeoff: 9,
+        candidates: [{ id: idA, model: 'model-a', pricing: { input: 1, cache_read: 0.1, output: 2 } }],
+      },
     })
+  })
+
+  it('omits an unset tradeoff and prices cache reads at the input price when unpriced', async () => {
+    const state = setup()
+    delete state.context.costQualityTradeoff
+    state.context.candidates = [{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }]
+    await state.client.selectRoute(request(), [peer], state.context)
+    const { routing } = decode(state.sendRequest.mock.calls[0]![1].body)
+    expect(routing).not.toHaveProperty('cost_quality_tradeoff')
+    expect(routing.candidates[0].pricing).toEqual({ input: 1, cache_read: 1, output: 2 })
+  })
+
+  it('uses readable provider:model@peer IDs and hashes IDs over 128 characters', () => {
+    expect(routingCandidateId({ provider: 'openai', serviceId: 'gpt-5.5', peerId: inferenceId })).toBe(`openai:gpt-5.5@${inferenceId}`)
+    const long = routingCandidateId({ provider: 'openai', serviceId: 'm'.repeat(100), peerId: inferenceId })
+    expect(long).toMatch(/^sha256:[0-9a-f]{64}$/)
+    expect(routingCandidateId({ provider: 'openai', serviceId: 'm'.repeat(100), peerId: inferenceId })).toBe(long)
   })
 
   it('puts the observed cache reuse on the exact candidate', async () => {
@@ -70,27 +91,27 @@ describe('ModelRoutingClient', () => {
     state.client.recordUsage({ conversationKey: 'chat-1', requestId: 'done', peerId: inferenceId, provider: 'openai', serviceId: 'model-a', inputTokens: 100, cachedInputTokens: 80 })
     state.context.candidates = [...state.context.candidates, { ...state.context.candidates[0]!, serviceId: 'model-b' }]
     await state.client.selectRoute(request('A much longer follow-up question that has plenty of tokens in it'), [peer], state.context)
-    const candidates = decode(state.sendRequest.mock.calls[0]![1].body).candidates
+    const candidates = decode(state.sendRequest.mock.calls[0]![1].body).routing.candidates
     expect(candidates[0].expected_usage.cache_read_tokens).toBeGreaterThan(0)
     // Absent means 0: candidates with no observed cache reuse omit expected_usage.
     expect(candidates[1].model).toBe('model-b')
     expect(candidates[1]).not.toHaveProperty('expected_usage')
   })
 
-  it('keeps router order and drops recommendations outside the sent candidates', async () => {
+  it('keeps router order, carries reasoning effort and drops entries outside the sent candidates', async () => {
     const other = { serviceId: 'model-b', peerId: inferenceId, provider: 'openai', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }
-    const state = setup(() => ({ body: { recommendations: [
-      { model: 'model-a', peer: 'c'.repeat(40), provider: 'openai' },
-      { model: 'model-b', peer: inferenceId, provider: 'openai' },
-      { model: 'model-a', peer: inferenceId, provider: 'openai' },
-    ] } }))
+    const state = setup(() => ({ body: ranking([
+      { candidate_id: `openai:model-a@${'c'.repeat(40)}` },
+      { candidate_id: `openai:model-b@${inferenceId}`, reasoning_effort: 'low', expected_cost_usd: 0.01 },
+      { candidate_id: idA },
+    ]) }))
     state.context.candidates = [...state.context.candidates, other]
     expect(await state.client.selectRoute(request(), [peer], state.context)).toEqual([
-      { serviceId: 'model-b', peerId: inferenceId, provider: 'openai' },
+      { serviceId: 'model-b', peerId: inferenceId, provider: 'openai', reasoningEffort: 'low' },
       { serviceId: 'model-a', peerId: inferenceId, provider: 'openai' },
     ])
-    const rejected = setup(() => ({ body: { recommendations: [{ model: 'model-z', peer: inferenceId, provider: 'openai' }] } }))
-    await expect(rejected.client.selectRoute(request(), [peer], rejected.context)).rejects.toThrow('no recommendation among the sent candidates')
+    const rejected = setup(() => ({ body: ranking([{ candidate_id: 'model-z' }]) }))
+    await expect(rejected.client.selectRoute(request(), [peer], rejected.context)).rejects.toThrow('no ranking among the sent candidates')
     expect(rejected.accepted).not.toHaveBeenCalled()
   })
 
@@ -101,21 +122,23 @@ describe('ModelRoutingClient', () => {
     expect(state.accepted).toHaveBeenCalledOnce()
   })
 
-  it('maps router errors, including a changed description', async () => {
-    for (const [statusCode, message] of [[409, RoutingDescriptionChangedError], [422, 'cannot rank'], [402, 'payment'], [500, 'Routing failed']] as const) {
+  it('maps router errors and IRP problem details', async () => {
+    for (const [statusCode, message] of [[400, 'rejected'], [422, RouterCannotRankError], [402, 'payment'], [503, 'temporarily unavailable'], [500, 'Routing rank failed']] as const) {
       const state = setup(() => ({ statusCode, body: { error: 'x' } }))
       await expect(state.client.selectRoute(request(), [peer], state.context)).rejects.toThrow(message)
     }
+    const problem = setup(() => ({ statusCode: 422, body: { type: 'urn:irp:problem:no-scorable-candidate', title: 'No scorable candidate', status: 422, detail: 'None of the 1 candidates fit.' } }))
+    await expect(problem.client.selectRoute(request(), [peer], problem.context)).rejects.toThrow('None of the 1 candidates fit.')
   })
 
-  it('reuses a same-turn recommendation, but not after the text, preferences or candidates change', async () => {
+  it('reuses a same-turn recommendation, but not after the text, tradeoff or candidates change', async () => {
     const state = setup()
     await state.client.selectRoute(request(), [peer], state.context)
     await state.client.selectRoute(request(), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(1)
     await state.client.selectRoute(request('New turn'), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(2)
-    state.context.preferences = { tradeoff: '1' }
+    state.context.costQualityTradeoff = 1
     await state.client.selectRoute(request('New turn'), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(3)
     state.context.candidates = [...state.context.candidates, { ...state.context.candidates[0]!, serviceId: 'model-b' }]
@@ -123,11 +146,13 @@ describe('ModelRoutingClient', () => {
     expect(state.sendRequest).toHaveBeenCalledTimes(4)
   })
 
-  it('validates before sending: user text, supported models and a model-routing service', async () => {
+  it('validates before sending: user text, candidates, tradeoff and a model-routing service', async () => {
     const state = setup()
     await expect(state.client.selectRoute(request(''), [peer], state.context)).rejects.toThrow('user text')
-    state.context.candidates = [{ ...state.context.candidates[0]!, serviceId: 'unsupported' }]
-    await expect(state.client.selectRoute(request(), [peer], state.context)).rejects.toThrow('does not support')
+    await expect(state.client.selectRoute(request(), [peer], { ...state.context, candidates: [] })).rejects.toThrow('No eligible candidates')
+    await expect(state.client.selectRoute(request(), [peer], { ...state.context, costQualityTradeoff: 11 })).rejects.toThrow('Invalid model-routing rank request')
+    const duplicate = state.context.candidates[0]!
+    await expect(state.client.selectRoute(request(), [peer], { ...state.context, candidates: [duplicate, duplicate] })).rejects.toThrow('Duplicate')
     const plain = setup()
     await expect(plain.client.selectRoute(request(), [{ ...peer, metadata: undefined }], plain.context)).rejects.toThrow('metadata is not available')
     expect(state.sendRequest).not.toHaveBeenCalled()

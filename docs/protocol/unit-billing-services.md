@@ -6,7 +6,7 @@
 | Routing ranks | 1 for a well-formed ranking, otherwise 0 | 1 × $0.001 = $0.001 |
 | Token inference | Existing input, cached-input and output usage | Unchanged |
 
-A ranking with five recommendations is one completed request.
+A ranking with five ranked candidates is one completed request. A response counts as well-formed when it is an IRP `routing.ranking` with a non-empty `ranked` list.
 
 ## Provider configuration
 

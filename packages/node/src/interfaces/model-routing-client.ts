@@ -1,13 +1,14 @@
 import type { PeerInfo } from '../types/peer.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import type { RequestExecutionOptions } from '@antseed/buyer-core';
-import type { RoutingDescribeResponseV1, RoutingPreferences } from '@antseed/protocol';
 import type { RoutingServiceTarget } from '../routing/selection.js';
 
 export type RouteRecommendation = {
   serviceId: string;
   provider?: string;
   peerId?: string;
+  /** IRP `reasoning_effort` suggested by the router for this candidate. */
+  reasoningEffort?: string;
 };
 
 export type RouteCandidate = {
@@ -21,17 +22,16 @@ export type RouteCandidate = {
 
 type SendRequest = (peer: PeerInfo, request: SerializedHttpRequest, options: RequestExecutionOptions) => Promise<SerializedHttpResponse>;
 
-export interface RoutingDescribeContext {
+export interface RoutingModelsContext {
   signal: AbortSignal;
   /** Free control-plane request to the selected routing peer; no payment is attached. */
   sendRequest: (peer: PeerInfo, request: SerializedHttpRequest) => Promise<SerializedHttpResponse>;
 }
 
 export interface RouteSelectionContext {
-  preferences: RoutingPreferences;
+  /** IRP `cost_quality_tradeoff`; omitted means the router's default (5). */
+  costQualityTradeoff?: number;
   routingService: RoutingServiceTarget;
-  /** The router's current description; candidates are already limited to its supported models. */
-  description: RoutingDescribeResponseV1;
   signal: AbortSignal;
   conversationKey: string | null;
   candidates: readonly RouteCandidate[];
@@ -48,11 +48,3 @@ export type RoutingUsageObservation = {
   inputTokens: number;
   cachedInputTokens: number;
 };
-
-/** Thrown when the router rejects a request because its description changed; the host refreshes and retries once. */
-export class RoutingDescriptionChangedError extends Error {
-  constructor(message = 'Router description changed') {
-    super(message);
-    this.name = 'RoutingDescriptionChangedError';
-  }
-}

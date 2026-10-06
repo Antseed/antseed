@@ -94,7 +94,7 @@ import {
   type ConversationIdentity,
 } from './conversation-identity.js'
 import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
-import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, RoutingDescriptionCache } from './router-execution.js'
+import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, RoutingModelsCache } from './router-execution.js'
 import { recordRouterUsage } from './routing-usage.js'
 import type { DepositWatcher } from './deposit-watcher.js'
 import {
@@ -836,7 +836,7 @@ export class BuyerProxy {
    */
   private _defaultRoutedModel: string | null = null
   private _defaultRouter: DefaultRouterSelection | null = null
-  private readonly _routingDescriptions = new RoutingDescriptionCache()
+  private readonly _routingModels = new RoutingModelsCache()
   private readonly _modelRoutingClient: ModelRoutingClientApi
   private _conversations!: ConversationStore
   /**
@@ -1144,9 +1144,9 @@ export class BuyerProxy {
     if (!value.service) throw new Error('Select an exact routing-service target')
   }
 
-  /** Parses the `router` field of `POST /_antseed/route` (`{ service, preferences? }`). */
+  /** Parses the `router` field of `POST /_antseed/route` (`{ service, costQualityTradeoff?, allowedModels? }`). */
   private _parseDefaultRouter(value: unknown): DefaultRouterSelection {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('router must be { service, preferences? }')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('router must be { service, costQualityTradeoff? }')
     const selection = { ...(value as Record<string, unknown>), kind: 'router' }
     this._validateRouterSelection(selection)
     return structuredClone(selection)
@@ -2478,7 +2478,7 @@ export class BuyerProxy {
           && !isCoolingDown(this._peerHealth.get(peer.peerId), this._now()))
       recommendations = await executeRouterSelection({
         node: this._node, client, request, peers, candidates,
-        conversationKey: routingConversationKey, selection, descriptions: this._routingDescriptions,
+        conversationKey: routingConversationKey, selection, modelsCache: this._routingModels,
         signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
         onRoutingRequest: requestId => {
           if (conversationId) this._trackRequestConversation(requestId, conversationId, undefined, 'routing')

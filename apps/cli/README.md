@@ -643,14 +643,14 @@ stores evidence and deduplicates in-flight checks, with keys containing the
 seller ID, selected verifier, and advertised-verifier fingerprint. The renderer
 does not need a new query client for this service.
 
-### Router description cache
+### Router model-list cache
 
-`RoutingDescriptionCache` in `src/proxy/router-execution.ts` keeps each
-routing service's free `/v1/routing/describe` response in a TanStack Query Core
-`QueryClient`, keyed by peer, provider and service. Descriptions are reused for
-60 seconds, concurrent requests share one describe call, and the entry is
-removed when a routing attempt fails or the router reports a changed
-description. Paid rank results are not stored in Query Core.
+`RoutingModelsCache` in `src/proxy/router-execution.ts` keeps each
+routing service's free `GET /v1/routing/models` response in a TanStack Query Core
+`QueryClient`, keyed by peer, provider and service. Model lists are reused for
+60 seconds, concurrent requests share one models call, and the entry is
+removed when a routing attempt fails. A 422 from the router refreshes the
+list and retries the ranking once. Paid rank results are not stored in Query Core.
 
 Trust lifetimes remain explicit in the service: successful badge evidence lasts
 up to 24 hours from check start, but routing evidence lasts only five minutes.

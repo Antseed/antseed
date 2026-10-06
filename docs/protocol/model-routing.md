@@ -1,55 +1,47 @@
 # Model routing protocol
 
-`model-routing` lets a seller recommend which inference destination should
-serve a request. The router only recommends; the buyer still sends the inference to
-the recommended seller and pays that seller normally.
+`model-routing` lets a seller rank which inference destination should serve a
+request. The router only ranks; the buyer still sends the inference to the
+chosen seller and pays that seller normally.
+
+The wire format is [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md)
+(IRP) **suggest-only mode**, unchanged. AntSeed adds nothing to IRP bodies:
+which routing service is being bought travels in a header, and seller identity
+stays on the buyer.
 
 A routing seller advertises a service with API protocol `model-routing` and
 a completed-request unit billing model (see
 [unit-billing-services.md](unit-billing-services.md)).
 
-Bodies carry no version field; breaking changes use a new path version (`/v1/`).
-
 ## Endpoints
 
 | Endpoint | Cost | Purpose |
 | --- | --- | --- |
-| `GET /v1/routing/describe?service=<id>` | Free, rate limited | Models the router understands and the preferences it accepts |
-| `POST /v1/routing/rank` | One completed request | Recommended destinations, best first, for one user turn |
+| `GET /v1/routing/models` | Free, rate limited | IRP §4: models the router can score |
+| `POST /v1/routing/rank` | One completed request | IRP §5: candidates ranked best first, for one user turn |
 
-## Describe
+Both requests carry two AntSeed transport headers:
+
+| Header | Meaning |
+| --- | --- |
+| `x-antseed-provider` | Seller provider that serves the routing service (as for every AntSeed request) |
+| `x-antseed-service` | Routing service ID being described or bought. Sellers use it to pick the provider and the paid offer |
+
+## Models
 
 ```json
 {
-  "revision": "2026-09-30.1",
-  "supportedServiceIds": ["gpt-5.5", "claude-sonnet-4-6", "kimi-k2.6"],
-  "preferences": {
-    "tradeoff": {
-      "options": ["1", "3", "5", "7", "9"],
-      "default": "5",
-      "title": "Cost-quality tradeoff",
-      "description": "1 favors lower cost; 9 favors higher quality."
-    }
-  },
-  "name": "Alpha"
+  "object": "list",
+  "data": [
+    { "id": "gpt-5.5", "object": "model" },
+    { "id": "claude-sonnet-4-6", "object": "model" }
+  ]
 }
 ```
 
-- `revision` is an opaque router-chosen string. Change it whenever the models
-  or preferences change.
-- `supportedServiceIds` are AntSeed service IDs. Buyers never send other models.
-- `preferences` lists the router's settings by name. Each setting has
-  `options` (unique, nonempty strings) and may carry a `title`, `description`
-  and `default` (one of the options). No other keys are allowed. A setting the
-  buyer leaves unset falls back to its `default`, or is omitted if there is none.
-
-A second router exposes its own policy in the same format:
-
-```json
-"preferences": {
-  "policy": { "options": ["quality", "balanced", "cost"], "default": "balanced" }
-}
-```
+Buyers only send candidates whose model is listed, cache the list for 60
+seconds and ignore members they do not recognise. AntSeed routers run in
+suggest-only mode, so entries carry no `candidates`.
 
 ## Rank
 
@@ -57,9 +49,6 @@ Request:
 
 ```json
 {
-  "service": "alpha-route",
-  "revision": "2026-09-30.1",
-  "preferences": { "tradeoff": "7" },
   "request": {
     "messages": [
       { "role": "system", "content": "You are a coding agent." },
@@ -68,68 +57,92 @@ Request:
     "tools": [{ "type": "function", "function": { "name": "read_file", "parameters": { "type": "object" } } }],
     "max_tokens": 4096
   },
-  "candidates": [
-    {
-      "model": "gpt-5.5",
-      "peer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
-      "provider": "openai",
-      "price": { "inputUsdPerMillion": 1.25, "outputUsdPerMillion": 10, "cachedInputUsdPerMillion": 0.125 },
-      "expected_usage": { "cache_read_tokens": 900 }
-    }
-  ]
+  "routing": {
+    "cost_quality_tradeoff": 3,
+    "candidates": [
+      {
+        "id": "openai:gpt-5.5@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+        "model": "gpt-5.5",
+        "pricing": { "input": 1.25, "cache_read": 0.125, "output": 10 },
+        "expected_usage": { "cache_read_tokens": 900 }
+      },
+      {
+        "id": "openai:gpt-5.5@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+        "model": "gpt-5.5",
+        "pricing": { "input": 1.1, "cache_read": 1.1, "output": 9 }
+      }
+    ]
+  }
 }
 ```
 
-- `service` is the purchased routing service ID.
-- `request` is the full inference request as an
+- `request` is the inference request as an
   [OpenAI Chat Completions](https://platform.openai.com/docs/api-reference/chat/create)
-  body (system prompt, history, tool calls and results, tools, images), the same
-  convention as the [Inference Routing Protocol](https://github.com/inference-routing/spec)
-  `request`. Anthropic Messages and OpenAI Responses requests are converted with the
-  `@antseed/api-adapter` request adapters before sending; the buyer still sends the
-  original request to the recommended seller. `model`, `stream` and `stream_options`
-  are omitted, since the router never forwards the request. Content with no Chat
-  Completions equivalent (Anthropic thinking and document blocks, cache markers) is
-  dropped.
-- `candidates` are the exact destinations the buyer allows, after its own
-  trust, price and pin filters. `expected_usage.cache_read_tokens` is the buyer's
-  estimate of prompt tokens that destination can serve from its cache, observed from
-  earlier turns of the same conversation (Inference Routing Protocol `expected_usage`).
-  Absent means 0, so buyers omit `expected_usage` when nothing was observed.
+  body (system prompt, history, tool calls and results, tools, images). Anthropic
+  Messages and OpenAI Responses requests are converted with the `@antseed/api-adapter`
+  request adapters; the buyer still sends the original request to the chosen seller.
+  `model`, `stream` and `stream_options` are omitted. Content with no Chat Completions
+  equivalent (Anthropic thinking and document blocks, cache markers) is dropped.
+- `cost_quality_tradeoff` is an integer from `0` (best quality regardless of price)
+  to `10` (cheapest acceptable candidate). It is omitted when the buyer has not chosen
+  one, and the router uses IRP's default, `5`.
+- `candidates` are the exact destinations the buyer allows, after its own trust, price
+  and pin filters. The same model from two sellers is two candidates.
+  - `id` is `provider:model@peer`. If that is longer than 128 characters, it is
+    `sha256:` followed by the hex SHA-256 of the same string. Routers may use the ID to
+    tell sellers apart and to learn per seller.
+  - `model` is the AntSeed service ID.
+  - `pricing` is the seller's price in USD per 1M tokens. Sellers that publish no
+    cached-input price bill cache reads at the input price, so `cache_read` equals `input`.
+  - `expected_usage.cache_read_tokens` is the buyer's estimate of prompt tokens this
+    destination can serve from its cache, observed on earlier turns of the conversation.
+    It is omitted when nothing was observed.
 
 Response:
 
 ```json
 {
-  "recommendations": [
-    { "model": "gpt-5.5", "peer": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa", "provider": "openai" }
+  "id": "rank_01J9",
+  "object": "routing.ranking",
+  "created": 1790000000,
+  "router": { "id": "alpha", "version": "2026-10-01" },
+  "ranked": [
+    { "candidate_id": "openai:gpt-5.5@bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb", "expected_cost_usd": 0.0041, "reasoning_effort": "low" },
+    { "candidate_id": "openai:gpt-5.5@aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa" }
   ]
 }
 ```
 
-The rank response has only `recommendations`. The buyer keeps recommendations that exactly match a sent candidate, in the
-router's order. Duplicates and entries with fields other than `model`, `peer`
-and `provider` are dropped. If none remain, the response is rejected and not paid.
+The buyer maps each `candidate_id` back through the candidates it sent and never
+parses it, so a router cannot name a destination the buyer filtered out. Unknown and
+duplicate IDs are dropped. If none remain, the response is rejected and not paid.
+Optional predictions (`expected_quality`, `expected_cost_usd`, `expected_usage`,
+`reasoning_effort`) are kept when well-formed. `reasoning_effort` is carried with the
+recommendation but not yet applied to the inference request.
 
 ## Errors
 
-| Status | Meaning | Buyer action |
-| --- | --- | --- |
-| 409 | `revision` is stale | Refresh describe and retry once |
-| 422 | No candidate can be ranked | Fail the turn without inference |
-| 402 | Payment problem | Existing payment negotiation |
+Routers answer errors with IRP problem details (`application/problem+json`, RFC 9457).
+The seller node uses the same format for the free models endpoint.
 
-Non-success responses are not charged.
+| Status | `type` | Buyer action |
+| --- | --- | --- |
+| 400 | `urn:irp:problem:invalid-request` | Fail the turn |
+| 402 | `urn:irp:problem:payment-required` | Existing payment negotiation |
+| 422 | `urn:irp:problem:no-scorable-candidate` | Refresh the model list and retry once, then fail the turn |
+| 503 | `urn:irp:problem:unavailable` | Fail the turn; `Retry-After` may be set |
+
+Non-success responses are not charged, so the 422 retry is free.
 
 ## Buyer flow
 
-1. Describe the selected routing service (cached for 60 seconds).
-2. Build candidates from eligible sellers whose model is in
-   `supportedServiceIds`.
-3. Resolve the buyer's choices against the described `preferences` and call rank.
+1. List the selected routing service's models (cached for 60 seconds).
+2. Build candidates from eligible sellers whose model is listed.
+3. Call rank with the buyer's `cost_quality_tradeoff`, if set.
 4. Validate the response (a well-formed ranking is billed as one completed request) and
-   send the inference to the first recommendation. Later recommendations are
-   fallbacks for retryable inference errors.
+   send the inference to the first ranked candidate. Later candidates are fallbacks for
+   retryable inference errors. Tool-loop continuations of the same user turn reuse the
+   ranking instead of paying again (IRP §7).
 
 The router receives the whole conversation, so buyers should only select routers
 they would trust with that content.

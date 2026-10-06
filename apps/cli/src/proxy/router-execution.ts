@@ -3,47 +3,47 @@ import { buildNetworkServiceOffers, isModelRouteEligible, type AntseedNode, type
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
-import { RoutingDescriptionChangedError, resolveRoutingPreferences, type RoutingDescribeResponseV1, type RoutingSelection, type RoutingServiceTarget } from '@antseed/node'
-import type { ModelRoutingClientApi } from '@antseed/router-core'
+import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node'
+import { RouterCannotRankError, type ModelRoutingClientApi } from '@antseed/router-core'
 
-const DESCRIBE_TIMEOUT_MS = 5_000
+const MODELS_TIMEOUT_MS = 5_000
 
 /**
- * Router descriptions in a TanStack Query Core cache: reused for `ttlMs`, shared by concurrent
- * callers so a burst of requests sends one describe, and removed when the router reports that
- * its description changed or a routing attempt fails.
+ * Router model lists (IRP `GET /v1/routing/models`) in a TanStack Query Core cache: reused for
+ * `ttlMs`, shared by concurrent callers so a burst of requests sends one models request, and
+ * removed when a routing attempt fails.
  */
-export class RoutingDescriptionCache {
+export class RoutingModelsCache {
   private readonly queries = new QueryClient({
     defaultOptions: { queries: { retry: false, networkMode: 'always', gcTime: Infinity, structuralSharing: false } },
   })
 
   constructor(private readonly ttlMs = 60_000) {}
 
-  async get(client: Pick<ModelRoutingClientApi, 'describe'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RoutingDescribeResponseV1> {
-    const description = await this.queries.fetchQuery({
-      queryKey: descriptionKey(target),
+  async get(client: Pick<ModelRoutingClientApi, 'listModels'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<string[]> {
+    const models = await this.queries.fetchQuery({
+      queryKey: modelsKey(target),
       staleTime: this.ttlMs,
       queryFn: () => {
-        const signal = AbortSignal.timeout(DESCRIBE_TIMEOUT_MS)
-        return client.describe(target, peers, {
+        const signal = AbortSignal.timeout(MODELS_TIMEOUT_MS)
+        return client.listModels(target, peers, {
           signal,
           sendRequest: (peer, request) => {
-            if (peer.peerId !== target.peerId) throw new Error('Router description must come from the selected routing-service peer')
+            if (peer.peerId !== target.peerId) throw new Error('Router models must come from the selected routing-service peer')
             return node.sendRequest(peer, request, { signal, controlPlane: true })
           },
         })
       },
     })
-    return structuredClone(description)
+    return [...models]
   }
 
   invalidate(target: RoutingServiceTarget): void {
-    this.queries.removeQueries({ queryKey: descriptionKey(target), exact: true })
+    this.queries.removeQueries({ queryKey: modelsKey(target), exact: true })
   }
 }
 
-function descriptionKey(target: RoutingServiceTarget): readonly [string, string, string] {
+function modelsKey(target: RoutingServiceTarget): readonly [string, string, string] {
   return [target.peerId, target.provider, target.serviceId]
 }
 
@@ -86,7 +86,7 @@ export function eligibleRouterCandidates(
  * Keep recommendations that match allowed destinations, in the router's order.
  * Each result names its provider, so a model-only entry becomes one entry per allowed
  * provider and the normal dispatch path can never pick a provider the buyer did not allow.
- * Invalid entries, reasoning overrides and duplicates are discarded.
+ * Invalid entries and duplicates are discarded; a suggested `reasoningEffort` is kept but not yet applied.
  */
 export function resolveRouterRecommendations(routes: readonly RouteRecommendation[], candidates: readonly RouteCandidate[]): RouteRecommendation[] {
   if (!Array.isArray(routes) || routes.length > 512) return []
@@ -99,7 +99,8 @@ export function resolveRouterRecommendations(routes: readonly RouteRecommendatio
     for (const candidate of candidates) {
       if (candidate.serviceId !== route.serviceId || (route.peerId !== undefined && candidate.peerId !== route.peerId)
         || (route.provider !== undefined && candidate.provider !== route.provider)) continue
-      const entry = { serviceId: route.serviceId, provider: candidate.provider, ...(route.peerId ? { peerId: route.peerId } : {}) }
+      const entry = { serviceId: route.serviceId, provider: candidate.provider, ...(route.peerId ? { peerId: route.peerId } : {}),
+        ...(typeof route.reasoningEffort === 'string' && route.reasoningEffort ? { reasoningEffort: route.reasoningEffort } : {}) }
       const key = JSON.stringify([entry.peerId ?? null, entry.provider, entry.serviceId])
       if (seen.has(key)) continue
       seen.add(key)
@@ -138,17 +139,16 @@ export async function executeRouterSelection(args: {
   conversationKey: string | null;
   selection: Extract<RoutingSelection, { kind: 'router' }>;
   signal: AbortSignal;
-  descriptions?: RoutingDescriptionCache;
+  modelsCache?: RoutingModelsCache;
   onRoutingRequest?: (requestId: string) => void;
 }): Promise<RouteRecommendation[]> {
   const { node, client, request, peers, conversationKey, signal } = args
   const routingService = args.selection.service
   if (!routingService) throw new Error('Select an exact routing-service target')
   const allowedModels = args.selection.allowedModels
-  const descriptions = args.descriptions ?? new RoutingDescriptionCache(0)
+  const modelsCache = args.modelsCache ?? new RoutingModelsCache(0)
   const attempt = async (): Promise<RouteRecommendation[]> => {
-    const description = await untilAborted(signal, descriptions.get(client, routingService, peers, node))
-    const supported = new Set(description.supportedServiceIds)
+    const supported = new Set(await untilAborted(signal, modelsCache.get(client, routingService, peers, node)))
     const allowed = args.candidates
       .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
         model.provider === candidate.provider && model.serviceId === candidate.serviceId))
@@ -158,10 +158,10 @@ export async function executeRouterSelection(args: {
       .filter(candidate => supported.has(candidate.serviceId))
       .map(({ peer: _peer, ...candidate }) => candidate)
     if (!candidates.length) throw new Error('No eligible allowed models are supported by this router')
-    // Check the user's choices against the router's own schema before paying.
-    const preferences = resolveRoutingPreferences(description.preferences, args.selection.preferences ?? {})
+    const { costQualityTradeoff } = args.selection
     const routes = await untilAborted(signal, client.selectRoute(request, peers, {
-      signal, conversationKey, candidates, preferences, routingService, description,
+      signal, conversationKey, candidates, routingService,
+      ...(costQualityTradeoff !== undefined ? { costQualityTradeoff } : {}),
       // Pay for the recommendation only if it names at least one allowed destination.
       acceptRecommendations: recommendations => resolveRouterRecommendations(recommendations, candidates).length > 0,
       sendRequest: (peer, serviceRequest, options) => {
@@ -180,13 +180,13 @@ export async function executeRouterSelection(args: {
   try {
     return await attempt()
   } catch (error) {
-    descriptions.invalidate(routingService)
-    // The router's models or settings changed after we described it: refresh once and retry.
-    if (error instanceof RoutingDescriptionChangedError) {
+    modelsCache.invalidate(routingService)
+    // IRP 422: our cached model list may be stale. Refresh it and retry once; failed ranks are not charged.
+    if (error instanceof RouterCannotRankError) {
       try {
         return await attempt()
       } catch (retryError) {
-        descriptions.invalidate(routingService)
+        modelsCache.invalidate(routingService)
         throw retryError
       }
     }

@@ -420,23 +420,22 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       getCapacity: () => ({ current: 0, max: 5 }),
       async handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
         rankCalls++;
-        const { candidates, request } = JSON.parse(Buffer.from(req.body).toString());
+        const { routing: { candidates }, request } = JSON.parse(Buffer.from(req.body).toString());
         if (request.messages[0].content === 'bad') {
           return { requestId: req.requestId, statusCode: 200, headers: {}, body: Buffer.from('not a ranking') };
         }
-        const { model, peer, provider } = candidates[0];
         return { requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
-          body: Buffer.from(JSON.stringify({ recommendations: [{ model, peer, provider }] })) };
+          body: Buffer.from(JSON.stringify({ id: 'rank-1', object: 'routing.ranking', created: 1, router: { id: 'alpha', version: '1' },
+            ranked: [{ candidate_id: candidates[0].id }] })) };
       },
     };
     const { discoveredSeller } = await setupProxyNetwork(routing);
 
     const rank = (text = 'hi') => buyerNode!.sendRequest(discoveredSeller, {
       requestId: crypto.randomUUID(), method: 'POST', path: '/v1/routing/rank',
-      headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
-      body: Buffer.from(JSON.stringify({ service: 'alpha-route', revision: 'r', preferences: {},
-        request: { messages: [{ role: 'user', content: text }] },
-        candidates: [{ model: 'm', peer: 'b'.repeat(40), provider: 'openai', price: { inputUsdPerMillion: 1, outputUsdPerMillion: 1 } }] })),
+      headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha', 'x-antseed-service': 'alpha-route' },
+      body: Buffer.from(JSON.stringify({ request: { messages: [{ role: 'user', content: text }] },
+        routing: { candidates: [{ id: 'm@b', model: 'm', pricing: { input: 1, cache_read: 1, output: 1 } }] } })),
     });
 
     // First call negotiates (402 -> reserve -> retry). A malformed answer costs nothing on

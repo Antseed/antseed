@@ -1,65 +1,86 @@
-import { resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferences, type RoutingPreferenceSchema } from './routing-preferences.js';
+/**
+ * AntSeed's binding of Inference Routing Protocol (IRP) suggest-only mode:
+ * https://github.com/inference-routing/spec/blob/main/SPEC.md
+ * Bodies are plain IRP. The purchased routing service travels in the `x-antseed-service`
+ * header, like `x-antseed-provider`, so no AntSeed data is added to the bodies.
+ */
 
-/** Service API protocol advertised by sellers that recommend inference destinations. */
+/** Service API protocol advertised by sellers that rank inference destinations. */
 export const MODEL_ROUTING_PROTOCOL = 'model-routing';
-export const MODEL_ROUTING_DESCRIBE_PATH = '/v1/routing/describe';
+/** IRP §4: the router's supported models (free on AntSeed). */
+export const MODEL_ROUTING_MODELS_PATH = '/v1/routing/models';
+/** IRP §5: suggest-only ranking (one completed request on AntSeed). */
 export const MODEL_ROUTING_RANK_PATH = '/v1/routing/rank';
+/** Header naming the AntSeed routing service a models or rank request is for. */
+export const ROUTING_SERVICE_HEADER = 'x-antseed-service';
+export const ROUTING_RANKING_OBJECT = 'routing.ranking';
+export const MAX_ROUTING_CANDIDATES = 512;
+export const MAX_ROUTING_CANDIDATE_ID_LENGTH = 128;
+/** IRP default when `cost_quality_tradeoff` is absent. */
+export const DEFAULT_COST_QUALITY_TRADEOFF = 5;
 
-/** Free description of a router: the models it understands and the settings it accepts. */
-export type RoutingDescribeResponseV1 = {
-  revision: string;
-  supportedServiceIds: string[];
-  preferences: RoutingPreferenceSchema;
-  name?: string;
-  description?: string;
+/** IRP §4 `GET /v1/routing/models` response. */
+export type RoutingModelsResponseV1 = {
+  object: 'list';
+  data: Array<{ id: string; object: 'model' }>;
 };
 
-/** One peer/provider/model destination the buyer allows, with its price and expected cache reuse. */
+/** IRP §3.2 candidate. */
 export type RoutingCandidateV1 = {
+  id: string;
   model: string;
-  peer: string;
-  provider: string;
-  price: {
-    inputUsdPerMillion: number;
-    outputUsdPerMillion: number;
-    cachedInputUsdPerMillion?: number;
-  };
-  /**
-   * What the buyer already knows about usage on this candidate (Inference Routing Protocol
-   * `expected_usage`). `cache_read_tokens`: prompt tokens this exact peer/provider/model is
-   * expected to serve from its prompt cache. Absent means 0.
-   */
+  /** USD per 1M tokens. */
+  pricing: { input: number; cache_read: number; output: number };
+  /** Absent means 0 cache reads. */
   expected_usage?: { cache_read_tokens?: number };
 };
 
 /**
- * The inference request being routed, as an OpenAI Chat Completions body (same convention as
- * the Inference Routing Protocol's `request`). Buyers convert Anthropic Messages and Responses
- * bodies before sending. Routers ignore `model` and `stream`; they never forward it.
+ * The inference request being ranked, as an OpenAI Chat Completions body (IRP `request`).
+ * Routers ignore `model` and `stream`; they never forward it.
  */
 export type RoutingInferenceRequestV1 = {
   messages: Array<{ role: string; [key: string]: unknown }>;
   [key: string]: unknown;
 };
 
+/** IRP §5.1 `POST /v1/routing/rank`. */
 export type RoutingRankRequestV1 = {
-  /** AntSeed routing service ID being purchased; sellers use it to match the paid offer. */
-  service: string;
-  revision: string;
-  preferences: RoutingPreferences;
   request: RoutingInferenceRequestV1;
-  candidates: RoutingCandidateV1[];
+  routing: {
+    /** 0 = best quality regardless of price, 10 = cheapest acceptable. Default 5. */
+    cost_quality_tradeoff?: number;
+    candidates: RoutingCandidateV1[];
+  };
 };
 
-export type RoutingRecommendationV1 = {
-  model: string;
-  peer: string;
-  provider: string;
+/** IRP §3.4 ranked entry. Only `candidate_id` is required. */
+export type RoutingRankedEntryV1 = {
+  candidate_id: string;
+  expected_quality?: number;
+  expected_cost_usd?: number;
+  expected_usage?: { input_tokens: number; cache_read_tokens: number; output_tokens: number };
+  reasoning_effort?: string;
 };
 
+/** IRP §5.2 response. */
 export type RoutingRankResponseV1 = {
-  recommendations: RoutingRecommendationV1[];
+  id: string;
+  object: typeof ROUTING_RANKING_OBJECT;
+  created: number;
+  router: { id: string; version: string };
+  ranked: RoutingRankedEntryV1[];
 };
+
+/** IRP §8 problem types. */
+export const ROUTING_PROBLEM_TYPES = {
+  invalidRequest: 'urn:irp:problem:invalid-request',
+  paymentRequired: 'urn:irp:problem:payment-required',
+  noScorableCandidate: 'urn:irp:problem:no-scorable-candidate',
+  unavailable: 'urn:irp:problem:unavailable',
+} as const;
+
+export type RoutingProblem = { type?: string; title?: string; status?: number; detail?: string };
 
 function object(value: unknown): value is Record<string, unknown> {
   return value !== null && typeof value === 'object' && !Array.isArray(value);
@@ -69,16 +90,17 @@ function text(value: unknown, maxLength = 256): value is string {
   return typeof value === 'string' && value.trim().length > 0 && value.length <= maxLength;
 }
 
-function onlyKeys(value: Record<string, unknown>, allowed: readonly string[]): boolean {
-  return Object.keys(value).every(key => allowed.includes(key));
-}
-
-function peerId(value: unknown): value is string {
-  return typeof value === 'string' && /^[0-9a-f]{40}$/.test(value);
-}
-
 function price(value: unknown): value is number {
   return typeof value === 'number' && Number.isFinite(value) && value >= 0;
+}
+
+function count(value: unknown): value is number {
+  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
+}
+
+/** An IRP `cost_quality_tradeoff`: an integer 0-10. */
+export function isCostQualityTradeoff(value: unknown): value is number {
+  return typeof value === 'number' && Number.isInteger(value) && value >= 0 && value <= 10;
 }
 
 const CHAT_ROLES = new Set(['developer', 'system', 'user', 'assistant', 'tool', 'function']);
@@ -89,91 +111,104 @@ function chatRequest(value: unknown): value is RoutingInferenceRequestV1 {
     && value.messages.every(message => object(message) && typeof message.role === 'string' && CHAT_ROLES.has(message.role));
 }
 
-function count(value: unknown): value is number {
-  return typeof value === 'number' && Number.isSafeInteger(value) && value >= 0;
-}
-
-/** Stable key for matching recommendations to candidates. */
-export function routingCandidateKey(entry: { model: string; peer: string; provider: string }): string {
-  return JSON.stringify([entry.peer, entry.provider, entry.model]);
-}
-
-export function validateRoutingDescribeResponse(value: unknown): asserts value is RoutingDescribeResponseV1 {
-  if (!object(value) || !onlyKeys(value, ['revision', 'supportedServiceIds', 'preferences', 'name', 'description'])
-    || !text(value.revision, 128) || !Array.isArray(value.supportedServiceIds)
-    || !value.supportedServiceIds.every(entry => text(entry))
-    || new Set(value.supportedServiceIds).size !== value.supportedServiceIds.length
-    || (value.name !== undefined && !text(value.name, 128))
-    || (value.description !== undefined && (typeof value.description !== 'string' || value.description.length > 1024))) {
-    throw new Error('Invalid model-routing describe response');
+/** The routing service named by the `x-antseed-service` header, if any. */
+export function routingServiceFromHeaders(headers: Record<string, string>): string | undefined {
+  for (const [name, value] of Object.entries(headers)) {
+    if (name.toLowerCase() === ROUTING_SERVICE_HEADER && typeof value === 'string' && value.trim()) return value.trim();
   }
-  validateRoutingPreferenceSchema(value.preferences);
+  return undefined;
 }
 
-/** Optional `expected_usage`; `cache_read_tokens` is optional and defaults to 0. */
-function expectedUsage(value: unknown): boolean {
-  if (value === undefined) return true;
-  return object(value) && onlyKeys(value, ['cache_read_tokens'])
-    && (value.cache_read_tokens === undefined || count(value.cache_read_tokens));
+/** Validate `GET /v1/routing/models` and return the model IDs. Unknown members are ignored (IRP §2). */
+export function parseRoutingModelsResponse(value: unknown): string[] {
+  if (!object(value) || value.object !== 'list' || !Array.isArray(value.data)) {
+    throw new Error('Invalid routing models response: expected an IRP model list');
+  }
+  const models = value.data.map(entry => {
+    if (!object(entry) || entry.object !== 'model' || !text(entry.id)) throw new Error('Invalid routing models response: each model needs an id');
+    return entry.id;
+  });
+  if (new Set(models).size !== models.length) throw new Error('Invalid routing models response: duplicate model id');
+  return models;
 }
 
 function validateCandidate(value: unknown): asserts value is RoutingCandidateV1 {
-  if (!object(value) || !onlyKeys(value, ['model', 'peer', 'provider', 'price', 'expected_usage'])
-    || !text(value.model) || !peerId(value.peer) || !text(value.provider, 128)
-    || !object(value.price) || !onlyKeys(value.price, ['inputUsdPerMillion', 'outputUsdPerMillion', 'cachedInputUsdPerMillion'])
-    || !price(value.price.inputUsdPerMillion) || !price(value.price.outputUsdPerMillion)
-    || (value.price.cachedInputUsdPerMillion !== undefined && !price(value.price.cachedInputUsdPerMillion))
-    || !expectedUsage(value.expected_usage)) {
+  if (!object(value) || !text(value.id, MAX_ROUTING_CANDIDATE_ID_LENGTH) || !text(value.model)
+    || !object(value.pricing) || !price(value.pricing.input) || !price(value.pricing.cache_read) || !price(value.pricing.output)
+    || (value.expected_usage !== undefined && (!object(value.expected_usage)
+      || (value.expected_usage.cache_read_tokens !== undefined && !count(value.expected_usage.cache_read_tokens))))) {
     throw new Error('Invalid model-routing candidate');
   }
 }
 
 /**
- * Check a rank request against the router's current description. Routers call this before
- * ranking; buyers call it before paying so malformed requests never leave the device.
+ * Check a rank request. Buyers call it before paying so malformed requests never leave the
+ * device; routers can call it before ranking. With `supportedModels`, every candidate must
+ * use a listed model. Unknown members are ignored (IRP §2).
  */
-export function validateRoutingRankRequest(value: unknown, description: RoutingDescribeResponseV1): asserts value is RoutingRankRequestV1 {
-  validateRoutingDescribeResponse(description);
-  if (!object(value) || !onlyKeys(value, ['service', 'revision', 'preferences', 'request', 'candidates'])
-    || !text(value.service) || typeof value.revision !== 'string' || !chatRequest(value.request)
-    || !Array.isArray(value.candidates) || value.candidates.length === 0) {
+export function validateRoutingRankRequest(value: unknown, supportedModels?: readonly string[]): asserts value is RoutingRankRequestV1 {
+  const routing = object(value) && object(value.routing) ? value.routing : undefined;
+  if (!object(value) || !chatRequest(value.request) || !routing
+    || !Array.isArray(routing.candidates) || routing.candidates.length === 0 || routing.candidates.length > MAX_ROUTING_CANDIDATES
+    || (routing.cost_quality_tradeoff !== undefined && !isCostQualityTradeoff(routing.cost_quality_tradeoff))) {
     throw new Error('Invalid model-routing rank request');
   }
-  if (value.revision !== description.revision) throw new Error('Router description changed; refresh it');
-  const supported = new Set(description.supportedServiceIds);
-  const keys = new Set<string>();
-  for (const candidate of value.candidates) {
+  const supported = supportedModels ? new Set(supportedModels) : null;
+  const ids = new Set<string>();
+  for (const candidate of routing.candidates) {
     validateCandidate(candidate);
-    if (!supported.has(candidate.model)) throw new Error(`Router does not support model ${candidate.model}`);
-    const key = routingCandidateKey(candidate);
-    if (keys.has(key)) throw new Error('Duplicate model-routing candidate');
-    keys.add(key);
+    if (supported && !supported.has(candidate.model)) throw new Error(`Router does not support model ${candidate.model}`);
+    if (ids.has(candidate.id)) throw new Error('Duplicate model-routing candidate id');
+    ids.add(candidate.id);
   }
-  resolveRoutingPreferences(description.preferences, value.preferences);
 }
 
 /**
- * Keep recommendations that name a sent candidate, in the router's order. Invalid entries
- * and duplicates are dropped.
- * Throws when the response shape is invalid or no entry survives.
+ * Validate an IRP ranking and keep entries naming a sent candidate, in the router's order
+ * (IRP §5.3: clients reject unknown `candidate_id`s). Duplicates and malformed entries are
+ * dropped; optional predictions are kept only when well-formed.
+ * Throws when the envelope is invalid or no entry survives.
  */
-export function validateRoutingRankResponse(value: unknown, candidates: readonly RoutingCandidateV1[]): RoutingRecommendationV1[] {
-  if (!object(value) || !onlyKeys(value, ['recommendations'])
-    || !Array.isArray(value.recommendations) || value.recommendations.length === 0) {
+export function validateRoutingRankResponse(value: unknown, candidates: readonly Pick<RoutingCandidateV1, 'id'>[]): RoutingRankedEntryV1[] {
+  if (!object(value) || value.object !== ROUTING_RANKING_OBJECT || !text(value.id) || !count(value.created)
+    || !object(value.router) || typeof value.router.id !== 'string' || typeof value.router.version !== 'string'
+    || !Array.isArray(value.ranked) || value.ranked.length === 0) {
     throw new Error('Invalid model-routing rank response');
   }
-  const byKey = new Map(candidates.map(candidate => [routingCandidateKey(candidate), candidate]));
+  const sent = new Set(candidates.map(candidate => candidate.id));
   const seen = new Set<string>();
-  const accepted: RoutingRecommendationV1[] = [];
-  for (const entry of value.recommendations) {
-    if (!object(entry) || !onlyKeys(entry, ['model', 'peer', 'provider'])
-      || typeof entry.model !== 'string' || typeof entry.peer !== 'string' || typeof entry.provider !== 'string') continue;
-    const key = routingCandidateKey({ model: entry.model, peer: entry.peer, provider: entry.provider });
-    const candidate = byKey.get(key);
-    if (!candidate || seen.has(key)) continue;
-    seen.add(key);
-    accepted.push({ model: candidate.model, peer: candidate.peer, provider: candidate.provider });
+  const accepted: RoutingRankedEntryV1[] = [];
+  for (const entry of value.ranked) {
+    if (!object(entry) || typeof entry.candidate_id !== 'string' || !sent.has(entry.candidate_id) || seen.has(entry.candidate_id)) continue;
+    seen.add(entry.candidate_id);
+    const usage = entry.expected_usage;
+    accepted.push({
+      candidate_id: entry.candidate_id,
+      ...(typeof entry.expected_quality === 'number' && entry.expected_quality >= 0 && entry.expected_quality <= 1 ? { expected_quality: entry.expected_quality } : {}),
+      ...(price(entry.expected_cost_usd) ? { expected_cost_usd: entry.expected_cost_usd } : {}),
+      ...(object(usage) && count(usage.input_tokens) && count(usage.cache_read_tokens) && count(usage.output_tokens)
+        ? { expected_usage: { input_tokens: usage.input_tokens, cache_read_tokens: usage.cache_read_tokens, output_tokens: usage.output_tokens } }
+        : {}),
+      ...(text(entry.reasoning_effort, 32) ? { reasoning_effort: entry.reasoning_effort } : {}),
+    });
   }
-  if (!accepted.length) throw new Error('Router returned no recommendation among the sent candidates');
+  if (!accepted.length) throw new Error('Router returned no ranking among the sent candidates');
   return accepted;
+}
+
+/** IRP §8 Problem Details (RFC 9457), when the body is one. */
+export function parseRoutingProblem(body: unknown): RoutingProblem | null {
+  if (!object(body)) return null;
+  const problem: RoutingProblem = {
+    ...(typeof body.type === 'string' ? { type: body.type } : {}),
+    ...(typeof body.title === 'string' ? { title: body.title } : {}),
+    ...(typeof body.status === 'number' ? { status: body.status } : {}),
+    ...(typeof body.detail === 'string' ? { detail: body.detail } : {}),
+  };
+  return problem.type || problem.title || problem.detail ? problem : null;
+}
+
+/** A serialized IRP problem response body (`application/problem+json`). */
+export function routingProblemBody(status: number, type: string, title: string, detail?: string): Uint8Array {
+  return new TextEncoder().encode(JSON.stringify({ type, title, status, ...(detail ? { detail } : {}) }));
 }

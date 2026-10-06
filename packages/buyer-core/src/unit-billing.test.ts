@@ -30,13 +30,13 @@ describe('unit billing adapters', () => {
     const response = (statusCode: number, body: unknown) => ({
       requestId: 'r', statusCode, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)),
     });
-    const ranked = { recommendations: [{ model: 'm', peer: 'p', provider: 'openai' }] };
+    const ranked = { id: 'r', object: 'routing.ranking', created: 1, router: { id: 'a', version: '1' }, ranked: [{ candidate_id: 'c' }] };
 
     expect(isUnitBilledProtocol('model-routing')).toBe(true);
     expect(validateUnitBillingModelForProtocolV1('model-routing', model)).toEqual([]);
     expect(validateUnitBillingModelForProtocolV1('openai-images', model)).toEqual(['completed_requests is not supported for openai-images']);
     expect(computeFinalUnitBilling(model, context, response(200, ranked)).costUsdc).toBe(1_000n);
-    expect(computeFinalUnitBilling(model, context, response(200, { recommendations: [] })).costUsdc).toBe(0n);
+    expect(computeFinalUnitBilling(model, context, response(200, { ...ranked, ranked: [] })).costUsdc).toBe(0n);
     expect(computeFinalUnitBilling(model, context, response(200, 'garbage')).costUsdc).toBe(0n);
     expect(computeFinalUnitBilling(model, context, response(500, ranked)).costUsdc).toBe(0n);
   });

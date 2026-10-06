@@ -34,25 +34,33 @@ export {
 // on ethers directly.
 export { formatEther, parseEther } from 'ethers';
 export type { Router } from './interfaces/buyer-router.js';
-export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, RoutingDescribeContext } from './interfaces/model-routing-client.js';
-export { RoutingDescriptionChangedError } from './interfaces/model-routing-client.js';
+export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, RoutingModelsContext } from './interfaces/model-routing-client.js';
 export type { RoutingUsageObservation } from './interfaces/model-routing-client.js';
 export * from './routing/selection.js';
-export { assertRoutingPreferences, resolveRoutingPreferences, validateRoutingPreferenceSchema, type RoutingPreferenceField, type RoutingPreferences, type RoutingPreferenceSchema } from '@antseed/protocol';
 export {
+  DEFAULT_COST_QUALITY_TRADEOFF,
+  MAX_ROUTING_CANDIDATES,
+  MAX_ROUTING_CANDIDATE_ID_LENGTH,
   MODEL_ROUTING_PROTOCOL,
-  MODEL_ROUTING_DESCRIBE_PATH,
+  MODEL_ROUTING_MODELS_PATH,
   MODEL_ROUTING_RANK_PATH,
-  routingCandidateKey,
-  validateRoutingDescribeResponse,
+  ROUTING_PROBLEM_TYPES,
+  ROUTING_RANKING_OBJECT,
+  ROUTING_SERVICE_HEADER,
+  isCostQualityTradeoff,
+  parseRoutingModelsResponse,
+  parseRoutingProblem,
+  routingProblemBody,
+  routingServiceFromHeaders,
   validateRoutingRankRequest,
   validateRoutingRankResponse,
   type RoutingCandidateV1,
-  type RoutingDescribeResponseV1,
   type RoutingInferenceRequestV1,
+  type RoutingModelsResponseV1,
+  type RoutingProblem,
+  type RoutingRankedEntryV1,
   type RoutingRankRequestV1,
   type RoutingRankResponseV1,
-  type RoutingRecommendationV1,
 } from '@antseed/protocol';
 
 // Types (re-export everything)

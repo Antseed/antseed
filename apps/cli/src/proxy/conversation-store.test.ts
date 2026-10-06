@@ -15,11 +15,12 @@ test('conversation router settings persist independently, clone inputs and clear
   context.after(async () => { await store.flush(); await rm(dir, { recursive: true, force: true }) })
   const first = store.touch({ tool: 'vpr', sessionKey: 'first' })
   const second = store.touch({ tool: 'vpr', sessionKey: 'second' })
-  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' }, preferences: { tradeoff: '9' } }
+  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' }, costQualityTradeoff: 9 }
   store.setPinnedModel(first.id, 'old-model', 'user')
   store.setRoutingSelection(first.id, selection)
-  selection.preferences.tradeoff = '1'
-  assert.equal(store.get(first.id)?.routingSelection?.preferences?.tradeoff, '9')
+  selection.service.serviceId = 'mutated'
+  assert.equal(store.get(first.id)?.routingSelection?.service.serviceId, 'alpha-route')
+  assert.equal(store.get(first.id)?.routingSelection?.costQualityTradeoff, 9)
   assert.equal(store.get(first.id)?.pinnedModel, null)
   assert.equal(store.get(first.id)?.peerSource, 'auto')
   assert.equal(store.get(second.id)?.routingSelection, null)
