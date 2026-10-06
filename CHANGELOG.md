@@ -37,6 +37,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Website: add the Antseed Foundation's $2.4M funding announcement with the full investor list, buyer and provider participation guides, ANTS reward information, and the funding cover image for the article and social previews.
+
 - Desktop AI VPN: add Claude Code CLI to Connected Apps. Connecting updates `~/.claude/settings.json` to route Claude Code through the local buyer with the AI VPN-selected `antseed` model alias; disconnecting restores the Antseed-managed settings. Claude Code and T3 Code conversations are now attributed separately.
 - Website: added lANTS Market to the ecosystem page — a community-built board and USDC market for lANTS staking positions on Antseed, with a card and onchain preview. No other copy or layout changes.
 - Website: blog post "How to Earn From Your Local AI Model With Antseed" (`/blog/earn-from-your-local-ai-model`) on offering an Ollama, llama.cpp, or other OpenAI-compatible local model through `@antseed/provider-local-llm`, with per-service pricing and concurrency limits.
