@@ -38,6 +38,8 @@ const HOP_BY_HOP = new Set([
 
 /** Bodies are buffered to read the model for metrics; the buyer buffers them too. */
 const MAX_MODEL_SNIFF_BYTES = 4 * 1024 * 1024
+/** Largest request body the gateway accepts, matching the buyer's default upload limit. */
+const MAX_BODY_BYTES = 64 * 1024 * 1024
 const KEY_INFO_PATH = '/v1/key'
 const TOPUP_PATH = '/v1/key/topup'
 
@@ -170,6 +172,7 @@ export class GatewayServer {
     }
 
     const body = await readBody(req)
+    if (!body) return sendBodyTooLarge(res)
     let tag: string
     if (route.paid) {
       const admission = this._options.accounting.admit(key)
@@ -281,9 +284,11 @@ export class GatewayServer {
       return
     }
 
+    const raw = await readBody(req)
+    if (!raw) return sendBodyTooLarge(res)
     let amountUsdc: number
     try {
-      const body = JSON.parse((await readBody(req)).toString('utf8') || '{}') as { amount_usd?: unknown }
+      const body = JSON.parse(raw.toString('utf8') || '{}') as { amount_usd?: unknown }
       amountUsdc = parseUsdToUsdc(String(body.amount_usd ?? ''))
     } catch {
       sendError(res, 400, 'invalid_request_error', 'invalid_amount', 'Send {"amount_usd": "<USD amount>"}')
@@ -433,10 +438,19 @@ function sendError(res: http.ServerResponse, status: number, type: string, code:
   sendJson(res, status, { error: { message, type, code } })
 }
 
-async function readBody(req: http.IncomingMessage): Promise<Buffer> {
+/** The request body, or null once it exceeds MAX_BODY_BYTES (the rest is drained, not kept). */
+async function readBody(req: http.IncomingMessage): Promise<Buffer | null> {
   const chunks: Buffer[] = []
-  for await (const chunk of req) chunks.push(chunk as Buffer)
-  return Buffer.concat(chunks)
+  let size = 0
+  for await (const chunk of req) {
+    size += (chunk as Buffer).length
+    if (size <= MAX_BODY_BYTES) chunks.push(chunk as Buffer)
+  }
+  return size > MAX_BODY_BYTES ? null : Buffer.concat(chunks)
+}
+
+function sendBodyTooLarge(res: http.ServerResponse): void {
+  sendError(res, 413, 'invalid_request_error', 'request_too_large', `Request bodies are limited to ${MAX_BODY_BYTES / 1024 / 1024} MiB`)
 }
 
 function sniffModel(body: Buffer, contentType: string | undefined): string | null {

@@ -387,6 +387,23 @@ test('gateway rejects revoked and expired keys', async () => {
   }
 })
 
+test('gateway answers 413 to oversized bodies without forwarding them', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Big', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const response = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: 'x'.repeat(64 * 1024 * 1024 + 1) })
+    assert.equal(response.status, 413)
+    assert.equal(JSON.parse(response.body).error.code, 'request_too_large')
+    assert.equal(buyer.captured.length, 0)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway settles reported spend per key and answers 402 once a cap is reached', async () => {
   const { store, cleanup } = tempStore()
   // Each request costs $0.40 against a $1.00 daily cap.
