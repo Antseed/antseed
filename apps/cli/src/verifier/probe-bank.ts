@@ -2,13 +2,15 @@ import { randomInt } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
+  KBF_REFERENCE_VERSION,
+  aggregateKbfSelfTestOutcomes,
   canonicalHashBytes32,
   computeBinomialPower,
+  computeContrastDetection,
   computeReferenceId,
-  queryProfileHash,
+  referenceCompatibilityProfileHash,
   validateKbfReferenceV1,
   type KbfProbe,
-  type KbfReferenceSelfTestV1,
   type KbfReferenceV1,
   type ReferenceProbeSelfTestV1,
 } from '@antseed/fingerprints'
@@ -21,7 +23,7 @@ import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
 export const BANK_EXHAUSTED = 'BANK_EXHAUSTED'
-const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '4'
+const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '6'
 
 interface BankProbeV1 {
   probe: KbfProbe
@@ -71,6 +73,8 @@ export interface SellerProbeLedgerV1 {
     service: string
     referenceId: string
     probeIds: string[]
+    /** How the subset and order were drawn. Absent on legacy shared-epoch assignments. */
+    selection?: SellerProbeSelectionMethod
     reservedAt: string
     voidedAt?: string
     voidReason?: string
@@ -88,14 +92,39 @@ export interface EpochProbeReferenceV1 {
   createdByRunId: string
 }
 
+/**
+ * Each seller gets its own probe subset and order, drawn from a CSPRNG shuffle
+ * of the bank probes this seller has not been assigned in an earlier epoch.
+ * Colluding sellers audited on the same day therefore cannot share answers by
+ * probe position or rely on receiving the same questions.
+ */
+export const SELLER_PROBE_SELECTION_METHOD = 'per-seller-csprng-shuffle-v1'
+export type SellerProbeSelectionMethod = typeof SELLER_PROBE_SELECTION_METHOD
+
+export interface SellerEpochProbeReferenceV1 {
+  version: 1
+  kind: 'antseed-kbf-seller-epoch-probe-reference'
+  model: string
+  epoch: string
+  sellerPeerId: string
+  compatibilityHash: string
+  selection: {
+    method: SellerProbeSelectionMethod
+    eligibleProbeCount: number
+    excludedPreviouslyAssignedProbeCount: number
+    allowProbeReuse: boolean
+  }
+  reference: KbfReferenceV1
+  createdAt: string
+  createdByRunId: string
+}
+
 export interface ProbeBankPowerStatus {
   totalProbeCount: number
   eligibleProbeCount: number
   selectedProbeCount: number | null
   statisticalPower: number | null
 }
-
-const epochReferenceCreations = new Map<string, Promise<KbfReferenceV1>>()
 
 export async function appendModelReferenceToBank(input: {
   banksDir: string
@@ -204,9 +233,10 @@ export async function reserveModelAuditReference(input: {
       throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
     }
     const now = input.now?.() ?? Date.now()
-    const reference = await loadOrCreateEpochProbeReference({
+    const reference = await loadOrCreateSellerEpochProbeReference({
       banksDir: input.banksDir,
       model: input.model,
+      sellerPeerId: input.sellerPeerId,
       epoch: input.epoch,
       runId: input.runId,
       allowProbeReuse: input.allowProbeReuse === true,
@@ -214,6 +244,7 @@ export async function reserveModelAuditReference(input: {
       now,
       shuffle: input.shuffle,
       bank,
+      ledger,
     })
     const reservedAt = new Date(now).toISOString()
     const auditId = canonicalHashBytes32({
@@ -234,6 +265,7 @@ export async function reserveModelAuditReference(input: {
       service: input.service,
       referenceId: reference.referenceId,
       probeIds,
+      selection: SELLER_PROBE_SELECTION_METHOD,
       reservedAt,
     })
     await mkdir(dirname(ledgerPath), { recursive: true })
@@ -261,11 +293,30 @@ export async function loadModelAuditReservation(input: {
   }
   const assignment = ledger.assignments.find((entry) => entry.auditId === input.auditId && !entry.voidedAt)
   if (!assignment) throw new Error(`active audit reservation ${input.auditId} not found in ${ledgerPath}`)
+  const sellerEpochReference = await readJsonIfExists<SellerEpochProbeReferenceV1>(
+    sellerEpochProbeReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId),
+  )
+  if (sellerEpochReference) {
+    const reference = validateSellerEpochProbeReference({
+      value: sellerEpochReference,
+      bank,
+      model: input.model,
+      sellerPeerId: input.sellerPeerId,
+      epoch: assignment.epoch,
+      config: input.config,
+    })
+    if (reference.referenceId !== assignment.referenceId
+      || !sameValues(reference.probes.map((probe) => probe.id), assignment.probeIds)) {
+      throw new Error(`audit reservation ${input.auditId} does not match its seller epoch probe reference`)
+    }
+    return { reference, assignment: structuredClone(assignment) }
+  }
+  // Legacy reservations drew one shared reference per model and epoch.
   const epochReference = await readJsonIfExists<EpochProbeReferenceV1>(
     epochProbeReferencePath(input.banksDir, input.model, assignment.epoch),
   )
   if (epochReference) {
-    const reference = validateEpochProbeReference({
+    const reference = validateLegacyEpochProbeReference({
       value: epochReference,
       bank,
       model: input.model,
@@ -330,13 +381,31 @@ export function bankPath(banksDir: string, model: string): string {
   return join(banksDir, safeServiceSlug(model), 'bank.json')
 }
 
+/** Legacy shared reference for every seller of a model in one epoch. Read-only. */
 export function epochProbeReferencePath(banksDir: string, model: string, epoch: string): string {
   return join(banksDir, safeServiceSlug(model), 'epochs', `${safeServiceSlug(epoch)}.json`)
 }
 
-async function loadOrCreateEpochProbeReference(input: {
+export function sellerEpochProbeReferencePath(
+  banksDir: string,
+  model: string,
+  epoch: string,
+  sellerPeerId: string,
+): string {
+  return join(
+    banksDir,
+    safeServiceSlug(model),
+    'epochs',
+    safeServiceSlug(epoch),
+    'sellers',
+    `${sellerPeerHash(sellerPeerId)}.json`,
+  )
+}
+
+async function loadOrCreateSellerEpochProbeReference(input: {
   banksDir: string
   model: string
+  sellerPeerId: string
   epoch: string
   runId: string
   allowProbeReuse: boolean
@@ -344,97 +413,99 @@ async function loadOrCreateEpochProbeReference(input: {
   now: number
   shuffle?: <T>(values: readonly T[]) => T[]
   bank: ProbeBankV1
+  ledger: SellerProbeLedgerV1
 }): Promise<KbfReferenceV1> {
-  const path = epochProbeReferencePath(input.banksDir, input.model, input.epoch)
-  const pending = epochReferenceCreations.get(path)
-  if (pending) return pending
-  const created = createEpochProbeReference(path, input)
-  epochReferenceCreations.set(path, created)
-  try {
-    return await created
-  } finally {
-    if (epochReferenceCreations.get(path) === created) epochReferenceCreations.delete(path)
-  }
-}
-
-async function createEpochProbeReference(
-  path: string,
-  input: {
-    banksDir: string
-    model: string
-    epoch: string
-    runId: string
-    allowProbeReuse: boolean
-    config?: VerifierCLIConfig
-    now: number
-    shuffle?: <T>(values: readonly T[]) => T[]
-    bank: ProbeBankV1
-  },
-): Promise<KbfReferenceV1> {
-  const lock = await acquirePidFileLock(`${path}.lock`)
-  try {
-    const existing = await readJsonIfExists<EpochProbeReferenceV1>(path)
-    if (existing) {
-      return validateEpochProbeReference({
-        value: existing,
-        bank: input.bank,
-        model: input.model,
-        epoch: input.epoch,
-        config: input.config,
-      })
-    }
-    const used = input.allowProbeReuse
-      ? new Set<string>()
-      : await usedEpochProbeIds(dirname(path), input.model)
-    const activeContrasts = new Set(input.bank.contrastModels.map(normalized))
-    const excludedDomains = excludedVerifierDomains(input.config, input.model)
-    const available = input.bank.probes.filter((entry) => !used.has(entry.probe.id)
-      && !excludedDomains.has(entry.probe.domain)
-      && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
-    const shuffled = (input.shuffle ?? cryptoShuffle)(available)
-    const reference = selectPoweredReference(input.bank, shuffled, input.config, input.now)
-    if (!reference) {
-      throw new Error(`${BANK_EXHAUSTED}: ${available.length} unused probes remain for ${input.model} epoch ${input.epoch}`)
-    }
-    const createdAt = new Date(input.now).toISOString()
-    const value: EpochProbeReferenceV1 = {
-      version: 1,
-      kind: 'antseed-kbf-epoch-probe-reference',
+  // The caller holds the seller ledger lock, which serializes this per seller.
+  const path = sellerEpochProbeReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId)
+  const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(path)
+  if (existing) {
+    return validateSellerEpochProbeReference({
+      value: existing,
+      bank: input.bank,
       model: input.model,
+      sellerPeerId: input.sellerPeerId,
       epoch: input.epoch,
-      compatibilityHash: input.bank.compatibilityHash,
-      reference,
-      createdAt,
-      createdByRunId: input.runId,
-    }
-    await writeJsonAtomic(path, value)
-    return structuredClone(reference)
-  } finally {
-    await lock.release()
+      config: input.config,
+    })
   }
+  const used = input.allowProbeReuse
+    ? new Set<string>()
+    : sellerProbeIdsFromOtherEpochs(input.ledger, input.epoch)
+  const activeContrasts = new Set(input.bank.contrastModels.map(normalized))
+  const excludedDomains = excludedVerifierDomains(input.config, input.model)
+  const candidates = input.bank.probes.filter((entry) => !excludedDomains.has(entry.probe.domain)
+    && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
+  const available = candidates.filter((entry) => !used.has(entry.probe.id))
+  const shuffled = (input.shuffle ?? cryptoShuffle)(available)
+  const reference = selectPoweredReference(input.bank, shuffled, input.config, input.now)
+  if (!reference) {
+    throw new Error(
+      `${BANK_EXHAUSTED}: ${available.length} probes not yet assigned to seller ${input.sellerPeerId} `
+      + `remain for ${input.model} epoch ${input.epoch}`,
+    )
+  }
+  const value: SellerEpochProbeReferenceV1 = {
+    version: 1,
+    kind: 'antseed-kbf-seller-epoch-probe-reference',
+    model: input.model,
+    epoch: input.epoch,
+    sellerPeerId: input.sellerPeerId,
+    compatibilityHash: input.bank.compatibilityHash,
+    selection: {
+      method: SELLER_PROBE_SELECTION_METHOD,
+      eligibleProbeCount: available.length,
+      excludedPreviouslyAssignedProbeCount: candidates.length - available.length,
+      allowProbeReuse: input.allowProbeReuse,
+    },
+    reference,
+    createdAt: new Date(input.now).toISOString(),
+    createdByRunId: input.runId,
+  }
+  await mkdir(dirname(path), { recursive: true })
+  await writeJsonAtomic(path, value)
+  return structuredClone(reference)
 }
 
-async function usedEpochProbeIds(directory: string, model: string): Promise<Set<string>> {
-  let names: string[]
-  try {
-    names = await readdir(directory)
-  } catch (error) {
-    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return new Set()
-    throw error
-  }
+/**
+ * Probes this seller was assigned in any other epoch, voided or not: a voided
+ * audit may still have sent its probes to the seller before it was voided.
+ */
+function sellerProbeIdsFromOtherEpochs(ledger: SellerProbeLedgerV1, epoch: string): Set<string> {
   const used = new Set<string>()
-  for (const name of names.filter((entry) => entry.endsWith('.json'))) {
-    const value = await readJsonIfExists<EpochProbeReferenceV1>(join(directory, name))
-    if (!value || value.version !== 1 || value.kind !== 'antseed-kbf-epoch-probe-reference'
-      || normalized(value.model) !== normalized(model) || !Array.isArray(value.reference?.probes)) {
-      throw new Error(`invalid epoch probe reference at ${join(directory, name)}`)
-    }
-    for (const probe of value.reference.probes) used.add(probe.id)
+  for (const assignment of ledger.assignments) {
+    if (assignment.epoch === epoch) continue
+    for (const probeId of assignment.probeIds) used.add(probeId)
   }
   return used
 }
 
-function validateEpochProbeReference(input: {
+function validateSellerEpochProbeReference(input: {
+  value: SellerEpochProbeReferenceV1
+  bank: ProbeBankV1
+  model: string
+  sellerPeerId: string
+  epoch: string
+  config?: VerifierCLIConfig
+}): KbfReferenceV1 {
+  const { value } = input
+  if (value.version !== 1 || value.kind !== 'antseed-kbf-seller-epoch-probe-reference'
+    || normalized(value.model) !== normalized(input.model)
+    || normalized(value.sellerPeerId) !== normalized(input.sellerPeerId)
+    || value.epoch !== input.epoch
+    || value.selection?.method !== SELLER_PROBE_SELECTION_METHOD
+    || value.compatibilityHash !== input.bank.compatibilityHash) {
+    throw new Error(`invalid seller epoch probe reference for ${input.model} epoch ${input.epoch}`)
+  }
+  return validateBankProbeReference({
+    reference: value.reference,
+    bank: input.bank,
+    model: input.model,
+    label: `seller epoch probe reference for ${input.model} epoch ${input.epoch}`,
+    config: input.config,
+  })
+}
+
+function validateLegacyEpochProbeReference(input: {
   value: EpochProbeReferenceV1
   bank: ProbeBankV1
   model: string
@@ -447,19 +518,36 @@ function validateEpochProbeReference(input: {
     || value.compatibilityHash !== bank.compatibilityHash) {
     throw new Error(`invalid epoch probe reference for ${input.model} epoch ${input.epoch}`)
   }
+  return validateBankProbeReference({
+    reference: value.reference,
+    bank,
+    model: input.model,
+    label: `epoch probe reference for ${input.model} epoch ${input.epoch}`,
+    config: input.config,
+  })
+}
+
+function validateBankProbeReference(input: {
+  reference: KbfReferenceV1
+  bank: ProbeBankV1
+  model: string
+  label: string
+  config?: VerifierCLIConfig
+}): KbfReferenceV1 {
+  const { bank, label } = input
   const sizing = resolveReferenceSizingPolicy(input.config)
-  const reference = validateKbfReferenceV1(value.reference, {
+  const reference = validateKbfReferenceV1(input.reference, {
     minimumStatisticalPower: sizing.minimumStatisticalPower,
   })
   if (!isReferenceProbeCountAllowed(reference.probes.length, sizing)) {
-    throw new Error(`epoch probe reference for ${input.model} epoch ${input.epoch} is incompatible with configured sizing`)
+    throw new Error(`${label} is incompatible with configured sizing`)
   }
   if (probeBankCompatibilityHash(input.model, reference) !== bank.compatibilityHash) {
-    throw new Error(`epoch probe reference for ${input.model} epoch ${input.epoch} is incompatible with the bank`)
+    throw new Error(`${label} is incompatible with the bank`)
   }
   const excludedDomains = excludedVerifierDomains(input.config, input.model)
   if (reference.probes.some((probe) => excludedDomains.has(probe.domain))) {
-    throw new Error(`epoch probe reference for ${input.model} epoch ${input.epoch} contains an excluded domain`)
+    throw new Error(`${label} contains an excluded domain`)
   }
   const bankById = new Map(bank.probes.map((entry) => [entry.probe.id, entry]))
   const outcomeById = new Map(reference.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]))
@@ -520,74 +608,54 @@ export async function inspectModelProbeBankPower(input: {
 }
 
 export function sellerLedgerPath(banksDir: string, model: string, sellerPeerId: string): string {
-  const hash = canonicalHashBytes32({ peerId: normalized(sellerPeerId) }).slice(2)
-  return join(banksDir, safeServiceSlug(model), 'sellers', `${hash}.json`)
+  return join(banksDir, safeServiceSlug(model), 'sellers', `${sellerPeerHash(sellerPeerId)}.json`)
 }
 
-export async function listClaimableReferenceCosts(
-  banksDir: string,
-  model: string,
-  evidenceHash?: string,
-): Promise<ReferenceCostEntryV1[]> {
-  const bank = await readRequiredBank(bankPath(banksDir, model), model)
-  return bank.referenceCosts
-    .filter((entry) => entry.status === 'unclaimed'
-      || (entry.status === 'reserved' && entry.reservedEvidenceHash === evidenceHash))
-    .map((entry) => structuredClone(entry))
+function sellerPeerHash(sellerPeerId: string): string {
+  return canonicalHashBytes32({ peerId: normalized(sellerPeerId) }).slice(2)
 }
 
-export async function reserveReferenceCosts(input: {
-  banksDir: string
-  model: string
-  evidenceHash: string
-  costIds: string[]
-}): Promise<ReferenceCostEntryV1[]> {
-  const path = bankPath(input.banksDir, input.model)
-  const lock = await acquirePidFileLock(join(dirname(path), '.bank.lock'))
-  try {
-    const bank = await readRequiredBank(path, input.model)
-    const requested = new Set(input.costIds)
-    const reserved: ReferenceCostEntryV1[] = []
-    for (const entry of bank.referenceCosts) {
-      if (!requested.has(entry.costId)) continue
-      if (entry.status === 'claimed') throw new Error(`reference cost ${entry.costId} is already claimed`)
-      if (entry.status === 'reserved' && entry.reservedEvidenceHash !== input.evidenceHash) {
-        throw new Error(`reference cost ${entry.costId} is reserved by another bundle`)
+/**
+ * Finds the full probe reference with `referenceId` among the per-seller (and legacy shared)
+ * epoch references of every model bank. Callers must validate the returned value.
+ */
+export async function findEpochProbeReference(banksDir: string, referenceId: string): Promise<unknown | null> {
+  const walk = async (directory: string): Promise<unknown | null> => {
+    let entries
+    try {
+      entries = await readdir(directory, { withFileTypes: true })
+    } catch (error) {
+      if (['ENOENT', 'ENOTDIR'].includes((error as NodeJS.ErrnoException).code ?? '')) return null
+      throw error
+    }
+    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
+      const path = join(directory, entry.name)
+      if (entry.isDirectory()) {
+        const found = await walk(path)
+        if (found) return found
+        continue
       }
-      entry.status = 'reserved'
-      entry.reservedEvidenceHash = input.evidenceHash
-      reserved.push(structuredClone(entry))
-      requested.delete(entry.costId)
+      if (!entry.isFile() || !entry.name.endsWith('.json')) continue
+      const value = await readJsonIfExists<EpochProbeReferenceV1 | SellerEpochProbeReferenceV1>(path)
+      if ((value?.kind === 'antseed-kbf-seller-epoch-probe-reference' || value?.kind === 'antseed-kbf-epoch-probe-reference')
+        && value.reference?.referenceId === referenceId) {
+        return structuredClone(value.reference)
+      }
     }
-    if (requested.size > 0) throw new Error(`unknown reference cost IDs: ${[...requested].join(', ')}`)
-    bank.updatedAt = new Date().toISOString()
-    await writeJsonAtomic(path, bank)
-    return reserved
-  } finally {
-    await lock.release()
+    return null
   }
-}
-
-export async function markReferenceCostsClaimed(input: {
-  banksDir: string
-  model: string
-  evidenceHash: string
-  transactionHash: string
-}): Promise<void> {
-  const path = bankPath(input.banksDir, input.model)
-  const lock = await acquirePidFileLock(join(dirname(path), '.bank.lock'))
+  let models: string[]
   try {
-    const bank = await readRequiredBank(path, input.model)
-    for (const entry of bank.referenceCosts) {
-      if (entry.status !== 'reserved' || entry.reservedEvidenceHash !== input.evidenceHash) continue
-      entry.status = 'claimed'
-      entry.claimedTransactionHash = input.transactionHash
-    }
-    bank.updatedAt = new Date().toISOString()
-    await writeJsonAtomic(path, bank)
-  } finally {
-    await lock.release()
+    models = await readdir(banksDir)
+  } catch (error) {
+    if ((error as NodeJS.ErrnoException).code === 'ENOENT') return null
+    throw error
   }
+  for (const model of models.sort()) {
+    const found = await walk(join(banksDir, model, 'epochs'))
+    if (found) return found
+  }
+  return null
 }
 
 function bankFromReference(model: string, reference: KbfReferenceV1, cost: ReferenceBuildCostV1): ProbeBankV1 {
@@ -650,7 +718,7 @@ function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): s
     model: normalized(model),
     referenceModel: normalized(reference.referenceModel),
     serviceAliases: reference.serviceAliases.map(normalized).sort(),
-    queryProfileHash: queryProfileHash(reference.queryProfile),
+    queryProfileHash: referenceCompatibilityProfileHash(reference),
     provenance: reference.provenance ?? null,
     generator: {
       name: reference.generator.name,
@@ -675,14 +743,16 @@ function selectPoweredReference(
   const sizing = resolveReferenceSizingPolicy(config)
   const excludedDomains = excludedVerifierDomains(config, bank.model)
   const eligible = available.filter((entry) => !excludedDomains.has(entry.probe.domain))
+  const testableContrasts = new Set(bank.probes.flatMap((entry) => entry.distinguishingContrastModels))
   for (let count = sizing.minimumProbeCount;
     count <= sizing.maximumProbeCount && count <= eligible.length;
     count += sizing.probeStep) {
     const selected = eligible.slice(0, count)
-    const selfTest = aggregateSelfTest(selected.map((entry) => entry.selfTest))
+    const selfTest = aggregateKbfSelfTestOutcomes(selected.map((entry) => entry.selfTest))
     const power = computeBinomialPower({
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
+      probeCount: count,
       minimumMismatchDelta: bank.referenceTemplate.minimumMismatchDelta,
       alpha: bank.statisticalAssumptions.alpha,
       cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
@@ -690,8 +760,26 @@ function selectPoweredReference(
     if (selfTest.coverage < 0.8 || selfTest.errorRate > 0.35
       || power.power < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
+    const contrasts = bank.contrastModels.map((model) => ({
+      model,
+      distinguishingProbeIds: selected
+        .filter((entry) => entry.distinguishingContrastModels.includes(model) && selectedIds.has(entry.probe.id))
+        .map((entry) => entry.probe.id),
+    }))
+    const contrastDetection = computeContrastDetection({
+      probeIds: selected.map((entry) => entry.probe.id),
+      contrasts,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      alpha: bank.statisticalAssumptions.alpha,
+      cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+    })
+    // Grow the subset until every testable contrast model would be flagged
+    // DIFF. A contrast that distinguishes no bank probe at all never answered
+    // during enrollment (for example, it was unavailable) and cannot be tested.
+    if (contrastDetection.some((entry) => testableContrasts.has(entry.model) && !entry.detected)) continue
     const reference: KbfReferenceV1 = {
-      version: 1,
+      version: KBF_REFERENCE_VERSION,
       kind: 'kbf',
       referenceId: '',
       ...bank.referenceTemplate,
@@ -707,34 +795,19 @@ function selectPoweredReference(
         clopperPearsonConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
         selfHamming: selfTest.hamming,
         selfTotal: selfTest.total,
+        probeCount: count,
         p0UpperBound: power.p0,
         alternativeMismatchRate: power.p1,
         criticalMismatchCount: power.criticalMismatchCount,
         power: power.power,
       },
-      contrasts: bank.contrastModels.map((model) => ({
-        model,
-        distinguishingProbeIds: selected
-          .filter((entry) => entry.distinguishingContrastModels.includes(model) && selectedIds.has(entry.probe.id))
-          .map((entry) => entry.probe.id),
-      })),
+      contrasts,
+      contrastDetection,
     }
     reference.referenceId = computeReferenceId(reference)
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })
   }
   return null
-}
-
-function aggregateSelfTest(outcomes: ReferenceProbeSelfTestV1[]): KbfReferenceSelfTestV1 {
-  const parsed = outcomes.filter((outcome) => outcome.match !== null).length
-  const hamming = outcomes.filter((outcome) => outcome.match !== 1).length
-  return {
-    hamming,
-    total: outcomes.length,
-    coverage: outcomes.length === 0 ? 0 : parsed / outcomes.length,
-    errorRate: outcomes.length === 0 ? 0 : hamming / outcomes.length,
-    outcomes,
-  }
 }
 
 function cryptoShuffle<T>(values: readonly T[]): T[] {

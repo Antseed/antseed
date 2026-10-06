@@ -12,6 +12,7 @@ import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { VerificationStorage } from '../src/verification/storage.js';
+import { AntseedNode } from '../src/node.js';
 
 const enc = new TextEncoder();
 
@@ -367,6 +368,49 @@ describe('BuyerPaymentManager', () => {
 
     // Buyer estimate used as cost, cumulative = 0 + estimate
     expect(BigInt(payload.cumulativeAmount)).toBe(SAMPLE_ESTIMATE.cost);
+  });
+
+  it('AntseedNode wires its verification storage as the request cost sink', async () => {
+    const verificationStorage = new VerificationStorage(join(tempDir, 'verification.db'));
+    const node = new AntseedNode({ role: 'buyer' });
+    const internals = node as unknown as {
+      _verificationStorage: VerificationStorage | null;
+      _createBuyerPaymentManager(identity: Identity, config: BuyerPaymentConfig, store: ChannelStore): BuyerPaymentManager;
+    };
+    internals._verificationStorage = verificationStorage;
+    manager = internals._createBuyerPaymentManager(identity, makeConfig(tempDir), store);
+    manager.setSigner(Wallet.createRandom());
+    const sellerPeerId = fakePeerId('seller-node-cost');
+    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+
+    const sellerClaim = SAMPLE_ESTIMATE.cost / 2n;
+    await manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost: sellerClaim,
+      reportedInputTokens: 100n,
+      reportedOutputTokens: 20n,
+      service: 'model-a',
+      requestId: 'node-request-cost-1',
+    });
+
+    expect(verificationStorage.getRequestCost('node-request-cost-1')).toMatchObject({
+      requestId: 'node-request-cost-1',
+      sellerPeerId,
+      service: 'model-a',
+      authorizedCostUsdc: sellerClaim,
+      source: 'response',
+    });
+
+    // A closed store must not break signing: the sink drops the record.
+    verificationStorage.close();
+    await expect(manager.signPerRequestAuth(sellerPeerId, {
+      inputBytes: SAMPLE_INPUT,
+      outputBytes: SAMPLE_OUTPUT,
+      sellerClaimedCost: sellerClaim,
+      service: 'model-a',
+      requestId: 'node-request-cost-2',
+    })).resolves.toBeDefined();
   });
 
   it('signPerRequestAuth persists the accepted request cost by caller request ID', async () => {

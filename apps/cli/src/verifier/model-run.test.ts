@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import {
+  KBF_PROMPT_VARIANT_IDS,
   computeBinomialPower,
   createReferenceQueryProfile,
+  getKbfPromptVariant,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, type PeerId, type PeerInfo } from '@antseed/node'
@@ -57,12 +59,13 @@ function reference(count: number): KbfReferenceV1 {
   const power = computeBinomialPower({
     selfHamming: 0,
     selfTotal: count,
+    probeCount: count,
     minimumMismatchDelta: 0.1,
     alpha: 0.05,
     cpConfidence: 0.99,
   })
   return {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: `reference-${count}`,
     referenceModel: 'gpt-5.6-sol',
@@ -76,7 +79,7 @@ function reference(count: number): KbfReferenceV1 {
       total: count,
       coverage: 1,
       errorRate: 0,
-      outcomes: probes.map((probe) => ({ probeId: probe.id, answer: probe.consensus, match: 1 })),
+      outcomes: probes.map((probe) => ({ probeId: probe.id, answers: [probe.consensus], matches: [1] })),
     },
     probes,
     selectedProbeCount: count,
@@ -88,6 +91,7 @@ function reference(count: number): KbfReferenceV1 {
       clopperPearsonConfidence: 0.99,
       selfHamming: 0,
       selfTotal: count,
+      probeCount: count,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
@@ -109,6 +113,7 @@ async function runTarget(
   auditTimeoutMs = 10_000,
   resume?: ModelVerificationResumeInput,
   checkpointIdentity?: { runId: string; epoch: string; model: string },
+  targetReference: KbfReferenceV1 = reference(count),
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-target-'))
   let requestCount = 0
@@ -282,7 +287,7 @@ async function runTarget(
       },
       target: peer(),
       service: 'GPT-5.6-SOL',
-      reference: reference(count),
+      reference: targetReference,
       auditId: resume ? `0x${'88'.repeat(32)}` : undefined,
       resume,
       checkpointIdentity,
@@ -520,6 +525,44 @@ test('proxy runtime uses dynamic reference sizes and pins every batch', async ()
     for (const request of run.requests) {
       assert.equal((request.headers as Record<string, string>)['x-antseed-pin-peer'], '11'.repeat(20))
     }
+  }
+})
+
+test('audit batches use recorded crypto-random prompt variants', async () => {
+  const run = await runTarget(500)
+  assert.equal(run.result.status, 'SAME')
+  const used = new Set<string>()
+  for (const exchange of run.evidence.exchanges) {
+    const variantId = exchange.promptVariantId
+    assert.ok(variantId && KBF_PROMPT_VARIANT_IDS.includes(variantId))
+    used.add(variantId)
+    const body = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    const variant = getKbfPromptVariant(variantId)
+    assert.equal(body.messages[0]?.content, variant.systemPrompt)
+    assert.equal(body.messages[1]?.content.startsWith(variant.task), true)
+  }
+  assert.ok(used.size > 1, 'expected more than one prompt variant across 50 batches')
+})
+
+test('audits send the canonical body without reference-endpoint settings', async () => {
+  const legacy = reference(100)
+  legacy.queryProfile.reasoningStrategy = 'bare'
+  legacy.queryProfile.requestOverrides = { reasoning_effort: 'none', reasoning: { effort: 'low' } }
+  legacy.queryProfile.requestOmissions = ['temperature', 'top_p']
+  const run = await runTarget(100, 'valid', 0, 'verified', true, 10_000, undefined, undefined, legacy)
+  assert.equal(run.result.status, 'SAME')
+  assert.equal(run.requests.length, 10)
+  for (const request of run.requests) {
+    const body = JSON.parse(request.body) as Record<string, unknown>
+    assert.equal(body.temperature, 0)
+    assert.equal(body.top_p, 1)
+    assert.equal(body.max_tokens, legacy.queryProfile.maxTokensPerRequest)
+    assert.equal(body.stream, false)
+    assert.equal(body.n, 1)
+    assert.equal(body.reasoning_effort, undefined)
+    assert.equal(body.reasoning, undefined)
   }
 })
 

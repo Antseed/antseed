@@ -29,7 +29,7 @@ function audit(
       queryProfile: createReferenceQueryProfile({ upstreamModel: 'upstream/model-a' }),
       statisticalPower: 0.99, statisticalPowerEvidence: { power: 0.99 },
       selfTest: { hamming: 0, total: 1, coverage: 1, errorRate: 0,
-        outcomes: [{ probeId: 'probe-1', answer: 10, match: 1 }] },
+        outcomes: [{ probeId: 'probe-1', answers: [10], matches: [1] }] },
       probes: [{ id: 'probe-1', name: 'probe', domain: 'math', template: 'Value is ___.',
         consensus: 10, range: [0, 20], tolerance: { mode: 'absolute', value: 0 },
         enrollmentEvidence: { temperatures: [0, 0.7, 0.7], answers: [10, 10, 10], rule: 'rounded-exact-agreement' } }],
@@ -102,7 +102,7 @@ test('model consensus evidence aggregates authenticated seller support by probe'
       version: number
       evidenceLevel?: string
       scope: { referenceIntegrity: string; rawSellerResponses: string; paymentEvidence: boolean }
-      reference: { relativeIntegrityPath: string }
+      references: Array<{ relativeIntegrityPath: string }>
       decisionRule: typeof REFERENCE_VOTE_DECISION_RULE
       summary: {
         authenticatedSellerCount: number
@@ -194,9 +194,10 @@ test('model consensus evidence aggregates authenticated seller support by probe'
     })
     assert.equal(evidence.probes[0]?.sellerAnswers[0]?.responseAuthSignature, `0x${'66'.repeat(65)}`)
     assert.equal(evidence.probes[0]?.referenceConsensus, 10)
-    assert.match(evidence.reference.relativeIntegrityPath, /^\.\.\/\.\.\/references\/reference-1\/probe-integrity\.json$/)
-    assert.ok(written.referenceIntegrityPath)
-    const integrity = JSON.parse(await readFile(written.referenceIntegrityPath!, 'utf8')) as {
+    assert.equal(evidence.references.length, 1)
+    assert.match(evidence.references[0]!.relativeIntegrityPath, /^\.\.\/\.\.\/references\/reference-1\/probe-integrity\.json$/)
+    assert.equal(written.referenceIntegrityPaths.length, 1)
+    const integrity = JSON.parse(await readFile(written.referenceIntegrityPaths[0]!, 'utf8')) as {
       kind: string
       probes: Array<{ probe: { enrollmentEvidence?: unknown } }>
     }
@@ -278,6 +279,45 @@ test('malformed output remains authenticated evidence but is excluded from refer
       'malformed-output-batch-not-scoreable',
     )
     assert.equal(evidence.probes[0]?.referenceDecision, 'NO_RESPONSE')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('model consensus evidence links every seller reference and only counts assigned sellers', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-model-consensus-multi-'))
+  try {
+    const runDirectory = join(directory, 'audits', 'run-1')
+    const results = []
+    for (const [index, probeId] of ['probe-1', 'probe-2'].entries()) {
+      const peerId = String(index + 1).repeat(40)
+      const auditId = `audit-${index}`
+      const evidence = audit(peerId, 10, 1)
+      evidence.reference.referenceId = `reference-${index + 1}`
+      evidence.reference.probes[0]!.id = probeId
+      evidence.reference.selfTest.outcomes = [{ probeId, answers: [10], matches: [1] }]
+      evidence.exchanges[0]!.probeIds = [probeId]
+      const written = await writeProxyAuditEvidence(join(runDirectory, 'sellers'), auditId, evidence)
+      results.push({ peerId, displayName: null, agentId: null, service: 'model-a', status: 'SAME' as const,
+        auditId, parsedProbeCount: 1, probeCount: 1, correctProbeCount: 1,
+        incorrectProbeCount: 0, correctRate: 1, requestCount: 1,
+        cost: emptyAuditCostSummary(), evidencePath: written.path,
+        evidenceHash: written.evidenceHash })
+    }
+    const written = await writeModelProbeConsensusEvidence({
+      directory: runDirectory,
+      referencesDirectory: join(directory, 'references'),
+      runId: 'run-1', epoch: '2026-08-13', model: 'model-a',
+      createdAt: '2026-08-13T10:01:00.000Z', results,
+    })
+    const evidence = JSON.parse(await readFile(written.consensusPath, 'utf8')) as ModelProbeConsensusEvidenceV1
+    assert.deepEqual(evidence.references.map((reference) => reference.referenceId), ['reference-1', 'reference-2'])
+    assert.equal(written.referenceIntegrityPaths.length, 2)
+    assert.deepEqual(evidence.probes.map((probe) => probe.referenceIds), [['reference-1'], ['reference-2']])
+    for (const probe of evidence.probes) {
+      assert.equal(probe.referenceDecision, 'CONFIRMED')
+      assert.equal(probe.sellerDecisions.NO_RESPONSE.count, 0)
+    }
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

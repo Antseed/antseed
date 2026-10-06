@@ -68,6 +68,8 @@ export interface ChainConfig {
   explorerApiUrl?: string;
   /** AntseedVerification contract address. */
   verificationContractAddress?: string;
+  /** Block when the verification contract was deployed. Floor for verifier event scans. */
+  verificationDeployBlock?: number;
   /** AntseedDepositRelay contract for gasless USDC sweeps from buyer hot wallets. */
   depositRelayAddress?: string;
 }

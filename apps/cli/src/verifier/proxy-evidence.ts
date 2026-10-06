@@ -7,6 +7,7 @@ import {
   type FingerprintVerdict,
   type KbfProbe,
   type MatchVector,
+  type ReferenceProbeSelfTestV1,
   type ReferenceQueryProfileV1,
 } from '@antseed/fingerprints'
 import type { StoredResponseAuth } from '@antseed/node'
@@ -31,6 +32,8 @@ export interface ProxyAuditEvidenceExchange {
   attemptCount: number
   requestIds: string[]
   probeIds: string[]
+  /** KBF prompt variant used for this batch; absent on evidence predating prompt variants. */
+  promptVariantId?: string
   request: {
     method: 'POST'
     url: string
@@ -155,7 +158,7 @@ export interface ProxyAuditEvidenceV1 {
       total: number
       coverage: number
       errorRate: number
-      outcomes?: Array<{ probeId: string; answer: number | null; match: 0 | 1 | null }>
+      outcomes?: ReferenceProbeSelfTestV1[]
     }
     probes: KbfProbe[]
   }

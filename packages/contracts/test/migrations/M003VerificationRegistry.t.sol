@@ -74,21 +74,28 @@ contract M003VerificationRegistryTest is Test {
         assertFalse(verification.approvedVerifiers(verifier));
     }
 
-    function test_approvedVerifierCanSubmitAndReadBundle() public {
+    function test_approvedVerifierCanSubmitAuditorSignedReport() public {
         AntseedVerification verification = script.runWith(config());
         vm.prank(address(0xCAFE));
         uint256 agentId = identity.register();
-        IAntseedVerification.VerificationResult[] memory results = new IAntseedVerification.VerificationResult[](1);
-        results[0] = IAntseedVerification.VerificationResult({
-            agentId: agentId,
-            serviceHash: keccak256("model"),
-            verdict: IAntseedVerification.Verdict.SAME
+        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](1);
+        results[0] = IAntseedVerification.ServiceResult({
+            serviceHash: keccak256("model"), modelHash: keccak256("reference"), flags: 3
         });
-        bytes32 evidence = keccak256("evidence");
+        IAntseedVerification.AuditReport memory report = IAntseedVerification.AuditReport({
+            agentId: agentId,
+            metadataHash: keccak256("metadata"),
+            evidenceHash: keccak256("evidence"),
+            resultsHash: keccak256(abi.encode(results)),
+            auditedAt: uint64(block.timestamp)
+        });
+        uint256 auditorKey = 0xA0D;
+        (uint8 v, bytes32 r, bytes32 s) = vm.sign(auditorKey, verification.hashAuditReport(report));
         vm.prank(verifier);
-        verification.submitVerificationBundle(evidence, "ipfs://evidence", results);
-        assertEq(verification.verificationBundle(evidence).verifier, verifier);
-        assertEq(verification.verificationResult(evidence, 0).agentId, agentId);
+        verification.submitReport(report, results, "ipfs://evidence", abi.encodePacked(r, s, v));
+        (,,, address[] memory auditors) = verification.pendingAttestation(agentId);
+        assertEq(auditors.length, 1);
+        assertEq(auditors[0], vm.addr(auditorKey));
     }
 
     function test_rejectsWrongChain() public {

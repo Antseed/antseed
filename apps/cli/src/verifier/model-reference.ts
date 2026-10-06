@@ -1,19 +1,28 @@
 import { readFile, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
+  KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_ENROLLMENT_TEMPERATURES,
   KBF_PROBES_PER_REQUEST,
+  KBF_PROMPT_VARIANT_IDS,
+  KBF_REFERENCE_VERSION,
+  aggregateKbfSelfTestOutcomes,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
   computeBinomialPower,
   computeMatchVector,
   computeReferenceId,
   createReferenceQueryProfile,
+  type ReferenceEndpointRequestV1,
+  type ReferenceContrastDetectionV1,
+  type ReferenceContrastV1,
+  computeContrastDetection,
   matchesTolerance,
   parseKbfAnswers,
   validateKbfReferenceV1,
   type KbfProbe,
   type KbfReferenceV1,
+  type ReferenceProbeSelfTestV1,
 } from '@antseed/fingerprints'
 import type {
   VerifierCLIConfig,
@@ -69,6 +78,8 @@ interface CollectedReferenceProbes {
   probes: KbfProbe[]
   candidateCount: number
   distinguishingProbeIdsByModel: Map<string, string[]>
+  /** Contrast models that returned a parseable answer, by accepted probe id. */
+  answeredContrastModelsByProbeId?: Map<string, string[]>
   generatedProbeIds: Set<string>
   reserveProbes: KbfProbe[]
   generationRound: number
@@ -84,6 +95,8 @@ interface ReferenceBuildCheckpointV1 {
 
 interface ReferenceCachedResponseBaseV1 {
   model: string
+  /** Upstream provider that served the response, when the endpoint reports it. */
+  provider?: string | null
   purpose: ReferenceBuildCostPurposeV1['purpose']
   inputTokens: number
   outputTokens: number
@@ -150,6 +163,14 @@ export function createReferenceRequestLimiter(
 type ReferenceQuery = ((model: string, body: Record<string, unknown>) => Promise<string>) & {
   invalidate?: (model: string, body: Record<string, unknown>) => Promise<void>
   costSummary?: () => ReferenceBuildCostV1
+  /** Upstream providers that served this build's responses for a model, in first-seen order. */
+  servedProviders?: (model: string) => string[]
+}
+
+/** OpenRouter provider routing that pins the reference upstream provider. */
+interface ReferenceProviderRouting {
+  order: string[]
+  allow_fallbacks: false
 }
 
 interface ReferenceRequestRoute {
@@ -161,6 +182,7 @@ interface ReferenceRequestRoute {
   pricing?: VerifierModelPricingConfig
   requestOverrides: Record<string, unknown>
   requestOmissions: Array<'temperature' | 'top_p'>
+  providerRouting?: ReferenceProviderRouting
 }
 
 export async function loadModelReference(input: {
@@ -246,6 +268,7 @@ export async function buildModelReference(input: {
         apiKey,
         catalog: input.catalog ?? null,
         referenceRoute: isTarget ? modelConfig.referenceRoute : undefined,
+        referenceProvider: isTarget ? modelConfig.referenceProvider : undefined,
         buyerProxyPort: input.buyerProxyPort,
       })] as const
     }),
@@ -308,13 +331,17 @@ export async function buildModelReference(input: {
     log: input.log,
   })
   let collected: CollectedReferenceProbes | undefined
-  const selfAnswers: Array<number | null> = []
+  const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
+  assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
+  const selfOutcomes: ReferenceProbeSelfTestV1[] = []
   let selected: {
     probes: KbfProbe[]
-    matches: Array<0 | 1 | null>
-    answers: Array<number | null>
+    selfTest: ReturnType<typeof aggregateKbfSelfTestOutcomes>
     power: ReturnType<typeof computeBinomialPower>
+    contrasts: ReferenceContrastV1[]
+    contrastDetection: ReferenceContrastDetectionV1[]
   } | null = null
+  let undetectedContrasts: string[] = []
   try {
     for (let targetCount = sizing.minimumProbeCount;
       targetCount <= sizing.maximumProbeCount;
@@ -330,37 +357,56 @@ export async function buildModelReference(input: {
         log: input.log,
         initial: collected,
       })
-      const additions = collected.probes.slice(selfAnswers.length, targetCount)
+      const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
-        input.log?.(`self-testing ${selfAnswers.length + 1}-${targetCount} of ${targetCount} probes`)
-        selfAnswers.push(...await querySelfTestAnswers(
+        input.log?.(
+          `self-testing ${selfOutcomes.length + 1}-${targetCount} of ${targetCount} probes `
+          + `(${selfTestRuns} runs)`,
+        )
+        selfOutcomes.push(...await querySelfTestOutcomes(
           modelConfig.upstreamModel,
           additions,
+          selfTestRuns,
           query,
           input.log,
         ))
       }
       const probes = collected.probes.slice(0, targetCount)
-      const answers = selfAnswers.slice(0, targetCount)
-      const matches = computeMatchVector(answers, probes)
-        .map((match, index) => answers[index] === null ? null : match)
-      const parsed = answers.filter((answer) => answer !== null).length
-      const hamming = matches.filter((match) => match !== 1).length
-      const coverage = parsed / targetCount
-      const errorRate = hamming / targetCount
+      const selfTest = aggregateKbfSelfTestOutcomes(selfOutcomes.slice(0, targetCount))
       const power = computeBinomialPower({
-        selfHamming: hamming,
-        selfTotal: targetCount,
+        selfHamming: selfTest.hamming,
+        selfTotal: selfTest.total,
+        probeCount: targetCount,
         minimumMismatchDelta: REFERENCE_MINIMUM_MISMATCH_DELTA,
         alpha: REFERENCE_POWER_ALPHA,
         cpConfidence: REFERENCE_POWER_CONFIDENCE,
       })
+      const contrasts = referenceContrasts(modelConfig.contrastModels, collected, probes)
+      const contrastDetection = computeContrastDetection({
+        probeIds: probes.map((probe) => probe.id),
+        contrasts,
+        answeredProbeIds: contrastAnsweredProbeIds(modelConfig.contrastModels, collected),
+        // p0 comes from the pooled self-test runs, as in the audit verdict.
+        selfHamming: selfTest.hamming,
+        selfTotal: selfTest.total,
+        alpha: REFERENCE_POWER_ALPHA,
+        cpConfidence: REFERENCE_POWER_CONFIDENCE,
+      })
+      // A contrast that answered none of the selected probes (for example, an
+      // unavailable model) cannot be tested and does not block the build.
+      undetectedContrasts = contrastDetection
+        .filter((entry) => entry.total > 0 && !entry.detected)
+        .map((entry) => entry.model)
       input.log?.(
         `reference size ${targetCount}: power ${power.power.toFixed(3)}, `
-        + `self-test ${hamming}/${targetCount}, coverage ${coverage.toFixed(3)}`,
+        + `self-test ${selfTest.hamming}/${selfTest.total}, coverage ${selfTest.coverage.toFixed(3)}`
+        + (contrastDetection.length > 0
+          ? `, contrasts detected ${contrastDetection.length - undetectedContrasts.length}/${contrastDetection.length}`
+          : ''),
       )
-      if (coverage >= 0.8 && errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower) {
-        selected = { probes, matches, answers, power }
+      if (selfTest.coverage >= 0.8 && selfTest.errorRate <= 0.35 && power.power >= sizing.minimumStatisticalPower
+        && undetectedContrasts.length === 0) {
+        selected = { probes, selfTest, power, contrasts, contrastDetection }
         break
       }
     }
@@ -371,19 +417,13 @@ export async function buildModelReference(input: {
   if (!collected || !selected) {
     throw new Error(
       `reference remains underpowered at ${sizing.maximumProbeCount} probes; `
-      + `required power ${sizing.minimumStatisticalPower.toFixed(3)}`,
+      + `required power ${sizing.minimumStatisticalPower.toFixed(3)}`
+      + (undetectedContrasts.length > 0
+        ? `; contrast models that would pass as SAME: ${undetectedContrasts.join(', ')}`
+        : ''),
     )
   }
-  const { probes, matches, answers, power } = selected
-  const parsed = answers.filter((answer) => answer !== null).length
-  const hamming = matches.filter((match) => match !== 1).length
-  const selfTest = {
-    hamming,
-    total: probes.length,
-    coverage: parsed / probes.length,
-    errorRate: hamming / probes.length,
-    outcomes: probes.map((probe, index) => ({ probeId: probe.id, answer: answers[index] ?? null, match: matches[index]! })),
-  }
+  const { probes, selfTest, power, contrasts, contrastDetection } = selected
   if (selfTest.coverage < 0.8) {
     await checkpoint.remove()
     throw new Error(`self-test coverage ${selfTest.coverage.toFixed(3)} is below 0.8`)
@@ -397,11 +437,22 @@ export async function buildModelReference(input: {
     maxTokensPerRequest: MAX_TOKENS,
     requestTimeoutMs: timeoutMs,
   })
-  queryProfile.reasoningStrategy = targetReasoningStrategy
-  queryProfile.requestOverrides = targetRequestOverrides
-  queryProfile.requestOmissions = targetRoute.requestOmissions
+  const servedTargetProviders = query.servedProviders?.(modelConfig.upstreamModel) ?? []
+  if (!targetRoute.providerRouting && servedTargetProviders.length > 1) {
+    input.log?.(
+      `warning: reference provider for ${modelConfig.upstreamModel} changed during the build `
+      + `(${servedTargetProviders.join(', ')}); pin referenceProvider.order for a reproducible reference`,
+    )
+  }
+  // Endpoint quirks stay out of the query profile: they apply only to requests
+  // sent to the reference endpoint, never to target audits.
+  const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
+    reasoningStrategy: targetReasoningStrategy,
+    requestOverrides: targetRequestOverrides,
+    requestOmissions: targetRoute.requestOmissions,
+  }
   const reference: KbfReferenceV1 = {
-    version: 1,
+    version: KBF_REFERENCE_VERSION,
     kind: 'kbf',
     referenceId: '',
     referenceModel: input.model,
@@ -412,7 +463,7 @@ export async function buildModelReference(input: {
     source: 'generated',
     generator: {
       name: 'antseed-simple-reference-builder',
-      version: '4',
+      version: '6',
       verifierKind: 'kbf',
       params: {
         sourceId: endpoint.sourceId,
@@ -430,6 +481,16 @@ export async function buildModelReference(input: {
         enrollmentBatchingVersion: 2,
         enrollmentStabilityVersion: 2,
         enrollmentEvidenceVersion: 1,
+        selfTestRuns,
+        referenceEndpointRequest,
+        ...(targetRoute.type === 'direct' ? {
+          referenceProvider: {
+            pinned: targetRoute.providerRouting
+              ? { order: [...targetRoute.providerRouting.order], allowFallbacks: false }
+              : null,
+            served: servedTargetProviders,
+          },
+        } : {}),
       },
     },
     provenance: {
@@ -448,18 +509,16 @@ export async function buildModelReference(input: {
       test: 'one-sided-binomial',
       alpha: REFERENCE_POWER_ALPHA,
       clopperPearsonConfidence: REFERENCE_POWER_CONFIDENCE,
-      selfHamming: hamming,
-      selfTotal: probes.length,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      probeCount: probes.length,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
       power: power.power,
     },
-    contrasts: modelConfig.contrastModels.map((model) => ({
-      model,
-      distinguishingProbeIds: (collected.distinguishingProbeIdsByModel.get(model) ?? [])
-        .filter((probeId) => probes.some((probe) => probe.id === probeId)),
-    })),
+    contrasts,
+    contrastDetection,
   }
   reference.referenceId = computeReferenceId(reference)
   const validated = validateKbfReferenceV1(reference, {
@@ -469,6 +528,30 @@ export async function buildModelReference(input: {
   await writeJsonAtomic(path, validated)
   const cost = query.costSummary?.() ?? summarizeReferenceCosts([])
   return { reference: validated, path, cost, finalize: () => checkpoint.remove() }
+}
+
+function referenceContrasts(
+  contrastModels: readonly string[],
+  collected: CollectedReferenceProbes,
+  probes: readonly KbfProbe[],
+): ReferenceContrastV1[] {
+  const selectedIds = new Set(probes.map((probe) => probe.id))
+  return contrastModels.map((model) => ({
+    model,
+    distinguishingProbeIds: (collected.distinguishingProbeIdsByModel.get(model) ?? [])
+      .filter((probeId) => selectedIds.has(probeId)),
+  }))
+}
+
+function contrastAnsweredProbeIds(
+  contrastModels: readonly string[],
+  collected: CollectedReferenceProbes,
+): Map<string, Set<string>> {
+  const answered = new Map(contrastModels.map((model) => [model, new Set<string>()]))
+  for (const [probeId, models] of collected.answeredContrastModelsByProbeId ?? []) {
+    for (const model of models) answered.get(model)?.add(probeId)
+  }
+  return answered
 }
 
 export async function collectReferenceProbes(input: {
@@ -493,6 +576,7 @@ export async function collectReferenceProbes(input: {
     probes: [],
     candidateCount: 0,
     distinguishingProbeIdsByModel: new Map(input.contrastModels.map((model) => [model, [] as string[]])),
+    answeredContrastModelsByProbeId: new Map<string, string[]>(),
     generatedProbeIds: new Set<string>(),
     reserveProbes: [],
     generationRound: 0,
@@ -525,7 +609,14 @@ export async function collectReferenceProbes(input: {
     state.candidateCount = state.generatedProbeIds.size
     input.log?.(`generation round ${state.generationRound}: testing ${candidates.length} new candidates for stability`)
     const stable = await certifyStableProbes(input.model, candidates, input.query, input.log, input.shuffle)
-    const contrastOutcomes = await queryContrastOutcomes(stable, input.contrastModels, input.query, input.log)
+    const { outcomes: contrastOutcomes, answered: contrastAnswered } = await queryContrastOutcomes(
+      stable,
+      input.contrastModels,
+      input.query,
+      input.log,
+    )
+    state.answeredContrastModelsByProbeId ??= new Map()
+    for (const [probeId, models] of contrastAnswered) state.answeredContrastModelsByProbeId.set(probeId, models)
     const accepted = stable.filter((probe) => input.contrastModels.length === 0
       || (contrastOutcomes.get(probe.id)?.length ?? 0) > 0)
     const prepared = accepted.map((probe) => {
@@ -669,8 +760,9 @@ async function queryContrastOutcomes(
   contrastModels: readonly string[],
   query: ReferenceQuery,
   log?: (message: string) => void,
-): Promise<Map<string, string[]>> {
+): Promise<{ outcomes: Map<string, string[]>; answered: Map<string, string[]> }> {
   const outcomes = new Map(probes.map((probe) => [probe.id, [] as string[]]))
+  const answered = new Map(probes.map((probe) => [probe.id, [] as string[]]))
   const answersByModel = await allSettledOrThrow(contrastModels.map(async (contrastModel) => {
     log?.(`checking contrast model ${contrastModel}`)
     return queryDomainGroupedProbeAnswers(
@@ -688,10 +780,11 @@ async function queryContrastOutcomes(
     const answers = answersByModel[modelIndex]!
     for (const [index, probe] of probes.entries()) {
       const answer = answers[index] ?? null
+      if (answer !== null) answered.get(probe.id)!.push(contrastModel)
       if (answer !== null && !matchesTolerance(answer, probe)) outcomes.get(probe.id)!.push(contrastModel)
     }
   }
-  return outcomes
+  return { outcomes, answered }
 }
 
 async function generateCandidates(
@@ -842,6 +935,20 @@ function createReferenceQuery(input: {
   assertNonNegativeInteger(input.retryCount, 'referenceBatchRetryCount')
   assertPositiveInteger(input.retryBaseDelayMs, 'referenceRetryBaseDelayMs')
   const consumed = new Map<string, ReferenceCachedResponseV1>()
+  const providersByModel = new Map<string, string[]>()
+  const recordProvider = (model: string, provider: string | null | undefined): void => {
+    if (!provider) return
+    const key = normalized(model)
+    const seen = providersByModel.get(key) ?? []
+    if (seen.includes(provider)) return
+    if (seen.length > 0) {
+      input.log?.(
+        `warning: reference provider for ${model} changed mid-build from ${seen.at(-1)} to ${provider}`,
+      )
+    }
+    seen.push(provider)
+    providersByModel.set(key, seen)
+  }
   const query = (async (model: string, body: Record<string, unknown>) => {
     const { __antseedReferenceCacheDomain, ...requestBody } = body
     const route = input.routeForModel(model)
@@ -854,6 +961,7 @@ function createReferenceQuery(input: {
     const cached = input.checkpoint.get(cacheKey)
     if (cached !== undefined) {
       consumed.set(cacheKey, cached)
+      recordProvider(model, cached.provider)
       if (cached.outcome === 'terminal-empty') {
         throw new EmptyReferenceResponseError(
           cached.finishReason,
@@ -881,6 +989,7 @@ function createReferenceQuery(input: {
           outcome: 'success',
           content: response.content,
           model,
+          ...(response.provider ? { provider: response.provider } : {}),
           purpose: referenceRequestPurpose(__antseedReferenceCacheDomain),
           inputTokens: response.inputTokens,
           outputTokens: response.outputTokens,
@@ -893,6 +1002,7 @@ function createReferenceQuery(input: {
         }
         await input.checkpoint.set(cacheKey, cachedResponse)
         consumed.set(cacheKey, cachedResponse)
+        recordProvider(model, response.provider)
         input.limiter.recordSuccess(model)
         return response.content
       } catch (error) {
@@ -937,10 +1047,11 @@ function createReferenceQuery(input: {
     await input.checkpoint.delete(cacheKey)
   }
   query.costSummary = () => summarizeReferenceCosts([...consumed.values()])
+  query.servedProviders = (model) => [...(providersByModel.get(normalized(model)) ?? [])]
   return query
 }
 
-class ReferenceBuildCheckpoint {
+export class ReferenceBuildCheckpoint {
   private saveChain = Promise.resolve()
 
   private constructor(
@@ -980,17 +1091,13 @@ class ReferenceBuildCheckpoint {
   }
 
   async reserveRequest(maxRequests: number): Promise<void> {
-    let budgetError: Error | null = null
-    this.saveChain = this.saveChain.then(async () => {
+    await this.enqueue(async () => {
       if (this.value.requestsUsed >= maxRequests) {
-        budgetError = new Error(`reference build request budget exhausted (${maxRequests})`)
-        return
+        throw new Error(`reference build request budget exhausted (${maxRequests})`)
       }
       this.value.requestsUsed += 1
       await writeJsonAtomic(this.path, this.value)
     })
-    await this.saveChain
-    if (budgetError) throw budgetError
   }
 
   async set(key: string, response: ReferenceCachedResponseV1): Promise<void> {
@@ -1011,8 +1118,17 @@ class ReferenceBuildCheckpoint {
   }
 
   private async save(): Promise<void> {
-    this.saveChain = this.saveChain.then(() => writeJsonAtomic(this.path, this.value))
-    await this.saveChain
+    await this.enqueue(() => writeJsonAtomic(this.path, this.value))
+  }
+
+  /**
+   * Serialize writes. Each task runs after the previous one settles, so a
+   * failed write is reported to its own caller without poisoning the chain.
+   */
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run = this.saveChain.then(task)
+    this.saveChain = run.catch(() => {})
+    return run
   }
 }
 
@@ -1144,13 +1260,14 @@ async function queryProbeAnswers(
     recoverTerminalEmptyBatches?: boolean
     stabilityDomain?: string
     log?: (message: string) => void
+    variantId?: string
   } = {},
 ): Promise<Array<number | null>> {
   const answers: Array<number | null> = []
   for (let offset = 0; offset < probes.length; offset += KBF_PROBES_PER_REQUEST) {
     const batch = probes.slice(offset, offset + KBF_PROBES_PER_REQUEST)
     const body = {
-      ...buildKbfChatRequestBody(model, batch, { maxTokens: MAX_TOKENS }),
+      ...buildKbfChatRequestBody(model, batch, { maxTokens: MAX_TOKENS, variantId: options.variantId }),
       temperature,
       top_p: 1,
       __antseedReferenceCacheDomain: cacheDomain,
@@ -1177,21 +1294,44 @@ async function queryProbeAnswers(
   return answers
 }
 
-async function querySelfTestAnswers(
+/**
+ * Self-test the reference under audit conditions: each run shuffles the
+ * probes into domain batches of ten and asks every batch with a prompt
+ * variant, so the honest-error baseline includes order and wording effects
+ * that audits see. Shuffles and variant picks are seeded per run so a resumed
+ * build reuses its checkpointed responses. Answers are scored like target
+ * answers (missing or refused = 0); transport failures abort the build, so
+ * no self-test match is null.
+ */
+async function querySelfTestOutcomes(
   model: string,
   probes: readonly KbfProbe[],
+  runs: number,
   query: ReferenceQuery,
   log?: (message: string) => void,
-): Promise<Array<number | null>> {
-  const answers = new Array<number | null>(probes.length).fill(null)
-  const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, identityShuffle)
-  for (const batch of batches) {
-    const batchAnswers = await querySelfTestBatch(model, batch.probes, query, log)
-    for (const [batchIndex, originalIndex] of batch.indexes.entries()) {
-      answers[originalIndex] = batchAnswers[batchIndex] ?? null
+): Promise<ReferenceProbeSelfTestV1[]> {
+  const answersByRun = await allSettledOrThrow(Array.from({ length: runs }, async (_unused, run) => {
+    const seed = `self-test-${run}`
+    const answers = new Array<number | null>(probes.length).fill(null)
+    const batches = createDomainHomogeneousKbfBatches(probes, KBF_PROBES_PER_REQUEST, deterministicShuffle(seed))
+    for (const batch of batches) {
+      const variantId = seededPromptVariantId(seed, batch.probes)
+      const batchAnswers = await querySelfTestBatch(model, batch.probes, query, log, seed, variantId)
+      for (const [batchIndex, originalIndex] of batch.indexes.entries()) {
+        answers[originalIndex] = batchAnswers[batchIndex] ?? null
+      }
     }
-  }
-  return answers
+    return answers
+  }))
+  return probes.map((probe, index) => {
+    const answers = answersByRun.map((runAnswers) => runAnswers[index] ?? null)
+    return { probeId: probe.id, answers, matches: computeMatchVector(answers, answers.map(() => probe)) }
+  })
+}
+
+function seededPromptVariantId(seed: string, probes: readonly KbfProbe[]): string {
+  const hash = canonicalHashBytes32({ seed, probeIds: probes.map((probe) => probe.id) })
+  return KBF_PROMPT_VARIANT_IDS[Number.parseInt(hash.slice(2, 10), 16) % KBF_PROMPT_VARIANT_IDS.length]!
 }
 
 function identityShuffle<T>(values: readonly T[]): T[] {
@@ -1215,10 +1355,12 @@ async function querySelfTestBatch(
   model: string,
   probes: readonly KbfProbe[],
   query: ReferenceQuery,
-  log?: (message: string) => void,
+  log: ((message: string) => void) | undefined,
+  cacheDomain: string,
+  variantId: string,
 ): Promise<Array<number | null>> {
   try {
-    return await queryProbeAnswers(model, probes, 0, 'self-test', query)
+    return await queryProbeAnswers(model, probes, 0, cacheDomain, query, { variantId })
   } catch (error) {
     if (!isTerminalEmptyReferenceError(error)) throw error
     if (probes.length === 1) {
@@ -1227,8 +1369,8 @@ async function querySelfTestBatch(
     }
     const splitAt = Math.ceil(probes.length / 2)
     log?.(`splitting refused ${probes.length}-probe self-test batch into ${splitAt} and ${probes.length - splitAt}`)
-    const left = await querySelfTestBatch(model, probes.slice(0, splitAt), query, log)
-    const right = await querySelfTestBatch(model, probes.slice(splitAt), query, log)
+    const left = await querySelfTestBatch(model, probes.slice(0, splitAt), query, log, cacheDomain, variantId)
+    const right = await querySelfTestBatch(model, probes.slice(splitAt), query, log, cacheDomain, variantId)
     return [...left, ...right]
   }
 }
@@ -1238,7 +1380,7 @@ async function postChatCompletion(
   body: Record<string, unknown>,
   timeoutMs: number,
   fetchFn: typeof fetch,
-): Promise<{ content: string; inputTokens: number; outputTokens: number }> {
+): Promise<{ content: string; inputTokens: number; outputTokens: number; provider: string | null }> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
   try {
@@ -1272,6 +1414,7 @@ async function postChatCompletion(
       )
     }
     const parsed = await response.json() as {
+      provider?: unknown
       choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown; native_finish_reason?: unknown }>
       usage?: {
         prompt_tokens?: unknown
@@ -1279,6 +1422,8 @@ async function postChatCompletion(
         completion_tokens_details?: { reasoning_tokens?: unknown }
       }
     }
+    const provider = optionalString(parsed.provider)
+    assertPinnedProvider(route, provider)
     const choice = parsed.choices?.[0]
     const content = completionText(choice?.message?.content)
     const inputTokens = nonNegativeInteger(parsed.usage?.prompt_tokens)
@@ -1303,9 +1448,20 @@ async function postChatCompletion(
     if (inputTokens === null || outputTokens === null) {
       throw new Error(`reference endpoint omitted token usage for ${route.model}`)
     }
-    return { content, inputTokens, outputTokens }
+    return { content, inputTokens, outputTokens, provider }
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+function assertPinnedProvider(route: ReferenceRequestRoute, provider: string | null): void {
+  if (!route.providerRouting || provider === null) return
+  const pinned = route.providerRouting.order.map(normalized)
+  if (!pinned.includes(normalized(provider))) {
+    throw new Error(
+      `reference endpoint served ${route.model} from provider ${provider}, `
+      + `outside the pinned providers ${route.providerRouting.order.join(', ')}`,
+    )
   }
 }
 
@@ -1404,7 +1560,7 @@ function summarizeReferenceCosts(responses: ReferenceCachedResponseV1[]): Refere
 }
 
 function referenceRequestPurpose(value: unknown): ReferenceBuildCostPurposeV1['purpose'] {
-  if (value === 'self-test') return 'self-test'
+  if (typeof value === 'string' && value.startsWith('self-test')) return 'self-test'
   if (typeof value === 'string' && value.startsWith('contrast-')) return 'contrast-model'
   if (typeof value === 'string' && value.startsWith('stability-')) return 'target-model'
   return 'candidate-generation'
@@ -1440,6 +1596,7 @@ function resolveReferenceRequestRoute(input: {
   apiKey: string | undefined
   catalog: VerifierModelCatalog | null
   referenceRoute?: ResolvedVerifierModelConfig['referenceRoute']
+  referenceProvider?: ResolvedVerifierModelConfig['referenceProvider']
   buyerProxyPort?: number
 }): ReferenceRequestRoute {
   if (input.referenceRoute?.type === 'antseed') {
@@ -1465,6 +1622,12 @@ function resolveReferenceRequestRoute(input: {
     peerId: input.endpoint.antseedPeerId,
     requestOverrides: resolveReferenceRequestOverrides(input.model, input.catalog),
     requestOmissions: [],
+    ...(input.referenceProvider ? {
+      providerRouting: {
+        order: input.referenceProvider.order.map((provider) => provider.trim()),
+        allow_fallbacks: false,
+      },
+    } : {}),
   }
 }
 
@@ -1475,6 +1638,7 @@ function applyReferenceRouteToBody(
   const routed: Record<string, unknown> = {
     ...body,
     ...route.requestOverrides,
+    ...(route.providerRouting ? { provider: route.providerRouting } : {}),
     model: route.model,
   }
   for (const field of route.requestOmissions) delete routed[field]

@@ -7,6 +7,8 @@ import {
   computeBinomialPower,
   computeReferenceId,
   createReferenceQueryProfile,
+  renderKbfProbeLine,
+  referenceEndpointRequest,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
@@ -15,6 +17,7 @@ import {
   collectReferenceProbes,
   createReferenceRequestLimiter,
   loadModelReference,
+  ReferenceBuildCheckpoint,
   resolveReferenceRequestOverrides,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
@@ -61,12 +64,13 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
   const power = computeBinomialPower({
     selfHamming: hamming,
     selfTotal: count,
+    probeCount: count,
     minimumMismatchDelta: 0.1,
     alpha,
     cpConfidence: confidence,
   })
   const value: KbfReferenceV1 = {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: '',
     referenceModel: MODEL,
@@ -87,8 +91,8 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
       errorRate: hamming / count,
       outcomes: probes.map((probe, index) => ({
         probeId: probe.id,
-        answer: probe.consensus + (index < hamming ? 0.5 : 0),
-        match: index < hamming ? 0 : 1,
+        answers: [probe.consensus + (index < hamming ? 0.5 : 0)],
+        matches: [index < hamming ? 0 as const : 1 as const],
       })),
     },
     probes,
@@ -101,6 +105,7 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
       clopperPearsonConfidence: confidence,
       selfHamming: hamming,
       selfTotal: count,
+      probeCount: count,
       p0UpperBound: power.p0,
       alternativeMismatchRate: power.p1,
       criticalMismatchCount: power.criticalMismatchCount,
@@ -129,6 +134,8 @@ function generatedCandidates(prompt: string): string {
     }
   }))
 }
+
+const PROBE_LINE_LABEL = /^(?:\(\d+\)|\d+[.)]|Q\d+:) /
 
 function successfulContent(model: string, prompt: string): string {
   if (prompt.startsWith('Generate ')) return generatedCandidates(prompt)
@@ -195,9 +202,12 @@ test('reference build uses minimum mandatory reasoning and persists the target o
     const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, catalog, fetchFn })
     assert.equal(built.reference.probes.length, 100)
     assert.deepEqual(built.reference.serviceAliases, [MODEL, 'model.test-alias'])
-    assert.equal(built.reference.queryProfile.reasoningStrategy, 'reasoning-effort-minimum-supported')
-    assert.deepEqual(built.reference.queryProfile.requestOverrides, {
-      reasoning: { effort: 'low', exclude: true },
+    assert.equal(built.reference.queryProfile.reasoningStrategy, undefined)
+    assert.equal(built.reference.queryProfile.requestOverrides, undefined)
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-minimum-supported',
+      requestOverrides: { reasoning: { effort: 'low', exclude: true } },
+      requestOmissions: [],
     })
     const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
     const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
@@ -273,9 +283,12 @@ test('reference build routes only target requests through a pinned AntSeed peer'
     assert.equal(contrastRequests.every((request) => request.headers['x-antseed-pin-peer'] === undefined), true)
     assert.equal(contrastRequests.every((request) => request.body.temperature !== undefined && request.body.top_p !== undefined), true)
     assert.equal(built.reference.queryProfile.upstreamModel, 'fable-5-coding-only')
-    assert.equal(built.reference.queryProfile.reasoningStrategy, 'bare')
-    assert.deepEqual(built.reference.queryProfile.requestOverrides, {})
-    assert.deepEqual(built.reference.queryProfile.requestOmissions, ['temperature', 'top_p'])
+    assert.equal(built.reference.queryProfile.requestOmissions, undefined)
+    assert.deepEqual(built.reference.generator.params.referenceEndpointRequest, {
+      reasoningStrategy: 'bare',
+      requestOverrides: {},
+      requestOmissions: ['temperature', 'top_p'],
+    })
     assert.equal(built.reference.provenance?.sourceId, `test-source:antseed:${'12'.repeat(20)}:fable-5-coding-only`)
     assert.equal(built.cost.models.find((entry) => entry.model === 'upstream-test')?.inputUsdPerMillion, 0.45)
   } finally {
@@ -469,10 +482,10 @@ test('reference build adaptively isolates and caches a refused self-test probe',
       messages: Array<{ content: string }>
     }
     const prompt = body.messages.at(-1)?.content ?? ''
-    const probeLines = prompt.split('\n').filter((line) => /^\(\d+\) /.test(line))
+    const probeLines = prompt.split('\n').filter((line) => PROBE_LINE_LABEL.test(line))
     if (body.model === 'contrast-test') contrastChecked = true
     if (contrastChecked && body.model === 'upstream-test' && refusedProbeText === null) {
-      refusedProbeText = probeLines[0]?.replace(/^\(1\) /, '') ?? null
+      refusedProbeText = probeLines[0]?.replace(PROBE_LINE_LABEL, '') ?? null
     }
     if (body.model === 'upstream-test'
       && refusedProbeText !== null
@@ -495,7 +508,18 @@ test('reference build adaptively isolates and caches a refused self-test probe',
       log: (message) => logs.push(message),
     })
     assert.equal(built.reference.probes.length, 100)
-    assert.equal(built.reference.selfTest.coverage, 0.99)
+    assert.equal(built.reference.selfTest.total, 300)
+    const refusedProbe = built.reference.probes.find((probe) => renderKbfProbeLine(probe) === refusedProbeText)!
+    const refusedOutcome = built.reference.selfTest.outcomes.find((outcome) => outcome.probeId === refusedProbe.id)!
+    const refusedRuns = refusedOutcome.answers.filter((answer) => answer === null).length
+    assert.ok(refusedRuns >= 1)
+    // Refused runs count as discrepancies, exactly like a missing target answer.
+    assert.deepEqual(
+      refusedOutcome.matches.filter((_match, run) => refusedOutcome.answers[run] === null),
+      new Array(refusedRuns).fill(0),
+    )
+    assert.equal(built.reference.selfTest.hamming, refusedRuns)
+    assert.equal(built.reference.selfTest.coverage, (300 - refusedRuns) / 300)
     assert.equal(refusedBatchSizes.some((size) => size > 1), true)
     assert.equal(refusedBatchSizes.includes(1), true)
     assert.equal(logs.some((message) => /splitting refused \d+-probe self-test batch/.test(message)), true)
@@ -604,9 +628,57 @@ test('loader rejects references outside the configured adaptive sizing policy', 
   }
 })
 
+test('reference self-test repeats shuffled batches with prompt variants for each configured run', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-self-test-runs-'))
+  let contrastChecked = false
+  const selfTestRequests: Array<{ system: string; lines: string[] }> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && body.temperature === 0 && prompt.includes('___')) {
+      selfTestRequests.push({
+        system: body.messages[0]!.content,
+        lines: prompt.split('\n').filter((line) => PROBE_LINE_LABEL.test(line))
+          .map((line) => line.replace(PROBE_LINE_LABEL, '')),
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config({ referenceSelfTestRuns: 2 }),
+      fetchFn,
+    })
+    const { reference } = built
+    assert.equal(reference.probes.length, 100)
+    assert.equal(reference.generator.params.selfTestRuns, 2)
+    assert.equal(reference.selfTest.total, 200)
+    assert.equal(reference.statisticalPowerEvidence.selfTotal, 200)
+    assert.equal(reference.statisticalPowerEvidence.probeCount, 100)
+    assert.equal(reference.selfTest.outcomes.every((outcome) => outcome.matches.length === 2
+      && outcome.answers.length === 2), true)
+    assert.ok(selfTestRequests.length > 0)
+    assert.equal(selfTestRequests.every((request) => request.lines.length <= 10), true)
+    assert.ok(new Set(selfTestRequests.map((request) => request.system)).size > 1)
+    const buildOrder = new Map(reference.probes.map((probe, index) => [renderKbfProbeLine(probe), index]))
+    assert.ok(selfTestRequests.some((request) => request.lines.some((line, index) => index > 0
+      && buildOrder.get(line)! < buildOrder.get(request.lines[index - 1]!)!)), 'self-test must not keep build order')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('adaptive builder selects the first powered prefix', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-adaptive-'))
-  let selfTestMismatchesRemaining = 4
+  // 14 pooled mismatches leave 100 probes (300 trials) just underpowered.
+  let selfTestMismatchesRemaining = 14
   let contrastChecked = false
   const fetchFn: typeof fetch = async (_url, init) => {
     const body = JSON.parse(String(init?.body)) as {
@@ -632,11 +704,16 @@ test('adaptive builder selects the first powered prefix', async () => {
   }
   try {
     const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
-    assert.equal(built.reference.probes.length, 120)
-    assert.equal(built.reference.selfTest.hamming, 4)
+    assert.equal(built.reference.probes.length, 110)
+    assert.equal(built.reference.selfTest.hamming, 14)
+    assert.equal(built.reference.selfTest.total, 330)
+    assert.equal(built.reference.statisticalPowerEvidence.probeCount, 110)
     assert.ok(built.reference.statisticalPower >= 0.9)
-    assert.equal(built.reference.queryProfile.reasoningStrategy, 'reasoning-effort-none')
-    assert.deepEqual(built.reference.queryProfile.requestOverrides, { reasoning_effort: 'none' })
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-none',
+      requestOverrides: { reasoning_effort: 'none' },
+      requestOmissions: [],
+    })
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
@@ -1245,6 +1322,166 @@ test('failed builds preserve an existing reference file', async () => {
       fetchFn: async () => response('missing content', 400),
     }), /reference endpoint 400/)
     assert.equal(await readFile(path, 'utf8'), 'existing-reference')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference checkpoint writes recover after a failed write', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-reference-checkpoint-'))
+  try {
+    const path = join(dir, 'checkpoint.json')
+    const checkpoint = await ReferenceBuildCheckpoint.open(path, 'compat-hash')
+
+    // Replace the checkpoint file with a non-empty directory so the atomic
+    // rename fails for the next write.
+    await rm(path)
+    await mkdir(path)
+    await writeFile(join(path, 'blocker'), '')
+    await assert.rejects(checkpoint.reserveRequest(10))
+
+    await rm(path, { recursive: true })
+    await checkpoint.reserveRequest(10)
+    const saved = JSON.parse(await readFile(path, 'utf8')) as { requestsUsed: number }
+    assert.equal(saved.requestsUsed, 2)
+
+    await assert.rejects(checkpoint.reserveRequest(2), /budget exhausted/)
+    await checkpoint.delete('missing-key')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+function providerResponse(content: string, provider: string): Response {
+  return new Response(JSON.stringify({
+    provider,
+    choices: [{ message: { content } }],
+    usage: { prompt_tokens: 100, completion_tokens: 20 },
+  }), { headers: { 'content-type': 'application/json' } })
+}
+
+test('reference build pins the target upstream provider and records it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-pin-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  const requestBodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    requestBodies.push(body)
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return providerResponse(successfulContent(body.model, prompt), body.model === 'upstream-test' ? 'Provider-A' : 'Other')
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
+    const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
+    assert.equal(targetBodies.length > 0, true)
+    assert.equal(targetBodies.every((body) => JSON.stringify(body.provider) === JSON.stringify({
+      order: ['Provider-A'],
+      allow_fallbacks: false,
+    })), true)
+    assert.equal(contrastBodies.every((body) => body.provider === undefined), true)
+    assert.deepEqual(built.reference.generator.params.referenceProvider, {
+      pinned: { order: ['Provider-A'], allowFallbacks: false },
+      served: ['Provider-A'],
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build fails when a pinned provider is not the one that served', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-mismatch-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), 'Provider-B')
+  }
+  try {
+    await assert.rejects(
+      buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn }),
+      /outside the pinned providers Provider-A/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('unpinned reference builds record served providers and warn when they change', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-drift-'))
+  const logs: string[] = []
+  let targetRequests = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    assert.equal(body.provider, undefined)
+    const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
+    if (body.model !== 'upstream-test') return response(content)
+    targetRequests += 1
+    return providerResponse(content, targetRequests <= 3 ? 'Provider-A' : 'Provider-B')
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.deepEqual(built.reference.generator.params.referenceProvider, {
+      pinned: null,
+      served: ['Provider-A', 'Provider-B'],
+    })
+    assert.equal(logs.some((message) => /changed mid-build from Provider-A to Provider-B/.test(message)), true)
+    assert.equal(logs.some((message) => /pin referenceProvider\.order/.test(message)), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference builds record contrast detection and grow until every contrast is flagged', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-contrast-detection-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
+  value.referenceEndpoint!.contrastModelBank!['close-contrast'] = {
+    upstreamModel: 'close-contrast',
+    pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
+    capabilityRank: 2,
+  }
+  // close-contrast misses only every twentieth fact, so small references cannot detect it.
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model !== 'close-contrast') return response(successfulContent(body.model, prompt))
+    return response(testPromptValues(prompt)
+      .map((fact, index) => `(${index + 1}) ${fact % 20 === 0 ? fact + 100_000 : fact}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.ok(built.reference.probes.length > 100)
+    const detection = built.reference.contrastDetection!
+    assert.deepEqual(detection.map((entry) => entry.model), ['contrast-test', 'close-contrast'])
+    assert.equal(detection.every((entry) => entry.detected), true)
+    assert.equal(detection[0]!.mismatches, built.reference.probes.length)
+    assert.equal(detection[1]!.total, built.reference.probes.length)
+
+    const capped = config({ referenceMaximumProbeCount: 100 })
+    capped.referenceEndpoint = value.referenceEndpoint
+    await assert.rejects(
+      buildModelReference({
+        model: MODEL,
+        referencesDir: join(directory, 'capped'),
+        config: capped,
+        fetchFn,
+      }),
+      /contrast models that would pass as SAME: close-contrast/,
+    )
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

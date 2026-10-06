@@ -50,7 +50,7 @@ export interface ModelAuditSummaryV1 {
   cost: AuditCostSummaryV1
   reasonCounts?: Record<string, number>
   consensusEvidencePath?: string
-  referenceIntegrityPath?: string
+  referenceIntegrityPaths?: string[]
 }
 
 export interface VerifierRunManifestV1 {
@@ -285,7 +285,7 @@ export async function renderModelAuditReports(
       failures?: SellerAuditReportFailure[]
       skipped?: SellerAuditReportSkip[]
       consensusEvidencePath?: string
-      referenceIntegrityPath?: string
+      referenceIntegrityPaths?: string[]
     }
     const consensus = modelSummary.consensusEvidencePath
       ? JSON.parse(await readFile(modelSummary.consensusEvidencePath, 'utf8')) as ModelProbeConsensusEvidenceV1
@@ -353,12 +353,12 @@ export async function renderModelAuditReports(
         reasonBreakdown,
         model.summaryPath,
         modelSummary.consensusEvidencePath,
-        modelSummary.referenceIntegrityPath,
+        modelSummary.referenceIntegrityPaths ?? [],
         consensus,
         reportDirectory,
       ),
       consensusEvidencePath: modelSummary.consensusEvidencePath,
-      referenceIntegrityPath: modelSummary.referenceIntegrityPath,
+      referenceIntegrityPaths: modelSummary.referenceIntegrityPaths ?? [],
     }
   }))
   return rendered.map((entry) => {
@@ -384,9 +384,7 @@ export async function renderModelAuditReports(
         modelConsensus: entry.consensusEvidencePath
           ? [{ model: entry.model, path: entry.consensusEvidencePath }]
           : [],
-        modelReferences: entry.referenceIntegrityPath
-          ? [{ model: entry.model, path: entry.referenceIntegrityPath }]
-          : [],
+        modelReferences: entry.referenceIntegrityPaths.map((path) => ({ model: entry.model, path })),
       },
       dirname(path),
     )
@@ -503,7 +501,7 @@ function renderModelReportSection(
   reasonBreakdown: Array<[string, number]>,
   summaryPath: string,
   consensusEvidencePath?: string,
-  referenceIntegrityPath?: string,
+  referenceIntegrityPaths: readonly string[] = [],
   consensus: ModelProbeConsensusEvidenceV1 | null = null,
   reportDirectory?: string,
 ): string {
@@ -527,7 +525,11 @@ function renderModelReportSection(
       ${renderFileLink(summaryPath, 'Summary JSON', reportDirectory)}
       ${consensusEvidencePath ? renderFileLink(consensusEvidencePath, 'Probe consensus JSON', reportDirectory) : ''}
       ${consensusEvidencePath ? renderFileLink(join(dirname(consensusEvidencePath), 'manifest.json'), 'Manifest JSON', reportDirectory) : ''}
-      ${referenceIntegrityPath ? renderFileLink(referenceIntegrityPath, 'Reference probe integrity', reportDirectory) : ''}
+      ${referenceIntegrityPaths.map((path, index) => renderFileLink(
+        path,
+        referenceIntegrityPaths.length === 1 ? 'Reference probe integrity' : `Reference probe integrity ${index + 1}`,
+        reportDirectory,
+      )).join('\n      ')}
       ${consensus ? '<a href="#audit-integrity">Audit Integrity</a>' : ''}
     </div>
     ${renderProbeConsensus(consensus, consensusEvidencePath, reportDirectory)}
@@ -551,11 +553,12 @@ function renderProbeConsensus(
   if (!consensus) return ''
   const summary = consensus.summary
   const consensusDirectory = consensusEvidencePath ? dirname(consensusEvidencePath) : null
-  const openRouterReference = consensus.reference?.sourceId?.startsWith('openrouter') === true
+  const sources = [...new Set((consensus.references ?? [])
+    .map((reference) => [reference.sourceId, reference.upstreamModel].filter(Boolean).join(' · ')))]
+  const openRouterReference = (consensus.references ?? []).length > 0
+    && consensus.references.every((reference) => reference.sourceId?.startsWith('openrouter') === true)
   const referenceName = openRouterReference ? 'OpenRouter reference answer' : 'Reference answer'
-  const referenceSource = consensus.reference
-    ? [consensus.reference.sourceId, consensus.reference.upstreamModel].filter(Boolean).join(' · ')
-    : 'Unavailable'
+  const referenceSource = sources.length > 0 ? sources.join(', ') : 'Unavailable'
   const questionCards = consensus.probes.map((probe, index) => {
     const confirming = probe.sellerAnswers.filter((answer) => answer.sellerDecision === 'CONFIRMED')
     const rejecting = probe.sellerAnswers.filter((answer) => answer.sellerDecision === 'REJECTED')

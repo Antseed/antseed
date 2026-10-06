@@ -63,7 +63,7 @@ import {
   type SweepReceiptPayload,
   type CloseChannelResultPayload,
 } from "./types/protocol.js";
-import { VerificationStorage } from "./verification/storage.js";
+import { VerificationStorage, type StoredRequestCost } from "./verification/storage.js";
 import { VerificationSampler } from "./verification/samples.js";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
@@ -1791,7 +1791,7 @@ export class AntseedNode extends EventEmitter {
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
           dataDir: paymentsDir,
         };
-        this._buyerPaymentManager = new BuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore, this._sellerAddressResolver ?? undefined);
+        this._buyerPaymentManager = this._createBuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore);
         // Re-emit per-request spend so callers can attribute it to whatever
         // issued the request — the node only knows the seller and requestId.
         this._buyerPaymentManager.setSpendListener((event) => this.emit('payment:spend', event));
@@ -2174,6 +2174,37 @@ export class AntseedNode extends EventEmitter {
     await this._balanceManager.load(paymentsDir).catch((err) => {
       debugWarn(`[Node] Failed to load payment balances: ${err instanceof Error ? err.message : err}`);
     });
+  }
+
+  /**
+   * Build the buyer payment manager with a request-cost sink backed by the
+   * verification store, so every authorized per-request cost lands in
+   * `request_costs` for verifier submission bundles.
+   */
+  private _createBuyerPaymentManager(
+    identity: Identity,
+    config: BuyerPaymentConfig,
+    channelStore: ChannelStore,
+  ): BuyerPaymentManager {
+    return new BuyerPaymentManager(
+      identity,
+      config,
+      channelStore,
+      this._sellerAddressResolver ?? undefined,
+      {
+        // Resolved lazily: the store may close (node stop) while the manager
+        // still holds this sink, and a cost-log failure must never fail signing.
+        insertRequestCost: (record: StoredRequestCost) => {
+          const storage = this._verificationStorage;
+          if (!storage) return;
+          try {
+            storage.insertRequestCost(record);
+          } catch (err) {
+            debugWarn(`[Node] Failed to record request cost ${record.requestId}: ${err instanceof Error ? err.message : err}`);
+          }
+        },
+      },
+    );
   }
 
   private _initializeVerificationStorage(dataDir: string): void {

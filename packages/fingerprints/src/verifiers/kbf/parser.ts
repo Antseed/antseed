@@ -1,17 +1,19 @@
 /**
  * Position-aware numeric answer parsing for KBF responses.
  *
- * Answers are extracted from `(N) <number>` lines. Position comes from the
- * `(N)` index, never from the line order, so missing or reordered lines do
+ * Answers are extracted from numbered lines in any format a KBF prompt variant
+ * emits: `(N)`, `N.`, `N)`, or `QN:` followed by the number. Position comes
+ * from the index N, never from the line order, so missing or reordered lines do
  * not shift other answers. Unparseable or missing positions yield null.
  */
 
 /**
- * Matches a line that starts with an answer index: `(3)`, `3)`, `3.`, `(3):`
- * etc. Captures the index and the remainder of the line. `-` is deliberately
- * not a separator so negative answers like `(5)-430` keep their sign.
+ * Matches a line that starts with an answer index: `(3)`, `3)`, `3.`, `(3):`,
+ * `Q3:`, `Q 3:` etc. Captures the index and the remainder of the line. `-` is
+ * deliberately not a separator so negative answers like `(5)-430` keep their
+ * sign.
  */
-const ANSWER_LINE_RE = /^\s*\(?\s*(\d{1,4})\s*[)\].:;]+\s*(.*)$/;
+const ANSWER_LINE_RE = /^\s*(?:Q\s*)?\(?\s*(\d{1,4})\s*[)\].:;]+\s*(.*)$/i;
 
 /**
  * First numeric token in a string: optional sign, digits with optional

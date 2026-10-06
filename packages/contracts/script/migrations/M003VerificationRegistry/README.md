@@ -1,8 +1,21 @@
 # M003 — Verification registry
 
-Deploys PR #969's registry-only `AntseedVerification` and optionally approves an
-initial verifier list. It does not change emissions, rewards, points policies,
-staking, or protocol registry pointers. M002 is not a prerequisite.
+Deploys `AntseedVerification` and optionally approves an initial verifier list.
+Auditors sign per-service audit reports; approved verifiers check the evidence and
+submit them; a quorum of agreeing auditors finalizes a per-agent score. It does not
+change emissions, points policies, staking, or protocol registry pointers. M002 is
+not a prerequisite.
+
+M003 deliberately leaves two switches off, so the contract runs in shadow mode:
+
+- **Auditor rewards.** Audit units accrue from the first finalized score, but claims
+  pay nothing until the emissions-gate owner hands the verification bucket to the
+  contract: `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
+  Unclaimed epochs stay claimable after the handoff, up to each epoch's bucket budget.
+- **Points boost.** `AntseedVerificationPointsPolicy` is not deployed or registered
+  here. Deploy it in a later migration once shadow-mode scores show the honest-seller
+  pass rate and score stability, with `bonusBps` chosen from that data, then register
+  it in `AntseedPointsPolicyRegistry`.
 
 ## Configuration
 
