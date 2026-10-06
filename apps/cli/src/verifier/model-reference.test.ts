@@ -15,6 +15,7 @@ import {
   collectReferenceProbes,
   createReferenceRequestLimiter,
   loadModelReference,
+  ReferenceBuildCheckpoint,
   resolveReferenceRequestOverrides,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
@@ -1247,5 +1248,30 @@ test('failed builds preserve an existing reference file', async () => {
     assert.equal(await readFile(path, 'utf8'), 'existing-reference')
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference checkpoint writes recover after a failed write', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-reference-checkpoint-'))
+  try {
+    const path = join(dir, 'checkpoint.json')
+    const checkpoint = await ReferenceBuildCheckpoint.open(path, 'compat-hash')
+
+    // Replace the checkpoint file with a non-empty directory so the atomic
+    // rename fails for the next write.
+    await rm(path)
+    await mkdir(path)
+    await writeFile(join(path, 'blocker'), '')
+    await assert.rejects(checkpoint.reserveRequest(10))
+
+    await rm(path, { recursive: true })
+    await checkpoint.reserveRequest(10)
+    const saved = JSON.parse(await readFile(path, 'utf8')) as { requestsUsed: number }
+    assert.equal(saved.requestsUsed, 2)
+
+    await assert.rejects(checkpoint.reserveRequest(2), /budget exhausted/)
+    await checkpoint.delete('missing-key')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
   }
 })

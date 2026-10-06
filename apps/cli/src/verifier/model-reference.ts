@@ -940,7 +940,7 @@ function createReferenceQuery(input: {
   return query
 }
 
-class ReferenceBuildCheckpoint {
+export class ReferenceBuildCheckpoint {
   private saveChain = Promise.resolve()
 
   private constructor(
@@ -980,17 +980,13 @@ class ReferenceBuildCheckpoint {
   }
 
   async reserveRequest(maxRequests: number): Promise<void> {
-    let budgetError: Error | null = null
-    this.saveChain = this.saveChain.then(async () => {
+    await this.enqueue(async () => {
       if (this.value.requestsUsed >= maxRequests) {
-        budgetError = new Error(`reference build request budget exhausted (${maxRequests})`)
-        return
+        throw new Error(`reference build request budget exhausted (${maxRequests})`)
       }
       this.value.requestsUsed += 1
       await writeJsonAtomic(this.path, this.value)
     })
-    await this.saveChain
-    if (budgetError) throw budgetError
   }
 
   async set(key: string, response: ReferenceCachedResponseV1): Promise<void> {
@@ -1011,8 +1007,17 @@ class ReferenceBuildCheckpoint {
   }
 
   private async save(): Promise<void> {
-    this.saveChain = this.saveChain.then(() => writeJsonAtomic(this.path, this.value))
-    await this.saveChain
+    await this.enqueue(() => writeJsonAtomic(this.path, this.value))
+  }
+
+  /**
+   * Serialize writes. Each task runs after the previous one settles, so a
+   * failed write is reported to its own caller without poisoning the chain.
+   */
+  private enqueue(task: () => Promise<void>): Promise<void> {
+    const run = this.saveChain.then(task)
+    this.saveChain = run.catch(() => {})
+    return run
   }
 }
 
