@@ -1669,7 +1669,10 @@ export class AntseedNode extends EventEmitter {
         this._muxes.get(peerId)?.abortPendingUploads();
         this._muxes.delete(peerId);
         this._paymentMuxes.delete(peerId);
-        this._peerCapabilities.delete(peerId);
+        // Other buyer identities share this map; keep it while one is still connected.
+        if (![...this._buyerIdentities.values()].some((context) => context.liveConnection(peerId))) {
+          this._peerCapabilities.delete(peerId);
+        }
         this._verificationMuxes.get(peerId)?.close();
         this._verificationMuxes.delete(peerId);
         this._sweepMuxes.delete(peerId);
