@@ -422,6 +422,13 @@ function normalizeCapabilities(value: unknown): string[] {
   return capabilities;
 }
 
+/**
+ * Inbound sockets a listener accepts from one IP. A buyer node holds one
+ * connection per buyer identity per seller, so a gateway with many identities
+ * opens many connections from the same address.
+ */
+const MAX_INBOUND_CONNECTIONS_PER_IP = 64;
+
 /** Manages all peer connections and optional inbound listening. */
 export class ConnectionManager extends EventEmitter {
   private _connections = new Map<PeerId, PeerConnection>();
@@ -517,7 +524,7 @@ export class ConnectionManager extends EventEmitter {
     this._server = net.createServer((socket) => {
       const ip = socket.remoteAddress ?? 'unknown';
       const current = this._ipConnectionCounts.get(ip) ?? 0;
-      if (current >= 10) {
+      if (current >= MAX_INBOUND_CONNECTIONS_PER_IP) {
         socket.destroy();
         return;
       }

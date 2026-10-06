@@ -26,7 +26,7 @@ antseed buyer identity create team-a
 antseed buyer identity list --balances
 ```
 
-Extra identities are stored in `<data-dir>/buyer-identities/<name>/identity.key`. A running buyer loads them at startup, or on first use if you create one while it runs. They share the buyer's peer discovery, routing and chain connections. Sellers still see each one as a separate buyer: its own connections, payment channels and deposits.
+Extra identities are stored in `<data-dir>/buyer-identities/<name>/identity.key`. A running buyer loads them at startup, or on first use if you create one while it runs. They share the buyer's peer discovery, routing and chain connections. Sellers still see each one as a separate buyer: its own connections, payment channels and deposits. Because each identity opens its own connection, a seller accepts up to 64 identities from one buyer machine at once (10 on sellers running a release from before buyer identities).
 
 To fund an identity, send USDC on Base to its wallet address. While the buyer runs, incoming USDC is swept into that identity's credits automatically. To show the address and a QR code:
 
