@@ -4,8 +4,10 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import {
+  KBF_PROMPT_VARIANT_IDS,
   computeBinomialPower,
   createReferenceQueryProfile,
+  getKbfPromptVariant,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, type PeerId, type PeerInfo } from '@antseed/node'
@@ -62,7 +64,7 @@ function reference(count: number): KbfReferenceV1 {
     cpConfidence: 0.99,
   })
   return {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: `reference-${count}`,
     referenceModel: 'gpt-5.6-sol',
@@ -521,6 +523,24 @@ test('proxy runtime uses dynamic reference sizes and pins every batch', async ()
       assert.equal((request.headers as Record<string, string>)['x-antseed-pin-peer'], '11'.repeat(20))
     }
   }
+})
+
+test('audit batches use recorded crypto-random prompt variants', async () => {
+  const run = await runTarget(500)
+  assert.equal(run.result.status, 'SAME')
+  const used = new Set<string>()
+  for (const exchange of run.evidence.exchanges) {
+    const variantId = exchange.promptVariantId
+    assert.ok(variantId && KBF_PROMPT_VARIANT_IDS.includes(variantId))
+    used.add(variantId)
+    const body = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as {
+      messages: Array<{ role: string; content: string }>
+    }
+    const variant = getKbfPromptVariant(variantId)
+    assert.equal(body.messages[0]?.content, variant.systemPrompt)
+    assert.equal(body.messages[1]?.content.startsWith(variant.task), true)
+  }
+  assert.ok(used.size > 1, 'expected more than one prompt variant across 50 batches')
 })
 
 test('proxy runtime retries transient failures', async () => {

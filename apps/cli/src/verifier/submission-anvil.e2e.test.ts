@@ -542,7 +542,7 @@ function referenceFixture(model: string): KbfReferenceV1 {
     cpConfidence: 0.99,
   })
   const value: KbfReferenceV1 = {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: '',
     referenceModel: model,

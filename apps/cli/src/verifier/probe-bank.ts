@@ -2,6 +2,7 @@ import { randomInt } from 'node:crypto'
 import { mkdir, readdir } from 'node:fs/promises'
 import { dirname, join } from 'node:path'
 import {
+  KBF_REFERENCE_VERSION,
   canonicalHashBytes32,
   computeBinomialPower,
   computeReferenceId,
@@ -21,7 +22,7 @@ import { safeServiceSlug } from './slug.js'
 import { normalized } from './utils.js'
 
 export const BANK_EXHAUSTED = 'BANK_EXHAUSTED'
-const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '4'
+const CURRENT_ANTSEED_REFERENCE_BUILDER_VERSION = '5'
 
 interface BankProbeV1 {
   probe: KbfProbe
@@ -691,7 +692,7 @@ function selectPoweredReference(
       || power.power < sizing.minimumStatisticalPower) continue
     const selectedIds = new Set(selected.map((entry) => entry.probe.id))
     const reference: KbfReferenceV1 = {
-      version: 1,
+      version: KBF_REFERENCE_VERSION,
       kind: 'kbf',
       referenceId: '',
       ...bank.referenceTemplate,

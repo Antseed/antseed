@@ -67,7 +67,7 @@ function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99):
     cpConfidence: confidence,
   })
   const value: KbfReferenceV1 = {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: '',
     referenceModel: MODEL,

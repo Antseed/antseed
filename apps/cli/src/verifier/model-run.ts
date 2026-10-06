@@ -1,8 +1,9 @@
-import { randomUUID } from 'node:crypto'
+import { randomInt, randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
   KBF_PROBES_PER_REQUEST,
+  KBF_PROMPT_VARIANT_IDS,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
   canonicalJsonStringify,
@@ -669,7 +670,9 @@ async function executeProxyProbeBatch(
   batchIndex: number,
   onRateLimited?: () => void,
 ): Promise<ProxyAuditEvidenceExchangeV1> {
-  const { url, headers, body, request } = buildProxyBatchRequest(context, target, service, reference, probes)
+  const { url, headers, body, request, promptVariantId } = buildProxyBatchRequest(
+    context, target, service, reference, probes,
+  )
   const startedAt = Date.now()
   let attemptCount = 0
   let lastFailure = 'proxy request failed'
@@ -729,6 +732,7 @@ async function executeProxyProbeBatch(
             attemptCount,
             requestIds,
             probeIds: probes.map((probe) => probe.id),
+            promptVariantId,
             request,
             response: lastResponse,
             timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
@@ -802,6 +806,7 @@ async function executeProxyProbeBatch(
         attemptCount,
         requestIds,
         probeIds: probes.map((probe) => probe.id),
+        promptVariantId,
         request,
         response: lastResponse,
         timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
@@ -858,6 +863,7 @@ async function executeProxyProbeBatch(
     attemptCount,
     requestIds,
     probeIds: probes.map((probe) => probe.id),
+    promptVariantId,
     request,
     response: lastResponse,
     timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
@@ -1017,17 +1023,28 @@ function extractQuotedService(message: string): string | null {
   return message.match(/Service\s+"([^"]+)"\s+is not served by this peer/i)?.[1] ?? null
 }
 
+/**
+ * Each audit batch uses a crypto-random prompt variant so audit traffic has
+ * no constant system prompt or header a seller could fingerprint. The id is
+ * recorded on the exchange so third parties can re-parse the response.
+ */
+function pickKbfPromptVariantId(): string {
+  return KBF_PROMPT_VARIANT_IDS[randomInt(KBF_PROMPT_VARIANT_IDS.length)]!
+}
+
 function buildProxyBatchRequest(
   context: ProxyVerificationContext,
   target: PeerInfo,
   service: string,
   reference: KbfReferenceV1,
   probes: KbfProbe[],
+  promptVariantId: string = pickKbfPromptVariantId(),
 ): {
   url: string
   headers: Record<string, string>
   body: Uint8Array
   request: ProxyAuditEvidenceExchangeV1['request']
+  promptVariantId: string
 } {
   const url = `${context.proxy.baseUrl}/v1/chat/completions`
   const headers = {
@@ -1036,7 +1053,10 @@ function buildProxyBatchRequest(
     'x-antseed-capture-response-auth-preimages': '1',
   }
   const requestBody: Record<string, unknown> = {
-    ...buildKbfChatRequestBody(service, probes, { maxTokens: reference.queryProfile.maxTokensPerRequest }),
+    ...buildKbfChatRequestBody(service, probes, {
+      maxTokens: reference.queryProfile.maxTokensPerRequest,
+      variantId: promptVariantId,
+    }),
     top_p: reference.queryProfile.generationSettings.topP,
     stream: false,
     n: 1,
@@ -1049,6 +1069,7 @@ function buildProxyBatchRequest(
     url,
     headers,
     body,
+    promptVariantId,
     request: {
       method: 'POST',
       url,
@@ -1068,13 +1089,14 @@ function notAttemptedExchange(
   batchIndex: number,
   terminalReason: VerificationOutcomeReasonV1,
 ): ProxyAuditEvidenceExchangeV1 {
-  const { request } = buildProxyBatchRequest(context, target, service, reference, probes)
+  const { request, promptVariantId } = buildProxyBatchRequest(context, target, service, reference, probes)
   const now = Date.now()
   return {
     batchIndex,
     attemptCount: 0,
     requestIds: [],
     probeIds: probes.map((probe) => probe.id),
+    promptVariantId,
     request,
     response: null,
     timing: { startedAt: now, completedAt: now, responseLatencyMs: 0 },

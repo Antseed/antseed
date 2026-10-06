@@ -4,6 +4,7 @@ import {
   computeBinomialPower,
   computeReferenceId,
   createReferenceQueryProfile,
+  kbfPromptVariantsHash,
   queryProfileHash,
   subsetReferenceSelfTest,
   validateKbfReferenceV1,
@@ -28,7 +29,7 @@ function reference(source: KbfReferenceV1['source'] = 'generated'): KbfReference
     minimumMismatchDelta: 0.1,
   });
   const value: KbfReferenceV1 = {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: '',
     referenceModel: 'gpt-5.6-sol',
@@ -134,6 +135,21 @@ describe('validateKbfReferenceV1', () => {
     duplicate.queryProfile.requestOmissions = ['temperature', 'temperature'];
     duplicate.referenceId = computeReferenceId(duplicate);
     expect(() => validateKbfReferenceV1(duplicate)).toThrow(/unsupported request omissions/);
+  });
+
+  it('pins the prompt variant set and rejects version 1 references', () => {
+    const value = reference();
+    expect(value.queryProfile.promptVariantsHash).toBe(kbfPromptVariantsHash());
+
+    const tampered = reference();
+    tampered.queryProfile.promptVariantsHash = 'sha256:' + '00'.repeat(32);
+    tampered.referenceId = computeReferenceId(tampered);
+    expect(() => validateKbfReferenceV1(tampered)).toThrow(/prompt variants hash mismatch/);
+
+    const legacy = reference() as unknown as Record<string, unknown>;
+    legacy.version = 1;
+    legacy.referenceId = computeReferenceId(legacy);
+    expect(() => validateKbfReferenceV1(legacy)).toThrow(/schema version 2/);
   });
 
   it('requires explicit operator trust for imported references', () => {

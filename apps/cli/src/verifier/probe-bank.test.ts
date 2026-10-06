@@ -73,7 +73,7 @@ function reference(count = 200): KbfReferenceV1 {
     selfHamming: 0, selfTotal: count, minimumMismatchDelta: 0.1, alpha: 0.05, cpConfidence: 0.99,
   })
   const value: KbfReferenceV1 = {
-    version: 1,
+    version: 2,
     kind: 'kbf',
     referenceId: '',
     referenceModel: 'model-a',
@@ -304,7 +304,7 @@ test('audit reservations reject legacy AntSeed enrollment banks', async () => {
     await assert.rejects(inspectModelProbeBankPower({
       banksDir: directory,
       model: 'model-a',
-    }), /archive it and rebuild with enrollment 4/)
+    }), /archive it and rebuild with enrollment \d+/)
     await assert.rejects(reserveModelAuditReference({
       banksDir: directory,
       model: 'model-a',
@@ -314,7 +314,7 @@ test('audit reservations reject legacy AntSeed enrollment banks', async () => {
       epoch: '7',
       config: undefined,
       shuffle: <T>(values: readonly T[]) => [...values],
-    }), /archive it and rebuild with enrollment 4/)
+    }), /archive it and rebuild with enrollment \d+/)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

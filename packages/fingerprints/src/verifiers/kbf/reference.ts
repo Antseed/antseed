@@ -1,15 +1,20 @@
-import { canonicalHash, sha256Hex } from '../../canonical-json.js';
+import { canonicalHash } from '../../canonical-json.js';
 import {
   computeReferenceId,
   type FingerprintReference,
   type KbfProbe,
   type MatchEntry,
 } from '../../types.js';
-import { KBF_SYSTEM_PROMPT } from './prompts.js';
+import { kbfPromptVariantsHash } from './prompts.js';
 import { binomialOneSidedPValue, clopperPearsonUpper } from './stats.js';
 
-export const KBF_REFERENCE_VERSION = 1;
-export const KBF_PARSER_VERSION = 'kbf-numeric-lines-v1';
+/**
+ * Version 2: query profiles pin the prompt variant set (`promptVariantsHash`)
+ * instead of a single system prompt. Version 1 references are rejected and
+ * must be rebuilt.
+ */
+export const KBF_REFERENCE_VERSION = 2;
+export const KBF_PARSER_VERSION = 'kbf-numeric-lines-v2';
 export const KBF_PROBES_PER_REQUEST = 10;
 export const KBF_MIN_PROBE_COUNT = 10;
 export const KBF_MAX_PROBE_COUNT = 750;
@@ -23,14 +28,15 @@ export const KBF_ENROLLMENT_TEMPERATURES = [0, 0.7, 0.7] as const;
 export const KBF_EXECUTION_TEMPERATURE = 0;
 
 export interface ReferenceQueryProfileV1 {
-  version: 1;
+  version: 2;
   apiProtocol: 'openai-chat-completions';
   upstreamModel: string;
   enrollmentTemperatures: [0, 0.7, 0.7];
   selfTestTemperature: 0;
   contrastTemperature: 0;
   auditTemperature: 0;
-  systemPromptHash: string;
+  /** Hash over every KBF prompt variant; each request uses one variant from this set. */
+  promptVariantsHash: string;
   parserVersion: typeof KBF_PARSER_VERSION;
   probesPerRequest: 10;
   maxTokensPerRequest: number;
@@ -69,7 +75,7 @@ export interface KbfReferenceSelfTestV1 {
 }
 
 export interface KbfReferenceV1 extends FingerprintReference {
-  version: 1;
+  version: typeof KBF_REFERENCE_VERSION;
   kind: 'kbf';
   queryProfile: ReferenceQueryProfileV1;
   selfTest: KbfReferenceSelfTestV1;
@@ -108,14 +114,14 @@ export function createReferenceQueryProfile(input: {
   const upstreamModel = input.upstreamModel.trim();
   if (!upstreamModel) throw new Error('query profile upstreamModel must not be empty');
   return {
-    version: 1,
+    version: 2,
     apiProtocol: 'openai-chat-completions',
     upstreamModel,
     enrollmentTemperatures: [...KBF_ENROLLMENT_TEMPERATURES],
     selfTestTemperature: KBF_EXECUTION_TEMPERATURE,
     contrastTemperature: KBF_EXECUTION_TEMPERATURE,
     auditTemperature: KBF_EXECUTION_TEMPERATURE,
-    systemPromptHash: `sha256:${sha256Hex(KBF_SYSTEM_PROMPT)}`,
+    promptVariantsHash: kbfPromptVariantsHash(),
     parserVersion: KBF_PARSER_VERSION,
     probesPerRequest: KBF_PROBES_PER_REQUEST,
     maxTokensPerRequest: input.maxTokensPerRequest ?? 160,
@@ -206,7 +212,7 @@ export function validateKbfReferenceV1(
   }
   const reference = object(value, 'reference') as unknown as KbfReferenceV1;
   if (reference.version !== KBF_REFERENCE_VERSION || reference.kind !== 'kbf') {
-    throw new Error('reference must be KBF schema version 1');
+    throw new Error(`reference must be KBF schema version ${KBF_REFERENCE_VERSION}; rebuild older references`);
   }
   nonEmpty(reference.referenceId, 'referenceId');
   nonEmpty(reference.referenceModel, 'referenceModel');
@@ -315,7 +321,7 @@ export function validateKbfReferenceV1(
 
 function validateQueryProfile(profile: ReferenceQueryProfileV1): void {
   object(profile, 'queryProfile');
-  if (profile.version !== 1 || profile.apiProtocol !== 'openai-chat-completions') throw new Error('invalid query profile');
+  if (profile.version !== 2 || profile.apiProtocol !== 'openai-chat-completions') throw new Error('invalid query profile');
   nonEmpty(profile.upstreamModel, 'queryProfile.upstreamModel');
   if (JSON.stringify(profile.enrollmentTemperatures) !== JSON.stringify(KBF_ENROLLMENT_TEMPERATURES)) {
     throw new Error('enrollment temperatures must be [0, 0.7, 0.7]');
@@ -323,7 +329,7 @@ function validateQueryProfile(profile: ReferenceQueryProfileV1): void {
   if (profile.selfTestTemperature !== 0 || profile.contrastTemperature !== 0 || profile.auditTemperature !== 0) {
     throw new Error('self-test, contrast, and audit temperatures must be 0');
   }
-  if (profile.systemPromptHash !== `sha256:${sha256Hex(KBF_SYSTEM_PROMPT)}`) throw new Error('system prompt hash mismatch');
+  if (profile.promptVariantsHash !== kbfPromptVariantsHash()) throw new Error('prompt variants hash mismatch');
   if (profile.parserVersion !== KBF_PARSER_VERSION) throw new Error('parser version mismatch');
   if (profile.probesPerRequest !== 10) throw new Error('query profile must use ten probes per request');
   positiveInteger(profile.maxTokensPerRequest, 'maxTokensPerRequest');

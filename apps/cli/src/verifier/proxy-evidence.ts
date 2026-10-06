@@ -31,6 +31,8 @@ export interface ProxyAuditEvidenceExchange {
   attemptCount: number
   requestIds: string[]
   probeIds: string[]
+  /** KBF prompt variant used for this batch; absent on evidence predating prompt variants. */
+  promptVariantId?: string
   request: {
     method: 'POST'
     url: string

@@ -1,5 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { parseKbfAnswers } from '../src/verifiers/kbf/parser.js';
+import { KBF_PROMPT_VARIANTS, buildKbfPrompt } from '../src/verifiers/kbf/prompts.js';
+import type { KbfProbe } from '../src/types.js';
 
 describe('parseKbfAnswers', () => {
   it('parses well-formed (N) <number> lines', () => {
@@ -62,5 +64,37 @@ describe('parseKbfAnswers', () => {
   it('handles empty input and zero probe count', () => {
     expect(parseKbfAnswers('', 3)).toEqual([null, null, null]);
     expect(parseKbfAnswers('(1) 5', 0)).toEqual([]);
+  });
+
+  it('parses every line-number format emitted by the prompt variants', () => {
+    expect(parseKbfAnswers('1. 3880\n2. -46\n3. 299792.458', 3)).toEqual([3880, -46, 299792.458]);
+    expect(parseKbfAnswers('1) 3880\n2) -46\n3) 1.5', 3)).toEqual([3880, -46, 1.5]);
+    expect(parseKbfAnswers('Q1: 3880\nQ2: -46\nq3: 7', 3)).toEqual([3880, -46, 7]);
+    expect(parseKbfAnswers('Q 1: 3880\nQ 2:-46', 2)).toEqual([3880, -46]);
+  });
+
+  it('does not treat prose starting with Q as an answer line', () => {
+    expect(parseKbfAnswers('Quiz answers:\nQ1: 5', 1)).toEqual([5]);
+  });
+
+  it('round-trips answers echoed in each variant line format', () => {
+    const probes: KbfProbe[] = [1, 2, 3].map((index) => ({
+      id: `p-${index}`,
+      name: `p-${index}`,
+      domain: 'test',
+      template: `Probe ${index} is ___.`,
+      consensus: index,
+      range: [0, 10],
+      tolerance: { mode: 'absolute', value: 0 },
+    }));
+    for (const variant of KBF_PROMPT_VARIANTS) {
+      const labels = buildKbfPrompt(probes, 0, variant.id)
+        .split('\n')
+        .filter((line) => line.endsWith('is ___.'))
+        .map((line) => line.slice(0, line.indexOf(' Probe')));
+      expect(labels).toHaveLength(3);
+      const response = labels.map((label, index) => `${label} ${(index + 1) * 11}`).join('\n');
+      expect(parseKbfAnswers(response, 3)).toEqual([11, 22, 33]);
+    }
   });
 });

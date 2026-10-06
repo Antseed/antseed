@@ -1,7 +1,11 @@
 import { describe, expect, it } from 'vitest';
 import {
+  KBF_PROMPT_VARIANTS,
+  KBF_PROMPT_VARIANT_IDS,
   buildKbfChatRequestBody,
   buildKbfPrompt,
+  getKbfPromptVariant,
+  kbfPromptVariantsHash,
   parseKbfAnswers,
   verifyKbf,
 } from '../src/verifiers/kbf/index.js';
@@ -68,6 +72,41 @@ describe('buildKbfPrompt', () => {
   });
 });
 
+describe('KBF prompt variants', () => {
+  it('exposes a small fixed set of distinct variants with unique ids', () => {
+    expect(KBF_PROMPT_VARIANTS.length).toBeGreaterThanOrEqual(6);
+    expect(new Set(KBF_PROMPT_VARIANT_IDS).size).toBe(KBF_PROMPT_VARIANTS.length);
+    expect(new Set(KBF_PROMPT_VARIANTS.map((variant) => variant.systemPrompt)).size)
+      .toBe(KBF_PROMPT_VARIANTS.length);
+    expect(new Set(KBF_PROMPT_VARIANTS.map((variant) => variant.task)).size).toBe(KBF_PROMPT_VARIANTS.length);
+    expect(new Set(KBF_PROMPT_VARIANTS.map((variant) => variant.lineFormat)))
+      .toEqual(new Set(['paren', 'dot', 'close-paren', 'q-colon']));
+  });
+
+  it('renders each variant with its own line format and header', () => {
+    expect(buildKbfPrompt(PROBES.slice(0, 2), 0, 'v2')).toContain('\n1. The test value is ___.\n2. ');
+    expect(buildKbfPrompt(PROBES.slice(0, 2), 0, 'v3')).toContain('\n1) The test value is ___.\n2) ');
+    expect(buildKbfPrompt(PROBES.slice(0, 2), 4, 'v4')).toContain('\nQ5: The test value is ___.\nQ6: ');
+    const prompts = KBF_PROMPT_VARIANT_IDS.map((id) => buildKbfPrompt(PROBES.slice(0, 3), 0, id));
+    expect(new Set(prompts.map((prompt) => prompt.split('\n')[0])).size).toBe(prompts.length);
+  });
+
+  it('keeps the default variant identical to the original prompt', () => {
+    expect(getKbfPromptVariant().id).toBe('v1');
+    expect(buildKbfPrompt(PROBES.slice(0, 1))).toBe(
+      'TASK: Answer these factual recall questions using only values stored in your weights.\n'
+      + 'RULES: Output ONLY in (N) <number> format, one per line. '
+      + 'Give a single plain number per line, no words, no ranges. '
+      + 'If unsure, output your best single numeric estimate.\n\n(1) The test value is ___.',
+    );
+  });
+
+  it('rejects unknown variants and hashes the whole set', () => {
+    expect(() => buildKbfPrompt(PROBES.slice(0, 1), 0, 'v999')).toThrow(/unknown KBF prompt variant/);
+    expect(kbfPromptVariantsHash()).toMatch(/^sha256:[0-9a-f]{64}$/);
+  });
+});
+
 describe('buildKbfChatRequestBody', () => {
   it('builds an OpenAI-compatible chat.completions body', () => {
     const body = buildKbfChatRequestBody('gpt-5.4', PROBES.slice(0, 10));
@@ -79,6 +118,14 @@ describe('buildKbfChatRequestBody', () => {
     expect(body.messages[1]!.role).toBe('user');
     expect(body.messages[1]!.content).toContain('TASK:');
     expect(JSON.parse(JSON.stringify(body))).toEqual(body); // plain JSON
+  });
+
+  it('uses the selected variant for both system and user messages', () => {
+    const body = buildKbfChatRequestBody('gpt-5.4', PROBES.slice(0, 10), { variantId: 'v6' });
+    const variant = getKbfPromptVariant('v6');
+    expect(body.messages[0]!.content).toBe(variant.systemPrompt);
+    expect(body.messages[1]!.content).toBe(buildKbfPrompt(PROBES.slice(0, 10), 0, 'v6'));
+    expect(body.messages[1]!.content.startsWith(variant.task)).toBe(true);
   });
 });
 

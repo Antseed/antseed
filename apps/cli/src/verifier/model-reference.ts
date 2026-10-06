@@ -3,6 +3,7 @@ import { join } from 'node:path'
 import {
   KBF_ENROLLMENT_TEMPERATURES,
   KBF_PROBES_PER_REQUEST,
+  KBF_REFERENCE_VERSION,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
   computeBinomialPower,
@@ -401,7 +402,7 @@ export async function buildModelReference(input: {
   queryProfile.requestOverrides = targetRequestOverrides
   queryProfile.requestOmissions = targetRoute.requestOmissions
   const reference: KbfReferenceV1 = {
-    version: 1,
+    version: KBF_REFERENCE_VERSION,
     kind: 'kbf',
     referenceId: '',
     referenceModel: input.model,
@@ -412,7 +413,7 @@ export async function buildModelReference(input: {
     source: 'generated',
     generator: {
       name: 'antseed-simple-reference-builder',
-      version: '4',
+      version: '5',
       verifierKind: 'kbf',
       params: {
         sourceId: endpoint.sourceId,
