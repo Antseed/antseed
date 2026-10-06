@@ -49,4 +49,8 @@ interface IAntseedVerification {
 
     /// @notice Current score in basis points, or 0 when none has been finalized or it expired.
     function activeScoreBps(uint256 agentId) external view returns (uint256);
+
+    /// @notice Claims the caller's auditor share of the verification emission bucket.
+    function claimAuditorRewards(uint256[] calldata epochs) external returns (uint256 total);
+    function pendingAuditorReward(address auditor, uint256 epoch) external view returns (uint256);
 }

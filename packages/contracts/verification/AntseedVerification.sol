@@ -6,6 +6,7 @@ import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
 import {ECDSA} from "@openzeppelin/contracts/utils/cryptography/ECDSA.sol";
 import {EIP712} from "@openzeppelin/contracts/utils/cryptography/EIP712.sol";
 
+import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "../interfaces/IAntseedRegistry.sol";
 import {IAntseedVerification} from "../interfaces/IAntseedVerification.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
@@ -21,6 +22,11 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 ///         Breadth rewards offering more distinct verified models; the steep integrity
 ///         term makes every failed service expensive, so honest padding cannot hide a
 ///         substituted flagship model.
+///
+///         Auditor rewards: when a score finalizes, each agreeing auditor earns one audit unit
+///         per service in the results, regardless of outcome. Once the gate epoch is final an
+///         auditor claims `budget * units / totalUnits` from the verification emission bucket,
+///         which this contract controls in the emissions gate.
 contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
     uint256 public constant BPS = 10_000;
     uint256 public constant FORMULA_VERSION = 1;
@@ -64,6 +70,10 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
     mapping(uint256 agentId => PendingAttestation pending) private _pending;
     mapping(uint256 agentId => AgentScore score) private _scores;
 
+    mapping(uint256 epoch => uint256 units) public epochAuditUnits;
+    mapping(uint256 epoch => mapping(address auditor => uint256 units)) public auditorEpochUnits;
+    mapping(uint256 epoch => mapping(address auditor => bool claimed)) public auditorEpochClaimed;
+
     event VerifierApprovalSet(address indexed verifier, bool approved);
     event QuorumSet(uint256 quorum);
     event MaxBreadthSet(uint256 maxBreadth);
@@ -85,6 +95,8 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
         uint16 flags,
         bytes32 evidenceHash
     );
+    event AuditUnitsCredited(uint256 indexed epoch, address indexed auditor, uint256 units);
+    event AuditorRewardClaimed(uint256 indexed epoch, address indexed auditor, uint256 amount);
     event AgentScoreFinalized(
         uint256 indexed agentId, uint16 scoreBps, uint64 validUntil, bytes32 resultsHash, address[] auditors
     );
@@ -102,6 +114,7 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
     error SelfAudit();
     error DuplicateAuditor();
     error RefreshTooSoon();
+    error EpochNotFinalized();
 
     modifier onlyApprovedVerifier() {
         if (!approvedVerifiers[msg.sender]) revert NotApprovedVerifier();
@@ -199,6 +212,32 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
     }
 
     // ═══════════════════════════════════════════════════════════════════
+    //                        AUDITOR REWARDS
+    // ═══════════════════════════════════════════════════════════════════
+
+    /// @notice Claims the caller's share of the verification bucket for finalized epochs.
+    ///         Epochs with nothing to claim, or whose bucket has no budget yet, are skipped
+    ///         and stay claimable.
+    function claimAuditorRewards(uint256[] calldata epochs) external override returns (uint256 total) {
+        IAntseedEmissionsGate gate = _emissionsGate();
+        uint256 current = gate.currentEpoch();
+        for (uint256 i = 0; i < epochs.length; i++) {
+            uint256 epoch = epochs[i];
+            if (epoch >= current) revert EpochNotFinalized();
+            uint256 amount = _pendingReward(gate, msg.sender, epoch);
+            if (amount == 0) continue;
+            auditorEpochClaimed[epoch][msg.sender] = true;
+            total += amount;
+            gate.claim(epoch, msg.sender, amount);
+            emit AuditorRewardClaimed(epoch, msg.sender, amount);
+        }
+    }
+
+    function pendingAuditorReward(address auditor, uint256 epoch) external view override returns (uint256) {
+        return _pendingReward(_emissionsGate(), auditor, epoch);
+    }
+
+    // ═══════════════════════════════════════════════════════════════════
     //                        VIEWS
     // ═══════════════════════════════════════════════════════════════════
 
@@ -283,12 +322,42 @@ contract AntseedVerification is IAntseedVerification, EIP712, Ownable2Step {
 
         address[] memory auditors = pending.auditors;
         delete _pending[report.agentId];
+        _creditAuditUnits(auditors, results.length);
 
         uint16 scoreBps = uint16(computeScoreBps(results));
         uint64 validUntil = uint64(block.timestamp) + scoreValidity;
         _scores[report.agentId] =
             AgentScore({scoreBps: scoreBps, validUntil: validUntil, finalizedAt: uint64(block.timestamp)});
         emit AgentScoreFinalized(report.agentId, scoreBps, validUntil, report.resultsHash, auditors);
+    }
+
+    /// @dev Crediting must never block finalization: without a live gate the units are skipped.
+    function _creditAuditUnits(address[] memory auditors, uint256 units) private {
+        address gate = registry.emissions();
+        if (gate.code.length == 0) return;
+        try IAntseedEmissionsGate(gate).currentEpoch() returns (uint256 epoch) {
+            epochAuditUnits[epoch] += units * auditors.length;
+            for (uint256 i = 0; i < auditors.length; i++) {
+                auditorEpochUnits[epoch][auditors[i]] += units;
+                emit AuditUnitsCredited(epoch, auditors[i], units);
+            }
+        } catch {}
+    }
+
+    function _pendingReward(IAntseedEmissionsGate gate, address auditor, uint256 epoch)
+        private
+        view
+        returns (uint256)
+    {
+        uint256 units = auditorEpochUnits[epoch][auditor];
+        if (units == 0 || auditorEpochClaimed[epoch][auditor]) return 0;
+        return (gate.controllerEpochBudget(address(this), epoch) * units) / epochAuditUnits[epoch];
+    }
+
+    function _emissionsGate() private view returns (IAntseedEmissionsGate) {
+        address gate = registry.emissions();
+        if (gate.code.length == 0) revert InvalidAddress();
+        return IAntseedEmissionsGate(gate);
     }
 
     function _structHash(AuditReport calldata report) private pure returns (bytes32) {
