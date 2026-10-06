@@ -1098,6 +1098,20 @@ describe('transformRequest responses to chat', () => {
     expect(messages[1]).toEqual({ role: 'user', content: 'What is the capital of France?' });
   });
 
+  it('preserves reasoning effort when converting responses to chat completions', () => {
+    const request = makeResponsesRequest({
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.6-sol',
+        input: 'Return only 42',
+        reasoning: { effort: 'none' },
+      })),
+    });
+    const result = transformRequest(request, { from: 'openai-responses', to: 'openai-chat-completions' });
+
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+    expect(body.reasoning_effort).toBe('none');
+  });
+
   it('converts array input to messages', () => {
     const request = makeResponsesRequest({
       body: new TextEncoder().encode(JSON.stringify({
@@ -1849,6 +1863,24 @@ describe('transformRequest chat to responses', () => {
     expect(body.input).toEqual([
       { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hello' }] },
     ]);
+  });
+
+  it('preserves reasoning effort when converting chat completions to responses', () => {
+    const request: SerializedHttpRequest = {
+      requestId: 'req-chat-reasoning-effort',
+      method: 'POST',
+      path: '/v1/chat/completions',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.6-sol',
+        messages: [{ role: 'user', content: 'Return only 42' }],
+        reasoning_effort: 'none',
+      })),
+    };
+    const result = transformRequest(request, { from: 'openai-chat-completions', to: 'openai-responses' });
+
+    const body = JSON.parse(new TextDecoder().decode(result!.request.body)) as Record<string, unknown>;
+    expect(body.reasoning).toEqual({ effort: 'none' });
   });
 
   it('carries an explicit prompt_cache_key through to the responses body', () => {

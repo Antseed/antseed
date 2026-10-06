@@ -219,6 +219,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- OpenAI Responses sellers now preserve explicit reasoning effort across Chat Completions and Responses request adaptation, so `reasoning_effort: "none"` reaches the upstream as `reasoning: { effort: "none" }` instead of being silently removed and allowing the upstream to use a different default. Non-stream responses also preserve completed streamed output items when an upstream's final event contains an empty `output`, preventing valid upstream answers from becoming blank responses.
 - Contracts: M002 rejects a `LAST_LOCKED_EPOCH` override that omits legacy deposits; documents the no-mixed-payouts-per-seller requirement and covers late pre-migration claims and repeated pool withdrawals.
 - Desktop no longer shows routing as on before it actually is. The Home power button, hero status, footer status strip, and floating pill lit up as soon as the buyer process was spawned — on first launch and when turning routing back on — even though the local proxy was not yet accepting connections. They now stay in a "Starting..." state until the proxy port answers a reachability probe (re-checked every second during startup), and only then switch to on/Running.
 - Desktop's footer status strip no longer reports the network as "Healthy" after routing is stopped — network stats kept their last DHT snapshot, so the strip read "Healthy | Stopped". It now shows "Offline" while the buyer runtime is stopped, and the "Stopped" state is shown in red like other error states.
