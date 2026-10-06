@@ -1988,6 +1988,8 @@ export class BuyerProxy {
       return
     }
 
+    // Unauthenticated like every /_antseed route: it relies on the buyer
+    // listening on 127.0.0.1 only, since it exposes per-seller spend and tags.
     if (path.startsWith('/_antseed/attributed-spend') && method === 'GET') {
       const after = Number(new URL(path, 'http://localhost').searchParams.get('after') ?? '0')
       res.writeHead(200, { 'content-type': 'application/json' })
