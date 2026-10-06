@@ -1,5 +1,7 @@
 import {
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
+  PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
+  type OneOffChannelPlan,
   CLOSE_CHANNEL_REJECT_CODES,
   type SpendingAuthPayload,
   type AuthAckPayload,
@@ -107,6 +109,7 @@ export function decodeSpendingAuth(data: Uint8Array): SpendingAuthPayload {
       reserveAuthSig: requireStringField(batch, 'reserveAuthSig'),
     };
   }
+  if (typeof obj.oneOffRequestId === 'string') result.oneOffRequestId = obj.oneOffRequestId;
   return result;
 }
 
@@ -179,17 +182,19 @@ export function decodePaymentRequired(data: Uint8Array): PaymentRequiredPayload 
   if (typeof obj.currentAcceptedCumulative === 'string') result.currentAcceptedCumulative = obj.currentAcceptedCumulative;
   if (typeof obj.channelId === 'string') result.channelId = obj.channelId;
   if (typeof obj.reserveMaxAmount === 'string') result.reserveMaxAmount = obj.reserveMaxAmount;
-  if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED) result.code = obj.code;
-  if (typeof obj.reservePlan === 'object' && obj.reservePlan !== null) {
-    const plan = obj.reservePlan as Record<string, unknown>;
-    result.reservePlan = {
-      currentReserveAmount: requireStringField(plan, 'currentReserveAmount'),
-      requiredCumulativeAmount: requireStringField(plan, 'requiredCumulativeAmount'),
-      finalReserveAmount: requireStringField(plan, 'finalReserveAmount'),
-      requestCost: requireStringField(plan, 'requestCost'),
-    };
+  if (obj.code === PAYMENT_CODE_CHANNEL_EXHAUSTED || obj.code === PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED) result.code = obj.code;
+  if (typeof obj.oneOffPlan === 'object' && obj.oneOffPlan !== null) {
+    result.oneOffPlan = decodeOneOffChannelPlan(obj.oneOffPlan as Record<string, unknown>);
   }
   return result;
+}
+
+export function decodeOneOffChannelPlan(plan: Record<string, unknown>): OneOffChannelPlan {
+  return {
+    openingReserveAmount: requireStringField(plan, 'openingReserveAmount'),
+    requiredCumulativeAmount: requireStringField(plan, 'requiredCumulativeAmount'),
+    requestCost: requireStringField(plan, 'requestCost'),
+  };
 }
 
 export function decodeNeedAuth(data: Uint8Array): NeedAuthPayload {

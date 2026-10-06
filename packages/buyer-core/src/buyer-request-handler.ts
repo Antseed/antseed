@@ -495,7 +495,9 @@ export class BuyerRequestHandler {
     response = { ...response, headers: { ...response.headers } };
     const storage = this._deps.verificationStorage;
     const advertisedService = requestedService ?? 'unknown';
-    const expectedChannelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+    const expectedChannelId = this._deps.negotiator?.bpm?.getResponseAuthChannelId(peer.peerId, request.requestId)
+      ?? this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId
+      ?? null;
     const responseAuthPromise = verificationMux.waitForResponseAuth(
       request.requestId,
       this._config.responseAuthTimeoutMs ?? DEFAULT_RESPONSE_AUTH_GRACE_MS,

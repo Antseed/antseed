@@ -75,16 +75,6 @@ export class ResourceOwnershipStore {
     };
   }
 
-  /**
-   * Total price of videos accepted on this channel but not yet downloaded.
-   * The reserve must keep room for them so their charge stays claimable.
-   */
-  getPendingChargeTotal(channelId: string): bigint {
-    const rows = this._db.prepare('SELECT amount FROM resource_charges WHERE channel_id = ? AND charged_at IS NULL')
-      .all(channelId) as Array<{ amount: string }>;
-    return rows.reduce((total, row) => total + BigInt(row.amount), 0n);
-  }
-
   /** Mark the job charged. Returns false when another delivery already charged it. */
   markCharged(protocol: string, resourceId: string): boolean {
     const result = this._db.prepare(`

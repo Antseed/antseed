@@ -72,6 +72,7 @@ export class ChannelStore {
     upsert: Database.Statement;
     getById: Database.Statement;
     getActiveByPeer: Database.Statement;
+    getOneOffByRequest: Database.Statement;
     getActiveByPeerAndBuyer: Database.Statement;
     getLatestByPeer: Database.Statement;
     getLatestByPeerAndBuyer: Database.Statement;
@@ -139,13 +140,13 @@ export class ChannelStore {
           nonce, auth_max, deadline, previous_session_id, previous_consumption,
           tokens_delivered, request_count, reserved_at, settled_at, settled_amount,
           status, latest_buyer_sig, latest_metadata_auth_sig, latest_metadata,
-          created_at, updated_at, payment_recovery
+          created_at, updated_at, payment_recovery, one_off_request_id
         ) VALUES (
           @sessionId, @peerId, @role, @channelKind, @sellerEvmAddr, @buyerEvmAddr,
           @nonce, @authMax, @deadline, @previousSessionId, @previousConsumption,
           @tokensDelivered, @requestCount, @reservedAt, @settledAt, @settledAmount,
           @status, @latestBuyerSig, @latestSpendingAuthSig, @latestMetadata,
-          @createdAt, @updatedAt, @paymentRecovery
+          @createdAt, @updatedAt, @paymentRecovery, @oneOffRequestId
         )
         ON CONFLICT(session_id) DO UPDATE SET
           channel_kind = @channelKind,
@@ -164,6 +165,9 @@ export class ChannelStore {
       `),
       getById: this._db.prepare(
         'SELECT * FROM payment_channels WHERE session_id = ?',
+      ),
+      getOneOffByRequest: this._db.prepare(
+        "SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND one_off_request_id = ? AND channel_kind = 'one_off' ORDER BY created_at DESC LIMIT 1",
       ),
       getActiveByPeer: this._db.prepare(
         'SELECT * FROM payment_channels WHERE peer_id = ? AND role = ? AND channel_kind = ? AND status = ? ORDER BY created_at DESC LIMIT 1',
@@ -282,8 +286,8 @@ export class ChannelStore {
         latestReserveDeadline: channel.latestReserveDeadline,
         reserveAuthPending: channel.reserveAuthPending,
         confirmedReserveAmount: channel.confirmedReserveAmount,
-        deliveredAmount: channel.deliveredAmount,
       }),
+      oneOffRequestId: channel.oneOffRequestId ?? null,
       createdAt: channel.createdAt,
       updatedAt: channel.updatedAt,
     });
@@ -291,6 +295,11 @@ export class ChannelStore {
 
   getChannel(sessionId: string): StoredChannel | null {
     const row = this._stmts.getById.get(sessionId) as ChannelRow | undefined;
+    return row ? rowToChannel(row) : null;
+  }
+
+  getOneOffChannelByRequest(peerId: string, role: ChannelRole, requestId: string): StoredChannel | null {
+    const row = this._stmts.getOneOffByRequest.get(peerId, role, requestId) as ChannelRow | undefined;
     return row ? rowToChannel(row) : null;
   }
 
@@ -362,6 +371,13 @@ export class ChannelStore {
         'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind = ? ORDER BY created_at DESC',
       )
       .all(role, buyerEvmAddr, channelKind) as ChannelRow[];
+    return rows.map(rowToChannel);
+  }
+
+  getBuyerPaymentChannels(buyerEvmAddr: string): StoredChannel[] {
+    const rows = this._db.prepare(
+      'SELECT * FROM payment_channels WHERE role = ? AND buyer_evm_addr = ? AND channel_kind IN (?, ?) ORDER BY created_at DESC',
+    ).all(CHANNEL_ROLE.BUYER, buyerEvmAddr, CHANNEL_KIND.PAID, CHANNEL_KIND.ONE_OFF) as ChannelRow[];
     return rows.map(rowToChannel);
   }
 
@@ -644,6 +660,7 @@ export class ChannelStore {
 
 interface ChannelRow {
   payment_recovery: string | null;
+  one_off_request_id: string | null;
   session_id: string;
   peer_id: string;
   role: string;
@@ -716,6 +733,7 @@ function rowToChannel(row: ChannelRow): StoredChannel {
     latestBuyerSig: row.latest_buyer_sig,
     latestSpendingAuthSig: row.latest_metadata_auth_sig,
     latestMetadata: row.latest_metadata,
+    ...(row.one_off_request_id ? { oneOffRequestId: row.one_off_request_id } : {}),
     createdAt: row.created_at,
     updatedAt: row.updated_at,
   };

@@ -103,38 +103,6 @@ async function buildSpendingAuth(
   };
 }
 
-async function withReserveBatch(
-  payload: SpendingAuthPayload,
-  buyerIdentity: Identity,
-  cumulativeAmount: bigint,
-  maxAmount: bigint,
-): Promise<SpendingAuthPayload> {
-  const deadline = payload.reserveDeadline!;
-  const metadata = encodeMetadata(ZERO_METADATA);
-  const metadataHash = computeMetadataHash(ZERO_METADATA);
-  const domain = makeChannelsDomain(CHAIN_ID, CONTRACT_ADDR);
-  return {
-    ...payload,
-    reserveBatch: {
-      cumulativeAmount: cumulativeAmount.toString(),
-      metadataHash,
-      metadata,
-      spendingAuthSig: await signSpendingAuth(buyerIdentity.wallet, domain, {
-        channelId: payload.channelId,
-        cumulativeAmount,
-        metadataHash,
-      }),
-      maxAmount: maxAmount.toString(),
-      deadline,
-      reserveAuthSig: await signReserveAuth(buyerIdentity.wallet, domain, {
-        channelId: payload.channelId,
-        maxAmount,
-        deadline: BigInt(deadline),
-      }),
-    },
-  };
-}
-
 function makeChannelId(n: number): string {
   return '0x' + n.toString(16).padStart(2, '0').repeat(32);
 }
@@ -219,79 +187,6 @@ describe('SellerPaymentManager', () => {
     expect(session!.latestBuyerSig).toBe(payload.spendingAuthSig);
     expect(session!.latestSpendingAuthSig).toBeNull();
     expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
-  });
-
-  it('executes a fresh reserve batch before acknowledging the channel', async () => {
-    const channelId = makeChannelId(140);
-    const initial = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true,
-      reserveMaxAmount: '1000000',
-    });
-    const payload = await withReserveBatch(initial, buyerIdentity, 650_000n, 5_000_000n);
-    const topUp = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
-
-    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux)).resolves.toBe('reserved');
-
-    expect(vi.mocked(manager.channelsClient.reserve).mock.invocationCallOrder[0])
-      .toBeLessThan(topUp.mock.invocationCallOrder[0]!);
-    expect(topUp.mock.calls[0]![2]).toBe(650_000n);
-    expect(topUp.mock.calls[0]![5]).toBe(5_000_000n);
-    expect(mux.sentAuthAcks).toEqual([{ channelId }]);
-    expect(manager.getAcceptedCumulative(channelId)).toBe(650_000n);
-  });
-
-  it('releases a fresh initial reserve when the batch top-up fails', async () => {
-    const channelId = makeChannelId(141);
-    const initial = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true,
-      reserveMaxAmount: '1000000',
-    });
-    const payload = await withReserveBatch(initial, buyerIdentity, 650_000n, 5_000_000n);
-    vi.spyOn(manager.channelsClient, 'topUp').mockRejectedValue(new Error('top-up failed'));
-
-    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, payload, mux)).rejects.toThrow('top-up failed');
-
-    expect(manager.channelsClient.close).toHaveBeenCalledWith(
-      expect.anything(),
-      channelId,
-      0n,
-      expect.any(String),
-      '0x',
-    );
-    expect(mux.sentAuthAcks).toHaveLength(0);
-    expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
-  });
-
-  it('does not lower an existing authorization when the batch carries only the top-up threshold', async () => {
-    const channelId = makeChannelId(142);
-    const initial = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true,
-      reserveMaxAmount: '1000000',
-    });
-    await manager.handleSpendingAuth(buyerIdentity.peerId, initial, mux);
-    const existing = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      cumulativeAmount: 900_000n,
-      reserveMaxAmount: '1000000',
-    });
-    await manager.handleSpendingAuth(buyerIdentity.peerId, existing, mux);
-
-    const topUpPayload = await withReserveBatch(
-      await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-        cumulativeAmount: 650_000n,
-        reserveMaxAmount: '5000000',
-      }),
-      buyerIdentity,
-      650_000n,
-      5_000_000n,
-    );
-    const topUp = vi.spyOn(manager.channelsClient, 'topUp').mockResolvedValue('0xtopup');
-
-    await expect(manager.handleSpendingAuth(buyerIdentity.peerId, topUpPayload, mux)).resolves.toBe('accepted');
-
-    expect(topUp.mock.calls[0]![2]).toBe(650_000n);
-    expect(manager.getAcceptedCumulative(channelId)).toBe(900_000n);
-    expect(store.getChannel(channelId)!.authMax).toBe('900000');
-    expect(store.getChannel(channelId)!.latestSpendingAuthSig).toBe(existing.spendingAuthSig);
   });
 
   it('retries overlapping initial reserves after delegated account transaction backpressure', async () => {
@@ -809,28 +704,6 @@ describe('SellerPaymentManager', () => {
     expect(manager.isChannelBlocked(channelId)).toBe(false);
     expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
     expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
-  });
-
-  it('keeps delivered spend below an accepted video threshold after restart', async () => {
-    const channelId = makeChannelId(130);
-    const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      isReserve: true, reserveMaxAmount: '1000000',
-    });
-    await manager.handleSpendingAuth(buyerIdentity.peerId, reserve, mux);
-    manager.recordSpend(channelId, 100_000n);
-    const advance = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
-      cumulativeAmount: 850_000n, reserveMaxAmount: '1000000',
-    });
-    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, advance, mux)).toBe('accepted');
-
-    const restarted = new SellerPaymentManager(sellerIdentity, {
-      rpcUrl: 'http://127.0.0.1:8545', channelsContractAddress: CONTRACT_ADDR, chainId: CHAIN_ID, dataDir: tempDir,
-    }, store);
-    vi.spyOn(restarted.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
-      deposit: 5_100_000n, settled: 850_000n,
-    }));
-    await restarted.validateHydratedChannels();
-    expect(restarted.getCumulativeSpend(channelId)).toBe(100_000n);
   });
 
   it('blocks the channel if permanent top-up failure cannot close immediately', async () => {
@@ -2004,7 +1877,7 @@ describe('SellerPaymentManager', () => {
 
     it('keeps channel and reconciles when active on-chain with higher settled', async () => {
       const channelId = makeChannelId(32);
-      seedChannel(store, channelId, buyerIdentity, sellerIdentity, { authMax: '700000', tokensDelivered: '100000' });
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, { tokensDelivered: '100000' });
 
       const mgr = makeFreshManager();
       expect(mgr.getCumulativeSpend(channelId)).toBe(100_000n);

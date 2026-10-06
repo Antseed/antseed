@@ -137,7 +137,7 @@ export type BuyerChannelSummary = {
   peerId: string;
   seller: string;
   buyer: string;
-  /** Latest in-memory ReserveAuth ceiling. Null when it is not available. */
+  /** Live session reserve or persisted confirmed one-off reserve. Null when unavailable. */
   reserveCeiling: string | null;
   /** Latest cumulative SpendingAuth amount persisted in the channel store. */
   cumulativeSigned: string;
@@ -1281,16 +1281,19 @@ export class AntseedNode extends EventEmitter {
    * Combines the persistent ChannelStore (session metadata + cumulative signed
    * amount) with the in-memory reserve ceiling tracked by BuyerPaymentManager.
    *
-   * The ReserveAuth ceiling lives only in the payment manager. When it is not
-   * available, return null rather than substituting the unrelated cumulative
-   * SpendingAuth amount stored in authMax.
+   * One-off channels use their own persisted confirmed reserve, never the
+   * seller's session reserve. Unavailable reserves are null rather than the
+   * unrelated cumulative SpendingAuth amount stored in authMax.
    */
   getActiveBuyerChannels(): BuyerChannelSummary[] {
     const buyerAddress = this._identity?.wallet.address ?? null;
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getActiveChannelsByBuyer(CHANNEL_ROLE.BUYER, buyerAddress);
+    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE);
     return stored.map((c) => {
-      const liveReserve = this._buyerPaymentManager?.getReserveCeiling(c.peerId);
+      const liveReserve = c.channelKind === CHANNEL_KIND.ONE_OFF
+        ? BigInt(c.confirmedReserveAmount ?? '0')
+        : this._buyerPaymentManager?.getReserveCeiling(c.peerId);
       return {
         channelId: c.sessionId,
         peerId: c.peerId,
@@ -1316,10 +1319,12 @@ export class AntseedNode extends EventEmitter {
   getAllBuyerChannels(): BuyerChannelSummary[] {
     const buyerAddress = this._identity?.wallet.address ?? null;
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getAllChannelsByBuyer('buyer', buyerAddress);
+    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress);
     return stored.map((c) => {
       const liveReserve = c.status === CHANNEL_STATUS.ACTIVE
-        ? this._buyerPaymentManager?.getReserveCeiling(c.peerId)
+        ? c.channelKind === CHANNEL_KIND.ONE_OFF
+          ? BigInt(c.confirmedReserveAmount ?? '0')
+          : this._buyerPaymentManager?.getReserveCeiling(c.peerId)
         : null;
       return {
         channelId: c.sessionId,

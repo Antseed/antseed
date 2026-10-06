@@ -2,7 +2,7 @@ import { describe, expect, it, vi } from 'vitest';
 import { BuyerPaymentNegotiator } from './buyer-payment-negotiator.js';
 import type { BuyerConnection, BuyerPeerView } from './interfaces.js';
 import { ConnectionState, toPeerId } from '@antseed/protocol';
-import type { ReserveAuthorizationPlan } from '@antseed/protocol/messages';
+import type { OneOffChannelPlan } from '@antseed/protocol/messages';
 
 describe('BuyerPaymentNegotiator', () => {
   it('decodes a browser-compatible external spending auth header', async () => {
@@ -33,99 +33,146 @@ describe('BuyerPaymentNegotiator', () => {
     expect(sendSpendingAuth).toHaveBeenCalledWith(payload);
   });
 
-  describe('reserve plans', () => {
+  describe('one-off video channels', () => {
     const peer: BuyerPeerView = { peerId: toPeerId('5'.repeat(40)) };
     const connection = { state: ConnectionState.Connected } as BuyerConnection;
     const requestId = 'video-create';
+    const channelId = `0x${'9'.repeat(64)}`;
 
-    function plan(overrides: Partial<ReserveAuthorizationPlan> = {}): ReserveAuthorizationPlan {
+    function plan(overrides: Partial<OneOffChannelPlan> = {}): OneOffChannelPlan {
       return {
-        currentReserveAmount: '1000000',
+        openingReserveAmount: '1000000',
         requiredCumulativeAmount: '650000',
-        finalReserveAmount: '4200000',
         requestCost: '4200000',
         ...overrides,
       };
     }
 
-    function makeNegotiator(available = 3_200_000n) {
-      const events: string[] = [];
-      const finalReserve = available >= 4_200_000n ? 5_200_000n : 4_200_000n;
-      const getSession = vi.fn()
-        .mockResolvedValueOnce({ deposit: 1_000_000n, status: 1 })
-        .mockResolvedValue({ deposit: finalReserve, status: 1 });
+    function paymentRequired(body: Record<string, unknown>) {
+      return {
+        requestId,
+        statusCode: 402,
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify(body)),
+      };
+    }
+
+    function makeNegotiator(options: { available?: bigint; acked?: boolean; existing?: string | null } = {}) {
+      const { available = 5_000_000n, acked = true, existing = null } = options;
       const bpm = {
         maxReserveAmountUsdc: 1_000_000n,
+        maxVideoRequestUsdc: 10_000_000n,
         getActiveSession: vi.fn(() => ({ sessionId: `0x${'1'.repeat(64)}` })),
         getRequestBilling: vi.fn(() => ({
           context: { sellerPeerId: peer.peerId },
           requestFacts: { kind: 'video', video: { action: 'create' } },
           estimatedCostUsdc: 4_200_000n,
         })),
-        getDeliveredAmount: vi.fn(() => 0n),
-        getPendingVideoTotal: vi.fn(() => 0n),
+        getOneOffChannelForRequest: vi.fn(() => existing),
+        isOneOffChannelConfirmed: vi.fn(() => false),
+        openOneOffChannel: vi.fn(async () => channelId),
+        waitForOneOffAck: vi.fn(async () => acked),
+        confirmOneOffChannelOnChain: vi.fn(async () => {}),
+        retireOneOffChannel: vi.fn(),
+        retireSession: vi.fn(),
         reconcileReserveAmount: vi.fn(async () => {}),
-        getBalance: vi.fn(async () => ({ available, reserved: 1_000_000n })),
-        signAndSendReserveBatch: vi.fn(async (
-          _peer: string,
-          _request: string,
-          amount: bigint,
-          _cost: bigint,
-          _deposit: bigint,
-          reserve: bigint,
-        ) => events.push(`batch:${amount}:${reserve}`)),
       };
+      const getSession = vi.fn(async () => ({ deposit: 4_200_000n, status: 1 }));
       const negotiator = Object.create(BuyerPaymentNegotiator.prototype) as BuyerPaymentNegotiator;
       Object.assign(negotiator as object, {
         _bpm: bpm,
-        _channelsClient: { getSession, getTopUpSettledThresholdBps: vi.fn(async () => 6_500n) },
+        _identity: { wallet: { address: `0x${'6'.repeat(40)}` } },
+        _depositsClient: { getBuyerBalance: vi.fn(async () => ({ available, reserved: 0n })) },
+        _channelsClient: {
+          getSession,
+          getFirstSignCap: vi.fn(async () => 1_000_000n),
+          getTopUpSettledThresholdBps: vi.fn(async () => 6_500n),
+        },
+        _isChainReachable: null,
+        _onChainReadFailure: null,
         _lockedPeers: new Set([peer.peerId]),
+        _bufferedPaymentRequired: new Map(),
         _pendingNeedAuth: new Set(),
-        _reservePlanLocks: new Map(),
+        _oneOffLocks: new Map(),
         _topUpThresholdBps: null,
+        _firstSignCapValue: null,
         getOrCreatePaymentMux: () => ({}),
       });
-      return { negotiator, bpm, events };
+      return { negotiator, bpm, getSession };
     }
 
+    it('opens a dedicated channel and leaves the session channel alone', async () => {
+      const { negotiator, bpm } = makeNegotiator();
+      const result = await negotiator.handle402(
+        paymentRequired({ error: 'payment_required', code: 'one_off_channel_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000', oneOffPlan: plan() }),
+        peer,
+        connection,
+        { requestId } as never,
+      );
+
+      expect(result).toEqual({ action: 'retry' });
+      expect(bpm.openOneOffChannel).toHaveBeenCalledWith(peer.peerId, requestId, plan(), expect.anything(), undefined);
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+      expect(bpm.reconcileReserveAmount).not.toHaveBeenCalled();
+    });
+
+    it('needs no serious fee for a video within the opening cap', async () => {
+      const { negotiator, bpm } = makeNegotiator();
+      bpm.getRequestBilling.mockReturnValue({
+        context: { sellerPeerId: peer.peerId },
+        requestFacts: { kind: 'video', video: { action: 'create' } },
+        estimatedCostUsdc: 800_000n,
+      });
+      const small = plan({ openingReserveAmount: '800000', requiredCumulativeAmount: '0', requestCost: '800000' });
+
+      await negotiator.openOneOffChannelForRequest(peer, connection, requestId, small);
+
+      expect(bpm.openOneOffChannel).toHaveBeenCalledWith(peer.peerId, requestId, small, expect.anything(), undefined);
+    });
+
+    it('returns insufficient_deposits when the buyer cannot cover the video', async () => {
+      const { negotiator, bpm } = makeNegotiator({ available: 4_199_999n });
+      const result = await negotiator.handle402(
+        paymentRequired({ error: 'payment_required', code: 'one_off_channel_required', minBudgetPerRequest: '10000', suggestedAmount: '1000000', oneOffPlan: plan() }),
+        peer,
+        connection,
+        { requestId } as never,
+      );
+
+      expect(result.action).toBe('return');
+      expect(bpm.openOneOffChannel).not.toHaveBeenCalled();
+    });
+
     it.each([
-      [3_200_000n, 4_200_000n],
-      [4_199_999n, 4_200_000n],
-      [4_200_000n, 5_200_000n],
-    ])('with %s available, keeps the threshold unchanged and reserves %s', async (available, expectedReserve) => {
-      const { negotiator, bpm, events } = makeNegotiator(available);
-
-      await negotiator.authorizeReservePlan(peer, connection, requestId, plan());
-
-      expect(events).toEqual([`batch:650000:${expectedReserve}`]);
-      expect(bpm.reconcileReserveAmount).toHaveBeenLastCalledWith(peer.peerId, expectedReserve);
-    });
-
-    it('rejects a seller-inflated reserve plan even when the buyer can afford a buffer', async () => {
-      const { negotiator, bpm } = makeNegotiator(4_200_000n);
-
-      await expect(negotiator.authorizeReservePlan(peer, connection, requestId, plan({ finalReserveAmount: '5200000' }))).rejects.toMatchObject({
-        code: 'peer-protocol-violation',
-      });
-      expect(bpm.signAndSendReserveBatch).not.toHaveBeenCalled();
-    });
-
-    it('checks the full additional reserve before signing the advance', async () => {
-      const { negotiator, bpm } = makeNegotiator(200_000n);
-
-      await expect(negotiator.authorizeReservePlan(peer, connection, requestId, plan())).rejects.toMatchObject({
-        code: 'buyer-deposits-insufficient',
-      });
-      expect(bpm.signAndSendReserveBatch).not.toHaveBeenCalled();
-    });
-
-    it('rejects a reserve plan that does not match the on-chain threshold', async () => {
+      ['wrong threshold', { requiredCumulativeAmount: '850000' }],
+      ['wrong opening reserve', { openingReserveAmount: '500000' }],
+      ['wrong price', { requestCost: '4300000' }],
+    ])('rejects a plan with %s', async (_label, overrides) => {
       const { negotiator, bpm } = makeNegotiator();
 
-      await expect(negotiator.authorizeReservePlan(peer, connection, requestId, plan({ requiredCumulativeAmount: '850000' }))).rejects.toMatchObject({
+      await expect(negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan(overrides))).rejects.toMatchObject({
         code: 'peer-protocol-violation',
       });
-      expect(bpm.signAndSendReserveBatch).not.toHaveBeenCalled();
+      expect(bpm.openOneOffChannel).not.toHaveBeenCalled();
+    });
+
+    it('falls back to the on-chain reserve when the AuthAck is lost', async () => {
+      const { negotiator, bpm, getSession } = makeNegotiator({ acked: false });
+
+      await negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan());
+
+      expect(getSession).toHaveBeenCalledWith(channelId);
+      expect(bpm.confirmOneOffChannelOnChain).toHaveBeenCalledWith(channelId, 4_200_000n);
+    });
+
+    it('refuses a second channel for a request whose channel is already confirmed', async () => {
+      const { negotiator, bpm } = makeNegotiator({ existing: channelId });
+      bpm.isOneOffChannelConfirmed.mockReturnValue(true);
+
+      await expect(negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan())).rejects.toMatchObject({
+        code: 'peer-protocol-violation',
+      });
+      expect(bpm.openOneOffChannel).not.toHaveBeenCalled();
     });
   });
 });

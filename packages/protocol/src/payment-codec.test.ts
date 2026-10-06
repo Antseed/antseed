@@ -30,6 +30,7 @@ describe('payment payload codec', () => {
         deadline: 1900000001,
         reserveAuthSig: '0x' + '44'.repeat(65),
       },
+      oneOffRequestId: 'req-video',
     };
     expect(decodeSpendingAuth(encodeSpendingAuth(payload))).toEqual(payload);
   });
@@ -58,10 +59,10 @@ describe('payment payload codec', () => {
       requestId: 'req-2',
       inputUsdPerMillion: 3000,
       outputUsdPerMillion: 15000,
-      reservePlan: {
-        currentReserveAmount: '500000',
-        requiredCumulativeAmount: '325000',
-        finalReserveAmount: '4200000',
+      code: 'one_off_channel_required' as const,
+      oneOffPlan: {
+        openingReserveAmount: '1000000',
+        requiredCumulativeAmount: '650000',
         requestCost: '4200000',
       },
     };

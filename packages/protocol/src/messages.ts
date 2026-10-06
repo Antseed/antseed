@@ -120,6 +120,14 @@ export interface SpendingAuthPayload {
     deadline: number;
     reserveAuthSig: string;
   };
+  /**
+   * Marks the initial SpendingAuth of a one-off channel with the requestId it
+   * pays for (the 402'd request, resent unchanged). The seller binds the new
+   * channel to this request instead of treating it as the buyer's session
+   * channel, never closes the session channel for it, and closes the one-off
+   * channel once its single request is paid or abandoned.
+   */
+  oneOffRequestId?: string;
 }
 
 /**
@@ -211,23 +219,61 @@ export interface PaymentRequiredPayload {
    * to internal phrasing. Only set on irrecoverable 402s today.
    */
   code?: PaymentRequiredCode;
-  /** Complete reserve requirement for an expensive request such as video. */
-  reservePlan?: ReserveAuthorizationPlan;
+  /** Present with code `one_off_channel_required`: open a dedicated channel for this request. */
+  oneOffPlan?: OneOffChannelPlan;
 }
 
-export interface ReserveAuthorizationPlan {
-  /** Reserve currently locked, or the initial reserve requested for a fresh channel. */
-  currentReserveAmount: string;
-  /** Cumulative SpendingAuth required by the contract before topUp(). */
+/**
+ * Terms of a one-off channel that pays for exactly one request (a video).
+ * Opened with reserve(openingReserveAmount). When the price is above the
+ * opening reserve, the buyer also signs a SpendingAuth for
+ * requiredCumulativeAmount (the contract's TOP_UP_SETTLED_THRESHOLD_BPS share
+ * of the opening reserve, the "serious fee") and a ReserveAuth for the full
+ * requestCost, which the seller submits with topUp().
+ */
+export interface OneOffChannelPlan {
+  openingReserveAmount: string;
+  /** Cumulative SpendingAuth settled by topUp(); '0' when no top-up is needed. */
   requiredCumulativeAmount: string;
-  /** Final on-chain reserve ceiling required before the request may start. */
-  finalReserveAmount: string;
-  /** Independently verifiable estimated price of this request. */
+  /** Independently verifiable estimated price of this request; also the final on-chain reserve. */
   requestCost: string;
 }
 
+/** AntseedChannels FIRST_SIGN_CAP default: the largest reserve() a fresh channel may open with. */
+export const DEFAULT_FIRST_SIGN_CAP = 1_000_000n;
+/**
+ * AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS default, used when the live,
+ * owner-configurable value (Base mainnet: 6500) cannot be read. It only makes
+ * the serious fee larger, never too small to unlock topUp().
+ */
+export const DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS = 8_500n;
+
+/**
+ * The one canonical one-off plan for a price. Buyer and seller both compute
+ * it from on-chain FIRST_SIGN_CAP and TOP_UP_SETTLED_THRESHOLD_BPS, so the
+ * buyer can reject any other terms.
+ */
+export function computeOneOffChannelPlan(
+  requestCost: bigint,
+  firstSignCap: bigint,
+  thresholdBps: bigint,
+): OneOffChannelPlan {
+  const openingReserveAmount = requestCost < firstSignCap ? requestCost : firstSignCap;
+  const requiredCumulativeAmount = openingReserveAmount < requestCost
+    ? (openingReserveAmount * thresholdBps + 9_999n) / 10_000n
+    : 0n;
+  return {
+    openingReserveAmount: openingReserveAmount.toString(),
+    requiredCumulativeAmount: requiredCumulativeAmount.toString(),
+    requestCost: requestCost.toString(),
+  };
+}
+
 export const PAYMENT_CODE_CHANNEL_EXHAUSTED = 'channel_exhausted' as const;
-export type PaymentRequiredCode = typeof PAYMENT_CODE_CHANNEL_EXHAUSTED;
+export const PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED = 'one_off_channel_required' as const;
+export type PaymentRequiredCode =
+  | typeof PAYMENT_CODE_CHANNEL_EXHAUSTED
+  | typeof PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED;
 
 /**
  * Seller tells buyer that the current cumulative authorization is insufficient.

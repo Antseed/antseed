@@ -13,6 +13,7 @@ import { bytesToHex } from '../src/utils/hex.js';
 import { toPeerId } from '../src/types/peer.js';
 import { AbiCoder, Wallet } from 'ethers';
 import { encodeSpendingAuth, decodeSpendingAuth } from '@antseed/protocol';
+import { computeOneOffChannelPlan } from '@antseed/protocol/messages';
 
 const enc = new TextEncoder();
 
@@ -152,76 +153,82 @@ describe('Full Payment Flow Integration', () => {
     return { sessionId };
   }
 
-  it.each(['success', 'insufficient-balance'] as const)('video reserve batch exchange: %s', async (outcome) => {
+  it.each(['success', 'insufficient-balance'] as const)('one-off video channel exchange: %s', async (outcome) => {
     const sellerPeerId = sellerIdentity.peerId;
     const buyerPeerId = buyerIdentity.peerId;
-    const channelId = await buyer.authorizeSpending(sellerPeerId, buyerMux, 0n, 1_000_000n, TEST_PRICING);
+    const sessionId = await buyer.authorizeSpending(sellerPeerId, buyerMux, 0n, 1_000_000n, TEST_PRICING);
     await seller.handleSpendingAuth(buyerPeerId, buyerMux.sentSpendingAuths[0]!, sellerMux);
     await buyer.handleAuthAck(sellerPeerId, sellerMux.sentAuthAcks[0]!);
+    vi.mocked(seller.channelsClient.reserve).mockClear();
 
-    // $0.10 of chat already delivered and signed.
-    seller.recordSpend(channelId, 100_000n);
-    await buyer.handleNeedAuth(sellerPeerId, {
-      channelId, requestId: 'chat-1', requiredCumulativeAmount: '100000', currentAcceptedCumulative: '0',
-      deposit: '1000000', lastRequestCost: '100000', inputTokens: '0', outputTokens: '0',
-    }, buyerMux);
-    expect(await seller.handleSpendingAuth(buyerPeerId, buyerMux.sentSpendingAuths.at(-1)!, sellerMux)).toBe('accepted');
-
-    buyer.trackRequestBilling('video-request', {
-      context: { sellerPeerId, service: 'video-model', provider: 'venice', serviceApiProtocol: 'venice-video', unitLimits: { video_generations: 1 } },
-      requestFacts: { kind: 'video', video: { protocol: 'venice-video', action: 'create' } },
-      unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
+    const video = {
+      context: { sellerPeerId, service: 'video-model', provider: 'venice', serviceApiProtocol: 'venice-video' as const, unitLimits: { video_generations: 1 } },
+      requestFacts: { kind: 'video' as const, video: { protocol: 'venice-video' as const, action: 'create' as const } },
+      unitModel: { version: 1 as const, components: [{ unit: 'video_generations' as const, priceUsd: 4.2 }] },
       estimatedCostUsdc: 4_200_000n,
-    });
-    vi.spyOn(buyer, 'getBalance').mockResolvedValue({ available: 10_000_000n, reserved: 1_000_000n });
+    };
+    buyer.trackRequestBilling('video-request', video);
+    const plan = computeOneOffChannelPlan(4_200_000n, 1_000_000n, 6_500n);
+    seller.registerOneOffPlan(buyerPeerId, 'video-request', plan);
     buyerMux.sentSpendingAuths.length = 0;
 
-    await buyer.signAndSendReserveBatch(
-      sellerPeerId,
-      'video-request',
-      850_000n,
-      4_200_000n,
-      1_000_000n,
-      5_100_000n,
-      buyerMux,
-    );
-    const topUp = decodeSpendingAuth(encodeSpendingAuth(buyerMux.sentSpendingAuths[0]!));
-    expect(topUp.reserveBatch?.cumulativeAmount).toBe('850000');
-    expect(seller.getCumulativeSpend(channelId)).toBe(100_000n);
+    const channelId = await buyer.openOneOffChannel(sellerPeerId, 'video-request', plan, buyerMux);
+    expect(channelId).not.toBe(sessionId);
+    const opening = decodeSpendingAuth(encodeSpendingAuth(buyerMux.sentSpendingAuths[0]!));
+    expect(opening.oneOffRequestId).toBe('video-request');
+    expect(opening.reserveMaxAmount).toBe('1000000');
+    expect(opening.reserveBatch?.cumulativeAmount).toBe('650000');
+    expect(opening.reserveBatch?.maxAmount).toBe('4200000');
+
     const topUpSpy = vi.spyOn(seller.channelsClient, 'topUp');
     if (outcome === 'success') topUpSpy.mockResolvedValue('0xtopup');
     else topUpSpy.mockRejectedValue(new Error('execution reverted: InsufficientBalance'));
-    await seller.handleSpendingAuth(buyerPeerId, topUp, sellerMux);
+    const closeSpy = vi.mocked(seller.channelsClient.close);
+    closeSpy.mockClear();
+    const result = await seller.handleSpendingAuth(buyerPeerId, opening, sellerMux);
+    expect(vi.mocked(seller.channelsClient.reserve).mock.calls[0]?.[3]).toBe(1_000_000n);
     expect(topUpSpy.mock.calls[0]?.[1]).toBe(channelId);
-    expect(topUpSpy.mock.calls[0]?.[2]).toBe(850_000n);
-    await buyer.reconcileReserveAmount(sellerPeerId, outcome === 'success' ? 5_100_000n : 1_000_000n);
+    expect(topUpSpy.mock.calls[0]?.[2]).toBe(650_000n);
+    expect(topUpSpy.mock.calls[0]?.[5]).toBe(4_200_000n);
+    // The session channel is never superseded by the video channel.
+    expect(seller.getChannelByPeer(buyerPeerId)?.sessionId).toBe(sessionId);
 
     if (outcome === 'success') {
-      // The video's NeedAuth asks for delivered spend ($4.30), not advance + price ($5.05).
+      expect(result).toBe('reserved');
+      const ack = sellerMux.sentAuthAcks.at(-1)!;
+      expect(ack.channelId).toBe(channelId);
+      await buyer.handleAuthAck(sellerPeerId, ack);
+      expect(buyer.isOneOffChannelConfirmed(channelId)).toBe(true);
+      expect(seller.claimOneOffChannel(channelId)).toBe(true);
+
+      buyer.trackVideoJob(sellerPeerId, 'venice-video', 'job-1', video, 'video-request');
+      expect(buyer.trackVideoRetrieve(sellerPeerId, 'venice-video', 'job-1', 'retrieve-request')).toBe(true);
+      // The seller signs the create's ResponseAuth with the video channel and its retrieves with the session channel.
+      expect(buyer.getResponseAuthChannelId(sellerPeerId, 'video-request')).toBe(channelId);
+      expect(buyer.getResponseAuthChannelId(sellerPeerId, 'retrieve-request')).toBeNull();
+      buyer.recordVideoDelivered(sellerPeerId, 'venice-video', 'job-1', 'retrieve-request');
       seller.recordSpend(channelId, 4_200_000n);
-      buyer.recordObservedUnitUsage('video-request', { units: { video_generations: 1 } });
       await buyer.handleNeedAuth(sellerPeerId, {
-        channelId, requestId: 'video-request', requiredCumulativeAmount: seller.getCumulativeSpend(channelId).toString(),
-        currentAcceptedCumulative: '850000', deposit: '5100000', lastRequestCost: '4200000',
+        channelId, requestId: 'retrieve-request', requiredCumulativeAmount: '4200000',
+        currentAcceptedCumulative: '650000', deposit: '4200000', lastRequestCost: '4200000',
         inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { video_generations: '1' } },
       }, buyerMux);
       const finalAuth = buyerMux.sentSpendingAuths.at(-1)!;
-      expect(finalAuth.cumulativeAmount).toBe('4300000');
+      expect(finalAuth.channelId).toBe(channelId);
+      expect(finalAuth.cumulativeAmount).toBe('4200000');
       expect(await seller.handleSpendingAuth(buyerPeerId, decodeSpendingAuth(encodeSpendingAuth(finalAuth)), sellerMux)).toBe('accepted');
-      await seller.settleSession(buyerPeerId);
-      expect(vi.mocked(seller.channelsClient.close).mock.calls[0]?.[2]).toBe(4_300_000n);
+      expect(closeSpy).toHaveBeenCalledOnce();
+      expect(closeSpy.mock.calls[0]?.[1]).toBe(channelId);
+      expect(closeSpy.mock.calls[0]?.[2]).toBe(4_200_000n);
+      expect(seller.isOneOffChannel(channelId)).toBe(false);
     } else {
-      // Top-up failed: the advance stays signed and later chats use it up.
-      expect(buyer.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
-      expect(buyer.getDeliveredAmount(sellerPeerId)).toBe(100_000n);
-      seller.recordSpend(channelId, 20_000n);
-      await buyer.handleNeedAuth(sellerPeerId, {
-        channelId, requestId: 'chat-2', requiredCumulativeAmount: '120000', currentAcceptedCumulative: '850000',
-        deposit: '1000000', lastRequestCost: '20000', inputTokens: '0', outputTokens: '0',
-      }, buyerMux);
-      expect(buyer.getCumulativeAmount(sellerPeerId)).toBe(850_000n);
-      expect(buyer.getDeliveredAmount(sellerPeerId)).toBe(120_000n);
+      expect(result).toBe('rejected');
+      expect(closeSpy.mock.calls[0]?.[1]).toBe(channelId);
+      expect(closeSpy.mock.calls[0]?.[2]).toBe(0n);
+      expect(seller.getOneOffChannelForRequest(buyerPeerId, 'video-request')).toBeNull();
     }
+    expect(buyer.getCumulativeAmount(sellerPeerId)).toBe(0n);
+    expect(seller.getCumulativeSpend(sessionId)).toBe(0n);
   });
 
   it('complete flow: reserve -> 3 requests -> settle', async () => {

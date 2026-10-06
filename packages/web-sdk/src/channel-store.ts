@@ -68,6 +68,16 @@ export class MemoryChannelStore implements BuyerChannelStore {
       .map(cloneChannel);
   }
 
+  getOneOffChannelByRequest(peerId: string, role: ChannelRole, requestId: string): StoredChannel | null {
+    return this.latestMatching(
+      (c) =>
+        c.peerId === peerId &&
+        c.role === role &&
+        c.channelKind === CHANNEL_KIND.ONE_OFF &&
+        c.oneOffRequestId === requestId,
+    );
+  }
+
   updateChannelStatus(sessionId: string, status: ChannelStatus, settledAmount?: string): void {
     const channel = this.channels.get(sessionId);
     if (!channel) return;

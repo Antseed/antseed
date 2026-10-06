@@ -39,12 +39,12 @@ function response(statusCode: number, body: unknown): SerializedHttpResponse {
 
 const PAYMENT_REQUIRED = response(402, {
   error: 'payment_required',
+  code: 'one_off_channel_required',
   minBudgetPerRequest: '10000',
   suggestedAmount: '1000000',
-  reservePlan: {
-    currentReserveAmount: '1000000',
+  oneOffPlan: {
+    openingReserveAmount: '1000000',
     requiredCumulativeAmount: '650000',
-    finalReserveAmount: '4200000',
     requestCost: '4200000',
   },
 });

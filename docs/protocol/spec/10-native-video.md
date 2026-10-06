@@ -69,7 +69,7 @@ Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `refere
 
 Discovery billing entries use the protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`; `venice-video` is ID `6`.
 
-A video is charged when it is delivered: the first retrieve that returns the finished video (a streamed download that passes the delivery check below) charges the video price once per job. The create itself is not charged; the seller stores the price with the accepted `queue_id` (`resource_charges` in the metering database) and charges it on the first delivery to the same channel. Later downloads of the same job are free. A job that is never delivered (provider failure, moderation rejection, expired file, or never downloaded) is not charged beyond the serious fee described below. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
+A video is charged when it is delivered: the first retrieve that returns the finished video (a streamed download that passes the delivery check below) charges the video price once per job. The create itself is not charged; the seller stores the price and the job's one-off channel with the accepted `queue_id` (`resource_charges` in the metering database) and charges it on the first delivery. Later downloads of the same job are free. A job that is never delivered (provider failure, moderation rejection, expired file, or never downloaded) is not charged beyond the serious fee described below. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
 
 ### Delivery check
 
@@ -81,24 +81,56 @@ Buyer and seller run the same check on a streamed download, so the seller never 
 
 Both peers inspect the MP4 while it streams; they read box headers and buffer only the `moov` box (at most 16 MiB), so `moov` may come before or after the media data. A download that fails the check is still passed to the client, but it is not charged and the seller keeps only the serious fee. JSON status answers never count as a delivery.
 
-### Videos above the first reserve
+### One-off video channels
 
-The buyer rejects a create whose price, computed from the seller's advertised unit pricing, is above `maxVideoRequestUsdc` (default `5000000`, $5.00). The buyer always sends the create first. The seller answers unbillable requests before any payment check. Only then, if the video's price is above the reserve still locked on the channel (`reserveMax - spent`), the seller replies HTTP 402 with `{"error":"payment_required","code":"video_reserve_required"}` plus `estimatedRequestCost`, `remainingLockedReserve` and `reserveMaxAmount`. It does not start the job and keeps the channel open. Sellers run at most one video create per buyer at a time; a second create while one is in flight gets HTTP 409 `video_create_in_progress` without starting a job. This is a temporary limit until the reserve check accounts for in-flight creates, so concurrent creates cannot together exceed the locked reserve. Retrieve requests and other buyers are not limited. This check ignores `reserveEstimateOverdraftUsdc`. The reserve check also keeps room for the buyer's accepted videos that are not delivered yet, so their later charges stay covered. Raising the reserve pays a serious fee that cannot be refunded, so the buyer raises it only after that reply, never for a rejected create:
+Every paid video create is paid from its own **one-off payment channel**: a fresh on-chain channel (new salt, so a new `channelId`) that pays for exactly that one video. It is never the buyer's session channel with the seller. Chat and image spending cannot use the video's reserve, the video's cumulative never mixes with chat spending, and disconnects or session settlement never close it. One buyer can run any number of videos with the same seller at once, each on its own channel, as long as its deposits cover each video. No contract change is involved: channel IDs are `keccak(buyer, seller, salt)`, so any number of channels can be open between the same pair.
 
-1. The buyer reads `TOP_UP_SETTLED_THRESHOLD_BPS` from the channels contract (6500, or 65%, on Base mainnet; 8500 is the fallback when the read fails) and signs an ordinary cumulative SpendingAuth up to that share of the current deposit. The part above delivered work is the **serious fee**: with a $1 first reserve on mainnet and nothing used yet, it is $0.65. It always counts toward the video price and is smaller than it. Sellers already accept SpendingAuths above delivered spend, so no new message field is involved.
-2. The buyer sends a top-up ReserveAuth. The new ceiling is `delivered + pending videos + video price + maxReserveAmountUsdc` (one normal reserve step for follow-up chats), or only `delivered + pending videos + video price` when deposits cannot cover the buffer. The seller calls `topUp()` with the serious-fee SpendingAuth. That one transaction settles the fee and locks the new ceiling, so the fee is paid only if the bigger reserve is locked too. If the deposit cannot cover the top-up, the transaction reverts and nothing is paid.
-3. The buyer waits until the new deposit is visible on-chain (up to 45 seconds), then resends the same create. It raises the reserve at most once per create; a second `video_reserve_required` is returned to the caller.
-4. When the finished video is delivered, the seller asks for the rest of the price with a normal NeedAuth, and the buyer signs it only after it has received the video.
+The buyer rejects a create whose price, computed from the seller's advertised unit pricing, is above `maxVideoRequestUsdc` (default `5000000`, $5.00). The buyer always sends the create first. The seller answers unbillable requests before any payment check. Then, if no one-off channel is open for this buyer and `requestId`, the seller replies HTTP 402 without starting the job:
 
-A buyer whose channel already has room for the video pays no serious fee; the video is charged in full on delivery. The serious fee applies only when the video does not fit the current reserve, which in practice is the first video on a new channel.
+```json
+{
+  "error": "payment_required",
+  "code": "one_off_channel_required",
+  "minBudgetPerRequest": "10000",
+  "suggestedAmount": "1000000",
+  "oneOffPlan": {
+    "openingReserveAmount": "1000000",
+    "requiredCumulativeAmount": "650000",
+    "requestCost": "4200000"
+  }
+}
+```
 
-The buyer tracks two numbers per channel: the signed cumulative and the amount owed for delivered work (`deliveredAmount`, persisted with the channel). They differ only while a serious fee is outstanding. After a $0.10 chat, a $0.65 serious fee and a delivered $4.20 video, the buyer has signed $4.30 in total, not $4.95. Spend events report only new authorization ($0.55 for the fee, then the rest on delivery), both with the video create's request ID, so conversation totals include the fee, and usage metadata attributes the full $4.20 to the video service. Sellers treat on-chain `settled` as lost local state only when it exceeds their accepted cumulative, so a serious fee is never counted as delivered work after a restart.
+The plan is fully determined by the price and two contract constants, so buyer and seller compute it the same way (`computeOneOffChannelPlan` in `@antseed/protocol`):
 
-The buyer keeps accepted-but-undelivered video prices in memory only. If the buyer process restarts before the download, it cannot verify the seller's delivery charge and does not sign it; the seller keeps only the serious fee.
+- `openingReserveAmount = min(price, FIRST_SIGN_CAP)`: `reserve()` cannot open a channel above `FIRST_SIGN_CAP` ($1 by default).
+- `requiredCumulativeAmount = ceil(openingReserveAmount × TOP_UP_SETTLED_THRESHOLD_BPS / 10000)` when the price is above the opening reserve, otherwise `0`. `topUp()` requires this share of the deposit to be settled first. This is the **serious fee**: $0.65 for a $1 opening reserve on Base mainnet (6500 bps; 8500 is the fallback when the read fails). It always counts toward the video price and is smaller than it.
+- The final reserve is always `requestCost`, the video price.
 
-The first reserve still respects `FIRST_SIGN_CAP`; no contract change is involved. If deposits cannot cover even the video price, the create fails with `buyer-deposits-insufficient` (HTTP 503); if the top-up cannot be confirmed in time, it fails with `buyer-reserve-topup-timeout` (HTTP 504) without resending the create.
+A video at or below `FIRST_SIGN_CAP` needs no serious fee and no top-up: the channel opens at the full price.
 
-The reference seller never settles or closes with the serious-fee signature on its own; it is used only as the `topUp()` argument. If the top-up fails or the buyer disconnects before it lands, the seller settles and closes at delivered spend. If `topUp()` fails permanently (for example `InsufficientBalance`), the seller closes the channel at delivered spend, so the buyer pays only for delivered work, and a later request opens a new channel. The contract still accepts the fee signature, so a modified seller could settle it alone; at most the serious fee is at risk. Already-settled funds are **not automatically refunded**.
+The buyer validates the plan against its own price estimate and the live contract values, checks that available deposits cover the full price (otherwise it returns `insufficient_deposits`), and sends one SpendingAuth for the new channel:
+
+- the opening ReserveAuth (`reserveSalt`, `reserveMaxAmount = openingReserveAmount`);
+- for a price above the cap, a `reserveBatch` with the serious-fee SpendingAuth and the final ReserveAuth for the price;
+- `oneOffRequestId: "<create requestId>"`, which binds the channel to the create.
+
+The seller accepts it only if it matches a plan it offered for the same buyer and `requestId` (plans expire after 2 minutes). It calls `reserve()` and, when needed, `topUp()` with the serious-fee SpendingAuth: that one transaction settles the fee and locks the full price, so the fee is paid only if the full reserve is locked too. If `topUp()` fails (for example `InsufficientBalance`), the seller immediately calls `close(0)` and the whole opening reserve goes back to the buyer. Otherwise it replies `AuthAck` for the new channel. The buyer waits for the AuthAck, reading the chain between waits so a lost AuthAck still confirms once the full reserve is visible (up to 45 seconds; `buyer-reserve-topup-timeout` otherwise), then resends the same create with the same `requestId`.
+
+The binding is the `requestId`: the retry carries the same `requestId`, and the seller looks up the one-off channel by `(buyer, requestId)`. No extra HTTP header is needed. The seller marks the channel used when the create starts, so a replayed create cannot start a second job on it (HTTP 409 `one_off_channel_used`); a channel whose reserve does not cover the price is refused with HTTP 409 `one_off_channel_mismatch`.
+
+A one-off channel is closed as soon as its outcome is known:
+
+- **Delivered:** the seller sends a NeedAuth for the channel with `requiredCumulativeAmount = price`. The buyer signs the price only for a delivered download of that channel's own job, and the seller calls `close(price)` right away.
+- **Not accepted, provider error, ownership store failure, or a free video:** the seller closes immediately at the amount already settled (the serious fee, or `0`).
+- **Generation failed:** when retrieve reports `FAILED`, `ERROR` or `CANCELLED`, the seller closes at the serious fee.
+- **Abandoned:** the seller closes a channel whose create never started after 10 minutes, and any unpaid channel after 24 hours.
+
+If the seller disappears, the buyer can still `requestClose()` and `withdraw()` the channel after the 15-minute grace period like any other channel.
+
+List these channels with `antseed buyer channels list` or `antseed buyer channels --json` for full channel IDs. To recover an abandoned video's remaining reserve without the seller, run `antseed buyer channels request-close <channelId>`, wait the 15-minute grace period, then run `antseed buyer channels withdraw <channelId>`. This releases only the unspent reserve, not the already-settled serious fee. One-off video channels also appear in buyer channel history, but stay separate from chat sessions; the cooperative `close` command is only for session channels.
+
+The buyer keeps accepted-but-undelivered video jobs in memory only. If the buyer process restarts before the download, it cannot verify the seller's delivery charge and does not sign it; the seller keeps only the serious fee. Already-settled funds are **not automatically refunded**: a video that is never delivered costs at most the serious fee, which `topUp()` settles on-chain.
 
 ## Routing and ownership
 

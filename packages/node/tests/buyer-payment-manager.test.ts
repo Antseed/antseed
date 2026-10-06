@@ -73,32 +73,6 @@ function decodeMetadataServices(metadata: string): Array<{
   }));
 }
 
-function decodeMetadataVideoUsage(metadata: string): {
-  videoGenerations: bigint;
-  videoSeconds: bigint;
-  serviceVideoGenerations: bigint;
-  serviceVideoSeconds: bigint;
-} {
-  const coder = AbiCoder.defaultAbiCoder();
-  const [, , , , , videoGenerations, videoSeconds, services] = coder.decode([
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'uint256',
-    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]',
-  ], metadata);
-  const service = services[0];
-  return {
-    videoGenerations,
-    videoSeconds,
-    serviceVideoGenerations: service?.cumulativeVideoGenerations ?? 0n,
-    serviceVideoSeconds: service?.cumulativeVideoSeconds ?? 0n,
-  };
-}
-
 function createMockPaymentMux(): PaymentMux & {
   sentSpendingAuths: unknown[];
 } {
@@ -199,8 +173,9 @@ describe('BuyerPaymentManager', () => {
     expect(sent.metadata).toBeTypeOf('string');
     expect(sent.metadata).not.toBe('');
     expect((sent.metadata as string).startsWith('0x')).toBe(true);
-    // v3 zero metadata: five head words + empty services array (offset + length) = 7 words.
-    expect((sent.metadata as string).length).toBe(2 + 7 * 64);
+    // v4 zero metadata: seven head words (version, input, output, requests,
+    // images, video generations, video seconds) + empty services array (offset + length) = 9 words.
+    expect((sent.metadata as string).length).toBe(2 + 9 * 64);
   });
 
   it('does not transmit ReserveAuth when durable persistence fails', async () => {
@@ -941,44 +916,6 @@ describe('BuyerPaymentManager', () => {
     }]);
   });
 
-  it('records raw video units without adding output-token equivalents', async () => {
-    const sellerPeerId = fakePeerId('seller-video-usage');
-    const service = 'veo-3';
-    const requestId = 'req-video-usage';
-    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 5_000_000n);
-    manager.trackRequestBilling(requestId, {
-      context: {
-        sellerPeerId,
-        provider: 'venice',
-        service,
-        serviceApiProtocol: 'venice-video',
-        unitLimits: { video_generations: 1, video_seconds: 8 },
-      },
-      requestFacts: { kind: 'video', video: { protocol: 'venice-video', action: 'create', duration: 8 } },
-      unitModel: { version: 1, components: [{ unit: 'video_generations', priceUsd: 4.2 }] },
-      estimatedCostUsdc: 4_200_000n,
-    });
-
-    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
-      inputBytes: new Uint8Array(0),
-      outputBytes: new Uint8Array(0),
-      sellerClaimedCost: 4_200_000n,
-      reportedInputTokens: 0n,
-      reportedOutputTokens: 0n,
-      unitUsage: { units: { video_generations: 1, video_seconds: 8 } },
-      service,
-      requestId,
-    });
-
-    expect(decodeMetadataTokens(payload.metadata).outputTokens).toBe(0n);
-    expect(decodeMetadataVideoUsage(payload.metadata)).toEqual({
-      videoGenerations: 1n,
-      videoSeconds: 8n,
-      serviceVideoGenerations: 1n,
-      serviceVideoSeconds: 8n,
-    });
-  });
-
   it('handleNeedAuth suppresses per-service metadata when disabled', async () => {
     manager = new BuyerPaymentManager(identity, makeConfig(tempDir, {
       disableMetadataV2Services: true,
@@ -1711,38 +1648,6 @@ describe('BuyerPaymentManager', () => {
     expect(sent.reserveSalt).toBeTypeOf('string');
     expect(sent.reserveDeadline).toBeTypeOf('number');
     expect(manager.getReserveCeiling(sellerPeerId)).toBe(20_000_000n);
-  });
-
-  it('topUpReserve raises the ceiling to an explicit target', async () => {
-    const sellerPeerId = fakePeerId('seller-topup-target');
-    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
-    mux.sentSpendingAuths.length = 0;
-
-    await manager.topUpReserve(sellerPeerId, mux, 5_850_000n);
-
-    expect(mux.sentSpendingAuths).toHaveLength(1);
-    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBe('5850000');
-    expect(manager.getReserveCeiling(sellerPeerId)).toBe(5_850_000n);
-
-    mux.sentSpendingAuths.length = 0;
-    await manager.topUpReserve(sellerPeerId, mux, 5_000_000n);
-    expect(mux.sentSpendingAuths).toHaveLength(0);
-  });
-
-  it('serializes concurrent top-ups so each builds on the previous ceiling', async () => {
-    const sellerPeerId = fakePeerId('seller-topup-serial');
-    await manager.authorizeSpending(sellerPeerId, mux, 10_000n, 1_000_000n, TEST_PRICING);
-    mux.sentSpendingAuths.length = 0;
-
-    await Promise.all([
-      manager.topUpReserve(sellerPeerId, mux),
-      manager.topUpReserve(sellerPeerId, mux, 5_000_000n),
-      manager.topUpReserve(sellerPeerId, mux),
-    ]);
-
-    expect(mux.sentSpendingAuths.map((auth) => (auth as Record<string, unknown>).reserveMaxAmount))
-      .toEqual(['11000000', '21000000']);
-    expect(manager.getReserveCeiling(sellerPeerId)).toBe(21_000_000n);
   });
 
   it('resendReserveAuth replays the original reserve amount after top-up', async () => {
