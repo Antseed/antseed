@@ -446,6 +446,10 @@ function sendError(res: http.ServerResponse, status: number, type: string, code:
 
 /** The request body, or null once it exceeds MAX_BODY_BYTES (the rest is drained, not kept). */
 async function readBody(req: http.IncomingMessage): Promise<Buffer | null> {
+  if (Number(req.headers['content-length']) > MAX_BODY_BYTES) {
+    req.resume()
+    return null
+  }
   const chunks: Buffer[] = []
   let size = 0
   for await (const chunk of req) {
