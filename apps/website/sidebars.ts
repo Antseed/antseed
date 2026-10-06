@@ -21,6 +21,7 @@ const sidebars: SidebarsConfig = {
         'guides/using-the-api',
         'guides/agents',
         'guides/public-tunnels',
+        'guides/gateway-api-keys',
         'guides/become-a-provider',
         'guides/tee-provider',
         'guides/verify-tee',

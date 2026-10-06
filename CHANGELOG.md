@@ -6,8 +6,18 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Node: one buyer node can pay as several wallets. `AntseedNode.addBuyerIdentity()` adds a wallet that shares the node's discovery, routing and chain clients while keeping its own seller connections, payment channels and free-usage sessions; requests pick it with the `buyerIdentity` option, and usage, channel and close APIs accept it too. `payment:spend` events now carry `buyerIdentity`.
+- CLI: `antseed buyer identity create|list|remove` manages extra buyer wallets in `<data-dir>/buyer-identities/`. A running buyer loads them at startup or on first use, sweeps deposits into each one, and pays as the identity named by the `x-antseed-buyer-identity` request header. Control-plane reads (`/_antseed/channels`, `/_antseed/buyer-usage`, `/_antseed/metering/:peer`) take `?identity=`, and `GET /_antseed/buyer-identities` lists them. `antseed buyer identity create <name> --key-from env:<VAR>|file:<path>` keeps an identity's private key out of the data dir: the buyer reads it at load time from an env var or a file provided by a secret manager (Vault, a cloud secret manager, a mounted Kubernetes secret).
+- CLI: `antseed gateway` serves one buyer API to many users. `antseed gateway key create|list|show|limits|revoke` manages API keys (stored hashed, shown once) with optional daily, monthly and lifetime USD spend limits, an expiry, and the buyer identity that pays for them (`--identity`, or `--new-identity` for a dedicated wallet). Spend is attributed per key from the USDC actually paid to sellers. A key that reaches a limit gets `402` with code `spend_limit_reached`, and key holders can read their usage and remaining limits at `GET /v1/key`. `antseed gateway start` runs the gateway locally, and `antseed tunnel start` now serves every gateway key; its `ANTSEED_TUNNEL_API_KEY` remains valid as an unlimited key, is no longer required once keys exist, and is revoked when the tunnel starts without it.
+- CLI gateway: key holders can top up a key's buyer wallet with x402. `POST /v1/key/topup` answers `402` with an x402 v2 `PAYMENT-REQUIRED` header (USDC on Base via EIP-3009, paid to the key's wallet), settles a signed `PAYMENT-SIGNATURE` through the configured facilitator (`--x402-facilitator` or `ANTSEED_X402_FACILITATOR_URL`: a URL, `cdp` for Coinbase CDP signed with `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`, or `payai`), records the top-up on the key, and leaves the running buyer to sweep it into the identity's credits. Top-ups are off per key until the owner enables them (`key create --allow-topup`, `key topup <id> on|off`). `GET /v1/key` reports `topup_enabled` and `topped_up_usd`.
+- CLI buyer: `GET /_antseed/attributed-spend` reports the signed spend of requests tagged by a local front end with `x-antseed-attribution-tag`. The tag is stripped before a request reaches a seller.
+- Docs: add the Shared Gateway API Keys guide.
+
 ### Fixed
 
+- Sellers: a listener now accepts up to 64 connections from one IP address, up from 10, so a buyer paying as several identities can reach the same seller with each of them.
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.

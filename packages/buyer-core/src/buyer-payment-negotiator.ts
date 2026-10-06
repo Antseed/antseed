@@ -625,6 +625,7 @@ export class BuyerPaymentNegotiator {
         existingSessionBudgetRequest,
         requiredCumulativeTarget,
         requiredCumulativeTarget == null,
+        req.requestId,
       );
       if (recovered) {
         return { action: 'retry' };
@@ -1187,6 +1188,7 @@ export class BuyerPaymentNegotiator {
     minBudgetPerRequest: bigint | null = null,
     targetCumulative: bigint | null = null,
     requireFreshAck = false,
+    requestId?: string,
   ): Promise<boolean> {
     const session = this._bpm.getActiveSession(peer.peerId);
     if (!session) {
@@ -1262,6 +1264,7 @@ export class BuyerPaymentNegotiator {
         minBudgetPerRequest,
         pmux,
         targetCumulative != null && targetCumulative > 0n ? targetCumulative : undefined,
+        requestId,
       );
       const cumulativeAfter = this._bpm.getCumulativeAmount(peer.peerId);
       if (cumulativeAfter <= cumulativeBefore) {

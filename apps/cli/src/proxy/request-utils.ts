@@ -316,6 +316,10 @@ export const SYSTEM_ROUTED_MODEL_HEADER = 'x-antseed-system-routed'
     rather than to a generic SDK User-Agent. Stripped before dispatch. */
 export const SYSTEM_PROXY_SOURCE_HEADER = 'x-antseed-system-proxy-source'
 
+/** Names the stored buyer identity (wallet) that pays for a request; absent
+    means the default identity. Local to the buyer — stripped before dispatch. */
+export const BUYER_IDENTITY_HEADER = 'x-antseed-buyer-identity'
+
 /**
  * Replace a proxy-assigned model with the chat's pinned route. Only used for
  * requests carrying SYSTEM_ROUTED_MODEL_HEADER — client-chosen models are

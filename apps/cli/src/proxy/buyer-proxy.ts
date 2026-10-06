@@ -16,6 +16,7 @@ import {
   modelRouteTotalPrice,
   normalizedModelReputationScore,
   peerSupportsCooperativeClose,
+  DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
   sanitizePeerDisplayName,
   type AntseedNode,
@@ -54,8 +55,10 @@ import {
   ROUTED_MODEL_ALIAS,
   SYSTEM_PROXY_SOURCE_HEADER,
   SYSTEM_ROUTED_MODEL_HEADER,
+  BUYER_IDENTITY_HEADER,
   normalizePeerId,
 } from './request-utils.js'
+import { BuyerIdentityLoader } from '../buyer-identities/loader.js'
 import {
   buildNetworkModels,
   effectiveModelReputationScore,
@@ -88,6 +91,7 @@ import {
   isTitleGenerationRequest,
   parseRequestBodyObject,
 } from './conversation-identity.js'
+import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
 import { ConversationStore } from './conversation-store.js'
 import type { DepositWatcher } from './deposit-watcher.js'
 import {
@@ -159,6 +163,8 @@ export interface BuyerProxyConfig {
   now?: () => number
   /** Verifier-SDK policy: which verifier the buyer commits to + whether it is required. */
   verifier?: VerifierPolicy
+  /** Loads stored buyer identities on demand; defaults to one reading `dataDir`. */
+  buyerIdentities?: BuyerIdentityLoader
 }
 
 // 401/403 are included: sellers relay upstream auth failures (revoked or
@@ -766,6 +772,11 @@ export async function mergeJsonStateFile(stateDir: string, stateFile: string, pa
   }
 }
 
+function sendUnknownBuyerIdentity(res: ServerResponse): void {
+  res.writeHead(404, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
+}
+
 export class BuyerProxy {
   private readonly _server: Server
   private readonly _node: AntseedNode
@@ -794,6 +805,7 @@ export class BuyerProxy {
    */
   private _lastModelActivityAt = 0
   private readonly _verifier?: VerifierPolicy
+  private readonly _buyerIdentities: BuyerIdentityLoader
   private readonly _teeVerification: TeeVerification
   private readonly _teeControl: TeeControl
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
@@ -843,10 +855,13 @@ export class BuyerProxy {
    * deltas (buyer- and seller-initiated auth both advance the cumulative).
    */
   private readonly _requestConversations = new Map<string, { convId: string; counted: boolean }>()
+  /** Signed spend for requests a local gateway tagged, polled over the control plane. */
+  private readonly _spendAttribution = new SpendAttributionFeed()
 
   constructor(config: BuyerProxyConfig) {
     this._node = config.node
     this._verifier = config.verifier
+    this._buyerIdentities = config.buyerIdentities ?? new BuyerIdentityLoader(config.node, config.dataDir)
     this._teeVerification = new TeeVerification(config.verifier)
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port
@@ -889,11 +904,12 @@ export class BuyerProxy {
     }
 
     const spendEventNode = this._node as AntseedNode & {
-      on?: (event: 'payment:spend', listener: (event: BuyerSpendEvent) => void) => unknown
+      on?: (event: 'payment:spend', listener: (event: BuyerSpendEvent & { buyerIdentity?: string }) => void) => unknown
     }
     if (typeof spendEventNode.on === 'function') {
-      spendEventNode.on('payment:spend', (event: BuyerSpendEvent) => {
+      spendEventNode.on('payment:spend', (event: BuyerSpendEvent & { buyerIdentity?: string }) => {
         this._attributeSpend(event)
+        this._spendAttribution.record(event)
       })
     }
 
@@ -925,6 +941,26 @@ export class BuyerProxy {
       !entry.counted,
     )
     entry.counted = true
+  }
+
+  /**
+   * Identity named by a request: null for the default, the name when it is
+   * (or can be) loaded, undefined when no stored identity has that name.
+   */
+  private async _resolveBuyerIdentity(header: string | undefined): Promise<string | null | undefined> {
+    const name = header?.trim().toLowerCase() ?? ''
+    if (!name || name === DEFAULT_BUYER_IDENTITY) return null
+    const loaded = await this._buyerIdentities.ensure(name).catch((err: unknown) => {
+      log(`Buyer identity "${name}" failed to load: ${err instanceof Error ? err.message : String(err)}`)
+      return false
+    })
+    return loaded ? name : undefined
+  }
+
+  /** `?identity=` on control-plane reads; undefined when it names no stored identity. */
+  private async _controlPlaneIdentity(path: string): Promise<string | null | undefined> {
+    const param = new URL(path, 'http://localhost').searchParams.get('identity')
+    return this._resolveBuyerIdentity(param ?? undefined)
   }
 
   /**
@@ -1056,7 +1092,10 @@ export class BuyerProxy {
     await this._writeStateFile('stopped')
     await this._conversations.flush()
     return new Promise((resolve) => {
-      this._server.close(() => resolve())
+      this._server.close(() => {
+        this._spendAttribution.close()
+        resolve()
+      })
     })
   }
 
@@ -1920,11 +1959,20 @@ export class BuyerProxy {
       return
     }
 
+    if (path.startsWith('/_antseed/buyer-identities') && method === 'GET') {
+      await this._buyerIdentities.loadAll()
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, identities: this._node.buyerIdentities() }))
+      return
+    }
+
     if (path.startsWith('/_antseed/channels') && method === 'GET') {
       const all = /[?&]all=1/.test(path)
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
       const channels = all
-        ? this._node.getAllBuyerChannels()
-        : this._node.getActiveBuyerChannels()
+        ? this._node.getAllBuyerChannels(identity ?? undefined)
+        : this._node.getActiveBuyerChannels(identity ?? undefined)
       const peers = await this._getPeers()
       const peersById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
       const channelsWithCapabilities = channels.map((channel) => {
@@ -1940,17 +1988,30 @@ export class BuyerProxy {
       return
     }
 
+    // Unauthenticated like every /_antseed route: it relies on the buyer
+    // listening on 127.0.0.1 only, since it exposes per-seller spend and tags.
+    if (path.startsWith('/_antseed/attributed-spend') && method === 'GET') {
+      const after = Number(new URL(path, 'http://localhost').searchParams.get('after') ?? '0')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, ...this._spendAttribution.page(Number.isFinite(after) ? after : 0) }))
+      return
+    }
+
     if (path.startsWith('/_antseed/buyer-usage') && method === 'GET') {
-      const totals = this._node.getBuyerUsageTotals()
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
+      const totals = this._node.getBuyerUsageTotals(identity ?? undefined)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, totals, lastActivityAt: this._lastModelActivityAt || null }))
       return
     }
 
-    const meteringMatch = path.match(/^\/_antseed\/metering\/(.+)$/)
+    const meteringMatch = path.match(/^\/_antseed\/metering\/([^?]+)/)
     if (meteringMatch && method === 'GET') {
       const sellerPeerId = decodeURIComponent(meteringMatch[1]!)
-      const stats = this._node.getMeteringStatsByPeer(sellerPeerId)
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
+      const stats = this._node.getMeteringStatsByPeer(sellerPeerId, identity ?? undefined)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify(stats))
       return
@@ -2005,10 +2066,12 @@ export class BuyerProxy {
       }
       let peerId: string
       let includeAuth = true
+      let identityParam: string | undefined
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString())
         peerId = String(body.peerId ?? '')
         if (body.includeAuth === false) includeAuth = false
+        if (typeof body.identity === 'string') identityParam = body.identity
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
@@ -2020,7 +2083,9 @@ export class BuyerProxy {
         return
       }
       try {
-        const result = await this._node.requestChannelClose(peerId, { includeAuth })
+        const identity = await this._resolveBuyerIdentity(identityParam)
+        if (identity === undefined) throw new Error('Unknown buyer identity')
+        const result = await this._node.requestChannelClose(peerId, { includeAuth, ...(identity ? { buyerIdentity: identity } : {}) })
         log(
           `Cooperative close of ${result.channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}...: ` +
           `${result.status}${result.code ? ` (${result.code})` : ''}`,
@@ -2238,6 +2303,27 @@ export class BuyerProxy {
     // it never reaches a seller.
     const systemRoutedModel = headers[SYSTEM_ROUTED_MODEL_HEADER] === '1'
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
+    // Internal marker from the API-key gateway: report this request's signed
+    // spend under the gateway's tag. Stripped so it never reaches a seller.
+    const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
+    delete headers[SPEND_ATTRIBUTION_HEADER]
+    // The paying identity rides on the internal headers through routing, like
+    // a peer pin, and is stripped when the request is built for the seller.
+    const buyerIdentity = await this._resolveBuyerIdentity(headers[BUYER_IDENTITY_HEADER])
+    if (buyerIdentity === undefined) {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        error: {
+          type: 'invalid_request_error',
+          code: 'unknown_buyer_identity',
+          message: `${BUYER_IDENTITY_HEADER} names no stored buyer identity. Create one with \`antseed buyer identity create <name>\`.`,
+          param: BUYER_IDENTITY_HEADER,
+        },
+      }))
+      return
+    }
+    if (buyerIdentity) headers[BUYER_IDENTITY_HEADER] = buyerIdentity
+    else delete headers[BUYER_IDENTITY_HEADER]
 
     let serializedReq: SerializedHttpRequest = {
       requestId: randomUUID(),
@@ -2246,6 +2332,7 @@ export class BuyerProxy {
       headers,
       body: new Uint8Array(body),
     }
+    if (spendAttributionTag) this._spendAttribution.track(serializedReq.requestId, spendAttributionTag)
     const requiredParameters = parseRequiredParametersHeader(
       serializedReq.headers[REQUIRED_PARAMETERS_HEADER],
     )
@@ -3002,6 +3089,7 @@ export class BuyerProxy {
     const {
       'x-antseed-pin-peer': _pinPeer,
       'x-antseed-prefer-peer': _preferPeer,
+      [BUYER_IDENTITY_HEADER]: buyerIdentity,
       [REQUIRED_PARAMETERS_HEADER]: _requiredParameters,
       'x-vpr-session-id': _vprSession,
       // Legacy desktop builds (pre AntStation → VPR rename) still send this.
@@ -3121,7 +3209,7 @@ export class BuyerProxy {
               }
             }
           },
-        }, { signal: requestSignal, pinned })
+        }, { signal: requestSignal, pinned, ...(buyerIdentity ? { buyerIdentity } : {}) })
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
         responseForClient = adaptPeerResponse(responseForClient)
@@ -3208,6 +3296,7 @@ export class BuyerProxy {
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: requestSignal,
           pinned,
+          ...(buyerIdentity ? { buyerIdentity } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)

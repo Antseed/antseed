@@ -456,6 +456,7 @@ export class BuyerPaymentManager {
     minBudgetPerRequest: bigint,
     paymentMux: PaymentMux,
     targetCumulative?: bigint,
+    requestId?: string,
   ): Promise<string> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
@@ -503,6 +504,15 @@ export class BuyerPaymentManager {
       currentMeta,
     );
     this._verifiedCost.set(sellerPeerId, reopened.verifiedCost);
+    this._reportSpend({
+      sellerPeerId,
+      requestId: requestId ?? null,
+      amountUsdc: (nextCumulative - currentCumulative).toString(),
+      inputTokens: '0',
+      cachedInputTokens: '0',
+      outputTokens: '0',
+      outputImages: '0',
+    });
     paymentMux.sendSpendingAuth(spendingAuth);
 
     // Send topUp AFTER the SpendingAuth so the seller processes the higher

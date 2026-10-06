@@ -10,7 +10,10 @@ export {
   type BuyerUsageChannelPoint,
   type BuyerUsageServicePoint,
   type BuyerChannelSummary,
+  type NodeRequestOptions,
+  type BuyerIdentitySummary,
 } from './node.js';
+export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
 export type { Provider, ProviderStreamCallbacks } from './interfaces/seller-provider.js';
 export {
   ModelHealthChecker,
