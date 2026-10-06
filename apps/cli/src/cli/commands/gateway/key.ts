@@ -2,7 +2,7 @@ import type { Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
-import { buyerIdentityAddress, buyerIdentityDir, createBuyerIdentity, loadBuyerIdentity } from '../../../buyer-identities/store.js'
+import { buyerIdentityAddress, buyerIdentityDir, buyerIdentityExists, createBuyerIdentity } from '../../../buyer-identities/store.js'
 import { LIMIT_PERIODS, periodStart, type LimitPeriod, type SpendLimits } from '../../../gateway/limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, usdcToDecimalString } from '../../../gateway/money.js'
 import type { ApiKeyRecord, GatewayStore } from '../../../gateway/store.js'
@@ -26,10 +26,10 @@ function requireKey(store: GatewayStore, id: string): ApiKeyRecord {
 }
 
 async function uniqueIdentityName(dataDir: string, base: string): Promise<string> {
-  if (!await loadBuyerIdentity(dataDir, base)) return base
+  if (!await buyerIdentityExists(dataDir, base)) return base
   for (let suffix = 2; ; suffix += 1) {
     const candidate = `${base.slice(0, 28)}-${suffix}`
-    if (!await loadBuyerIdentity(dataDir, candidate)) return candidate
+    if (!await buyerIdentityExists(dataDir, candidate)) return candidate
   }
 }
 
@@ -84,7 +84,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
           : await uniqueIdentityName(dataDir, slugifyIdentityName(label))
         identityName = (await createBuyerIdentity(dataDir, requested)).name
         createdIdentity = true
-      } else if (identityName !== DEFAULT_BUYER_IDENTITY && !await loadBuyerIdentity(dataDir, identityName)) {
+      } else if (identityName !== DEFAULT_BUYER_IDENTITY && !await buyerIdentityExists(dataDir, identityName)) {
         throw new Error(`Unknown buyer identity "${identityName}". Create it with \`antseed buyer identity create ${identityName}\` or use --new-identity.`)
       }
       const topupEnabled = options['allowTopup'] === true

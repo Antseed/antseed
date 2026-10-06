@@ -29,13 +29,24 @@ export class BuyerIdentityLoader {
     return pending
   }
 
-  async loadAll(): Promise<StoredBuyerIdentity[]> {
+  /** Loads every stored identity; `failed` lists those whose key could not be read, with the reason. */
+  async loadAll(): Promise<{ loaded: StoredBuyerIdentity[]; failed: StoredBuyerIdentity[] }> {
     const stored = await listBuyerIdentities(this._dataDir)
     const loaded: StoredBuyerIdentity[] = []
+    const failed: StoredBuyerIdentity[] = []
     for (const entry of stored) {
-      if (await this.ensure(entry.name).catch(() => false)) loaded.push(entry)
+      if (entry.error) {
+        failed.push(entry)
+        continue
+      }
+      const error = await this.ensure(entry.name).then(
+        (ok) => (ok ? null : 'no longer stored'),
+        (err: unknown) => (err instanceof Error ? err.message : String(err)),
+      )
+      if (error) failed.push({ ...entry, error })
+      else loaded.push(entry)
     }
-    return loaded
+    return { loaded, failed }
   }
 
   private async _load(name: string): Promise<boolean> {

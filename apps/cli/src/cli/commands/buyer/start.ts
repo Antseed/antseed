@@ -557,10 +557,13 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       }
 
       if (ownsProxyListener) {
-        const loaded = await buyerIdentities.loadAll().catch((err: unknown) => {
+        const { loaded, failed } = await buyerIdentities.loadAll().catch((err: unknown) => {
           console.warn(chalk.yellow(`Could not load buyer identities: ${(err as Error).message}`))
-          return []
+          return { loaded: [], failed: [] }
         })
+        for (const entry of failed) {
+          console.warn(chalk.yellow(`Buyer identity ${entry.name} not loaded: ${entry.error}`))
+        }
         if (loaded.length > 0) {
           console.log(chalk.dim(`  Buyer identities: default + ${loaded.map((entry) => entry.name).join(', ')} (select with the x-antseed-buyer-identity header)`))
         }

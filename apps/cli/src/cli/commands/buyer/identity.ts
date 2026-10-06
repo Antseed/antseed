@@ -1,10 +1,10 @@
-import type { Command } from 'commander'
+import { InvalidArgumentError, type Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import { DEFAULT_BUYER_IDENTITY, DepositsClient, resolveChainConfig } from '@antseed/node'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { archiveBuyerIdentity, createBuyerIdentity, listBuyerIdentities, readDefaultWallet } from '../../../buyer-identities/store.js'
+import { archiveBuyerIdentity, createBuyerIdentity, listBuyerIdentities, parseKeySource, readDefaultWallet } from '../../../buyer-identities/store.js'
 
 function formatUsdc(baseUnits: bigint): string {
   return (Number(baseUnits) / 1_000_000).toFixed(2)
@@ -18,16 +18,30 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
   identity.command('create')
     .description('Create a buyer identity with its own wallet')
     .argument('<name>', 'identity name (lowercase letters, digits, dashes)')
-    .action(async (name: string) => {
+    .option('--key-from <source>', 'read an existing private key from env:<VAR> or file:<absolute path> on every load, instead of storing one in the data dir', (value: string) => {
+      try {
+        return parseKeySource(value)
+      } catch (err) {
+        throw new InvalidArgumentError((err as Error).message)
+      }
+    })
+    .action(async (name: string, options: { keyFrom?: string }) => {
       const { dataDir } = getGlobalOptions(buyerCmd)
-      const created = await createBuyerIdentity(dataDir, name)
+      const created = await createBuyerIdentity(dataDir, name, options.keyFrom)
       console.log(chalk.green(`Created buyer identity ${created.name}`))
       console.log(`Wallet: ${created.address}`)
-      console.log(chalk.dim(`Key: ${created.dir}/identity.key — back it up; the wallet holds this identity's credits.`))
+      if (created.keyFrom) {
+        console.log(chalk.dim(`Key: read from ${created.keyFrom}; it is not stored in the data dir. The buyer must be started with it available.`))
+      } else {
+        console.log(chalk.dim(`Key: ${created.dir}/identity.key — back it up; the wallet holds this identity's credits.`))
+      }
       console.log('')
       console.log('Fund it by sending USDC on Base to the wallet. A running buyer deposits it into the')
-      console.log("identity's credits automatically. To show the address as a QR code:")
-      console.log(chalk.dim(`  antseed --data-dir ${created.dir} buyer deposit --no-watch`))
+      console.log("identity's credits automatically.")
+      if (!created.keyFrom) {
+        console.log('To show the address as a QR code:')
+        console.log(chalk.dim(`  antseed --data-dir ${created.dir} buyer deposit --no-watch`))
+      }
       console.log('')
       console.log(`Use it by sending ${chalk.bold(`x-antseed-buyer-identity: ${created.name}`)} with requests to the buyer.`)
     })
@@ -40,9 +54,14 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
       const globalOpts = getGlobalOptions(buyerCmd)
       const stored = await listBuyerIdentities(globalOpts.dataDir)
       const defaultWallet = await readDefaultWallet(globalOpts.dataDir)
-      const rows: Array<{ name: string; address: string | null; available?: string; reserved?: string }> = [
+      const rows: Array<{ name: string; address: string | null; keyFrom?: string; error?: string; available?: string; reserved?: string }> = [
         { name: DEFAULT_BUYER_IDENTITY, address: defaultWallet.address },
-        ...stored.map((entry) => ({ name: entry.name, address: entry.address })),
+        ...stored.map((entry) => ({
+          name: entry.name,
+          address: entry.address,
+          ...(entry.keyFrom ? { keyFrom: entry.keyFrom } : {}),
+          ...(entry.error ? { error: entry.error } : {}),
+        })),
       ]
 
       if (options.balances) {
@@ -74,11 +93,12 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
         console.log(JSON.stringify(rows))
         return
       }
-      const table = new Table({ head: ['Name', 'Wallet', ...(options.balances ? ['Available', 'Reserved'] : [])] })
+      const table = new Table({ head: ['Name', 'Wallet', 'Key', ...(options.balances ? ['Available', 'Reserved'] : [])] })
       for (const row of rows) {
         table.push([
           row.name,
-          row.address ?? chalk.dim(defaultWallet.note),
+          row.address ?? (row.error ? chalk.yellow(row.error) : chalk.dim(defaultWallet.note)),
+          row.keyFrom ?? 'data dir',
           ...(options.balances ? [row.available ?? '-', row.reserved ?? '-'] : []),
         ])
       }

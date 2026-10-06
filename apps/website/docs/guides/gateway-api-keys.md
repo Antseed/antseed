@@ -28,6 +28,20 @@ antseed buyer identity list --balances
 
 Extra identities are stored in `<data-dir>/buyer-identities/<name>/identity.key`. A running buyer loads them at startup, or on first use if you create one while it runs. They share the buyer's peer discovery, routing and chain connections. Sellers still see each one as a separate buyer: its own connections, payment channels and deposits. Because each identity opens its own connection, a seller accepts up to 64 identities from one buyer machine at once (10 on sellers running a release from before buyer identities).
 
+### Keep keys out of the data dir
+
+By default an identity's private key is stored in plain text in `identity.key` (file mode 0600), like the default identity. To keep it in a secret manager instead, create the identity with `--key-from`:
+
+```bash
+# Key injected as an env var (Vault agent, Doppler, systemd credentials, ...)
+antseed buyer identity create team-a --key-from env:ANTSEED_KEY_TEAM_A
+
+# Key mounted as a file (Kubernetes secret, cloud secret manager CSI driver, ...)
+antseed buyer identity create team-b --key-from file:/run/secrets/antseed-team-b
+```
+
+The value is a hex private key, with or without `0x`. Only the reference is stored, in `identity.json`. The buyer reads the key each time it loads the identity, so the env var or file must be available to `antseed buyer start`. If it is missing, the identity is not loaded and the buyer logs why; it never falls back to another wallet. This is also how you bring an existing wallet as an identity.
+
 To fund an identity, send USDC on Base to its wallet address. While the buyer runs, incoming USDC is swept into that identity's credits automatically. To show the address and a QR code:
 
 ```bash
@@ -181,6 +195,6 @@ Top-ups add funds to the wallet. They don't change the key's spend limits. A fir
 ## Where state lives
 
 - `<data-dir>/gateway/gateway.db`: hashed keys, the request log and the per-key ledger (SQLite).
-- `<data-dir>/buyer-identities/<name>/identity.key`: each extra identity's wallet.
+- `<data-dir>/buyer-identities/<name>/identity.key`: each extra identity's wallet, or `identity.json` pointing at its key in your secret manager.
 
-Back up the identity directories. Each one holds a wallet that can hold USDC credits.
+Back up the identity directories, or the secrets they point at. Each wallet can hold USDC credits.
