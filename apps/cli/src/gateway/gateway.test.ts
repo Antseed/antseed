@@ -696,6 +696,29 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
   }
 })
 
+test('x402 top-up still answers 200 when the settled payment cannot be booked', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer()
+  const facilitator = await fakeFacilitator()
+  const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
+  const gateway = await startGateway(store, buyer.port, 300_000, facilitator.topup())
+  const topup = (headers: http.OutgoingHttpHeaders = {}) =>
+    request(gateway.port, '/v1/key/topup', { method: 'POST', key: team.secret, body: '{"amount_usd":"5"}', headers })
+  try {
+    const required = decodeHeaderJson<PaymentRequired>((await topup()).headers['payment-required'] as string)!
+    store.recordLedgerEntry = () => { throw new Error('disk full') }
+    const paid = await topup({ 'payment-signature': await signPayment(Wallet.createRandom(), required) })
+    assert.equal(paid.status, 200)
+    assert.equal(decodeHeaderJson<SettlementResponse>(paid.headers['payment-response'] as string)!.success, true)
+    assert.ok(gateway.logs.some((line) => line.includes('NOT recorded in the ledger')))
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    await facilitator.close()
+    cleanup()
+  }
+})
+
 test('x402 top-up is unavailable without a facilitator, for keys on the operator wallet, or when the owner has not allowed it', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()

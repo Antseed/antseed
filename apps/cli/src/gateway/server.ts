@@ -338,15 +338,21 @@ export class GatewayServer {
     }
 
     const authorization = payment.payload.authorization
-    this._options.store.recordLedgerEntry({
-      kind: 'credit',
-      keyId: key.id,
-      buyerIdentity: key.buyerIdentity,
-      amountUsdc,
-      externalRef: `x402:${requirements.network}:${authorization.nonce.toLowerCase()}`,
-      note: `x402 top-up from ${settled.payer || authorization.from}, tx ${settled.transaction}`,
-      createdAt: Date.now(),
-    })
+    // The USDC has already moved; a failed bookkeeping write must not turn
+    // the settled payment into an error the client would retry.
+    try {
+      this._options.store.recordLedgerEntry({
+        kind: 'credit',
+        keyId: key.id,
+        buyerIdentity: key.buyerIdentity,
+        amountUsdc,
+        externalRef: `x402:${requirements.network}:${authorization.nonce.toLowerCase()}`,
+        note: `x402 top-up from ${settled.payer || authorization.from}, tx ${settled.transaction}`,
+        createdAt: Date.now(),
+      })
+    } catch (error) {
+      this._log(`gateway top-up settled but NOT recorded in the ledger: key=${key.id} amount=${formatUsdc(amountUsdc)} tx=${settled.transaction}: ${error instanceof Error ? error.message : String(error)}`)
+    }
     this._log(`gateway top-up: key=${key.id} identity=${key.buyerIdentity} amount=${formatUsdc(amountUsdc)} tx=${settled.transaction}`)
     res.setHeader(PAYMENT_RESPONSE_HEADER, encodeHeaderJson(settled))
     sendJson(res, 200, {
