@@ -14,6 +14,7 @@ import { SpendFeedPoller } from './spend-feed.js'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GatewayStore } from './store.js'
+import { liveBuyerIdentityAddress } from './runtime.js'
 import { Wallet } from 'ethers'
 import { randomBytes } from 'node:crypto'
 import {
@@ -109,7 +110,7 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
     })
   })
   const port = await listen(server)
-  return { port, captured, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+  return { port, captured, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
 }
 
 async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000, topup: GatewayTopupOptions | null = null) {
@@ -251,8 +252,9 @@ test('spend signed by a different identity than the key\'s is not booked to the 
   }
 })
 
-test('spend attribution feed reports only tagged requests and pages by cursor', () => {
+test('spend attribution feed reports only tagged requests and pages by cursor', (context) => {
   const feed = new SpendAttributionFeed(() => 1000)
+  context.after(() => feed.close())
   feed.track('req-1', 'gw_a')
   const spend = { sellerPeerId: 's', amountUsdc: '10', inputTokens: '1', cachedInputTokens: '0', outputTokens: '1', outputImages: '0' }
   feed.record({ ...spend, requestId: 'req-1' })
@@ -263,6 +265,39 @@ test('spend attribution feed reports only tagged requests and pages by cursor', 
   assert.equal(first.cursor, 2)
   assert.deepEqual(feed.page(first.cursor).events, [])
   assert.equal(feed.page(first.cursor).cursor, 2)
+})
+
+test('late spend keeps its tag after more than 2048 newer requests', (context) => {
+  const feed = new SpendAttributionFeed()
+  context.after(() => feed.close())
+  feed.track('long-running', 'gw_original')
+  for (let index = 0; index < 4096; index++) feed.track(`request-${index}`, `gw_${index}`)
+  const spend = { requestId: 'long-running', sellerPeerId: 'seller', amountUsdc: '10', inputTokens: '1', cachedInputTokens: '0', outputTokens: '1', outputImages: '0' }
+  feed.record(spend)
+  feed.record(spend)
+  assert.deepEqual(feed.page(0).events.map((event) => event.tag), ['gw_original', 'gw_original'])
+})
+
+test('gateway wallet lookup follows the live buyer until it reloads an identity', async () => {
+  let address = 'original-wallet'
+  let status = 200
+  const server = http.createServer((req, res) => {
+    assert.equal(req.url, '/_antseed/buyer-identities')
+    res.writeHead(status, { 'content-type': 'application/json' })
+    res.end(JSON.stringify({ identities: [{ name: 'customer', address }] }))
+  })
+  const port = await listen(server)
+  try {
+    assert.equal(await liveBuyerIdentityAddress(port, 'customer'), 'original-wallet')
+    assert.equal(await liveBuyerIdentityAddress(port, 'missing'), null)
+    address = 'recreated-wallet'
+    assert.equal(await liveBuyerIdentityAddress(port, 'customer'), 'recreated-wallet')
+    status = 503
+    assert.equal(await liveBuyerIdentityAddress(port, 'customer'), null)
+  } finally {
+    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+  await assert.rejects(liveBuyerIdentityAddress(port, 'customer'))
 })
 
 test('gateway exposes only authenticated supported API routes', async () => {

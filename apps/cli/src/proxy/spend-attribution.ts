@@ -1,4 +1,5 @@
 import { randomUUID } from 'node:crypto'
+import Database from 'better-sqlite3'
 
 /**
  * Opaque tag a trusted local front end (the API-key gateway) attaches to a
@@ -9,7 +10,6 @@ import { randomUUID } from 'node:crypto'
 export const SPEND_ATTRIBUTION_HEADER = 'x-antseed-attribution-tag'
 
 const TAG_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/
-const MAX_TRACKED_REQUESTS = 2048
 const MAX_BUFFERED_EVENTS = 10_000
 const MAX_EVENTS_PER_PAGE = 1000
 
@@ -45,25 +45,29 @@ export function parseSpendAttributionTag(value: string | undefined): string | nu
 }
 
 /**
- * Bounded in-memory feed of spend events for tagged requests. Consumers poll
- * it with a cursor; events are kept for the most recent requests only, which
- * is enough for a co-located gateway that polls every few seconds.
+ * Bounded in-memory event feed, with request tags retained in a temporary
+ * SQLite database until shutdown so late spend never loses its attribution.
  */
 export class SpendAttributionFeed {
   readonly bootId = randomUUID()
-  private readonly _tags = new Map<string, string>()
+  private readonly _tags = new Database('')
+  private readonly _track: Database.Statement
+  private readonly _lookup: Database.Statement
   private readonly _events: AttributedSpendEvent[] = []
   private _nextSeq = 1
 
-  constructor(private readonly _now: () => number = () => Date.now()) {}
+  constructor(private readonly _now: () => number = () => Date.now()) {
+    this._tags.exec('CREATE TABLE request_tags (request_id TEXT PRIMARY KEY, tag TEXT NOT NULL)')
+    this._track = this._tags.prepare('INSERT OR REPLACE INTO request_tags VALUES (?, ?)')
+    this._lookup = this._tags.prepare('SELECT tag FROM request_tags WHERE request_id = ?')
+  }
 
   track(requestId: string, tag: string): void {
-    this._tags.set(requestId, tag)
-    while (this._tags.size > MAX_TRACKED_REQUESTS) {
-      const oldest = this._tags.keys().next().value
-      if (oldest === undefined) break
-      this._tags.delete(oldest)
-    }
+    this._track.run(requestId, tag)
+  }
+
+  close(): void {
+    this._tags.close()
   }
 
   record(event: {
@@ -76,8 +80,8 @@ export class SpendAttributionFeed {
     outputTokens: string
     outputImages: string
   }): void {
-    if (!event.requestId) return
-    const tag = this._tags.get(event.requestId)
+    if (!event.requestId || !this._tags.open) return
+    const tag = (this._lookup.get(event.requestId) as { tag: string } | undefined)?.tag
     if (!tag) return
     this._events.push({
       seq: this._nextSeq++,

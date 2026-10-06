@@ -1,7 +1,6 @@
 import { resolveChainConfig } from '@antseed/node'
 import { Contract, JsonRpcProvider } from 'ethers'
 import { loadConfig } from '../config/loader.js'
-import { buyerIdentityAddress } from '../buyer-identities/store.js'
 import { GatewayAccounting } from './accounting.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayTopupOptions } from './server.js'
@@ -93,6 +92,15 @@ function facilitatorAuth(config: GatewayTopupConfig): { authorize?: (endpointUrl
   return {}
 }
 
+export async function liveBuyerIdentityAddress(buyerPort: number, name: string): Promise<string | null> {
+  const response = await fetch(`http://127.0.0.1:${buyerPort}/_antseed/buyer-identities`, {
+    signal: AbortSignal.timeout(3_000),
+  })
+  if (!response.ok) return null
+  const body = await response.json() as { identities?: Array<{ name: string; address: string }> }
+  return body.identities?.find((identity) => identity.name === name)?.address ?? null
+}
+
 /** Gateway server + spend feed, shared by `antseed gateway start` and `antseed tunnel start`. */
 export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promise<GatewayRuntime> {
   const config = await loadConfig(options.configPath)
@@ -114,10 +122,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     throw error
   }
 
-  // Read on every call rather than cached: an identity can be removed and
-  // recreated with a new wallet while the gateway runs, and a stale address
-  // would send top-ups to the archived wallet.
-  const identityAddress = (name: string): Promise<string | null> => buyerIdentityAddress(options.dataDir, name)
+  const identityAddress = (name: string): Promise<string | null> => liveBuyerIdentityAddress(buyerPort, name)
 
   const accounting = new GatewayAccounting(store, {
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),

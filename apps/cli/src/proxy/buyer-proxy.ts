@@ -1092,7 +1092,10 @@ export class BuyerProxy {
     await this._writeStateFile('stopped')
     await this._conversations.flush()
     return new Promise((resolve) => {
-      this._server.close(() => resolve())
+      this._server.close(() => {
+        this._spendAttribution.close()
+        resolve()
+      })
     })
   }
 
