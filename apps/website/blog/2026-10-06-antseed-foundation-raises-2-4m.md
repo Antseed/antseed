@@ -13,8 +13,6 @@ date: 2026-10-06
 
 The Antseed Foundation has raised $2.4M in a token round led by Spark Capital, with participation from Collider, DCG, North Island Ventures, Reciprocal Ventures, Relayer Capital, and Venice.ai.
 
-We're also backed by Albert Castellana, Andy from The Rollup, Yan Liberman, Tommy Shaughnessy, and Drew Austin.
-
 What BitTorrent did for files, we want to do for AI inference. Anyone should be able to buy and sell access to AI models, on their own terms.
 
 <!-- truncate -->
@@ -38,13 +36,38 @@ The easiest way to begin is with the AI VPN:
 
 You can set maximum token prices and a minimum trust score for automatic routing. You pay for the inference you use, without an Antseed subscription. The [AI VPN guide](/docs/guides/vpr/) walks through these settings and connecting your apps.
 
-If you prefer the terminal, install the CLI:
+If you prefer the terminal, use the CLI to install Antseed, start your buyer, and send your first request:
 
 ```bash
+# 1. Install
 npm install -g @antseed/cli
+
+# 2. Set your identity
+export ANTSEED_IDENTITY_HEX=<your-private-key-hex>
+
+# 3. Start the buyer proxy
+antseed buyer start
+# Proxy listening on http://localhost:8377
+
+# 4. Browse available models and peers
+curl -s http://localhost:8377/v1/models | jq '.data[].id'
+antseed network browse
+
+# 5. Make a request — the model name selects the highest-ranked eligible
+#    offer under your shared Price + Trust routing preferences
+curl http://localhost:8377/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "deepseek-v4-flash",
+    "messages": [{"role": "user", "content": "Hello"}]
+  }'
+
+# 6. Deposit USDC when you want to pay providers
+antseed buyer deposit
+# Shows your funding address + QR code; incoming USDC deposits automatically
 ```
 
-Follow the [API setup guide](/docs/guides/using-the-api/) to configure your identity and start the buyer. Your tools connect to a local endpoint at `http://localhost:8377`, which handles discovery, routing, and payments.
+Your tools connect to a local endpoint at `http://localhost:8377`, which handles discovery, routing, and payments. The [API setup guide](/docs/guides/using-the-api/) covers configuration and connecting your tools.
 
 Privacy is also part of choosing a provider. Antseed does not require a central account or email, and traffic between peers is encrypted. A standard provider still processes the prompt you send it. For providers advertising TEE support, your buyer can check hardware attestation evidence locally. What that evidence covers matters when choosing where to send sensitive requests. [Read how TEE verification works](/blog/dont-trust-the-tee-label/).
 
