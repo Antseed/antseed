@@ -303,6 +303,8 @@ export interface PaymentsCLIConfig {
     emissionsContractAddress?: string;
     /** Deployed AntseedVerification contract address */
     verificationContractAddress?: string;
+    /** Deployment block of the verification contract; floor for verifier event scans */
+    verificationDeployBlock?: number;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;
     legacyEmissionsV1ContractAddress?: string;

@@ -45,6 +45,12 @@ export {
   VERIFIER_VERDICT_DIFF,
   VERIFIER_VERDICT_UNDETERMINED,
 } from './evm/verifier-client.js';
+export {
+  DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
+  queryInBlockChunks,
+  resolveScanFromBlock,
+} from './evm/block-range.js';
+export type { BlockRangeOptions } from './evm/block-range.js';
 export type {
   VerifierClientConfig,
   VerifierVerdict,

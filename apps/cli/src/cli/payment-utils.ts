@@ -136,6 +136,7 @@ type ResolvedCryptoConfig = NonNullable<AntseedConfig['payments']['crypto']> & {
   identityRegistryAddress?: string;
   emissionsContractAddress?: string;
   verificationContractAddress?: string;
+  verificationDeployBlock?: number;
   legacyEmissionsContractAddress?: string;
   legacyStakingContractAddress?: string;
   legacyEmissionsV1ContractAddress?: string;
@@ -216,6 +217,10 @@ export function requireCryptoConfig(
     pointsPolicyRegistryAddress: crypto.pointsPolicyRegistryAddress || resolved.pointsPolicyRegistryAddress,
     identityRegistryAddress: crypto.identityRegistryAddress || resolved.identityRegistryAddress,
     verificationContractAddress: crypto.verificationContractAddress || resolved.verificationContractAddress,
+    // The built-in deploy block only describes the built-in address; a custom
+    // address must bring its own block (or scans need an explicit fromBlock).
+    verificationDeployBlock: crypto.verificationDeployBlock
+      ?? (crypto.verificationContractAddress ? undefined : resolved.verificationDeployBlock),
     depositRelayAddress: crypto.depositRelayAddress || resolved.depositRelayAddress,
     evmChainId: resolved.evmChainId,
     explorerApiUrl: crypto.explorerApiUrl ?? resolved.explorerApiUrl,
@@ -403,6 +408,7 @@ export function createVerifierClient(config: AntseedConfig, overrides?: CryptoCo
     ...fallbackClientOpts(crypto),
     contractAddress: crypto.verificationContractAddress,
     evmChainId: crypto.evmChainId,
+    ...(crypto.verificationDeployBlock !== undefined ? { deploymentBlock: crypto.verificationDeployBlock } : {}),
   });
 }
 

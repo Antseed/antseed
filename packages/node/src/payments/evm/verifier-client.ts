@@ -5,14 +5,23 @@ import {
   keccak256,
   toUtf8Bytes,
   type AbstractSigner,
+  type ContractEventName,
 } from 'ethers';
 import { BaseEvmClient } from './base-evm-client.js';
+import { queryInBlockChunks, resolveScanFromBlock } from './block-range.js';
 
 export interface VerifierClientConfig {
   rpcUrl: string;
   fallbackRpcUrls?: string[];
   contractAddress: string;
   evmChainId?: number;
+  /**
+   * Block the verification contract was deployed at. Default lower bound for
+   * event queries; without it, queries require an explicit `fromBlock`.
+   */
+  deploymentBlock?: number;
+  /** Max blocks per `eth_getLogs` window (defaults to 10k). */
+  logQueryChunkBlocks?: number;
 }
 
 export const VERIFIER_VERDICT_UNKNOWN = 0;
@@ -86,9 +95,13 @@ export function serviceHash(service: string): string {
 
 export class VerifierClient extends BaseEvmClient {
   private _contractInstance: Contract | null = null;
+  private readonly _deploymentBlock: number | undefined;
+  private readonly _logQueryChunkBlocks: number | undefined;
 
   constructor(config: VerifierClientConfig) {
     super(config.rpcUrl, config.contractAddress, config.fallbackRpcUrls, config.evmChainId);
+    this._deploymentBlock = config.deploymentBlock;
+    this._logQueryChunkBlocks = config.logQueryChunkBlocks;
   }
 
   private _contract(): Contract {
@@ -139,7 +152,7 @@ export class VerifierClient extends BaseEvmClient {
 
   async queryAttestations(
     agentId: number | bigint,
-    fromBlock: number | 'earliest' = 'earliest',
+    fromBlock?: number,
     toBlock: number | 'latest' = 'latest',
   ): Promise<AttestationSubmittedEvent[]> {
     const contract = this._contract();
@@ -147,7 +160,8 @@ export class VerifierClient extends BaseEvmClient {
     if (!resultFilterFactory) {
       throw new Error('verification events are missing from verification ABI');
     }
-    const resultLogs = await contract.queryFilter(
+    const resultLogs = await this._queryEvents(
+      contract,
       resultFilterFactory(null, BigInt(agentId), null),
       fromBlock,
       toBlock,
@@ -171,13 +185,34 @@ export class VerifierClient extends BaseEvmClient {
 
   async queryBundles(
     evidenceHash: string | null = null,
-    fromBlock: number | 'earliest' = 'earliest',
+    fromBlock?: number,
     toBlock: number | 'latest' = 'latest',
   ): Promise<VerificationBundleSubmittedEvent[]> {
     const contract = this._contract();
     const filterFactory = contract.filters.VerificationBundleSubmitted;
     if (!filterFactory) throw new Error('VerificationBundleSubmitted event is missing from verification ABI');
-    return this._bundleEvents(await contract.queryFilter(filterFactory(evidenceHash), fromBlock, toBlock));
+    return this._bundleEvents(await this._queryEvents(contract, filterFactory(evidenceHash), fromBlock, toBlock));
+  }
+
+  /**
+   * Query logs from `fromBlock` (default: the deployment block) to `toBlock`
+   * in bounded windows so RPC block-range limits are never exceeded.
+   */
+  private async _queryEvents(
+    contract: Contract,
+    event: ContractEventName,
+    fromBlock: number | undefined,
+    toBlock: number | 'latest',
+  ): Promise<Awaited<ReturnType<Contract['queryFilter']>>> {
+    const from = resolveScanFromBlock(fromBlock, this._deploymentBlock, 'verification contract');
+    const openEnded = toBlock === 'latest';
+    const to = openEnded ? await this._provider.getBlockNumber() : toBlock;
+    return queryInBlockChunks(
+      from,
+      to,
+      (start, end) => contract.queryFilter(event, start, end),
+      { chunkBlocks: this._logQueryChunkBlocks, openEnded },
+    );
   }
 
   private _bundleEvents(logs: readonly unknown[]): VerificationBundleSubmittedEvent[] {

@@ -127,6 +127,7 @@ test('verifier submit sends per-model bundles to Anvil with retry-safe accountin
           chainId: 'base-local',
           rpcUrl,
           verificationContractAddress: verificationAddress,
+          verificationDeployBlock: 0,
           identityRegistryAddress,
         },
       },
@@ -817,7 +818,7 @@ globalThis.fetch = async (input, init) => {
 }
 
 function createVerifierClient(rpcUrl: string, contractAddress: string): VerifierClient {
-  return new VerifierClient({ rpcUrl, contractAddress, evmChainId: 31_337 })
+  return new VerifierClient({ rpcUrl, contractAddress, evmChainId: 31_337, deploymentBlock: 0 })
 }
 
 function requireCommand(command: string): void {
