@@ -1,6 +1,10 @@
 appId: com.antseed.desktop
-productName: AntSeed VPR
-copyright: Copyright © 2025-2026 AntSeed
+productName: Antseed AI VPN
+# Keep the installed bundle/executable path stable across the visible rename.
+# The running old version performs the first update, so changing this in the
+# same release could strand macOS relaunches or move the Windows install path.
+executableName: AntSeed VPR
+copyright: Copyright © 2025-2026 Antseed
 electronVersion: 31.7.7
 npmRebuild: false
 
@@ -71,6 +75,12 @@ extraResources:
     to: cli-dist/
     filter:
       - "**/*"
+  - from: ../../packages/antseed-verifier/dist
+    to: bundled-plugins/@antseed/antseed-verifier/dist
+    filter:
+      - "**/*.js"
+  - from: ../../packages/antseed-verifier/package.json
+    to: bundled-plugins/@antseed/antseed-verifier/package.json
   - from: ../../plugins/router-local/dist
     to: bundled-plugins/@antseed/router-local/dist
     filter:
@@ -183,7 +193,7 @@ linux:
   icon: assets/antseed-dock-icon.png
   category: Development
   # Deterministic names (default deb naming uses the package name + amd64):
-  # AntSeed-VPR-<version>-<x64|arm64>.<AppImage|deb>. The website download
+  # Antseed-AI VPN-<version>-<x64|arm64>.<AppImage|deb>. The website download
   # matcher and the alpha mirror both rely on this shape.
   artifactName: "${productName}-${version}-${arch}.${ext}"
   # NOTE: arch is intentionally NOT pinned here (same reasoning as mac above).

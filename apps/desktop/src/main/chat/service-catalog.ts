@@ -2,17 +2,20 @@ import type {
   CatalogServiceCapabilities,
   CatalogServiceProtocol,
   NetworkServiceCatalogPeer,
+  PeerInfo,
 } from '@antseed/node';
+import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
 import {
   buildNetworkServiceOffers,
   normalizedModelReputationScore,
   preferredModelDisplayName,
 } from '@antseed/node';
 
-export type ChatServiceProtocol = Exclude<CatalogServiceProtocol, 'openai-images'>;
+export type ChatServiceProtocol = Exclude<CatalogServiceProtocol, 'openai-images' | 'typesafe-systemone'>;
 export type { CatalogServiceCapabilities, CatalogServiceProtocol };
 
 export type ChatServiceCatalogEntry = {
+  advertisedVerifierIds?: string[];
   id: string;
   label: string;
   provider: string;
@@ -32,6 +35,7 @@ export type ChatServiceCatalogEntry = {
 };
 
 type NetworkModelsPeerOffer = {
+  advertisedVerifierIds?: unknown;
   peerId?: unknown;
   displayName?: unknown;
   provider?: unknown;
@@ -130,6 +134,7 @@ export function buildChatServiceCatalogFromNetworkModels(payload: unknown): Chat
       const maxImageUsdPerImage = nonNegativeNumber(offer.maxImageUsdPerImage);
 
       entries.push({
+        advertisedVerifierIds: normalizeAdvertisedVerifierIds(offer.advertisedVerifierIds),
         id: serviceId,
         label: label ?? serviceId,
         provider,
@@ -168,8 +173,9 @@ export function buildChatServiceCatalogFromPersistedPeers(payload: unknown): Cha
   return buildNetworkServiceOffers(peers).flatMap((offer) => {
     if (!offer.protocol) return [];
     const peer = peersById.get(offer.peerId);
-    const effectiveReputationScore = peer ? normalizedModelReputationScore(peer) : null;
+    const effectiveReputationScore = peer ? normalizedModelReputationScore(peer as PeerInfo) : null;
     return [{
+      advertisedVerifierIds: offer.advertisedVerifierIds,
       id: offer.serviceId,
       label: preferredModelDisplayName(offer.serviceId),
       provider: offer.provider,

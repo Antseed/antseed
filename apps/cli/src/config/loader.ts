@@ -337,6 +337,50 @@ function normalizeSellerGasCheck(
   };
 }
 
+function cloneSellerFreeTier(
+  value: AntseedConfig['seller']['freeTier'],
+): AntseedConfig['seller']['freeTier'] {
+  if (!value) return undefined;
+  return {
+    ...(value.maxRequestsPerAddress !== undefined ? { maxRequestsPerAddress: value.maxRequestsPerAddress } : {}),
+    ...(value.maxRequestsPerIp !== undefined ? { maxRequestsPerIp: value.maxRequestsPerIp } : {}),
+    ...(value.windowMs !== undefined ? { windowMs: value.windowMs } : {}),
+  };
+}
+
+function normalizeSellerFreeTier(
+  value: unknown,
+  fallback?: AntseedConfig['seller']['freeTier'],
+): { freeTier: NonNullable<AntseedConfig['seller']['freeTier']> } | Record<string, never> {
+  if (!isRecord(value)) {
+    const cloned = cloneSellerFreeTier(fallback);
+    return cloned ? { freeTier: cloned } : {};
+  }
+  return {
+    freeTier: {
+      ...(value['maxRequestsPerAddress'] !== undefined
+        ? { maxRequestsPerAddress: toFiniteOrNaN(value['maxRequestsPerAddress']) }
+        : {}),
+      ...(value['maxRequestsPerIp'] !== undefined
+        ? { maxRequestsPerIp: toFiniteOrNaN(value['maxRequestsPerIp']) }
+        : {}),
+      ...(value['windowMs'] !== undefined ? { windowMs: toFiniteOrNaN(value['windowMs']) } : {}),
+    },
+  };
+}
+
+function normalizeSellerFreeUsage(
+  value: unknown,
+  fallback?: AntseedConfig['seller']['freeUsage'],
+): { freeUsage: NonNullable<AntseedConfig['seller']['freeUsage']> } | Record<string, never> {
+  const src: Record<string, unknown> | undefined = isRecord(value) ? value : fallback;
+  if (!src) return {};
+  const out: NonNullable<AntseedConfig['seller']['freeUsage']> = {};
+  if (typeof src['recordBatchSize'] === 'number') out.recordBatchSize = src['recordBatchSize'];
+  if (typeof src['recordFlushIntervalMs'] === 'number') out.recordFlushIntervalMs = src['recordFlushIntervalMs'];
+  return Object.keys(out).length > 0 ? { freeUsage: out } : {};
+}
+
 function mergeSellerConfig(
   defaults: AntseedConfig['seller'],
   value: unknown
@@ -352,6 +396,8 @@ function mergeSellerConfig(
       ...(normalizeVerifications(undefined, defaults.verifications)),
       ...(normalizeSellerHealthCheck(undefined, defaults.healthCheck)),
       ...(normalizeSellerGasCheck(undefined, defaults.gasCheck)),
+      ...(normalizeSellerFreeTier(undefined, defaults.freeTier)),
+      ...(normalizeSellerFreeUsage(undefined, defaults.freeUsage)),
     };
   }
 
@@ -375,6 +421,8 @@ function mergeSellerConfig(
     ...(normalizeAgentDir(value['agentDir'], defaults.agentDir)),
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
+    ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
+    ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
   };
 }
 

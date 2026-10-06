@@ -15,7 +15,7 @@
  * - Only coarse buckets for durations and amounts.
  */
 
-import type { TelemetryActionSurface, TelemetryUserAction } from '../../shared/telemetry.js';
+import type { TelemetryActionSurface, TelemetryAppName, TelemetryUserAction } from '../../shared/telemetry.js';
 import { modelMetadataFor } from '../../shared/model-metadata.js';
 
 export const TELEMETRY_SCHEMA_VERSION = 1;
@@ -101,6 +101,8 @@ export type TelemetryEventProperties = {
     surface: TelemetryActionSurface;
     duration_bucket: DurationBucket;
     is_first_action: boolean;
+    /** app_connect / app_disconnect only: which app (fixed taxonomy). */
+    app?: TelemetryAppName;
   };
   /** Emitted when first-run setup completes. */
   setup_completed: {
@@ -200,7 +202,7 @@ export const TELEMETRY_EVENT_ALLOWLIST: { readonly [K in TelemetryEventName]: Re
     'has_free_eligible_offer',
     'eligible_offer_count_bucket',
   ]),
-  user_action: new Set(['action', 'surface', 'duration_bucket', 'is_first_action']),
+  user_action: new Set(['action', 'surface', 'duration_bucket', 'is_first_action', 'app']),
   setup_completed: new Set(['duration_bucket']),
   deposit_completed: new Set(['method_category', 'amount_bucket', 'is_first_deposit', 'days_since_first_open']),
   deposit_failed: new Set(['method_category', 'failure_code', 'failure_stage', 'retryable']),

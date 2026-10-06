@@ -1,4 +1,4 @@
-import {useState, useCallback} from 'react';
+import {useEffect, useRef, useState, useCallback, type JSX, type ReactNode} from 'react';
 import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import Head from '@docusaurus/Head';
@@ -18,20 +18,34 @@ import {ArrowRight, Button, FinalCta, Ticks, ticksToHtml} from '../components/ui
 
 function CopyButton({value}: {value: string}) {
   const [copied, setCopied] = useState(false);
+  const resetTimer = useRef(0);
+  useEffect(() => () => window.clearTimeout(resetTimer.current), []);
   const handle = useCallback(() => {
-    navigator.clipboard.writeText(value).then(() => {
-      setCopied(true);
-      setTimeout(() => setCopied(false), 1500);
-    });
+    navigator.clipboard
+      .writeText(value)
+      .then(() => {
+        setCopied(true);
+        window.clearTimeout(resetTimer.current);
+        resetTimer.current = window.setTimeout(() => setCopied(false), 1500);
+      })
+      .catch(() => {
+        /* clipboard blocked (insecure context / permission) — nothing to show */
+      });
   }, [value]);
   return (
-    <button className={`${styles.copyBtn}${copied ? ' ' + styles.copied : ''}`} onClick={handle}>
+    <button type="button" className={`${styles.copyBtn}${copied ? ' ' + styles.copied : ''}`} onClick={handle}>
       {copied ? '✓ Copied' : 'Copy'}
     </button>
   );
 }
 
-function CodeBlock({path, language: _language, snippet}: {path?: string; language?: string; snippet: string}) {
+/** Explanatory paragraph under a step or config block; renders nothing without text. */
+function StepNote({text}: {text?: string}) {
+  if (!text) return null;
+  return <p className={styles.stepNote}><Ticks>{text}</Ticks></p>;
+}
+
+function CodeBlock({path, snippet}: {path?: string; snippet: string}) {
   // Note: we use a <div>, not a <pre>, because Docusaurus' custom.css applies
   // `pre { background: #f6f8fa !important }` globally and we need a dark block.
   return (
@@ -76,30 +90,30 @@ function ConfigBlockRenderer({b}: {b: ConfigBlock}) {
           <summary>Show as shell exports</summary>
           <CodeBlock snippet={lines} />
         </details>
-        {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+        <StepNote text={b.note} />
       </div>
     );
   }
   if (b.kind === 'file') {
     return (
       <>
-        <CodeBlock path={b.path} language={b.language} snippet={b.snippet} />
-        {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+        <CodeBlock path={b.path} snippet={b.snippet} />
+        <StepNote text={b.note} />
       </>
     );
   }
   if (b.kind === 'code') {
     return (
       <>
-        <CodeBlock language={b.language} snippet={b.snippet} />
-        {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+        <CodeBlock snippet={b.snippet} />
+        <StepNote text={b.note} />
       </>
     );
   }
   return (
     <>
       <div className={styles.guiBlock}><Ticks>{b.instructions}</Ticks></div>
-      {b.note && <p className={styles.stepNote}><Ticks>{b.note}</Ticks></p>}
+      <StepNote text={b.note} />
     </>
   );
 }
@@ -108,9 +122,9 @@ function StepBlock({s}: {s: Step}) {
   return (
     <li className={styles.step}>
       <span className={styles.stepLabel}>{s.label}</span>
-      {s.command && <CodeBlock language={s.language} snippet={s.command} />}
+      {s.command && <CodeBlock snippet={s.command} />}
       {s.output && <ExampleOutput label={s.outputLabel} snippet={s.output} />}
-      {s.note && <p className={styles.stepNote}><Ticks>{s.note}</Ticks></p>}
+      <StepNote text={s.note} />
     </li>
   );
 }
@@ -124,7 +138,7 @@ function RunFirstBanner() {
         <div>
           <p className={styles.runFirstKicker}>
             <span className={styles.runFirstDot} aria-hidden="true" />
-            Run AntSeed first
+            Run Antseed first
           </p>
           <p className={styles.runFirstSub}>
             Every integration assumes a buyer proxy at <code>http://localhost:8377</code>.
@@ -148,7 +162,7 @@ function RunFirstBanner() {
             <li>
               <strong>Buyer proxy</strong> - a small server on{' '}
               <code>localhost:8377</code> that accepts API calls from your tools and
-              forwards them to the AntSeed network. It speaks{' '}
+              forwards them to the Antseed network. It speaks{' '}
               <em>all four LLM protocols</em> at once -{' '}
               <code>/v1/messages</code> (Anthropic),{' '}
               <code>/v1/chat/completions</code> (OpenAI Chat),{' '}
@@ -214,7 +228,7 @@ function RunFirstBanner() {
                 Install the CLI and start the buyer proxy.
               </p>
               <p className={styles.runFirstHint}>
-                <strong>Recommended:</strong> the <Link to="/install">VPR desktop app</Link>{' '}
+                <strong>Recommended:</strong> the <Link to="/install">AI VPN desktop app</Link>{' '}
                 wraps everything below in one app — its <strong>Apps</strong> view
                 launches tools like this one pre-wired to the proxy and saves its
                 Price + Trust preferences into the buyer config used by every client.
@@ -519,7 +533,7 @@ function RunFirstBanner() {
 }
 
 /**
- * Explains, in one block, exactly what wire format the tool sends, what AntSeed
+ * Explains, in one block, exactly what wire format the tool sends, what Antseed
  * peers advertise per service (the `protocols` array), and what happens when
  * they differ.
  *
@@ -538,8 +552,8 @@ function WireFormatPanel({i}: {i: Integration}) {
       <section className={styles.wireFormat}>
         <p className={styles.wireFormatTitle}>Wire format • multi-protocol</p>
         <p className={styles.wireFormatBody}>
-          {i.name} can send <strong>any</strong> of AntSeed's supported protocols -
-          configure per call. AntSeed will match each request to the peer's advertised
+          {i.name} can send <strong>any</strong> of Antseed's supported protocols -
+          configure per call. Antseed will match each request to the peer's advertised
           service protocols (see <code>providerServiceApiProtocols</code> on a peer)
           and translate when they don't match.
         </p>
@@ -566,7 +580,7 @@ function WireFormatPanel({i}: {i: Integration}) {
 
   return (
     <section className={styles.wireFormat}>
-      <p className={styles.wireFormatTitle}>How {i.name} talks to AntSeed</p>
+      <p className={styles.wireFormatTitle}>How {i.name} talks to Antseed</p>
       <ul className={styles.wireFormatFacts}>
         <li>
           <strong>Wire format sent by {i.name}:</strong>{' '}
@@ -588,7 +602,7 @@ function WireFormatPanel({i}: {i: Integration}) {
           browse command exposes the same field per peer.
         </li>
         <li>
-          <strong>What happens when protocols don't match:</strong> AntSeed's{' '}
+          <strong>What happens when protocols don't match:</strong> Antseed's{' '}
           <a
             href="https://github.com/AntSeed/antseed/tree/main/packages/api-adapter"
             target="_blank"
@@ -620,7 +634,7 @@ function WireFormatPanel({i}: {i: Integration}) {
   );
 }
 
-function Section({eyebrow, title, children}: {eyebrow: string; title: string; children: React.ReactNode}) {
+function Section({eyebrow, title, children}: {eyebrow: string; title: string; children: ReactNode}) {
   return (
     <section className={styles.section}>
       <p className={styles.sectionEyebrow}>{eyebrow}</p>
@@ -651,7 +665,7 @@ export default function IntegrationPage({integration}: {integration: Integration
   // Mirrors what Docusaurus renders into <title> (Layout title + site title), so
   // og:title can't drift from the page title (X falls back to og:title).
   const titleText = i.seoTitle ?? i.name;
-  const pageTitle = `${titleText} | AntSeed`;
+  const pageTitle = `${titleText} | Antseed`;
 
   // Marks up the breadcrumb rendered below so search engines read the hierarchy.
   const breadcrumbLd = {
@@ -666,51 +680,50 @@ export default function IntegrationPage({integration}: {integration: Integration
 
   // Mirrors the Step sections actually rendered below, in the same order, so the
   // markup never claims a step the page doesn't show.
+  const howToSteps: {'@type': 'HowToStep'; name: string; text: string; url: string}[] = [];
+  if (i.install.length > 0) {
+    howToSteps.push({
+      '@type': 'HowToStep',
+      name: `Install ${i.name}`,
+      text: i.install.map((s) => s.label).join(' '),
+      url: `${pageUrl}#install`,
+    });
+  }
+  howToSteps.push({
+    '@type': 'HowToStep',
+    name: `Point ${i.name} at Antseed`,
+    text: `Configure ${i.name} to send requests to the local Antseed proxy at http://localhost:8377.`,
+    url: `${pageUrl}#configure`,
+  });
+  if (i.modelHints) {
+    howToSteps.push({
+      '@type': 'HowToStep',
+      name: 'Pick a model',
+      text: `Choose a model available on the network. Suggested: ${i.modelHints.suggested.join(', ')}.`,
+      url: `${pageUrl}#model`,
+    });
+  }
+  if (i.test && i.test.length > 0) {
+    howToSteps.push({
+      '@type': 'HowToStep',
+      name: 'Test it',
+      text: i.test.map((s) => s.label).join(' '),
+      url: `${pageUrl}#test`,
+    });
+  }
   const howToLd = {
     '@context': 'https://schema.org',
     '@type': 'HowTo',
-    name: `Connect ${i.name} to AntSeed`,
-    description: `Route ${i.name} through the AntSeed peer-to-peer inference network.`,
-    step: [
-      ...(i.install.length > 0
-        ? [{
-            '@type': 'HowToStep',
-            name: `Install ${i.name}`,
-            text: i.install.map((s) => s.label).join(' '),
-            url: `${pageUrl}#install`,
-          }]
-        : []),
-      {
-        '@type': 'HowToStep',
-        name: `Point ${i.name} at AntSeed`,
-        text: `Configure ${i.name} to send requests to the local AntSeed proxy at http://localhost:8377.`,
-        url: `${pageUrl}#configure`,
-      },
-      ...(i.modelHints
-        ? [{
-            '@type': 'HowToStep',
-            name: 'Pick a model',
-            text: `Choose a model available on the network. Suggested: ${i.modelHints.suggested.join(', ')}.`,
-            url: `${pageUrl}#model`,
-          }]
-        : []),
-      ...(i.test && i.test.length > 0
-        ? [{
-            '@type': 'HowToStep',
-            name: 'Test it',
-            text: i.test.map((s) => s.label).join(' '),
-            url: `${pageUrl}#test`,
-          }]
-        : []),
-    ],
+    name: `Connect ${i.name} to Antseed`,
+    description: `Route ${i.name} through the Antseed peer-to-peer inference network.`,
+    step: howToSteps,
   };
 
   return (
     <Layout
       title={titleText}
-      description={`Connect ${i.name} to the AntSeed peer-to-peer inference network. ${metaOneLiner}`}>
+      description={`Connect ${i.name} to the Antseed peer-to-peer inference network. ${metaOneLiner}`}>
       <Head>
-        <link rel="alternate" type="text/markdown" href="/skill.md" title="Agent-readable integration guide" />
         <meta property="og:title" content={pageTitle} />
         <meta property="og:description" content={metaOneLiner} />
         <script type="application/ld+json">{JSON.stringify(breadcrumbLd)}</script>
@@ -742,8 +755,7 @@ export default function IntegrationPage({integration}: {integration: Integration
               <span className={`${styles.detailBadge} ${styles.detailBadgeGreen}`}>{CATEGORY_LABELS[i.category]}</span>
               <span className={styles.detailBadge}>{FORMAT_LABELS[i.format]}</span>
               <span className={styles.detailBadge}>~{i.setupMinutes} min</span>
-              {i.status === 'community' && <span className={styles.detailBadge}>{STATUS_LABELS[i.status]}</span>}
-              {i.status === 'coming-soon' && <span className={styles.detailBadge}>{STATUS_LABELS[i.status]}</span>}
+              {i.status !== 'verified' && <span className={styles.detailBadge}>{STATUS_LABELS[i.status]}</span>}
             </div>
           </div>
         </header>
@@ -774,7 +786,7 @@ export default function IntegrationPage({integration}: {integration: Integration
 
         <Section
           eyebrow={i.install.length > 0 ? 'Step 2' : 'Step 1'}
-          title={`Point ${i.name} at AntSeed`}>
+          title={`Point ${i.name} at Antseed`}>
           <div className={styles.configList}>
             {i.configure.map((b, idx) => <ConfigBlockRenderer key={idx} b={b} />)}
           </div>
@@ -806,9 +818,7 @@ export default function IntegrationPage({integration}: {integration: Integration
         <WireFormatPanel i={i} />
 
         {i.troubleshooting && i.troubleshooting.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>If it goes wrong</p>
-            <h2 className={styles.sectionTitle}>Troubleshooting</h2>
+          <Section eyebrow="If it goes wrong" title="Troubleshooting">
             <ul className={styles.troubleshootList}>
               {i.troubleshooting.map((t, idx) => (
                 <li key={idx}>
@@ -817,29 +827,25 @@ export default function IntegrationPage({integration}: {integration: Integration
                 </li>
               ))}
             </ul>
-          </section>
+          </Section>
         )}
 
         {i.caveats && i.caveats.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>Heads up</p>
-            <h2 className={styles.sectionTitle}>Caveats</h2>
+          <Section eyebrow="Heads up" title="Caveats">
             <ul className={styles.bulletList}>
               {i.caveats.map((c, idx) => <li key={idx}><Ticks>{c}</Ticks></li>)}
             </ul>
-          </section>
+          </Section>
         )}
 
         {i.links && i.links.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>Reference</p>
-            <h2 className={styles.sectionTitle}>Links</h2>
+          <Section eyebrow="Reference" title="Links">
             <div className={styles.linkRow}>
               {i.links.map((l, idx) => (
                 <a key={idx} href={l.href} target="_blank" rel="noopener noreferrer">{l.label}</a>
               ))}
             </div>
-          </section>
+          </Section>
         )}
 
         {i.agentSummary && (
@@ -847,36 +853,33 @@ export default function IntegrationPage({integration}: {integration: Integration
             <h3>For agents</h3>
             <p><Ticks>{i.agentSummary}</Ticks></p>
             <p>
-              Full machine-readable catalog of every AntSeed integration:{' '}
-              <a href="/skill.md">/skill.md</a>
+              Give your agent the skill: <code>gh skill install Antseed/antseed join-buyer</code>
             </p>
           </aside>
         )}
 
         {related.length > 0 && (
-          <section className={styles.section}>
-            <p className={styles.sectionEyebrow}>Same category</p>
-            <h2 className={styles.sectionTitle}>Related</h2>
+          <Section eyebrow="Same category" title="Related">
             <div className={styles.relatedRow}>
               {related.map((r) => (
                 <Link key={r.slug} to={`/integrations/${r.slug}`}>{r.name}</Link>
               ))}
               <Link to="/integrations">All integrations<ArrowRight size={16} /></Link>
             </div>
-          </section>
+          </Section>
         )}
       </article>
 
       <FinalCta
         title={`Run ${i.name} on the open market`}
-        sub="Install AntSeed, point this tool at your local proxy, and pay per request in USDC."
+        sub="Install Antseed, point this tool at your local proxy, and pay per request in USDC."
         note={
           <>
             <a href="/integrations">All integrations</a>
             <a href="/docs/guides/using-the-api">Protocol guide</a>
           </>
         }>
-        <Button to="/docs/install" variant="white" size="lg" arrow>Install AntSeed</Button>
+        <Button to="/docs/install" variant="white" size="lg" arrow>Install Antseed</Button>
         <Button to="/providers" variant="light" size="lg">Become a provider</Button>
       </FinalCta>
     </Layout>

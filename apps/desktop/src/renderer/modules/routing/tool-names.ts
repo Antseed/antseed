@@ -13,9 +13,9 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   droid: 'Droid',
   opencode: 'OpenCode',
   pi: 'pi',
-  vpr: 'VPR',
-  // Chats created before the AntStation → VPR rename keep their stored slug.
-  antstation: 'VPR',
+  vpr: 'AI VPN',
+  // Chats created before the AntStation → AI VPN rename keep their stored slug.
+  antstation: 'AI VPN',
 };
 
 export function displayToolName(tool: string): string {

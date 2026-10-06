@@ -20,7 +20,6 @@ export type ModelRouteCandidate = {
   peerId: string;
   effectiveReputationScore?: number | null;
   onChainReputationScore?: number | null;
-  onChainTrustScore?: number | null;
   reputationScore?: number | null;
   inputUsdPerMillion?: number | null;
   outputUsdPerMillion?: number | null;

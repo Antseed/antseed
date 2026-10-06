@@ -37,7 +37,7 @@ jobs:
 
       - uses: actions/setup-node@v4
         with:
-          node-version: '20'
+          node-version-file: '.nvmrc'
           cache: 'pnpm'
           registry-url: 'https://registry.npmjs.org'
 
@@ -78,6 +78,6 @@ jobs:
         run: >
           pnpm --filter './packages/*' --filter './plugins/*'
           --filter @antseed/cli --filter @antseed/network-stats
-          --filter @antseed/payments --filter @antseed/relay
+          --filter @antseed/payments --filter @antseed/ants --filter @antseed/relay
           publish --access public --no-git-checks
           ${{ inputs.dry_run && '--dry-run' || '' }}

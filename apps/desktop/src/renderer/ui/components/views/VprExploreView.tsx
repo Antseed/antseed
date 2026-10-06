@@ -37,6 +37,8 @@ import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { useEverFunded } from '../../hooks/useEverFunded';
 import { useRetainedState } from '../../hooks/useRetainedState';
+import { projectTeeBrowseCatalog, teeBrowseCache } from '../../../modules/catalog/tee-browse';
+import { VprTeeFilter, VprTeeNotice } from '../vpr/VprTeeAvailability';
 import type { ViewName } from '../../types';
 import { BrandIcon } from '../brand/BrandIcon';
 import { VprFilterDropdown, VprMultiFilterDropdown, type VprFilterOption } from '../vpr/VprFilterDropdown';
@@ -83,19 +85,21 @@ export function VprExploreView({ onSelectView }: Props) {
     modelPins: state.vprModelPins,
     discoverRows: state.vprRoutableRows,
     discoverRowsLoaded: state.chatDiscoverRowsLoaded,
+    preferences: state.vprRoutingPreferences,
   }), shallowEqual);
   const everFunded = useEverFunded();
   const [search, setSearch] = useRetainedState(exploreViewCache, 'search');
   const [types, setTypes] = useRetainedState(exploreViewCache, 'types');
   const [families, setFamilies] = useRetainedState(exploreViewCache, 'families');
   const [sort, setSort] = useRetainedState(exploreViewCache, 'sort');
+  const [teeFilter, setTeeFilter] = useRetainedState(teeBrowseCache, 'filter');
   // Filter/search changes re-render the full model list — hundreds of rows.
   // Deriving the list from deferred values keeps the tapped control
   // responsive: the pill paints its new state in the urgent render and the
   // list catches up in an interruptible background render.
   const listInputs = useDeferredValue(useMemo(
-    () => ({ search, types, families, sort }),
-    [families, search, sort, types],
+    () => ({ search, types, families, sort, teeFilter }),
+    [families, search, sort, types, teeFilter],
   ));
   // Starred on the model pages; fresh on every visit (the view remounts).
   const [favorites] = useState(loadFavoriteModels);
@@ -130,8 +134,11 @@ export function VprExploreView({ onSelectView }: Props) {
     { value: 'Savings', label: 'Savings', description: 'Largest savings first', icon: <FilterIconView icon={ChartUpIcon} /> },
     { value: 'Name', label: 'Name', description: 'Alphabetical order', icon: <FilterIconView icon={AlphabetGreekIcon} /> },
   ], []);
+  const displayCatalog = useMemo(() => projectTeeBrowseCatalog(
+    snap.catalog, snap.discoverRows, snap.preferences, listInputs.teeFilter,
+  ), [snap.catalog, snap.discoverRows, snap.preferences, listInputs.teeFilter]);
   const entries = useMemo(() => sortVprCatalog(
-    filterVprCatalog(snap.catalog, {
+    filterVprCatalog(displayCatalog, {
       search: listInputs.search,
       kinds: listInputs.types
         .filter((value) => value.startsWith('kind:'))
@@ -143,7 +150,7 @@ export function VprExploreView({ onSelectView }: Props) {
       freeOnly: listInputs.types.includes('free'),
     }),
     listInputs.sort,
-  ), [listInputs, snap.catalog]);
+  ), [listInputs, displayCatalog]);
 
   const selectedModel = snap.selection.model;
   const selectedEntry = selectedModel
@@ -157,6 +164,7 @@ export function VprExploreView({ onSelectView }: Props) {
   // an unfunded user), or the popular lineup once funded. Searching or
   // filtering drops the frame: the user is navigating the full list.
   const filtersActive = listInputs.search.trim().length > 0
+    || listInputs.teeFilter === 'tee'
     || listInputs.types.length > 0
     || listInputs.families.length > 0;
   const favoriteEntries = useMemo(
@@ -259,7 +267,12 @@ export function VprExploreView({ onSelectView }: Props) {
               align="end"
             />
           </div>
+          <div className={styles.sellerFilter}>
+            <VprTeeFilter value={teeFilter} onChange={setTeeFilter} />
+          </div>
         </div>
+
+        {teeFilter === 'tee' && <VprTeeNotice onClear={() => setTeeFilter('all')} />}
 
         {listEntries.length > 0 ? (
           <VprModelRowList
@@ -276,7 +289,15 @@ export function VprExploreView({ onSelectView }: Props) {
         ) : (
           snap.discoverRowsLoaded ? (
             <div className={styles.empty} role="status">
-              <div>No models match the current filters.</div>
+              <div>{teeFilter === 'tee' ? 'No sellers advertising TEE support match these filters.' : 'No models match the current filters.'}</div>
+              {teeFilter === 'tee' && (
+                <button type="button" onClick={() => {
+                  setTeeFilter('all');
+                  setSearch('');
+                  setTypes([]);
+                  setFamilies([]);
+                }}>Clear filters</button>
+              )}
               <button type="button" onClick={() => { void actions.refreshAll(); }}>
                 Refresh models
               </button>

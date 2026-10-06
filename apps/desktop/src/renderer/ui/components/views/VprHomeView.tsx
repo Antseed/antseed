@@ -1,4 +1,4 @@
-import { useEffect, useMemo, useRef, useState } from 'react';
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -12,6 +12,7 @@ import {
   Tick02Icon,
 } from '@hugeicons/core-free-icons';
 import type { VprModelCatalogEntry } from '../../../core/state';
+import type { SystemProxyProfileSummary } from '../../../types/bridge';
 import { getUiStateRef } from '../../../core/store';
 import { activeProfilesFromRuntimeState } from '../../../modules/routing/tools';
 import { pinnedSellerLabel, pinnedSellerLabels } from '../../../modules/catalog/view-models';
@@ -39,8 +40,12 @@ import { VprModelRowList } from '../vpr/VprModelRows';
 import { hasSeenChats, rememberSeenChats, VprRecentChatsCard } from '../vpr/VprRecentChats';
 import { conversationRoutedPeerName } from '../../../modules/routing/conversations';
 import { formatCompactTokens, VprStatRow, VprStatTile } from '../vpr/VprKit';
+import { DisconnectConfirmDialog } from './DisconnectConfirmDialog';
+import { isBuyerReady } from '../../../modules/app/connect-badge';
+import { isDisconnectConfirmDismissed, persistDisconnectConfirmDismissed } from '../../../modules/app/disconnect-confirm';
 import styles from './VprHomeView.module.scss';
 import { recordFirstModelShown, recordUserAction } from '../../../modules/telemetry/actions';
+import { normalizeTelemetryAppName } from '../../../../shared/telemetry.js';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -58,6 +63,9 @@ function isFreeEntry(entry: VprModelCatalogEntry | undefined): boolean {
   return i !== null && o !== null && i <= 0 && o <= 0;
 }
 
+/* Catalog apps shown as pills on Home (plus Telegram, Claude, Cursor). */
+const HOME_APP_PILL_LIMIT = 11;
+
 export function VprHomeView({ onSelectView }: Props) {
   const actions = useActions();
   const snap = useUiSelector((state) => ({
@@ -67,6 +75,7 @@ export function VprHomeView({ onSelectView }: Props) {
     discoverRows: state.vprRoutableRows,
     defaultProvisional: state.vprDefaultModelProvisional,
     processes: state.processes,
+    proxyOnline: state.chatProxyOnline,
     connectBadge: state.connectBadge,
     usage: state.creditsBuyerUsage,
     floatOpen: state.vprFloatOpen,
@@ -141,9 +150,20 @@ export function VprHomeView({ onSelectView }: Props) {
     () => profiles.filter((profile) => activeProfiles?.has(profile.name) ?? false),
     [activeProfiles, profiles],
   );
-  // Match the Apps tab ordering in the first-run home preview: Telegram is
-  // the special built-in app row, followed by the first catalog profiles.
-  const homePreviewProfiles = useMemo(() => profiles.slice(0, 2), [profiles]);
+  // First-run home preview, mirroring the Apps tab: Telegram (built-in),
+  // Claude + Cursor (the two headline desktop integrations), then the top of
+  // the catalog. Claude is a proxy profile; Cursor is set up from the Apps
+  // page (public endpoint), so its row navigates there.
+  const claudeProfile = useMemo(
+    () => profiles.find((profile) => profile.name === 'claude-desktop') ?? null,
+    [profiles],
+  );
+  // Pills wrap, so the preview can afford most of the catalog; the tail and
+  // custom apps live on the Apps page.
+  const homePreviewProfiles = useMemo(
+    () => profiles.filter((profile) => profile.name !== 'claude-desktop').slice(0, HOME_APP_PILL_LIMIT),
+    [profiles],
+  );
   const restartProfiles = useMemo(
     () => connectedProfiles.filter((profile) => profile.needsRestart),
     [connectedProfiles],
@@ -273,7 +293,7 @@ export function VprHomeView({ onSelectView }: Props) {
   // the profile can't be connected automatically (e.g. no route yet).
   async function connectApp(profileName: string): Promise<void> {
     if (connectingProfile !== null) return;
-    recordUserAction('app_connect', 'home');
+    recordUserAction('app_connect', 'home', normalizeTelemetryAppName(profileName));
     setConnectingProfile(profileName);
     try {
       const result = await connectVprProfile(window.antseedDesktop, getUiStateRef(), profileName);
@@ -310,8 +330,29 @@ export function VprHomeView({ onSelectView }: Props) {
   // Visual-only: with the network unreachable the runtime is still running,
   // but showing the hero lit would promise routing that can't happen.
   const networkDown = snap.networkAlert !== 'none';
-  const connected = (snap.connectBadge.tone === 'active' || runtimeOn) && !networkDown;
-  const powerLit = runtimeOn && !networkDown;
+  // Lit only once the buyer proxy actually answers — `runtimeOn` is true the
+  // moment the process is spawned, which is too early to promise routing.
+  const buyerReady = isBuyerReady(snap.processes, snap.proxyOnline);
+  const connected = buyerReady && !networkDown;
+  const powerLit = buyerReady && !networkDown;
+  // Power button off: confirm first unless the user opted out of the prompt.
+  const [disconnectConfirmOpen, setDisconnectConfirmOpen] = useState(false);
+  const onPowerClick = useCallback(() => {
+    if (!runtimeOn) {
+      void actions.startAll();
+      return;
+    }
+    if (isDisconnectConfirmDismissed()) {
+      void actions.stopAll();
+      return;
+    }
+    setDisconnectConfirmOpen(true);
+  }, [actions, runtimeOn]);
+  const confirmDisconnect = useCallback((dontShowAgain: boolean) => {
+    persistDisconnectConfirmDismissed(dontShowAgain);
+    setDisconnectConfirmOpen(false);
+    void actions.stopAll();
+  }, [actions]);
 
   // The Add Balance banner is a nudge for low balances only — with more than
   // $5 left it's just noise. Keyed off spendable, not the unreserved slice: an
@@ -396,6 +437,131 @@ export function VprHomeView({ onSelectView }: Props) {
     </section>
   ) : null;
 
+  /* Model picker panel — shared by the composer pill (first-timers) and the
+     standalone model card (connected-apps variant). */
+  const modelMenu = modelMenuOpen ? (
+        <div className={styles.modelMenu} role="listbox">
+          <VprModelRowList
+            entries={dropdownEntries}
+            selectedProvider={selectedModel?.provider}
+            selectedServiceId={selectedModel?.serviceId}
+            favoriteKeys={favorites}
+            selectOnly
+            pinnedPeerLabels={dropdownPins}
+            dense
+            onSelect={(provider, serviceId) => {
+              selectModelForNewChats(provider, serviceId);
+            }}
+            emptyLabel="No models discovered yet"
+            frameless
+          />
+          <button
+            type="button"
+            className={styles.modelMenuFooter}
+            onClick={() => {
+              setModelMenuOpen(false);
+              onSelectView?.('explore');
+            }}
+          >
+            <span>All models</span>
+            <HugeiconsIcon icon={ArrowRight02Icon} size={16} strokeWidth={2} />
+          </button>
+        </div>
+  ) : null;
+
+  const renderProfilePill = (profile: SystemProxyProfileSummary) => {
+    // A connected app keeps its pill, shown as connected; clicking it leads
+    // to the Apps page where the connection is managed.
+    const connected = activeProfiles?.has(profile.name) ?? false;
+    return (
+      <button
+        key={profile.name}
+        type="button"
+        className={`${styles.toolPill}${connected ? ` ${styles.toolPillConnected}` : ''}`}
+        disabled={!connected && connectingProfile !== null}
+        onClick={() => {
+          if (connected) onSelectView?.('tools');
+          else void connectApp(profile.name);
+        }}
+        title={connected ? `${profile.displayName} is connected` : `Connect ${profile.displayName}`}
+      >
+        {profile.iconDataUri && !isThemeAwareAppBrand(resolveBrandKey(profile.name, profile.displayName))
+          ? <img src={profile.iconDataUri} alt="" className={styles.appIcon} />
+          : <BrandIcon name={profile.name} hints={[profile.displayName]} size={16} />}
+        <span className={styles.toolLabel}>
+          {connectingProfile === profile.name ? 'Connecting...' : profile.displayName}
+        </span>
+        {connected && <span className={styles.toolConnectedDot} aria-label="Connected" />}
+      </button>
+    );
+  };
+
+  /* Connect pitch — shown on both Home variants until the user has chats:
+     connecting one tool shouldn't hide the rest of the catalog. Once chats
+     exist the user knows the flow (the full list lives on the Apps page). */
+  const appsPitch = (conversations === null ? !expectChats : conversations.length === 0) ? (
+    <div className={styles.appsGroup}>
+      <p className={styles.appsLabel}>Use Antseed on your favorite app</p>
+
+      <div className={styles.toolList}>
+        {/* Same lead items as the Apps tab (Telegram, Claude, Cursor), then
+            the catalog — the full list lives on the Apps page. */}
+        <button
+          type="button"
+          className={styles.toolPill}
+          onClick={() => onSelectView?.('tools')}
+          title="Set up Telegram Bot"
+        >
+          <BrandIcon name="telegram" hints={['Telegram Bot']} size={16} />
+          <span className={styles.toolLabel}>Telegram Bot</span>
+        </button>
+        {claudeProfile ? renderProfilePill(claudeProfile) : null}
+        <button
+          type="button"
+          className={styles.toolPill}
+          onClick={() => onSelectView?.('tools')}
+          title="Set up Cursor"
+        >
+          <BrandIcon name="cursor" hints={['Cursor']} size={16} />
+          <span className={styles.toolLabel}>Cursor</span>
+        </button>
+        {homePreviewProfiles.map(renderProfilePill)}
+      </div>
+    </div>
+  ) : null;
+
+  /* Usage tiles — shown on both Home variants, zeros included, so the
+     module is there from the first launch. */
+  const usageTiles = (
+    <div className={styles.usageGroup}>
+      <p className={styles.usageLabel}>Usage</p>
+      <VprStatRow>
+        <VprStatTile label="Requests" value={(snap.usage?.totalRequests ?? 0).toLocaleString('en-US')} />
+        <VprStatTile
+          label="Tokens"
+          value={formatCompactTokens(snap.usage?.totalInputTokens, snap.usage?.totalOutputTokens)}
+        />
+        <VprStatTile
+          label="Saving"
+          value={expectedSavingsPct !== null && (snap.usage?.totalRequests ?? 0) > 0
+            ? (
+              <span
+                className={styles.savingValue}
+                title={measuredSavings
+                  ? `Measured vs retail: paid $${measuredSavings.actualUsd.toFixed(2)} for usage worth $${measuredSavings.baselineUsd.toFixed(2)} at retail reference prices`
+                  : 'Estimated from current network price spread'}
+              >
+                {measuredSavings
+                  ? `${formatSavedUsd(measuredSavings.baselineUsd - measuredSavings.actualUsd)}`
+                  : `${expectedSavingsPct}%`}
+              </span>
+            )
+            : formatSavedUsd(0)}
+        />
+      </VprStatRow>
+    </div>
+  );
+
   return (
     <section className={`view view-vpr-home ${styles.view}`} role="tabpanel">
       {/* The hero is pinned outside the scroller — only the content below it
@@ -421,7 +587,7 @@ export function VprHomeView({ onSelectView }: Props) {
           <button
             type="button"
             className={`${styles.power}${powerLit ? ` ${styles.powerOn}` : ` ${styles.powerOff}`}`}
-            onClick={() => { void (runtimeOn ? actions.stopAll() : actions.startAll()); }}
+            onClick={onPowerClick}
             aria-pressed={runtimeOn}
             aria-label={runtimeOn ? 'Stop routing' : 'Start routing'}
             title={runtimeOn ? 'Stop routing' : 'Start routing'}
@@ -435,6 +601,58 @@ export function VprHomeView({ onSelectView }: Props) {
               : snap.connectBadge.label}
           </div>
 
+          {!hasConnectedApps ? (
+            /* Chat comes first: one composer card — prompt on top, model pill
+               and send below — so the first thing to do is press send. Hidden
+               once apps are connected; that variant leads with the chats. */
+            <div className={styles.heroAsk}>
+              <form
+                className={styles.composer}
+                onSubmit={(event) => { event.preventDefault(); submitDraft(); }}
+              >
+                <input
+                  className={styles.askInput}
+                  type="text"
+                  value={draft}
+                  placeholder="How can I help you today?"
+                  aria-label="How can I help you today?"
+                  onChange={(event) => setDraft(event.target.value)}
+                />
+                <div className={styles.composerFooter}>
+                  <div className={styles.modelDropdownInline} ref={modelMenuRef}>
+                    <button
+                      type="button"
+                      className={styles.modelPill}
+                      onClick={() => setModelMenuOpen((open) => !open)}
+                      aria-haspopup="listbox"
+                      aria-expanded={modelMenuOpen}
+                      title="Change model for new chats"
+                    >
+                      {selectedModel && (
+                        <BrandIcon name={selectedModel.provider} hints={[selectedModel.label]} size={16} />
+                      )}
+                      <span className={styles.modelPillName}>{defaultModelLabel}</span>
+                      {modelIsFree && <span className={styles.freeTag}>Free</span>}
+                      {!modelIsFree && snap.defaultProvisional && (
+                        <span className={styles.searchingTag}>Finding free peers…</span>
+                      )}
+                      <HugeiconsIcon icon={ArrowDown01Icon} size={18} strokeWidth={2} className={styles.modelPillChevron} />
+                    </button>
+                    {modelMenu}
+                  </div>
+                  <button
+                    type="submit"
+                    className={`${styles.askSend}${!expectChats && draft.trim().length > 0 ? ` ${styles.askSendPing}` : ''}`}
+                    aria-label="Send message"
+                    title="Send message"
+                    disabled={draft.trim().length === 0}
+                  >
+                    <HugeiconsIcon icon={ArrowUp02Icon} size={22} strokeWidth={2} />
+                  </button>
+                </div>
+              </form>
+            </div>
+          ) : (
           <div className={styles.modelDropdown} ref={modelMenuRef}>
             <button
               type="button"
@@ -479,35 +697,9 @@ export function VprHomeView({ onSelectView }: Props) {
               </span>
               <HugeiconsIcon icon={ArrowDown01Icon} size={24} strokeWidth={2} className={styles.modelCardChevron} />
             </button>
-            {modelMenuOpen && (
-              <div className={styles.modelMenu} role="listbox">
-                <VprModelRowList
-                  entries={dropdownEntries}
-                  selectedProvider={selectedModel?.provider}
-                  selectedServiceId={selectedModel?.serviceId}
-                  favoriteKeys={favorites}
-                  selectOnly
-                  pinnedPeerLabels={dropdownPins}
-                  onSelect={(provider, serviceId) => {
-                    selectModelForNewChats(provider, serviceId);
-                  }}
-                  emptyLabel="No models discovered yet"
-                  frameless
-                />
-                <button
-                  type="button"
-                  className={styles.modelMenuFooter}
-                  onClick={() => {
-                    setModelMenuOpen(false);
-                    onSelectView?.('explore');
-                  }}
-                >
-                  <span>All models</span>
-                  <HugeiconsIcon icon={ArrowRight02Icon} size={16} strokeWidth={2} />
-                </button>
-              </div>
-            )}
+            {modelMenu}
           </div>
+          )}
         </div>
       </div>
       </div>
@@ -529,7 +721,7 @@ export function VprHomeView({ onSelectView }: Props) {
                   <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={18} strokeWidth={2} />
                   <span>
                     <strong>{restartProfiles.length === 1 ? restartProfiles[0]!.displayName : `${restartProfiles.length} apps`} need a restart</strong>
-                    <small>Restart to apply the VPR connection.</small>
+                    <small>Restart to apply the AI VPN connection.</small>
                   </span>
                 </button>
                 <button
@@ -546,11 +738,6 @@ export function VprHomeView({ onSelectView }: Props) {
             {reminderCard}
 
             {recentChats}
-
-            <button type="button" className={styles.moreApps} onClick={() => onSelectView?.('tools')}>
-              <span>Connect more apps</span>
-              <HugeiconsIcon icon={ArrowRight02Icon} size={16} strokeWidth={2} />
-            </button>
 
             {showAddBalance && !snap.reminderOffer ? (
               <div className={styles.balanceBanner}>
@@ -575,116 +762,21 @@ export function VprHomeView({ onSelectView }: Props) {
               </div>
             ) : null}
 
-            <div className={styles.usageGroup}>
-              <p className={styles.usageLabel}>Usage</p>
-              <VprStatRow>
-                <VprStatTile label="Requests" value={(snap.usage?.totalRequests ?? 0).toLocaleString('en-US')} />
-                <VprStatTile
-                  label="Tokens"
-                  value={formatCompactTokens(snap.usage?.totalInputTokens, snap.usage?.totalOutputTokens)}
-                />
-                <VprStatTile
-                  label="Saving"
-                  value={expectedSavingsPct !== null && (snap.usage?.totalRequests ?? 0) > 0
-                    ? (
-                      <span
-                        className={styles.savingValue}
-                        title={measuredSavings
-                          ? `Measured vs retail: paid $${measuredSavings.actualUsd.toFixed(2)} for usage worth $${measuredSavings.baselineUsd.toFixed(2)} at retail reference prices`
-                          : 'Estimated from current network price spread'}
-                      >
-                        {measuredSavings
-                          ? `${formatSavedUsd(measuredSavings.baselineUsd - measuredSavings.actualUsd)}`
-                          : `${expectedSavingsPct}%`}
-                      </span>
-                    )
-                    : '-'}
-                />
-              </VprStatRow>
-            </div>
+            {appsPitch}
+
+            {usageTiles}
           </div>
         ) : (
-        /* Ask + routed apps */
+        /* Routed apps + recent chats (the ask input lives in the hero) */
         <div className={styles.connectGroup}>
-          <h2 className={styles.connectHeading}>Routing to your existing apps or start chatting here</h2>
-
-          <form
-            className={styles.askForm}
-            onSubmit={(event) => { event.preventDefault(); submitDraft(); }}
-          >
-            <input
-              className={styles.askInput}
-              type="text"
-              value={draft}
-              placeholder="Ask anything. On any model..."
-              aria-label="Ask anything. On any model"
-              onChange={(event) => setDraft(event.target.value)}
-            />
-            <button
-              type="submit"
-              className={styles.askSend}
-              aria-label="Send message"
-              title="Send message"
-              disabled={draft.trim().length === 0}
-            >
-              <HugeiconsIcon icon={ArrowUp02Icon} size={24} strokeWidth={2} />
-            </button>
-          </form>
-
-          {/* The connect pitch is for first-timers — once chats exist the
-              user knows the flow, so only the "More apps" link (below the
-              chats) remains. */}
-          {(conversations === null ? !expectChats : conversations.length === 0) && (
-          <div className={styles.appsGroup}>
-            <p className={styles.appsLabel}>Use it on your favorite app</p>
-
-            <div className={styles.toolList}>
-              {/* Same lead item as the Apps tab, then the top of the catalog —
-                  the full list lives on the Apps page behind "More apps". */}
-              <button
-                type="button"
-                className={styles.toolRow}
-                onClick={() => onSelectView?.('tools')}
-                title="Set up Telegram Bot"
-              >
-                <span className={styles.toolIdentity}>
-                  <BrandIcon name="telegram" hints={['Telegram Bot']} size={20} />
-                  <span className={styles.toolLabel}>Telegram Bot</span>
-                </span>
-                <span className={styles.toolConnect}>Set up</span>
-              </button>
-              {homePreviewProfiles.map((profile) => (
-                <button
-                  key={profile.name}
-                  type="button"
-                  className={styles.toolRow}
-                  disabled={connectingProfile !== null}
-                  onClick={() => { void connectApp(profile.name); }}
-                  title={`Connect ${profile.displayName}`}
-                >
-                  <span className={styles.toolIdentity}>
-                    {profile.iconDataUri && !isThemeAwareAppBrand(resolveBrandKey(profile.name, profile.displayName))
-                      ? <img src={profile.iconDataUri} alt="" className={styles.appIcon} />
-                      : <BrandIcon name={profile.name} hints={[profile.displayName]} size={20} />}
-                    <span className={styles.toolLabel}>{profile.displayName}</span>
-                  </span>
-                  <span className={styles.toolConnect}>
-                    {connectingProfile === profile.name ? 'Connecting...' : 'Connect'}
-                  </span>
-                </button>
-              ))}
-            </div>
-          </div>
-          )}
+          {appsPitch}
 
           {reminderCard}
 
           {recentChats}
 
-          <button type="button" className={styles.moreApps} onClick={() => onSelectView?.('tools')}>
-            <span>More apps</span>
-            <HugeiconsIcon icon={ArrowRight02Icon} size={16} strokeWidth={2} />
-          </button>
+          {/* Usage sits last on both variants. */}
+          {usageTiles}
         </div>
         )}
       </div>
@@ -700,6 +792,11 @@ export function VprHomeView({ onSelectView }: Props) {
           onDismiss={() => setModelChangeNotice(null)}
         />
       ) : null}
+      <DisconnectConfirmDialog
+        visible={disconnectConfirmOpen}
+        onConfirm={confirmDisconnect}
+        onCancel={() => setDisconnectConfirmOpen(false)}
+      />
     </section>
   );
 }

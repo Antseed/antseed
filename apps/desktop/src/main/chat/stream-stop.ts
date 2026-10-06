@@ -52,7 +52,7 @@ const COMMON_HTTP_STATUS_TEXT: Record<number, string> = {
 
 const DEFAULT_FAILURE_MESSAGE = 'The request ended unexpectedly.';
 const PROTOCOL_PEER_ERROR_MARKERS = [
-  'AntSeed is a peer-to-peer network.',
+  'Antseed is a peer-to-peer network.',
   'Original Response:',
 ];
 

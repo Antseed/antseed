@@ -1,0 +1,277 @@
+/* First-visit coach mark over the Apps screen. The layer never blocks the
+   view — only the tip card takes pointer events. Inside the card, a mini
+   app window plays a hard-coded chat on a 6s loop while the window's
+   identity (Claude → Cursor) crossfades on a 12s loop. */
+
+$chat: 6s;
+$apps: 12s;
+
+.layer {
+  position: absolute;
+  inset: 0;
+  z-index: 30;
+  pointer-events: none;
+  display: flex;
+  justify-content: center;
+}
+
+/* Sits low over the footer, pointing down at the
+   "What are connected apps?" hint. */
+.tip {
+  position: absolute;
+  bottom: 52px;
+  width: min(300px, calc(100% - 32px));
+  pointer-events: auto;
+  opacity: 0;
+  animation: tip-pop 0.4s cubic-bezier(0.2, 0.9, 0.3, 1.2) 0.15s forwards;
+}
+
+.arrow {
+  position: absolute;
+  bottom: -7px;
+  left: 50%;
+  width: 12px;
+  height: 12px;
+  background: var(--bg-card);
+  border-left: 1px solid var(--border);
+  border-top: 1px solid var(--border);
+  transform: translateX(-50%) rotate(225deg);
+}
+
+.tipInner {
+  position: relative;
+  padding: 14px 14px 12px;
+  border-radius: 14px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
+  text-align: left;
+}
+
+.tipTitle {
+  margin: 0;
+  font-size: 13px;
+  font-weight: 600;
+  color: var(--text-primary);
+}
+
+.tipBody {
+  margin: 10px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+  color: var(--text-muted);
+}
+
+.tipFoot {
+  margin-top: 10px;
+}
+
+/* Content stagger on first appearance. */
+.tipTitle,
+.demo,
+.tipBody,
+.tipFoot {
+  opacity: 0;
+  animation: tip-item-in 0.35s ease forwards;
+}
+
+.tipTitle { animation-delay: 0.3s; }
+.demo     { animation-delay: 0.42s; }
+.tipBody  { animation-delay: 0.54s; }
+.tipFoot  { animation-delay: 0.66s; }
+
+/* ---------- Mini demo window ---------- */
+
+.demo {
+  margin-top: 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-surface);
+  overflow: hidden;
+}
+
+.demoHeader {
+  position: relative;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 10px;
+  border-bottom: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+/* Traffic lights. */
+.demoDots {
+  display: flex;
+  gap: 4px;
+
+  span {
+    width: 6px;
+    height: 6px;
+    border-radius: 50%;
+    background: var(--border);
+  }
+}
+
+/* Two app identities stacked in the same spot, crossfading each half of
+   the 12s loop. */
+.demoApp {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-secondary);
+  white-space: nowrap;
+}
+
+.demoAppFirst  { animation: app-first $apps ease-in-out infinite; }
+.demoAppSecond { opacity: 0; animation: app-second $apps ease-in-out infinite; }
+
+@keyframes app-first {
+  0%, 46%   { opacity: 1; }
+  50%, 96%  { opacity: 0; }
+  100%      { opacity: 1; }
+}
+
+@keyframes app-second {
+  0%, 46%   { opacity: 0; }
+  50%, 96%  { opacity: 1; }
+  100%      { opacity: 0; }
+}
+
+/* Chat area: bubbles absolutely placed, replaying every 6s. */
+.demoBody {
+  position: relative;
+  height: 96px;
+  padding: 8px;
+}
+
+.demoUser {
+  position: absolute;
+  top: 8px;
+  right: 8px;
+  max-width: 75%;
+  padding: 4px 8px;
+  border-radius: 9px 9px 3px 9px;
+  background: var(--accent-green);
+  color: #fff;
+  font-size: 10.5px;
+  line-height: 1.35;
+  opacity: 0;
+  animation: bubble-user $chat ease-in-out infinite;
+}
+
+.demoTyping {
+  position: absolute;
+  top: 38px;
+  left: 8px;
+  display: flex;
+  gap: 3px;
+  padding: 6px 8px;
+  border-radius: 9px 9px 9px 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  opacity: 0;
+  animation: bubble-typing $chat ease-in-out infinite;
+
+  span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    animation: typing-dot 0.9s ease-in-out infinite;
+  }
+
+  span:nth-child(2) { animation-delay: 0.15s; }
+  span:nth-child(3) { animation-delay: 0.3s; }
+}
+
+.demoAnswer {
+  position: absolute;
+  top: 38px;
+  left: 8px;
+  max-width: 85%;
+  padding: 5px 8px;
+  border-radius: 9px 9px 9px 3px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-primary);
+  font-size: 10.5px;
+  line-height: 1.4;
+  opacity: 0;
+  animation: bubble-answer $chat ease-in-out infinite;
+}
+
+.demoVia {
+  display: block;
+  margin-top: 3px;
+  font-size: 9px;
+  font-weight: 600;
+  color: var(--accent-green);
+}
+
+/* 6s chat loop: user asks → typing → answer → everything fades for the
+   next round (and the next app identity). */
+@keyframes bubble-user {
+  0%, 3%    { opacity: 0; transform: translateY(4px); }
+  8%, 88%   { opacity: 1; transform: translateY(0); }
+  95%, 100% { opacity: 0; transform: translateY(0); }
+}
+
+@keyframes bubble-typing {
+  0%, 14%   { opacity: 0; }
+  18%, 36%  { opacity: 1; }
+  40%, 100% { opacity: 0; }
+}
+
+@keyframes bubble-answer {
+  0%, 40%   { opacity: 0; transform: translateY(4px); }
+  46%, 88%  { opacity: 1; transform: translateY(0); }
+  95%, 100% { opacity: 0; transform: translateY(0); }
+}
+
+@keyframes typing-dot {
+  0%, 100% { transform: translateY(0); opacity: 0.5; }
+  50%      { transform: translateY(-2px); opacity: 1; }
+}
+
+@keyframes tip-pop {
+  from { opacity: 0; transform: translateY(8px) scale(0.94); }
+  to   { opacity: 1; transform: translateY(0) scale(1); }
+}
+
+@keyframes tip-item-in {
+  from { opacity: 0; transform: translateY(4px); }
+  to   { opacity: 1; transform: translateY(0); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .tip,
+  .tipTitle,
+  .demo,
+  .tipBody,
+  .tipFoot {
+    animation: none;
+    opacity: 1;
+  }
+
+  .demoAppFirst,
+  .demoTyping {
+    animation: none;
+  }
+
+  .demoTyping { opacity: 0; }
+
+  .demoAppSecond { animation: none; opacity: 0; }
+
+  .demoUser,
+  .demoAnswer {
+    animation: none;
+    opacity: 1;
+    transform: none;
+  }
+}

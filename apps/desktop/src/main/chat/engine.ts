@@ -61,6 +61,7 @@ import {
   isPriceAllowedByBuyerMax,
   limitChatServiceCatalogEntries,
   loadBuyerMaxPricingDefaults,
+  normalizeTrustBreakdown,
   updateServiceProtocolMap,
   updateServiceProviderHints,
   type BuyerStateDiscoveredPeer,
@@ -610,14 +611,17 @@ export function registerPiChatHandlers({
             const rec = p as Record<string, unknown>;
             const peerId = rec.peerId as string;
             const peerRecord: BuyerStateDiscoveredPeer = {
+              trust: normalizeTrustBreakdown(rec.trust),
               onChainAgentId: typeof rec.onChainAgentId === 'number' ? rec.onChainAgentId : null,
-              onChainStakeUsdcMicros: typeof rec.onChainStakeUsdcMicros === 'number' ? rec.onChainStakeUsdcMicros : null,
+              onChainPoolStakeAnts: typeof rec.onChainPoolStakeAnts === 'number' && Number.isFinite(rec.onChainPoolStakeAnts)
+                ? rec.onChainPoolStakeAnts
+                : null,
               onChainChannelCount: typeof rec.onChainChannelCount === 'number' ? rec.onChainChannelCount : null,
               onChainGhostCount: typeof rec.onChainGhostCount === 'number' ? rec.onChainGhostCount : null,
               onChainTotalVolumeUsdcMicros: typeof rec.onChainTotalVolumeUsdcMicros === 'number' ? rec.onChainTotalVolumeUsdcMicros : null,
               onChainLastSettledAtSec: typeof rec.onChainLastSettledAtSec === 'number' ? rec.onChainLastSettledAtSec : null,
               onChainReputationScore: typeof rec.onChainReputationScore === 'number' ? rec.onChainReputationScore : null,
-              onChainTrustScore: typeof rec.onChainTrustScore === 'number' ? rec.onChainTrustScore : null,
+              onChainWashFlagged: typeof rec.onChainWashFlagged === 'boolean' ? rec.onChainWashFlagged : null,
               onChainSybilRisk: typeof rec.onChainSybilRisk === 'number' ? rec.onChainSybilRisk : null,
               onChainSybilFlags: Array.isArray(rec.onChainSybilFlags)
                 ? rec.onChainSybilFlags.filter((f: unknown): f is string => typeof f === 'string')
@@ -992,7 +996,7 @@ export function registerPiChatHandlers({
   ipcMain.handle('chat:ai-select-peer', async (_event, payload: ChatPeerSelectionRequest | string | null) => applyPeerSelection(payload));
 
   // Keep the buyer proxy's default route (`antseed` model alias, and the
-  // route the Telegram bridge reads) on the renderer's current VPR selection.
+  // route the Telegram bridge reads) on the renderer's current AI VPN selection.
   // Best-effort: the buyer proxy may not be running yet — the renderer calls
   // this again on its catalog poll, so the route lands once the proxy is up.
   let lastPostedDefaultRoute = '';

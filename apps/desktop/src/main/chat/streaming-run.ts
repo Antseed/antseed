@@ -280,6 +280,12 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         error: `Service "${serviceId}" generates images and cannot be used for text chat. Select a text-capable model.`,
       };
     }
+    if (advertisedProtocol === 'typesafe-systemone') {
+      return {
+        ok: false,
+        error: `Service "${serviceId}" is a decision model and cannot be used for text chat. Select a text-capable model.`,
+      };
+    }
 
     const protocol: ChatServiceProtocol = advertisedProtocol ?? await resolveProtocolForSend(serviceId);
     const supportsMultimodal = catalogEntry?.categories?.includes('multimodal') ?? false;
@@ -310,7 +316,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     // Pass the system prompt via resourceLoader so it is applied on every turn.
     // (agent-session rebuilds _baseSystemPrompt from the loader each turn, so a
     // one-shot session.agent.setSystemPrompt call would be overridden.)
-    // Priority: user override (env/config) → VPR default.
+    // Priority: user override (env/config) → AI VPN default.
     const userSystemPrompt = await resolveSystemPrompt(configPath);
     const sessionWorkspaceDir = sessionManager.getCwd()?.trim();
     const chatWorkspaceDir = sessionWorkspaceDir && existsSync(sessionWorkspaceDir)

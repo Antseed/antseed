@@ -38,7 +38,7 @@ export function TelegramBotCard() {
     const bridge = window.antseedDesktop;
     const token = tokenDraft.trim();
     if (!token || !bridge?.telegramConnect) return;
-    recordUserAction('app_connect', 'apps');
+    recordUserAction('app_connect', 'apps', 'telegram');
     setConnectBusy(true);
     setError(null);
     try {
@@ -59,7 +59,7 @@ export function TelegramBotCard() {
     const bridge = window.antseedDesktop;
     if (!bridge?.telegramDisconnect) return;
     if (!window.confirm('Disconnect the Telegram bot? The saved token is removed from this device.')) return;
-    recordUserAction('app_disconnect', 'apps');
+    recordUserAction('app_disconnect', 'apps', 'telegram');
     const result = await bridge.telegramDisconnect();
     if (result.data) setStatus(result.data);
     setChangingBot(false);
@@ -136,7 +136,7 @@ export function TelegramBotCard() {
         title="Telegram Bot"
         subtitle={(
           <span className={styles.modalAppSubtitle}>
-            Connect a private Telegram bot to chat with your AntSeed agent from Telegram.
+            Connect a private Telegram bot to chat with your Antseed agent from Telegram.
             <button
               type="button"
               className={styles.settingWebsiteLink}
@@ -147,7 +147,6 @@ export function TelegramBotCard() {
             </button>
           </span>
         )}
-        className={styles.vprModal}
         bodyClassName={styles.settingsBody}
       >
         {showTokenForm ? (
@@ -258,7 +257,7 @@ export function TelegramBotCard() {
               </div>
               <p className={styles.settingHint}>
                 Paired with {status?.ownerName ?? 'you'} on Telegram. Messages to the bot
-                run on this computer&apos;s agent and are billed like any VPR chat.
+                run on this computer&apos;s agent and are billed like any AI VPN chat.
                 Use <code>/new</code> for a fresh conversation and <code>/stop</code> to
                 cancel a reply. Risky tool calls ask for approval with buttons in the chat.
               </p>

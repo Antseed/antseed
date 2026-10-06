@@ -1,0 +1,400 @@
+{
+  "release": "001-recognized-usage-deployed",
+  "status": "deployed",
+  "sourceCommit": "859a10ec889671f04e5827a7bdd48bd80d2add79",
+  "effectiveEpoch": 22,
+  "verificationConfiguration": {
+    "washTradingRegistry": "0xc02a111CB94332Cc31C08E079cbe781880b2121C",
+    "washTradingPointsPolicy": "0x7a605aaa3c725aa25012dfDeD6B5dddcC561D6e5",
+    "verificationMinterController": "0x5B3A59088bD5BD5f722571420c09a9251a03AAdb",
+    "verificationMinterShareBps": 10000,
+    "verificationMinterEditable": true,
+    "pointsPolicyCount": 1,
+    "emissionsGateOwner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a",
+    "pointsPolicyRegistryOwner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+  },
+  "transactions": [
+    {
+      "action": "deploy AntseedWashTradingRegistry",
+      "hash": "0xba4b22bc506b8ea320c361b674726a9e4d3a7532eaf09ef781d14801397b47a8",
+      "blockNumber": 50955026,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedEmissionsGate",
+      "hash": "0xfac7210de465ca15bf39be60a3cdd1d5b9270ace0059337a21dd309c5fcdf84a",
+      "blockNumber": 50955027,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setMinterController(bytes32,address)",
+      "hash": "0x366fc704df4c250501176702cc64bce2e1578361218e6a1243cc79cb83e96a9f",
+      "blockNumber": 50955028,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd"
+    },
+    {
+      "action": "deploy AntseedSellerPools",
+      "hash": "0x4bc7c19033a6521a2d6de7bccf0fb071fea9b9aef62b5e9d72649ecc6f7da6f1",
+      "blockNumber": 50955029,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedSellerRegistry",
+      "hash": "0x30bb68fb86e94b75190edf54dcfc00c499b341e6e13e79369066d2d5b75580bb",
+      "blockNumber": 50955030,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setStakingSource(address)",
+      "hash": "0xf0a7fdb897ca2753f374e6e9fea20948281a4af4d2ffae533f4b6f71d62374e1",
+      "blockNumber": 50955031,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652"
+    },
+    {
+      "action": "setMinter(bytes32,address,uint32,bool)",
+      "hash": "0xcf7bfb7092d33c97afcda7f65e58707b6fee70ac3be40bb04e6faf57f09ec835",
+      "blockNumber": 50955032,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd"
+    },
+    {
+      "action": "deploy AntseedPositionInit",
+      "hash": "0xc5c3b33138a59222871104acfe987076f7fd40f3c1a89907a40e11e3373be09e",
+      "blockNumber": 50955033,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedUsageAccounting",
+      "hash": "0xdd65cec51382558aa745f8f48b906a045b7df231af62a2a679d2f8457b65c31d",
+      "blockNumber": 50955034,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedPointsPolicyRegistry",
+      "hash": "0xb6e24df4541042e39c7f76e1f07e7968a9f581acf64d90f4cb24a0bac5df4997",
+      "blockNumber": 50955035,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedWashTradingPointsPolicy",
+      "hash": "0x7852bf9f71b8d46a332f20238ae0cdf2862fa1c38fcdf4488832ff3aae25fc82",
+      "blockNumber": 50955036,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "registerPolicy(address)",
+      "hash": "0xa2cf2241cd7071859e2a5f659cbc13433766698a9d7c0e9b2d832c725a03dab1",
+      "blockNumber": 50955037,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x212d2c1058b84507de248a147aafeb08fb19e3b6"
+    },
+    {
+      "action": "setPointsPolicy(address)",
+      "hash": "0xc50506ab60243ada53ffe9da5eed29fe3fc4735c2e9e94b7df969f1889cdbf20",
+      "blockNumber": 50955038,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9"
+    },
+    {
+      "action": "deploy AntseedSellerPoolsRewards",
+      "hash": "0x86f2c86d56f978e5ba0d7646c6ebc0b7a0ddb0f044f5dff4790519be925013ae",
+      "blockNumber": 50955039,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "deploy AntseedUsageRewards",
+      "hash": "0xcedecb746657edb2a0b16217ced1780ccb1d45a654f9f34a83e865d7fa5c4cbc",
+      "blockNumber": 50955040,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setSellerPools(address)",
+      "hash": "0x6d253c1dedea2d6003d53b396aff82ad634dd23b60b34f464c1bbe55bbbe5396",
+      "blockNumber": 50955041,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x78330bf154172f1137219bb559d4f3a270b3201f"
+    },
+    {
+      "action": "setUsageRewards(address)",
+      "hash": "0xa2deedfc1bc1a73dae9435f8f420d14c00f2a512f5cf641877035de6944ac162",
+      "blockNumber": 50955042,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9"
+    },
+    {
+      "action": "setClaimForwarder(address)",
+      "hash": "0xc1079f6ea95677d0b9b94f0f4842d6bff7f374ab080073e63f633164512245d8",
+      "blockNumber": 50955043,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x78330bf154172f1137219bb559d4f3a270b3201f"
+    },
+    {
+      "action": "deploy AntseedLegacyEmissionsEscrow",
+      "hash": "0xd19e9a6960cf3b5fba4a603396e68cce913eefbc3b1a835280de962812d3b8b4",
+      "blockNumber": 50955044,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": null
+    },
+    {
+      "action": "setTransferWhitelist(address,bool)",
+      "hash": "0x3de9aa2128c485a50cccd2ecf9f424eb3d648eead033f99fd635cf1410ec4ea5",
+      "blockNumber": 50955045,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa87ee81b2c0bc659307ca2d9ffdc38514dd85263"
+    },
+    {
+      "action": "setTransferWhitelist(address,bool)",
+      "hash": "0xefc95f1b461b728cad8089f5df0c466ed7389b41b4e44837176d32818aefb0bd",
+      "blockNumber": 50955046,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa87ee81b2c0bc659307ca2d9ffdc38514dd85263"
+    },
+    {
+      "action": "setTransferWhitelist(address,bool)",
+      "hash": "0xf524d3bbb310c6ce31531cf97b60eff1ce92711f0b24dca1a58ee9a52a24f37c",
+      "blockNumber": 50955047,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa87ee81b2c0bc659307ca2d9ffdc38514dd85263"
+    },
+    {
+      "action": "setTransferWhitelist(address,bool)",
+      "hash": "0xc02136fd7d7cf81fddc54bc0e3c699d207321309612d4fbda85e9e02e2ceaddf",
+      "blockNumber": 50955048,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa87ee81b2c0bc659307ca2d9ffdc38514dd85263"
+    },
+    {
+      "action": "setTransferWhitelist(address,bool)",
+      "hash": "0xe265f58dc327a6faa31476e3ec549060156355df22cf1ca1ee2d2c7659a0f1c0",
+      "blockNumber": 50955049,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa87ee81b2c0bc659307ca2d9ffdc38514dd85263"
+    },
+    {
+      "action": "setRewardStaker(address,bool)",
+      "hash": "0xa66508e884cf64491ff860decd541fe28afc24abd5abf2bfb44c45e62e86d28e",
+      "blockNumber": 50955050,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652"
+    },
+    {
+      "action": "setMinter(bytes32,address,uint32,bool)",
+      "hash": "0x07e4da3f6710ffff897787bffdc7c76368c768d35c429419f80f69fe7f4ce21c",
+      "blockNumber": 50955051,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd"
+    },
+    {
+      "action": "setMinter(bytes32,address,uint32,bool)",
+      "hash": "0x73dd603d107c4860f67de5deb27b3310de1040775a48e859927194f8762d18ef",
+      "blockNumber": 50955052,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd"
+    },
+    {
+      "action": "setRegistry(address)",
+      "hash": "0x9d4910c6e732812a15095c815acb6d2d92f0a6f8f885abe74c690778f480913b",
+      "blockNumber": 50955053,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xa87ee81b2c0bc659307ca2d9ffdc38514dd85263"
+    },
+    {
+      "action": "fundLegacyEscrow(address)",
+      "hash": "0x6995c518046c045443f78681c4b054923043d3b1e1e6e33265c7658387fe7d44",
+      "blockNumber": 50955054,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd"
+    },
+    {
+      "action": "setRegistry(address)",
+      "hash": "0x32c7f8fb5bc4138f5bb124003802d68ed0fd012231531d400ebe577a05ad7e87",
+      "blockNumber": 50955055,
+      "from": "0x48f4142f4abf7b77a03f0cdffcd511edd9b6d54a",
+      "to": "0xf13be52c4a3afc6ae29536f073588d01a0564088"
+    }
+  ],
+  "contracts": {
+    "washTradingRegistry": {
+      "address": "0xc02a111cb94332cc31c08e079cbe781880b2121c",
+      "deploymentBlock": 50955026,
+      "transactionHash": "0xba4b22bc506b8ea320c361b674726a9e4d3a7532eaf09ef781d14801397b47a8",
+      "runtimeCodeHash": "0x67fa7bb03a8c7fe09b122f883447e116a18abbaf84086d4d4f5bfc6045e2d6ff",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xb69f2584CBcFf99a58C4e7002E8b89Af54a6f4e2",
+        "0x4388a21c687fdd5f218d7e3d13190cac4c5355818d3605fd5fb811df468ee696",
+        "0x78b69899C8cD252126cBB1A50171ec37286C3877",
+        "0x0028d499469d8bdb345427dccf15bbbf3f1c582625a0a5690e7ac3576ef6ed99",
+        "44471575",
+        "50672526"
+      ],
+      "owner": null
+    },
+    "emissionsGate": {
+      "address": "0xe60a31e6cd2f8455503ca0b3f6545dd3ddf543bd",
+      "deploymentBlock": 50955027,
+      "transactionHash": "0xfac7210de465ca15bf39be60a3cdd1d5b9270ace0059337a21dd309c5fcdf84a",
+      "runtimeCodeHash": "0xb21dff09dee3cac86317150974860d4fbe966483b545b078fee3a74d82cb46dc",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x47151b68e2f34500A4f8886885cE69b179Bf5B0B",
+        "0xBF348D3eEDA2012c60375ebFe4Eb46511859f70F",
+        "15000",
+        "15000"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "sellerPools": {
+      "address": "0x8bf4d39aa13f3cb03f87d9500767fbc4d0940652",
+      "deploymentBlock": 50955029,
+      "transactionHash": "0x4bc7c19033a6521a2d6de7bccf0fb071fea9b9aef62b5e9d72649ecc6f7da6f1",
+      "runtimeCodeHash": "0x48116d40565f6fa87f8d7c8761c4e7b42c55329553ae551078b6eda53688bcc7",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263",
+        "0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD",
+        "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+        "0x3652E6B22919bd322A25723B94BB207602E5c8e6"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "sellerRegistry": {
+      "address": "0x99c533bcc6ca646e543dba835fdbb9c2ee02cb60",
+      "deploymentBlock": 50955030,
+      "transactionHash": "0x30bb68fb86e94b75190edf54dcfc00c499b341e6e13e79369066d2d5b75580bb",
+      "runtimeCodeHash": "0xbdaad6c0cae85a32a97f5be14fc3e2e2ce508f91375d05f25bec5ec843d8e2b1",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652",
+        "0x3652E6B22919bd322A25723B94BB207602E5c8e6"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "positionInit": {
+      "address": "0xb68ad13b681319fceb6b0a640c2fd96c0138cbc8",
+      "deploymentBlock": 50955033,
+      "transactionHash": "0xc5c3b33138a59222871104acfe987076f7fd40f3c1a89907a40e11e3373be09e",
+      "runtimeCodeHash": "0x9f6dba20123fb76038260727debc888564222276c0cde6ecc86e5de703b30584",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652",
+        "0x3652E6B22919bd322A25723B94BB207602E5c8e6",
+        "1000000000000000000",
+        "126"
+      ],
+      "owner": null
+    },
+    "usageAccounting": {
+      "address": "0xadd2d85316153d7bfaf7921ee9bf1bb6c7a1cbc9",
+      "deploymentBlock": 50955034,
+      "transactionHash": "0xdd65cec51382558aa745f8f48b906a045b7df231af62a2a679d2f8457b65c31d",
+      "runtimeCodeHash": "0xcdf2de6c1d951523ba8bf500fabe12cd8f8d0dcebf8dbebde9ad1598542ec240",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652",
+        "0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d",
+        "0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "pointsPolicyRegistry": {
+      "address": "0x212d2c1058b84507de248a147aafeb08fb19e3b6",
+      "deploymentBlock": 50955035,
+      "transactionHash": "0xb6e24df4541042e39c7f76e1f07e7968a9f581acf64d90f4cb24a0bac5df4997",
+      "runtimeCodeHash": "0x011a54dc5072a8fa530e761141605426534c2e27f02f6b6b9dec22cb94647e77",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "washTradingPointsPolicy": {
+      "address": "0x7a605aaa3c725aa25012dfded6b5dddcc561d6e5",
+      "deploymentBlock": 50955036,
+      "transactionHash": "0x7852bf9f71b8d46a332f20238ae0cdf2862fa1c38fcdf4488832ff3aae25fc82",
+      "runtimeCodeHash": "0xbfdfba63c3df125c64714eadb0d6827b8cc425a3a340f68650fddd4bcd93079b",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xc02a111CB94332Cc31C08E079cbe781880b2121C"
+      ],
+      "owner": null
+    },
+    "sellerPoolsRewards": {
+      "address": "0x83cc5b9aa0c8cb8683f35462c385a5baaa755ee5",
+      "deploymentBlock": 50955039,
+      "transactionHash": "0x86f2c86d56f978e5ba0d7646c6ebc0b7a0ddb0f044f5dff4790519be925013ae",
+      "runtimeCodeHash": "0x65a6cbebfea1d0a2eb79cd90b55fb3500e75e1d0eac94e86faf74c56d758c525",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD",
+        "0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "usageRewards": {
+      "address": "0x78330bf154172f1137219bb559d4f3a270b3201f",
+      "deploymentBlock": 50955040,
+      "transactionHash": "0xcedecb746657edb2a0b16217ced1780ccb1d45a654f9f34a83e865d7fa5c4cbc",
+      "runtimeCodeHash": "0x9b5d26ab4a2d6b53089e8cc3b0b30d18d77031fca1f3c16f81c9ac2936f37992",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD",
+        "0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9",
+        "0x8004A169FB4a3325136EB29fA0ceB6D2e539a432",
+        "0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    },
+    "legacyEmissionsEscrow": {
+      "address": "0x4d0fc3c0bbb5233af6c4ce33223e5330c34db9ab",
+      "deploymentBlock": 50955044,
+      "transactionHash": "0xd19e9a6960cf3b5fba4a603396e68cce913eefbc3b1a835280de962812d3b8b4",
+      "runtimeCodeHash": "0x073d4df09a9bc3bc5fef42511af1df02378abc82629e76b17af7a582f6e15515",
+      "version": "1",
+      "external": false,
+      "deployedInRelease": true,
+      "constructorArguments": [
+        "0xf33fC901BFa97326379A369401F4490E231B69B0",
+        "0xF13bE52c4A3afC6AE29536f073588d01A0564088"
+      ],
+      "owner": "0x48F4142F4AbF7b77a03f0cDffcd511eDD9B6d54a"
+    }
+  },
+  "$schema": "../../schema.json",
+  "network": "base-mainnet",
+  "chainId": 8453
+}

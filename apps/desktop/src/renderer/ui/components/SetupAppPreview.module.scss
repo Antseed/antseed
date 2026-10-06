@@ -1,0 +1,467 @@
+/* Miniature AI VPN window used as the setup walkthrough-loader. One 16s period,
+   4s per scene (Home, Models, Apps, Chat); elements stagger within their
+   scene via inline animation-delay. Sized to the app's real portrait
+   proportions so it reads as the actual window, not a squashed card. */
+
+$period: 16s;
+
+.walkthrough {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  width: 100%;
+}
+
+.frame {
+  position: relative;
+  display: flex;
+  width: 264px;
+  height: 336px;
+  border-radius: 16px;
+  border: 1px solid var(--border);
+  background: var(--bg-primary);
+  box-shadow: var(--shadow);
+  overflow: hidden;
+}
+
+/* ---------- nav rail ---------- */
+
+.rail {
+  flex: 0 0 40px;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+  padding-top: 14px;
+  background: var(--bg-secondary);
+  border-right: 1px solid var(--border);
+}
+
+.railItem {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  border-radius: 8px;
+  color: var(--text-muted);
+}
+
+/* Highlight riding the scene clock — lit while its scene is on stage. */
+.railItemCycle {
+  animation: rail-active $period ease-in-out infinite;
+}
+
+@keyframes rail-active {
+  0%        { background: transparent; color: var(--text-muted); }
+  4%, 23%   { background: var(--bg-sidebar-active); color: var(--text-primary); }
+  27%, 100% { background: transparent; color: var(--text-muted); }
+}
+
+/* ---------- scenes ---------- */
+
+.pane {
+  position: relative;
+  flex: 1 1 auto;
+  min-width: 0;
+}
+
+.scene {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  padding: 12px;
+  opacity: 0;
+  animation: scene-cycle $period ease-in-out infinite;
+}
+
+.sceneHome   { animation-delay: 0s; }
+.sceneChat   { animation-delay: 4s; align-items: stretch; gap: 7px; }
+.sceneModels { animation-delay: 8s; align-items: stretch; gap: 7px; }
+.sceneApps   { animation-delay: 12s; align-items: stretch; gap: 7px; }
+
+/* Each scene owns 25% of the period: enter over ~4%, hold, leave by 26%. */
+@keyframes scene-cycle {
+  0%        { opacity: 0; transform: translateY(6px); }
+  4%, 23%   { opacity: 1; transform: none; }
+  26%, 100% { opacity: 0; transform: translateY(-6px); }
+}
+
+.sceneTitle {
+  flex: 0 0 auto;
+  font-size: 10px;
+  font-weight: 600;
+  color: var(--text-muted);
+  text-transform: uppercase;
+  letter-spacing: 0.06em;
+}
+
+/* Element entrance on the shared clock: visible from its delay until the
+   scene leaves. */
+@keyframes element-in {
+  0%        { opacity: 0; transform: translateY(4px); }
+  2.5%, 23% { opacity: 1; transform: none; }
+  26%, 100% { opacity: 0; }
+}
+
+/* ---------- Home scene ---------- */
+
+.banner {
+  position: absolute;
+  top: 0;
+  left: 0;
+  right: 0;
+  height: 88px;
+  background: url('../../assets/banner-texture.jpg') center / cover no-repeat, var(--brand);
+}
+
+.power {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 52px;
+  height: 52px;
+  margin-top: 48px;
+  border-radius: 50%;
+  background: var(--bg-card);
+  color: var(--accent-green);
+  box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14);
+  animation: power-glow 1.8s ease-in-out infinite;
+}
+
+@keyframes power-glow {
+  0%, 100% { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14), 0 0 0 0 rgba(var(--accent-green-rgb), 0.35); }
+  60%      { box-shadow: 0 4px 14px rgba(0, 0, 0, 0.14), 0 0 0 9px rgba(var(--accent-green-rgb), 0); }
+}
+
+.statusLine {
+  margin-top: 8px;
+  font-size: 11px;
+  font-weight: 600;
+  color: var(--accent-green);
+}
+
+.composer {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 6px;
+  width: 100%;
+  margin-top: 16px;
+  padding: 8px 7px 8px 11px;
+  border-radius: 12px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  animation: element-in $period ease-in-out infinite;
+  animation-delay: 0.6s;
+}
+
+.composerText {
+  font-size: 10.5px;
+  color: var(--text-muted);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.composerSend {
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 20px;
+  height: 20px;
+  border-radius: 6px;
+  background: rgba(var(--brand-rgb), 0.14);
+  color: var(--brand);
+}
+
+/* App pill strip — the tools that connect through the AI VPN. */
+.pillRow {
+  display: flex;
+  justify-content: center;
+  gap: 6px;
+  margin-top: 10px;
+  animation: element-in $period ease-in-out infinite;
+  animation-delay: 0.9s;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 20px;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  color: var(--text-secondary);
+}
+
+/* Usage tiles — Saving in green is the takeaway. */
+.homeUsage {
+  width: 100%;
+  display: flex;
+  gap: 5px;
+  margin-top: 6px;
+  animation: element-in $period ease-in-out infinite;
+  animation-delay: 1.3s;
+}
+
+.usageTile {
+  flex: 1 1 0;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 1px;
+  padding: 5px 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+}
+
+.usageLabel {
+  font-size: 8px;
+  color: var(--text-muted);
+}
+
+.usageValue {
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-primary);
+  font-variant-numeric: tabular-nums;
+}
+
+.usageSaving {
+  color: var(--accent-green);
+}
+
+/* ---------- Models scene ---------- */
+
+.modelRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 8px 9px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  opacity: 0;
+  animation: element-in $period ease-in-out infinite;
+}
+
+.modelName {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.chip {
+  flex: 0 0 auto;
+  min-width: 28px;
+  padding: 1px 6px;
+  border-radius: 6px;
+  font-size: 9px;
+  font-weight: 600;
+  line-height: 13px;
+  text-align: center;
+  color: transparent;
+  background: var(--bg-surface);
+}
+
+.chipFree {
+  color: var(--success-subtle-text);
+  background: var(--success-subtle-bg);
+}
+
+.chipPrice {
+  color: var(--text-secondary);
+}
+
+/* ---------- Apps scene ---------- */
+
+.appRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 9px 10px;
+  border-radius: 10px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  opacity: 0;
+  animation: element-in $period ease-in-out infinite;
+}
+
+.appName {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 500;
+  color: var(--text-primary);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+/* Mini switch that flips on shortly after its row lands. */
+.toggle {
+  flex: 0 0 auto;
+  position: relative;
+  width: 26px;
+  height: 15px;
+  border-radius: 999px;
+  background: var(--bg-surface);
+  animation: toggle-on $period ease-in-out infinite;
+}
+
+@keyframes toggle-on {
+  0%, 1%    { background: var(--bg-surface); }
+  3%, 23%   { background: var(--accent-green); }
+  26%, 100% { background: var(--bg-surface); }
+}
+
+.toggleKnob {
+  position: absolute;
+  top: 2px;
+  left: 2px;
+  width: 11px;
+  height: 11px;
+  border-radius: 50%;
+  background: #fff;
+  box-shadow: 0 1px 2px rgba(0, 0, 0, 0.2);
+  animation: knob-on $period ease-in-out infinite;
+}
+
+@keyframes knob-on {
+  0%, 1%    { transform: translateX(0); }
+  3%, 23%   { transform: translateX(11px); }
+  26%, 100% { transform: translateX(0); }
+}
+
+.appsHint {
+  margin-top: 2px;
+  font-size: 9.5px;
+  color: var(--text-muted);
+  text-align: center;
+  opacity: 0;
+  animation: element-in $period ease-in-out infinite;
+  animation-delay: 14.2s;
+}
+
+/* ---------- Chat scene ---------- */
+
+.bubble {
+  max-width: 82%;
+  padding: 7px 10px;
+  border-radius: 11px;
+  font-size: 11px;
+  line-height: 15px;
+  opacity: 0;
+  animation: element-in $period ease-in-out infinite;
+}
+
+.bubbleUser {
+  align-self: flex-end;
+  background: var(--brand);
+  color: #fff;
+  animation-delay: 4.4s;
+}
+
+.bubbleTyping {
+  align-self: flex-start;
+  display: inline-flex;
+  gap: 3px;
+  background: var(--bg-surface);
+  animation: typing-slot $period ease-in-out infinite;
+  animation-delay: 4.4s;
+
+  span {
+    width: 4px;
+    height: 4px;
+    border-radius: 50%;
+    background: var(--text-muted);
+    animation: typing-dot 1s ease-in-out infinite;
+    &:nth-child(2) { animation-delay: 0.15s; }
+    &:nth-child(3) { animation-delay: 0.3s; }
+  }
+}
+
+/* The typing bubble shows briefly, then the answer replaces it. */
+@keyframes typing-slot {
+  0%        { opacity: 0; }
+  3%, 9%    { opacity: 1; }
+  11%, 100% { opacity: 0; }
+}
+
+@keyframes typing-dot {
+  0%, 80%, 100% { opacity: 0.3; transform: scale(0.85); }
+  40%           { opacity: 1;   transform: scale(1); }
+}
+
+.bubbleAnswer {
+  align-self: flex-start;
+  width: 88%;
+  margin-top: -24px;
+  background: var(--bg-surface);
+  color: var(--text-secondary);
+  font-size: 10px;
+  line-height: 14px;
+  animation-delay: 6s;
+}
+
+/* ---------- captions under the frame ---------- */
+
+.captions {
+  position: relative;
+  width: 100%;
+  height: 18px;
+}
+
+.caption {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  font-size: 13px;
+  font-weight: 500;
+  color: var(--text-secondary);
+  opacity: 0;
+  animation: scene-cycle $period ease-in-out infinite;
+}
+
+/* ---------- reduced motion: hold the Home scene ---------- */
+
+@media (prefers-reduced-motion: reduce) {
+  .scene,
+  .composer,
+  .pillRow,
+  .homeUsage,
+  .modelRow,
+  .appRow,
+  .railItemCycle,
+  .appsHint,
+  .toggle,
+  .toggleKnob,
+  .bubble,
+  .power,
+  .caption {
+    animation: none;
+  }
+  .sceneHome,
+  .composer,
+  .pillRow,
+  .homeUsage { opacity: 1; transform: none; }
+  .caption:first-child { opacity: 1; }
+}

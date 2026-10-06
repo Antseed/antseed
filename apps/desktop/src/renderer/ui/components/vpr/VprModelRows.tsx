@@ -35,6 +35,9 @@ export type VprModelRowListProps = {
    * under the name and the trailing chevron is dropped, so the model name
    * keeps the full row width instead of truncating after a few characters. */
   compact?: boolean;
+  /** Tighter rows with the full content kept — menus that must fit on screen
+   * (the Home composer's model menu). */
+  dense?: boolean;
   /** Rows only pick a model instead of drilling into its page (the Home
    * dropdown, the chat model pickers) — the trailing chevron is dropped so
    * the row doesn't promise a navigation that never happens. */
@@ -71,13 +74,14 @@ function formatPrice(price: number | null): string {
   return price === null ? '—' : formatUsdShort(price);
 }
 
-function ModelRow({ entry, checked, favorite, badge, compact, chevron = true, pinnedPeerLabel, onClick, onConfigure }: {
+function ModelRow({ entry, checked, favorite, badge, compact, dense, chevron = true, pinnedPeerLabel, onClick, onConfigure }: {
   entry: VprModelCatalogEntry;
   /** Leading checkmark for the currently selected model (Figma "model list" checked state). */
   checked?: boolean;
   favorite?: boolean;
   badge?: JSX.Element | null;
   compact?: boolean;
+  dense?: boolean;
   /** Trailing right chevron — only for rows that open the model page. */
   chevron?: boolean;
   /** Seller this model is pinned to; replaces the peer count on the meta line. */
@@ -130,6 +134,7 @@ function ModelRow({ entry, checked, favorite, badge, compact, chevron = true, pi
       className={[
         styles.row,
         compact ? styles.rowCompact : '',
+        dense ? styles.rowDense : '',
       ].filter(Boolean).join(' ')}
       aria-pressed={checked}
       onClick={onClick}
@@ -242,6 +247,7 @@ export function VprModelRowList({
   recommendedCount,
   recommendedLabel,
   frameless,
+  dense,
   compact,
   selectOnly,
   pinnedPeerLabels,
@@ -287,6 +293,7 @@ export function VprModelRowList({
         entry={entry}
         checked={selected}
         compact={compact}
+        dense={dense}
         chevron={!selectOnly}
         pinnedPeerLabel={pinned}
         favorite={favoriteKeys?.has(favoriteModelKey(entry.provider, entry.serviceId))}

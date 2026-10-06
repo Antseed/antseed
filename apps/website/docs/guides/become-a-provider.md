@@ -7,14 +7,18 @@ hide_title: true
 
 # Become a Provider
 
-Providers earn USDC by serving AI requests on the AntSeed network. This guide covers everything from setup to your first request.
+Providers earn USDC by serving AI requests on the Antseed network. This guide covers everything from setup to your first request.
 
 :::warning Provider Compliance
-AntSeed is designed for providers who build differentiated services — such as TEE-secured inference, domain-specific skills or agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Providers are solely responsible for complying with their upstream API provider's terms.
+Antseed is designed for providers who build differentiated services — such as TEE-secured inference, domain-specific skills or agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Providers are solely responsible for complying with their upstream API provider's terms.
 :::
 
 :::info Seller ANTS emissions
-Starting from the current epoch, seller ANTS emissions are tracked but routed into a dedicated Provider Pool and locked for now. These incentives are not freely claimable yet. Future claimability is expected after stronger provider validation, audit, attestation, and proof systems are introduced, and may be subject to verification or slashing.
+From epoch 22 (September 10, 2026), ANTS rewards use recognized usage and
+seller-pool stake. USDC earnings are separate. See [ANTS rewards](/docs/recognized-usage)
+for the new model and [legacy claims](/docs/legacy-emissions) for earlier rewards.
+
+The CLI checks `AntseedRegistry` to determine whether the recognized-usage upgrade is active. Before the upgrade, seller rewards follow the existing emissions path. After it, finalized earlier rewards remain claimable and new seller/operator plus pool-staker rewards use the recognized-usage contracts.
 :::
 
 ## Prerequisites
@@ -22,8 +26,8 @@ Starting from the current epoch, seller ANTS emissions are tracked but routed in
 - Node.js 20+
 - An AI API key (Anthropic, OpenAI, Together AI, or a local model)
 - A secp256k1 private key (your node identity)
-- ETH on Base Mainnet (for gas, ~$0.01 per transaction)
-- USDC on Base Mainnet (minimum $10 for staking)
+- ETH on Base Mainnet for seller transaction fees; the cost varies with gas usage and network fees
+- An on-chain seller registration (`antseed seller register`). Staking is optional; see [staking and starter positions](/docs/recognized-usage)
 
 ## 1. Install
 
@@ -193,13 +197,13 @@ For durable config-file based deployments, store it under `payments.crypto.rpcUr
 antseed config set payments.crypto.rpcUrl "https://base-mainnet.g.alchemy.com/v2/<key>"
 ```
 
-Runtime precedence is: `--base-rpc-url` flag, then `ANTSEED_BASE_RPC_URL`, then `payments.crypto.rpcUrl`, then AntSeed's built-in Base defaults.
+Runtime precedence is: `--base-rpc-url` flag, then `ANTSEED_BASE_RPC_URL`, then `payments.crypto.rpcUrl`, then Antseed's built-in Base defaults.
 
 ## 5. Fund Your Wallet
 
 Your wallet address needs:
-- **ETH** for gas fees (register, stake, settle transactions)
-- **USDC** for staking (minimum $10)
+- **ETH** for gas fees (register, settle, and optional stake transactions)
+- **ANTS** only if you choose to stake
 
 Send both to the EVM address derived from your identity key. You can find your address with:
 
@@ -207,18 +211,28 @@ Send both to the EVM address derived from your identity key. You can find your a
 antseed seller status
 ```
 
-## 6. Register and Stake
+## 6. Register (Staking Optional)
 
 ```bash
 # Register your identity on-chain (ERC-8004)
 antseed seller register
 
-# Stake USDC (minimum $10)
-antseed seller stake 10
-
 # Verify everything is ready
 antseed seller status
 ```
+
+Staking is optional. The seller registry's minimum pool stake is currently 0, so a registered seller can start selling without staking. Stake ANTS into your seller pool to earn recognized-usage rewards:
+
+```bash
+antseed seller register
+antseed seller legacy claim-starter
+antseed seller stake 100 --epochs 4
+antseed seller pool positions
+```
+
+`seller stake` always means ANTS; use `seller legacy stake` for USDC on networks that have not upgraded. The starter claim is only for eligible legacy sellers; new sellers register and stake ANTS without that step.
+
+Pool stake activates after the contract's activation delay. The CLI reports positions as pending, active, matured, closed, or withdrawn. For an early withdrawal, `--accept-slashing` first prints the estimated principal loss and then requires confirmation; add `--yes` only for non-interactive automation after reviewing that estimate. The rate can change before the transaction executes, so the estimate is not a guaranteed maximum loss.
 
 ## 7. Add Your Services
 
@@ -280,7 +294,7 @@ antseed config seller add-service openai image-studio \
 
 The `--upstream` flag maps the buyer-facing service name to the upstream model id. Omit it when they're the same.
 
-For an `openai-images` service, `outputs: ["image"]` identifies an image result. Input modalities are an operational routing contract: `inputs: ["text"]` means generation only, while `inputs: ["text", "image"]` means the seller can accept both `/v1/images/generations` and multipart `/v1/images/edits`. Do not advertise `image` input merely because the upstream platform offers editing somewhere; the exact configured service and provider adapter must support the edit request end to end. In particular, Venice-backed services must remain generation-only until AntSeed has a native Venice edit adapter.
+For an `openai-images` service, `outputs: ["image"]` identifies an image result. Input modalities are an operational routing contract: `inputs: ["text"]` means generation only, while `inputs: ["text", "image"]` means the seller can accept both `/v1/images/generations` and multipart `/v1/images/edits`. Do not advertise `image` input merely because the upstream platform offers editing somewhere; the exact configured service and provider adapter must support the edit request end to end. In particular, Venice-backed services must remain generation-only until Antseed has a native Venice edit adapter.
 
 Unit billing is currently supported by the `openai` provider for `openai-images`; startup warns if a different plugin ignores the setting. Image services remain advertised but are skipped by periodic health checks to avoid generating paid probe images.
 
@@ -342,10 +356,18 @@ This release emits discovery metadata v12. Older buyers reject newer metadata an
 
 USDC earnings are paid directly to your wallet address on each `settle()` or `close()` call. No claim step needed for USDC.
 
-Seller-side ANTS emissions are different: they are currently tracked but locked in the Provider Pool while stronger validation systems are developed. Provider ANTS claims may become available later and may be subject to verification or slashing.
+ANTS rewards are separate from USDC earnings. They depend on recognized usage,
+pool power, and [reward policies](/docs/reward-policies). Pre-migration rewards
+use the [legacy claims flow](/docs/legacy-emissions), including the M002 release
+rule for locked seller rewards.
+
+Seller-side ANTS rewards are epoch-based. The CLI claims finalized legacy epochs from the legacy emissions contract and, after recognized-usage cutover, claims new operator rewards while exposing separately indexed seller-pool staker rewards.
 
 :::warning Real usage only
-ANTS incentives are designed for real provider contribution. Farming, fake volume, sybil behavior, spam, or value extraction may be capped, excluded, delayed, locked, or subject to future slashing.
+The historical wash-trading policy excludes new reward points for flagged
+sellers without blocking USDC settlement. ANTS stake also has an
+[early-withdrawal penalty](/docs/recognized-usage#moving-stake-and-early-withdrawal);
+that principal penalty is separate from the usage-points filter.
 :::
 
 ## Next Steps

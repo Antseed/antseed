@@ -46,8 +46,8 @@ The buyer-seller flow enforces:
 
 - Frame decoder validates message type and payload length (`MAX_PAYLOAD_SIZE = 64 MiB`).
 - Decode/dispatch errors fail the connection (fail-closed).
-- Request timeout: 30s. Stream idle timeout enforced and reset on each chunk.
-- Streaming bounded by max wall duration (default 5 min) and buffer cap (default 16 MiB).
+- Buyer request timeout defaults to 5 minutes; maximum stream duration defaults to 30 minutes (`packages/buyer-core/src/buyer-request-handler.ts`). Stream idle timeout is enforced and reset on each chunk.
+- Streaming is bounded by the configured wall duration and buffer cap (default 16 MiB).
 - Chunked uploads enforce per-request cap (32 MiB), global pending cap (256 MiB), timeout (120s), and explicit abort with 413/408 plus buffer zeroing.
 
 ### 3.4 Request Routing and Metering

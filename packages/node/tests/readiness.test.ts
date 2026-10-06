@@ -20,11 +20,13 @@ const fakeIdentity: Identity = {
 function mockStakingClient(overrides: {
   ethBalance?: bigint;
   sellerStake?: bigint;
+  eligible?: boolean;
 } = {}): StakingClient {
   return {
     provider: {
       getBalance: vi.fn().mockResolvedValue(overrides.ethBalance ?? 1000000000000000n),
     },
+    isStakedAboveMin: vi.fn().mockResolvedValue(overrides.eligible ?? true),
     getStake: vi.fn().mockResolvedValue(overrides.sellerStake ?? 10_000_000n),
   } as unknown as StakingClient;
 }
@@ -87,15 +89,34 @@ describe('checkSellerReadiness', () => {
     expect(regCheck.command).toBe('antseed seller register');
   });
 
-  it('fails stake check when no stake', async () => {
-    const staking = mockStakingClient({ sellerStake: 0n });
-    const identity = mockIdentityClient();
+  it('accepts an eligible zero-stake seller', async () => {
+    const staking = mockStakingClient({ sellerStake: 0n, eligible: true });
 
-    const checks = await checkSellerReadiness(fakeIdentity, identity, staking);
+    const checks = await checkSellerReadiness(fakeIdentity, mockIdentityClient(), staking);
+
+    expect(checks.every(c => c.passed)).toBe(true);
+    expect(checks.every(c => c.command === undefined)).toBe(true);
+    expect(staking.isStakedAboveMin).toHaveBeenCalledWith(fakeIdentity.wallet.address);
+    expect(staking.getStake).not.toHaveBeenCalled();
+  });
+
+  it.each([0n, 10_000_000n])('rejects an ineligible seller with stake %s', async (sellerStake) => {
+    const staking = mockStakingClient({ sellerStake, eligible: false });
+
+    const checks = await checkSellerReadiness(fakeIdentity, mockIdentityClient(), staking);
 
     const stakeCheck = checks.find(c => c.name === 'Stake')!;
     expect(stakeCheck.passed).toBe(false);
-    expect(stakeCheck.command).toBe('antseed seller stake 10');
+    expect(stakeCheck.message).toContain('Check agent binding and required stake');
+    expect(stakeCheck.command).toBe('antseed seller status');
+  });
+
+  it('propagates eligibility RPC errors rather than treating the seller as ready', async () => {
+    const staking = mockStakingClient();
+    vi.mocked(staking.isStakedAboveMin).mockRejectedValue(new Error('RPC unavailable'));
+
+    await expect(checkSellerReadiness(fakeIdentity, mockIdentityClient(), staking))
+      .rejects.toThrow('RPC unavailable');
   });
 
   it('checks registration and stake against the configured seller contract', async () => {
@@ -107,7 +128,7 @@ describe('checkSellerReadiness', () => {
 
     expect(staking.provider.getBalance).toHaveBeenCalledWith(fakeIdentity.wallet.address);
     expect(identityClient.isRegistered).toHaveBeenCalledWith(sellerContract);
-    expect(staking.getStake).toHaveBeenCalledWith(sellerContract);
+    expect(staking.isStakedAboveMin).toHaveBeenCalledWith(sellerContract);
   });
 
 });

@@ -188,7 +188,7 @@ export function selectDefaultVprModel(
     (entry) => (entry.hasEligibleFreeSeller ? 0 : null),
 ): VprSelectedModel | null {
   if (current && findCatalogEntry(catalog, current.provider, current.serviceId)?.kind === 'text') return current;
-  // First launch defaults to a free model — trying the VPR must cost nothing
+  // First launch defaults to a free model — trying the AI VPN must cost nothing
   // before any balance exists. Candidates are entries with at least one
   // eligible $0 route (judged per route, so another seller's paid variant of
   // the same model can't mask a genuinely free offer). The hardcoded priority

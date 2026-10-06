@@ -71,13 +71,14 @@ apps/               Applications
   cli/              CLI tool (@antseed/cli) — bin: antseed
   desktop/          Electron desktop app
   dashboard/        Web dashboard (Fastify server + React frontend)
+  ants/             ANTS staking dashboard (@antseed/ants: Fastify server + React web + service layer shared with the CLI)
   website/          Marketing website (React + Vite + Tailwind)
 e2e/                End-to-end tests
 docs/protocol/      Protocol specification and plugin templates
 ```
 
 ## Tech Stack
-- **Runtime**: Node.js >=20, ES modules throughout
+- **Development runtime**: Node.js 24 (pinned in `.nvmrc` and Volta), ES modules throughout. Published package engine ranges and Electron's embedded runtime are separate from this development pin.
 - **Language**: TypeScript 5.x with strict mode
 - **Package Manager**: pnpm workspaces
 - **Build**: tsc for libraries, Vite for web apps and Electron renderer

@@ -228,8 +228,6 @@ export function initDashboardRenderModule({
     const peers = normalizedNetwork.peers;
     const stats = normalizedNetwork.stats;
     const serviceCount = normalizedNetwork.serviceCount;
-    const dht = networkHealth(stats, peers.length);
-
     const statusPayload = results.status.ok ? (results.status.data as Record<string, unknown>) : null;
     const dataSourcesPayload = results.dataSources.ok ? (results.dataSources.data as Record<string, unknown> | null) : null;
     const configPayload = results.config.ok ? (results.config.data as Record<string, unknown> | null) : null;
@@ -240,6 +238,11 @@ export function initDashboardRenderModule({
     const daemonDetailsCount = daemonChannelDetails.length;
 
     const buyerRuntimeState = isModeRunning('connect') ? 'connected' : 'offline';
+    const dht = networkHealth(stats, peers.length);
+    // Network stats are owned by the main process and keep the last DHT
+    // snapshot after the buyer runtime stops, so the footer would keep saying
+    // "Healthy" while disconnected. Report the network as offline instead.
+    const ovDhtHealth = buyerRuntimeState === 'offline' ? 'Offline' : dht.label;
     const activeChannels = Math.max(
       safeNumber(statusPayload?.activeChannels, 0),
       daemonActiveChannels,
@@ -257,7 +260,7 @@ export function initDashboardRenderModule({
     // Overview stats
     uiState.ovNodeState = buyerRuntimeState;
     uiState.ovPeers = formatInt(peers.length);
-    uiState.ovDhtHealth = dht.label;
+    uiState.ovDhtHealth = ovDhtHealth;
     uiState.ovProxyPort = proxyPort > 0 ? String(proxyPort) : '-';
     uiState.ovServiceCount = formatInt(serviceCount);
     uiState.ovLastScan = formatRelativeTime(stats.lastScanAt);

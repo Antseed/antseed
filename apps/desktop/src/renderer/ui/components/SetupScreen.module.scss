@@ -24,7 +24,7 @@
 }
 
 .content {
-  margin-top: 10%;
+  margin-top: 6%;
   display: flex;
   flex-direction: column;
   align-items: center;
@@ -34,79 +34,97 @@
   text-align: center;
 }
 
-/* Ant mark + "VPR" wordmark — the setup screen's only branding. */
+/* Ant mark + "AI VPN" wordmark — the setup screen's only branding. */
 .brand {
   display: flex;
   flex-direction: column;
   align-items: center;
   gap: 10px;
-  margin-bottom: 28px;
-}
-
-.brandName {
-  color: var(--accent-green);
-  font-size: 20px;
-  font-weight: 700;
-}
-
-.title {
-  font-size: 18px;
-  font-weight: 600;
-  color: var(--text-primary);
-  margin: 0 0 8px;
-}
-
-.subtitle {
-  font-size: 13px;
-  line-height: 1.5;
-  color: var(--text-muted);
-  margin: 0 0 28px;
-  max-width: 320px;
+  margin-bottom: 20px;
 }
 
 /* ------------------------------------------------------------------ */
-/*  Live discovery tallies                                             */
+/*  Logo marquee — model families on the network, drifting by           */
 /* ------------------------------------------------------------------ */
 
-.statRow {
-  display: flex;
+.marquee {
   width: 100%;
-  gap: 8px;
+  overflow: hidden;
+  margin-top: 18px;
+  /* Soft edges so logos fade in/out instead of being clipped. */
+  mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
+  -webkit-mask-image: linear-gradient(to right, transparent, #000 15%, #000 85%, transparent);
 }
 
-.statTile {
-  flex: 1 1 0;
-  min-width: 0;
+.marqueeTrack {
+  display: flex;
+  width: max-content;
+  gap: 28px;
+  padding: 4px 14px;
+  animation: marquee-drift 28s linear infinite;
+}
+
+/* The track holds the logo list twice; sliding by half loops seamlessly. */
+@keyframes marquee-drift {
+  from { transform: translateX(0); }
+  to   { transform: translateX(-50%); }
+}
+
+.marqueeLogo {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 40px;
+  height: 40px;
+  border-radius: 12px;
+  background: var(--bg-card);
+  border: 1px solid var(--border);
+  color: var(--text-secondary);
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .marqueeTrack {
+    animation: none;
+  }
+}
+
+/* ------------------------------------------------------------------ */
+/*  Footer — activity line, compact tallies, first-run note            */
+/* ------------------------------------------------------------------ */
+
+.footer {
+  position: absolute;
+  bottom: 20px;
+  left: 0;
+  right: 0;
   display: flex;
   flex-direction: column;
   align-items: center;
-  gap: 4px;
-  padding: 14px 6px 12px;
-  background: var(--bg-card);
-  border: 1px solid var(--border);
-  border-radius: var(--radius-sm);
+  gap: 8px;
 }
 
-.statIcon {
-  color: var(--text-muted);
-  transition: color 0.3s ease;
-
-  .statLive & {
-    color: var(--accent-green);
-  }
-}
-
-.statValue {
-  font-size: 20px;
-  font-weight: 600;
-  line-height: 24px;
+.statStrip {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  flex-wrap: wrap;
+  gap: 6px;
+  margin: 0;
+  font-size: 11px;
+  line-height: 14px;
   color: var(--text-muted);
   font-variant-numeric: tabular-nums;
+}
 
-  .statLive & {
-    color: var(--text-primary);
-    animation: stat-pop 0.35s ease;
-  }
+.statItem {
+  white-space: nowrap;
+}
+
+.statItemLive .statValue {
+  color: var(--text-secondary);
+  font-weight: 600;
+  display: inline-block;
+  animation: stat-pop 0.35s ease;
 }
 
 @keyframes stat-pop {
@@ -114,10 +132,8 @@
   100% { transform: scale(1);    }
 }
 
-.statLabel {
-  font-size: 11px;
-  color: var(--text-muted);
-  white-space: nowrap;
+.statSep {
+  opacity: 0.6;
 }
 
 /* ------------------------------------------------------------------ */
@@ -132,7 +148,6 @@
   /* Fixed height so phase swaps (and the ready state taking over)
      never shift the layout below. */
   height: 20px;
-  margin-top: 22px;
   font-size: 13px;
   color: var(--text-secondary);
   animation: rise-in 0.35s ease;
@@ -179,7 +194,6 @@
   justify-content: center;
   gap: 6px;
   height: 20px;
-  margin-top: 22px;
   font-size: 13px;
   font-weight: 500;
   color: var(--accent-green);
@@ -195,14 +209,10 @@
 }
 
 /* ------------------------------------------------------------------ */
-/*  First-run note — pinned to the bottom of the page                  */
+/*  First-run note (in the footer)                                     */
 /* ------------------------------------------------------------------ */
 
 .firstRunNote {
-  position: absolute;
-  bottom: 24px;
-  left: 0;
-  right: 0;
   margin: 0;
   font-size: 12px;
   color: var(--text-muted);

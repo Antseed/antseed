@@ -297,7 +297,7 @@ export async function createTelemetryService(
     ]);
   };
 
-  const userActionKey = (input: UserActionSignal): string => `${input.action}:${input.surface}`;
+  const userActionKey = (input: UserActionSignal): string => `${input.action}:${input.surface}:${input.app ?? ''}`;
 
   const deliverNextUserAction = (): void => {
     if (userActionDelivery) return;

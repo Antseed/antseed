@@ -1,11 +1,11 @@
 /* ===================================================================
-   AntSeed Desktop — Light / Dark Theme
+   Antseed Desktop — Light / Dark Theme
    Light theme is default. Add class "dark-theme" to <body> for dark.
    =================================================================== */
 
 :root {
   /* ---------- Light theme (default) ----------
-     Brand palette from the AntSeed Figma guideline: warm cream surfaces
+     Brand palette from the Antseed Figma guideline: warm cream surfaces
      (surface/0 #fbf9f4, surface/1 white), deep green primary (#008359)
      with the brighter brand emerald (#10b981) reserved for fills. */
   --bg-primary: #fbf9f4;
@@ -1268,4 +1268,61 @@ select.form-input {
 @keyframes thinking-dot-pulse {
   0%, 80%, 100% { opacity: 0.2; transform: scale(0.8); }
   40% { opacity: 1; transform: scale(1); }
+}
+
+/* ===================================================================
+   Shared @antseed/ui modal chrome (all desktop windows)
+   The Modal primitive ships the dashboard's `--as-*` look (bordered
+   header, boxed close button, generous padding). Restyle it once here
+   with the app's tokens so every desktop modal — confirms, settings,
+   pickers — matches the AI VPN views without per-dialog overrides.
+   Selectors are nested under `.as-modal` / `.as-modal-overlay` so they
+   outrank the primitive's own rules whatever the stylesheet order.
+   =================================================================== */
+
+.as-modal-overlay .as-modal {
+  border: none;
+  border-radius: 16px;
+  background: var(--bg-card);
+  box-shadow: var(--shadow);
+}
+
+.as-modal .as-modal__header {
+  align-items: center;
+  gap: 12px;
+  padding: 16px 16px 6px;
+  border-bottom: none;
+}
+
+.as-modal .as-modal__title {
+  color: var(--text-primary);
+  font-size: 14px;
+  font-weight: 600;
+  letter-spacing: 0;
+  line-height: 20px;
+}
+
+.as-modal .as-modal__subtitle {
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 15px;
+}
+
+.as-modal .as-modal__close {
+  width: 24px;
+  height: 24px;
+  border: none;
+  border-radius: 8px;
+  background: transparent;
+  color: var(--text-muted);
+}
+
+.as-modal .as-modal__close:hover:not(:disabled) {
+  border-color: transparent;
+  background: var(--bg-surface);
+  color: var(--text-primary);
+}
+
+.as-modal .as-modal__body {
+  padding: 10px 16px 16px;
 }

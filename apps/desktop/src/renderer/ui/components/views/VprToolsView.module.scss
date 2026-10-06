@@ -1,4 +1,5 @@
 .view {
+  position: relative; /* anchors the first-visit coach-mark layer */
   height: 100%;
   min-height: 0;
   overflow: hidden;
@@ -266,55 +267,6 @@
 .configActionActive {
   color: var(--text-primary);
   background: var(--bg-surface);
-}
-
-/* ---------- VPR-styled modal (app settings / add custom app) ----------
-   The shared Modal ships the dashboard's `--as-*` look; these overrides
-   restyle it with the app's own tokens so it matches the VPR views. */
-
-.vprModal {
-  border: none;
-  border-radius: 16px;
-  background: var(--bg-card);
-  box-shadow: var(--shadow-lg, 0 16px 48px rgba(0, 0, 0, 0.28));
-
-  :global(.as-modal__header) {
-    padding: 16px 16px 6px;
-    border-bottom: none;
-  }
-
-  :global(.as-modal__title) {
-    color: var(--text-primary);
-    font-size: 14px;
-    font-weight: 600;
-    letter-spacing: 0;
-    line-height: 20px;
-  }
-
-  :global(.as-modal__subtitle) {
-    color: var(--text-muted);
-    font-size: 11px;
-    line-height: 15px;
-  }
-
-  :global(.as-modal__close) {
-    width: 24px;
-    height: 24px;
-    border: none;
-    border-radius: 8px;
-    background: transparent;
-    color: var(--text-muted);
-    cursor: pointer;
-  }
-
-  :global(.as-modal__close):hover {
-    background: var(--bg-surface);
-    color: var(--text-primary);
-  }
-
-  :global(.as-modal__body) {
-    padding: 10px 16px 16px;
-  }
 }
 
 /* ---------- Per-app settings modal ---------- */

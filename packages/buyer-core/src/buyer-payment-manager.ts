@@ -44,11 +44,11 @@ import { buyerFault, faultCodeOf } from './errors.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
 const DEFAULT_COST_TOLERANCE = 1.4;
-/** Fraction of reserve ceiling at which to signal a top-up is needed.
- *  Trigger well before the contract's TOP_UP_SETTLED_THRESHOLD_BPS (85%)
- *  so that by the time the seller calls topUp() on-chain, enough has been
- *  settled to pass the threshold check. */
-const DEFAULT_TOPUP_THRESHOLD = 0.65;
+/** Remaining headroom that triggers the first top-up (35% of the initial reserve). */
+const INITIAL_TOPUP_HEADROOM_PERCENT = 35n;
+/** Fixed remaining headroom that triggers every later top-up ($0.50). */
+const SUBSEQUENT_TOPUP_HEADROOM_USDC = 500_000n;
+const PERCENT_DENOMINATOR = 100n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
 const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
@@ -1135,15 +1135,17 @@ export class BuyerPaymentManager {
     return maxSignable < ceiling ? maxSignable : ceiling;
   }
 
-  /**
-   * Check whether the current cumulative amount is approaching the reserve ceiling
-   * and a top-up should be triggered.
-   */
+  /** Check whether the channel has reached its absolute remaining-headroom threshold. */
   private _needsTopUp(sellerPeerId: string): boolean {
     const ceiling = this._getCeiling(sellerPeerId);
     const current = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
-    const threshold = BigInt(Math.floor(Number(ceiling) * DEFAULT_TOPUP_THRESHOLD));
-    return current >= threshold;
+    const initialReserve = this._initialReserveAmount.get(sellerPeerId)
+      ?? this._config.maxReserveAmountUsdc;
+    const threshold = ceiling <= initialReserve
+      ? initialReserve * INITIAL_TOPUP_HEADROOM_PERCENT / PERCENT_DENOMINATOR
+      : SUBSEQUENT_TOPUP_HEADROOM_USDC;
+    const remaining = ceiling > current ? ceiling - current : 0n;
+    return remaining <= threshold;
   }
 
   /**
@@ -1662,8 +1664,8 @@ export class BuyerPaymentManager {
     // cumulative first — this ensures the on-chain settle amount meets the
     // contract's TopUpThresholdNotMet requirement (85% of deposit must be
     // settleable before topUp is allowed). Also proactively send the top-up
-    // once the signed cumulative reaches the buyer's 65% threshold; the seller
-    // may defer the on-chain topUp until the contract's 85% gate is satisfied.
+    // once the signed cumulative reaches the buyer's remaining-headroom
+    // threshold; the seller may defer it until the contract gate is satisfied.
     if (needsTopUp || this._needsTopUp(sellerPeerId)) {
       await this._topUpAfterSpendAuthBestEffort(sellerPeerId, paymentMux, 'handleNeedAuth');
     }

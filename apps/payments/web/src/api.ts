@@ -117,8 +117,9 @@ export interface EmissionsEpochParams {
 
 export interface EmissionsPendingRow {
   epoch: number;
+  protocol: 'legacy' | 'recognized';
   epochEmission: string;
-  params: EmissionsEpochParams;
+  params: EmissionsEpochParams | null;
   seller: { amount: string; userPoints: string; totalPoints: string; claimed: boolean };
   buyer:  { amount: string; userPoints: string; totalPoints: string; claimed: boolean };
   isCurrent: boolean;
@@ -270,4 +271,9 @@ export async function getNetworkStats(networkStatsUrl: string): Promise<NetworkS
     },
     indexer: body.indexer,
   };
+}
+
+/** Old claim links hand off to the shared dashboard through their trusted host. */
+export async function openRewardsDashboard(): Promise<void> {
+  await fetchJson('/api/pay/open-rewards', { method: 'POST' });
 }

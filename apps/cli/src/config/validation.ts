@@ -416,6 +416,35 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  if (config.seller.freeTier !== undefined) {
+    const freeTier = config.seller.freeTier;
+    if (freeTier.maxRequestsPerAddress === undefined && freeTier.maxRequestsPerIp === undefined) {
+      errors.push('seller.freeTier requires maxRequestsPerAddress and/or maxRequestsPerIp');
+    }
+    for (const key of ['maxRequestsPerAddress', 'maxRequestsPerIp'] as const) {
+      const limit = freeTier[key];
+      if (limit !== undefined && (!Number.isSafeInteger(limit) || limit < 1)) {
+        errors.push(`seller.freeTier.${key} must be a positive safe integer`);
+      }
+    }
+    if (
+      freeTier.windowMs !== undefined &&
+      (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
+    ) {
+      errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
+    }
+  }
+
+  if (config.seller.freeUsage !== undefined) {
+    const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
+    if (recordBatchSize !== undefined && (!Number.isSafeInteger(recordBatchSize) || recordBatchSize < 1)) {
+      errors.push('seller.freeUsage.recordBatchSize must be a positive safe integer');
+    }
+    if (recordFlushIntervalMs !== undefined && (!Number.isSafeInteger(recordFlushIntervalMs) || recordFlushIntervalMs < 1_000)) {
+      errors.push('seller.freeUsage.recordFlushIntervalMs must be a safe integer >= 1000');
+    }
+  }
+
   validateVerifications('seller.verifications', config.seller.verifications, errors);
 
   if (config.relayer !== undefined) {

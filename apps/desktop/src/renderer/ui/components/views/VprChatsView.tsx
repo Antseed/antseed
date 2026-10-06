@@ -24,7 +24,7 @@ import {
   routesForSelectedModel,
 } from '../../../modules/catalog/view-models';
 import { shortPeerId } from '../../../modules/routing/tools';
-import { isFreeRoute, sellerMetaLabel, sellerReputationLabel } from '../../../modules/catalog/seller-format';
+import { isFreeRoute, sellerMetaLabel, sellerReputationLabel, sellerReputationExplanation } from '../../../modules/catalog/seller-format';
 import { buyerConversationsResource, systemProxyResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import type { DiscoverRow } from '../../../core/state';
@@ -293,7 +293,7 @@ export function VprChatsView({ onSelectView: _onSelectView }: Props) {
                               </span>
                               <span className={styles.sellerMeta}>{sellerMetaLabel(route)}</span>
                             </span>
-                            <span className={styles.sellerScore}>{sellerReputationLabel(route)}</span>
+                            <span className={styles.sellerScore} title={sellerReputationExplanation(route)}>{sellerReputationLabel(route)}</span>
                           </button>
                         );
                       })}

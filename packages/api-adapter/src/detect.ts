@@ -3,6 +3,7 @@ import type { SerializedHttpRequest, ServiceApiProtocol } from './types.js';
 const ANTHROPIC_PROVIDER_NAMES = new Set(['anthropic', 'claude-code', 'claude-oauth']);
 const OPENAI_CHAT_PROVIDER_NAMES = new Set(['openai', 'local-llm']);
 const OPENAI_RESPONSES_PROVIDER_NAMES = new Set(['openai-responses']);
+const TYPESAFE_PROVIDER_NAMES = new Set(['typesafe']);
 const STANDARD_ADAPTER_FALLBACKS: Partial<Record<ServiceApiProtocol, ServiceApiProtocol[]>> = {
   'anthropic-messages': ['openai-chat-completions', 'openai-responses'],
   'openai-chat-completions': ['openai-responses', 'anthropic-messages'],
@@ -36,6 +37,9 @@ export function detectRequestServiceApiProtocol(
   ) {
     return 'openai-images';
   }
+  if (normalizedPath.startsWith('/v1/systemone')) {
+    return 'typesafe-systemone';
+  }
 
   const hasAnthropicVersionHeader = Object.keys(request.headers)
     .some((key) => key.toLowerCase() === 'anthropic-version');
@@ -54,6 +58,7 @@ export function inferProviderDefaultServiceApiProtocols(providerName: string): S
   // support the Images API.
   if (OPENAI_CHAT_PROVIDER_NAMES.has(normalized)) return ['openai-chat-completions'];
   if (OPENAI_RESPONSES_PROVIDER_NAMES.has(normalized)) return ['openai-responses'];
+  if (TYPESAFE_PROVIDER_NAMES.has(normalized)) return ['typesafe-systemone'];
   return [];
 }
 

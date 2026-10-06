@@ -216,7 +216,7 @@
   align-items: center;
   justify-content: space-between;
   gap: 8px;
-  padding: 12px 16px;
+  padding: 9px 16px;
   border: none;
   border-top: 1px solid var(--border);
   border-radius: 0;
@@ -642,31 +642,99 @@
   gap: 16px;
 }
 
-.connectHeading {
-  text-align: center;
-  font-size: 14px;
-  font-weight: 400;
-  line-height: 20px;
-  color: var(--text-primary);
-}
-
-.askForm {
+/* Chat-first hero block: intro line + ask input, above the model card. */
+.heroAsk {
+  position: relative;
+  z-index: 1;
   width: 100%;
   display: flex;
+  flex-direction: column;
   align-items: center;
-  gap: 8px;
-  padding: 9px 9px 9px 21px;
-  border-radius: 28px;
-  border: 1px solid var(--border);
-  background: var(--bg-card);
+  gap: 10px;
+  margin-top: 14px;
 }
 
-.askForm:focus-within {
+
+/* Composer card (chat-first hero): prompt on top, model pill + send in a
+   footer row — the same anatomy as the chat view's input. */
+.composer {
+  position: relative;
+  width: 100%;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  padding: 14px 12px 12px 16px;
+  border-radius: 20px;
+  border: 1px solid var(--border);
+  background: var(--bg-card);
+  box-shadow: var(--shadow-sm);
+  transition: border-color 0.12s ease, box-shadow 0.12s ease;
+}
+
+.composer:focus-within {
   border-color: rgba(var(--brand-rgb), 0.5);
 }
 
-.askInput {
+.composerFooter {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+
+/* Static wrapper so the menu anchors to the composer card, not the pill. */
+.modelDropdownInline {
+  position: static;
+  min-width: 0;
   flex: 1 1 auto;
+  display: flex;
+  justify-content: flex-end;
+}
+
+.modelPill {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  max-width: 100%;
+  height: 40px;
+  padding: 0 4px 0 6px;
+  border: none;
+  border-radius: 10px;
+  background: transparent;
+  color: var(--text-primary);
+  font: inherit;
+  font-size: 14px;
+  font-weight: 400;
+  line-height: 20px;
+  text-align: left;
+  cursor: pointer;
+  transition: background 0.12s ease;
+}
+
+.modelPill:hover {
+  background: var(--bg-hover);
+}
+
+.modelPill:focus-visible {
+  outline: none;
+  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
+}
+
+.modelPillName {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.modelPillChevron {
+  flex: 0 0 auto;
+  color: var(--text-secondary);
+}
+
+.askInput {
+  width: 100%;
   min-width: 0;
   border: none;
   background: transparent;
@@ -689,7 +757,7 @@
   padding: 0;
   place-items: center;
   border: none;
-  border-radius: 50%;
+  border-radius: 10px;
   background: rgba(var(--brand-rgb), 0.12);
   color: var(--brand);
   cursor: pointer;
@@ -703,6 +771,40 @@
 .askSend:disabled {
   cursor: default;
   opacity: 0.6;
+}
+
+/* "Ping": once a first-timer has typed something, the send button breathes
+   and throws a soft ring so it reads as the thing to press. */
+.askSendPing:not(:disabled) {
+  background: var(--brand);
+  color: #fff;
+  animation: ask-send-ping 1.8s ease-out infinite;
+}
+
+.askSendPing:not(:disabled):hover {
+  background: var(--brand);
+}
+
+@keyframes ask-send-ping {
+  0% {
+    box-shadow: 0 0 0 0 rgba(var(--brand-rgb), 0.55);
+    transform: scale(1);
+  }
+  60% {
+    box-shadow: 0 0 0 12px rgba(var(--brand-rgb), 0);
+    transform: scale(1.04);
+  }
+  100% {
+    box-shadow: 0 0 0 0 rgba(var(--brand-rgb), 0);
+    transform: scale(1);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .askSendPing:not(:disabled) {
+    animation: none;
+    box-shadow: 0 0 0 4px rgba(var(--brand-rgb), 0.25);
+  }
 }
 
 .appsGroup {
@@ -725,52 +827,60 @@
 .toolList {
   width: 100%;
   display: flex;
-  flex-direction: column;
-  gap: 4px;
+  flex-wrap: wrap;
+  justify-content: center;
+  gap: 8px;
 }
 
-.toolRow {
-  width: 100%;
-  display: flex;
+/* App pill: icon + name; click connects (catalog apps) or opens the Apps page. */
+.toolPill {
+  display: inline-flex;
   align-items: center;
-  justify-content: space-between;
-  gap: 8px;
-  padding: 8px 16px 8px 12px;
-  border: none;
-  border-radius: 16px;
-  background: transparent;
+  gap: 6px;
+  max-width: 100%;
+  min-height: 32px;
+  padding: 5px 12px 5px 9px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--bg-card);
   font: inherit;
   cursor: pointer;
-  transition: background 0.12s ease;
+  transition: background 0.12s ease, border-color 0.12s ease;
 }
 
-.toolRow:hover:not(:disabled) {
+.toolPill:hover:not(:disabled) {
   background: var(--bg-hover);
+  border-color: rgba(var(--brand-rgb), 0.5);
 }
 
-.toolRow:focus-visible {
+.toolPill:focus-visible {
   outline: none;
   box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
 }
 
-.toolRow:disabled {
+.toolPill:disabled {
   opacity: 0.6;
   cursor: default;
 }
 
-.toolIdentity {
-  min-width: 0;
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
+.toolPillConnected {
+  border-color: rgba(var(--accent-green-rgb), 0.45);
 }
 
-/* Real application icon (extracted from the installed app) on app rows. */
+.toolConnectedDot {
+  flex: 0 0 auto;
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--accent-green);
+}
+
+/* Real application icon (extracted from the installed app) on app pills. */
 .appIcon {
   flex: 0 0 auto;
-  width: 20px;
-  height: 20px;
-  border-radius: 5px;
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
   object-fit: contain;
 }
 
@@ -779,37 +889,9 @@
   text-overflow: ellipsis;
   white-space: nowrap;
   color: var(--text-primary);
-  font-size: 14px;
+  font-size: 13px;
   font-weight: 500;
-  line-height: 20px;
-}
-
-.toolConnect {
-  flex: 0 0 auto;
-  color: var(--accent-green);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-}
-
-.moreApps {
-  display: inline-flex;
-  align-items: center;
-  gap: 4px;
-  padding: 0;
-  border: none;
-  background: transparent;
-  color: var(--accent-green);
-  font-size: 14px;
-  font-weight: 500;
-  line-height: 20px;
-  text-decoration: underline;
-  text-underline-offset: 2px;
-  cursor: pointer;
-}
-
-.moreApps:hover {
-  color: var(--brand);
+  line-height: 18px;
 }
 
 /* Recent chats card moved to the shared VprRecentChats component. */

@@ -26,6 +26,7 @@ import { existsSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 export const WSL_TOOL_PROBES = {
   opencode: { binary: 'opencode', signals: ['.opencode/bin/opencode', '.local/bin/opencode', '.config/opencode', '.local/share/opencode'] },
   codex: { binary: 'codex', signals: ['.codex', '.local/bin/codex'] },
+  claude: { binary: 'claude', signals: ['.claude', '.local/bin/claude', '.claude/local/claude'] },
   droid: { binary: 'droid', signals: ['.factory', '.factory/bin/droid', '.local/bin/droid'] },
   crush: { binary: 'crush', signals: ['.config/crush', '.local/share/crush', '.local/bin/crush'] },
   goose: { binary: 'goose', signals: ['.config/goose', '.local/bin/goose'] },

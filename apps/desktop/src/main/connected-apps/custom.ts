@@ -3,7 +3,7 @@ import path from 'node:path';
 import { getDomainSiteMetadata } from './domain-site-metadata.js';
 
 /**
- * User-added "custom apps" for the System Proxy (VPR Connected apps screen).
+ * User-added "custom apps" for the System Proxy (AI VPN Connected apps screen).
  *
  * A custom app is a mitm proxy profile derived from an API base URL: requests
  * to that host under the URL's path are intercepted and forwarded verbatim to

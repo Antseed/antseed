@@ -1,6 +1,12 @@
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import type { DiscoverRow, VprSelectedModel } from '../../core/state';
+import { createInitialUiState } from '../../core/state';
+import { filterTeeBrowseRows, projectTeeBrowseCatalog, teeBrowseCache } from './tee-browse';
+import { filterVprCatalog, sortVprCatalog } from './view-models';
+import { chooseBestVprRoute, isRouteEligibleForAutoSelection } from '../routing/select';
+import { writeRetainedState } from '../../ui/hooks/useRetainedState';
+import * as baselines from './openrouter-baseline';
 import {
   createVprRouteSelection,
   findCatalogEntry,
@@ -8,6 +14,93 @@ import {
   selectDefaultVprModel,
   sortFreeModelsByPriority,
 } from './model-catalog.js';
+
+test('TEE browsing counts distinct sellers and intersects pricing with matching offers', () => {
+  const preferences = { ...createInitialUiState().vprRoutingPreferences, minTrustScore: 0 };
+  const rows = [
+    discoverRow({ peerId: 'standard', serviceId: 'gpt-test', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }),
+    discoverRow({ peerId: 'tee', serviceId: 'gpt-test', advertisedVerifierIds: ['antseed-verifier'], inputUsdPerMillion: 2, outputUsdPerMillion: 4 }),
+    discoverRow({ peerId: 'tee', serviceId: 'openai/gpt-test', advertisedVerifierIds: ['antseed-verifier'], inputUsdPerMillion: 2, outputUsdPerMillion: 4 }),
+    discoverRow({ peerId: 'other', serviceId: 'another-model', advertisedVerifierIds: ['acme'] }),
+  ];
+  const catalog = projectRowsToVprModelCatalog(rows);
+  const snapshot = structuredClone({ rows, catalog, preferences });
+  const routeBefore = chooseBestVprRoute(rows, preferences);
+  const pin = createVprRouteSelection(catalog[0], 'standard');
+  const pinBefore = structuredClone(pin);
+  const filtered = projectTeeBrowseCatalog(catalog, rows, preferences, 'tee');
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].peerCount, 1);
+  assert.equal(filtered[0].minInputUsdPerMillion, 2);
+  assert.equal(filtered[0].minOutputUsdPerMillion, 4);
+  assert.equal(filtered[0].hasEligibleFreeSeller, false);
+  assert.equal(filtered[0].serviceId, catalog[0].serviceId);
+  assert.deepEqual(filterVprCatalog(filtered, { freeOnly: true }), []);
+  assert.deepEqual(filterVprCatalog(filtered, { search: 'gpt', kinds: ['text'] }), filtered);
+  assert.deepEqual(filterVprCatalog(filtered, { kinds: ['image'] }), []);
+  assert.deepEqual(sortVprCatalog(filtered, 'Price'), filtered);
+  assert.equal(filterTeeBrowseRows(rows, 'tee').length, 2);
+  assert.equal(projectTeeBrowseCatalog(catalog, rows, preferences, 'all'), catalog);
+  assert.equal(filterTeeBrowseRows(rows, 'all'), rows);
+  assert.deepEqual({ rows, catalog, preferences }, snapshot);
+  assert.deepEqual(pin, pinBefore);
+  assert.equal(chooseBestVprRoute(rows, preferences), routeBefore);
+  const withdrawn = rows.map((row) => ({ ...row, advertisedVerifierIds: [] }));
+  assert.deepEqual(projectTeeBrowseCatalog(catalog, withdrawn, preferences, 'tee'), []);
+});
+
+test('TEE browsing keeps existing trust-based pricing eligibility and fallback', () => {
+  const preferences = { ...createInitialUiState().vprRoutingPreferences, minTrustScore: 60 };
+  const rows = [
+    discoverRow({ peerId: 'low', advertisedVerifierIds: ['antseed-verifier'], effectiveReputationScore: 10, inputUsdPerMillion: 0, outputUsdPerMillion: 0 }),
+    discoverRow({ peerId: 'high', advertisedVerifierIds: ['antseed-verifier'], effectiveReputationScore: 90, inputUsdPerMillion: 3, outputUsdPerMillion: 6 }),
+  ];
+  const catalog = projectRowsToVprModelCatalog(rows, (row) => isRouteEligibleForAutoSelection(row, preferences));
+  const [filtered] = projectTeeBrowseCatalog(catalog, rows, preferences, 'tee');
+  assert.equal(filtered.minInputUsdPerMillion, 3);
+  assert.equal(filtered.hasEligibleFreeSeller, false);
+  const [fallback] = projectTeeBrowseCatalog(catalog, [rows[0]], preferences, 'tee');
+  assert.equal(fallback.minInputUsdPerMillion, 0);
+  assert.equal(fallback.hasEligibleFreeSeller, false);
+});
+
+test('TEE browsing retains its session filter without storing routing preferences', () => {
+  assert.equal(teeBrowseCache.filter, 'all');
+  writeRetainedState(teeBrowseCache, 'filter', 'tee');
+  assert.equal(teeBrowseCache.filter, 'tee');
+  writeRetainedState(teeBrowseCache, 'filter', 'all');
+});
+
+test('TEE display savings use matching prices rather than the unfiltered free offer', () => {
+  const reference = vi.spyOn(baselines, 'getCachedOpenRouterPrices').mockReturnValue({ 'gpt-test': { input: 4, output: 8 } });
+  try {
+    const rows = [
+      discoverRow({ peerId: 'standard', serviceId: 'gpt-test', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }),
+      discoverRow({ peerId: 'tee', serviceId: 'gpt-test', advertisedVerifierIds: ['antseed-verifier'], inputUsdPerMillion: 2, outputUsdPerMillion: 4 }),
+    ];
+    const catalog = projectRowsToVprModelCatalog(rows);
+    const [filtered] = projectTeeBrowseCatalog(catalog, rows, createInitialUiState().vprRoutingPreferences, 'tee');
+    assert.equal(filtered.expectedSavingsPct, 50);
+    assert.equal(filtered.baselineInputUsdPerMillion, 4);
+    assert.equal(catalog[0].expectedSavingsPct, null);
+  } finally {
+    reference.mockRestore();
+  }
+});
+
+test('TEE browsing uses image offer prices and excludes unknown advertisements', () => {
+  const rows = [
+    discoverRow({ peerId: 'standard', serviceId: 'art', protocol: 'openai-images', minImageUsdPerImage: 0, maxImageUsdPerImage: 0 }),
+    discoverRow({ peerId: 'tee', serviceId: 'art', protocol: 'openai-images', advertisedVerifierIds: ['antseed-verifier'], minImageUsdPerImage: 0.04, maxImageUsdPerImage: 0.08 }),
+    discoverRow({ peerId: 'unrelated', serviceId: 'text', advertisedVerifierIds: ['other-verifier'] }),
+  ];
+  const filtered = projectTeeBrowseCatalog(projectRowsToVprModelCatalog(rows), rows, createInitialUiState().vprRoutingPreferences, 'tee');
+  assert.equal(filtered.length, 1);
+  assert.equal(filtered[0].kind, 'image');
+  assert.equal(filtered[0].minImageUsdPerImage, 0.04);
+  assert.equal(filtered[0].maxImageUsdPerImage, 0.08);
+  assert.deepEqual(filterVprCatalog(filtered, { freeOnly: true }), []);
+});
 
 function discoverRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
   const peerId = overrides.peerId ?? 'p1';
@@ -40,13 +133,13 @@ function discoverRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
     lifetimeLastSessionAt: null,
     onChainChannelCount: null,
     agentId: 1,
-    stakeUsdc: '0',
+    poolStakeAnts: 0,
     onChainActiveChannelCount: 0,
     onChainGhostCount: 0,
     onChainTotalVolumeUsdc: '0',
     onChainLastSettledAt: 0,
     onChainReputationScore: null,
-    onChainTrustScore: null,
+    washFlagged: null,
     onChainSybilRisk: null,
     onChainSybilFlags: [],
     networkRequests: null,

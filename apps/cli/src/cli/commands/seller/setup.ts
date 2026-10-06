@@ -88,6 +88,8 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'sign in to Claude Code on this machine';
     case 'local-llm':
       return 'start your local LLM runtime (no API key required)';
+    case 'typesafe':
+      return 'export TYPESAFE_API_KEY=<key>';
     default:
       return `set the credentials required by ${pluginName}`;
   }
@@ -259,8 +261,8 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
         console.log(chalk.bold('\nNext steps:\n'));
         console.log(`  ${chalk.cyan('1.')} Set credentials: ${chalk.dim(getSellerSetupCredentialHint(pluginName))}`);
         console.log(`  ${chalk.cyan('2.')} Register on-chain: ${chalk.dim('antseed seller register')}`);
-        console.log(`  ${chalk.cyan('3.')} Stake USDC: ${chalk.dim('antseed seller stake 10')}`);
-        console.log(`  ${chalk.cyan('4.')} Start selling: ${chalk.dim('antseed seller start')}`);
+        console.log(`  ${chalk.cyan('3.')} Start selling: ${chalk.dim('antseed seller start')}`);
+        console.log(chalk.dim('     Optional: stake ANTS for rewards with antseed seller stake <ants> --epochs <n>'));
         console.log('');
 
         await printReadinessCheck(globalOpts.dataDir, globalOpts.config);

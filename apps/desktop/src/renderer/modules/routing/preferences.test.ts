@@ -70,7 +70,7 @@ test('malformed preference JSON falls back', () => {
   assert.deepEqual(loadVprRoutingPreferences(fallbackPreferences), fallbackPreferences);
 });
 
-test('valid VPR preferences and route selection save and load', () => {
+test('valid AI VPN preferences and route selection save and load', () => {
   const preferences: VprRoutingPreferences = {
     autoRouting: false,
     preferFreePeers: true,

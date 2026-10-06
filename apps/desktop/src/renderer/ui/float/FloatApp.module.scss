@@ -400,7 +400,7 @@
 }
 
 /* Short session id at the end of the title line — quieter than the title.
-   Hidden for now, matching the VPR chat rows. Drop the `display: none` to
+   Hidden for now, matching the AI VPN chat rows. Drop the `display: none` to
    bring it back. */
 .sessionId {
   display: none;
@@ -455,7 +455,7 @@
 }
 
 /* Back header of the drill-down model list: hosts the shared VprBackTitle
-   (same chrome as the inner VPR pages), with the title clamped so a long
+   (same chrome as the inner AI VPN pages), with the title clamped so a long
    chat name doesn't span the whole pill. */
 .menuBack {
   padding: 2px 4px 2px 8px;
@@ -695,7 +695,7 @@
   color: var(--text-primary);
 }
 
-/* Pinned footer of the dropdown panel: opens the main AntSeed window. Sits
+/* Pinned footer of the dropdown panel: opens the main Antseed window. Sits
    below the scroll area so it stays visible however long the list gets. */
 .menuFooter {
   /* Fixed to the window bottom, below the panel — it owns its rounded

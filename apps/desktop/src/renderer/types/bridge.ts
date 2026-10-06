@@ -302,7 +302,7 @@ export type DesktopBridge = {
   /**
    * OpenRouter reference/retail prices keyed by normalized model id/name
    * (USD per million tokens). Used to render the struck-through baseline on
-   * the VPR Home "Popular" list. Empty map when OpenRouter is unreachable.
+   * the AI VPN Home "Popular" list. Empty map when OpenRouter is unreachable.
    */
   getOpenRouterReferencePrices?: () => Promise<
     Record<string, { input: number | null; output: number | null }>
@@ -399,6 +399,8 @@ export type DesktopBridge = {
   onWindowFocusChange?: (handler: (isFocused: boolean) => void) => () => void;
   getAppSetupStatus?: () => Promise<{ needed: boolean; complete: boolean }>;
   getTelemetryStatus?: () => Promise<import('../../shared/telemetry.js').TelemetryStatus>;
+  getTeeStatus?: () => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
+  checkSellerTee?: (peerId: string) => Promise<import('@antseed/node/tee-status').DesktopTeeStatus>;
   setTelemetryEnabled?: (enabled: boolean) => Promise<import('../../shared/telemetry.js').TelemetryStatusUpdateResult>;
   telemetryRecordUserAction?: (payload: import('../../shared/telemetry.js').UserActionSignal) => Promise<{ ok: boolean }>;
   telemetryRecordFirstModelShown?: (payload: import('../../shared/telemetry.js').FirstModelShownSignal) => Promise<{ ok: boolean }>;
@@ -409,7 +411,7 @@ export type DesktopBridge = {
   downloadUpdate?: () => Promise<InstallUpdateResult>;
   getUpdateStatus?: () => Promise<UpdateStatus | null>;
   setDebugLogs?: (enabled: boolean) => Promise<{ ok: true }>;
-  creditsGetInfo?: () => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string } | null; error: string | null }>;
+  creditsGetInfo?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string } | null; error: string | null }>;
   /** Prompts a native save dialog and writes the signer private key to the chosen file. */
   identityExportKey?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string | null }>;
   /** Replaces the signer private key (the current one is backed up on disk first). */
@@ -437,16 +439,16 @@ export type DesktopBridge = {
     error?: string;
   }>;
 
+  stakingOpen?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
+  stakingCopyLink?: (options?: { page?: 'stake' | 'rewards' }) => Promise<{ ok: boolean; error?: string }>;
   paymentsOpenPayPage?: (opts: { kind?: 'deposit' | 'withdraw' | 'authorize' | 'claim' | 'close-channel'; amountUsdc?: string; channelId?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
   paymentsCardProviders?: () => Promise<{ ok: boolean; data?: Array<{ id: string; label: string }>; error?: string }>;
   paymentsOpenCardProvider?: (opts?: { providerId?: string; amountUsdc?: string }) => Promise<{ ok: boolean; url?: string; error?: string }>;
-  paymentsFunkitConfig?: () => Promise<{ ok: boolean; data?: { apiKey: string } | null; error?: string }>;
-  paymentsOnrampAvailability?: () => Promise<{ ok: boolean; data?: { country: string | null; stripe: boolean }; error?: string }>;
   /** Closes any app-owned Fun checkout/sign-in popup windows (login-only flows produce no deposit, so the deposit watcher can't close them). */
   paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
-  paymentsGetChannels?: () => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
+  paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
   paymentsRequestCooperativeClose?: (opts: { peerId: string }) => Promise<{
     ok: boolean;
     result: CooperativeCloseResult | null;

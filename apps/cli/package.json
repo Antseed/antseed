@@ -1,6 +1,6 @@
 {
   "name": "@antseed/cli",
-  "version": "0.1.157",
+  "version": "0.1.168",
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
   "files": [
@@ -25,19 +25,21 @@
   },
   "dependencies": {
     "@antseed/ant-agent": "workspace:*",
+    "@antseed/ants": "workspace:*",
     "@antseed/api-adapter": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",
     "@peculiar/x509": "^2.0.0",
-    "reflect-metadata": "^0.2.2",
+    "@tanstack/query-core": "5.97.0",
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
     "dotenv": "^16.6.1",
     "open": "^11.0.0",
     "ora": "^9.3.0",
-    "qrcode": "^1.5.4"
+    "qrcode": "^1.5.4",
+    "reflect-metadata": "^0.2.2"
   },
   "devDependencies": {
     "@types/node": "^20.11.0",

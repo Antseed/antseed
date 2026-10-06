@@ -138,33 +138,55 @@ USDC on Base. 6 decimal places. All on-chain amounts are in USDC atomic units (1
 
 ## Smart Contracts
 
+The recognized-usage protocol starts **September 10, 2026 at 09:54:21 UTC
+(epoch 22)**. Its contracts separate USDC settlement from ANTS eligibility,
+accounting, and rewards:
+
 ```text title="contract architecture"
-AntseedRegistry            Central address book for all protocol contracts
-AntseedStaking             Seller staking (holds stake USDC, binds to ERC-8004 agentId)
-AntseedDeposits            Buyer deposits, seller payouts (holds buyer USDC)
-AntseedChannels            Payment channel lifecycle (swappable, holds NO USDC)
-AntseedEmissionsV2         ANTS token emissions (backward-compatible replacement)
-AntseedSellerRewardsPool   Locked ANTS reserves for sellers pending unlock
-AntseedSellerUnlockPolicy  On-chain policy controlling when sellers can claim
-AntseedEmissions (legacy)  Original emissions contract — depleted since epoch 4
-ANTSToken                  ANTS ERC-20 token (1.04B max supply)
+AntseedRegistry               Central address book
+AntseedDeposits               Buyer deposits and seller payouts in USDC
+AntseedChannels               Signed payment channels; holds no USDC
+ANTSToken                     ANTS token; mint authority is the emissions gate
+AntseedEmissionsGate          Emission schedule and reward allocations
+AntseedSellerRegistry         Seller eligibility and ERC-8004 agent lookup
+AntseedSellerPools            Locked ANTS positions and epoch pool power
+AntseedUsageAccounting        Recognized buyer/seller usage points
+AntseedPointsPolicyRegistry   Ordered usage-point policies
+AntseedWashTradingPointsPolicy  Filters usage by historically flagged sellers
+AntseedSellerPoolsRewards     Staker rewards
+AntseedUsageRewards           Buyer and seller/operator rewards
+AntseedPositionInit           Starter-position grants
 ```
 
-Network fees are set to 4% of settlement and flow to the Protocol Reserve, not to a company. The Protocol Reserve is intended to support long-term network sustainability, trust, utility, and alignment.
+Looking for the pre-migration contracts or older rewards?
+See [Legacy emissions and claims](./legacy-emissions.md).
+
+The source contract initializes `PLATFORM_FEE_BPS` to 200 (2%). The Channels owner
+can change it through `setPlatformFeeBps`, up to the source-defined maximum of
+1000 basis points (10%). Read the deployed contract for the active setting;
+source defaults do not establish the current onchain fee. Each settlement charges
+the fee on the newly settled delta, using integer division in USDC base units.
+Deposits sends the fee to the configured Protocol Reserve and the remainder to
+the seller. If no reserve address is configured, Deposits waives the fee.
 
 ### Emissions
 
-`AntseedEmissionsV2` replaced the original `AntseedEmissions` contract at epoch 4. It is backward-compatible: historical points from epochs 1–4 remain claimable through V2, while all new points accrue in V2's own ledger.
+ANTS rewards combine recognized service usage with seller-pool stake. From
+**epoch 22**, allocation ceilings are 40% for seller-pool rewards, 20% for
+buyer and seller/operator usage rewards, 15% for the reserve, 15% for the team,
+and 10% for verification. Pool and usage allocations vary dynamically with
+eligibility and utilization; the ceilings are not guaranteed payouts.
 
-Each epoch's ANTS are split: 50% to sellers, 20% to buyers, 15% to the Protocol Reserve, and 15% to the team.
+USDC settlement and reward eligibility are separate. A seller without enough
+pool power, or usage filtered by a points policy, can still settle payment
+without earning recognized-usage rewards. Historical wash flags zero both
+buyer and seller points for future records involving the flagged seller.
 
-**For sellers:** ANTS rewards from finalized epochs are minted to a locked rewards pool (`AntseedSellerRewardsPool`) by default. Sellers can only claim unlocked tokens when the on-chain `AntseedSellerUnlockPolicy` allows it — typically after stake/activity criteria are met.
+See [Recognized Usage and ANTS Rewards](./recognized-usage.md) for staking,
+policies, claims, and the complete contract inventory. For rewards earned
+before the start date, use [Legacy emissions and claims](./legacy-emissions.md).
 
-**For buyers:** Buyer emissions are claimable via an operator address through `claimBuyerEmissions`.
-
-Per finalized epoch, rewards are subject to recipient caps. Each seller is capped at `maxSellerSharePct` (currently 50% of the seller bucket), and each buyer is capped at `maxBuyerSharePct` (currently 5% of the buyer bucket). Cap overages are redirected to the Protocol Reserve.
-
-**Stable contracts** (Staking, Deposits) hold funds and rarely change. The **swappable contract** (Channels) holds no USDC and can be redeployed by re-pointing via the Registry.
+Deposits holds buyer USDC; Channels holds no USDC. Seller pools hold ANTS stake.
 
 Identity uses the deployed [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) IdentityRegistry on Base.
 
@@ -179,15 +201,19 @@ Contract addresses are built into the CLI for each chain — no manual configura
 
 ### Base Mainnet Contract Addresses
 
+Protocol addresses from the **September 10, 2026** start date are below.
+See the [full rewards inventory](./recognized-usage.md#mainnet-contracts) or
+[pre-migration addresses](./legacy-emissions.md#legacy-contract-addresses).
+
 | Contract | Address |
 |---|---|
 | USDC (Circle) | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
 | AntseedRegistry | `0xf33fC901BFa97326379A369401F4490E231B69B0` |
 | AntseedDeposits | `0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2` |
 | AntseedChannels | `0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d` |
-| AntseedStaking | `0x3652E6B22919bd322A25723B94BB207602E5c8e6` |
+| AntseedSellerRegistry | `0x99c533BCc6Ca646E543dbA835Fdbb9C2ee02Cb60` |
 | AntseedStats | `0x15649ff076BFa5e37e24EE3154a00503149954Fd` |
-| AntseedEmissionsV2 | `0xF13bE52c4A3afC6AE29536f073588d01A0564088` |
+| AntseedUsageAccounting | `0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9` |
 | ANTSToken | `0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263` |
 | ERC-8004 IdentityRegistry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
 

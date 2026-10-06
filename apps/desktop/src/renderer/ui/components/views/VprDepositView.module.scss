@@ -77,50 +77,6 @@
   box-shadow: none;
 }
 
-/* Stripe Link-branded primary: the green "Pay with link" pill, content
-   centered, same radius/height family as the other CTAs. Brand green holds
-   in both themes. */
-.linkCta {
-  display: flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  width: 100%;
-  margin-top: 4px;
-  padding: 15px 14px;
-  border: none;
-  border-radius: 14px;
-  background: #00d632;
-  color: #011e0f;
-  font-size: 15.5px;
-  font-weight: 600;
-  line-height: 22px;
-  cursor: pointer;
-  transition: filter 0.12s ease, transform 0.12s ease, box-shadow 0.12s ease;
-}
-
-.linkCta:hover {
-  filter: brightness(1.06);
-  box-shadow: var(--shadow-sm);
-  transform: translateY(-1px);
-}
-
-.linkCta:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
-/* Quiet trust line under the pill: processor name + accepted-card badges. */
-.linkCtaSub {
-  display: inline-flex;
-  align-items: center;
-  justify-content: center;
-  gap: 8px;
-  color: var(--text-secondary);
-  font-size: 12px;
-  line-height: 16px;
-}
-
 /* One deposit option: its CTA plus the supporting icon row / footnote. */
 .methodGroup {
   display: grid;

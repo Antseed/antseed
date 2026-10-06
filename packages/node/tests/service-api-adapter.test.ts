@@ -132,9 +132,23 @@ describe('detectRequestServiceApiProtocol', () => {
       detectRequestServiceApiProtocol(makeRequest({ path: '/v1/chat/completions' })),
     ).toBe('openai-chat-completions');
   });
+
+  it('detects typesafe systemone from path', () => {
+    expect(
+      detectRequestServiceApiProtocol(makeRequest({ path: '/v1/systemone' })),
+    ).toBe('typesafe-systemone');
+  });
 });
 
 describe('selectTargetProtocolForRequest', () => {
+  it('never adapts systemone requests onto chat protocols', () => {
+    expect(selectTargetProtocolForRequest('typesafe-systemone', ['openai-chat-completions'])).toBeNull();
+    expect(selectTargetProtocolForRequest('typesafe-systemone', ['typesafe-systemone'])).toEqual({
+      targetProtocol: 'typesafe-systemone',
+      requiresTransform: false,
+    });
+  });
+
   it('selects passthrough protocol when supported directly', () => {
     const selected = selectTargetProtocolForRequest('anthropic-messages', ['anthropic-messages']);
     expect(selected).toEqual({ targetProtocol: 'anthropic-messages', requiresTransform: false });
@@ -517,6 +531,9 @@ describe('transformRequest responses to chat', () => {
     expect(body.tools).toEqual([{
       type: 'function',
       function: { name: 'search', description: 'Search the web', parameters: { type: 'object' } },
+    }, {
+      type: 'function',
+      function: { name: 'final_answer', parameters: { properties: {}, type: 'object' } },
     }]);
     expect(body.tool_choice).toBe('auto');
   });

@@ -278,6 +278,36 @@ Smart contract source and deployment notes: `node/contracts/README.md`.
 
 ## Key Exports
 
+### Recognized-usage payment helpers
+
+Import these APIs from `@antseed/node/payments`:
+
+- `SellerRegistryClient.getRegisteredAgentId(seller)` returns the explicitly
+  bound identity, or `0` when only a legacy fallback exists.
+  `registerSellerBinding(signer, agentId, onConfirmed?)` binds and verifies it,
+  returning `false` without a transaction when already bound. The optional
+  callback receives the confirmed hash before verification; verification
+  failure throws `SellerRegistrationVerificationError`.
+- `SellerPoolsClient.allStakerPositionIds(seller)` paginates active positions;
+  `rewardPositions(seller)` also discovers withdrawn positions from burn logs.
+  Historical discovery needs an RPC with historical code and log access.
+  `earlyExitSlashBps(id)` and `estimateEarlyExit(position, slashBps)` provide
+  an estimate, not a guaranteed maximum loss at transaction execution.
+- `SellerPoolsRewardsClient.previewStakerRewards(positionIds)` returns ANTS
+  base-unit amounts in input order, including unindexed completed epochs.
+  Every call uses its own single-block snapshot and read cache; reuse of a
+  client does not preserve stale previews. `previewStakerReward(id)` is the
+  single-position equivalent. Neither method sends transactions.
+- `previewPoolRewards`, `pendingEpochRewards`, `claimPoolRewards`,
+  `claimEpochRewards`, and `claimBuyerEpochRewards` provide shared discovery,
+  previews, and bounded claim orchestration. Pool claims index missing epochs
+  before claiming. Callbacks expose confirmed transactions without CLI output.
+- `ANTSTokenClient.receivedInTransaction(hash, recipient)` sums incoming ANTS
+  transfers from a successful transaction receipt, rather than using estimates
+  as the claimed total.
+
+### Core API
+
 ```ts
 // Main class
 import { AntseedNode, type NodeConfig } from '@antseed/node';

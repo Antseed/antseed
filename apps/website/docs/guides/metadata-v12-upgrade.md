@@ -2,7 +2,7 @@
 sidebar_position: 8
 slug: /guides/metadata-v12-upgrade
 title: Metadata v12 Upgrade
-description: Safe rollout order for AntSeed metadata v12, large service catalogs, capabilities, and image unit billing.
+description: Safe rollout order for Antseed metadata v12, large service catalogs, capabilities, and image unit billing.
 ---
 
 # Metadata v12 Upgrade
@@ -37,7 +37,7 @@ The seller validates these limits before announcing. Buyers apply the same signe
 Upgrade every component that performs buyer discovery before upgrading sellers:
 
 - `@antseed/cli` processes running `antseed buyer start`
-- AntSeed Desktop buyer installations
+- Antseed Desktop buyer installations
 - Applications embedding `@antseed/node` buyer/discovery APIs
 - Routers or long-running services that cache peer metadata
 

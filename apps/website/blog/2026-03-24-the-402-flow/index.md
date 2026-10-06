@@ -3,7 +3,7 @@ slug: the-402-flow
 title: "The 402 Flow"
 authors: [antseed]
 tags: [protocol, payments, P2P, decentralized payments]
-description: How AntSeed uses HTTP 402 to trigger fully decentralized payment negotiation — no gateway, no facilitator, just peers settling directly.
+description: How Antseed uses HTTP 402 to trigger fully decentralized payment negotiation — no gateway, no facilitator, just peers settling directly.
 keywords: [HTTP 402, payment negotiation, P2P payments, decentralized payments, EIP-712, cumulative streaming payments, x402, MPP]
 image: /og-image.jpg
 date: 2026-03-27
@@ -13,7 +13,7 @@ HTTP 402 Payment Required has been in the HTTP spec since 1997 — "reserved for
 
 All of these give 402 a mechanism. They differ in architecture — specifically, in who sits between buyer and seller, and whether that intermediary is required.
 
-AntSeed uses 402 as the trigger for fully decentralized payment negotiation between peers. No payment gateway, no relay, no facilitator. The entire flow — from the initial 402 response to the on-chain reserve to the retried request — happens over the same peer connection that carries the actual AI traffic.
+Antseed uses 402 as the trigger for fully decentralized payment negotiation between peers. No payment gateway, no relay, no facilitator. The entire flow — from the initial 402 response to the on-chain reserve to the retried request — happens over the same peer connection that carries the actual AI traffic.
 
 <!-- truncate -->
 
@@ -35,7 +35,7 @@ This message rides the same connection as every other message in the protocol. T
 
 ## Two Signatures, One Session
 
-This is the core of the design. AntSeed uses two distinct EIP-712 signatures to separate the concerns of *reserving funds* and *authorizing spend*:
+This is the core of the design. Antseed uses two distinct EIP-712 signatures to separate the concerns of *reserving funds* and *authorizing spend*:
 
 ### ReserveAuth — the budget ceiling
 
@@ -95,13 +95,13 @@ The buyer's only on-chain transaction is the initial deposit — which funds all
 
 Here's something x402 and MPP can't do: payment negotiation on the same transport as the actual traffic, with no additional infrastructure.
 
-AntSeed peers are already connected over an encrypted peer-to-peer connection for proxying AI requests and responses. The payment flow — 402 trigger, ReserveAuth, SpendingAuth, acknowledgments — rides that same connection. The protocol multiplexes payment messages alongside proxy traffic using a frame-level type byte. Payment messages are just another message type on an open connection.
+Antseed peers are already connected over an encrypted peer-to-peer connection for proxying AI requests and responses. The payment flow — 402 trigger, ReserveAuth, SpendingAuth, acknowledgments — rides that same connection. The protocol multiplexes payment messages alongside proxy traffic using a frame-level type byte. Payment messages are just another message type on an open connection.
 
 This means there is no payment service to deploy. No WebSocket sidecar for payment negotiation. No HTTP callbacks to a facilitator. No second connection to establish. When a buyer hits a 402, the entire negotiation — signing, sending the authorization, waiting for the on-chain reserve, receiving the acknowledgment, retrying the request — happens on the connection that's already open.
 
 The transport cost of payment negotiation is literally zero. The only added latency is the on-chain `reserve()` confirmation (2-3 seconds on Base), paid once per session. After that, SpendingAuth signatures flow alongside proxy traffic as just another message on the mux. A streaming AI response might produce dozens of response chunks interleaved with a SpendingAuth — the mux handles this naturally.
 
-x402 requires an HTTP round-trip to a facilitator for every paid request. MPP requires communication with Stripe's infrastructure. AntSeed requires nothing beyond the peer connection you already have.
+x402 requires an HTTP round-trip to a facilitator for every paid request. MPP requires communication with Stripe's infrastructure. Antseed requires nothing beyond the peer connection you already have.
 
 ## Running Out of Budget
 
@@ -127,17 +127,17 @@ This is practical for adding payments to existing HTTP APIs — the facilitator 
 
 ### MPP (Stripe + Tempo)
 
-The Machine Payments Protocol uses pre-authorized sessions — similar to AntSeed's ReserveAuth in spirit, and a direct inspiration for our design. The buyer pre-authorizes a spending limit, and individual requests settle automatically against that session. MPP is chain-agnostic and settlement is batched, amortizing on-chain costs across requests.
+The Machine Payments Protocol uses pre-authorized sessions — similar to Antseed's ReserveAuth in spirit, and a direct inspiration for our design. The buyer pre-authorizes a spending limit, and individual requests settle automatically against that session. MPP is chain-agnostic and settlement is batched, amortizing on-chain costs across requests.
 
-AntSeed builds on this foundation with two additions. First, the funding model: in MPP, the buyer executes an on-chain transaction to fund each new session. In AntSeed, the buyer deposits USDC once into a deposits contract, and every session after that draws from that balance — the *seller* calls `reserve()` using the buyer's signed authorization, so the buyer never needs to send another transaction. This matters for machine-to-machine payments where the buyer is an agent, not a human clicking "approve" in a wallet.
+Antseed builds on this foundation with two additions. First, the funding model: in MPP, the buyer executes an on-chain transaction to fund each new session. In Antseed, the buyer deposits USDC once into a deposits contract, and every session after that draws from that balance — the *seller* calls `reserve()` using the buyer's signed authorization, so the buyer never needs to send another transaction. This matters for machine-to-machine payments where the buyer is an agent, not a human clicking "approve" in a wallet.
 
-Second, what settlement proves. MPP confirms that money moved. AntSeed's SpendingAuth carries a `metadataHash` — a hash of cumulative delivery metrics — so settlement simultaneously proves *what was delivered* and *what was paid*.
+Second, what settlement proves. MPP confirms that money moved. Antseed's SpendingAuth carries a `metadataHash` — a hash of cumulative delivery metrics — so settlement simultaneously proves *what was delivered* and *what was paid*.
 
-### AntSeed
+### Antseed
 
 No facilitator, no per-session buyer transaction. The buyer deposits USDC once. The seller calls `reserve()` using the buyer's signed authorization — locking funds from the existing deposit. After that, every request is just a local signature check. Settlement happens when the session ends, carrying cumulative delivery metrics on-chain.
 
-| | **x402** | **MPP** | **AntSeed** |
+| | **x402** | **MPP** | **Antseed** |
 |---|---|---|---|
 | Intermediary | Facilitator (Coinbase) | Stripe + Tempo | None (smart contract only) |
 | Payment transport | HTTP headers + facilitator round-trip | HTTP headers + Stripe/Tempo API | Same encrypted connection as traffic |
@@ -147,7 +147,7 @@ No facilitator, no per-session buyer transaction. The buyer deposits USDC once. 
 | Chain dependency | Multi-chain | Chain-agnostic | Any EVM chain with USDC |
 | Proof of delivery | None | None | Built-in (metadataHash in SpendingAuth) |
 
-Both MPP and AntSeed amortize on-chain costs by batching settlement — individual requests are authorized off-chain, and the cumulative result settles on-chain. The architectural distinctions are in the other rows. The deposit model means the buyer never needs to be online for a wallet transaction — critical for autonomous agents that consume AI services without human intervention. The multiplexed transport means no additional infrastructure. And the `metadataHash` in every SpendingAuth creates a cryptographic link between payment and delivery, enabling on-chain reputation to emerge directly from settlement without a separate reporting system.
+Both MPP and Antseed amortize on-chain costs by batching settlement — individual requests are authorized off-chain, and the cumulative result settles on-chain. The architectural distinctions are in the other rows. The deposit model means the buyer never needs to be online for a wallet transaction — critical for autonomous agents that consume AI services without human intervention. The multiplexed transport means no additional infrastructure. And the `metadataHash` in every SpendingAuth creates a cryptographic link between payment and delivery, enabling on-chain reputation to emerge directly from settlement without a separate reporting system.
 
 ## Why This Matters
 
@@ -155,4 +155,4 @@ Payment negotiation adds zero infrastructure overhead. There's no payment servic
 
 When a buyer connects to a new seller for the first time, the 402 flow adds a one-time 2-3 second delay for the on-chain reserve. Every subsequent request is served at full speed with only a local signature verification — sub-millisecond.
 
-HTTP 402 now has competing mechanisms. x402 adds a facilitator. MPP pioneered the pre-authorized session model that inspired our design. AntSeed builds on that with deposit-based funding, multiplexed transport, and delivery proof baked into every signature.
+HTTP 402 now has competing mechanisms. x402 adds a facilitator. MPP pioneered the pre-authorized session model that inspired our design. Antseed builds on that with deposit-based funding, multiplexed transport, and delivery proof baked into every signature.

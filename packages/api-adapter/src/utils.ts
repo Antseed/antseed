@@ -68,6 +68,8 @@ export interface TokenUsage {
   cachedInputTokens: number;
 }
 
+export const RESPONSES_FINAL_ANSWER_TOOL = 'final_answer';
+
 /** Plain API-shape facts parsed from image generation requests. */
 export interface ImageRequestFacts {
   model?: string;

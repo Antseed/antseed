@@ -173,6 +173,23 @@ export function findAdvertisedServiceOffer(
   return selectLowestPricedNetworkServiceOffer(offers)
 }
 
+/**
+ * Every protocol any peer advertises the requested model under, regardless of
+ * whether it fits the current request. Lets the proxy tell "nobody serves
+ * this model" apart from "it is served, but not on this API".
+ */
+export function findAdvertisedServiceProtocols(peers: PeerInfo[], requestedService: string): string[] {
+  const requestedKey = canonicalModelKey(requestedService)
+  if (!requestedKey) return []
+  const protocols = new Set<string>()
+  for (const offer of buildNetworkServiceOffers(peers)) {
+    if (!isRequestedServiceMatch(offer.serviceId, requestedService)) continue
+    for (const protocol of offer.protocols) protocols.add(protocol)
+    if (offer.protocol) protocols.add(offer.protocol)
+  }
+  return [...protocols].sort()
+}
+
 function selectProviderByProtocol(
   candidates: string[],
   requestProtocol: ServiceApiProtocol,
@@ -213,6 +230,7 @@ function selectAdvertisedServiceByProtocol(
         || protocol === 'openai-chat-completions'
         || protocol === 'openai-responses'
         || protocol === 'openai-images'
+        || protocol === 'typesafe-systemone'
       ))
     } else if (offer.protocol) {
       supportedProtocols = [offer.protocol]
@@ -314,6 +332,7 @@ const PROTOCOL_BASELINE_FIELDS: Partial<Record<ServiceApiProtocol, readonly stri
   'openai-chat-completions': ['model', 'messages', 'stream'],
   'openai-responses': ['model', 'input', 'stream'],
   'anthropic-messages': ['model', 'messages', 'max_tokens', 'stream'],
+  'typesafe-systemone': ['model', 'state', 'questions'],
 }
 
 /**

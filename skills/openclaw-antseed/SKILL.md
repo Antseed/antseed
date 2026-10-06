@@ -1,23 +1,23 @@
 ---
 name: openclaw-antseed
-description: "Connect OpenClaw to the AntSeed P2P AI network locally or through an authenticated public tunnel. Use when: user asks to connect OpenClaw to AntSeed, route OpenClaw through AntSeed, set up AntSeed as a service provider for OpenClaw, or use P2P AI services in OpenClaw."
+description: "Connect OpenClaw to the Antseed P2P AI network locally or through an authenticated public tunnel. Use when: user asks to connect OpenClaw to Antseed, route OpenClaw through Antseed, set up Antseed as a service provider for OpenClaw, or use P2P AI services in OpenClaw."
 user-invocable: true
 metadata: { "openclaw": { "emoji": "\ud83c\udf31", "requires": { "bins": ["npm", "openclaw"] } } }
 ---
 
-# Connect OpenClaw to AntSeed P2P Network
+# Connect OpenClaw to Antseed P2P Network
 
-Set up AntSeed as a service provider for OpenClaw. The agent can connect to a buyer proxy on the same machine or to the VPR's authenticated public endpoint.
+Set up Antseed as a service provider for OpenClaw. The agent can connect to a buyer proxy on the same machine or to the AI VPN's authenticated public endpoint.
 
 ## Architecture
 
 ```
-OpenClaw -> local buyer proxy or HTTPS tunnel -> AntSeed P2P -> Provider node -> Upstream API
+OpenClaw -> local buyer proxy or HTTPS tunnel -> Antseed P2P -> Provider node -> Upstream API
 ```
 
 The buyer proxy discovers providers via DHT, negotiates payment channels automatically, and exposes an API-compatible HTTP endpoint. Never expose the local buyer port directly to the internet.
 
-## Step 1: Install and initialize AntSeed
+## Step 1: Install and initialize Antseed
 
 ```bash
 npm install -g @antseed/cli
@@ -68,7 +68,7 @@ Run in a terminal or set up as a persistent service:
 antseed buyer start
 ```
 
-For an isolated OpenClaw buyer, use a dedicated data directory. This is where AntSeed writes `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`:
+For an isolated OpenClaw buyer, use a dedicated data directory. This is where Antseed writes `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`:
 
 ```bash
 export BUYDIR="$HOME/.antseed-buyer-openclaw"
@@ -87,7 +87,7 @@ antseed --data-dir "$BUYDIR" buyer start --port 5005
 ```bash
 sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<'EOF'
 [Unit]
-Description=AntSeed Buyer Proxy
+Description=Antseed Buyer Proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -124,8 +124,8 @@ The local buyer proxy accepts any non-empty placeholder key.
 
 For OpenClaw running elsewhere:
 
-1. Open **Agents** in the VPR.
-2. Under **Define your internet-accessible AntSeed endpoint**, configure and start ngrok or Cloudflare Tunnel.
+1. Open **Agents** in the AI VPN.
+2. Under **Define your internet-accessible Antseed endpoint**, configure and start ngrok or Cloudflare Tunnel.
 3. Copy the displayed **OpenAI base URL** and generated **API key**.
 4. Set them on the OpenClaw machine:
 
@@ -161,7 +161,7 @@ json.dump(cfg, sys.stdout, indent=2)
 " > /tmp/oc_antseed.json && mv /tmp/oc_antseed.json ~/.openclaw/openclaw.json
 ```
 
-Replace `SERVICE_ID_HERE` with a model from the VPR's network catalog:
+Replace `SERVICE_ID_HERE` with a model from the AI VPN's network catalog:
 
 ```bash
 curl -s "$ANTSEED_BASE_URL/models" -H "Authorization: Bearer $ANTSEED_API_KEY" | jq '.data[].id'
@@ -200,7 +200,7 @@ If the proxy returns models from across the network, the connection is working. 
 
 ## References
 
-- AntSeed integration page: `https://antseed.com/integrations/openclaw/`
-- AntSeed public tunnel guide: `https://antseed.com/docs/guides/public-tunnels`
+- Antseed integration page: `https://antseed.com/integrations/openclaw/`
+- Antseed public tunnel guide: `https://antseed.com/docs/guides/public-tunnels`
 - OpenClaw model-provider documentation: `https://docs.openclaw.ai/concepts/model-providers`
 - OpenClaw source: `https://github.com/openclaw/openclaw`

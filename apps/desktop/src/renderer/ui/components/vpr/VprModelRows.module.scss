@@ -258,6 +258,14 @@
   padding: 6px 10px;
 }
 
+/* Dense: same content as a full row, tighter box — Home model menu. */
+.rowDense {
+  min-height: 44px;
+  contain-intrinsic-size: auto 44px;
+  gap: 6px;
+  padding: 5px 12px;
+}
+
 .rowCompact .discount {
   font-size: 13px;
 }

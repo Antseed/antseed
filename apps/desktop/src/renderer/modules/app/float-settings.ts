@@ -2,12 +2,13 @@
 
 export const VPR_FLOAT_AUTO_OPEN_STORAGE_KEY = 'antseed.desktop.vpr.floatAutoOpen';
 
-/** Whether the pill should pop up on its own when routed traffic starts. */
+/** Whether the pill should pop up on its own when routed traffic starts.
+    On by default — only an explicit opt-out disables it. */
 export function loadFloatAutoOpen(): boolean {
   try {
-    return localStorage.getItem(VPR_FLOAT_AUTO_OPEN_STORAGE_KEY) === 'true';
+    return localStorage.getItem(VPR_FLOAT_AUTO_OPEN_STORAGE_KEY) !== 'false';
   } catch {
-    return false;
+    return true;
   }
 }
 

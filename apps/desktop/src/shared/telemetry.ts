@@ -32,6 +32,35 @@ export const TELEMETRY_USER_ACTIONS = [
 
 export type TelemetryUserAction = (typeof TELEMETRY_USER_ACTIONS)[number];
 
+/**
+ * Which app an app_connect / app_disconnect action refers to. A fixed local
+ * taxonomy: the packaged profile names plus the Telegram bot; anything else
+ * (user-added apps) reports as 'custom' so raw names never leave the device.
+ */
+export const TELEMETRY_APP_NAMES = [
+  'opencode',
+  'codex',
+  'claude-desktop',
+  'hermes',
+  'droid',
+  't3code',
+  'pi',
+  'gooeypi',
+  'crush',
+  'goose',
+  'zed',
+  'telegram',
+  'custom',
+] as const;
+
+export type TelemetryAppName = (typeof TELEMETRY_APP_NAMES)[number];
+
+export function normalizeTelemetryAppName(name: string): TelemetryAppName {
+  return (TELEMETRY_APP_NAMES as readonly string[]).includes(name)
+    ? (name as TelemetryAppName)
+    : 'custom';
+}
+
 export const TELEMETRY_ACTION_SURFACES = [
   'home',
   'explore',
@@ -65,6 +94,8 @@ export type FirstModelShownSignal = {
 export type UserActionSignal = {
   action: TelemetryUserAction;
   surface: TelemetryActionSurface;
+  /** Set on app_connect / app_disconnect: which app it was. */
+  app?: TelemetryAppName;
 };
 
 export type TelemetryStatus = {

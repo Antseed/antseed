@@ -1,4 +1,5 @@
 import type { RendererUiState } from '../../core/state';
+import { isBuyerReady } from './connect-badge';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
 import { formatCompactTokens, formatCredits, shortAddress } from '../../core/format';
 import { notifyUiStateChanged } from '../../core/store';
@@ -309,9 +310,7 @@ export function initVprFloatModule({
     const pinnedSellers = Object.fromEntries(
       pinnedSellerLabels(uiState.vprRoutableRows, uiState.vprModelPins, models),
     );
-    const runtimeOn = uiState.processes.some(
-      (process) => process.mode === 'connect' && process.running === true,
-    );
+    const runtimeOn = isBuyerReady(uiState.processes, uiState.chatProxyOnline);
 
     return {
       apps: connected.map((profile) => ({

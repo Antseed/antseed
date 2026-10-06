@@ -858,7 +858,7 @@ function CopyResponseButton({ content }: { content: unknown }) {
     const artifacts = findSensitiveChatArtifacts(text);
     if (artifacts.length === 0) return true;
     return window.confirm(
-      'This response contains hidden addresses or gated links. AntSeed will never ask you to send funds, deposit, top up, connect a wallet, or approve transactions from chat. Copy the original response anyway?',
+      'This response contains hidden addresses or gated links. Antseed will never ask you to send funds, deposit, top up, connect a wallet, or approve transactions from chat. Copy the original response anyway?',
     );
   }, []);
 

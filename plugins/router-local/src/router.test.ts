@@ -35,6 +35,17 @@ function makeRequest(service?: string): SerializedHttpRequest {
   };
 }
 
+function withEstablishedHistory(peer: PeerInfo): PeerInfo {
+  const now = Date.now();
+  peer.verificationResults = { verified: true, checkedAtMs: now, domains: [],
+    github: [{ username: 'portfolio', repository: 'proof', peerId: peer.peerId, verified: true, checkedAtMs: now }],
+    identityHistory: { version: 1, identities: [{ kind: 'github', claim: 'portfolio', identityId: 'github:42',
+      status: 'available', fetchedAtMs: now, createdAtMs: now - 10 * 365.25 * 86_400_000,
+      projects: Array.from({ length: 10 }, (_, index) => ({ id: index + 1, name: `project-${index}`,
+        createdAtMs: now - 4 * 365.25 * 86_400_000, stars: 100, archived: false })) }] } };
+  return peer;
+}
+
 describe('LocalRouter', () => {
   it('selects cheapest peer regardless of provider name', () => {
     const router = new LocalRouter({
@@ -148,14 +159,14 @@ describe('LocalRouter', () => {
         },
       },
     });
-    const highRepAllowedPrice = makePeer({
+    const highRepAllowedPrice = withEstablishedHistory(makePeer({
       reputationScore: 90,
       providerPricing: {
         anthropic: {
           defaults: { inputUsdPerMillion: 5, outputUsdPerMillion: 5 },
         },
       },
-    });
+    }));
     const highRepOverpriced = makePeer({
       reputationScore: 90,
       providerPricing: {
@@ -282,6 +293,7 @@ describe('LocalRouter', () => {
       peerId: '2'.repeat(40) as PeerInfo['peerId'],
       reputationScore: 90,
     });
+    withEstablishedHistory(highRep);
 
     const selected = router.selectPeer(makeRequest(), [lowRep, highRep]);
     expect(selected?.peerId).toBe(highRep.peerId);

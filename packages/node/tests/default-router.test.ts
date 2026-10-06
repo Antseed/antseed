@@ -71,17 +71,13 @@ describe('DefaultRouter', () => {
       const lowOnChain = makePeer({
         peerId: 'a'.repeat(40) as any,
         reputationScore: undefined,
-        onChainChannelCount: 25,
-        onChainTotalVolumeUsdcMicros: 10_000_000,
+        onChainReputationScore: 20,
         onChainLastSettledAtSec: nowSec,
       });
       const highOnChain = makePeer({
         peerId: 'b'.repeat(40) as any,
         reputationScore: undefined,
-        onChainChannelCount: 120,
-        onChainTotalVolumeUsdcMicros: 1_000_000_000,
-        onChainStakeUsdcMicros: 10_000_000,
-        onChainStakedAtSec: nowSec - 90 * 86_400,
+        onChainReputationScore: 90,
         onChainLastSettledAtSec: nowSec,
       });
 

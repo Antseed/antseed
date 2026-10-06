@@ -4,8 +4,9 @@ import { registerSellerSetupCommand } from './setup.js';
 import { registerSellerStatusCommand } from './status.js';
 import { registerSellerRegisterCommand } from './register.js';
 import { registerSellerStakeCommand } from './stake.js';
-import { registerSellerEmissionsCommand } from './emissions.js';
 import { registerSellerDoctorCommand } from './doctor.js';
+import { registerSellerPoolCommand } from './pool.js';
+import { registerSellerRewardsCommand } from './rewards.js';
 
 export function registerSellerCommands(program: Command): void {
   const sellerCmd = program
@@ -17,6 +18,7 @@ export function registerSellerCommands(program: Command): void {
   registerSellerStatusCommand(sellerCmd);
   registerSellerRegisterCommand(sellerCmd);
   registerSellerStakeCommand(sellerCmd);
-  registerSellerEmissionsCommand(sellerCmd);
+  registerSellerPoolCommand(sellerCmd);
+  registerSellerRewardsCommand(sellerCmd);
   registerSellerDoctorCommand(sellerCmd);
 }

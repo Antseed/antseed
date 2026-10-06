@@ -1,9 +1,11 @@
 import { useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
+import type { BadgeTone } from '../../core/state';
 import type { ViewName } from '../types';
 import { shallowEqual, useUiSelector } from '../hooks/useUiSelector';
+import { useTeeBackgroundVerification } from '../hooks/useTeeVerification';
 import { selectHeadlineBalanceUsdc } from '../../core/balance';
-import { formatCredits } from '../../core/format';
+import { shouldNotifyAppsOnboarding } from '../../modules/app/apps-onboarding';
 import { navViews } from './viewRegistry';
 import { ChatListPanel } from './ChatListPanel';
 import { DepositProgressBanner } from './DepositProgressBanner';
@@ -11,12 +13,13 @@ import { NetworkAlertBanner } from './NetworkAlertBanner';
 import { UpdateBanner } from './UpdateBanner';
 import { PublicEndpointModalProvider } from './tunnels/PublicEndpointModal';
 import { VprNavContext } from './vpr/VprNavContext';
+import { VprHeaderActions } from './vpr/VprHeaderActions';
 import styles from './VprShell.module.scss';
 
 /* Views built on VprPage carry the credits pill inside their pinned header,
-   so the shell's floating pill would duplicate it. Home and chat keep the
-   floating one. */
+   so the shell's floating pill would duplicate it. */
 const VIEWS_WITH_HEADER_CREDITS: ReadonlySet<ViewName> = new Set([
+  'chat',
   'explore',
   'model',
   'tools',
@@ -42,10 +45,24 @@ type VprShellProps = {
 const mainNavEntries = navViews('main');
 const bottomNavEntries = navViews('bottom');
 
+function statusClassName(tone: BadgeTone): string {
+  if (tone === 'bad') return `${styles.statusItem} ${styles.statusBad}`;
+  if (tone === 'warn') return `${styles.statusItem} ${styles.statusWarn}`;
+  return styles.statusItem;
+}
+
+function networkStatusClassName(networkHealth: string): string {
+  if (networkHealth === 'Down') return `${styles.statusItem} ${styles.statusBad}`;
+  if (networkHealth === 'Limited') return `${styles.statusItem} ${styles.statusWarn}`;
+  return styles.statusItem;
+}
+
 export function VprShell({ activeView, onSelectView, onNavigateBack, children }: VprShellProps) {
+  useTeeBackgroundVerification();
   const snap = useUiSelector((state) => ({
     headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     connectBadgeLabel: state.connectBadge.label,
+    connectBadgeTone: state.connectBadge.tone,
     networkHealth: state.ovDhtHealth,
     proxyPort: state.ovProxyPort,
     peers: state.ovPeers,
@@ -78,7 +95,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
           clicks working; interactive elements overlapping it opt out with
           -webkit-app-region: no-drag. */}
       <div className={styles.dragStrip} aria-hidden="true" />
-      <nav className={styles.sidebar} aria-label="VPR navigation">
+      <nav className={styles.sidebar} aria-label="AI VPN navigation">
         <div className={styles.navGroup}>
           {mainNavEntries.map(({ view, nav }) => {
             const active = activeView === view;
@@ -94,6 +111,12 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
                 <span className={styles.navLabel}>{nav.label}</span>
                 {view === 'chat' && snap.chatNeedsAttention && activeView !== 'chat' && (
                   <span className={styles.navDot} aria-label="Chat activity" />
+                )}
+                {/* One-shot onboarding nudge: the user hasn't opened Apps
+                    yet — opening it plays the connect-your-tools walkthrough
+                    and clears the dot for good. */}
+                {view === 'tools' && activeView !== 'tools' && shouldNotifyAppsOnboarding() && (
+                  <span className={styles.navDot} aria-label="Connect your apps" />
                 )}
               </button>
             );
@@ -128,14 +151,11 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
             no-drag hole and swallow its clicks. */}
         {!VIEWS_WITH_HEADER_CREDITS.has(activeView) && (
           <div className={styles.creditsPillSlot}>
-            <button
-              type="button"
+            <VprHeaderActions
               className={styles.creditsPill}
-              title="Add credits"
-              onClick={() => onSelectView('deposit')}
-            >
-              ${formatCredits(snap.headlineBalanceUsdc)}
-            </button>
+              credits={snap.headlineBalanceUsdc}
+              onSelectView={onSelectView}
+            />
           </div>
         )}
         <NetworkAlertBanner />
@@ -143,19 +163,13 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         <DepositProgressBanner />
       </main>
       <footer className={styles.statusStrip}>
-        <span
-          className={`${styles.statusItem}${
-            snap.networkHealth === 'Down'
-              ? ` ${styles.statusBad}`
-              : snap.networkHealth === 'Limited'
-                ? ` ${styles.statusWarn}`
-                : ''
-          }`}
-        >
+        <span className={networkStatusClassName(snap.networkHealth)}>
           {snap.networkHealth}
         </span>
         <span className={styles.statusSep} aria-hidden="true">|</span>
-        <span className={styles.statusItem}>{snap.connectBadgeLabel}</span>
+        <span className={statusClassName(snap.connectBadgeTone)}>
+          {snap.connectBadgeLabel}
+        </span>
         <span className={styles.statusSep} aria-hidden="true">|</span>
         <span className={styles.statusItem}>Port: {snap.proxyPort}</span>
         <span className={styles.statusSep} aria-hidden="true">|</span>

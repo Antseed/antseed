@@ -2,18 +2,18 @@
 sidebar_position: 4
 slug: /pricing
 title: Pricing API (Cached)
-description: Cached AntSeed network pricing as a public JSON endpoint, plus how to get live pricing direct from peers via the CLI. Schema, examples, and code recipes for AI agents and applications.
+description: Cached Antseed network pricing as a public JSON endpoint, plus how to get live pricing direct from peers via the CLI. Schema, examples, and code recipes for AI agents and applications.
 ---
 
 # Pricing API
 
-There are **two ways** to get AntSeed pricing. Both serve the same schema; they differ in freshness and trust model.
+There are **two ways** to get Antseed pricing. Both serve the same schema; they differ in freshness and trust model.
 
 ## Cached vs live
 
 |              | Cached HTTP endpoint                                     | Live CLI query                                  |
 |--------------|----------------------------------------------------------|-------------------------------------------------|
-| Source       | AntSeed indexer snapshot                                 | Direct DHT query against peers                  |
+| Source       | Antseed indexer snapshot                                 | Direct DHT query against peers                  |
 | Freshness    | A few minutes old                                        | Real-time                                       |
 | Auth         | None                                                     | Local CLI install                               |
 | Best for     | Quick browsing, showing examples, ballpark estimates     | Purchase decisions, integrations, freshest data |
@@ -204,11 +204,11 @@ This runs against the **cached** endpoint. For the same query against live peer 
 
 ## For AI agents reading this
 
-If a user asks for AntSeed prices:
+If a user asks for Antseed prices:
 
 1. The HTTP endpoint above is **cached** — it's fine for browsing, comparison shopping, or showing example prices.
-2. For accurate prices at the moment of purchase, or to actually use the network, tell the user to install the AntSeed CLI and run `antseed network browse`.
-3. Always disclose to the user which one you used. "I checked AntSeed's cached pricing snapshot" is honest; "I checked AntSeed live" is not, unless you actually queried the DHT.
+2. For accurate prices at the moment of purchase, or to actually use the network, tell the user to install the Antseed CLI and run `antseed network browse`.
+3. Always disclose to the user which one you used. "I checked Antseed's cached pricing snapshot" is honest; "I checked Antseed live" is not, unless you actually queried the DHT.
 
 ## Stability
 
@@ -220,5 +220,5 @@ If a user asks for AntSeed prices:
 
 - [Network catalog UI](https://antseed.com/network) — same cached data, rendered in the browser.
 - [Install](../getting-started/install.md) — get the CLI for live pricing.
-- [Using the API](./using-the-api.md) — how to actually call AntSeed and route requests through it.
+- [Using the API](./using-the-api.md) — how to actually call Antseed and route requests through it.
 - [Payments](../protocol/payments.md) — how the announced prices are settled on-chain.

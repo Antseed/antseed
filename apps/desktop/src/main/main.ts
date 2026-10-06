@@ -3,6 +3,7 @@ import {
   autoUpdater as nativeAutoUpdater,
   BrowserWindow,
   ipcMain,
+  dialog,
 } from 'electron';
 import { execFileSync, spawn } from 'node:child_process';
 import path from 'node:path';
@@ -69,6 +70,8 @@ import { LOCALHOST_URL } from './constants.js';
 import { registerAppIpc } from './ipc/app.js';
 import { registerDesktopIpc } from './ipc/desktop.js';
 import { registerFloatIpc } from './ipc/float.js';
+import { registerStakingIpc } from './ipc/staking.js';
+import { stakingSessions } from './staking/portal.js';
 import { registerPaymentsIpc } from './ipc/payments.js';
 import { registerRuntimeIpc } from './ipc/runtime.js';
 import { registerSystemProxyIpc } from './ipc/system-proxy.js';
@@ -281,7 +284,7 @@ initSystemProxyRuntime({
 // ── Payments Portal ──
 
 async function stopDesktopServices(): Promise<void> {
-  await Promise.all([telegramBridge.stop(), stopManagedRuntimes(), stopPaymentsPortal()]);
+  await Promise.all([telegramBridge.stop(), stopManagedRuntimes(), stopPaymentsPortal(), stakingSessions.stop()]);
 }
 
 function getCombinedProcessState(): RuntimeProcessState[] {
@@ -292,6 +295,7 @@ function getCombinedProcessState(): RuntimeProcessState[] {
 // Each group lives in ipc/<domain>.ts; anything they need from this file is
 // passed in rather than reached for.
 registerPaymentsIpc();
+registerStakingIpc();
 registerDesktopIpc();
 registerAppIpc();
 registerFloatIpc();
@@ -791,6 +795,18 @@ app.whenReady().then(async () => {
   // spawn a detached watchdog before quitting that waits for the app to
   // exit and starts ShipIt itself if launchd didn't.
   const SHIPIT_LABEL = 'com.antseed.desktop.ShipIt';
+  const clearStaleMacUpdateJob = (): void => {
+    if (process.platform !== 'darwin') return;
+    const uid = process.getuid?.();
+    if (uid === undefined) return;
+    try {
+      execFileSync('launchctl', ['bootout', `gui/${uid}/${SHIPIT_LABEL}`], {
+        stdio: 'ignore',
+      });
+    } catch {
+      // No job registered — the common case.
+    }
+  };
   const spawnMacUpdateWatchdog = (): void => {
     if (process.platform !== 'darwin') return;
     const contentsDir = path.resolve(path.dirname(process.execPath), '..');
@@ -805,7 +821,7 @@ app.whenReady().then(async () => {
       // padding the user-visible gap before the relaunch.
       'i=0; while kill -0 "$APP_PID" 2>/dev/null && [ "$i" -lt 180 ]; do sleep 1; i=$((i+1)); done',
       // The install gap has no UI at all — reassure via a system notification.
-      'osascript -e \'display notification "Installing the update — the app will reopen shortly." with title "AntSeed VPR"\' >/dev/null 2>&1 || true',
+      'osascript -e \'display notification "Installing the update — the app will reopen shortly." with title "Antseed AI VPN"\' >/dev/null 2>&1 || true',
       'j=0; while [ "$j" -lt 3 ]; do',
       '  sleep 2',
       '  launchctl print "gui/$(id -u)/$LABEL" 2>/dev/null | grep -q "state = running" && exit 0',
@@ -832,6 +848,7 @@ app.whenReady().then(async () => {
     sendUpdateStatus({ status: 'installing', version: updateVersion });
 
     try {
+      clearStaleMacUpdateJob();
       spawnMacUpdateWatchdog();
       await Promise.allSettled([stopDesktopServices(), recordTelemetryCleanShutdown()]);
       isQuitting = true;
@@ -862,6 +879,16 @@ app.on('before-quit', (event) => {
   }
 
   event.preventDefault();
+  try {
+    stakingSessions.pauseWrites();
+  } catch {
+    dialog.showMessageBoxSync({
+      type: 'info', title: 'Staking action in progress',
+      message: 'Wait for your staking action to finish before quitting VPR.',
+      detail: 'You can follow its progress in the staking dashboard.',
+    });
+    return;
+  }
   isQuitting = true;
 
   // First, and synchronously: the async teardown below waits on child

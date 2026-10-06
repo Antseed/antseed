@@ -39,8 +39,10 @@ import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
 import type { VprModelCatalogEntry } from '../../../core/state';
 import { getPeerDisplayName } from '../../../core/peer-utils';
+import { selectHeadlineBalanceUsdc } from '../../../core/balance';
 import { getUiStateRef, notifyUiStateChangedSync } from '../../../core/store';
 import { VprStackedLogo } from '../VprLogo';
+import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
@@ -233,6 +235,7 @@ const chatViewCache: ChatViewCache = {
 
 export function ChatView({ onSelectView }: ChatViewProps) {
   const snap = useUiSelector((state) => ({
+    headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     browserPreviewRequestId: state.browserPreviewRequestId,
     browserPreviewUrl: state.browserPreviewUrl,
     chatAbortVisible: state.chatAbortVisible,
@@ -685,7 +688,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     )) ?? snap.discoverRows.find((row) => row.peerId === peerId) ?? null;
   }, [currentServiceOption, snap.chatSelectedPeerId, snap.chatRoutedPeerId, snap.discoverRows]);
   const lowReputationPeer = useMemo(() => {
-    const score = currentDiscoverRow?.onChainReputationScore;
+    const score = currentDiscoverRow?.effectiveReputationScore ?? currentDiscoverRow?.onChainReputationScore;
     const peerId = currentDiscoverRow?.peerId || currentServiceOption?.peerId || snap.chatSelectedPeerId || snap.chatRoutedPeerId || '';
     if (!peerId || typeof score !== 'number' || !Number.isFinite(score) || score >= LOW_REPUTATION_SCORE_THRESHOLD) {
       return null;
@@ -697,7 +700,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     };
   }, [currentDiscoverRow, currentServiceOption?.peerId, snap.chatSelectedPeerId, snap.chatRoutedPeerId, peerDisplayName]);
 
-  // Switching models routes through the VPR selection (auto seller pick);
+  // Switching models routes through the AI VPN selection (auto seller pick);
   // with an open conversation this also rebinds the thread to the new model.
   const applyModelChange = useCallback(
     (entry: VprModelCatalogEntry) => {
@@ -1181,8 +1184,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           )}
         </div>
         )}
-        {snap.chatActiveConversation && (
-          <div className={`${styles.pageHeaderRight}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+          <div className={`${styles.pageHeaderRight}${messageSearchOpen ? ` ${styles.pageHeaderRightSearching}` : ''}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+            {snap.chatActiveConversation && <>
             {!searchOnlyHeader && snap.chatActiveConversation && currentPeerId && (
               <button
                 type="button"
@@ -1264,8 +1267,9 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 <HugeiconsIcon icon={BrowserIcon} size={15} strokeWidth={1.8} />
               </button>
             )}
+            </>}
+            <VprHeaderActions credits={snap.headlineBalanceUsdc} onSelectView={onSelectView} />
           </div>
-        )}
       </div>
 
       {showWelcome && (
@@ -1273,7 +1277,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           className={styles.chatExternalHint}
           onClick={() => onSelectView?.('tools')}
         >
-          <span>Connect tools through your VPR profiles</span>
+          <span>Connect tools through your AI VPN profiles</span>
           <HugeiconsIcon icon={ArrowRight01Icon} size={12} strokeWidth={1.5} />
         </button>
       )}

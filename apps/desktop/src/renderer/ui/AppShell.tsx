@@ -151,8 +151,8 @@ export function AppShell() {
 
   useEffect(() => {
     if (showSetup) return;
-    // Chat supports both window sizes: thin by default, expanded to the
-    // standard preset when the user opens the conversation-list panel.
+    // Chat supports both window sizes: wide (standard preset, conversation
+    // list showing) by default, thin when the user collapses the panel.
     if (activeView === 'chat' && snap.chatPanelExpanded) {
       void window.antseedDesktop?.applyWindowPreset?.('standard');
       return;

@@ -302,15 +302,15 @@ describe('BuyerPaymentNegotiator', () => {
       expect(onChainReadFailure).toHaveBeenCalledOnce();
     });
 
-    it('requires a fresh AuthAck when a seller with no local session asks for payment again', async () => {
+    it.each([0n, 25_000n])('replays %s without increasing spend when a seller asks for a fresh AuthAck', async (amount) => {
       // First, lock the peer through successful negotiation
       await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
       (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
 
       const activeSession = makeActiveSession(peer.peerId);
       (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(activeSession);
-      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValueOnce(0n).mockReturnValueOnce(100n);
-      (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(amount);
+      (bpm.resendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
         (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
       });
       bufferPaymentRequired(negotiator, peer.peerId, conn);
@@ -318,13 +318,10 @@ describe('BuyerPaymentNegotiator', () => {
       const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
 
       expect(bpm.clearLockConfirmation).toHaveBeenCalledWith(peer.peerId);
-      expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalledWith(
-        peer.peerId,
-        BigInt(paymentRequiredPayload.minBudgetPerRequest),
-        expect.anything(),
-        undefined,
-      );
-      expect(bpm.resendCurrentSpendingAuth).not.toHaveBeenCalled();
+      expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+      expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledWith(peer.peerId, expect.anything());
+      expect(bpm.getCumulativeAmount(peer.peerId)).toBe(amount);
+      expect(bpm.retireSession).not.toHaveBeenCalled();
       expect(bpm.authorizeSpending).not.toHaveBeenCalled();
       expect(result.action).toBe('retry');
     });
@@ -454,7 +451,12 @@ describe('BuyerPaymentNegotiator', () => {
       });
       bufferPaymentRequired(negotiator, peer.peerId, conn);
 
-      const result = await negotiator.handle402(make402Response(), peer, conn, makeRequest());
+      const result = await negotiator.handle402(make402Response({
+        error: 'payment_required',
+        minBudgetPerRequest: paymentRequiredPayload.minBudgetPerRequest,
+        suggestedAmount: paymentRequiredPayload.suggestedAmount,
+        requiredCumulativeAmount: '600',
+      }), peer, conn, makeRequest());
 
       expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalled();
       expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);

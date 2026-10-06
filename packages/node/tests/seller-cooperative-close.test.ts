@@ -232,6 +232,112 @@ describe('SellerPaymentManager.handleCloseChannelRequest', () => {
     expect(manager.hasInFlightRequests(buyer.peerId)).toBe(false);
   });
 
+  it('yields to a request admitted while the close was still preparing', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    let resolveGetSession!: (value: ReturnType<typeof onChainChannel>) => void;
+    vi.spyOn(manager.channelsClient, 'getSession').mockReturnValue(
+      new Promise((resolve) => { resolveGetSession = resolve; }) as never,
+    );
+
+    const pending = manager.handleCloseChannelRequest(
+      buyer.peerId,
+      { version: 1, channelId: CHANNEL_ID },
+      mux,
+    );
+    // Admission is still open during the handler's awaits — a request that
+    // starts now must make the close step aside, not lose its billing.
+    manager.beginBillableRequest(buyer.peerId);
+    resolveGetSession(onChainChannel(buyer, seller, 0n));
+
+    const result = await pending;
+    expect(result.status).toBe('rejected');
+    expect(result.code).toBe('busy');
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+    expect(manager.hasSession(buyer.peerId)).toBe(true);
+    manager.endBillableRequest(buyer.peerId);
+  });
+
+  it('rejects pending_auth when unsigned spend lands during close preparation', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    // A fast request admitted and fully billed while the handler awaits
+    // on-chain state — its spend must not settle below the signed amount.
+    vi.spyOn(manager.channelsClient, 'getSession').mockImplementation(async () => {
+      manager.recordSpend(CHANNEL_ID, 100_000n);
+      return onChainChannel(buyer, seller, 0n);
+    });
+
+    const result = await manager.handleCloseChannelRequest(
+      buyer.peerId,
+      { version: 1, channelId: CHANNEL_ID },
+      mux,
+    );
+    expect(result.status).toBe('rejected');
+    expect(result.code).toBe('pending_auth');
+    expect(result.requiredCumulativeAmount).toBe('500000');
+    expect(manager.channelsClient.close).not.toHaveBeenCalled();
+    expect(manager.hasSession(buyer.peerId)).toBe(true);
+  });
+
+  it('reports the close transaction in flight via hasClosingChannel', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+
+    let resolveClose!: (txHash: string) => void;
+    vi.spyOn(manager.channelsClient, 'close').mockReturnValue(
+      new Promise((resolve) => { resolveClose = resolve; }) as never,
+    );
+
+    expect(manager.hasClosingChannel(buyer.peerId)).toBe(false);
+    const pending = manager.handleCloseChannelRequest(
+      buyer.peerId,
+      { version: 1, channelId: CHANNEL_ID },
+      mux,
+    );
+    await vi.waitFor(() => expect(manager.hasClosingChannel(buyer.peerId)).toBe(true));
+
+    resolveClose('0xclosetx');
+    const result = await pending;
+    expect(result.status).toBe('closed');
+    expect(manager.hasClosingChannel(buyer.peerId)).toBe(false);
+  });
+
+  it('clears the closing state when the close fails, so the channel serves again', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+    manager.recordSpend(CHANNEL_ID, 400_000n);
+    vi.spyOn(manager.channelsClient, 'close').mockRejectedValue(new Error('tx reverted'));
+
+    const result = await manager.handleCloseChannelRequest(
+      buyer.peerId,
+      { version: 1, channelId: CHANNEL_ID },
+      mux,
+    );
+
+    expect(result.status).toBe('rejected');
+    expect(result.code).toBe('close_failed');
+    expect(manager.hasClosingChannel(buyer.peerId)).toBe(false);
+    expect(manager.hasSession(buyer.peerId)).toBe(true);
+  });
+
+  it('reports a background close in flight via hasClosingChannel', async () => {
+    await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
+
+    let resolveClose!: (txHash: string) => void;
+    vi.spyOn(manager.channelsClient, 'close').mockReturnValue(
+      new Promise((resolve) => { resolveClose = resolve; }) as never,
+    );
+
+    const pending = manager.handleCloseRequested(CHANNEL_ID);
+    expect(manager.hasClosingChannel(buyer.peerId)).toBe(true);
+
+    resolveClose('0xclosetx');
+    await pending;
+    expect(manager.hasClosingChannel(buyer.peerId)).toBe(false);
+  });
+
   it('refuses with pending_auth and a NeedAuth when spend outruns the signed amount', async () => {
     await manager.handleSpendingAuth(buyer.peerId, await buildSpendingAuth(buyer, 400_000n), mux);
     manager.recordSpend(CHANNEL_ID, 750_000n);

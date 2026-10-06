@@ -20,7 +20,7 @@ function mkRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
     lifetimeSessions: 0, lifetimeRequests: 0, lifetimeInputTokens: 0, lifetimeOutputTokens: 0,
     lifetimeFirstSessionAt: null, lifetimeLastSessionAt: null,
     onChainChannelCount: null,
-    agentId: 1, stakeUsdc: '0',
+    agentId: 1, poolStakeAnts: 0,
     onChainActiveChannelCount: 0, onChainGhostCount: 0, onChainTotalVolumeUsdc: '0', onChainLastSettledAt: 0,
     onChainReputationScore: null,
     networkRequests: null, networkInputTokens: null, networkOutputTokens: null,
@@ -64,10 +64,20 @@ test('hasValidCachedInputPrice rejects cached input above input', () => {
   assert.ok(!hasValidCachedInputPrice(mkRow({ inputUsdPerMillion: null, cachedInputUsdPerMillion: 0.5 })));
 });
 
-test('matchesMinStake compares base-6 USDC bigint to slider value', () => {
-  assert.ok(matchesMinStake(mkRow({ stakeUsdc: '10000000' }), 10));
-  assert.ok(!matchesMinStake(mkRow({ stakeUsdc: '9000000' }), 10));
-  assert.ok(matchesMinStake(mkRow({ stakeUsdc: '0' }), 0));
+test('matchesMinStake compares pool stake in whole ANTS to slider value', () => {
+  assert.ok(matchesMinStake(mkRow({ poolStakeAnts: 10 }), 10));
+  assert.ok(!matchesMinStake(mkRow({ poolStakeAnts: 9 }), 10));
+  assert.ok(matchesMinStake(mkRow({ poolStakeAnts: 0 }), 0));
+});
+
+test('applySort stakeDesc orders by pool stake in ANTS', () => {
+  const rows = [
+    mkRow({ serviceLabel: 'A', poolStakeAnts: 5 }),
+    mkRow({ serviceLabel: 'B', poolStakeAnts: 500 }),
+    mkRow({ serviceLabel: 'C', poolStakeAnts: 50 }),
+  ];
+  const sorted = applySort(rows, 'stakeDesc', 'desc');
+  assert.deepEqual(sorted.map((r) => r.serviceLabel), ['B', 'C', 'A']);
 });
 
 test('rowChannelCount uses the larger of active vs metadata channel count', () => {
@@ -78,6 +88,7 @@ test('rowChannelCount uses the larger of active vs metadata channel count', () =
 });
 
 test('matchesMinReputationScore gates rows by reputation threshold', () => {
+  assert.ok(matchesMinReputationScore(mkRow({ onChainReputationScore: 0, effectiveReputationScore: 70 }), 60));
   assert.ok(matchesMinReputationScore(mkRow({ onChainReputationScore: 75 }), 50));
   assert.ok(matchesMinReputationScore(mkRow({ onChainReputationScore: 50 }), 50));
   assert.ok(!matchesMinReputationScore(mkRow({ onChainReputationScore: 49 }), 50));
@@ -95,7 +106,7 @@ test('applyFilters composes all predicates', () => {
     search: '', categorySet: new Set(['coding']), peerSet: new Set(),
     maxInputPrice: MAX_INPUT_PRICE_SLIDER_USD,
     maxOutputPrice: MAX_OUTPUT_PRICE_SLIDER_USD,
-    minStakeUsdc: 0,
+    minStakeAnts: 0,
     minReputationScore: 0,
   });
   assert.equal(filtered.length, 1);

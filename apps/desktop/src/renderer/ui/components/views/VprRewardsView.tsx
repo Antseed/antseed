@@ -1,6 +1,5 @@
+import { StakingButton } from '../StakingButton';
 import { useEffect } from 'react';
-import { HugeiconsIcon } from '@hugeicons/react';
-import { ArrowUpRight01Icon } from '@hugeicons/core-free-icons';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { formatCredits } from '../../../core/format';
@@ -14,7 +13,7 @@ type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
 /**
  * In-app $ANTS rewards (moved from the browser portal). The summary is
  * read-only; claiming transfers tokens on-chain and needs the authorized
- * wallet's signature, so the claim actions open the secure checkout page.
+ * wallet's signature, so the claim actions open the shared rewards dashboard.
  */
 export function VprRewardsView({ onSelectView }: Props) {
   const actions = useActions();
@@ -41,10 +40,6 @@ export function VprRewardsView({ onSelectView }: Props) {
   const pending = rewards?.available ? rewards.pendingAnts : '0';
   const hasPending = Number(pending) > 0;
 
-  const openClaim = () => {
-    void window.antseedDesktop?.paymentsOpenPayPage?.({ kind: 'claim' });
-  };
-
   return (
     <section className={`view view-vpr-rewards view-pinned-header ${styles.view}`} role="tabpanel">
       <VprPage title="Rewards" backFallback="credits">
@@ -61,22 +56,26 @@ export function VprRewardsView({ onSelectView }: Props) {
             </span>
           </div>
           <div className={styles.heroActions}>
-            <button
-              type="button"
-              className={styles.claimButton}
-              disabled={!rewards?.available || !hasPending}
-              onClick={openClaim}
-            >
-              <span>Claim rewards</span>
-              <HugeiconsIcon icon={ArrowUpRight01Icon} size={14} strokeWidth={2} />
-            </button>
             {rewards?.available && (
               <VprBadge tone={rewards.transfersEnabled ? 'green' : 'neutral'}>
                 {rewards.transfersEnabled ? 'Transfers live' : 'Transfers not enabled yet'}
               </VprBadge>
             )}
+            <StakingButton page="rewards" className={styles.claimButton} disabled={!rewards?.available || !hasPending} copyDisabled={!rewards?.available}>
+              Claim rewards ↗
+            </StakingButton>
           </div>
         </VprCard>
+
+        <VprCard className={styles.aboutCard}>
+          <span className={styles.aboutTitle}>Staking</span>
+          <span className={styles.aboutText}>
+            Manage positions and staking rewards in your browser. Connect a wallet to approve transactions.
+          </span>
+          <StakingButton className={styles.claimButton}>Manage staking ↗</StakingButton>
+        </VprCard>
+
+        <span className={styles.errorNote}>Copy a link to use your wallet in another browser.</span>
 
         <VprCard className={styles.aboutCard}>
           <span className={styles.aboutTitle}>About $ANTS</span>

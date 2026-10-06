@@ -31,8 +31,17 @@ function makePatch(configPath: string): ConfigPatchDef {
     configPath,
     providerKey: 'antseed',
     npm: '@antseed/tool-provider',
-    providerName: 'AntSeed',
+    providerName: 'Antseed',
     baseURL: 'http://127.0.0.1:{buyerPort}/v1',
+  };
+}
+
+function makeClaudeCodePatch(configPath: string): ConfigPatchDef {
+  return {
+    format: 'claude-code',
+    configPath,
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}',
   };
 }
 
@@ -41,7 +50,7 @@ function makeT3CodePatch(configPath: string): ConfigPatchDef {
     format: 't3code',
     configPath,
     providerKey: 'antseed',
-    providerName: 'AntSeed',
+    providerName: 'Antseed',
     baseURL: 'http://localhost:{buyerPort}',
   };
 }
@@ -104,13 +113,13 @@ test('applyConfigPatch patches JSONC configs and writes a backup before normaliz
     };
 
     assert.equal(config.provider.existing?.name, 'Existing');
-    assert.equal(config.provider.antseed?.name, 'AntSeed');
+    assert.equal(config.provider.antseed?.name, 'Antseed');
     assert.equal(config.provider.antseed?.npm, '@antseed/tool-provider');
     assert.equal(config.provider.antseed?.options?.baseURL, 'http://127.0.0.1:9456/v1');
     assert.equal(config.provider.antseed?.options?.apiKey, 'antseed');
     assert.deepEqual(config.provider.antseed?.models, {
       antseed: {
-        name: 'AntSeed Auto',
+        name: 'Antseed Auto',
         attachment: true,
         modalities: { input: ['text', 'image'], output: ['text'] },
         limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
@@ -196,7 +205,7 @@ function makeDroidPatch(configPath: string): DroidConfigPatchDef {
     format: 'droid',
     configPath,
     providerKey: 'antseed',
-    providerName: 'AntSeed Auto',
+    providerName: 'Antseed Auto',
     baseURL: 'http://127.0.0.1:{buyerPort}/v1',
     originator: 'droid',
   };
@@ -228,15 +237,15 @@ test('applyConfigPatch (droid) adds and selects the routed model while preservin
     const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
     assert.equal(config['model'], 'gpt-5-codex');
     assert.deepEqual(config['sessionDefaultSettings'], {
-      model: 'custom:AntSeed-Auto-0',
+      model: 'custom:Antseed-Auto-0',
       reasoningEffort: 'high',
     });
     assert.equal(config['reasoningEffort'], 'high');
     assert.deepEqual(config['customModels'][0], original.customModels[0]);
     assert.deepEqual(config['customModels'][1], {
       model: 'antseed',
-      id: 'custom:AntSeed-Auto-0',
-      displayName: 'AntSeed Auto',
+      id: 'custom:Antseed-Auto-0',
+      displayName: 'Antseed Auto',
       baseUrl: 'http://127.0.0.1:9456/v1',
       provider: 'generic-chat-completion-api',
       maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
@@ -260,7 +269,7 @@ test('applyConfigPatch (droid) refuses to replace an existing antseed custom mod
       model: 'antseed',
       customModels: [{
         model: 'antseed',
-        displayName: 'User AntSeed',
+        displayName: 'User Antseed',
         baseUrl: 'https://example.test/v1',
         provider: 'generic-chat-completion-api',
       }],
@@ -276,7 +285,7 @@ test('applyConfigPatch (droid) refuses to replace an existing antseed custom mod
   });
 });
 
-test('removeConfigPatch (droid) removes a config created entirely by AntSeed', async () => {
+test('removeConfigPatch (droid) removes a config created entirely by Antseed', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'settings.json');
     const patch = makeDroidPatch(configPath);
@@ -321,7 +330,7 @@ test('removeConfigPatch (droid) restores the prior default after Droid normalize
     delete connected['model'];
     connected['customModels'][0]['index'] = 0;
     connected['sessionDefaultSettings'] = {
-      model: 'custom:AntSeed-Auto-0',
+      model: 'custom:Antseed-Auto-0',
       reasoningEffort: 'none',
     };
     await writeFile(configPath, `${JSON.stringify(connected, null, 2)}\n`, 'utf8');
@@ -343,13 +352,13 @@ test('removeConfigPatch (droid) restores version 1 state after Droid normalizati
     await writeFile(configPath, `${JSON.stringify({
       customModels: [{
         model: 'antseed',
-        id: 'custom:AntSeed-Auto-0',
-        displayName: 'AntSeed Auto',
+        id: 'custom:Antseed-Auto-0',
+        displayName: 'Antseed Auto',
         baseUrl: 'http://127.0.0.1:8377/v1',
         provider: 'generic-chat-completion-api',
       }],
       sessionDefaultSettings: {
-        model: 'custom:AntSeed-Auto-0',
+        model: 'custom:Antseed-Auto-0',
       },
     }, null, 2)}\n`, 'utf8');
     await writeFile(`${configPath}.antseed.state.json`, `${JSON.stringify({
@@ -372,7 +381,7 @@ function makeCodexPatch(configPath: string): ConfigPatchDef {
     format: 'codex',
     configPath,
     providerKey: 'antseed',
-    providerName: 'AntSeed',
+    providerName: 'Antseed',
     baseURL: 'http://127.0.0.1:{buyerPort}/v1',
   };
 }
@@ -402,7 +411,7 @@ test('applyConfigPatch (codex) sets top-level keys before tables and appends a m
     assert.equal(lines.filter((line) => /^\s*model\s*=/.test(line)).length, 1);
     assert.ok(raw.includes('[mcp_servers.docs]'));
     assert.ok(raw.includes('[model_providers.antseed]'));
-    assert.ok(raw.includes('name = "AntSeed"'));
+    assert.ok(raw.includes('name = "Antseed"'));
     assert.ok(raw.includes('base_url = "http://127.0.0.1:9456/v1"'));
     assert.ok(raw.includes('wire_api = "responses"'));
     assert.equal(await readFile(`${configPath}.antseed.bak`, 'utf8'), original);
@@ -483,7 +492,7 @@ test('applyConfigPatch (pi) writes the provider into models.json and the default
     assert.equal(models.providers.antseed?.apiKey, 'antseed');
     assert.deepEqual(models.providers.antseed?.headers, { originator: 'pi' });
     assert.deepEqual(models.providers.antseed?.models, [
-      { id: 'antseed', name: 'AntSeed Auto', contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW, maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
+      { id: 'antseed', name: 'Antseed Auto', contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW, maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
     ]);
 
     const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
@@ -533,7 +542,7 @@ test('applyConfigPatch writes only the routed-model alias across formats', async
       providers: Record<string, { models?: Array<{ id: string }> }>;
     };
     // Model selection lives in the desktop route selector (floating pill /
-    // VPR); tool configs expose only the alias the buyer resolves per request.
+    // AI VPN); tool configs expose only the alias the buyer resolves per request.
     assert.deepEqual(models.providers.antseed?.models?.map((entry) => entry.id), ['antseed']);
   });
 });
@@ -558,7 +567,7 @@ function makeCrushPatch(configPath: string): ConfigPatchDef {
     format: 'crush',
     configPath,
     providerKey: 'antseed',
-    providerName: 'AntSeed',
+    providerName: 'Antseed',
     baseURL: 'http://127.0.0.1:{buyerPort}/v1',
   };
 }
@@ -670,9 +679,83 @@ test('removeConfigPatch (goose) keeps a provider selection it does not own', asy
   });
 });
 
+// --- Claude Code ---
+
+test('Claude Code patch routes through the AI VPN alias and restores managed settings', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    await writeFile(configPath, JSON.stringify({
+      model: 'sonnet',
+      env: {
+        DISABLE_AUTO_COMPACT: '1',
+        ANTHROPIC_API_KEY: 'user-key',
+      },
+      hooks: { Stop: [] },
+    }), 'utf8');
+
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 9456);
+
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.equal(config['model'], 'antseed');
+    assert.deepEqual(config['hooks'], { Stop: [] });
+    assert.deepEqual(config['env'], {
+      DISABLE_AUTO_COMPACT: '1',
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_BASE_URL: 'http://localhost:9456',
+      ANTHROPIC_AUTH_TOKEN: 'antseed',
+      ANTHROPIC_CUSTOM_HEADERS: 'x-antseed-system-proxy-source: claude-code',
+    });
+    assert.ok(existsSync(`${configPath}.antseed.bak`));
+    assert.ok(existsSync(`${configPath}.antseed.state.json`));
+
+    applyConfigPatch(patch, PEER_ID, 8377);
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(restored, {
+      model: 'sonnet',
+      env: {
+        DISABLE_AUTO_COMPACT: '1',
+        ANTHROPIC_API_KEY: 'user-key',
+      },
+      hooks: { Stop: [] },
+    });
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+    assert.equal(removeConfigPatch(patch), false);
+  });
+});
+
+test('Claude Code patch removal keeps user edits to managed keys', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    config['model'] = 'opus';
+    config['env']['ANTHROPIC_BASE_URL'] = 'https://gateway.example.test';
+    await writeFile(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(removeConfigPatch(patch), true);
+    const cleaned = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.equal(cleaned['model'], 'opus');
+    assert.deepEqual(cleaned['env'], { ANTHROPIC_BASE_URL: 'https://gateway.example.test' });
+  });
+});
+
+test('Claude Code patch removes a settings file it created', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(configPath), false);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
 // --- T3 Code ---
 
-test('T3 Code patch adds an AntSeed Claude provider and preserves existing settings', async () => {
+test('T3 Code patch adds Antseed Claude provider and preserves existing settings', async () => {
   await withTempConfig(async (_dir, configPath) => {
     await writeFile(configPath, JSON.stringify({
       theme: 'dark',
@@ -689,10 +772,11 @@ test('T3 Code patch adds an AntSeed Claude provider and preserves existing setti
     assert.deepEqual(providers['codex'], { driver: 'codex', displayName: 'Codex' });
     assert.deepEqual(providers['antseed'], {
       driver: 'claudeAgent',
-      displayName: 'AntSeed',
+      displayName: 'Antseed',
       environment: [
         { name: 'ANTHROPIC_BASE_URL', value: 'http://localhost:9456', sensitive: false },
         { name: 'ANTHROPIC_API_KEY', value: 'antseed', sensitive: false },
+        { name: 'ANTHROPIC_CUSTOM_HEADERS', value: 'x-antseed-system-proxy-source: t3code', sensitive: false },
         { name: 'HTTP_PROXY', value: '', sensitive: false },
         { name: 'HTTPS_PROXY', value: '', sensitive: false },
         { name: 'http_proxy', value: '', sensitive: false },
@@ -709,7 +793,7 @@ test('T3 Code patch adds an AntSeed Claude provider and preserves existing setti
   });
 });
 
-test('T3 Code patch removal only removes the managed AntSeed provider', async () => {
+test('T3 Code patch removal only removes the managed Antseed provider', async () => {
   await withTempConfig(async (_dir, configPath) => {
     const patch = makeT3CodePatch(configPath);
     applyConfigPatch(patch, PEER_ID, 8377);
@@ -731,7 +815,7 @@ function makeZedPatch(configPath: string): ConfigPatchDef {
     format: 'zed',
     configPath,
     providerKey: 'antseed',
-    providerName: 'AntSeed',
+    providerName: 'Antseed',
     baseURL: 'http://127.0.0.1:{buyerPort}/v1',
   };
 }
@@ -745,11 +829,11 @@ test('applyConfigPatch (zed) writes the openai_compatible provider and agent def
 
     const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
     assert.equal(config['theme'], 'One Dark');
-    const provider = config['language_models']['openai_compatible']['AntSeed'];
+    const provider = config['language_models']['openai_compatible']['Antseed'];
     assert.equal(provider['api_url'], 'http://127.0.0.1:8377/v1');
     assert.equal(provider['available_models'][0]['name'], 'antseed');
     assert.ok(provider['available_models'].every((model: Record<string, unknown>) => model['max_tokens'] === ANTSEED_MODEL_CONTEXT_WINDOW));
-    assert.deepEqual(config['agent']['default_model'], { provider: 'AntSeed', model: 'antseed' });
+    assert.deepEqual(config['agent']['default_model'], { provider: 'Antseed', model: 'antseed' });
     assert.ok(existsSync(`${configPath}.antseed.bak`));
   });
 });
@@ -761,11 +845,11 @@ test('removeConfigPatch (zed) removes the managed provider and matching default 
       theme: 'One Dark',
       language_models: {
         openai_compatible: {
-          AntSeed: { api_url: 'http://127.0.0.1:8377/v1', available_models: [] },
+          Antseed: { api_url: 'http://127.0.0.1:8377/v1', available_models: [] },
           Groq: { api_url: 'https://api.groq.com/openai/v1', available_models: [] },
         },
       },
-      agent: { default_model: { provider: 'AntSeed', model: 'antseed' }, always_allow_tool_actions: true },
+      agent: { default_model: { provider: 'Antseed', model: 'antseed' }, always_allow_tool_actions: true },
     }), 'utf8');
 
     assert.equal(removeConfigPatch(makeZedPatch(configPath)), true);
@@ -778,7 +862,7 @@ test('removeConfigPatch (zed) removes the managed provider and matching default 
   });
 });
 
-test('applyConfigPatch (hermes) adds an AntSeed provider and selects it', async () => {
+test('applyConfigPatch (hermes) adds Antseed provider and selects it', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'config.yaml');
     await writeFile(configPath, 'display:\n  skin: cyberpunk\n', 'utf8');
@@ -968,19 +1052,21 @@ test('applyConfigPatch writes the Claude third-party profile and flips both depl
     assert.equal(profile['inferenceProvider'], 'gateway');
     assert.equal(profile['inferenceGatewayBaseUrl'], `http://127.0.0.1:${CLAUDE_GATEWAY_DEFAULT_PORT}`);
     assert.equal(profile['inferenceGatewayAuthScheme'], 'bearer');
-    assert.equal(profile['deploymentDisplayName'], 'AntSeed');
+    assert.equal(profile['deploymentDisplayName'], 'Antseed');
     assert.equal(profile['disableDeploymentModeChooser'], true);
     assert.deepEqual(profile['coworkEgressAllowedHosts'], ['*']);
+    // The published model catalog would relabel gateway slots by Claude id.
+    assert.equal(profile['modelCatalogEnabled'], false);
 
     const metaPath = path.join(patch.thirdPartyDir, 'configLibrary', '_meta.json');
     const meta = parseJsoncObject(await readFile(metaPath, 'utf8'), metaPath);
     assert.equal(meta['appliedId'], CLAUDE_DESKTOP_PROFILE_ID);
-    assert.deepEqual(meta['entries'], [{ id: CLAUDE_DESKTOP_PROFILE_ID, name: 'AntSeed' }]);
+    assert.deepEqual(meta['entries'], [{ id: CLAUDE_DESKTOP_PROFILE_ID, name: 'Antseed' }]);
 
     // Re-apply is idempotent: no duplicate configLibrary entries.
     applyConfigPatch(patch, PEER_ID, 9456);
     const metaAgain = parseJsoncObject(await readFile(metaPath, 'utf8'), metaPath);
-    assert.deepEqual(metaAgain['entries'], [{ id: CLAUDE_DESKTOP_PROFILE_ID, name: 'AntSeed' }]);
+    assert.deepEqual(metaAgain['entries'], [{ id: CLAUDE_DESKTOP_PROFILE_ID, name: 'Antseed' }]);
   });
 });
 

@@ -1,6 +1,7 @@
 import type {
   FirstModelShownSignal,
   TelemetryActionSurface,
+  TelemetryAppName,
   TelemetryUserAction,
 } from '../../../shared/telemetry.js';
 import type { ViewName } from '../../ui/types.js';
@@ -32,9 +33,17 @@ export function telemetrySurfaceForView(view: ViewName): TelemetryActionSurface 
   return VIEW_SURFACES[view];
 }
 
-export function recordUserAction(action: TelemetryUserAction, surface: TelemetryActionSurface): void {
+export function recordUserAction(
+  action: TelemetryUserAction,
+  surface: TelemetryActionSurface,
+  app?: TelemetryAppName,
+): void {
   try {
-    void window.antseedDesktop?.telemetryRecordUserAction?.({ action, surface }).catch(() => undefined);
+    void window.antseedDesktop?.telemetryRecordUserAction?.({
+      action,
+      surface,
+      ...(app !== undefined ? { app } : {}),
+    }).catch(() => undefined);
   } catch {
     // Telemetry must never affect user actions.
   }

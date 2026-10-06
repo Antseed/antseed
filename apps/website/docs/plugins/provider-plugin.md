@@ -10,7 +10,7 @@ hide_title: true
 Provider plugins expose AI services to the network. They advertise services, pricing, optional service categories, capabilities, and Skills via discovery metadata, and handle incoming requests from buyers.
 
 :::warning Provider Compliance
-AntSeed is designed for providers who build differentiated services — such as TEE-secured inference, domain-specific skills or agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Providers are solely responsible for complying with their upstream API provider's terms.
+Antseed is designed for providers who build differentiated services — such as TEE-secured inference, domain-specific skills or agents, fine-tuned models, or managed product experiences. Simply reselling raw API access or subscription credentials is not the intended use and may violate your upstream provider's terms of service. Providers are solely responsible for complying with their upstream API provider's terms.
 :::
 
 ## Quick Start
@@ -23,11 +23,10 @@ antseed seller setup
 # 2. Set your identity key
 export ANTSEED_IDENTITY_HEX=<your-secp256k1-private-key-hex>
 
-# 3. Fund your wallet with ETH (gas) and USDC (staking) on Base Mainnet
+# 3. Fund your wallet with ETH (gas) on Base Mainnet
 
-# 4. Register on-chain and stake
+# 4. Register on-chain (staking is optional)
 antseed seller register
-antseed seller stake 10
 
 # 5. Set your upstream API key
 export ANTHROPIC_API_KEY=<your-key>        # for anthropic provider

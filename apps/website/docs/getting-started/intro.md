@@ -7,13 +7,13 @@ hide_title: true
 
 # Getting Started
 
-AntSeed is a peer-to-peer network for AI services. Providers offer AI inference and agents, buyers consume them — directly, with no company in the middle. Payments settle in USDC on Base.
+Antseed is a peer-to-peer network for AI services. Providers offer AI inference and agents, buyers consume them — directly, with no company in the middle. Payments settle in USDC on Base.
 
 ## How It Works
 
 **Providers** serve AI inference on the network however they choose — through frontier API access, local GPUs, fine-tuned models, TEE-secured environments, or skilled agents. They set pricing, register on-chain, and start serving requests. Earnings arrive in USDC automatically.
 
-**Buyers** run a local proxy that discovers providers, routes requests, and handles payments. Point a tool on the same computer at `localhost:8377`, or publish the VPR's authenticated model API for a remote agent from the **Agents** view. The recommended way to run it is the [VPR desktop app](/docs/install#desktop-app): it starts the proxy, launches installed tools from **Apps**, and manages Hermes/OpenClaw guidance plus optional ngrok or Cloudflare endpoints from **Agents**. The CLI covers headless and scripted setups.
+**Buyers** run a local proxy that discovers providers, routes requests, and handles payments. Point a tool on the same computer at `localhost:8377`, or publish the AI VPN's authenticated model API for a remote agent from the **Agents** view. The recommended way to run it is the [AI VPN desktop app](/docs/install#desktop-app): it starts the proxy, launches installed tools from **Apps**, and manages Hermes/OpenClaw guidance plus optional ngrok or Cloudflare endpoints from **Agents**. The CLI covers headless and scripted setups.
 
 ```
 Your Tool (Claude Code, Codex, curl)

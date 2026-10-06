@@ -99,6 +99,19 @@ export class ModelHealthChecker {
     this._failureThreshold = Math.max(1, config.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD);
     this._probeTimeoutMs = config.probeTimeoutMs ?? DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS;
     this._onChange = config.onChange;
+    // Providers retained after an OAuth initialization failure must pass a real
+    // probe before any service is advertised. Keep their services in recovery
+    // state rather than dropping the provider permanently.
+    for (const { provider } of this._targets) {
+      if (provider.healthCheckAvailable !== false) continue;
+      for (const [index, service] of provider.services.entries()) {
+        const state = this._stateFor(provider.name, service);
+        state.removed = true;
+        state.removedAtIndex = index;
+        state.lastDetail = 'Awaiting successful probe after initialization failure';
+      }
+      provider.services.splice(0);
+    }
   }
 
   /** Start periodic sweeps. The first sweep runs immediately (async). */
@@ -317,6 +330,8 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
+  // Image generations cost real money per probe; everything else has a
+  // near-free minimal request shape.
   return protocol !== 'openai-images';
 }
 
@@ -355,6 +370,16 @@ export function buildHealthProbeRequest(service: string, protocol: ServiceApiPro
     case 'openai-chat-completions':
       path = '/v1/chat/completions';
       body = { model: service, max_tokens: 1, messages: [{ role: 'user', content: 'ping' }] };
+      break;
+    case 'typesafe-systemone':
+      path = '/v1/systemone';
+      // One tiny state and one yes/no question: a few input tokens, no
+      // generated text.
+      body = {
+        model: service,
+        state: 'ping',
+        questions: { ok: { type: 'noul', instructions: 'Is the state the word ping?' } },
+      };
       break;
     case 'openai-images':
       throw new Error('Health probes are not supported for openai-images services');

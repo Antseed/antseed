@@ -1,4 +1,5 @@
 import type { GithubVerificationClaim, PeerMetadata } from "./peer-metadata.js";
+import { fetchPublicProof } from '../reputation/public-json.js';
 import {
   DEFAULT_VERIFICATION_TIMEOUT_MS,
   MAX_VERIFICATION_PROOF_BYTES,
@@ -79,10 +80,13 @@ export async function verifyGithubVerificationClaim(
     peerId: normalizedPeerId,
   };
   try {
+    if (!/^[a-z0-9-]{1,39}$/i.test(username) || !/^[a-z0-9._-]{1,100}$/i.test(repository) || repository === '.' || repository === '..') {
+      throw new Error('Invalid GitHub claim');
+    }
     // redirect: "error" keeps the proof pinned to the claimed account: a
     // renamed or transferred repository must re-publish the proof under the
     // claimed username rather than verify through a redirect.
-    const response = await (options?.fetch ?? fetch)(buildGithubVerificationProofUrl(claim), {
+    const response = await (options?.fetch ?? fetchPublicProof)(buildGithubVerificationProofUrl(claim), {
       headers: { accept: "application/json" },
       redirect: "error",
       signal,

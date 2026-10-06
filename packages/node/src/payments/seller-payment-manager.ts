@@ -38,6 +38,8 @@ export interface SellerPaymentConfig {
    * the full amount so no dust is left behind. Default: "2000" (~$0.002).
    */
   minSettleDelta?: string;
+  /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
+  serveWhileClosePending?: boolean;
 }
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
@@ -106,6 +108,7 @@ export class SellerPaymentManager {
    * lets timeout cleanup distinguish restart-only zero-auth zombies.
    */
   private readonly _activeBuyers = new Set<string>();
+  private readonly _buyerDisconnectMarkers = new Map<string, object>();
 
   /** Channels restored from disk before the buyer has proven it reconnected. */
   private readonly _hydratedChannelIds = new Set<string>();
@@ -170,6 +173,8 @@ export class SellerPaymentManager {
 
   private readonly _minSettleDelta: bigint;
 
+  private readonly _serveWhileClosePending: boolean;
+
   /** Max close() retries before giving up (buyer must requestClose on-chain) */
   private static readonly MAX_CLOSE_RETRIES = 3;
 
@@ -199,6 +204,8 @@ export class SellerPaymentManager {
     this._minSettleDelta = config.minSettleDelta !== undefined
       ? BigInt(config.minSettleDelta)
       : DEFAULT_MIN_SETTLE_DELTA;
+
+    this._serveWhileClosePending = config.serveWhileClosePending ?? false;
 
     // Hydrate from persisted channels
     const activeChannels = this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER);
@@ -250,6 +257,14 @@ export class SellerPaymentManager {
 
         if (!matchesChannelParties(onChainState.channel, channel.buyerEvmAddr, sellerEvmAddr)) {
           this._evictStaleChannel(channel.sessionId, channel.peerId, 'on-chain parties mismatch');
+          evicted++;
+          continue;
+        }
+
+        // Close requested while this seller was offline — the event poller
+        // starts at the current block and would miss it. Handle it as if live.
+        if (onChainState.channel.closeRequestedAt > 0n && !this._serveWhileClosePending) {
+          await this.handleCloseRequested(channel.sessionId);
           evicted++;
           continue;
         }
@@ -307,6 +322,8 @@ export class SellerPaymentManager {
     const current = this._channelStore.getActiveChannelByPeer(peerId, CHANNEL_ROLE.SELLER);
     if (!current || current.sessionId === channelId) {
       this._activeBuyers.delete(peerId);
+      if (current) this._buyerDisconnectMarkers.set(peerId, {});
+      else this._buyerDisconnectMarkers.delete(peerId);
     }
   }
 
@@ -441,11 +458,12 @@ export class SellerPaymentManager {
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
+    const disconnectMarker = this._buyerDisconnectMarkers.get(buyerPeerId);
     // Per-buyer mutex: serialize concurrent auths for the same buyer
     const existing = this._buyerLocks.get(buyerPeerId);
     let result: 'accepted' | 'reserved' | 'rejected' = 'rejected';
     const lock = (existing ?? Promise.resolve()).then(async () => {
-      result = await this._handleSpendingAuthInner(buyerPeerId, payload, paymentMux);
+      result = await this._handleSpendingAuthInner(buyerPeerId, payload, paymentMux, disconnectMarker);
     });
     this._buyerLocks.set(buyerPeerId, lock.catch(() => {}));
     await lock;
@@ -468,6 +486,7 @@ export class SellerPaymentManager {
     buyerPeerId: string,
     payload: SpendingAuthPayload,
     paymentMux: PaymentMux,
+    disconnectMarker: object | undefined,
   ): Promise<'accepted' | 'reserved' | 'rejected'> {
     const buyerEvmAddr = peerIdToAddress(buyerPeerId);
     try {
@@ -700,8 +719,14 @@ export class SellerPaymentManager {
           );
           return 'rejected';
         }
+        const requiresReactivation = !this._activeBuyers.has(buyerPeerId) || this._hydratedChannelIds.has(channelId);
         if (cumulativeAmount === existingCumulative) {
+          if (requiresReactivation
+            && !await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
+            return 'rejected';
+          }
           debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
+          this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
           return 'accepted';
         }
 
@@ -731,7 +756,6 @@ export class SellerPaymentManager {
         }
 
         // Update tracking
-        this._hydratedChannelIds.delete(channelId);
         this._acceptedCumulative.set(channelId, cumulativeAmount);
         this._latestAuth.set(channelId, {
           spendingAuthSig: payload.spendingAuthSig,
@@ -761,12 +785,59 @@ export class SellerPaymentManager {
           await this._retryPendingTopUp(buyerPeerId, channelId, pendingTopUp, retrySettleAmount, retryMetadata, retrySig);
         }
 
+        if (requiresReactivation
+          && await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
+          this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
+        }
         return 'accepted';
       }
     } catch (err) {
       debugWarn(`[SellerPayment] Failed to process SpendingAuth: ${err instanceof Error ? err.message : err}`);
       return 'rejected';
     }
+  }
+
+  private _canAcknowledgeRetainedChannel(buyerPeerId: string, channelId: string, disconnectMarker: object | undefined): boolean {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    return session?.sessionId === channelId
+      && this._acceptedCumulative.has(channelId)
+      && !this._closingChannels.has(channelId)
+      && !this._blockedChannels.has(channelId)
+      && this._buyerDisconnectMarkers.get(buyerPeerId) === disconnectMarker;
+  }
+
+  private async _validateRetainedChannel(
+    buyerPeerId: string,
+    channelId: string,
+    cumulativeAmount: bigint,
+    disconnectMarker: object | undefined,
+  ): Promise<boolean> {
+    if (!this._canAcknowledgeRetainedChannel(buyerPeerId, channelId, disconnectMarker)) return false;
+    try {
+      const state = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+      const { seller } = await this._resolvedAddresses!;
+      return state.exists && state.status === 'active'
+        && matchesChannelParties(state.channel, peerIdToAddress(buyerPeerId), seller)
+        && (state.channel.closeRequestedAt === 0n || this._serveWhileClosePending)
+        && cumulativeAmount >= state.channel.settled
+        && cumulativeAmount <= state.channel.deposit
+        && this._canAcknowledgeRetainedChannel(buyerPeerId, channelId, disconnectMarker);
+    } catch (err) {
+      debugWarn(`[SellerPayment] Retained channel validation failed: ${this._formatError(err)}`);
+      return false;
+    }
+  }
+
+  private _acknowledgeRetainedChannel(
+    buyerPeerId: string,
+    channelId: string,
+    paymentMux: PaymentMux,
+    disconnectMarker: object | undefined,
+  ): void {
+    if (!this._canAcknowledgeRetainedChannel(buyerPeerId, channelId, disconnectMarker)) return;
+    this._hydratedChannelIds.delete(channelId);
+    this._activeBuyers.add(buyerPeerId);
+    paymentMux.sendAuthAck({ channelId });
   }
 
   /**
@@ -999,6 +1070,16 @@ export class SellerPaymentManager {
     if (!matchesChannelParties(onChainState.channel, buyerEvmAddr, sellerEvmAddr)) return false;
     const onChain = onChainState.channel;
 
+    // Active status hides a running withdraw timer that may already have matured.
+    if (onChain.closeRequestedAt > 0n && !this._serveWhileClosePending) {
+      debugWarn(
+        `[SellerPayment] Refusing to recover channel ${channelId.slice(0, 18)}... — ` +
+        `buyer requested close on-chain at ${onChain.closeRequestedAt}; funds served against it ` +
+        `may be unrecoverable. Set serveWhileClosePending to accept this risk.`,
+      );
+      return false;
+    }
+
     const metadataMsg = {
       channelId,
       cumulativeAmount,
@@ -1221,11 +1302,23 @@ export class SellerPaymentManager {
     return (this._inFlightRequests.get(buyerPeerId) ?? 0) > 0;
   }
 
+  /**
+   * Whether a close transaction is in flight for this buyer's active channel.
+   * Request admission refuses new billable work while this is true: the close
+   * would remove the session mid-request and its spend would never be recorded.
+   */
+  hasClosingChannel(buyerPeerId: string): boolean {
+    if (this._closingChannels.size === 0) return false;
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    return session != null && this._closingChannels.has(session.sessionId);
+  }
+
   // ── Disconnect handling ───────────────────────────────────────
 
   onBuyerDisconnect(buyerPeerId: string): void {
     const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
     if (!session) return;
+    this._buyerDisconnectMarkers.set(buyerPeerId, {});
 
     const settleOnDisconnect = this._config.settleOnDisconnect ?? true;
 
@@ -1592,6 +1685,25 @@ export class SellerPaymentManager {
       onChainSettled = (await this._channelsClient.getSession(channelId)).settled;
     } catch (err) {
       return reject('close_failed', `could not read on-chain channel state: ${this._formatError(err)}`);
+    }
+
+    // Re-check after the awaits above: a request admitted while this handler
+    // was verifying and waiting must finish billing before the channel closes,
+    // and any spend it recorded must be signed for or the close settles short.
+    // Everything from here to the submission is synchronous, so nothing can
+    // land in between.
+    if (this.hasInFlightRequests(buyerPeerId)) {
+      return reject('busy', 'a request is still being served on this channel', {
+        retryAfterMs: CLOSE_RETRY_AFTER_MS,
+      });
+    }
+    spent = this._spent.get(channelId) ?? 0n;
+    best = this._getSettleParams(channelId);
+    if (spent > best.amount) {
+      return reject('pending_auth', `unsigned spend outstanding (spent=${spent} signed=${best.amount})`, {
+        retryAfterMs: CLOSE_RETRY_AFTER_MS,
+        requiredCumulativeAmount: spent.toString(),
+      });
     }
 
     const useSignedAuth = best.sig !== '0x' && best.amount > onChainSettled;

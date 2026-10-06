@@ -366,7 +366,7 @@ export function registerSystemProxyIpc(deps: { processManager: ProcessManager })
 
   // Whether the OS already trusts this device's CA. Drives the "trust the
   // certificate" prompt shown after adding an intercepted app: `stale` means an
-  // older AntSeed CA is trusted under the same name (the CERT_SIGNATURE_FAILURE
+  // older Antseed CA is trusted under the same name (the CERT_SIGNATURE_FAILURE
   // cause), `absent` means nothing is trusted yet, `trusted` means we're set.
   ipcMain.handle('system-proxy:ca-trust-state', async (): Promise<{ ok: boolean; exists: boolean; trust: 'trusted' | 'stale' | 'absent' | 'unknown'; error?: string }> => {
     try {

@@ -5,7 +5,15 @@ import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import { resolveEffectiveSellerConfig } from '../../../config/effective.js';
 import { getNodeStatus } from '../../../status/node-status.js';
-import { loadCryptoContext } from '../../payment-utils.js';
+import {
+  createLegacyStakingClient,
+  createSellerPoolsClient,
+  createSellerRegistryClient,
+  createStakingClient,
+  formatUsdc,
+  loadCryptoContext,
+  resolveCliContractStack,
+} from '../../payment-utils.js';
 import { formatEarnings, formatTokens } from '../../formatters.js';
 
 type SellerNodeState = 'seeding' | 'connected' | 'idle';
@@ -43,6 +51,34 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
           };
         });
 
+        let onChain: Record<string, unknown> | null = null;
+        let onChainError: string | null = null;
+        if (walletAddress) {
+          try {
+            const stack = await resolveCliContractStack(config);
+            if (stack.mode === 'recognized-usage') {
+              const registry = createSellerRegistryClient(config);
+              const pools = createSellerPoolsClient(config);
+              const agentId = await registry.getAgentId(walletAddress);
+              const [legacyStake, activePoolStake, eligible, positionCount] = await Promise.all([
+                stack.addresses.legacyStakingContractAddress ? createLegacyStakingClient(config).getStake(walletAddress) : 0n,
+                agentId ? pools.poolActiveStakeAtEpoch(agentId, stack.currentEpoch) : 0n,
+                registry.isStakedAboveMin(walletAddress),
+                pools.stakerPositionCount(walletAddress),
+              ]);
+              onChain = { mode: stack.mode, agentId, legacyStake, activePoolStake, eligible, positionCount };
+            } else {
+              const staking = createStakingClient(config);
+              const [agentId, legacyStake, eligible] = await Promise.all([
+                staking.getAgentId(walletAddress), staking.getStake(walletAddress), staking.isStakedAboveMin(walletAddress),
+              ]);
+              onChain = { mode: stack.mode, agentId, legacyStake, activePoolStake: 0n, eligible, positionCount: 0 };
+            }
+          } catch (error) {
+            onChainError = `${(error as Error).name}: ${(error as Error).message}`;
+          }
+        }
+
         if (options.json) {
           console.log(JSON.stringify({
             state: status.state,
@@ -54,7 +90,9 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
             walletAddress,
             notices: status.notices,
             providers: providerSummary,
-          }, null, 2));
+            onChain,
+            onChainError,
+          }, (_key, value) => typeof value === 'bigint' ? value.toString() : value, 2));
           return;
         }
 
@@ -91,10 +129,29 @@ export function registerSellerStatusCommand(sellerCmd: Command): void {
             : chalk.dim('(none)'),
         ]);
 
+        if (onChain) {
+          table.push(
+            ['On-chain mode', String(onChain.mode)],
+            ['Agent ID', String(onChain.agentId)],
+            ['Legacy USDC stake', `${formatUsdc(onChain.legacyStake as bigint)} USDC`],
+            ['Pool active stake', `${formatAntsForStatus(onChain.activePoolStake as bigint)} ANTS`],
+            ['Seller eligible', String(onChain.eligible)],
+            ['Pool positions', String(onChain.positionCount)],
+          );
+        } else if (onChainError) {
+          table.push(['On-chain warning', chalk.yellow(onChainError)]);
+        }
+
         console.log(table.toString());
       } catch (err) {
         console.error(chalk.red(`Error: ${(err as Error).message}`));
         process.exitCode = 1;
       }
     });
+}
+
+function formatAntsForStatus(amount: bigint): string {
+  const whole = amount / 10n ** 18n;
+  const fraction = (amount % 10n ** 18n).toString().padStart(18, '0').slice(0, 4).replace(/0+$/, '');
+  return fraction ? `${whole}.${fraction}` : String(whole);
 }

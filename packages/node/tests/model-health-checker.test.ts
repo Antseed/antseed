@@ -90,6 +90,18 @@ describe('buildHealthProbeRequest', () => {
     });
   });
 
+  it('builds a single-question systemone probe', () => {
+    expect(supportsHealthProbe('typesafe-systemone')).toBe(true);
+    const req = buildHealthProbeRequest('jev-latest', 'typesafe-systemone');
+    expect(req.path).toBe('/v1/systemone');
+    const body = JSON.parse(new TextDecoder().decode(req.body));
+    expect(body).toEqual({
+      model: 'jev-latest',
+      state: 'ping',
+      questions: { ok: { type: 'noul', instructions: 'Is the state the word ping?' } },
+    });
+  });
+
   it('does not fall back to a chat probe for image services', () => {
     expect(supportsHealthProbe('openai-images')).toBe(false);
     expect(() => buildHealthProbeRequest('gpt-image-1', 'openai-images')).toThrow(
@@ -99,6 +111,24 @@ describe('buildHealthProbeRequest', () => {
 });
 
 describe('ModelHealthChecker', () => {
+  it('quarantines initial auth failures and restores only models with successful probes', async () => {
+    const provider = makeProvider({
+      healthCheckAvailable: false,
+      onRequest: statusSequence({ 'model-a': [200], 'model-b': [400, 200] }),
+    });
+    const onChange = vi.fn();
+    const checker = new ModelHealthChecker({ targets: [{ provider }], onChange });
+    expect(provider.services).toEqual([]);
+    expect(checker.getSnapshot().every((s) => !s.advertised)).toBe(true);
+    await checker.runSweep();
+    expect(provider.services).toEqual(['model-a']);
+    expect(provider.healthCheckAvailable).toBe(true);
+    expect(onChange).toHaveBeenCalledTimes(1);
+    await checker.runSweep();
+    expect(provider.services).toEqual(['model-a', 'model-b']);
+    expect(onChange).toHaveBeenCalledTimes(2);
+  });
+
   it('unadvertises a service after the failure threshold and emits an event', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({ 'model-a': [500, 500, 500], 'model-b': [200, 200, 200] }),

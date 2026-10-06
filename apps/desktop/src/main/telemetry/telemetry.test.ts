@@ -478,6 +478,31 @@ test('user actions identify the first meaningful action per launch', async (t) =
   assert.equal(actions[1]?.properties['duration_bucket'], '30s_2m');
 });
 
+test('app connect actions carry the app name and are not coalesced across apps', async (t) => {
+  const dir = await makeTempDir(t);
+  const captured: Captured = { payloads: [] };
+  const service = await createTelemetryService(baseOptions(dir, captured));
+  await service.recordAppStarted(0);
+  await service.recordUserAction({ action: 'app_connect', surface: 'apps', app: 'claude-desktop' }, 1_000);
+  await service.recordUserAction({ action: 'app_connect', surface: 'apps', app: 'cursor' as never }, 2_000);
+  await service.recordUserAction({ action: 'app_disconnect', surface: 'apps', app: 'telegram' }, 3_000);
+  await service.recordUserAction({ action: 'chat_send', surface: 'chat' }, 4_000);
+
+  let drainAttempts = 0;
+  while (captured.payloads.filter((payload) => payload.event === 'user_action').length < 4) {
+    await new Promise<void>((resolve) => setImmediate(resolve));
+    drainAttempts += 1;
+    assert.ok(drainAttempts < 100, 'user action queue did not drain');
+  }
+
+  const actions = captured.payloads.filter((payload) => payload.event === 'user_action');
+  assert.equal(actions.length, 4);
+  assert.equal(actions[0]?.properties['app'], 'claude-desktop');
+  assert.equal(actions[1]?.properties['app'], 'cursor');
+  assert.equal(actions[2]?.properties['app'], 'telegram');
+  assert.equal('app' in (actions[3]?.properties ?? {}), false);
+});
+
 test('setup completion requires a started transition and emits once across restarts', async (t) => {
   const dir = await makeTempDir(t);
   const captured: Captured = { payloads: [] };

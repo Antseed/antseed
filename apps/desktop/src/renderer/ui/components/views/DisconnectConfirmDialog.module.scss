@@ -1,0 +1,110 @@
+/* Disconnect confirmation body. Header/panel chrome is the app-wide modal
+   restyle in global.scss. */
+
+.body {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 12px;
+  text-align: center;
+}
+
+/* Animated power-off badge: the icon dims like a light going out while two
+   rings ripple outward and fade — "signal leaving". */
+.badge {
+  position: relative;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 64px;
+  height: 64px;
+  margin: 32px;
+  border-radius: 50%;
+  background: rgba(var(--danger-rgb), 0.1);
+  color: var(--danger);
+}
+
+.badgeIcon {
+  position: relative;
+  z-index: 1;
+  display: flex;
+  animation: disconnect-power-dim 2.4s ease-in-out infinite;
+}
+
+.ring {
+  position: absolute;
+  inset: 0;
+  border-radius: 50%;
+  border: 1.5px solid rgba(var(--danger-rgb), 0.55);
+  animation: disconnect-ring 2.4s ease-out infinite;
+  pointer-events: none;
+}
+
+.ringDelayed {
+  animation-delay: 0.8s;
+}
+
+@keyframes disconnect-ring {
+  0% {
+    transform: scale(0.85);
+    opacity: 0.7;
+  }
+  100% {
+    transform: scale(1.55);
+    opacity: 0;
+  }
+}
+
+@keyframes disconnect-power-dim {
+  0%,
+  100% {
+    opacity: 1;
+    transform: scale(1);
+  }
+  55% {
+    opacity: 0.45;
+    transform: scale(0.94);
+  }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .badgeIcon,
+  .ring {
+    animation: none;
+  }
+  .ring {
+    opacity: 0.35;
+    transform: scale(1.15);
+  }
+}
+
+.text {
+  margin: 0;
+  max-width: 300px;
+  font-size: 13px;
+  line-height: 1.5;
+  color: var(--text-secondary);
+}
+
+.dontShowRow {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  font-size: 12px;
+  color: var(--text-muted);
+  cursor: pointer;
+  user-select: none;
+
+  input[type="checkbox"] {
+    margin: 0;
+    cursor: pointer;
+  }
+}
+
+.actions {
+  display: grid;
+  grid-template-columns: 1fr 1fr;
+  gap: 8px;
+  width: 100%;
+  margin-top: 6px;
+}

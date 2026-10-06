@@ -6,7 +6,7 @@
 export type WindowSizePresetName = 'standard' | 'compact';
 
 export const VIEW_WINDOW_PRESETS = {
-  // VPR screens are small single-purpose panels.
+  // AI VPN screens are small single-purpose panels.
   home: 'compact',
   explore: 'compact',
   model: 'compact',
@@ -19,11 +19,11 @@ export const VIEW_WINDOW_PRESETS = {
   activity: 'compact',
   rewards: 'compact',
   help: 'compact',
-  // Chat opens thin like the other VPR panels; an in-view expand toggle
-  // switches the window to the standard (wide) preset, which also reveals
-  // the conversation-list panel (see AppShell / VprShell chatPanelExpanded).
+  // Chat's base preset is the thin panel, but the view opens wide by default:
+  // chatPanelExpanded starts true, and AppShell applies the standard preset
+  // whenever it is set — the in-view toggle collapses back to this.
   chat: 'compact',
-  // Diagnostic screens stay in the same compact panel as the VPR views
+  // Diagnostic screens stay in the same compact panel as the AI VPN views
   // (they're reachable from Help & Support) — their tables and panels scroll
   // within the window instead of blowing it up to the wide preset.
   peers: 'compact',
