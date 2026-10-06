@@ -18,6 +18,8 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Fixed
 
 - Sellers: a listener now accepts up to 64 connections from one IP address, up from 10, so a buyer paying as several identities can reach the same seller with each of them.
+- Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
+
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.
 - Development/testing OAuth: optionally persist Claude credentials with `CLAUDE_AUTH_FILE`, retain rotated tokens across restarts, and back off failed refresh attempts without logging upstream credential responses. With model health checks enabled, OAuth refresh failures during CLI provider initialization no longer terminate multi-provider development sessions; affected services stay hidden until a successful probe. Configuration errors remain fatal. Subscription OAuth plugins remain for testing and development only.
 
@@ -44,6 +46,8 @@ This project uses selective package publishing. Each release entry lists the pub
 - Payments: add a Disconnect button to the wallet authorization dialog. Disconnection does not revoke on-chain authorization and is disabled while authorization is in progress.
 
 ### Added
+
+- Website: add the Antseed Foundation's $2.4M funding announcement with the full investor list, buyer and provider participation guides, ANTS reward information, and the funding cover image for the article and social previews.
 
 - Desktop AI VPN: add Claude Code CLI to Connected Apps. Connecting updates `~/.claude/settings.json` to route Claude Code through the local buyer with the AI VPN-selected `antseed` model alias; disconnecting restores the Antseed-managed settings. Claude Code and T3 Code conversations are now attributed separately.
 - Website: added lANTS Market to the ecosystem page — a community-built board and USDC market for lANTS staking positions on Antseed, with a card and onchain preview. No other copy or layout changes.
