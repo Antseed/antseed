@@ -487,6 +487,24 @@ test('gateway holds block concurrent requests from slipping under a cap', () => 
   }
 })
 
+test('a finished request keeps its remaining hold after its first spend delta', () => {
+  const { store, cleanup } = tempStore()
+  const accounting = new GatewayAccounting(store, { holdUsdc: 300_000, settleGraceMs: 60_000 })
+  try {
+    const { key } = store.createKey({ label: 'Stream', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+    const admission = accounting.admit(key)
+    assert.ok(admission.ok)
+    store.startRequest({ tag: admission.tag, keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: null, startedAt: 0 })
+    accounting.finish(admission.tag)
+    const event = { seq: 1, tag: admission.tag, requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '100000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: 0 }
+    accounting.ingest('boot', [event])
+    assert.equal(accounting.heldUsdc(key.id), 200_000, 'later deltas of the same request stay covered')
+  } finally {
+    accounting.dispose()
+    cleanup()
+  }
+})
+
 test('free routes neither reserve holds nor count against caps', async () => {
   const { store, cleanup } = tempStore()
   const buyer = await fakeBuyer()

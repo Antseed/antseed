@@ -92,13 +92,10 @@ export class GatewayAccounting {
       if (!inserted) continue
       recorded += 1
       // Settled spend replaces that much of the request's worst-case hold.
+      // The rest stays until the grace period ends: one request can sign
+      // several deltas, and later ones still need to be covered.
       const hold = this._holds.get(event.tag)
-      if (!hold) continue
-      hold.amountUsdc = Math.max(0, hold.amountUsdc - parseBaseUnits(event.amountUsdc))
-      if (hold.finished) {
-        if (hold.timer) clearTimeout(hold.timer)
-        this._holds.delete(event.tag)
-      }
+      if (hold) hold.amountUsdc = Math.max(0, hold.amountUsdc - parseBaseUnits(event.amountUsdc))
     }
     return recorded
   }
