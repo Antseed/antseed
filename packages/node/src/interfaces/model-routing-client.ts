@@ -18,6 +18,8 @@ export type RouteCandidate = {
   inputUsdPerMillion: number;
   outputUsdPerMillion: number;
   cachedInputUsdPerMillion?: number;
+  /** The router's name for this model (from its models list); defaults to `serviceId`. */
+  routerModel?: string;
 };
 
 type SendRequest = (peer: PeerInfo, request: SerializedHttpRequest, options: RequestExecutionOptions) => Promise<SerializedHttpResponse>;

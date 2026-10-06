@@ -4,7 +4,7 @@ import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
 import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node'
-import { RouterCannotRankError, type ModelRoutingClientApi } from '@antseed/router-core'
+import { RouterCannotRankError, routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
 
 const MODELS_TIMEOUT_MS = 5_000
 
@@ -148,15 +148,16 @@ export async function executeRouterSelection(args: {
   const allowedModels = args.selection.allowedModels
   const modelsCache = args.modelsCache ?? new RoutingModelsCache(0)
   const attempt = async (): Promise<RouteRecommendation[]> => {
-    const supported = new Set(await untilAborted(signal, modelsCache.get(client, routingService, peers, node)))
+    const routerModel = routerModelResolver(await untilAborted(signal, modelsCache.get(client, routingService, peers, node)))
     const allowed = args.candidates
       .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
         model.provider === candidate.provider && model.serviceId === candidate.serviceId))
     if (!allowed.length && allowedModels !== undefined) throw new Error('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
-    // Send only models the router understands.
-    const candidates: RouteCandidate[] = allowed
-      .filter(candidate => supported.has(candidate.serviceId))
-      .map(({ peer: _peer, ...candidate }) => candidate)
+    // Send only models the router lists, named the way the router names them.
+    const candidates: RouteCandidate[] = allowed.flatMap(({ peer: _peer, ...candidate }) => {
+      const model = routerModel(candidate.serviceId)
+      return model ? [{ ...candidate, routerModel: model }] : []
+    })
     if (!candidates.length) throw new Error('No eligible allowed models are supported by this router')
     const { costQualityTradeoff } = args.selection
     const routes = await untilAborted(signal, client.selectRoute(request, peers, {

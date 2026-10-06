@@ -79,6 +79,14 @@ describe('ModelRoutingClient', () => {
     expect(routing.candidates[0].pricing).toEqual({ input: 1, cache_read: 1, output: 2 })
   })
 
+  it('sends the router model name when one was resolved, and still dispatches the seller service', async () => {
+    const state = setup()
+    state.context.candidates = [{ serviceId: 'model-a', routerModel: 'vendor/model-a', peerId: inferenceId, provider: 'openai', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }]
+    expect(await state.client.selectRoute(request(), [peer], state.context)).toEqual([{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai' }])
+    const { routing } = decode(state.sendRequest.mock.calls[0]![1].body)
+    expect(routing.candidates[0]).toMatchObject({ id: idA, model: 'vendor/model-a' })
+  })
+
   it('uses readable provider:model@peer IDs and hashes IDs over 128 characters', () => {
     expect(routingCandidateId({ provider: 'openai', serviceId: 'gpt-5.5', peerId: inferenceId })).toBe(`openai:gpt-5.5@${inferenceId}`)
     const long = routingCandidateId({ provider: 'openai', serviceId: 'm'.repeat(100), peerId: inferenceId })

@@ -182,7 +182,7 @@ export class ModelRoutingClient {
           const cacheReadTokens = this.observations.expectedCachedInputTokens(context.conversationKey, candidate, estimatedTokens)
           return {
             id: routingCandidateId(candidate),
-            model: candidate.serviceId,
+            model: candidate.routerModel ?? candidate.serviceId,
             // Sellers without a cached-input price bill cache reads at the input price.
             pricing: {
               input: candidate.inputUsdPerMillion,

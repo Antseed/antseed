@@ -40,7 +40,11 @@ Both requests carry two AntSeed transport headers:
 ```
 
 Buyers only send candidates whose model is listed, cache the list for 60
-seconds and ignore members they do not recognise. AntSeed routers run in
+seconds and ignore members they do not recognise. Sellers and routers often spell
+the same model differently (`claude-opus-5` and `anthropic/claude-opus-5`), so a
+seller's service ID matches a listed model exactly or, failing that, by its
+canonical model key, the same matching the savings baselines use. If several listed
+models share a key, the first one listed wins. AntSeed routers run in
 suggest-only mode, so entries carry no `candidates`.
 
 ## Rank
@@ -91,7 +95,8 @@ Request:
   - `id` is `provider:model@peer`. If that is longer than 128 characters, it is
     `sha256:` followed by the hex SHA-256 of the same string. Routers may use the ID to
     tell sellers apart and to learn per seller.
-  - `model` is the AntSeed service ID.
+  - `model` is the router's own name for the model, taken from its model list. The
+    buyer still sends the seller's service ID with the inference request.
   - `pricing` is the seller's price in USD per 1M tokens. Sellers that publish no
     cached-input price bill cache reads at the input price, so `cache_read` equals `input`.
   - `expected_usage.cache_read_tokens` is the buyer's estimate of prompt tokens this
@@ -137,7 +142,8 @@ Non-success responses are not charged, so the 422 retry is free.
 ## Buyer flow
 
 1. List the selected routing service's models (cached for 60 seconds).
-2. Build candidates from eligible sellers whose model is listed.
+2. Build candidates from eligible sellers whose model is listed, named the way the
+   router lists it.
 3. Call rank with the buyer's `cost_quality_tradeoff`, if set.
 4. Validate the response (a well-formed ranking is billed as one completed request) and
    send the inference to the first ranked candidate. Later candidates are fallbacks for

@@ -80,6 +80,22 @@ test('router model lists restrict candidates, are cached, and refresh once after
   await assert.rejects(executeRouterSelection({ ...args, modelsCache: new RoutingModelsCache() }), /supported by this router/)
 })
 
+test('seller model names are sent under the router\'s own name for that model', async () => {
+  const sent: Array<[string, string | undefined]> = []
+  const client: ModelRoutingClientApi = {
+    listModels: async () => ['anthropic/claude-opus-5', 'openai/gpt-5'],
+    async selectRoute(_request, _peers, context) {
+      for (const candidate of context.candidates) sent.push([candidate.serviceId, candidate.routerModel])
+      return [{ serviceId: 'claude-opus-5' }]
+    },
+  }
+  const base = candidates()[0]!
+  const available = [{ ...base, serviceId: 'claude-opus-5' }, { ...base, serviceId: 'openai/gpt-5' }, { ...base, serviceId: 'mistral-large' }]
+  assert.deepEqual(await executeRouterSelection({ node: unusedNode, client, request, peers: [peer], candidates: available,
+    conversationKey: null, signal: new AbortController().signal, selection: routerSelection }), [{ serviceId: 'claude-opus-5', provider: 'openai' }])
+  assert.deepEqual(sent, [['claude-opus-5', 'anthropic/claude-opus-5'], ['openai/gpt-5', 'openai/gpt-5']])
+})
+
 test('concurrent model lists share one request and refresh after invalidation or expiry', async () => {
   let calls = 0
   let release!: () => void
