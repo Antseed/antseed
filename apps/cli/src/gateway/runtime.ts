@@ -114,13 +114,10 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     throw error
   }
 
-  const addresses = new Map<string, string | null>()
-  const identityAddress = async (name: string): Promise<string | null> => {
-    if (!addresses.has(name)) {
-      addresses.set(name, await buyerIdentityAddress(options.dataDir, name))
-    }
-    return addresses.get(name) ?? null
-  }
+  // Read on every call rather than cached: an identity can be removed and
+  // recreated with a new wallet while the gateway runs, and a stale address
+  // would send top-ups to the archived wallet.
+  const identityAddress = (name: string): Promise<string | null> => buyerIdentityAddress(options.dataDir, name)
 
   const accounting = new GatewayAccounting(store, {
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
