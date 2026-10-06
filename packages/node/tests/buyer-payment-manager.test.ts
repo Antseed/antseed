@@ -27,6 +27,14 @@ function fakePeerId(label: string): string {
   return hex;
 }
 
+/** The manager's in-memory session state for a seller, for tests that set internals directly. */
+function sessionState(manager: BuyerPaymentManager, sellerPeerId: string): { ceiling?: bigint; verified: bigint } {
+  const state = (manager as unknown as { _session(id: string): { ceiling?: bigint; verified: bigint } | undefined })
+    ._session(sellerPeerId);
+  if (!state) throw new Error(`no session state for ${sellerPeerId}`);
+  return state;
+}
+
 function decodeMetadataTokens(metadata: string): {
   inputTokens: bigint;
   outputTokens: bigint;
@@ -1325,8 +1333,7 @@ describe('BuyerPaymentManager', () => {
 
     const sellerPeerId = fakePeerId('seller-needauth-absolute-topup');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
-    (manager as unknown as { _currentReserveCeiling: Map<string, bigint> })
-      ._currentReserveCeiling.set(sellerPeerId, 10_000_000n);
+    sessionState(manager, sellerPeerId).ceiling = 10_000_000n;
     mux.sentSpendingAuths.length = 0;
 
     await manager.handleNeedAuth(sellerPeerId, {
@@ -1405,7 +1412,7 @@ describe('BuyerPaymentManager', () => {
     // Simulate a very expensive first response: verified cost jumps close to the
     // reserve ceiling, and the seller asks for just above that ceiling. The buyer
     // must still sign at the current ceiling first, then top up.
-    (manager as unknown as { _verifiedCost: Map<string, bigint> })._verifiedCost.set(sellerPeerId, 950_000n);
+    sessionState(manager, sellerPeerId).verified = 950_000n;
     mux.sentSpendingAuths.length = 0;
 
     await manager.handleNeedAuth(sellerPeerId, {
@@ -1445,7 +1452,7 @@ describe('BuyerPaymentManager', () => {
     const sellerPeerId = fakePeerId('seller-concurrent-expensive-conversations');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, expensivePricing);
 
-    (manager as unknown as { _verifiedCost: Map<string, bigint> })._verifiedCost.set(sellerPeerId, 950_000n);
+    sessionState(manager, sellerPeerId).verified = 950_000n;
     mux.sentSpendingAuths.length = 0;
 
     const payload = {
@@ -1622,7 +1629,7 @@ describe('BuyerPaymentManager', () => {
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n, TEST_PRICING);
     manager.handleAuthAck(sellerPeerId, { channelId });
 
-    (manager as unknown as { _verifiedCost: Map<string, bigint> })._verifiedCost.set(sellerPeerId, 100_000n);
+    sessionState(manager, sellerPeerId).verified = 100_000n;
     mux.sentSpendingAuths.length = 0;
     await manager.extendCurrentSpendingAuth(sellerPeerId, 1n, mux, 100_001n);
 
