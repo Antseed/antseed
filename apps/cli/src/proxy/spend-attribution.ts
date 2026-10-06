@@ -12,6 +12,8 @@ export const SPEND_ATTRIBUTION_HEADER = 'x-antseed-attribution-tag'
 const TAG_PATTERN = /^[A-Za-z0-9:_-]{1,128}$/
 const MAX_BUFFERED_EVENTS = 10_000
 const MAX_EVENTS_PER_PAGE = 1000
+/** How long a request's tag is kept for spend signed after the response. */
+const TAG_RETENTION_MS = 60 * 60 * 1000
 
 export interface AttributedSpendEvent {
   seq: number
@@ -45,27 +47,31 @@ export function parseSpendAttributionTag(value: string | undefined): string | nu
 }
 
 /**
- * Bounded in-memory event feed, with request tags retained in a temporary
- * SQLite database until shutdown so late spend never loses its attribution.
+ * Bounded in-memory event feed, with request tags retained for an hour in a
+ * temporary SQLite database so late spend keeps its attribution.
  */
 export class SpendAttributionFeed {
   readonly bootId = randomUUID()
   private readonly _tags = new Database('')
   private readonly _track: Database.Statement
   private readonly _lookup: Database.Statement
+  private readonly _prune: Database.Statement
   private readonly _events: AttributedSpendEvent[] = []
   /** Tag of the latest tagged spend per identity and seller, for spend signed without a request id. */
   private readonly _lastTagBySeller = new Map<string, string>()
   private _nextSeq = 1
 
   constructor(private readonly _now: () => number = () => Date.now()) {
-    this._tags.exec('CREATE TABLE request_tags (request_id TEXT PRIMARY KEY, tag TEXT NOT NULL)')
-    this._track = this._tags.prepare('INSERT OR REPLACE INTO request_tags VALUES (?, ?)')
+    this._tags.exec('CREATE TABLE request_tags (request_id TEXT PRIMARY KEY, tag TEXT NOT NULL, tracked_at INTEGER NOT NULL)')
+    this._track = this._tags.prepare('INSERT OR REPLACE INTO request_tags VALUES (?, ?, ?)')
+    this._prune = this._tags.prepare('DELETE FROM request_tags WHERE tracked_at < ?')
     this._lookup = this._tags.prepare('SELECT tag FROM request_tags WHERE request_id = ?')
   }
 
   track(requestId: string, tag: string): void {
-    this._track.run(requestId, tag)
+    const now = this._now()
+    this._prune.run(now - TAG_RETENTION_MS)
+    this._track.run(requestId, tag, now)
   }
 
   close(): void {

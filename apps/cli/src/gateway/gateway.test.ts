@@ -290,6 +290,21 @@ test('late spend keeps its tag after more than 2048 newer requests', (context) =
   assert.deepEqual(feed.page(0).events.map((event) => event.tag), ['gw_original', 'gw_original'])
 })
 
+test('request tags are dropped an hour after they were tracked', (context) => {
+  let now = 0
+  const feed = new SpendAttributionFeed(() => now)
+  context.after(() => feed.close())
+  feed.track('old', 'gw_old')
+  now = 59 * 60 * 1000
+  feed.track('recent', 'gw_recent')
+  now = 61 * 60 * 1000
+  feed.track('new', 'gw_new')
+  const spend = { sellerPeerId: 's', amountUsdc: '1', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
+  feed.record({ ...spend, requestId: 'old', sellerPeerId: 'a' })
+  feed.record({ ...spend, requestId: 'recent' })
+  assert.deepEqual(feed.page(0).events.map((event) => event.tag), ['gw_recent'])
+})
+
 test('gateway wallet lookup follows the live buyer until it reloads an identity', async () => {
   let address = 'original-wallet'
   let status = 200
