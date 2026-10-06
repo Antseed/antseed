@@ -1,4 +1,5 @@
 export {
+  renderRequestBodyAsOpenAIChat,
   transformRequest,
   type ServiceApiRequestTransformOptions,
   type ServiceApiRequestTransformResult,

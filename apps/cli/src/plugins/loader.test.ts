@@ -12,11 +12,11 @@ test('explicit development local-router path bypasses the shared plugin install'
   const previous = process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH']
   try {
     const entry = join(directory, 'router.mjs')
-    writeFileSync(entry, 'export default { type: "router", name: "workspace-router", createRouter: () => ({ getModelRouterAdapter() {} }) }')
+    writeFileSync(entry, 'export default { type: "router", name: "workspace-router", createRouter: () => ({ selectPeer() {} }) }')
     process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH'] = entry
     const plugin = await loadRouterPlugin('local')
     assert.equal(plugin.name, 'workspace-router')
-    assert.equal(typeof (await plugin.createRouter({})).getModelRouterAdapter, 'function')
+    assert.equal(typeof (await plugin.createRouter({})).selectPeer, 'function')
     process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH'] = 'relative.mjs'
     await assert.rejects(loadRouterPlugin('local'), /absolute path/)
   } finally {

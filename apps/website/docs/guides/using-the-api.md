@@ -246,9 +246,97 @@ curl http://localhost:8377/v1/chat/completions \
   }'
 ```
 
+## Select a Routing Service
+
+To let a remote service choose the inference model, first discover the available
+routing offers on your **local buyer proxy**:
+
+```bash
+curl http://localhost:8377/_antseed/routing-services
+```
+
+Each entry in `services` identifies an exact `peerId`, `provider`, and `serviceId`,
+with its per-ranking `priceMicroUsdc`. Select one using
+`POST /_antseed/route { router: { service, costQualityTradeoff?, allowedModels? } }`.
+Replace the example target with an offer returned by discovery:
+
+```bash
+curl http://localhost:8377/_antseed/route \
+  -H 'content-type: application/json' \
+  -d '{
+    "router": {
+      "service": {
+        "peerId": "<40-character-peer-id-without-0x>",
+        "provider": "<routing-provider>",
+        "serviceId": "<routing-service>"
+      },
+      "costQualityTradeoff": 5
+    }
+  }'
+```
+
+- `costQualityTradeoff` must be an integer **0–10**: **0 = best quality**,
+  **10 = cheapest**. Omit it to use the router's default **5**. This is the same
+  setting as the desktop Cost / quality slider.
+- Optional `allowedModels` is a list of exact inference-provider/service pairs,
+  for example `[{ "provider": "<inference-provider>", "serviceId": "<model-service>" }]`.
+  These are inference destinations, not the routing service's own provider or
+  service. Omit the list to allow all eligible models supported by the router;
+  an explicit empty list allows none. The buyer still enforces its own policy.
+- Setting `router` clears the default model. Setting `{ "model": "<model-id>" }`
+  clears the router. Sending both a nonempty `model` and a non-null `router` is
+  rejected. `{ "model": null, "router": null }` clears both defaults.
+
+The route is persisted in the buyer's state. `GET /_antseed/route` and a successful
+POST return `{ "ok": true, "model": null, "router": { ... } }` in router mode;
+they do not wrap the route in a `selection` field. Updating the default affects
+subsequent requests, not an already-running request.
+
+Send inference with the `antseed` alias to use that default router:
+
+```bash
+curl http://localhost:8377/v1/chat/completions \
+  -H 'content-type: application/json' \
+  -d '{
+    "model": "antseed",
+    "messages": [{ "role": "user", "content": "Help me plan this implementation" }]
+  }'
+```
+
+Concrete model requests and explicit seller/model pins remain overrides. The
+desktop also synchronizes this default for connected apps. Selecting a routing
+service does not require changing the buyer's `--router` plugin.
+
+### Ranking, payment, and conversation access
+
+Antseed uses [Inference Routing Protocol (IRP)](https://github.com/inference-routing/spec/blob/main/SPEC.md)
+**suggest-only** mode. The buyer fetches the selected service's models with free
+`GET /v1/routing/models`, cached for 60 seconds. It sends supported, policy-allowed
+candidates to `POST /v1/routing/rank` with `id`, `model`, and `pricing`; responses
+rank them using `candidate_id`. Seller model names are mapped to the router's
+names by canonical model key. The purchased service and provider travel in
+`x-antseed-service` and `x-antseed-provider`, not in the IRP body.
+
+The router **only ranks**. The buyer sends the inference request to the chosen
+seller, and pays the router and inference seller separately. Each successful
+ranking costs **one completed request** at the router's advertised price, even
+when it ranks several candidates. Tool-loop continuations can reuse the ranking
+for the same user turn when its router, settings, and candidates are unchanged.
+An IRP 422 refreshes the model list and retries ranking once without broadening
+the allowlist; unsuccessful rank responses are not billed as completed requests.
+
+:::warning Conversation access
+The router sees the **whole conversation supplied with the request**, not just
+the last user message. Chat Completions, Anthropic Messages, and Responses inputs
+are rendered as an OpenAI Chat Completions request for IRP, including the system
+prompt, history, supported tool calls/results, and images. Fields without an
+equivalent in that format can be dropped. Select a router you trust with this
+content; choosing one adds a recipient beyond the inference seller.
+:::
+
 ## How Routing Works
 
-When you send a request:
+For a concrete model request, rather than delegating model choice to a routing service:
 
 1. The proxy resolves an explicit peer pin when present (header > `<peerId>@<model>` prefix > session pin).
 2. Without a pin, it canonicalizes the requested model, finds compatible offers, applies the shared `buyer.routingPreferences`, and ranks eligible sellers by Price + Trust plus health signals.

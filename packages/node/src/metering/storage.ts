@@ -19,6 +19,15 @@ export interface FreeTierConsumption {
   limitedBy: FreeTierLimitKind | null;
 }
 
+export interface FreeTierUsageInput {
+  buyerAddress: string;
+  remoteIp: string | null;
+  maxRequestsPerAddress: number | null;
+  maxRequestsPerIp: number | null;
+  windowMs: number;
+  nowMs?: number;
+}
+
 export interface FreeTierLimitCheck {
   kind: FreeTierLimitKind;
   limit: number;
@@ -367,24 +376,27 @@ export class MeteringStorage {
    * Each configured limit (buyer address, remote IP) is checked; the request
    * is recorded only when every applicable limit still has headroom.
    */
-  consumeFreeTierRequest(input: {
-    buyerAddress: string;
-    remoteIp: string | null;
-    service: string;
-    maxRequestsPerAddress: number | null;
-    maxRequestsPerIp: number | null;
-    windowMs: number;
-    nowMs?: number;
-  }): FreeTierConsumption {
+  consumeFreeTierRequest(input: FreeTierUsageInput & { service: string }): FreeTierConsumption {
+    return this.evaluateFreeTierRequest(input, input.service);
+  }
+
+  /** Check admission without recording a request or changing the quota. */
+  checkFreeTierRequest(input: FreeTierUsageInput): FreeTierConsumption {
+    return this.evaluateFreeTierRequest(input, null);
+  }
+
+  private evaluateFreeTierRequest(input: FreeTierUsageInput, service: string | null): FreeTierConsumption {
     const nowMs = input.nowMs ?? Date.now();
     const windowStart = nowMs - input.windowMs;
     const buyerAddress = input.buyerAddress.toLowerCase();
     const remoteIp = input.remoteIp ?? '';
     const pruneIntervalMs = Math.min(input.windowMs, 60 * 60_000);
     if (
-      this.lastFreeTierPruneAt === null
-      || nowMs < this.lastFreeTierPruneAt
-      || nowMs - this.lastFreeTierPruneAt >= pruneIntervalMs
+      service !== null && (
+        this.lastFreeTierPruneAt === null
+        || nowMs < this.lastFreeTierPruneAt
+        || nowMs - this.lastFreeTierPruneAt >= pruneIntervalMs
+      )
     ) {
       this.db.prepare('DELETE FROM free_tier_usage WHERE timestamp < ?').run(windowStart);
       this.lastFreeTierPruneAt = nowMs;
@@ -406,11 +418,11 @@ export class MeteringStorage {
         checks.push({ kind: 'ip', limit: input.maxRequestsPerIp, ...countUsage('remote_ip', remoteIp) });
       }
       const decision = evaluateFreeTierLimits(checks, input.windowMs, nowMs);
-      if (decision.allowed) {
+      if (decision.allowed && service !== null) {
         this.db.prepare(`
           INSERT INTO free_tier_usage (buyer_address, remote_ip, service, timestamp)
           VALUES (?, ?, ?, ?)
-        `).run(buyerAddress, remoteIp, input.service, nowMs);
+        `).run(buyerAddress, remoteIp, service, nowMs);
       }
       return decision;
     });

@@ -132,12 +132,6 @@ describe('BuyerPaymentNegotiator', () => {
   });
 
   describe('preparePreRequestAuth', () => {
-    it('does not run generic catch-up authorization for completed-request 402s on an existing session', async () => {
-      bpm.getActiveSession.mockReturnValue({ sessionId: 'existing' } as any);
-      expect(await negotiator.negotiateUnitBillingPayment(peer, conn)).toBe(false);
-      expect(bpm.signPerRequestAuth).not.toHaveBeenCalled();
-      expect(bpm.authorizeSpending).not.toHaveBeenCalled();
-    });
     it('no-ops when peer is not locked', async () => {
       await negotiator.preparePreRequestAuth(peer, conn);
       expect(bpm.signPerRequestAuth).not.toHaveBeenCalled();

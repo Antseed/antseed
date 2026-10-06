@@ -6,12 +6,11 @@ import { mkdtemp, rm } from 'node:fs/promises';
 import { createServer } from 'node:http';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { AntseedNode, resolveServiceBillingOffer } from '@antseed/node';
+import { AntseedNode, validateRoutingRankResponse } from '@antseed/node';
 import { resolveInstancePorts } from '../../apps/desktop/scripts/dev-instance-config.mjs';
 import { GESUNDAI_TARGET } from '../scripts/gesundai-router.mjs';
-import { validateRoutingResponse } from '../../plugins/router-levanto/src/validation.js';
 
-it('discovers the standalone fake router, serves its catalog API and buys a free recommendation over real P2P', async () => {
+it('discovers the standalone fake router, lists its IRP models and buys a free recommendation over real P2P', async () => {
   const instance = `levanto-test-${randomUUID().slice(0, 8)}`;
   const directory = await mkdtemp(join(tmpdir(), 'levanto-dev-buyer-'));
   let available = true;
@@ -41,35 +40,22 @@ it('discovers the standalone fake router, serves its catalog API and buys a free
     const peer = (await buyer.discoverPeers()).find((candidate) => candidate.peerId === peerId);
     expect(peer, output).toBeDefined();
     expect(peer!.metadata!.displayName).toBe('Levanto');
-    const routerApi = output.match(/Router API: (http:\/\/\S+)/)![1]!;
-    const routingCatalog = await (await fetch(`${routerApi}/_antseed/route/catalog?provider=fake-levanto&service=levanto-route`)).json();
-    expect((await fetch(`${routerApi}/_antseed/route/catalog?provider=fake-levanto&service=other`)).status).toBe(404);
-    expect(routingCatalog.title).toBe('Auto Router');
-    expect(routingCatalog.models).toEqual([{ provider: GESUNDAI_TARGET.provider, serviceId: GESUNDAI_TARGET.serviceId }]);
-    expect(routingCatalog.preferencesSchema.properties.cqt).toMatchObject({
-      title: 'Cost quality', description: 'Set your preferred balance between cost and response quality.',
-    });
-    const offer = resolveServiceBillingOffer(peer!.metadata!.providers, 'fake-levanto', 'levanto-route');
-    expect(offer.unitModel.components[0]!.priceUsd).toBe(0);
-    const body = { v: 1, preferences: { cqt: '5' }, service: 'levanto-route', inputMessage: 'Recommend the fixed target',
-      catalogRevision: routingCatalog.revision,
-      promptTokens: 5, expectedCachedTokens: [], constraints: { allowedPeerIds: [GESUNDAI_TARGET.peerId], allowedCandidates: [GESUNDAI_TARGET] } };
-    const send = () => buyer.sendRequest(peer!, { requestId: randomUUID(), method: 'POST', path: '/_antseed/levanto-route',
-      headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) }, {
-      unitBilling: offer, maxFeeMicroUsdc: '0', acceptResponse: (response) => {
-        validateRoutingResponse(JSON.parse(Buffer.from(response.body).toString()), body);
-        return true;
-      },
-    });
+    const headers = { 'content-type': 'application/json', 'x-antseed-provider': 'fake-levanto', 'x-antseed-service': 'levanto-route' };
+    const models = await buyer.sendRequest(peer!, { requestId: randomUUID(), method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() }, { controlPlane: true });
+    expect(JSON.parse(Buffer.from(models.body).toString())).toEqual({ object: 'list', data: [{ id: GESUNDAI_TARGET.serviceId, object: 'model' }] });
+    const candidate = { id: GESUNDAI_TARGET.provider + ':' + GESUNDAI_TARGET.serviceId + '@' + GESUNDAI_TARGET.peerId,
+      model: GESUNDAI_TARGET.serviceId, pricing: { input: 0.65, cache_read: 0.07, output: 3.25 } };
+    const body = { request: { messages: [{ role: 'user', content: 'Recommend the fixed target' }] },
+      routing: { cost_quality_tradeoff: 5, candidates: [candidate] } };
+    const send = () => buyer.sendRequest(peer!, { requestId: randomUUID(), method: 'POST', path: '/v1/routing/rank',
+      headers, body: Buffer.from(JSON.stringify(body)) });
     const response = await send();
     expect(response.statusCode).toBe(200);
-    expect(validateRoutingResponse(JSON.parse(Buffer.from(response.body).toString()), body)).toEqual([
-      { peer: GESUNDAI_TARGET.peerId, model: GESUNDAI_TARGET.serviceId, provider: GESUNDAI_TARGET.provider },
-    ]);
+    expect(validateRoutingRankResponse(JSON.parse(Buffer.from(response.body).toString()), [candidate])).toEqual([{ candidate_id: candidate.id }]);
     available = false;
     const missing = await send();
     expect(missing.statusCode).toBe(503);
-    expect(Buffer.from(missing.body).toString()).toContain('not available');
+    expect(JSON.parse(Buffer.from(missing.body).toString()).ranked).toBeUndefined();
   } finally {
     await buyer.stop();
     child.kill('SIGINT');

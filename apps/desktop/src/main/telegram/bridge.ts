@@ -376,9 +376,9 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       const port = await engine.getProxyPort();
       const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/route`, { signal: AbortSignal.timeout(5_000) });
       if (!response.ok) throw new Error(`Read route failed (${response.status})`);
-      const body = await response.json() as { ok?: boolean; selection?: { kind: string; model?: string | null } };
-      if (body.selection?.kind === 'router') return { service: 'antseed' };
-      const model = telegramRouteModel(body.selection);
+      const body = await response.json() as { ok?: boolean; model?: string | null; router?: unknown };
+      if (!body.model && body.router) return { service: 'antseed' };
+      const model = telegramRouteModel({ kind: 'model', model: body.model });
       const at = model.indexOf('@');
       if (at > 0) {
         routed = { peerId: model.slice(0, at), service: model.slice(at + 1) };

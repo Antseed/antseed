@@ -33,7 +33,7 @@ export function buyerDefaultRoutePayload(
 /** Resolve the current AI VPN selection to a concrete peer + model target. */
 function resolveRouteTarget(uiState: RendererUiState): VprRouteTarget | null {
   const selection = uiState.vprRouteSelection;
-  if (selection.router) return { peerId: selection.router.service.peerId, model: 'antseed', servedModels: ['antseed', 'levanto-auto'] };
+  if (selection.router) return { peerId: selection.router.service.peerId, model: 'antseed', servedModels: ['antseed'] };
   if (!selection.model) return null;
   const selectedEntry = uiState.vprModelCatalog.find((entry) => (
     entry.provider === selection.model?.provider && entry.serviceId === selection.model.serviceId
@@ -114,14 +114,14 @@ export async function syncBuyerDefaultRoute(
     if (!current.ok) return false;
     if (!uiState.vprRouteHydrated && uiState.vprRouteSelection === previous) {
       if (current.selection?.kind === 'router') {
-        const restored = { service: current.selection.service, preferences: current.selection.preferences ?? {}, allowedModels: current.selection.allowedModels };
+        const restored = { service: current.selection.service, costQualityTradeoff: current.selection.costQualityTradeoff, allowedModels: current.selection.allowedModels };
         if (!isDesktopRouterSelection(restored)) {
           uiState.vprRouteError = 'The saved router selection is unsupported. Choose a model or a compatible routing service.';
           notifyUiStateChanged();
           return false;
         }
         uiState.vprRouteSelection = { model: null, mode: 'auto', peerId: null,
-          router: createDesktopRouterSelection(restored.service, restored.preferences, restored.allowedModels) };
+          router: createDesktopRouterSelection(restored.service, restored.costQualityTradeoff, restored.allowedModels) };
         uiState.vprDefaultModelProvisional = false;
         saveVprRouteSelection(uiState.vprRouteSelection);
         notifyUiStateChanged();

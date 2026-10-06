@@ -296,13 +296,81 @@ The `--upstream` flag maps the buyer-facing service name to the upstream model i
 
 For an `openai-images` service, `outputs: ["image"]` identifies an image result. Input modalities are an operational routing contract: `inputs: ["text"]` means generation only, while `inputs: ["text", "image"]` means the seller can accept both `/v1/images/generations` and multipart `/v1/images/edits`. Do not advertise `image` input merely because the upstream platform offers editing somewhere; the exact configured service and provider adapter must support the edit request end to end. In particular, Venice-backed services must remain generation-only until Antseed has a native Venice edit adapter.
 
-Unit billing is currently supported by the `openai` provider for `openai-images`; startup warns if a different plugin ignores the setting. Image services remain advertised but are skipped by periodic health checks to avoid generating paid probe images.
+The built-in `openai` provider supports the image unit-billing configuration above for `openai-images`; startup warns if a plugin ignores the setting. Image services remain advertised but are skipped by periodic health checks to avoid generating paid probe images. Custom model-ranking providers use the separate `model-routing` completed-request billing described below.
 
 You only have to do this once per service. To see what you've configured:
 
 ```bash
 antseed config seller show
 ```
+
+### Offering a model-routing service
+
+A routing service is a provider that **ranks the buyer's inference candidates**,
+not a provider that executes or forwards the buyer's inference. Implement
+[Inference Routing Protocol (IRP)](https://github.com/inference-routing/spec/blob/main/SPEC.md)
+**suggest-only mode** in your provider's request handler and advertise the
+`model-routing` service API protocol. The built-in buyer client can select it
+without a service-specific buyer router plugin.
+
+For a custom `Provider` implementation, the relevant metadata fields look like
+this. The `$0.001` ranking fee is an example; set your own `priceUsd`:
+
+```json
+{
+  "services": ["alpha-route"],
+  "serviceApiProtocols": {
+    "alpha-route": ["model-routing"]
+  },
+  "serviceUnitBillingModels": {
+    "alpha-route": {
+      "model-routing": {
+        "version": 1,
+        "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }]
+      }
+    }
+  },
+  "pricing": {
+    "defaults": { "inputUsdPerMillion": 0, "outputUsdPerMillion": 0 }
+  }
+}
+```
+
+These are fields on the provider implementation, not a complete `config.json`
+or a claim that an existing inference plugin implements IRP. Your provider must
+handle both endpoints:
+
+| Endpoint | Response | Billing |
+| --- | --- | --- |
+| `GET /v1/routing/models` | IRP `{ "object": "list", "data": [{ "id": "<model-name>", "object": "model" }] }` | Free control-plane request, rate limited by the seller node |
+| `POST /v1/routing/rank` | IRP `routing.ranking` with `id`, `created`, `router`, and a nonempty `ranked` list referencing `candidate_id` | One `completed_requests` unit per successful ranking, not per candidate |
+
+Buyers send `x-antseed-service` to identify the routing service and
+`x-antseed-provider` to select its provider. Keep Antseed service identity in
+those headers, not in the IRP body. The rank body contains the inference
+`request` and `routing.candidates`; each candidate has an `id`, a `model` name
+from your models list, and `pricing`. Return the candidate IDs you rank rather
+than introducing destinations the buyer did not offer. The buyer maps seller
+model names to your listed names using canonical model keys.
+
+Interpret optional `routing.cost_quality_tradeoff` as an integer from **0 (best
+quality)** to **10 (cheapest)**, with default **5** when absent. Buyers expose
+the same setting as `costQualityTradeoff`. Return IRP problem details for
+errors; a 422 causes the buyer to refresh your model list and retry once with
+its allowlist still enforced.
+
+The router receives the **whole conversation included in the inference
+request**, rendered in the IRP request format, including supported system
+messages, history, tool calls/results, and images. Account for this content in
+your service's data handling. After ranking, the buyer sends inference directly
+to the chosen seller and pays that seller separately; your routing fee pays for
+the ranking only. Recognized tool-loop continuations can reuse an accepted
+ranking rather than call your service again.
+
+See [the repository's Antseed IRP binding](https://github.com/AntSeed/antseed/blob/main/docs/protocol/model-routing.md)
+for complete request/response examples and errors, and
+[the buyer API guide](/docs/guides/using-the-api#select-a-routing-service) for
+selecting your service.
 
 ## 8. Set Your API Key and Start Selling
 

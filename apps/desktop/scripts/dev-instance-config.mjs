@@ -20,6 +20,5 @@ export function resolveInstancePorts(instanceName) {
     systemProxy: 8378 + slot,
     levantoDht: 18000 + slot,
     levantoSignaling: 20000 + slot,
-    levantoHttp: 22000 + slot,
   };
 }

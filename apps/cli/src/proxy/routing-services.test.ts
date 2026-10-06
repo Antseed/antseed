@@ -1,56 +1,41 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
 import type { PeerInfo } from '@antseed/node';
+import { ModelRoutingClient } from '@antseed/router-core';
 import { buildRoutingServices } from './routing-services.js';
-import { createRoutingServiceMetadata, type RoutingCatalogV1, type Router } from '@antseed/node';
-import { RoutingCatalogCache } from './routing-catalog-cache.js';
+import { RoutingModelsCache } from './router-execution.js';
 
-function createRoutingCatalog(models: RoutingCatalogV1['models'], preferencesSchema: RoutingCatalogV1['preferencesSchema'] = { type: 'object', properties: {}, additionalProperties: false }, options: { title?: string } = {}): RoutingCatalogV1 {
-  return { version: 1, revision: 'test-catalog-1', models, preferencesSchema, ...options };
-}
+const node = { sendRequest: async () => { throw new Error('unused'); } };
+const client = { listModels: async () => ['openai/gpt-5'], selectRoute: async () => null };
 
-const identity = { peerId: 'a'.repeat(40) as PeerInfo['peerId'] };
-const noSchema = createRoutingServiceMetadata({ type: 'object', properties: {}, additionalProperties: false });
-function routerWith(getCatalog?: () => Promise<RoutingCatalogV1 | undefined>): Router {
-  return { selectPeer: () => null, onResult: () => {}, getModelRouterAdapter: target => {
-    if (target.serviceId !== 'routing') throw new Error('Unsupported');
-    return { routingMetadata: noSchema, selectRoute: async () => null, ...(getCatalog ? { getCatalog } : {}) };
+function peer(): PeerInfo {
+  const peerId = 'a'.repeat(40) as PeerInfo['peerId'];
+  return { peerId, lastSeen: 0, providers: ['router'], displayName: 'Test router',
+    providerServiceApiProtocols: { router: { services: { routing: ['model-routing'], image: ['openai-images'], 'gpt-5': ['openai-chat-completions'] } } },
+    metadata: {
+    peerId, version: 12, region: 'test', timestamp: 0, signature: '', providers: [{
+      provider: 'router', services: ['routing', 'image', 'gpt-5'],
+      defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, maxConcurrency: 10, currentLoad: 0,
+      serviceApiProtocols: { routing: ['model-routing'], image: ['openai-images'], 'gpt-5': ['openai-chat-completions'] },
+      serviceUnitBillingModels: {
+        routing: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.01 }] } },
+      },
+    }],
   } };
 }
 
-function peer(): PeerInfo {
-  const peerId = identity.peerId;
-  return { peerId, lastSeen: 0, providers: ['levanto'], displayName: 'Test router', metadata: {
-    peerId, version: 12, region: 'test', timestamp: 0, signature: '', providers: [{
-    provider: 'levanto', services: ['routing', 'image'],
-    defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, maxConcurrency: 10, currentLoad: 0,
-    serviceApiProtocols: { routing: ['levanto-routing'], image: ['openai-images'] },
-    serviceUnitBillingModels: {
-      routing: { 'levanto-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
-      image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.01 }] } },
-    },
-  }] } };
-}
-
-test('routing discovery exposes exact completed-request offers without image services', async () => {
-  assert.deepEqual(await buildRoutingServices([peer()]), [{ peerId: identity.peerId, provider: 'levanto', serviceId: 'routing', label: 'Test router', sellerName: 'Test router', priceMicroUsdc: '1000' }]);
-});
-
-test('router title comes from the plugin catalog and seller name from discovery, with provider fallback', async () => {
-  const advertised = peer();
-  advertised.displayName = 'Levanto';
-  const router = routerWith(async () => createRoutingCatalog([], undefined, { title: 'Auto Router' }));
-  const found = (await buildRoutingServices([advertised], router))[0]!;
-  assert.equal(found.label, 'Auto Router');
-  assert.equal(found.sellerName, 'Levanto');
-  assert.equal(found.provider, 'levanto');
-  delete advertised.displayName;
-  assert.equal((await buildRoutingServices([advertised], router))[0]!.sellerName, 'levanto');
-  assert.equal((await buildRoutingServices([advertised], router))[0]!.label, 'Auto Router');
-  const unknown = (await buildRoutingServices([advertised], routerWith()))[0]!;
-  assert.equal(unknown.label, 'levanto');
-  assert.equal(unknown.catalog, undefined);
-  assert.equal(unknown.catalogError, undefined);
+test('discovery exposes IRP completed-request offers and canonically matched network models', async () => {
+  const services = await buildRoutingServices([peer()], client, node);
+  assert.equal(services.length, 1);
+  const found = services[0]!;
+  assert.equal(found.serviceId, 'routing');
+  assert.equal(found.priceMicroUsdc, '1000');
+  assert.equal(found.label, 'Test router');
+  assert.deepEqual(found.catalog, { models: [{ provider: 'router', serviceId: 'gpt-5' }] });
+  const unnamed = peer();
+  delete unnamed.displayName;
+  assert.equal((await buildRoutingServices([unnamed], client, node))[0]!.label, 'router');
 });
 
 test('missing, ambiguous and token-only offers cannot become routing purchases', async () => {
@@ -60,47 +45,49 @@ test('missing, ambiguous and token-only offers cannot become routing purchases',
   ambiguous.metadata!.providers.push(structuredClone(ambiguous.metadata!.providers[0]!));
   const tokenOnly = peer();
   delete tokenOnly.metadata!.providers[0]!.serviceUnitBillingModels;
-  assert.deepEqual(await buildRoutingServices([missing, ambiguous, tokenOnly]), []);
+  assert.deepEqual(await buildRoutingServices([missing, ambiguous, tokenOnly], client, node), []);
 });
 
-test('router discovery publishes plugin catalogs, caches them and surfaces catalog errors', async (context) => {
+test('discovery caches listModels, surfaces failures and recovers without stale data', async (context) => {
   context.mock.timers.enable({ apis: ['Date'], now: 1_000 });
-  const catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]);
   let calls = 0;
   let fail = false;
-  const router = routerWith(async () => { calls++; if (fail) throw new Error('Router catalog unavailable (503)'); return catalog; });
-  const cache = new RoutingCatalogCache(60_000);
-  const found = (await buildRoutingServices([peer()], router, cache))[0]!;
-  assert.deepEqual(found.catalog, catalog);
+  const routingClient = { ...client, listModels: async () => {
+    calls++;
+    if (fail) throw new Error('Router models unavailable (503)');
+    return ['openai/gpt-5'];
+  } };
+  const cache = new RoutingModelsCache(60_000);
+  const found = (await buildRoutingServices([peer()], routingClient, node, cache))[0]!;
   assert.equal(found.catalogExpiresAt, 61_000);
-  await buildRoutingServices([peer()], router, cache);
+  await buildRoutingServices([peer()], routingClient, node, cache);
   assert.equal(calls, 1);
   fail = true;
   context.mock.timers.setTime(62_000);
-  const failed = (await buildRoutingServices([peer()], router, cache))[0]!;
+  const failed = (await buildRoutingServices([peer()], routingClient, node, cache))[0]!;
   assert.equal(failed.catalog, undefined);
   assert.match(failed.catalogError!, /503/);
   fail = false;
-  context.mock.timers.setTime(68_000);
-  assert.deepEqual((await buildRoutingServices([peer()], router, cache))[0]!.catalog, catalog);
+  assert.deepEqual((await buildRoutingServices([peer()], routingClient, node, cache))[0]!.catalog, found.catalog);
   assert.equal(calls, 3);
 });
 
-test('invalid plugin catalogs are reported instead of trusted', async () => {
-  const catalog = createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]);
-  const found = (await buildRoutingServices([peer()], routerWith(async () => ({ ...catalog, revision: '' }))))[0]!;
-  assert.equal(found.catalog, undefined);
-  assert.match(found.catalogError!, /Invalid routing catalog/);
-});
-
-test('registered routing protocols expose their own enum schemas without Levanto-specific discovery', async () => {
-  const advertised = peer();
-  const provider = advertised.metadata!.providers[0]!;
-  provider.serviceApiProtocols = { routing: ['openai-responses'] };
-  provider.serviceUnitBillingModels = { routing: { 'openai-responses': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0 }] } } };
-  const schema = { type: 'object' as const, additionalProperties: false as const, properties: {
-    mode: { type: 'string' as const, enum: ['quick', 'thorough'], default: 'quick' },
+test('discovery uses free IRP models requests and rejects malformed model responses', async () => {
+  let invalid = false;
+  const routingClient = new ModelRoutingClient();
+  const transport: Parameters<typeof buildRoutingServices>[2] = { sendRequest: async (target, request, options) => {
+    assert.equal(target.peerId, peer().peerId);
+    assert.equal(request.method, 'GET');
+    assert.equal(request.path, '/v1/routing/models');
+    assert.equal(request.headers['x-antseed-service'], 'routing');
+    assert.equal(options?.controlPlane, true);
+    return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from(JSON.stringify(
+      invalid ? { models: ['gpt-5'] } : { object: 'list', data: [{ id: 'openai/gpt-5', object: 'model' }] },
+    )) };
   } };
-  const router = routerWith(async () => createRoutingCatalog([], schema));
-  assert.deepEqual((await buildRoutingServices([advertised], router))[0]!.catalog!.preferencesSchema, schema);
+  assert.ok((await buildRoutingServices([peer()], routingClient, transport))[0]!.catalog);
+  invalid = true;
+  const result = (await buildRoutingServices([peer()], routingClient, transport))[0]!;
+  assert.equal(result.catalog, undefined);
+  assert.ok(result.catalogError);
 });

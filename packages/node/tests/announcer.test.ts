@@ -17,9 +17,6 @@ import {
   CONNECTION_CAPABILITY_TCP_ENC_V1,
 } from '../src/types/protocol.js';
 import { METADATA_VERSION } from '../src/discovery/peer-metadata.js';
-import { resolveServiceBillingOffer } from '@antseed/protocol/service-billing';
-import { decodeMetadata, encodeMetadata, encodeMetadataForSigning } from '../src/discovery/metadata-codec.js';
-import { verifySignature, hexToBytes } from '../src/p2p/identity.js';
 
 function makeBaseConfig(): AnnouncerConfig {
   const privateKey = randomBytes(32);
@@ -136,40 +133,6 @@ describe('PeerAnnouncer capabilities', () => {
 });
 
 describe('PeerAnnouncer metadata versions', () => {
-  it('signs native completed-request and image models together in metadata v12', async () => {
-    const offer = { provider: 'levanto', service: 'levanto-route', serviceApiProtocol: 'levanto-routing' as const, unitModel: { version: 1 as const, components: [{ unit: 'completed_requests' as const, priceUsd: 0.001 }] } };
-    const announcer = new PeerAnnouncer({
-      ...makeBaseConfig(),
-      providers: [{ provider: 'images', services: ['image'], maxConcurrency: 5,
-        serviceApiProtocols: { image: ['openai-images'] },
-        serviceUnitBillingModels: { image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } } },
-      }, { provider: offer.provider, services: [offer.service], maxConcurrency: 5,
-        pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
-        serviceApiProtocols: { [offer.service]: [offer.serviceApiProtocol] },
-        serviceUnitBillingModels: { [offer.service]: { [offer.serviceApiProtocol]: { version: 1, components: [{ unit: 'completed_requests', priceUsd: offer.unitModel.components[0]!.priceUsd }] } } },
-      }],
-    });
-    await announcer.announce();
-    const metadata = announcer.getLatestMetadata()!;
-    const decoded = decodeMetadata(encodeMetadata(metadata));
-    expect(decoded.version).toBe(12);
-    expect(decoded.offerings).toBeUndefined();
-    expect(decoded.capabilities).toEqual([
-      CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
-      CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
-      CONNECTION_CAPABILITY_SIGNED_SDP_V1,
-      CONNECTION_CAPABILITY_TCP_ENC_V1,
-    ].sort());
-    expect(decoded.providers[0]?.services).toEqual(['image']);
-    expect(decoded.providers[0]?.serviceUnitBillingModels?.image?.['openai-images']?.version).toBe(1);
-    expect(resolveServiceBillingOffer(decoded.providers, offer.provider, offer.service)).toEqual({
-      ...offer, unitModel: { version: 1, components: [{ unit: 'completed_requests', priceUsd: Math.fround(0.001) }] },
-    });
-    expect(await verifySignature(decoded.peerId, hexToBytes(decoded.signature), encodeMetadataForSigning(decoded))).toBe(true);
-    const model = decoded.providers.find(provider => provider.provider === offer.provider)!.serviceUnitBillingModels![offer.service]![offer.serviceApiProtocol]!;
-    model.components[0]!.priceUsd = 0.001001;
-    expect(await verifySignature(decoded.peerId, hexToBytes(decoded.signature), encodeMetadataForSigning(decoded))).toBe(false);
-  });
   it('announces current-version metadata carrying configured billing models', async () => {
     const base = makeBaseConfig();
     const announcer = new PeerAnnouncer({

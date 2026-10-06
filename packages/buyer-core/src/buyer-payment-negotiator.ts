@@ -273,7 +273,6 @@ export class BuyerPaymentNegotiator {
         provider: route.provider,
         service: route.service,
         serviceApiProtocol: route.serviceApiProtocol,
-        unitModel: route.unitModel,
         request,
       });
       this._bpm.trackRequestBilling(request.requestId, {
@@ -704,12 +703,6 @@ export class BuyerPaymentNegotiator {
     }
   }
 
-  async negotiateUnitBillingPayment(peer: BuyerPeerView, conn: BuyerConnection): Promise<boolean> {
-    if (this._bpm.getActiveSession(peer.peerId)) return false;
-    await this._negotiatePayment(peer, conn);
-    return true;
-  }
-
   estimateCostFromResponse(
     peer: BuyerPeerView,
     response: SerializedHttpResponse,
@@ -728,7 +721,7 @@ export class BuyerPaymentNegotiator {
       try {
         unitBilling = computeFinalUnitBilling(unitModel, billingEntry.context, response, requestFacts);
       } catch (err) {
-        const observed = extractUnitResponseUsage(response, requestFacts);
+        const observed = extractUnitResponseUsage(response, requestFacts, billingEntry.context.serviceApiProtocol);
         if (requestId) {
           this._bpm.recordObservedUnitUsage(requestId, observed.usage);
         }

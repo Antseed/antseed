@@ -74,7 +74,10 @@
   padding: 8px 0 16px;
   border-bottom: 1px solid var(--border);
 
-  button[aria-haspopup='listbox'] { max-width: 210px; }
+  .settingText { flex-basis: 100%; }
+  input[type='range'] { flex: 1; min-width: 120px; accent-color: var(--brand); }
+  output { font-size: 12px; min-width: 60px; text-align: right; }
+  button { font-size: 12px; }
 }
 
 .allModels {

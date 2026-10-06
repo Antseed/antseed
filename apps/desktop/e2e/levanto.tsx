@@ -31,8 +31,14 @@ const json = async (path: string, body?: unknown) => (await fetch(path, body ===
   method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body),
 })).json();
 const bridge: DesktopBridge = {
-  chatGetBuyerDefaultRoute: () => json('/_antseed/route'),
-  chatSetBuyerDefaultRoute: (payload) => json('/_antseed/route', payload),
+  chatGetBuyerDefaultRoute: async () => {
+    const result = await json('/_antseed/route');
+    return { ...result, selection: result.model ? { kind: 'model', model: result.model }
+      : result.router ? { kind: 'router', ...result.router } : { kind: 'model', model: null } };
+  },
+  chatSetBuyerDefaultRoute: ({ selection }) => json('/_antseed/route', selection.kind === 'router'
+    ? { model: null, router: { service: selection.service, costQualityTradeoff: selection.costQualityTradeoff, allowedModels: selection.allowedModels } }
+    : { model: selection.model, router: null }),
   chatGetRoutingServices: () => json('/_antseed/routing-services'),
   chatAiGetProxyStatus: async () => ({ ok: true, data: { running: true, port: 8377 } }),
   chatAiListDiscoverRows: async () => {
@@ -69,8 +75,8 @@ const bridge: DesktopBridge = {
 };
 const chat = initChatModule({ bridge, uiState: state, appendSystemLog: () => {} });
 registerActions(new Proxy({
-  selectVprRouter: (service, preferences, forConversation, allowedModels) => selectVprRouter(bridge, state, chat, service, preferences, forConversation, allowedModels),
-  updateVprRouterSettings: (service, preferences, allowedModels) => updateVprRouterSettings(bridge, state, service, preferences, allowedModels),
+  selectVprRouter: (service, costQualityTradeoff, forConversation, allowedModels) => selectVprRouter(bridge, state, chat, service, costQualityTradeoff, forConversation, allowedModels),
+  updateVprRouterSettings: (service, costQualityTradeoff, allowedModels) => updateVprRouterSettings(bridge, state, service, costQualityTradeoff, allowedModels),
 } as Partial<AppActions>, { get: (target, key) => Reflect.get(target, key) ?? (() => {}) }) as AppActions);
 
 function Harness() {

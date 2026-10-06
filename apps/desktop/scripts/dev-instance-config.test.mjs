@@ -19,7 +19,6 @@ test('resolveInstancePorts never returns the single-instance defaults or invalid
   assert.notEqual(ports.systemProxy, 8378);
   assert.equal(ports.levantoDht, 18000 + resolveInstanceSlot('0'));
   assert.equal(ports.levantoSignaling, 20000 + resolveInstanceSlot('0'));
-  assert.equal(ports.levantoHttp, 22000 + resolveInstanceSlot('0'));
   for (const port of Object.values(ports)) {
     assert.ok(port > 0 && port <= 65_535);
   }

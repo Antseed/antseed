@@ -1,16 +1,16 @@
 import assert from 'node:assert/strict';
 import { afterEach, test, vi } from 'vitest';
-import { createDesktopRouterSelection, isDesktopRouterSelection, routerPreferenceDefaults, routerPreferenceError } from '../../../shared/routing-selection';
+import { createDesktopRouterSelection, isDesktopRouterSelection } from '../../../shared/routing-selection';
 import { loadVprRouteSelection, saveVprRouteSelection, VPR_ROUTE_SELECTION_STORAGE_KEY } from './preferences';
 import { createInitialUiState } from '../../core/state';
 
 afterEach(() => vi.unstubAllGlobals());
 
-test('router persistence round-trips arbitrary text-enum settings without hardcoding fields or values', () => {
+test('router persistence round-trips IRP integer settings including both endpoints and the unset default', () => {
   const storage = new Map<string, string>();
   vi.stubGlobal('localStorage', { getItem: (key: string) => storage.get(key), setItem: (key: string, value: string) => storage.set(key, value) });
   const offer = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route', label: 'Display only', priceMicroUsdc: '1000' };
-  for (const preferences of [{ strategy: 'fast', region: 'eu' }, { cqt: '2' }, {}]) {
+  for (const preferences of [0, 5, 10, undefined]) {
     const router = createDesktopRouterSelection(offer, preferences, [{ provider: 'openai', serviceId: 'model-a' }]);
     assert.deepEqual(Object.keys(router.service).sort(), ['peerId', 'provider', 'serviceId']);
     const selection = { model: null, mode: 'auto' as const, peerId: null, router };
@@ -22,27 +22,24 @@ test('router persistence round-trips arbitrary text-enum settings without hardco
 });
 
 test('desktop allowlists reject malformed entries and preserve an explicit empty list', () => {
-  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, {}, []);
+  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, undefined, []);
   assert.equal(isDesktopRouterSelection(router), true);
   for (const allowedModels of [null, ['model-a'], [{ provider: 'openai' }], [{ provider: '', serviceId: 'model-a' }]]) {
     assert.equal(isDesktopRouterSelection({ ...router, allowedModels }), false);
   }
 });
 
-test('advertised defaults and required enums validate without inventing a selection', () => {
-  const schema = { type: 'object' as const, additionalProperties: false as const, required: ['region'], properties: {
-    strategy: { type: 'string' as const, enum: ['fast', 'balanced'], default: 'balanced' },
-    region: { type: 'string' as const, enum: ['eu', 'us'] },
-  } };
-  assert.deepEqual(routerPreferenceDefaults(schema), { strategy: 'balanced' });
-  assert.match(routerPreferenceError(schema, {})!, /region/);
-  assert.equal(routerPreferenceError(schema, { region: 'eu' }), null);
-  assert.match(routerPreferenceError(schema, { region: 'removed' })!, /advertised value/);
-  assert.match(routerPreferenceError(schema, { oldSetting: 'x' })!, /no longer advertised/);
+test('invalid IRP tradeoffs and legacy preferences cannot be restored', () => {
+  const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' };
+  for (const costQualityTradeoff of [-1, 11, 2.5, NaN, Infinity, '5', null]) {
+    assert.equal(isDesktopRouterSelection({ service, costQualityTradeoff }), false);
+  }
+  assert.equal(isDesktopRouterSelection({ service, preferences: { tradeoff: '9' } }), false);
+  assert.equal(isDesktopRouterSelection({ service }), true);
 });
 
-test('missing preferences and malformed targets are not restored as paid router selections', () => {
-  for (const value of [null, {}, [], { service: null }, { service: { peerId: 'bad', provider: 'levanto', serviceId: 'route' }, preferences: { cqt: '5' } }]) {
+test('Malformed targets are not restored as paid router selections', () => {
+  for (const value of [null, {}, [], { service: null }, { service: { peerId: 'bad', provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 5 }]) {
     assert.equal(isDesktopRouterSelection(value), false);
   }
 });

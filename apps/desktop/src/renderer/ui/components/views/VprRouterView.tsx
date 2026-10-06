@@ -1,13 +1,12 @@
 import { useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
-import { HierarchyIcon, InformationCircleIcon, PreferenceHorizontalIcon } from '@hugeicons/core-free-icons';
-import { routerPreferenceDefaults, routerPreferenceError, routingServiceKey, type RouterPreferences, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
+import { HierarchyIcon, InformationCircleIcon } from '@hugeicons/core-free-icons';
+import { routingServiceKey, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
 import { useUiSelector, shallowEqual } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { projectRowsToVprModelCatalog } from '../../../modules/catalog/model-catalog';
 import { loadVprRouterSettings } from '../../../modules/routing/preferences';
 import { VprPage, VprSearch, VprStatRow, VprStatTile } from '../vpr/VprKit';
-import { VprFilterDropdown } from '../vpr/VprFilterDropdown';
 import { VprModelRowList } from '../vpr/VprModelRows';
 import { routerPriceLabel } from '../vpr/VprRouterOptions';
 import { InfoTooltip } from '../InfoTooltip';
@@ -23,12 +22,8 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const key = routingServiceKey(service);
   const current = snapshot.services.find((entry) => routingServiceKey(entry) === key);
   const active = !!snapshot.selected && routingServiceKey(snapshot.selected.service) === key;
-  const schema = current?.catalog?.preferencesSchema;
   const [initialSettings] = useState(() => active ? snapshot.selected : loadVprRouterSettings(service));
-  const [draft, setDraft] = useState<RouterPreferences | null>(initialSettings ? { ...initialSettings.preferences } : null);
-  const defaults = routerPreferenceDefaults(schema);
-  const preferences = { ...defaults, ...draft };
-  const preferencesError = routerPreferenceError(schema, preferences);
+  const [costQualityTradeoff, setCostQualityTradeoff] = useState<number | undefined>(initialSettings?.costQualityTradeoff);
   const [allowedModels, setAllowedModels] = useState<RouterAllowedModel[] | undefined>(initialSettings?.allowedModels);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
@@ -47,11 +42,11 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const tooManyModels = (allowedModels?.length ?? 0) > 512;
   const noAvailableModels = !!supported && !catalog.some(model => checkedKeys.has(modelKey(model)));
   const label = current?.label ?? service.label;
-  function updateSettings(nextPreferences: RouterPreferences, nextAllowedModels: RouterAllowedModel[] | undefined): void {
-    setDraft(nextPreferences);
+  function updateSettings(nextCostQualityTradeoff: number | undefined, nextAllowedModels: RouterAllowedModel[] | undefined): void {
+    setCostQualityTradeoff(nextCostQualityTradeoff);
     setAllowedModels(nextAllowedModels);
     try {
-      actions.updateVprRouterSettings(service, nextPreferences, nextAllowedModels);
+      actions.updateVprRouterSettings(service, nextCostQualityTradeoff, nextAllowedModels);
       setSaveError(null);
     } catch (error) {
       setSaveError(`Could not save router settings: ${error instanceof Error ? error.message : String(error)}`);
@@ -60,7 +55,7 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   function toggleModel(provider: string, serviceId: string): void {
     const model = { provider, serviceId };
     const selected = allowedModels ?? catalog.map(({ provider, serviceId }) => ({ provider, serviceId }));
-    updateSettings(preferences, selected.some(entry => modelKey(entry) === modelKey(model))
+    updateSettings(costQualityTradeoff, selected.some(entry => modelKey(entry) === modelKey(model))
       ? selected.filter(entry => modelKey(entry) !== modelKey(model)) : [...selected, model]);
   }
   return <section className={`view view-vpr-model view-pinned-header ${styles.view}`} role="tabpanel">
@@ -75,8 +70,8 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
             <div className={modelStyles.badgeRow}><span className={modelStyles.modelTag}>Router</span></div>
           </div>
           <button type="button" className={modelStyles.use} aria-label={active ? 'Selected router' : 'Use router'}
-            disabled={active || !current || !!catalogError || !!preferencesError || emptySelection || tooManyModels || noAvailableModels}
-            onClick={() => { if (current) actions.selectVprRouter(current, preferences, false, allowedModels); }}>
+            disabled={active || !current || !supported || !!catalogError || emptySelection || tooManyModels || noAvailableModels}
+            onClick={() => { if (current) actions.selectVprRouter(current, costQualityTradeoff, false, allowedModels); }}>
             {active ? 'Selected' : 'Use'}
           </button>
         </div>
@@ -94,33 +89,24 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
           </VprStatRow>
         </div>
         <h2>Router settings</h2>
-        {Object.entries(schema?.properties ?? {}).map(([name, field]) => {
-          const label = field.title ?? name;
-          const value = preferences[name] ?? '';
-          const options = field.enum.map(choice => ({ value: choice, label: choice, icon: <HugeiconsIcon icon={PreferenceHorizontalIcon} size={16} /> }));
-          if (!value || (!schema?.required?.includes(name) && field.default === undefined)) options.unshift({ value: '', label: schema?.required?.includes(name) ? 'Choose a value' : 'Not set', icon: <HugeiconsIcon icon={PreferenceHorizontalIcon} size={16} /> });
-          if (value && !field.enum.includes(value)) options.unshift({ value, label: `${value} (unavailable)`, icon: <HugeiconsIcon icon={PreferenceHorizontalIcon} size={16} /> });
-          return <div className={styles.settings} key={name}>
-            <div className={styles.settingText}><h3>{label}</h3>{field.description && <p className={styles.hint}>{field.description}</p>}</div>
-            <VprFilterDropdown label={label} value={value} options={options} align="end" onChange={choice => {
-              const next = { ...preferences };
-              if (choice === '') delete next[name]; else next[name] = choice;
-              updateSettings(next, allowedModels);
-            }} />
-          </div>;
-        })}
-        {!Object.keys(schema?.properties ?? {}).length && <p className={styles.hint}>This router does not advertise configurable settings.</p>}
-        {Object.keys(preferences).filter(name => !schema || !Object.prototype.hasOwnProperty.call(schema.properties, name)).map(name =>
-          <div className={styles.settings} key={name}><span>{name}: {preferences[name]} (unavailable)</span><button type="button" onClick={() => {
-            const next = { ...preferences }; delete next[name]; updateSettings(next, allowedModels);
-          }}>Remove {name}</button></div>)}
-        {preferencesError && <p role="alert" className={styles.hint}>{preferencesError}</p>}
+        <div className={styles.settings}>
+          <div className={styles.settingText}>
+            <h3><label htmlFor="router-cost-quality">Cost / quality</label></h3>
+            <p className={styles.hint}>0 = best quality · 10 = cheapest. Unset uses the router default (5).</p>
+          </div>
+          <input id="router-cost-quality" type="range" min={0} max={10} step={1}
+            value={costQualityTradeoff ?? 5} aria-valuetext={costQualityTradeoff === undefined ? 'Router default (5)' : String(costQualityTradeoff)}
+            onChange={event => updateSettings(Number(event.currentTarget.value), allowedModels)} />
+          <output htmlFor="router-cost-quality">{costQualityTradeoff ?? 'Default (5)'}</output>
+          <button type="button" disabled={costQualityTradeoff === undefined}
+            onClick={() => updateSettings(undefined, allowedModels)}>Use router default</button>
+        </div>
         <div className={styles.modelHeading}>
           <h2>Allowed models</h2>
           {supported && <label className={styles.allModels}><input type="checkbox" checked={allowedModels === undefined} disabled={!!catalogError}
-            onChange={event => updateSettings(preferences, event.currentTarget.checked ? undefined : [])} />All supported models</label>}
+            onChange={event => updateSettings(costQualityTradeoff, event.currentTarget.checked ? undefined : [])} />All supported models</label>}
         </div>
-        {!supported && !catalogError && <p role="status" className={styles.hint}>This router does not publish its supported models. Support is unknown; requests still restrict recommendations to eligible models.</p>}
+        {!supported && !catalogError && <p role="status" className={styles.hint}>Router models are not available yet. Refresh discovery before routing.</p>}
         {catalogError && <p role="alert" className={styles.hint}>{catalogError}</p>}
         {supported && <>
         <p className={styles.hint}>Choose which supported models this router can use. If the router returns no allowed model, the request fails.</p>

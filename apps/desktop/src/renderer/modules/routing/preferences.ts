@@ -197,6 +197,6 @@ export function loadVprRouterSettings(service: RoutingServiceTarget): DesktopRou
 export function saveVprRouterSettings(settings: DesktopRouterSelection): void {
   if (!isDesktopRouterSelection(settings)) throw new Error('Invalid router settings');
   if (typeof localStorage === 'undefined') return;
-  const stored = createDesktopRouterSelection(settings.service, settings.preferences, settings.allowedModels);
+  const stored = createDesktopRouterSelection(settings.service, settings.costQualityTradeoff, settings.allowedModels);
   localStorage.setItem(routerSettingsStorageKey(settings.service), JSON.stringify(stored));
 }

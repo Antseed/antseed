@@ -39,7 +39,7 @@ test('selecting a router alias for a chat does not post a transient model defaul
   const uiState = createInitialUiState();
   uiState.vprRouteHydrated = true;
   uiState.vprRouteSelection = { model: null, mode: 'auto', peerId: null,
-    router: { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, preferences: { cqt: '5' } } };
+    router: { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 5 } };
   const initial = uiState.vprRouteSelection;
   const writes: unknown[] = [];
   const api = initChatModule({ uiState, appendSystemLog: () => undefined,

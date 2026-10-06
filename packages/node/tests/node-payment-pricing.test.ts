@@ -11,16 +11,18 @@ const ATTEST_ID = 'antseed-verifier';
 const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 
 describe('completed-request seller payments', () => {
-  const body = { service: 'levanto-route', v: 1, cqt: 5, inputMessage: 'Help with code', promptTokens: 3, expectedCachedTokens: [], constraints: {} };
-  const result = { v: 1, router: 'levanto', ranked: [{ model: 'model-a', peer: 'a'.repeat(40), estimate: { costUsd: 0.01, inputTokens: 3, cachedInputTokens: 0, outputTokens: 30 }, price: { inUsdPerM: 1, outUsdPerM: 3, cachedInUsdPerM: 0 } }] };
+  const candidate = { id: 'model-a@a', model: 'model-a', pricing: { input: 1, cache_read: 1, output: 3 } };
+  const body = { request: { messages: [{ role: 'user', content: 'Help with code' }] }, routing: { cost_quality_tradeoff: 5, candidates: [candidate] } };
+  const routingHeaders = { 'x-antseed-provider': 'alpha', 'x-antseed-service': 'alpha-route' };
+  const result = { id: 'rank-1', object: 'routing.ranking', created: 1, router: { id: 'alpha', version: '1' }, ranked: [{ candidate_id: candidate.id }] };
   function setup(overrides: Record<string, unknown> = {}) {
     let spend = 0n;
-    const provider = makeProvider(10, 10, { name: 'levanto', services: ['levanto-route', 'image'] });
-    provider.serviceApiProtocols = { 'levanto-route': ['levanto-routing'] };
-    provider.serviceUnitBillingModels = { 'levanto-route': { 'levanto-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
-    provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { 'levanto-route': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
+    const provider = makeProvider(10, 10, { name: 'alpha', services: ['alpha-route', 'image'] });
+    provider.serviceApiProtocols = { 'alpha-route': ['model-routing'] };
+    provider.serviceUnitBillingModels = { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
+    provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { 'alpha-route': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) }));
-    provider.handleRequestStream = vi.fn();
+    delete (provider as Partial<Provider>).handleRequestStream;
     const spm = makeSpmMock({
       recordSpend: vi.fn((_channel: string, amount: bigint) => { spend += amount; }),
       getCumulativeSpend: () => spend, getAcceptedCumulative: () => spend, ...overrides,
@@ -31,42 +33,53 @@ describe('completed-request seller payments', () => {
     const { mux } = handler.handleConnection(makeConn(frames), 'b'.repeat(40), paymentMux as any);
     const send = async (requestId = 'fixed', patch: Partial<SerializedHttpRequest> = {}) => {
       await mux.handleFrame({ type: MessageType.HttpRequest, messageId: 1, payload: encodeHttpRequest({
-        requestId, method: 'POST', path: '/_antseed/levanto-route',
-        headers: { 'content-type': 'application/json', 'x-antseed-provider': 'levanto' },
+        requestId, method: 'POST', path: '/v1/routing/rank',
+        headers: { 'content-type': 'application/json', ...routingHeaders },
         body: new TextEncoder().encode(JSON.stringify(body)), ...patch,
       }) });
       return frames.map(frame => decodeHttpResponse(decodeFrame(frame).message!.payload)).reverse().find(response => response.requestId === requestId)!;
     };
     return { provider, spm, paymentMux, send };
   }
-  it('charges exactly the fee without a capability flag, with zero tokens and no streaming', async () => {
+  it('charges exactly the fee for a well-formed ranking, with zero tokens', async () => {
     const harness = setup();
     expect((await harness.send()).statusCode).toBe(200);
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '1000', inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { completed_requests: '1' } } }));
-    expect(harness.provider.handleRequestStream).not.toHaveBeenCalled();
   });
-  it('uses completed-request measurement for a TypeSafe service without a price header', async () => {
+  it('serves the routing model list for free through the provider', async () => {
     const harness = setup();
-    harness.provider.serviceApiProtocols!['levanto-route'] = ['typesafe-systemone'];
-    harness.provider.serviceUnitBillingModels!['levanto-route'] = { 'typesafe-systemone': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } };
-    expect((await harness.send('typesafe', { path: '/v1/systemone' })).statusCode).toBe(200);
-    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
-    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].headers).not.toHaveProperty('x-antseed-unit-price');
-    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ billingUsage: { version: 1, units: { completed_requests: '1' } } }));
+    expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers: routingHeaders, body: new Uint8Array() })).statusCode).toBe(200);
+    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe('/v1/routing/models');
+    expect(harness.spm.recordSpend).not.toHaveBeenCalled();
+    expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
-  it('rejects mismatched providers and non-POST requests before execution', async () => {
+  it('rejects invalid routing model-list requests before the provider with problem details', async () => {
     const harness = setup();
-    expect((await harness.send('wrong', { headers: {} })).statusCode).toBe(400);
-    expect((await harness.send('wrong-method', { method: 'GET' })).statusCode).toBe(400);
+    const get = (requestId: string, headers: Record<string, string>) => harness.send(requestId, { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() });
+    const missing = await get('missing', { 'x-antseed-provider': 'alpha' });
+    expect(missing.statusCode).toBe(400);
+    expect(missing.headers['content-type']).toBe('application/problem+json');
+    expect(JSON.parse(new TextDecoder().decode(missing.body))).toMatchObject({ type: 'urn:irp:problem:invalid-request', status: 400 });
+    expect((await get('not-routing', { 'x-antseed-service': 'image' })).statusCode).toBe(404);
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+  });
+  it('rate limits routing model-list requests with an IRP 503', async () => {
+    const harness = setup();
+    const statuses: number[] = [];
+    for (let index = 0; index < 11; index += 1) {
+      statuses.push((await harness.send(`models-${index}`, { method: 'GET', path: '/v1/routing/models', headers: routingHeaders, body: new Uint8Array() })).statusCode);
+    }
+    expect(statuses.slice(0, 10).every(status => status === 200)).toBe(true);
+    expect(statuses[10]).toBe(503);
+    expect(harness.provider.handleRequest).toHaveBeenCalledTimes(10);
   });
   it('negotiates once before execution and allows retrying that request ID', async () => {
     let hasSession = false;
     const harness = setup({ hasSession: () => hasSession });
     expect((await harness.send()).statusCode).toBe(402);
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
-    expect(harness.paymentMux.sendPaymentRequired).toHaveBeenCalledWith(expect.objectContaining({ minBudgetPerRequest: '1000' }));
+    expect(harness.paymentMux.sendPaymentRequired).toHaveBeenCalledOnce();
     hasSession = true;
     expect((await harness.send()).statusCode).toBe(200);
     expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
@@ -78,12 +91,12 @@ describe('completed-request seller payments', () => {
     expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
   });
-  it('leaves API payload validation to the provider and buyer', async () => {
+  it('does not charge a malformed ranking, so the buyer and seller stay in agreement', async () => {
     const harness = setup();
     vi.mocked(harness.provider.handleRequest).mockImplementation(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode('{}') }));
-    expect((await harness.send('opaque', { body: new TextEncoder().encode(JSON.stringify({ service: 'levanto-route', v: 2 })) })).statusCode).toBe(200);
-    expect(harness.provider.handleRequest).toHaveBeenCalledOnce();
-    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
+    expect((await harness.send('opaque')).statusCode).toBe(200);
+    expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
+    expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
   });
   it('uses ordinary concurrent dispatch for paid routing requests', async () => {
     const harness = setup();
@@ -111,11 +124,6 @@ describe('completed-request seller payments', () => {
     expect((await harness.send()).statusCode).toBe(400);
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 0n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '0', billingUsage: { version: 1, units: { completed_requests: '0' } } }));
-  });
-  it('keeps ordinary services discoverable to legacy model-list clients', async () => {
-    const harness = setup();
-    const response = await harness.send('models', { method: 'GET', path: '/v1/models', headers: {}, body: new Uint8Array() });
-    expect(JSON.parse(new TextDecoder().decode(response.body)).data.map((model: { id: string }) => model.id)).toEqual(['image']);
   });
   it('preserves concurrent inference after a completed-request purchase', async () => {
     const harness = setup();
@@ -150,7 +158,7 @@ describe('completed-request seller payments', () => {
       body: new TextEncoder().encode(JSON.stringify({ data: [{ b64_json: 'aGVsbG8=' }, { b64_json: 'd29ybGQ=' }] })),
     }));
     const response = await harness.send('legacy-image', {
-      path: '/v1/images/generations', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'levanto' },
+      path: '/v1/images/generations', headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha' },
       body: new TextEncoder().encode(JSON.stringify({ model: 'image', prompt: 'A tree', n: 2 })),
     });
     expect(response.statusCode).toBe(200);

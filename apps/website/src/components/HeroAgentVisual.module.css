@@ -1,0 +1,47 @@
+.card { position: relative; display: flex; flex-direction: column; width: 100%; overflow: visible; background: #f7faf7; border: 1px solid #dce7de; border-radius: 24px; box-shadow: 0 24px 70px -36px #123e2940; color: #173b2b; }
+.top { display: flex; justify-content: space-between; align-items: center; padding: 22px 24px; border-bottom: 1px solid #e5ece5; }
+.top > span { display: flex; align-items: center; gap: 9px; font-weight: 600; }
+.top i, .indicator { width: 6px; height: 6px; background: #16a66a; border-radius: 50%; box-shadow: 0 0 0 4px #16a66a12; flex-shrink: 0; }
+.top small { font: 9px var(--as-font-data); letter-spacing: 1.1px; color: #75877a; }
+.scene { flex: 1; min-height: 0; display: flex; align-items: center; padding: 12px 8px 20px; background-image: radial-gradient(#234b2915 .8px, transparent .8px); background-size: 16px 16px; }
+.scene svg { width: 100%; max-height: 100%; display: block; overflow: visible; }
+.top, .activity, .install { flex-shrink: 0; }
+
+.route { fill: none; stroke: #cddfd1; stroke-width: 1.2; }
+.packet, .response { fill: none; stroke: #19ad70; stroke-width: 2.5; stroke-linecap: round; stroke-dasharray: 18 420; stroke-dashoffset: 440; animation: flow 4.4s linear infinite; }
+.response { stroke: #82aaa0; stroke-width: 1.5; animation-direction: reverse; }
+.node { fill: #fff; stroke: #dce7de; }
+.text { font: 600 18px var(--as-font-ui); fill: #173b2b; }
+.caption { font: 600 15px var(--as-font-data); letter-spacing: 1px; fill: #496653; }
+.hub { fill: white; stroke: #16a66a; stroke-width: 1.5; }
+.ring { fill: none; stroke: #16a66a; transform-origin: 300px 150px; animation: ripple 2.2s ease-out infinite; }
+.activity { margin: 0 24px; display: flex; align-items: center; gap: 12px; min-height: 46px; border-top: 1px solid #dce7de; font: 14px var(--as-font-ui); }
+.activityText { animation: appear .4s ease both; }
+.steps { margin-left: auto; display: flex; gap: 4px; }
+.steps i { width: 14px; height: 3px; border-radius: 4px; background: #dce7de; transition: background .4s; }
+.steps .current { background: #16a66a; }
+.install { position: absolute; top: calc(100% + 12px); left: 0; width: 100%; box-sizing: border-box; display: flex; flex-direction: column; gap: 12px; padding: 20px 24px 24px; background: white; border: 1px solid #dce7de; border-radius: 18px; box-shadow: 0 16px 40px -24px #123e2940; transform-origin: top center; animation: unfold .65s cubic-bezier(.22, 1, .36, 1) .35s both; }
+@keyframes unfold { from { opacity: 0; transform: translateY(-16px) scaleY(.8); clip-path: inset(0 0 100% 0); } to { opacity: 1; transform: none; clip-path: inset(0 0 0 0); } }
+.installHeader { display: flex; align-items: center; justify-content: space-between; gap: 8px; font-size: 12px; font-weight: 500; color: #496653; }
+.installHeader button { flex-shrink: 0; min-height: 44px; padding: 0 10px; border: 0; border-radius: 8px; background: #eef4ef; color: #214d35; font: 600 12px var(--as-font-ui); cursor: pointer; }
+.installHeader button:hover { background: #e0ece3; }
+.installHeader button:focus-visible { outline: 2px solid #16a66a; outline-offset: 2px; }
+.installCode { margin: 0; padding: 0; border: 0; background: transparent; text-align: left; overflow: visible; }
+.installCode code { display: block; padding: 0; border: 0; background: none; font: 500 clamp(11px, 3.3cqw, 14px)/1.8 var(--as-font-data); color: #173b2b; white-space: pre; word-break: normal; overflow-wrap: normal; }
+.installCode code > span:first-child { color: #47735b; }
+.paused * { animation-play-state: paused; }
+@keyframes flow { to { stroke-dashoffset: 0; } }
+@keyframes ripple { from { transform: scale(.85); opacity: .6; } to { transform: scale(1.55); opacity: 0; } }
+@keyframes appear { from { opacity: 0; transform: translateY(4px); } to { opacity: 1; transform: translateY(0); } }
+@container (max-width: 440px) {
+  .text { font-size: 21px; letter-spacing: -.5px; }
+  .caption { font-size: 19px; letter-spacing: .5px; }
+  .top, .install { padding: 12px 16px; }
+  .top { font-size: 16px; }
+  .activity { margin: 0 16px; min-height: 44px; gap: 8px; }
+  .steps { display: none; }
+  .install { gap: 8px; }
+  .installHeader { font-size: 11px; }
+  .installHeader button { padding: 0 8px; }
+}
+@media (prefers-reduced-motion: reduce) { .card * { animation: none !important; transition: none !important; } .packet, .response { display: none; } .ring { opacity: .25; } }

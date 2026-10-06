@@ -61,7 +61,7 @@ export function VprRouterOptions({ forConversation = false, routerActive = true,
     {services.map((service) => {
       const selectedService = routingServiceKey(service) === selectedKey;
       return <VprRouterRow key={routingServiceKey(service)} service={service} menu chat={forConversation} active={routerActive && selectedService}
-        onClick={() => { actions.selectVprRouter(service, selectedService ? selected!.preferences : undefined, forConversation, selectedService ? selected!.allowedModels : undefined); onSelect?.(); }} />;
+        onClick={() => { actions.selectVprRouter(service, selectedService ? selected!.costQualityTradeoff : undefined, forConversation, selectedService ? selected!.allowedModels : undefined); onSelect?.(); }} />;
     })}
     {selected && routerActive && !services.some((service) => routingServiceKey(service) === selectedKey) &&
       <div className={styles.modelDropdownItem} role="status">Selected router unavailable. Retry discovery or select a model.</div>}

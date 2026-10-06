@@ -1,4 +1,4 @@
-import { afterAll, beforeAll, describe, expect, it } from 'vitest';
+import { afterAll, beforeAll, beforeEach, describe, expect, it } from 'vitest';
 import { mkdtemp, rm } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
@@ -7,11 +7,10 @@ import { AntseedNode } from '@antseed/node';
 import { loadRouterPlugin } from '../../apps/cli/src/plugins/loader.js';
 import { buildCliChildEnv } from '../../apps/desktop/src/main/runtime/process-manager.js';
 import { BuyerProxy } from '../../apps/cli/src/proxy/buyer-proxy.js';
-import { writeBuyerRoute } from '../../apps/desktop/src/main/chat/buyer-route.js';
+import { buyerRouteSelection, writeBuyerRoute } from '../../apps/desktop/src/main/chat/buyer-route.js';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { FakeLevantoProvider, FakeRoutedInferenceProvider } from './helpers/fake-levanto.js';
 import { createLevantoChain } from './helpers/levanto-chain.js';
-import { startRoutingCatalogServer } from '../scripts/gesundai-router.mjs';
 
 async function freePort(): Promise<number> {
   const server = createServer();
@@ -38,8 +37,6 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
   const routing = new FakeLevantoProvider(paid ? 0.001 : 0);
   const inference = new FakeRoutedInferenceProvider();
   let chain: Awaited<ReturnType<typeof createLevantoChain>> | undefined;
-  let routerApi: Awaited<ReturnType<typeof startRoutingCatalogServer>> | undefined;
-  let catalogRequests = 0;
   let routingSellerAddress: string;
   let inferenceSellerAddress: string;
   let buyerAddress: string;
@@ -50,15 +47,16 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
   let inferencePeer: string;
   let sequence = 0;
 
+  beforeEach(() => {
+    const seller = nodes[1] as unknown as { _sellerHandler: { _attestRateWindows: Map<string, unknown> } };
+    seller._sellerHandler._attestRateWindows.clear();
+  });
+
   beforeAll(async () => {
     directory = await mkdtemp(join(tmpdir(), 'antseed-levanto-vpr-'));
     if (paid) chain = await createLevantoChain(await freePort());
     if (paid) inference.pricing.defaults = { inputUsdPerMillion: 1, outputUsdPerMillion: 1 };
     bootstrap = await createLocalBootstrap();
-    routerApi = await startRoutingCatalogServer(0, (provider: string | null, serviceId: string | null) => {
-      catalogRequests++;
-      return provider === routing.name && serviceId === routing.services[0] ? routing.routingCatalog : undefined;
-    });
     for (const [index, provider] of [inference, routing].entries()) {
       const dataDir = join(directory, `seller-${index}`);
       if (chain) {
@@ -84,7 +82,7 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     try {
       process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH'] = buildCliChildEnv({}, true)['ANTSEED_DEV_ROUTER_LOCAL_PATH'];
       const localPlugin = await loadRouterPlugin('local');
-      buyer.setRouter(await localPlugin.createRouter({ ANTSEED_MIN_REPUTATION: '0', ANTSEED_MAX_FAILURES: '100', LEVANTO_ROUTING_PEER_URL: routerApi.url }));
+      buyer.setRouter(await localPlugin.createRouter({ ANTSEED_MIN_REPUTATION: '0', ANTSEED_MAX_FAILURES: '100' }));
     } finally {
       if (previousRouterPath === undefined) delete process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH'];
       else process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH'] = previousRouterPath;
@@ -104,11 +102,14 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     for (const node of nodes.reverse()) await node.stop();
     await bootstrap?.stop();
     await chain?.stop();
-    await routerApi?.close();
     if (directory) await rm(directory, { recursive: true, force: true });
   }, 30_000);
 
-  const chooseRouter = (cqt = '5') => writeBuyerRoute(port, { kind: 'router', service, preferences: { cqt } });
+  const chooseRouter = (costQualityTradeoff = 5) => writeBuyerRoute(port, { kind: 'router', service, costQualityTradeoff });
+  const readRoute = async () => {
+    const selection = buyerRouteSelection(await (await fetch(`${base}/_antseed/route`)).json());
+    return selection.kind === 'router' ? selection : { ...selection, allowedModels: undefined, costQualityTradeoff: undefined };
+  };
   const send = async (model = 'antseed', headers: Record<string, string> = {}) => {
     const response = await fetch(`${base}/v1/chat/completions`, { method: 'POST', headers: { 'content-type': 'application/json', ...headers },
       body: JSON.stringify({ model, messages: [{ role: 'user', content: `Hello ${++sequence}` }], stream: false }) });
@@ -120,23 +121,23 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
   it('discovers exact completed-request offers outside the model catalog', async () => {
     const offers = await (await fetch(`${base}/_antseed/routing-services`)).json();
     expect(offers.services).toEqual([expect.objectContaining({ ...service, priceMicroUsdc: paid ? '1000' : '0',
-      catalog: routing.routingCatalog, catalogExpiresAt: expect.any(Number) })]);
+      catalog: { models: routing.models.map(serviceId => ({ provider: inference.name, serviceId })) }, catalogExpiresAt: expect.any(Number) })]);
     const catalog = await (await fetch(`${base}/v1/models`)).json();
     expect(catalog.data.map((entry: { id: string }) => entry.id)).not.toContain('levanto-route');
-    const before = catalogRequests;
+    const before = routing.modelsRequests;
     await fetch(`${base}/_antseed/routing-services`);
-    expect(catalogRequests).toBe(before);
+    expect(routing.modelsRequests).toBe(before);
   });
 
   it('switches model → router → different recommendation → model', async () => {
     expect((await writeBuyerRoute(port, { kind: 'model', model: 'model-a' })).ok).toBe(true);
     expect((await send()).body.model).toBe('model-a');
     const before = routing.requests.length;
-    expect((await chooseRouter('9')).ok).toBe(true);
+    expect((await chooseRouter(9)).ok).toBe(true);
     expect((await send()).body.model).toBe('model-a');
-    expect(routing.requests.at(-1)?.preferences).toEqual({ cqt: '9' });
+    expect(routing.requests.at(-1)?.routing).toMatchObject({ cost_quality_tradeoff: 9 });
     routing.mode = 'second';
-    expect((await send('levanto-auto')).body.model).toBe('model-b');
+    expect((await send('antseed')).body.model).toBe('model-b');
     expect(routing.requests.length).toBe(before + 2);
     await writeBuyerRoute(port, { kind: 'model', model: 'model-a' });
     expect((await send()).body.model).toBe('model-a');
@@ -145,16 +146,15 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
 
   it.skipIf(paid)('enforces exact model allowlists before inference, including empty lists and mixed rankings', async () => {
     const allowedModels = [{ provider: inference.name, serviceId: 'model-a' }];
-    expect((await writeBuyerRoute(port, { kind: 'router', service, preferences: { cqt: '5' }, allowedModels })).ok).toBe(true);
-    expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.allowedModels).toEqual(allowedModels);
+    expect((await writeBuyerRoute(port, { kind: 'router', service, costQualityTradeoff: 5, allowedModels })).ok).toBe(true);
+    expect((await readRoute()).allowedModels).toEqual(allowedModels);
     routing.mode = 'second';
     const before = inference.requests.length;
     expect((await send()).status).toBeGreaterThanOrEqual(400);
     expect(inference.requests.length).toBe(before);
     routing.mode = 'fallback';
     expect((await send()).body.model).toBe('model-a');
-    expect(routing.requests.at(-1)).toMatchObject({ v: 1, catalogRevision: routing.routingCatalog.revision,
-      constraints: { allowedCandidates: [{ peerId: inferencePeer, provider: inference.name, serviceId: 'model-a' }] } });
+    expect(routing.requests.at(-1)).toMatchObject({ routing: { candidates: [{ id: inference.name + ':model-a@' + inferencePeer, model: 'model-a' }] } });
     expect((await send('model-b')).body.model).toBe('model-b');
     const beforeFallback = inference.requests.length;
     inference.failingModels.add('model-a');
@@ -163,7 +163,7 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
       expect(inference.requests.slice(beforeFallback).map(request => request.model)).toEqual(['model-a']);
     } finally { inference.failingModels.clear(); }
     const routingBefore = routing.requests.length;
-    await writeBuyerRoute(port, { kind: 'router', service, preferences: { cqt: '5' }, allowedModels: [] });
+    await writeBuyerRoute(port, { kind: 'router', service, costQualityTradeoff: 5, allowedModels: [] });
     expect((await send()).status).toBeGreaterThanOrEqual(400);
     expect(routing.requests.length).toBe(routingBefore);
     await chooseRouter();
@@ -174,7 +174,7 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     routing.mode = 'second';
     await chooseRouter();
     await writeBuyerRoute(port, { kind: 'model', model: `${inferencePeer}@model-a` }, true);
-    expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('router');
+    expect((await readRoute()).kind).toBe('router');
     expect((await send('model-a', { 'x-antseed-system-proxy-source': 'test', 'x-antseed-system-routed': '1' })).body.model).toBe('model-b');
     const count = routing.requests.length;
     expect((await send('model-a')).body.model).toBe('model-a');
@@ -243,7 +243,7 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     expect(inference.requests.length).toBe(inferenceCount);
   });
 
-  it.skipIf(paid).each(['invalid-json', 'empty', 'foreign-peer', 'wrong-model', 'wrong-provider', 'unavailable', 'stale-catalog'] as const)('fails closed for %s without inference or unconstrained retries', async (mode) => {
+  it.skipIf(paid).each(['invalid-json', 'empty', 'foreign-peer', 'wrong-model', 'wrong-provider', 'unavailable', 'cannot-rank'] as const)('fails closed for %s without inference or unconstrained retries', async (mode) => {
     routing.mode = mode;
     await chooseRouter();
     const count = inference.requests.length;
@@ -251,17 +251,17 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     const result = await send();
     expect(result.status).toBeGreaterThanOrEqual(400);
     expect(inference.requests.length).toBe(count);
-    expect(routing.requests.length).toBe(routingCount + 1);
-    expect(routing.requests.at(-1)?.v).toBe(1);
+    expect(routing.requests.length).toBe(routingCount + (mode === 'cannot-rank' ? 2 : 1));
+    expect(routing.requests.at(-1)?.routing).toBeDefined();
   });
 
-  it.skipIf(paid)('rejects a router ignoring exact constraints even when one recommendation is allowed', async () => {
+  it.skipIf(paid)('filters unknown candidates while accepting an allowed recommendation', async () => {
     routing.mode = 'ignore-constraints';
-    await writeBuyerRoute(port, { kind: 'router', service, preferences: { cqt: '5' },
+    await writeBuyerRoute(port, { kind: 'router', service, costQualityTradeoff: 5,
       allowedModels: [{ provider: inference.name, serviceId: 'model-a' }] });
     const count = inference.requests.length;
-    expect((await send()).status).toBeGreaterThanOrEqual(400);
-    expect(inference.requests.length).toBe(count);
+    expect((await send()).status).toBe(200);
+    expect(inference.requests.length).toBe(count + 1);
     routing.mode = 'first';
     await chooseRouter();
   });
@@ -277,16 +277,16 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     expect((await send()).body.model).toBe('model-b');
   });
 
-  it('rejects invalid preferences and persists selection across proxy restart', async () => {
-    expect((await chooseRouter('2')).ok).toBe(false);
+  it('rejects invalid IRP tradeoffs and persists selection across proxy restart', async () => {
+    expect((await chooseRouter(11)).ok).toBe(false);
     routing.mode = 'first';
-    const selection = { kind: 'router' as const, service, preferences: { cqt: '7' },
+    const selection = { kind: 'router' as const, service, costQualityTradeoff: 7,
       allowedModels: [{ provider: inference.name, serviceId: 'model-a' }] };
     expect((await writeBuyerRoute(port, selection)).ok).toBe(true);
     await proxy.stop();
     proxy = new BuyerProxy({ node: nodes[2]!, port, dataDir: join(directory, 'buyer') });
     await proxy.start();
-    expect((await (await fetch(`${base}/_antseed/route`)).json()).selection).toEqual(selection);
+    expect((await readRoute())).toEqual(selection);
     expect((await send()).body.model).toBe('model-a');
   });
 
@@ -334,22 +334,22 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
       await page.getByRole('button', { name: 'Models', exact: true }).click();
       await page.setViewportSize({ width: 480, height: 900 });
       await page.getByPlaceholder('Search models or routers').fill('Levanto');
-      await page.getByRole('button').filter({ hasText: 'Auto Router' }).waitFor();
+      await page.getByRole('button').filter({ hasText: 'Levanto' }).waitFor();
       await page.getByPlaceholder('Search models or routers').fill('');
-      const routerCatalogRow = page.getByRole('tabpanel').getByRole('button').filter({ hasText: 'Auto Router' });
-      await routerCatalogRow.getByText('Levanto', { exact: true }).waitFor();
+      const routerCatalogRow = page.getByRole('tabpanel').getByRole('button').filter({ hasText: 'Levanto' });
+      await routerCatalogRow.getByText('Levanto', { exact: true }).last().waitFor();
       expect(await routerCatalogRow.getByText('fake-levanto', { exact: true }).count()).toBe(0);
       // Seller and price share the meta line; poll so a mid-render layout is not sampled.
       await waitUntil(async () => {
-        const sellerBounds = await routerCatalogRow.getByText('Levanto', { exact: true }).boundingBox();
+        const sellerBounds = await routerCatalogRow.getByText('Levanto', { exact: true }).last().boundingBox();
         const priceBounds = await routerCatalogRow.getByText(paid ? '$0.001 / request' : 'Free', { exact: true }).boundingBox();
         return !!sellerBounds && !!priceBounds && sellerBounds.x < priceBounds.x && Math.abs(sellerBounds.y - priceBounds.y) < 4;
       }, 5_000);
       await routerCatalogRow.locator('..').getByRole('button', { name: /Model A/ }).waitFor();
       expect(await page.getByRole('tabpanel').getByLabel('Routing services').count()).toBe(0);
       await page.getByRole('tabpanel').screenshot({ path: '/tmp/antseed-levanto-models-page.png', animations: 'disabled' });
-      await page.getByRole('button').filter({ hasText: 'Auto Router' }).click();
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('model');
+      await page.getByRole('button').filter({ hasText: 'Levanto' }).click();
+      expect((await readRoute()).kind).toBe('model');
       const pricingInfo = page.getByRole('button', { name: 'About router pricing' });
       await page.getByText('Model inference is billed separately.', { exact: true }).waitFor({ state: 'hidden' });
       await pricingInfo.hover();
@@ -359,61 +359,51 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
       await page.getByRole('tooltip').waitFor({ state: 'hidden' });
       await pricingInfo.focus();
       await page.getByRole('tooltip').getByText('Model inference is billed separately.', { exact: true }).waitFor();
-      await page.getByRole('heading', { name: 'Cost quality', exact: true }).waitFor();
-      await page.getByText('Balance lower cost against higher response quality.', { exact: true }).waitFor();
-      expect(await page.getByRole('heading', { name: 'cqt', exact: true }).count()).toBe(0);
-      await page.getByRole('button', { name: 'Cost quality', exact: true }).click();
-      await page.getByRole('tooltip').waitFor({ state: 'hidden' });
-      await page.getByRole('option', { name: '9', exact: true }).click();
-      await page.getByRole('button', { name: 'Cost quality', exact: true }).getByText('9', { exact: true }).waitFor();
-      await page.getByRole('button', { name: 'strategy', exact: true }).click();
-      await page.getByRole('option', { name: 'fastest', exact: true }).click();
+      await page.getByRole('slider', { name: 'Cost / quality' }).fill('9');
       await page.getByRole('checkbox', { name: 'All supported models', exact: true }).uncheck();
       expect(await page.getByRole('button', { name: 'Use router', exact: true }).isDisabled()).toBe(true);
       await page.getByRole('checkbox', { name: /Model A/ }).click();
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('model');
+      expect((await readRoute()).kind).toBe('model');
       await page.reload();
       await page.getByRole('button', { name: 'Models', exact: true }).click();
-      await page.getByRole('button').filter({ hasText: 'Auto Router' }).click();
-      await page.getByRole('button', { name: 'Cost quality', exact: true }).getByText('9', { exact: true }).waitFor();
+      await page.getByRole('button').filter({ hasText: 'Levanto' }).click();
+      expect(await page.getByRole('slider', { name: 'Cost / quality' }).inputValue()).toBe('9');
       expect(await page.getByRole('checkbox', { name: /Model A/ }).getAttribute('aria-checked')).toBe('true');
       expect(await page.getByRole('checkbox', { name: /Model B/ }).getAttribute('aria-checked')).toBe('false');
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('model');
+      expect((await readRoute()).kind).toBe('model');
       await page.getByPlaceholder('Search allowed models').fill('Model B');
       expect(await page.getByRole('checkbox', { name: /Model A/ }).count()).toBe(0);
       await page.getByPlaceholder('Search allowed models').fill('');
       expect(await page.getByRole('checkbox', { name: /Model A/ }).getAttribute('aria-checked')).toBe('true');
       await page.getByRole('tabpanel').screenshot({ path: '/tmp/antseed-levanto-router-settings.png', animations: 'disabled' });
       await page.getByRole('button', { name: 'Use router', exact: true }).click();
-      await waitUntil(async () => (await (await fetch(`${base}/_antseed/route`)).json()).selection.allowedModels?.length === 1);
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.allowedModels).toEqual([{ provider: inference.name, serviceId: 'model-a' }]);
+      await waitUntil(async () => (await readRoute()).allowedModels?.length === 1);
+      expect((await readRoute()).allowedModels).toEqual([{ provider: inference.name, serviceId: 'model-a' }]);
       await page.reload();
       await page.getByRole('button', { name: 'Models', exact: true }).click();
-      await page.getByRole('button').filter({ hasText: 'Auto Router' }).click();
+      await page.getByRole('button').filter({ hasText: 'Levanto' }).click();
       expect(await page.getByRole('checkbox', { name: /Model A/ }).getAttribute('aria-checked')).toBe('true');
       expect(await page.getByRole('checkbox', { name: /Model B/ }).getAttribute('aria-checked')).toBe('false');
-      await page.getByRole('button', { name: 'strategy', exact: true }).getByText('fastest', { exact: true }).waitFor();
+      expect(await page.getByRole('slider', { name: 'Cost / quality' }).inputValue()).toBe('9');
       await page.getByRole('checkbox', { name: /Model A/ }).click();
-      await waitUntil(async () => (await (await fetch(`${base}/_antseed/route`)).json()).selection.allowedModels?.length === 0);
+      await waitUntil(async () => (await readRoute()).allowedModels?.length === 0);
       expect((await send()).status).toBe(502);
       await page.getByRole('checkbox', { name: /Model A/ }).click();
-      await waitUntil(async () => (await (await fetch(`${base}/_antseed/route`)).json()).selection.allowedModels?.length === 1);
-      await page.getByRole('button', { name: 'strategy', exact: true }).click();
-      await page.getByRole('option', { name: 'Not set', exact: true }).click();
+      await waitUntil(async () => (await readRoute()).allowedModels?.length === 1);
+      await page.getByRole('button', { name: 'Use router default', exact: true }).click();
       expect(await page.getByRole('button', { name: 'Selected router', exact: true }).isDisabled()).toBe(true);
       expect(await page.getByRole('button', { name: 'Save settings', exact: true }).count()).toBe(0);
-      await waitUntil(async () => (await (await fetch(`${base}/_antseed/route`)).json()).selection.preferences.strategy === undefined);
-      await page.getByRole('button', { name: 'strategy', exact: true }).click();
-      await page.getByRole('option', { name: 'fastest', exact: true }).click();
+      await waitUntil(async () => (await readRoute()).costQualityTradeoff === undefined);
+      await page.getByRole('slider', { name: 'Cost / quality' }).fill('9');
       await page.getByRole('checkbox', { name: 'All supported models', exact: true }).check();
       expect(await page.getByRole('button', { name: 'Selected router', exact: true }).isDisabled()).toBe(true);
-      await waitUntil(async () => (await (await fetch(`${base}/_antseed/route`)).json()).selection.allowedModels === undefined);
+      await waitUntil(async () => (await readRoute()).allowedModels === undefined);
       await page.getByRole('button', { name: 'Chat', exact: true }).click();
       await page.getByRole('button', { name: 'Refresh catalog' }).click();
       await page.getByRole('button', { name: 'Send', exact: true }).click();
       await page.getByRole('log').getByText('Reply from model-a', { exact: true }).waitFor();
       await page.getByRole('log').getByText('Routed to Model A', { exact: true }).waitFor();
-      expect(routing.requests.at(-1)?.preferences).toEqual({ cqt: '9', strategy: 'fastest' });
+      expect(routing.requests.at(-1)?.routing).toMatchObject({ cost_quality_tradeoff: 9 });
       routing.mode = 'second';
       await page.getByLabel('Message', { exact: true }).fill('Choose another model');
       await page.getByRole('button', { name: 'Send', exact: true }).click();
@@ -421,9 +411,9 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
       await page.getByRole('log').getByText('Routed to Model B', { exact: true }).waitFor();
       await page.getByRole('log').screenshot({ path: '/tmp/antseed-levanto-chat-indicators.png', animations: 'disabled' });
       await page.getByRole('button', { name: 'Router · Auto model' }).click();
-      const chatRouterRow = page.getByRole('option').filter({ hasText: 'Auto Router' });
-      await chatRouterRow.getByText('Levanto', { exact: true }).waitFor();
-      const chatSellerBounds = await chatRouterRow.getByText('Levanto', { exact: true }).boundingBox();
+      const chatRouterRow = page.getByRole('option').filter({ hasText: 'Levanto' });
+      await chatRouterRow.getByText('Levanto', { exact: true }).last().waitFor();
+      const chatSellerBounds = await chatRouterRow.getByText('Levanto', { exact: true }).last().boundingBox();
       const chatTagBounds = await chatRouterRow.getByText('Router', { exact: true }).boundingBox();
       expect(chatSellerBounds!.x).toBeLessThan(chatTagBounds!.x);
       await page.getByRole('listbox').screenshot({ path: '/tmp/antseed-levanto-vpr-browser.png', animations: 'disabled' });
@@ -431,7 +421,7 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
       await page.getByLabel('Message', { exact: true }).fill('Fixed model again');
       await page.getByRole('button', { name: 'Send', exact: true }).click();
       await page.getByRole('log').getByText('Reply from model-a', { exact: true }).nth(1).waitFor();
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('model');
+      expect((await readRoute()).kind).toBe('model');
       await page.getByRole('button', { name: /Model A|model-a/ }).first().click();
       await page.getByRole('option').filter({ hasText: 'Router' }).click();
       await page.getByLabel('Message', { exact: true }).fill('Router again in this chat');
@@ -440,14 +430,14 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
       await page.reload();
       await page.getByRole('button', { name: 'Router · Auto model' }).waitFor();
       await page.getByRole('button', { name: 'Refresh catalog' }).click();
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('router');
+      expect((await readRoute()).kind).toBe('router');
       routing.mode = 'unavailable';
       const beforeFailure = inference.requests.length;
       await page.getByLabel('Message', { exact: true }).fill('Show a routing error');
       await page.getByRole('button', { name: 'Send', exact: true }).click();
-      await page.getByRole('log').getByText('Levanto routing failed (503)', { exact: true }).waitFor();
+      await page.getByRole('log').getByText('Router is temporarily unavailable', { exact: true }).waitFor();
       expect(inference.requests.length).toBe(beforeFailure);
-      expect((await (await fetch(`${base}/_antseed/route`)).json()).selection.kind).toBe('router');
+      expect((await readRoute()).kind).toBe('router');
       routing.mode = 'first';
       await page.getByLabel('Message', { exact: true }).fill('Retry after router recovery');
       await page.getByRole('button', { name: 'Send', exact: true }).click();
@@ -456,20 +446,20 @@ describe('VPR → buyer HTTP → real P2P → fake Levanto → inference', () =>
     } finally { await browser.close(); await vite.close(); }
   }, 60_000);
 
-  it.skipIf(!paid)('does not charge for v1 catalog changes or empty rankings and recovers without dropping constraints', async () => {
+  it.skipIf(!paid)('does not charge for unscorable candidates or empty rankings and recovers without dropping constraints', async () => {
     await chooseRouter();
     const manager = nodes[2]!.buyerPaymentManager!;
     const authorized = manager.getCumulativeAmount(service.peerId);
     const inferenceCount = inference.requests.length;
-    routing.mode = 'stale-catalog';
-    expect((await send()).body.error.message).toContain('catalog changed');
+    routing.mode = 'cannot-rank';
+    expect((await send()).body.error.message).toContain('cannot rank');
     routing.mode = 'second';
-    await writeBuyerRoute(port, { kind: 'router', service, preferences: { cqt: '5' },
+    await writeBuyerRoute(port, { kind: 'router', service, costQualityTradeoff: 5,
       allowedModels: [{ provider: inference.name, serviceId: 'model-a' }] });
     expect((await send()).body.error.message).toContain('cannot rank');
     expect(manager.getCumulativeAmount(service.peerId)).toBe(authorized);
     expect(inference.requests.length).toBe(inferenceCount);
-    expect(routing.requests.slice(-2).map(request => request.v)).toEqual([1, 1]);
+    expect(routing.requests.slice(-2).every(request => request.routing)).toBe(true);
     routing.mode = 'first';
     await chooseRouter();
     expect((await send()).body.model).toBe('model-a');

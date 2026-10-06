@@ -15,11 +15,12 @@ test('conversation router settings persist independently, clone inputs and clear
   context.after(async () => { await store.flush(); await rm(dir, { recursive: true, force: true }) })
   const first = store.touch({ tool: 'vpr', sessionKey: 'first' })
   const second = store.touch({ tool: 'vpr', sessionKey: 'second' })
-  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'levanto', serviceId: 'levanto-route' }, preferences: { cqt: '9' } }
+  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' }, costQualityTradeoff: 9 }
   store.setPinnedModel(first.id, 'old-model', 'user')
   store.setRoutingSelection(first.id, selection)
-  selection.preferences.cqt = '1'
-  assert.equal(store.get(first.id)?.routingSelection?.preferences?.cqt, '9')
+  selection.service.serviceId = 'mutated'
+  assert.equal(store.get(first.id)?.routingSelection?.service.serviceId, 'alpha-route')
+  assert.equal(store.get(first.id)?.routingSelection?.costQualityTradeoff, 9)
   assert.equal(store.get(first.id)?.pinnedModel, null)
   assert.equal(store.get(first.id)?.peerSource, 'auto')
   assert.equal(store.get(second.id)?.routingSelection, null)
@@ -41,7 +42,7 @@ test('explicit model pins replace router overrides but automatic affinity does n
   const store = new ConversationStore(dir)
   context.after(async () => { await store.flush(); await rm(dir, { recursive: true, force: true }) })
   const chat = store.touch({ tool: 'vpr', sessionKey: 'first' })
-  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'levanto', serviceId: 'levanto-route' } }
+  const selection = { kind: 'router' as const, service: { peerId: 'a'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' } }
   store.setRoutingSelection(chat.id, selection)
   store.setPinnedModel(chat.id, 'automatic-model', 'auto')
   assert.deepEqual(store.get(chat.id)?.routingSelection, selection)
@@ -54,7 +55,7 @@ test('legacy and malformed persisted conversation overrides load without breakin
   const dir = await makeDir()
   context.after(() => rm(dir, { recursive: true, force: true }))
   const invalid = [undefined, null, { kind: 'router' }, { kind: 'model', model: 'model-a' },
-    { kind: 'router', service: { peerId: 'invalid', provider: 'levanto', serviceId: 'levanto-route' } }]
+    { kind: 'router', service: { peerId: 'invalid', provider: 'alpha', serviceId: 'alpha-route' } }]
   await writeFile(join(dir, CONVERSATIONS_FILE), JSON.stringify({ conversations: invalid.map((routingSelection, index) => ({
     tool: 'vpr', sessionKey: `chat-${index}`, routingSelection, lastActiveAt: Date.now(),
   })) }))

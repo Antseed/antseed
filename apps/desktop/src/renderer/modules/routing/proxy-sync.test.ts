@@ -33,7 +33,7 @@ test('desktop pinned mode syncs the selected peer and its advertised service id'
 
 test('router sync retains the exact target and preferences across empty model polls', async () => {
   const state = createInitialUiState();
-  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, { strategy: 'fast', region: 'eu' });
+  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, 0);
   state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router };
   const payloads: unknown[] = [];
   const bridge = { chatSetBuyerDefaultRoute: async (payload: unknown) => { payloads.push(payload); return { ok: true }; } };
@@ -67,7 +67,7 @@ test('connecting an app hydrates a saved router before resolving its alias targe
     systemProxyStart: async (payload) => {
       assert.equal(payload.peerId, router.service.peerId);
       assert.equal(payload.defaultModel, 'antseed');
-      assert.deepEqual(payload.servedModels, ['antseed', 'levanto-auto']);
+      assert.deepEqual(payload.servedModels, ['antseed']);
       events.push('start');
       return { ok: true };
     },
@@ -103,7 +103,7 @@ test('first sync adopts the saved buyer router instead of overwriting it with a 
 
 test('router allowlist survives startup hydration and subsequent proxy sync', async () => {
   const state = createInitialUiState();
-  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, { strategy: 'fast' }, [{ provider: 'openai', serviceId: 'model-a' }]);
+  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, 0, [{ provider: 'openai', serviceId: 'model-a' }]);
   const posted: unknown[] = [];
   await syncBuyerDefaultRoute({
     chatGetBuyerDefaultRoute: async () => ({ ok: true, selection: { kind: 'router', ...router } }),
@@ -116,7 +116,7 @@ test('router allowlist survives startup hydration and subsequent proxy sync', as
 test('an explicit selection wins over a late startup read', async () => {
   const state = createInitialUiState();
   const first = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' });
-  const second = createDesktopRouterSelection({ peerId: 'e'.repeat(40), provider: 'levanto', serviceId: 'other' }, { quality: 'high' });
+  const second = createDesktopRouterSelection({ peerId: 'e'.repeat(40), provider: 'levanto', serviceId: 'other' }, 0);
   const posted: unknown[] = [];
   await syncBuyerDefaultRoute({
     chatGetBuyerDefaultRoute: async () => {

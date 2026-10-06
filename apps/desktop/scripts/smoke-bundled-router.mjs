@@ -26,16 +26,15 @@ try {
   const output = execFileSync(electron, ['--input-type=module', '-e', `
     import assert from 'node:assert/strict';
     import localPlugin from '@antseed/router-local';
-    import { LevantoRoutingAdapter } from '@antseed/router-levanto';
+    import { ModelRoutingClient } from '@antseed/router-core';
     import Database from 'better-sqlite3';
     const router = await localPlugin.createRouter({});
-    assert.equal(router.autoRouteServiceId, 'levanto-auto');
-    assert.equal(typeof router.getModelRouterAdapter, 'function');
-    assert.equal(typeof new LevantoRoutingAdapter().selectRoute, 'function');
+    assert.equal(typeof router.selectPeer, 'function');
+    assert.equal(typeof new ModelRoutingClient().listModels, 'function');
     const database = new Database(':memory:');
     assert.equal(database.prepare('SELECT 1 AS ok').get().ok, 1);
     database.close();
-    console.log('Isolated Electron runtime: bundled local router, Levanto adapter and SQLite passed');
+    console.log('Isolated Electron runtime: bundled local router, IRP client and SQLite passed');
   `], { cwd: directory, env: { ...process.env, ELECTRON_RUN_AS_NODE: '1', NODE_PATH: '' }, encoding: 'utf8', timeout: 30_000 });
   process.stdout.write(output);
 } finally {

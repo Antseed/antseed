@@ -1,4 +1,3 @@
-import { completedRequestPrice } from '@antseed/protocol/billing';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
@@ -12,7 +11,6 @@ import type { BuyerPeerView } from './interfaces.js';
 import type { BuyerConnection } from './interfaces.js';
 import type { ProxyMux } from './proxy-mux.js';
 import { PaymentMux } from './payment-mux.js';
-import type { ServiceBillingOffer } from '@antseed/protocol/service-billing';
 import { ConnectionState } from '@antseed/protocol/connection-state';
 import type { BuyerPaymentNegotiator, SelectedBillingRoute } from './buyer-payment-negotiator.js';
 import { debugLog, debugWarn } from './debug.js';
@@ -21,7 +19,9 @@ import type { ResponseAuthSink } from './interfaces.js';
 import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth } from './response-auth.js';
-import { isCompletedRequestBillingModel, isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { routingServiceFromHeaders } from '@antseed/protocol/model-routing';
+import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
   detectRequestServiceApiProtocol,
@@ -31,10 +31,6 @@ import {
 import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import { buyerFault, peerFault } from './errors.js';
 import { adaptPeerFaultErrorResponse } from './peer-error-response.js';
-
-function externalAuthPresent(request: SerializedHttpRequest): boolean {
-  return Object.keys(request.headers).some(header => header.toLowerCase() === ANTSEED_SPENDING_AUTH_HEADER);
-}
 
 export interface RequestStreamResponseMetadata {
   streaming: boolean;
@@ -49,9 +45,6 @@ export interface RequestStreamCallbacks {
 }
 
 export interface RequestExecutionOptions {
-  unitBilling?: ServiceBillingOffer;
-  maxFeeMicroUsdc?: string;
-  acceptResponse?: (response: SerializedHttpResponse) => boolean;
   signal?: AbortSignal;
   /** Skip payment/free-usage machinery for internal control-plane requests. */
   controlPlane?: boolean;
@@ -116,22 +109,6 @@ export class BuyerRequestHandler {
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
-    const unitBilling = options?.unitBilling;
-    if (unitBilling) {
-      if (callbacks || options?.controlPlane || externalAuthPresent(req)) throw new Error('Completed-request requests require ordinary non-streaming SDK payments');
-      if (!options?.acceptResponse) throw new Error('Completed-request requests require response acceptance');
-      const unitBillingBody = JSON.parse(new TextDecoder().decode(req.body)) as Record<string, unknown> | null;
-      if (!unitBillingBody || req.method !== 'POST'
-        || unitBillingBody.service !== unitBilling.service) throw new Error('Completed-request request does not match agreed service');
-      const agreementHeaders = { 'x-antseed-provider': unitBilling.provider };
-      for (const [header, value] of Object.entries(req.headers)) {
-        const expected = agreementHeaders[header.toLowerCase() as keyof typeof agreementHeaders];
-        if (expected !== undefined && value !== expected) throw new Error('Completed-request request does not match agreed offer');
-      }
-      req = { ...req, headers: { ...req.headers, ...agreementHeaders } };
-      if (!negotiator && completedRequestPrice(unitBilling.unitModel) > 0n) throw new Error('Buyer payments must be enabled');
-      negotiator?.bpm.trackUnitRequest(peer.peerId, req.requestId, unitBilling);
-    }
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
     }
@@ -150,19 +127,16 @@ export class BuyerRequestHandler {
 
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
     const requestedService = options?.controlPlane ? undefined : extractServiceFromBody(req);
-    const requestProtocol = options?.controlPlane || unitBilling ? null : detectRequestServiceApiProtocol(req);
+    const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
-    if (!unitBilling && isCompletedRequestBillingModel(billingRoute?.unitModel)) {
-      throw new Error('Completed-request purchases require an explicit offer and response acceptance');
-    }
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
-    const isFreeService = unitBilling ? completedRequestPrice(unitBilling.unitModel) === 0n : requestedService
+    const isFreeService = requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
       : false;
-    if (negotiator && requestedService && !unitBilling) {
+    if (negotiator && requestedService) {
       if (isFreeService) {
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
         try {
@@ -172,20 +146,20 @@ export class BuyerRequestHandler {
         }
       } else {
         if (
-          requestProtocol === "openai-images"
+          isUnitBilledProtocol(requestProtocol)
           && (
             !billingRoute
-            || billingRoute.serviceApiProtocol !== "openai-images"
+            || billingRoute.serviceApiProtocol !== requestProtocol
             || (!billingRoute.unitModel && !isZeroTokenPricing(billingRoute.tokenPricing))
           )
         ) {
           throw new Error(
-            `Cannot send paid openai-images request for service "${requestedService}" without service unit billing metadata`,
+            `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
         }
         negotiator.trackRequestBillingContext(req, requestedService, billingRoute);
       }
-    } else if (!unitBilling && requestedService && isFreeService && this._deps.freeUsageManager) {
+    } else if (requestedService && isFreeService && this._deps.freeUsageManager) {
       this._deps.freeUsageManager.trackRequestService(req.requestId, requestedService);
       try {
         this._prepareDirectFreeUsageOpen(peer, conn);
@@ -380,33 +354,7 @@ export class BuyerRequestHandler {
       );
     });
 
-    const executeUnitBillingSafe = async (): Promise<SerializedHttpResponse> => {
-      try {
-        if (unitBilling) negotiator?.bpm.bindUnitRequestChannel(peer.peerId, req.requestId);
-        return await executeRequest();
-      } catch (error) {
-        if (unitBilling) negotiator?.bpm.observeUnitResponse(peer.peerId, req.requestId, false);
-        throw error;
-      }
-    };
-    const finishUnitBilling = async (response: SerializedHttpResponse): Promise<SerializedHttpResponse> => {
-      if (!unitBilling) return response;
-      let accepted = false;
-      try {
-        if (response.statusCode >= 200 && response.statusCode < 300 && !options?.signal?.aborted) {
-          accepted = options?.acceptResponse?.(structuredClone(response)) === true;
-          if (!accepted || options?.signal?.aborted) {
-            accepted = false;
-            throw new Error('Completed-request response was not accepted');
-          }
-        }
-      } finally {
-        negotiator?.bpm.observeUnitResponse(peer.peerId, req.requestId, accepted);
-      }
-      if (accepted && negotiator) await negotiator.bpm.authorizeUnitResponse(peer.peerId, req.requestId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
-      return response;
-    };
-    const response = await executeUnitBillingSafe();
+    const response = await executeRequest();
 
     // A seller demanded payment while this buyer runs no payment machinery
     // (payments disabled or unconfigured). Forwarding the raw seller 402 would
@@ -428,17 +376,6 @@ export class BuyerRequestHandler {
     }
 
     if (response.statusCode === 402 && negotiator && !externalSpendingAuth) {
-      if (unitBilling) {
-        try {
-          const retry = await negotiator.negotiateUnitBillingPayment(peer, conn);
-          const finalResponse = retry ? await executeUnitBillingSafe() : response;
-          this._recordResponseAuth(peer, req, finalResponse, requestedService, verificationMux);
-          return adaptPeerResponse(await finishUnitBilling(finalResponse));
-        } catch (error) {
-          negotiator.bpm.observeUnitResponse(peer.peerId, req.requestId, false);
-          throw error;
-        }
-      }
       const result = await negotiator.handle402(response, peer, conn, req);
       if (result.action === 'return') {
         return adaptPeerResponse(result.response);
@@ -452,12 +389,12 @@ export class BuyerRequestHandler {
       return adaptPeerResponse(retriedResponse);
     }
 
-    if (negotiator && !isFreeService && !unitBilling) {
+    if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
 
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
-    return adaptPeerResponse(await finishUnitBilling(response));
+    return adaptPeerResponse(response);
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {
@@ -541,10 +478,10 @@ export class BuyerRequestHandler {
   }
 }
 
-/** Extract the service/model name from a JSON or multipart request body, or undefined if not found. */
+/** The requested service: the `x-antseed-service` header (routing), else `service`/`model` from a JSON or multipart body. */
 function extractServiceFromBody(request: SerializedHttpRequest): string | undefined {
   const parsed = extractRequestBodyFields(request.headers, request.body);
-  const service = parsed?.service ?? parsed?.model;
+  const service = routingServiceFromHeaders(request.headers) ?? parsed?.service ?? parsed?.model;
   if (typeof service === 'string' && service.length > 0) return service;
   return undefined;
 }

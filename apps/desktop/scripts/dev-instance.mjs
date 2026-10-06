@@ -18,7 +18,6 @@ const child = spawn('pnpm', ['run', 'dev'], {
     ANTSEED_SYSTEM_PROXY_PORT: String(ports.systemProxy),
     ANTSEED_SYSTEM_PROXY_DATA_DIR: path.join(instanceDir, 'system-proxy'),
     ANTSEED_DEV_ROUTING_DHT_PORT: String(ports.levantoDht),
-    LEVANTO_ROUTING_PEER_URL: process.env.LEVANTO_ROUTING_PEER_URL ?? `http://127.0.0.1:${ports.levantoHttp}`,
   },
   stdio: 'inherit',
 });

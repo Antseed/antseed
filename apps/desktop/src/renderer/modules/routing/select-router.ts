@@ -1,4 +1,4 @@
-import { createDesktopRouterSelection, routerPreferenceDefaults, type RouterPreferences, type RoutingServiceTarget, type RouterAllowedModel, routingServiceKey } from '../../../shared/routing-selection';
+import { createDesktopRouterSelection, type RoutingServiceTarget, type RouterAllowedModel, routingServiceKey } from '../../../shared/routing-selection';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged } from '../../core/store';
 import type { DesktopBridge } from '../../types/bridge';
@@ -11,14 +11,13 @@ export function selectVprRouter(
   state: RendererUiState,
   chat: Pick<ChatModuleApi, 'handleServiceChange' | 'endProvisionalDefaultModel'>,
   service: RoutingServiceTarget,
-  preferences?: RouterPreferences,
+  costQualityTradeoff?: number,
   forConversation = false,
   allowedModels?: RouterAllowedModel[],
 ): void {
-  const stored = preferences === undefined ? loadVprRouterSettings(service) : null;
-  const advertised = state.vprRoutingServices.find(entry => routingServiceKey(entry) === routingServiceKey(service));
+  const stored = costQualityTradeoff === undefined ? loadVprRouterSettings(service) : null;
   const router = createDesktopRouterSelection(service,
-    preferences ?? stored?.preferences ?? routerPreferenceDefaults(advertised?.catalog?.preferencesSchema),
+    costQualityTradeoff ?? stored?.costQualityTradeoff,
     allowedModels ?? stored?.allowedModels);
   saveVprRouterSettings(router);
   state.vprRouteHydrated = true;
@@ -35,10 +34,10 @@ export function updateVprRouterSettings(
   bridge: DesktopBridge | undefined,
   state: RendererUiState,
   service: RoutingServiceTarget,
-  preferences: RouterPreferences,
+  costQualityTradeoff: number | undefined,
   allowedModels?: RouterAllowedModel[],
 ): void {
-  const router = createDesktopRouterSelection(service, preferences, allowedModels);
+  const router = createDesktopRouterSelection(service, costQualityTradeoff, allowedModels);
   saveVprRouterSettings(router);
   if (!state.vprRouteSelection.router || routingServiceKey(state.vprRouteSelection.router.service) !== routingServiceKey(service)) return;
   state.vprRouteHydrated = true;

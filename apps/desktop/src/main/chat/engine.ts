@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { writeBuyerRoute } from './buyer-route.js';
+import { buyerRouteSelection, writeBuyerRoute } from './buyer-route.js';
 import { isRoutingSelection } from '@antseed/node';
 import { readFile } from 'node:fs/promises';
 import { getNetworkStats } from '../runtime/fetch-network-stats.js';
@@ -1046,7 +1046,8 @@ export function registerPiChatHandlers({
       const proxyPort = await resolveProxyPort(configPath);
       const response = await fetch(`${LOCALHOST_URL}:${proxyPort}/_antseed/route`, { signal: AbortSignal.timeout(5_000) });
       if (!response.ok) throw new Error(`Read route failed (${response.status})`);
-      return await response.json();
+      const result = await response.json();
+      return { ok: true, selection: buyerRouteSelection(result) };
     } catch (error) {
       return { ok: false, error: asErrorMessage(error) };
     }

@@ -14,13 +14,14 @@ import type {
   UnitBillingContext,
   UnitBillingMatchKeyV1,
   UnitBillingModelV1,
+  UnitBillingUnitV1,
   UnitBillingUsage,
   UnitBillingUsageReportV1,
 } from '@antseed/protocol/billing';
 import {
   evaluateUnitBilling,
-  isCompletedRequestBillingModel,
   unitUsageToBillingReport,
+  validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 
@@ -44,43 +45,109 @@ export interface FinalUnitBillingResult {
   billingUsage: UnitBillingUsageReportV1;
 }
 
-export interface MeasurementAdapter {
-  measure(response: SerializedHttpResponse, facts?: ImageRequestFacts, accepted?: boolean): { usage: UnitBillingUsage; tokenUsage: TokenUsage };
-}
-
-export const imageMeasurementAdapter: MeasurementAdapter = {
-  measure: (response, facts) => extractUnitResponseUsage(response, facts),
-};
-
-export function completedRequestUsage(accepted: boolean): UnitBillingUsage {
-  return { units: { completed_requests: accepted ? 1 : 0 } };
-}
-
-export const completedRequestMeasurementAdapter: MeasurementAdapter = {
-  measure(response, _facts, accepted) {
-    if (response.statusCode >= 200 && response.statusCode < 300 && accepted === undefined) throw new Error('Completed-request measurement requires response acceptance');
-    return {
-      usage: completedRequestUsage(response.statusCode >= 200 && response.statusCode < 300 && accepted === true),
-      tokenUsage: { ...ZERO_TOKEN_USAGE },
-    };
-  },
-};
-
-export function captureUnitBillingContext(args: {
+export interface CaptureUnitBillingArgs {
   sellerPeerId: string;
   provider: string;
   service: string;
   serviceApiProtocol: ServiceApiProtocol;
-  unitModel?: UnitBillingModelV1;
   request: SerializedHttpRequest;
-}): CapturedUnitBillingContext {
-  if (isCompletedRequestBillingModel(args.unitModel)) {
-    return {
-      context: { sellerPeerId: args.sellerPeerId, provider: args.provider, service: args.service,
-        serviceApiProtocol: args.serviceApiProtocol, unitLimits: { completed_requests: 1 } },
-      requestUsage: { units: { completed_requests: 1 } }, requestFacts: {},
-    };
+}
+
+export interface UnitBillingAdapter {
+  name: string;
+  units: readonly UnitBillingUnitV1[];
+  protocols: readonly ServiceApiProtocol[];
+  capture(args: CaptureUnitBillingArgs): CapturedUnitBillingContext;
+  measure(
+    response: SerializedHttpResponse,
+    requestFacts?: ImageRequestFacts,
+  ): { usage: UnitBillingUsage; tokenUsage: TokenUsage };
+}
+
+const imageBillingAdapter: UnitBillingAdapter = {
+  name: 'image billing',
+  units: ['output_images'],
+  protocols: ['openai-images'],
+  capture: captureImageUnitBillingContext,
+  measure: extractImageResponseUsage,
+};
+
+// Model routing charges one completed request per well-formed ranking. Buyer and seller run this
+// same function on the same response bytes, so they always agree on the charge.
+const routingBillingAdapter: UnitBillingAdapter = {
+  name: 'model-routing billing',
+  units: ['completed_requests'],
+  protocols: ['model-routing'],
+  capture: (args) => ({
+    context: {
+      sellerPeerId: args.sellerPeerId,
+      provider: args.provider,
+      service: args.service,
+      serviceApiProtocol: args.serviceApiProtocol,
+      unitLimits: { completed_requests: 1 },
+    },
+    requestUsage: { units: { completed_requests: 1 } },
+    requestFacts: {},
+  }),
+  measure: (response) => {
+    const parsed = response.statusCode >= 200 && response.statusCode < 300 ? parseJsonObject(response.body) : null;
+    const ranked = parsed?.object === 'routing.ranking' && Array.isArray(parsed.ranked) && parsed.ranked.length > 0;
+    return { usage: { units: { completed_requests: ranked ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+  },
+};
+
+function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBillingUnitV1[]): UnitBillingAdapter {
+  const fail = (): never => {
+    throw new Error(`${name} is not implemented`);
+  };
+  return { name, units, protocols: [], capture: fail, measure: fail };
+}
+
+const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
+  imageBillingAdapter,
+  routingBillingAdapter,
+  unimplementedUnitBillingAdapter('video billing', ['video_generations', 'video_seconds']),
+];
+
+function adapterForProtocol(protocol: ServiceApiProtocol): UnitBillingAdapter | undefined {
+  return UNIT_BILLING_ADAPTERS.find((adapter) => adapter.protocols.includes(protocol));
+}
+
+function resolveUnitBillingAdapter(protocol: ServiceApiProtocol, model: UnitBillingModelV1): UnitBillingAdapter {
+  const protocolAdapter = adapterForProtocol(protocol);
+  if (!protocolAdapter) throw new Error(`Unit billing is not supported for ${protocol}`);
+  for (const component of model.components) {
+    const unitAdapter = UNIT_BILLING_ADAPTERS.find((adapter) => adapter.units.includes(component.unit));
+    if (!unitAdapter) throw new Error(`No unit billing adapter for ${component.unit}`);
+    if (unitAdapter.protocols.length === 0) throw new Error(`${unitAdapter.name} is not implemented`);
+    if (unitAdapter !== protocolAdapter) throw new Error(`${component.unit} is not supported for ${protocol}`);
   }
+  return protocolAdapter;
+}
+
+export function isUnitBilledProtocol(protocol: string | null | undefined): protocol is ServiceApiProtocol {
+  return typeof protocol === 'string' && UNIT_BILLING_ADAPTERS.some((adapter) => adapter.protocols.includes(protocol as ServiceApiProtocol));
+}
+
+export function validateUnitBillingModelForProtocolV1(
+  protocol: ServiceApiProtocol,
+  model: UnitBillingModelV1,
+): string[] {
+  const errors = validateUnitBillingModelV1(model);
+  if (errors.length > 0) return errors;
+  try {
+    resolveUnitBillingAdapter(protocol, model);
+  } catch (error) {
+    errors.push(error instanceof Error ? error.message : String(error));
+  }
+  return errors;
+}
+
+export function captureUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
+  return (adapterForProtocol(args.serviceApiProtocol) ?? imageBillingAdapter).capture(args);
+}
+
+function captureImageUnitBillingContext(args: CaptureUnitBillingArgs): CapturedUnitBillingContext {
   const parsed = extractRequestBodyFields(args.request.headers, args.request.body);
   const requestFacts = extractImageRequestFacts({
     path: args.request.path,
@@ -108,6 +175,14 @@ export function captureUnitBillingContext(args: {
 export function extractUnitResponseUsage(
   response: SerializedHttpResponse,
   requestFacts?: ImageRequestFacts,
+  serviceApiProtocol: ServiceApiProtocol = 'openai-images',
+): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
+  return (adapterForProtocol(serviceApiProtocol) ?? imageBillingAdapter).measure(response, requestFacts);
+}
+
+function extractImageResponseUsage(
+  response: SerializedHttpResponse,
+  requestFacts?: ImageRequestFacts,
 ): { usage: UnitBillingUsage; tokenUsage: TokenUsage } {
   const parsed = parseJsonObject(response.body);
   const responseFacts: ProviderResponseFacts = parsed
@@ -132,10 +207,8 @@ export function computeFinalUnitBilling(
   context: UnitBillingContext,
   response: SerializedHttpResponse,
   requestFacts?: ImageRequestFacts,
-  accepted?: boolean,
 ): FinalUnitBillingResult {
-  const adapter = isCompletedRequestBillingModel(model) ? completedRequestMeasurementAdapter : imageMeasurementAdapter;
-  const responseUsage = adapter.measure(response, requestFacts, accepted);
+  const responseUsage = resolveUnitBillingAdapter(context.serviceApiProtocol, model).measure(response, requestFacts);
   const costUsdc = evaluateUnitBilling(model, context, responseUsage.usage);
   return {
     usage: responseUsage.usage,
@@ -143,6 +216,15 @@ export function computeFinalUnitBilling(
     costUsdc,
     billingUsage: unitUsageToBillingReport(responseUsage.usage),
   };
+}
+
+export function estimateUnitRequestCost(
+  model: UnitBillingModelV1,
+  context: UnitBillingContext,
+  requestUsage: UnitBillingUsage,
+): bigint {
+  resolveUnitBillingAdapter(context.serviceApiProtocol, model);
+  return evaluateUnitBilling(model, context, requestUsage);
 }
 
 function factsToUnitUsage(facts: ImageRequestFacts): UnitBillingUsage {

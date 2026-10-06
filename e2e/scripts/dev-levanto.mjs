@@ -5,7 +5,7 @@ import path from 'node:path';
 import { AntseedNode, toPeerId } from '@antseed/node';
 import { DHTNode } from '@antseed/node/discovery';
 import { resolveInstancePorts } from '../../apps/desktop/scripts/dev-instance-config.mjs';
-import { GesundaiDevRouter, findGesundaiOffer, startRoutingCatalogServer } from './gesundai-router.mjs';
+import { GesundaiDevRouter, findGesundaiOffer } from './gesundai-router.mjs';
 
 const args = process.argv.slice(2).filter((argument) => argument !== '--');
 if (args.includes('--help')) {
@@ -32,19 +32,16 @@ const router = new GesundaiDevRouter(async () => {
   return findGesundaiOffer(await response.json());
 });
 seller.registerProvider(router);
-let catalogServer;
 let stopping;
-const stop = () => stopping ??= (async () => { await seller.stop(); await bootstrap.stop(); await catalogServer?.close(); })();
+const stop = () => stopping ??= (async () => { await seller.stop(); await bootstrap.stop(); })();
 try {
-  catalogServer = await startRoutingCatalogServer(ports.levantoHttp, (provider, service) =>
-    provider === router.name && router.services.includes(service) ? router.routingCatalog : undefined);
   await bootstrap.start();
   await seller.start();
   console.log(`Fake Levanto ready for desktop instance: ${instance}`);
-  console.log(`Router peer: ${seller.peerId}\nLocal discovery: 127.0.0.1:${ports.levantoDht}\nP2P service: 127.0.0.1:${seller.signalingPort}\nRouter API: ${catalogServer.url}`);
+  console.log(`Router peer: ${seller.peerId}\nLocal discovery: 127.0.0.1:${ports.levantoDht}\nP2P service: 127.0.0.1:${seller.signalingPort}`);
   console.log('Recommendation fee: $0. GesundAI inference is NOT free and uses your existing buyer payment settings.');
   console.log(`Run "pnpm dev:desktop:instance ${instance}" in another terminal. If an older buyer is running, stop it in its owning app/terminal first; a dev instance's Home button only detaches/reattaches to shared buyers.`);
-  console.log('Choose "Auto Router" by Levanto, marked Router, in the picker. Open its Models page for settings. No route or wallet configuration was changed. Ctrl+C stops this fake router.');
+  console.log('Choose "Levanto", marked Router, in the picker. Open its Models page for settings. No route or wallet configuration was changed. Ctrl+C stops this fake router.');
   await new Promise((resolve) => {
     process.once('SIGINT', resolve);
     process.once('SIGTERM', resolve);
