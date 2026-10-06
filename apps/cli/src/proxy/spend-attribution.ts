@@ -16,7 +16,7 @@ const MAX_EVENTS_PER_PAGE = 1000
 export interface AttributedSpendEvent {
   seq: number
   tag: string
-  requestId: string
+  requestId: string | null
   /** Buyer identity whose wallet signed the spend. */
   buyerIdentity: string
   sellerPeerId: string
@@ -54,6 +54,8 @@ export class SpendAttributionFeed {
   private readonly _track: Database.Statement
   private readonly _lookup: Database.Statement
   private readonly _events: AttributedSpendEvent[] = []
+  /** Tag of the latest tagged spend per identity and seller, for spend signed without a request id. */
+  private readonly _lastTagBySeller = new Map<string, string>()
   private _nextSeq = 1
 
   constructor(private readonly _now: () => number = () => Date.now()) {
@@ -80,9 +82,13 @@ export class SpendAttributionFeed {
     outputTokens: string
     outputImages: string
   }): void {
-    if (!event.requestId || !this._tags.open) return
-    const tag = (this._lookup.get(event.requestId) as { tag: string } | undefined)?.tag
+    if (!this._tags.open) return
+    const sellerKey = `${event.buyerIdentity ?? 'default'}:${event.sellerPeerId}`
+    const tag = event.requestId
+      ? (this._lookup.get(event.requestId) as { tag: string } | undefined)?.tag
+      : this._lastTagBySeller.get(sellerKey)
     if (!tag) return
+    this._lastTagBySeller.set(sellerKey, tag)
     this._events.push({
       seq: this._nextSeq++,
       tag,

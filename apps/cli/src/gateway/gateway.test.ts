@@ -267,6 +267,18 @@ test('spend attribution feed reports only tagged requests and pages by cursor', 
   assert.equal(feed.page(first.cursor).cursor, 2)
 })
 
+test('spend signed without a request id goes to the latest tag on that seller', (context) => {
+  const feed = new SpendAttributionFeed()
+  context.after(() => feed.close())
+  feed.track('req-1', 'gw_a')
+  const spend = { sellerPeerId: 's', amountUsdc: '10', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' }
+  feed.record({ ...spend, requestId: null })
+  feed.record({ ...spend, requestId: 'req-1' })
+  feed.record({ ...spend, requestId: null, amountUsdc: '7' })
+  feed.record({ ...spend, requestId: null, sellerPeerId: 'other' })
+  assert.deepEqual(feed.page(0).events.map((event) => [event.tag, event.amountUsdc]), [['gw_a', '10'], ['gw_a', '7']])
+})
+
 test('late spend keeps its tag after more than 2048 newer requests', (context) => {
   const feed = new SpendAttributionFeed()
   context.after(() => feed.close())
