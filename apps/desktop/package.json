@@ -1,7 +1,7 @@
 {
   "name": "@antseed/desktop",
   "productName": "Antseed AI VPN",
-  "version": "0.2.49",
+  "version": "0.2.50",
   "private": true,
   "description": "Desktop app for Antseed",
   "author": "Antseed <hello@antseed.com>",
@@ -48,6 +48,7 @@
     "@mariozechner/pi-ai": "^0.64.0",
     "@mariozechner/pi-coding-agent": "^0.64.0",
     "@sinclair/typebox": "^0.34.48",
+    "@tanstack/query-core": "5.97.0",
     "better-sqlite3": "^12.6.2",
     "electron-updater": "^6.8.3",
     "fflate": "0.8.2",

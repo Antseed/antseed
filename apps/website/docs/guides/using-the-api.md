@@ -125,7 +125,9 @@ The proxy accepts these API formats. Use whichever matches your tool:
 | `/v1/responses` | OpenAI Responses API | Codex |
 | `/v1/images/generations` | OpenAI Images generation | OpenAI-compatible image clients |
 | `/v1/images/edits` | OpenAI Images edits | OpenAI-compatible multipart image clients |
-| `/v1/models` | OpenAI model list | network-wide, answered locally; `?type=images` filters (free) |
+| `/api/v1/video/queue` | Venice video queue | Venice-compatible video clients |
+| `/api/v1/video/retrieve` | Venice video status and MP4 download | Venice-compatible video clients |
+| `/v1/models` | OpenAI model list | network-wide, answered locally; `?type=images` and `?type=videos` filter (free) |
 | `/v1/messages/count_tokens` | Anthropic token counting | answered locally, never routed or billed |
 
 The `model` field in your request determines which service to route to, and optionally which peer (`<peerId>@<model>`).
@@ -164,9 +166,44 @@ Sellers that support edits must advertise both `text` and `image` in the service
 
 In Desktop image chats, follow-up prompts use `/v1/images/edits` only when the selected seller advertises image input. With a generation-only seller, Desktop keeps the selected seller and requests a new image using the conversation's image-prompt history as cumulative instructions.
 
+### Videos
+
+Video services use the [Venice video API](https://docs.venice.ai/api-reference/endpoint/video/queue) format (`venice-video`).
+
+```bash
+# Find video models
+curl -s 'http://localhost:8377/v1/models?type=videos' | jq '.data[].id'
+
+# Queue a job; the response includes a queue_id
+curl http://localhost:8377/api/v1/video/queue \
+  -H 'content-type: application/json' \
+  -d '{"model": "<video-model>", "prompt": "A tiny ant carrying a seed", "duration": "5s"}'
+
+# Poll until the response is video/mp4 instead of a JSON status
+curl http://localhost:8377/api/v1/video/retrieve \
+  -H 'content-type: application/json' \
+  -d '{"model": "<video-model>", "queue_id": "<queue_id>"}' -o result.out
+```
+
+Retrieve requests always go back to the seller that accepted the job. For image-to-video, add Venice media fields such as `image_url` (a public URL or `data:` URL) and pick a model that supports them.
+
+**Payment**
+
+- You pay the seller's price once, when the finished MP4 is delivered. Repeat downloads are free.
+- Videos above $5.00 are refused.
+- Each video uses its own payment channel. For videos above $1, $0.65 is settled up front and counts toward the price; it is the most you lose if the video is never delivered.
+
+If a seller disappears, release the unspent reserve:
+
+```bash
+antseed buyer channels request-close <channelId>
+# after the 15-minute grace period
+antseed buyer channels withdraw <channelId>
+```
+
 ## Claude Code
 
-**Recommended:** launch Claude Code from the AI VPN's **Apps** view — it detects the installed tool, wires it to the proxy, and handles peer and model routing automatically.
+**Recommended:** connect Claude Code from the AI VPN's **Apps** view. Antseed updates `~/.claude/settings.json` so new and running Claude Code sessions use the `antseed` model alias, which follows the model selected in the AI VPN. Disconnecting restores the settings Antseed changed. While connected, plain `claude` requests go through Antseed instead of your Anthropic login.
 
 CLI alternative — the `antseed claude` wrapper resolves the running buyer proxy, sets `ANTHROPIC_BASE_URL` and a placeholder `ANTHROPIC_API_KEY` for the child process, and forwards the rest of your flags to Claude Code:
 
@@ -184,6 +221,8 @@ export ANTHROPIC_BASE_URL=http://localhost:8377
 export ANTHROPIC_API_KEY=antseed   # any non-empty placeholder
 claude --model kimi-k2.6           # or <peerId>@kimi-k2.6
 ```
+
+Use `--model antseed` with the wrapper or manual setup to follow the AI VPN selection instead of pinning a concrete model.
 
 Claude Code sends requests to `/v1/messages`. Bare model ids use automatic routing and conversation affinity; explicitly prefixed model ids remain hard-pinned. The proxy translates to the selected seller's native format when needed.
 
@@ -316,6 +355,8 @@ antseed --data-dir "$BUYDIR" buyer start \
 ```
 
 Use `--data-dir <path>` in service/systemd scripts because it is explicit. `ANTSEED_DATA_DIR=<path>` is useful for wrappers and local scripts. Do not reuse the same buyer data directory across concurrent processes.
+
+To pay from several wallets on one machine, you don't need a buyer process per wallet. Add buyer identities to one buyer and pick one per request with the `x-antseed-buyer-identity` header. See [buyer identities](/docs/guides/gateway-api-keys#buyer-identities).
 
 If the buyer proxy starts but appears to use stale pins, waits on broad discovery, times out before payment negotiation, or shows sessions/channels in an unexpected place, check the startup log for the resolved data directory and `buyer.state.json` path. `ANTSEED_HOME` is not the CLI state-isolation setting; use `--data-dir` or `ANTSEED_DATA_DIR`.
 

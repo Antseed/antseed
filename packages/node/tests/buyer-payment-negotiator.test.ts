@@ -366,7 +366,8 @@ describe('BuyerPaymentNegotiator', () => {
         currentAcceptedCumulative: '56218',
       });
 
-      const result = await negotiator.handle402(response, peer, conn, makeRequest());
+      const req = makeRequest();
+      const result = await negotiator.handle402(response, peer, conn, req);
 
       expect(bpm.clearLockConfirmation).not.toHaveBeenCalled();
       expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalledWith(
@@ -374,6 +375,7 @@ describe('BuyerPaymentNegotiator', () => {
         10000n,
         expect.anything(),
         85119n, // <— the catch-up target the seller asked for
+        req.requestId,
       );
       expect(result.action).toBe('retry');
     });

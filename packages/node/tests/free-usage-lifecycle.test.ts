@@ -665,6 +665,55 @@ describe('FreeUsage P2P lifecycle', () => {
     );
   });
 
+  it('seller stops retrying a pending free usage record once the channel has expired', async () => {
+    vi.useFakeTimers();
+    vi.setSystemTime(new Date('2026-01-01T00:00:00Z'));
+    try {
+      const buyerManager = new BuyerFreeUsageManager(buyer, freeUsageConfig({ defaultAuthDurationSecs: 2 }));
+      const sellerManager = new SellerFreeUsageManager(seller, sellerConfig({ recordFlushIntervalMs: 60_000 }));
+      const client = installMockClient(sellerManager);
+      client.record.mockRejectedValue(new Error('execution reverted'));
+      const sellerConn = makeConn();
+      const sellerMux = new PaymentMux(sellerConn.conn as any);
+      const buyerConn = makeConn();
+      const buyerMux = new PaymentMux(buyerConn.conn as any);
+      const openPayload = await prepareOpen(buyerManager);
+
+      await openSellerSession(sellerManager, openPayload, sellerMux);
+      buyerManager.handleAck(seller.peerId, {
+        channelId: openPayload.channelId,
+        acceptedSequence: '0',
+      });
+      sellerConn.frames.length = 0;
+
+      sellerManager.reportUsageRequest(buyer.peerId, sellerMux, {
+        requestId: 'req-free-expired',
+        inputTokens: 12,
+        outputTokens: 7,
+        service: 'gpt-free',
+      });
+      buyerManager.trackRequestService('req-free-expired', 'gpt-free');
+      await buyerManager.handleNeedAuth(
+        seller.peerId,
+        decodeNeedFreeUsageAuth(decodeSentFrame(sellerConn.frames[0]!).payload),
+        buyerMux,
+      );
+      sellerManager.handleAuth(buyer.peerId, decodeFreeUsageAuth(decodeSentFrame(buyerConn.frames[0]!).payload), sellerMux);
+
+      // The flush is clamped to the channel deadline: one attempt before it fails and is retried,
+      // the retry lands after the deadline and must drop the record instead of rescheduling.
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(client.record).toHaveBeenCalledTimes(1);
+      await vi.advanceTimersByTimeAsync(1_000);
+      expect(client.record).toHaveBeenCalledTimes(2);
+
+      await vi.advanceTimersByTimeAsync(120_000);
+      expect(client.record).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
   it('seller closes the latest pending free usage record on disconnect', async () => {
     const buyerManager = new BuyerFreeUsageManager(buyer, freeUsageConfig());
     const sellerManager = new SellerFreeUsageManager(seller, sellerConfig({

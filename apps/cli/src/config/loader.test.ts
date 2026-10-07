@@ -719,6 +719,16 @@ test('loadConfig rejects invalid seller gasCheck minBalanceEth', async () => {
   );
 });
 
+test('loadConfig preserves seller freeUsage setting', async () => {
+  await withTempConfig(
+    JSON.stringify({ seller: { freeUsage: { recordBatchSize: 64, recordFlushIntervalMs: 900_000 } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.freeUsage, { recordBatchSize: 64, recordFlushIntervalMs: 900_000 });
+    }
+  );
+});
+
 test('loadConfig preserves seller freeTier setting', async () => {
   await withTempConfig(
     JSON.stringify({

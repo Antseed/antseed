@@ -22,7 +22,8 @@ describe('provider-claude-oauth plugin manifest', () => {
     expect(keys).toContain('ANTSEED_MAX_CONCURRENCY');
     expect(keys).toContain('ANTSEED_ALLOWED_SERVICES');
     const accessField = plugin.configSchema!.find(f => f.key === 'CLAUDE_ACCESS_TOKEN');
-    expect(accessField!.required).toBe(true);
+    expect(keys).toContain('CLAUDE_AUTH_FILE');
+    expect(accessField!.required).toBe(false);
     expect(accessField!.type).toBe('secret');
     const clientIdField = plugin.configSchema!.find(f => f.key === 'CLAUDE_OAUTH_CLIENT_ID');
     expect(clientIdField!.required).toBe(false);

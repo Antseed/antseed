@@ -77,6 +77,22 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
   {
+    name: 'claude-code',
+    displayName: 'Claude Code',
+    kind: 'config-patch',
+    method: 'Config patch',
+    toolSlugs: ['claude-code'],
+    domains: [],
+    pathPrefixes: [],
+    configPatch: {
+      format: 'claude-code',
+      configPath: '~/.claude/settings.json',
+      providerKey: 'antseed',
+      baseURL: 'http://localhost:{buyerPort}',
+      installProbe: 'claude',
+    },
+  },
+  {
     name: 'claude-desktop',
     displayName: 'Claude',
     kind: 'config-patch',
@@ -151,7 +167,7 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     displayName: 'T3 Code',
     kind: 'config-patch',
     method: 'Config patch',
-    toolSlugs: ['claude-code', 'claude-cli'],
+    toolSlugs: ['t3code'],
     domains: [],
     pathPrefixes: [],
     configPatch: {

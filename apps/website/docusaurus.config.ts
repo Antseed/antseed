@@ -196,6 +196,14 @@ const config: Config = {
   ],
 
   themeConfig: {
+    announcementBar: {
+      id: 'foundation-funding-2-4m',
+      content:
+        '<a class="funding-announcement" href="/blog/antseed-foundation-raises-2-4m/"><strong>We raised $2.4M, led by Spark Capital.</strong><span>Read the announcement <span aria-hidden="true">→</span></span></a>',
+      backgroundColor: '#001E12',
+      textColor: '#FFFFFF',
+      isCloseable: true,
+    },
     metadata: [
       {name: 'google-site-verification', content: '09pzs5Q9kHdpQSNSBpr0vNh9SMq-T8lzhBgH5Zgm6ug'},
       {name: 'description', content: 'Run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.'},
@@ -205,8 +213,9 @@ const config: Config = {
       {property: 'og:site_name', content: 'Antseed'},
       {name: 'twitter:card', content: 'summary_large_image'},
       {name: 'twitter:site', content: '@antseed'},
-      {name: 'twitter:image', content: 'https://antseed.com/og-image.png'},
-      {property: 'og:image', content: 'https://antseed.com/og-image.png'},
+      {name: 'twitter:image', content: 'https://antseed.com/og-image-open-market.png'},
+      {property: 'og:image', content: 'https://antseed.com/og-image-open-market.png'},
+      {property: 'og:image:type', content: 'image/png'},
       {property: 'og:image:width', content: '1200'},
       {property: 'og:image:height', content: '630'},
       {property: 'og:image:alt', content: 'Antseed, run your agents on your terms'},

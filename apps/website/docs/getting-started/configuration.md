@@ -205,7 +205,7 @@ Each service entry supports five optional fields:
 | `categories` | string[] | Normie-friendly tags announced in peer metadata (e.g. `chat`, `coding`, `math`, `study`, `fast`, `free`). |
 | `pricing` | object | Per-service pricing in USD per million tokens. If omitted, the provider's `defaults` are used. |
 | `capabilities` | object | Optional discovery hints: `contextWindow`, `maxOutputTokens`, `inputs`, `outputs`, `reasoning`, `toolUse`, `structuredOutput`, and `supportedParameters`. |
-| `unitBillingModels` | object | Optional per-protocol non-token pricing. Currently consumed by the `openai` provider for `openai-images` services. |
+| `unitBillingModels` | object | Optional per-protocol non-token pricing. Consumed by the `openai` provider for `openai-images` services and by the `venice-video` provider for `venice-video` services. |
 
 Capabilities are hints, not enforced limits. Omitted fields mean “unknown.” Supported modality values for `inputs` and `outputs` are `text`, `image`, `audio`, `video`, and `pdf`. `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, e.g. `background`, `output_format`, `seed`) — useful for image services where clients otherwise have to guess. The `openai` provider automatically advertises `outputs: ["image"]` for `openai-images` services; explicit config extends or overrides that default per field.
 
@@ -333,6 +333,32 @@ antseed config seller set freeTier.windowMs 86400000
 ```
 
 Omit `windowMs` to use the 24-hour default. Remove `seller.freeTier` to restore unlimited zero-priced service access.
+
+## Free-Usage Transactions
+
+Free requests are still recorded on-chain so buyers earn usage credit, and the seller pays the gas for those transactions. A buyer opens a free-usage channel (one `open` transaction), the seller writes accumulated usage to it (`record` transactions), and the channel is closed when the buyer asks or its deadline passes. Buyers on node 0.2.126 or newer open channels with a 1-hour deadline; older clients use 15 minutes.
+
+The seller controls how often usage is written:
+
+```json
+{
+  "seller": {
+    "freeUsage": {
+      "recordBatchSize": 16,
+      "recordFlushIntervalMs": 900000
+    }
+  }
+}
+```
+
+A `record` transaction is sent as soon as `recordBatchSize` free requests have accumulated on a channel, or after `recordFlushIntervalMs` milliseconds since the first unrecorded request, whichever comes first. The flush always happens before the channel deadline, because records submitted after it are rejected by the contract. Raising either value means fewer transactions per active buyer; usage is never dropped, only written later. The defaults are 16 requests and 15 minutes.
+
+```bash
+antseed config seller set freeUsage.recordBatchSize 64
+antseed config seller set freeUsage.recordFlushIntervalMs 3600000
+```
+
+Both values must be positive integers; `recordFlushIntervalMs` must be at least 1000.
 
 ## Model Health Checks
 
