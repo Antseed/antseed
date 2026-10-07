@@ -1,4 +1,5 @@
 import '@antseed/ui/styles';
+import { selectVprRouter, updateVprRouterSettings } from './modules/routing/select-router';
 import { initChatModule } from './modules/chat/controller';
 import { initSettingsModule } from './modules/app/settings';
 import { initRuntimeModule } from './modules/app/runtime';
@@ -648,6 +649,12 @@ registerActions({
   clearPinnedPeer: () => { recordUserAction('route_mode_change', 'chat'); chatApi.clearPinnedPeer(); },
   selectVprModel: (provider, serviceId, peerId) => {
     actionSelectVprModel(provider, serviceId, peerId);
+  },
+  selectVprRouter: (service, costQualityTradeoff, forConversation = false, allowedModels) => {
+    selectVprRouter(bridge, uiState, chatApi, service, costQualityTradeoff, forConversation, allowedModels);
+  },
+  updateVprRouterSettings: (service, costQualityTradeoff, allowedModels) => {
+    updateVprRouterSettings(bridge, uiState, service, costQualityTradeoff, allowedModels);
   },
   clearVprPinnedPeer: () => {
     recordUserAction('route_mode_change', 'model');

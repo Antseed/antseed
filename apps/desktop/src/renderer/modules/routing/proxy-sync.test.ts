@@ -1,7 +1,8 @@
 import assert from 'node:assert/strict';
 import { test } from 'vitest';
 import { createInitialUiState, type DiscoverRow, type VprRouteSelection } from '../../core/state.js';
-import { buyerDefaultRoutePayload, syncBuyerDefaultRoute, type VprRouteTarget } from './proxy-sync.js';
+import { buyerDefaultRoutePayload, connectVprProfile, syncBuyerDefaultRoute, type VprRouteTarget } from './proxy-sync.js';
+import { createDesktopRouterSelection } from '../../../shared/routing-selection.js';
 
 const model = {
   provider: 'openai',
@@ -19,16 +20,60 @@ const target: VprRouteTarget = {
 test('desktop Auto syncs a model-only buyer route', () => {
   const selection: VprRouteSelection = { model, mode: 'auto', peerId: null };
   assert.deepEqual(buyerDefaultRoutePayload(selection, target), {
-    service: 'openai-gpt-56-sol',
+    selection: { kind: 'model', model: 'openai-gpt-56-sol' },
   });
 });
 
 test('desktop pinned mode syncs the selected peer and its advertised service id', () => {
   const selection: VprRouteSelection = { model, mode: 'pinned-peer', peerId: target.peerId };
   assert.deepEqual(buyerDefaultRoutePayload(selection, target), {
-    peerId: target.peerId,
-    service: 'openai-gpt-56-sol',
+    selection: { kind: 'model', model: `${target.peerId}@openai-gpt-56-sol` },
   });
+});
+
+test('router sync retains the exact target and preferences across empty model polls', async () => {
+  const state = createInitialUiState();
+  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, 0);
+  state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router };
+  const payloads: unknown[] = [];
+  const bridge = { chatSetBuyerDefaultRoute: async (payload: unknown) => { payloads.push(payload); return { ok: true }; } };
+  await syncBuyerDefaultRoute(bridge, state);
+  state.vprModelCatalog = [];
+  state.vprRoutableRows = [];
+  await syncBuyerDefaultRoute(bridge, state);
+  assert.deepEqual(payloads, Array.from({ length: 2 }, () => ({ selection: { kind: 'router', ...router } })));
+  assert.deepEqual(state.vprRouteSelection.router, router);
+});
+
+test('failed route updates surface errors and do not claim success', async () => {
+  const state = createInitialUiState();
+  state.vprRouteSelection = { model: null, mode: 'auto', peerId: null,
+    router: createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }) };
+  assert.equal(await syncBuyerDefaultRoute({ chatSetBuyerDefaultRoute: async () => ({ ok: false, error: 'Router unavailable' }) }, state), false);
+  assert.equal(state.vprRouteError, 'Router unavailable');
+});
+
+test('connecting an app syncs the selected router before resolving its alias target', async () => {
+  const state = createInitialUiState();
+  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' });
+  state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router };
+  const events: string[] = [];
+  const result = await connectVprProfile({
+    chatSetBuyerDefaultRoute: async (payload) => {
+      assert.deepEqual(payload, { selection: { kind: 'router', ...router } });
+      events.push('route');
+      return { ok: true };
+    },
+    systemProxyStart: async (payload) => {
+      assert.equal(payload.peerId, router.service.peerId);
+      assert.equal(payload.defaultModel, 'antseed');
+      assert.deepEqual(payload.servedModels, ['antseed']);
+      events.push('start');
+      return { ok: true };
+    },
+  }, state, 'codex');
+  assert.equal(result.ok, true);
+  assert.deepEqual(events, ['route', 'start']);
 });
 
 test('desktop Auto replaces a stale coding-only selection with an unrestricted route', async () => {
@@ -113,5 +158,5 @@ test('desktop Auto replaces a stale coding-only selection with an unrestricted r
     },
   }, uiState);
 
-  assert.deepEqual(payloads, [{ service: 'claude-fable-5' }]);
+  assert.deepEqual(payloads, [{ selection: { kind: 'model', model: 'claude-fable-5' } }]);
 });

@@ -167,6 +167,7 @@ export function initChatModule({
   onPaymentCardShown,
   onResponseCompleted,
 }: ChatModuleOptions): ChatModuleApi {
+  const pendingRouteUpdates = new Map<string, Promise<{ ok: boolean; error?: string }>>();
   // ---------------------------------------------------------------------------
   // Constants
   // ---------------------------------------------------------------------------
@@ -1250,6 +1251,8 @@ export function initChatModule({
       };
     }
 
+    if (uiState.vprRouteSelection.router) return { id: 'antseed', provider: null };
+
     const vprOption = resolveVprChatOption(
       uiState.chatServiceOptions,
       uiState.discoverRows,
@@ -1437,6 +1440,7 @@ export function initChatModule({
    * Returns the pick, or null when the catalog offers nothing to pick.
    */
   function adoptDefaultVprModel(): VprSelectedModel | null {
+    if (uiState.vprRouteSelection.router) return null;
     const defaultModel = selectDefaultVprModel(uiState.vprModelCatalog, null, freeEntryRouteReputation);
     if (!defaultModel) return null;
     const entry = findCatalogEntry(uiState.vprModelCatalog, defaultModel.provider, defaultModel.serviceId);
@@ -1479,7 +1483,7 @@ export function initChatModule({
     // The selected model may only have been offered by a seller the new rules
     // exclude — leaving it selected would strand every send with no route.
     const selected = uiState.vprRouteSelection.model;
-    if (selected && routesForSelectedModel(uiState.vprRoutableRows, selected).length === 0) {
+    if (!uiState.vprRouteSelection.router && selected && routesForSelectedModel(uiState.vprRoutableRows, selected).length === 0) {
       if (!adoptDefaultVprModel()) {
         uiState.vprRouteSelection = { model: null, mode: 'auto', peerId: null };
         saveVprRouteSelection(uiState.vprRouteSelection);
@@ -1556,6 +1560,15 @@ export function initChatModule({
   }
 
   async function refreshChatServiceOptions(): Promise<void> {
+    void bridge?.chatGetRoutingServices?.().then((result) => {
+      uiState.vprRoutingServices = result.ok ? result.services ?? [] : [];
+      uiState.vprRoutingServicesError = result.ok ? null : result.error ?? 'Routing discovery failed. Check that the buyer is running.';
+      notifyUiStateChanged();
+    }).catch((error: unknown) => {
+      uiState.vprRoutingServices = [];
+      uiState.vprRoutingServicesError = error instanceof Error ? error.message : 'Routing discovery failed. Check that the buyer is running.';
+      notifyUiStateChanged();
+    });
     // Skip if a fetch is already in-flight — the 30s timeout outlasts the 5s poll
     // cycle, so without this guard every result gets a stale token and is dropped.
     if (serviceRefreshInProgress) return;
@@ -1634,7 +1647,7 @@ export function initChatModule({
         // it — re-picking here would flatten a pin back to auto.
         setProvisionalDefaultModel(null);
       }
-      if (!selectedRouteModel || selectedRouteEntry?.kind === 'image' || provisionalDefaultModel !== null) {
+      if (!uiState.vprRouteSelection.router && (!selectedRouteModel || selectedRouteEntry?.kind === 'image' || provisionalDefaultModel !== null)) {
         adoptDefaultVprModel();
       }
       // Keep the buyer proxy's default route on the current selection. Runs
@@ -2202,6 +2215,9 @@ export function initChatModule({
     }
 
     try {
+      if (selection.id === 'antseed' && !await syncBuyerDefaultRoute(bridge, uiState)) {
+        throw new Error(uiState.vprRouteError ?? 'Could not apply router selection');
+      }
       // Record how this thread's peer was chosen: a pinned thread must keep its
       // peer forever, while an auto thread may be re-routed if the peer dies.
       const routeMode = uiState.vprRouteSelection.mode === 'pinned-peer' ? 'pinned' : 'auto';
@@ -2631,15 +2647,30 @@ export function initChatModule({
     })();
   }
 
-  function dispatchChatRequest(
+  async function dispatchChatRequest(
     convId: string,
     content: string,
     attachments?: PreparedChatAttachment[],
     selectionOverride?: ChatServiceSelection,
-  ): void {
+  ): Promise<void> {
     if (!bridge) return;
 
     const selection = selectionOverride ?? getConversationServiceSelection(convId);
+    const routeUpdate = pendingRouteUpdates.get(convId);
+    if (routeUpdate) {
+      const result = await routeUpdate;
+      if (!result.ok) {
+        reportChatError(result.error ?? 'Could not change the conversation route', 'Request failed');
+        setConversationSending(convId, false);
+        return;
+      }
+      if (pendingRouteUpdates.get(convId) === routeUpdate) pendingRouteUpdates.delete(convId);
+    }
+    if (selection.id === 'antseed' && !await syncBuyerDefaultRoute(bridge, uiState)) {
+      reportChatError(uiState.vprRouteError ?? 'Could not apply route selection', 'Request failed');
+      setConversationSending(convId, false);
+      return;
+    }
     const requestStartedAt = Date.now();
     streamCompletedAtByConversation.delete(convId);
     streamFailedAtByConversation.delete(convId);
@@ -2871,7 +2902,7 @@ export function initChatModule({
     // Write the explicit pick through to the AI VPN route selection so the two
     // never disagree about which model+peer a new conversation targets. The
     // service options are per-peer entries, so a dropdown pick is a peer pin.
-    if (nextServiceId) {
+    if (nextServiceId && nextServiceId !== 'antseed') {
       const catalogEntry = nextProvider
         ? findCatalogEntry(uiState.vprModelCatalog, nextProvider, nextServiceId)
         : null;
@@ -2945,14 +2976,15 @@ export function initChatModule({
       }
     }
     if (bridge?.chatAiSelectPeer) {
-      void bridge.chatAiSelectPeer({
+      const update = bridge.chatAiSelectPeer({
         conversationId: uiState.chatActiveConversation,
         peerId: pinnedPeerId || null,
         // Persist the model rebinding too — the in-memory summary update
         // above is otherwise reverted by the next conversation-list refresh.
         ...(nextServiceId ? { service: nextServiceId, provider: nextProvider ?? '' } : {}),
         routeMode: nextRouteMode,
-      }).catch(() => undefined);
+      }).catch((error: unknown) => ({ ok: false, error: toErrorMessage(error) }));
+      if (uiState.chatActiveConversation) pendingRouteUpdates.set(uiState.chatActiveConversation, update);
     }
     void refreshChatPermissionModeForPeer(pinnedPeerId);
 
@@ -3090,7 +3122,7 @@ export function initChatModule({
       bridge.onChatDefaultRouteChanged((data) => {
         const peerId = typeof data.peerId === 'string' ? data.peerId.trim() : '';
         const serviceId = normalizeChatServiceId(data.service);
-        if (!peerId || !serviceId) return;
+        if (!serviceId) return;
         const provider = normalizeProviderId(data.provider);
         const option = uiState.chatServiceOptions.find((o) => (
           o.peerId === peerId && normalizeChatServiceId(o.id) === serviceId
@@ -3111,7 +3143,7 @@ export function initChatModule({
               label: option?.label ?? serviceId,
               categories: [...(option?.categories ?? [])],
             };
-        uiState.vprRouteSelection = { model: selectedModel, mode: 'pinned-peer', peerId };
+        uiState.vprRouteSelection = { model: selectedModel, mode: peerId ? 'pinned-peer' : 'auto', peerId: peerId || null };
         // An external explicit pick ends the provisional-default window even
         // when it lands on the very model the provisional default chose —
         // otherwise the next refresh's re-pick would flatten the pin to auto.

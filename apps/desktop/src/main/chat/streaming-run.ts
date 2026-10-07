@@ -8,6 +8,7 @@
  * set of engine state this run touches; nothing else is reachable from it.
  */
 import { randomUUID } from 'node:crypto';
+import { RESPONSE_ROUTE_ENTRY } from './response-route.js';
 import { existsSync } from 'node:fs';
 import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import {
@@ -420,6 +421,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     );
 
     const turnMetaQueue: AiMessageMeta[] = [];
+    let finalAssistantCreatedAt: number | undefined;
     const toolArgsById = new Map<string, Record<string, unknown>>();
     // Pi's native streaming handles all API formats (anthropic-messages,
     // openai-completions, openai-responses) via model.api + model.baseUrl.
@@ -719,6 +721,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             }
           }
           const assistantMessage = message as AssistantMessage & { meta?: AiMessageMeta };
+          finalAssistantCreatedAt = assistantMessage.timestamp;
           assistantMessage.meta = parsedMeta;
           pendingAssistantMessage = mergeAssistantMessagesForUi(
             pendingAssistantMessage,
@@ -859,6 +862,13 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             peerId: routed.peerId,
             service: routed.service,
           };
+          if (finalAssistantCreatedAt) {
+            sessionManager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, {
+              createdAt: finalAssistantCreatedAt,
+              peerId: routed.peerId,
+              service: routed.service,
+            });
+          }
           preferredPeerByConversationId.set(conversationId, routed.peerId);
           const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === routed.peerId)?.peerLabel;
           await store.setPeer(conversationId, routed.peerId, peerLabel, routeMode);

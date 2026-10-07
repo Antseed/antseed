@@ -1,4 +1,6 @@
 import type { RendererUiState } from '../../core/state';
+import type { DesktopRoutingSelection } from '../../../shared/routing-selection';
+import { notifyUiStateChanged } from '../../core/store';
 import type { DesktopBridge, RuntimeProcessState } from '../../types/bridge';
 import { chooseBestVprRoute } from './select';
 import { routesForSelectedModel } from '../catalog/view-models';
@@ -18,16 +20,18 @@ export type VprRouteTarget = {
 export function buyerDefaultRoutePayload(
   selection: RendererUiState['vprRouteSelection'],
   target: VprRouteTarget,
-): { peerId?: string; service: string } {
+): { selection: DesktopRoutingSelection } {
+  if (selection.router) return { selection: { kind: 'router', ...selection.router } };
   if (selection.mode === 'pinned-peer') {
-    return { peerId: target.peerId, service: target.model };
+    return { selection: { kind: 'model', model: `${target.peerId}@${target.model}` } };
   }
-  return { service: target.model };
+  return { selection: { kind: 'model', model: target.model } };
 }
 
 /** Resolve the current AI VPN selection to a concrete peer + model target. */
 function resolveRouteTarget(uiState: RendererUiState): VprRouteTarget | null {
   const selection = uiState.vprRouteSelection;
+  if (selection.router) return { peerId: selection.router.service.peerId, model: 'antseed', servedModels: ['antseed'] };
   if (!selection.model) return null;
   const selectedEntry = uiState.vprModelCatalog.find((entry) => (
     entry.provider === selection.model?.provider && entry.serviceId === selection.model.serviceId
@@ -94,19 +98,25 @@ async function startProfilesOnRoute(
  * (`POST /_antseed/route`), keeping the proxy the single routing authority:
  * the `antseed` model alias and headless frontends (the Telegram bridge)
  * resolve their peer from this route instead of re-deriving it. Best-effort —
- * main dedupes repeat values and the buyer proxy may not be running yet, so
+ * main serializes updates and the buyer proxy may not be running yet, so
  * this is safe to call from polling refreshes.
  */
 export async function syncBuyerDefaultRoute(
   bridge: DesktopBridge | undefined,
   uiState: RendererUiState,
-): Promise<void> {
-  if (!bridge?.chatSetBuyerDefaultRoute) return;
+): Promise<boolean> {
+  if (!bridge?.chatSetBuyerDefaultRoute) return false;
   const target = resolveRouteTarget(uiState);
-  if (!target) return;
-  await bridge.chatSetBuyerDefaultRoute(
+  if (!target) return false;
+  const selection = uiState.vprRouteSelection;
+  const result = await bridge.chatSetBuyerDefaultRoute(
     buyerDefaultRoutePayload(uiState.vprRouteSelection, target),
-  ).catch(() => undefined);
+  ).catch((error: unknown) => ({ ok: false, error: error instanceof Error ? error.message : String(error) }));
+  if (uiState.vprRouteSelection === selection) {
+    uiState.vprRouteError = result.ok ? null : result.error ?? 'Route update failed';
+    notifyUiStateChanged();
+  }
+  return result.ok;
 }
 
 /**
@@ -129,7 +139,8 @@ export async function applyVprRouteToConnectedProxy(
   uiState: RendererUiState,
 ): Promise<void> {
   if (!bridge) return;
-  void syncBuyerDefaultRoute(bridge, uiState);
+  if (!await syncBuyerDefaultRoute(bridge, uiState)) return;
+  if (uiState.vprRouteSelection.router) return;
   const profileNames = await activeProfileNames(bridge);
   if (profileNames.length === 0) return;
   const target = resolveRouteTarget(uiState);
@@ -148,6 +159,7 @@ export async function connectVprProfile(
   profileName: string,
 ): Promise<{ ok: boolean; state?: RuntimeProcessState | null; error?: string }> {
   if (!bridge) return { ok: false, error: 'Desktop bridge unavailable' };
+  if (!await syncBuyerDefaultRoute(bridge, uiState)) return { ok: false, error: uiState.vprRouteError ?? 'Route update failed' };
   const target = resolveRouteTarget(uiState);
   if (!target) return { ok: false, error: 'No model route available yet' };
   const existing = await activeProfileNames(bridge);
