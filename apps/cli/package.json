@@ -27,6 +27,7 @@
     "@antseed/ant-agent": "workspace:*",
     "@antseed/ants": "workspace:*",
     "@antseed/api-adapter": "workspace:*",
+    "@antseed/connected-apps": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",
