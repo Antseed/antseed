@@ -8,12 +8,16 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Development: `pnpm sandbox:attach` starts or reuses the routing-smoke sandbox and opens its attach-only desktop in one command.
+- Development: `pnpm sandbox up --live` reads provider keys from the shell or a dotenv file (`--env-file FILE`, default: gitignored `.antseed-sandbox.env` in the worktree). Only names referenced by `apiKeyEnv` are read, shell values win, providers may share a key, and values are never printed. Scenarios can declare `requires: ['liveUpstream']` and are refused against a mock sandbox.
 - Development: `pnpm sandbox` runs an isolated AntSeed stack per git worktree for end-to-end testing: a Base fork on Anvil, sellers backed by an OpenAI-compatible mock (or real upstreams with `--live`), a buyer and its proxy, a private bootstrap DHT node, and optionally an attach-only desktop window. Commands: `up`, `down` (settles and closes channels before stopping), `status`, `run <scenario>` (writes `report.json`, exits nonzero on failure), `desktop`, `logs`, `list`. Sandboxes never use default ports, `~/.antseed` or the keychain, and only stop processes they started. Scenarios `chat-basic` and `routing-smoke` ship in `e2e/sandbox/scenarios/`. See `e2e/sandbox/README.md`.
 - Desktop: attach-only mode (`ANTSEED_DESKTOP_ATTACH_ONLY=1`) connects to an existing buyer proxy without starting its own buyer, reading the OS keychain, writing `~/.antseed` or changing system proxy settings. Used by `pnpm sandbox desktop`.
 - `@antseed/node`: `bindHost` option for the DHT and seller signaling listeners (default unchanged: all interfaces) and `natTraversal: false` to skip UPnP/NAT-PMP port mapping.
 
 ### Fixed
 
+- Sandbox: process-ownership checks read `ps` start times in the C locale, so locks and owned-process detection work in non-English shells; `pnpm sandbox up` no longer echoes log lines from a previous run while waiting for startup.
+- Sandbox desktop: preserve the real HOME for Electron's macOS keychain access while keeping buyer identity and configuration on explicit sandbox paths, avoiding the missing-keychain dialog. Attach-only startup skips router-plugin installation and marks setup complete so the VPR does not hang on installation.
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.
 - Development/testing OAuth: optionally persist Claude credentials with `CLAUDE_AUTH_FILE`, retain rotated tokens across restarts, and back off failed refresh attempts without logging upstream credential responses. With model health checks enabled, OAuth refresh failures during CLI provider initialization no longer terminate multi-provider development sessions; affected services stay hidden until a successful probe. Configuration errors remain fatal. Subscription OAuth plugins remain for testing and development only.
 

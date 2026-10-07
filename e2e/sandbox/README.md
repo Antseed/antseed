@@ -23,6 +23,7 @@ pnpm sandbox up [--config FILE] [--live] [--deposit-usdc N] [--block N] [--scena
 pnpm sandbox status [--json] [--env]   # ports, wallets, balances, peers, URLs, env exports
 pnpm sandbox run <scenario> [--keep] [--strict]
 pnpm sandbox desktop                  # attach-only Electron window on the sandbox buyer
+pnpm sandbox:attach                   # start/reuse routing-smoke, then open the attached VPR
 pnpm sandbox logs [supervisor|anvil|seller-<id>] [--follow]
 pnpm sandbox down [--force]           # settle + close channels while Anvil is alive, then stop
 pnpm sandbox list                     # every sandbox on this machine
@@ -72,7 +73,13 @@ Inline secrets (any key that looks like a credential, anywhere in the file) are 
 ### Upstream
 
 - **Mock (default).** Each seller gets its own OpenAI-compatible mock that answers every model in its config: `/v1/models`, chat (JSON and SSE streaming with usage), and `/v1/images/generations` (a fixture PNG). Usage is fixed (10 input + 8 output tokens), so costs are exact. Only OpenAI-compatible plugins (`openai`) can be mocked.
-- **Live (`--live`).** Sellers call the real upstream. Every provider needs `apiKeyEnv` set in your shell and an HTTPS `baseUrl`. Keys reach seller processes through their environment only. Settlement still happens on the fork, so no real funds move.
+- **Live (`--live`).** Sellers call the real upstream. Every provider needs `apiKeyEnv` (set in your shell or in `--env-file`) and an HTTPS `baseUrl`. Keys reach seller processes through their environment only. Settlement still happens on the fork, so no real funds move.
+
+Live keys come from the shell first, then `--env-file FILE` (default: a gitignored `.antseed-sandbox.env` in the worktree). Only names referenced by a provider's `apiKeyEnv` are read from the file; values are never printed, and providers may share one variable. `up` prints which variable and source each provider uses.
+
+```bash
+pnpm sandbox up --live --config path/to/config.json --env-file ~/.my-keys.env
+```
 
 ## Scenarios
 

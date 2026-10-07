@@ -6,7 +6,7 @@ import { hostname } from 'node:os';
 /** Start time of a PID as reported by ps (stable across the process lifetime), or null if gone. */
 export function processStartTime(pid) {
   if (!Number.isInteger(pid) || pid <= 0) return null;
-  const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8' });
+  const result = spawnSync('ps', ['-o', 'lstart=', '-p', String(pid)], { encoding: 'utf8', env: { ...process.env, LC_ALL: 'C' } });
   const value = result.status === 0 ? result.stdout.trim() : '';
   return value || null;
 }

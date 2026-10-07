@@ -556,18 +556,22 @@ app.whenReady().then(async () => {
 
   // Payments portal starts lazily on first open (via payments:open-portal IPC)
 
-  void ensureDefaultPlugin('@antseed/router-local', {
-    getAppSetupNeeded: () => getAppSetupStatus().needed,
-    setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
-    getAppSetupComplete: () => getAppSetupStatus().complete,
-    setAppSetupComplete: (v) => { setAppSetupStatus({ complete: v }); },
-    onAppSetupStarted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupStarted()); },
-    onAppSetupCompleted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupCompleted()); },
-    getMainWindow,
-    appendLog,
-  }).catch(() => {
-    // Failure is already logged via appendLog inside ensureDefaultPlugin.
-  });
+  if (isAttachOnly()) {
+    setAppSetupStatus({ needed: false, complete: true });
+  } else {
+    void ensureDefaultPlugin('@antseed/router-local', {
+      getAppSetupNeeded: () => getAppSetupStatus().needed,
+      setAppSetupNeeded: (v) => { setAppSetupStatus({ needed: v }); },
+      getAppSetupComplete: () => getAppSetupStatus().complete,
+      setAppSetupComplete: (v) => { setAppSetupStatus({ complete: v }); },
+      onAppSetupStarted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupStarted()); },
+      onAppSetupCompleted: () => { void telemetryReady.then((telemetry) => telemetry?.recordSetupCompleted()); },
+      getMainWindow,
+      appendLog,
+    }).catch(() => {
+      // Failure is already logged via appendLog inside ensureDefaultPlugin.
+    });
+  }
 
   // Auto-update: check for updates silently on launch and every 30 minutes.
   // If an in-flight download stops emitting progress events for a couple of

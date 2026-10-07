@@ -38,6 +38,7 @@
     "test:e2e": "pnpm --filter=@antseed/e2e run test",
     "test:sandbox": "node --test e2e/sandbox/test/*.test.mjs",
     "sandbox": "node e2e/sandbox/cli.mjs",
+    "sandbox:attach": "node scripts/sandbox-attach.mjs",
     "test:sandbox:e2e": "node e2e/sandbox/test/e2e-flow.mjs",
     "typecheck": "pnpm -r run typecheck",
     "contracts:deploy": "node scripts/deploy-contracts.mjs",

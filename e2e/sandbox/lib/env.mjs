@@ -72,3 +72,37 @@ export async function listenWithRetry(start, { attempts = 5, pickPort = freePort
   }
   throw lastError ?? new Error('No free port found');
 }
+
+const ENV_LINE = /^\s*(?:export\s+)?([A-Za-z_][A-Za-z0-9_]*)\s*=\s*(.*?)\s*$/;
+
+/** Parses KEY=VALUE lines (optional `export`, quotes and comments); never evaluates shell syntax. */
+export function parseEnvFile(text) {
+  const values = {};
+  for (const line of text.split(/\r?\n/)) {
+    if (!line.trim() || line.trim().startsWith('#')) continue;
+    const match = ENV_LINE.exec(line);
+    if (!match) continue;
+    let value = match[2];
+    const quote = value[0];
+    if ((quote === '"' || quote === "'") && value.endsWith(quote) && value.length >= 2) value = value.slice(1, -1);
+    else value = value.replace(/\s+#.*$/, '');
+    values[match[1]] = value;
+  }
+  return values;
+}
+
+/**
+ * Resolves the named keys from the shell first, then the env file. Returns only those keys
+ * plus which source each came from; values are never logged.
+ */
+export function resolveLiveKeys(names, { env = process.env, fileValues = {} } = {}) {
+  const values = {};
+  const sources = {};
+  const missing = [];
+  for (const name of names) {
+    if (env[name]?.trim()) { values[name] = env[name]; sources[name] = 'shell'; }
+    else if (fileValues[name]?.trim()) { values[name] = fileValues[name]; sources[name] = 'env file'; }
+    else missing.push(name);
+  }
+  return { values, sources, missing };
+}

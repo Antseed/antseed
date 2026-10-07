@@ -3,7 +3,7 @@ import { sanitizeConfig } from './config.mjs';
 export const MAX_SELLERS = 8;
 const SELLER_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
 export const TARGET_CAPABILITIES = {
-  fork: new Set(['warpTime', 'sellerControl', 'mockControl']),
+  fork: new Set(['warpTime', 'sellerControl', 'mockControl', 'liveUpstream']),
 };
 
 function microsFromUsdc(value, label) {
