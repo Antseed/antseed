@@ -20,7 +20,7 @@ After the user confirms, it filters sellers that support the exact request and p
 
 Local PNG, JPEG, or WebP images, supplied by the user or generated with `antseed-images`, can be used as start and end frames. In Antseed Desktop, images uploaded to or generated in the chat can be used directly, and generated frames and videos play inline.
 
-For videos longer than one clip, the skill plans frame-matched segments. It generates them one at a time and stitches them with ffmpeg. Each cut uses a shared keyframe, or the previous segment's last frame (`antseed_video.mjs frame`), so the shots connect.
+For videos longer than one clip, the skill plans frame-matched segments and stitches them with ffmpeg. When all keyframes are ready, `antseed_video.mjs batch` submits creates one at a time and waits for accepted jobs in parallel. Segments that need the previous segment's last frame (`antseed_video.mjs frame`) still run in order.
 
 ## Prerequisites
 

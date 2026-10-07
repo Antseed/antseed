@@ -68,8 +68,35 @@ If the requested length is longer than the longest advertised duration, for exam
 
    - If no frames are supported, generate independent segments and tell the user the cuts will not be continuous.
 5. Show the segment plan, model, seller, per-segment price and total price. Ask for one confirmation for the whole plan.
-6. Generate segments **one at a time**. If a segment fails, stop and report. Do not move the remaining segments to another seller without asking.
+6. Generate the approved segments:
+   - If every segment has its prompt and frames, use `batch`. It submits creates one at a time, starts waiting as soon as each job is accepted, and renders the accepted jobs in parallel.
+   - If the user asks for a test, the first segment, or only some segments, include only those in the plan.
+   - If the next segment needs the previous segment's last frame, generate in order.
+   - If a create fails, `batch` creates no more jobs but keeps waiting for jobs already accepted. Do not move the remaining segments to another seller without asking.
 7. Stitch the segments with ffmpeg, for example a concat list re-encoded to H.264/AAC, and show the final MP4 when supported. Keep the segment files.
+
+Example `segments.json`; relative paths are resolved from the plan file:
+
+```json
+{
+  "segments": [
+    { "promptFile": "seg1.txt", "firstFrame": "k0.png", "lastFrame": "k1.png", "output": "seg1.mp4" },
+    { "promptFile": "seg2.txt", "firstFrame": "k1.png", "lastFrame": "k2.png", "output": "seg2.mp4" }
+  ]
+}
+```
+
+```bash
+node scripts/antseed_video.mjs batch \
+  --model "$model" \
+  --peer "$peer_id" \
+  --duration 10 \
+  --resolution 1080p \
+  --aspect-ratio 16:9 \
+  --plan segments.json
+```
+
+The result has one entry per segment with `state`, `jobId`, `output`, and any error. Retry an accepted but unavailable job with `download --job-id`; never create it again without asking.
 
 ## Select and confirm
 
@@ -125,6 +152,6 @@ node scripts/antseed_video.mjs download --model "$model" --job-id "$job_id" --ou
 - `404` or `video_route_not_found`: unknown job, missing route, or expired file.
 - `video_retrieve_unavailable`: the job was accepted but status or download kept failing. The job may still finish; retry with `download --job-id` later.
 - `502 video_download_failed`: the seller could not reach the upstream video service for this check. The helper retries it.
-- `409 video_create_in_progress`: another video from this buyer is still being created. Wait for it to finish before creating the next one.
+- `409 video_create_in_progress`: another create from this buyer is still being submitted. Wait for that create request to return, then submit the next one.
 - `400 unsupported_video_options` or `no_compatible_video_offer`: options do not fit a seller.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

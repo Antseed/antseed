@@ -306,3 +306,67 @@ test('CLI generate reports create failures without retrying and rejects non-MP4 
     });
   });
 });
+
+test('CLI batch creates segments one by one and renders accepted jobs in parallel', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(path.join(dir, 'k0.png'), PNG);
+    await writeFile(path.join(dir, 'k1.png'), PNG);
+    await writeFile(path.join(dir, 'k2.png'), PNG);
+    await writeFile(path.join(dir, 'segments.json'), JSON.stringify({
+      segments: [
+        { prompt: 'one', firstFrame: 'k0.png', output: 'seg1.mp4' },
+        { prompt: 'two', firstFrame: 'k1.png', output: 'seg2.mp4' },
+      ],
+    }));
+    let creates = 0;
+    const handler = catalogHandler((request) => {
+      if (request.url === '/api/v1/video/queue') {
+        creates += 1;
+        return { body: { queue_id: `job-${creates}` }, headers: { 'x-antseed-seller-peer': 'bb' } };
+      }
+      if (request.url === '/api/v1/video/retrieve') {
+        if (request.body.queue_id === 'job-1' && creates < 2) return { body: { status: 'PROCESSING' } };
+        return { type: 'video/mp4', body: MP4 };
+      }
+      return { status: 404 };
+    });
+    await withProxy(handler, async (base, requests) => {
+      const { code, json } = await cli(['--proxy-url', base, 'batch', '--model', 'seedance', '--peer', 'bb', '--duration', '10', '--poll-interval', '0', '--plan', path.join(dir, 'segments.json')]);
+      assert.equal(code, 0, JSON.stringify(json));
+      assert.equal(json.created, 2);
+      assert.equal(json.saved, 2);
+      assert.deepEqual(json.results.map((result) => result.jobId), ['job-1', 'job-2']);
+      const urls = requests.map((request) => request.url).filter((url) => url.startsWith('/api/v1/video/'));
+      assert.ok(urls.indexOf('/api/v1/video/retrieve') < urls.lastIndexOf('/api/v1/video/queue'));
+      assert.deepEqual(await readFile(path.join(dir, 'seg1.mp4')), MP4);
+      assert.deepEqual(await readFile(path.join(dir, 'seg2.mp4')), MP4);
+    });
+  });
+});
+
+test('CLI batch stops creating after a create failure but keeps accepted jobs', async () => {
+  await withTempDir(async (dir) => {
+    await writeFile(path.join(dir, 'segments.json'), JSON.stringify([
+      { prompt: 'one', output: 'seg1.mp4' },
+      { prompt: 'two', output: 'seg2.mp4' },
+      { prompt: 'three', output: 'seg3.mp4' },
+    ]));
+    let creates = 0;
+    const handler = catalogHandler((request) => {
+      if (request.url === '/api/v1/video/queue') {
+        creates += 1;
+        return creates === 1 ? { body: { queue_id: 'job-1' } } : { status: 409, body: { error: { code: 'video_create_in_progress', message: 'busy' } } };
+      }
+      if (request.url === '/api/v1/video/retrieve') return { type: 'video/mp4', body: MP4 };
+      return { status: 404 };
+    });
+    await withProxy(handler, async (base) => {
+      const { code, json } = await cli(['--proxy-url', base, 'batch', '--model', 'seedance', '--peer', 'bb', '--duration', '10', '--poll-interval', '0', '--plan', path.join(dir, 'segments.json')]);
+      assert.equal(code, 1);
+      assert.equal(creates, 2);
+      assert.deepEqual(json.results.map((result) => result.state), ['saved', 'create_failed', 'not_created']);
+      assert.equal(json.results[1].error.code, 'video_create_in_progress');
+      assert.deepEqual(await readFile(path.join(dir, 'seg1.mp4')), MP4);
+    });
+  });
+});

@@ -4,6 +4,7 @@
 // the Node runtime bundled with Antseed Desktop.
 
 import { spawnSync } from 'node:child_process';
+import { randomUUID } from 'node:crypto';
 import { lookup } from 'node:dns/promises';
 import { mkdir, open, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { realpathSync } from 'node:fs';
@@ -371,7 +372,7 @@ async function saveMp4(response, output, onChunk = () => {}) {
   const length = Number(response.headers.get('content-length'));
   if (Number.isFinite(length) && length > MAX_VIDEO_BYTES) throw new VideoError('Generated video exceeds the size limit.', 'video_too_large');
   await mkdir(path.dirname(output), { recursive: true });
-  const tempName = path.join(path.dirname(output), `.antseed-video-${process.pid}-${Date.now()}.mp4`);
+  const tempName = path.join(path.dirname(output), `.antseed-video-${process.pid}-${randomUUID()}.mp4`);
   const handle = await open(tempName, 'wx', 0o600);
   let total = 0;
   let header = Buffer.alloc(0);
@@ -557,11 +558,7 @@ async function commandSelect(args) {
   };
 }
 
-async function commandGenerate(args) {
-  if (!args.peer) throw new VideoError('Run select first and pass the confirmed seller with --peer.', 'missing_peer');
-  const model = await resolveModel(args.proxyUrl, args.model);
-  args.modelId = String(model.id);
-  const peer = selectedPeer(model, args);
+async function createJob(args, peer) {
   const { status, headers, body: accepted } = await requestJson('POST', `${args.proxyUrl}/api/v1/video/queue`, await createBody(peer, args), 300);
   if (status < 200 || status >= 300) {
     const error = errorFrom(status, accepted, 'Video creation failed.');
@@ -570,16 +567,112 @@ async function commandGenerate(args) {
   }
   const jobId = accepted.queue_id;
   if (typeof jobId !== 'string' || !jobId) throw new VideoError('Video service did not return a job id.', 'missing_job_id', { peerId: peer.peerId });
-  const output = expandPath(args.output);
-  const downloadUrl = typeof accepted.download_url === 'string' ? accepted.download_url : null;
-  let result;
+  return {
+    jobId,
+    peerId: headers.get('x-antseed-seller-peer') || peer.peerId,
+    downloadUrl: typeof accepted.download_url === 'string' ? accepted.download_url : null,
+  };
+}
+
+async function waitForJob(args, peer, job, output) {
   try {
-    result = await waitForVideo(args.proxyUrl, String(peer.serviceId || args.modelId), jobId, output, downloadUrl, args.pollInterval, args.timeout);
+    const result = await waitForVideo(args.proxyUrl, String(peer.serviceId || args.modelId), job.jobId, output, job.downloadUrl, args.pollInterval, args.timeout);
+    return { ok: true, output, bytes: result.bytes, model: args.modelId, peerId: job.peerId, jobId: job.jobId };
   } catch (error) {
-    if (error instanceof VideoError) Object.assign(error.details, { jobId, peerId: peer.peerId });
+    if (error instanceof VideoError) Object.assign(error.details, { jobId: job.jobId, peerId: job.peerId });
     throw error;
   }
-  return { ok: true, output, bytes: result.bytes, model: args.modelId, peerId: headers.get('x-antseed-seller-peer') || peer.peerId, jobId };
+}
+
+async function commandGenerate(args) {
+  if (!args.peer) throw new VideoError('Run select first and pass the confirmed seller with --peer.', 'missing_peer');
+  const model = await resolveModel(args.proxyUrl, args.model);
+  args.modelId = String(model.id);
+  const peer = selectedPeer(model, args);
+  return waitForJob(args, peer, await createJob(args, peer), expandPath(args.output));
+}
+
+function errorResult(error) {
+  const videoError = error instanceof VideoError ? error : new VideoError(String(error?.message || error), 'video_error');
+  return { code: videoError.code, message: videoError.message, ...videoError.details };
+}
+
+async function readBatchPlan(file) {
+  const planPath = expandPath(file);
+  let plan;
+  try {
+    plan = JSON.parse(await readFile(planPath, 'utf8'));
+  } catch {
+    throw invalid('--plan must be a readable JSON file.');
+  }
+  const segments = Array.isArray(plan) ? plan : plan?.segments;
+  if (!Array.isArray(segments) || !segments.length) throw invalid('--plan must contain a non-empty segments array.');
+  const base = path.dirname(planPath);
+  const resolve = (value) => (path.isAbsolute(value) || value === '~' || value.startsWith('~/') || value.startsWith('~\\') ? expandPath(value) : path.resolve(base, value));
+  const outputs = new Set();
+  return segments.map((segment, index) => {
+    if (!isObject(segment)) throw invalid(`Segment ${index + 1} must be an object.`);
+    if (Boolean(segment.prompt) === Boolean(segment.promptFile)) throw invalid(`Segment ${index + 1} needs exactly one of prompt or promptFile.`);
+    if (typeof segment.output !== 'string' || !segment.output) throw invalid(`Segment ${index + 1} needs an output path.`);
+    for (const key of ['prompt', 'promptFile', 'firstFrame', 'lastFrame']) {
+      if (segment[key] != null && typeof segment[key] !== 'string') throw invalid(`Segment ${index + 1} ${key} must be a string.`);
+    }
+    const output = resolve(segment.output);
+    if (outputs.has(output)) throw invalid(`Segment ${index + 1} reuses output ${segment.output}.`);
+    outputs.add(output);
+    return {
+      prompt: segment.prompt,
+      promptFile: segment.promptFile ? resolve(segment.promptFile) : undefined,
+      firstFrame: segment.firstFrame ? resolve(segment.firstFrame) : undefined,
+      lastFrame: segment.lastFrame ? resolve(segment.lastFrame) : undefined,
+      output,
+    };
+  });
+}
+
+async function commandBatch(args) {
+  if (!args.peer) throw new VideoError('Run select first and pass the confirmed seller with --peer.', 'missing_peer');
+  const segments = await readBatchPlan(args.plan);
+  const model = await resolveModel(args.proxyUrl, args.model);
+  args.modelId = String(model.id);
+  const prepared = [];
+  for (const [index, segment] of segments.entries()) {
+    const segmentArgs = { ...args, ...segment };
+    try {
+      const peer = selectedPeer(model, segmentArgs);
+      await createBody(peer, segmentArgs);
+      prepared.push({ args: segmentArgs, peer });
+    } catch (error) {
+      if (error instanceof VideoError) error.details.segment = index + 1;
+      throw error;
+    }
+  }
+
+  const results = prepared.map(({ args: segmentArgs }, index) => ({ segment: index + 1, output: segmentArgs.output, ok: false, state: 'not_created' }));
+  const waits = [];
+  for (const [index, item] of prepared.entries()) {
+    try {
+      const job = await createJob(item.args, item.peer);
+      Object.assign(results[index], { state: 'accepted', jobId: job.jobId, peerId: job.peerId });
+      waits.push(waitForJob(item.args, item.peer, job, item.args.output).then(
+        (result) => Object.assign(results[index], result, { state: 'saved' }),
+        (error) => Object.assign(results[index], { state: 'failed', error: errorResult(error) }),
+      ));
+    } catch (error) {
+      Object.assign(results[index], { state: 'create_failed', error: errorResult(error) });
+      break;
+    }
+  }
+  await Promise.all(waits);
+  const failed = results.filter((result) => !result.ok);
+  return {
+    ok: failed.length === 0,
+    model: args.modelId,
+    peerId: args.peer,
+    created: results.filter((result) => result.jobId).length,
+    saved: results.length - failed.length,
+    results,
+  };
 }
 
 async function commandDownload(args) {
@@ -636,6 +729,7 @@ const COMMANDS = {
   options: { options: { model: { type: 'string' }, duration: { type: 'string' }, resolution: { type: 'string' } }, required: ['model'], run: commandOptions },
   select: { options: REQUEST_OPTIONS, required: ['model'], run: commandSelect },
   generate: { options: { ...REQUEST_OPTIONS, ...WAIT_OPTIONS }, required: ['model'], run: commandGenerate },
+  batch: { options: { ...REQUEST_OPTIONS, 'poll-interval': WAIT_OPTIONS['poll-interval'], timeout: WAIT_OPTIONS.timeout, plan: { type: 'string' } }, required: ['model', 'plan'], run: commandBatch },
   download: { options: { model: { type: 'string' }, 'job-id': { type: 'string' }, ...WAIT_OPTIONS }, required: ['model', 'job-id'], run: commandDownload },
   frame: { options: { video: { type: 'string' }, position: { type: 'string', default: 'last' }, output: { type: 'string' } }, required: ['video', 'output'], run: commandFrame },
 };
@@ -684,6 +778,9 @@ export function parseCliArgs(argv, env = process.env) {
   args.audio = values.audio ? true : values['no-audio'] ? false : null;
   delete args.noAudio;
   if (name === 'generate' && Boolean(values.prompt) === Boolean(values['prompt-file'])) throw invalid('Use exactly one of --prompt or --prompt-file.');
+  if (name === 'batch' && ['prompt', 'prompt-file', 'first-frame', 'last-frame'].some((key) => key in values)) {
+    throw invalid('Put prompt, frames, and output in each --plan segment.');
+  }
   if ('prefer' in values && !['reputation', 'price'].includes(values.prefer)) throw invalid('--prefer must be reputation or price.');
   if ('position' in values && !['first', 'last'].includes(values.position)) throw invalid('--position must be first or last.');
   args.duration = parseInteger('duration', values.duration);
@@ -709,8 +806,9 @@ export async function main(argv = process.argv.slice(2)) {
       return 0;
     }
     args.proxyUrl = proxyUrl(args.proxyUrl);
-    emit(await args.run(args));
-    return 0;
+    const result = await args.run(args);
+    emit(result);
+    return result?.ok === false ? 1 : 0;
   } catch (error) {
     const videoError = error instanceof VideoError ? error : new VideoError(String(error?.message || error), 'file_error');
     emit({ ok: false, error: { code: videoError.code, message: videoError.message, ...videoError.details } });
