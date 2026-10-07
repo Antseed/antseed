@@ -7,7 +7,9 @@
   "scripts": {
     "test": "vitest run",
     "test:watch": "vitest",
-    "flow:local-chain": "node ./scripts/local-chain-full-flow.mjs"
+    "flow:local-chain": "node ./scripts/local-chain-full-flow.mjs",
+    "test:sandbox": "node --test sandbox/test/*.test.mjs",
+    "flow:sandbox": "node sandbox/test/e2e-flow.mjs"
   },
   "dependencies": {
     "@antseed/node": "workspace:*",

@@ -21,6 +21,12 @@ This project uses selective package publishing. Each release entry lists the pub
   - The route preview lists each seller's success rate, speed and whether it shares traffic; `GET /_antseed/peer-health` adds `sellerHealth`, and `POST /_antseed/peer-health/clear` also resets a seller's record. A gateway key's explicit **Cheapest**, **Most trusted** or **Lowest latency** sort and route chains still apply, with failing sellers tried last.
 - Node: `AntseedNode` emits `response-auth` with the verdict on each seller-signed response receipt, and exports the routing model as `SellerHealthBook` and `orderAdaptiveRoutes`.
 
+### Added
+
+- Development: `pnpm sandbox` runs an isolated AntSeed stack per git worktree for end-to-end testing: a Base fork on Anvil, sellers backed by an OpenAI-compatible mock (or real upstreams with `--live`), a buyer and its proxy, a private bootstrap DHT node, and optionally an attach-only desktop window. Commands: `up`, `down` (settles and closes channels before stopping), `status`, `run <scenario>` (writes `report.json`, exits nonzero on failure), `desktop`, `logs`, `list`. Sandboxes never use default ports, `~/.antseed` or the keychain, and only stop processes they started. Scenarios `chat-basic` and `routing-smoke` ship in `e2e/sandbox/scenarios/`. See `e2e/sandbox/README.md`.
+- Desktop: attach-only mode (`ANTSEED_DESKTOP_ATTACH_ONLY=1`) connects to an existing buyer proxy without starting its own buyer, reading the OS keychain, writing `~/.antseed` or changing system proxy settings. Used by `pnpm sandbox desktop`.
+- `@antseed/node`: `bindHost` option for the DHT and seller signaling listeners (default unchanged: all interfaces) and `natTraversal: false` to skip UPnP/NAT-PMP port mapping.
+
 ### Fixed
 
 - Provider `openai-responses`: a buyer's `max_output_tokens` now reaches the Codex backend instead of being removed. The plugin stripped it as unsupported, but the backend accepts and enforces it (it ends the answer with `status: incomplete`, `reason: max_output_tokens`). Without the cap a model that loops can keep one answer streaming until the backend cuts it off, and the seller records no usage for it. A non-streaming request that reaches the cap gets the partial answer as JSON with `status: incomplete` and `incomplete_details`, instead of the raw event stream.
