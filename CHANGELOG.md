@@ -18,6 +18,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Gateway installer: `--port` values with leading zeros (such as `08`) are read as decimal instead of failing with a misleading error, and `--help` notes that `--host` is ignored behind `--domain` or a Cloudflare tunnel.
+
 - Sellers: a listener now accepts up to 64 connections from one IP address, up from 10, so a buyer paying as several identities can reach the same seller with each of them.
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 

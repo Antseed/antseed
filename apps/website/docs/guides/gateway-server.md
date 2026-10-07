@@ -68,7 +68,7 @@ The installer prints something like:
     Wallet:    0x…  (send USDC on Base to fund paid models)
 ```
 
-The key is shown only once. Test it from anywhere:
+The key is shown only once. If you run the installer from cloud-init or a CI job, it also ends up in that system's logs: revoke it there with `antseed gateway key revoke <id>` and create a new one by hand. Test it from anywhere:
 
 ```bash
 curl https://llm.example.com/v1/models -H "Authorization: Bearer antseed_…"
@@ -112,4 +112,4 @@ Run the installer again with the same options to upgrade the CLI and rewrite the
 curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --uninstall
 ```
 
-`--uninstall` removes the services, the `antseed` command, the Caddy site and `/opt/antseed`. It keeps `/var/lib/antseed` and `/etc/antseed`, because the wallets may still hold credits.
+`--uninstall` removes the services, the `antseed` command, the Caddy site and `/opt/antseed`. If the installer replaced the stock Caddyfile, uninstalling puts the original back, discarding any edits you made to it since. It keeps `/var/lib/antseed` and `/etc/antseed`, because the wallets may still hold credits.
