@@ -39,6 +39,13 @@ export function routingServiceKey(service: RoutingServiceTarget): string {
   return `${service.peerId}:${service.provider}:${service.serviceId}`;
 }
 
+/** Picker label for an active router: its discovered name, or a generic label while it is undiscovered. */
+export function routerAutoModelLabel(router: DesktopRouterSelection | undefined, services: readonly RoutingServiceEntry[]): string {
+  const key = router ? routingServiceKey(router.service) : null;
+  const label = key ? services.find(service => routingServiceKey(service) === key)?.label.trim() : undefined;
+  return `${label || 'Router'} · Auto model`;
+}
+
 export function normalizeRouterAllowedModels(allowedModels: RouterAllowedModel[] | undefined, availableModels?: RouterAllowedModel[]): RouterAllowedModel[] | undefined {
   if (!allowedModels?.length || allowedModels.length > 512) return undefined;
   if (!availableModels) return allowedModels;

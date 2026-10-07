@@ -8,7 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
-- Desktop AI VPN: add routing-service selection and settings using the IRP API, with a 0–10 cost/quality slider, per-router model choices, and automatic persistence. Remove stale saved model choices and reset empty or fully unavailable selections to all supported models.
+- Desktop AI VPN: add routing-service selection and settings using the IRP API (the model picker names the selected router, e.g. "Levanto · Auto model"), with a 0–10 cost/quality slider, per-router model choices, and automatic persistence. Remove stale saved model choices and reset empty or fully unavailable selections to all supported models.
 - Desktop routing: preserve router selection across discovery refreshes, connected apps, and new chats; retain explicit model overrides and display the model that answered each chat reply.
 - CLI routing: expose available routing services, per-ranking prices, and canonically matched supported models through `GET /_antseed/routing-services`. Reuse the ranking model-list cache, report expiry and discovery errors, and exclude sellers advertising multiple routing services.
 - Protocol: extend the shared billing unit list with `completed_requests`, `video_generations`, and `video_seconds`, preserving position-based metadata encoding, and route unit measurement through billing adapters. Completed-request and video billing fail closed until their adapters are implemented.

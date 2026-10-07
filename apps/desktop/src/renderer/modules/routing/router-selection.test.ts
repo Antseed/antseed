@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test, vi } from 'vitest';
-import { createDesktopRouterSelection, isDesktopRouterSelection, normalizeRouterAllowedModels } from '../../../shared/routing-selection';
+import { createDesktopRouterSelection, isDesktopRouterSelection, normalizeRouterAllowedModels, routerAutoModelLabel } from '../../../shared/routing-selection';
 import { loadVprRouteSelection, saveVprRouteSelection, VPR_ROUTE_SELECTION_STORAGE_KEY } from './preferences';
 import { createInitialUiState } from '../../core/state';
 
@@ -60,4 +60,13 @@ test('Malformed targets are not restored as paid router selections', () => {
   for (const value of [null, {}, [], { service: null }, { service: { peerId: 'bad', provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 5 }]) {
     assert.equal(isDesktopRouterSelection(value), false);
   }
+});
+
+test('router picker label names the selected router, falling back while it is undiscovered', () => {
+  const offer = { peerId: 'd'.repeat(40), provider: 'sandbox-levanto', serviceId: 'levanto-route', label: 'Levanto', priceMicroUsdc: '1000' };
+  const router = createDesktopRouterSelection(offer);
+  assert.equal(routerAutoModelLabel(router, [offer]), 'Levanto · Auto model');
+  assert.equal(routerAutoModelLabel(router, []), 'Router · Auto model');
+  assert.equal(routerAutoModelLabel(router, [{ ...offer, label: '  ' }]), 'Router · Auto model');
+  assert.equal(routerAutoModelLabel(router, [{ ...offer, peerId: 'e'.repeat(40) }]), 'Router · Auto model');
 });

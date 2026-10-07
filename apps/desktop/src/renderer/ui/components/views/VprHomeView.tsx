@@ -47,6 +47,7 @@ import { isDisconnectConfirmDismissed, persistDisconnectConfirmDismissed } from 
 import styles from './VprHomeView.module.scss';
 import { recordFirstModelShown, recordUserAction } from '../../../modules/telemetry/actions';
 import { normalizeTelemetryAppName } from '../../../../shared/telemetry.js';
+import { routerAutoModelLabel } from '../../../../shared/routing-selection';
 
 type Props = { onSelectView?: (view: ViewName) => void };
 
@@ -72,6 +73,7 @@ export function VprHomeView({ onSelectView }: Props) {
   const snap = useUiSelector((state) => ({
     catalog: state.vprModelCatalog,
     selection: state.vprRouteSelection,
+    routingServices: state.vprRoutingServices,
     routeError: state.vprRouteError,
     modelPins: state.vprModelPins,
     discoverRows: state.vprRoutableRows,
@@ -373,7 +375,7 @@ export function VprHomeView({ onSelectView }: Props) {
     onSelectView?.('chat');
   }
 
-  const defaultModelLabel = snap.selection.router ? 'Router · Auto model' : selectedEntry?.label
+  const defaultModelLabel = snap.selection.router ? routerAutoModelLabel(snap.selection.router, snap.routingServices) : selectedEntry?.label
     ?? (selectedModel ? displayModelLabel(selectedModel.serviceId, selectedModel.label) : 'No model');
 
   /* Recent chats sample — full width, same rows as the floating pill; every

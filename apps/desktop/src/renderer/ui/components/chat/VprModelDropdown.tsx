@@ -15,6 +15,8 @@ import {
 import { BrandIcon } from '../brand/BrandIcon';
 import styles from './VprModelDropdown.module.scss';
 import { VprRouterOptions } from '../vpr/VprRouterOptions';
+import { useUiSelector } from '../../hooks/useUiSelector';
+import { routerAutoModelLabel } from '../../../../shared/routing-selection';
 
 /* The menu shows the curated recommended lineup (frontier + free models);
    the full list lives on the Models page via the footer link. */
@@ -66,6 +68,7 @@ export function VprModelDropdown({
   routerActive = false,
 }: VprModelDropdownProps) {
   const [open, setOpen] = useState(false);
+  const routerLabel = useUiSelector((state) => routerAutoModelLabel(state.vprRouteSelection.router, state.vprRoutingServices));
   const [favorites, setFavorites] = useState(loadFavoriteModels);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -116,7 +119,7 @@ export function VprModelDropdown({
 
   // Prettify the fallback in case it is a raw service key (e.g. the bound
   // conversation's serviceId while the catalog is still loading).
-  const triggerLabel = routerActive ? 'Router · Auto model' : selectedEntry?.label || displayModelLabel(selectedServiceId, fallbackLabel);
+  const triggerLabel = routerActive ? routerLabel : selectedEntry?.label || displayModelLabel(selectedServiceId, fallbackLabel);
 
   function renderEntry(entry: VprModelCatalogEntry) {
     const active = !routerActive && isSelected(entry, selectedProvider, selectedServiceId);
