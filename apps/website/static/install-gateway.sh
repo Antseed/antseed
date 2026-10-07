@@ -50,6 +50,8 @@ Exposure (pick at most one; default is 127.0.0.1 only, reach it over SSH):
   --public-url <https://...>   Public hostname configured on the Cloudflare tunnel.
   --host <addr>                Gateway listen address without a proxy (default: 127.0.0.1).
                                0.0.0.0 serves plain HTTP; use it only on a private network.
+                               Ignored with --domain or a Cloudflare tunnel, which always
+                               listen on 127.0.0.1 behind the proxy.
 
 Options:
   --port <n>                   Gateway port (default: 8379).
@@ -105,7 +107,7 @@ parse_args() {
       --verbose) VERBOSE=1; shift ;;
       --uninstall) UNINSTALL=true; shift ;;
       -h|--help) usage; exit 0 ;;
-    *) usage >&2; die "unknown option: $1" ;;
+      *) usage >&2; die "unknown option: $1" ;;
     esac
   done
 }
@@ -163,7 +165,9 @@ validate() {
     check_value "the Cloudflare tunnel token" "$CLOUDFLARE_TOKEN"
     HOST=127.0.0.1
   fi
-  if ! [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || (( PORT < 1 || PORT > 65535 )); then die "--port must be between 1 and 65535"; fi
+  [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || die "--port must be between 1 and 65535"
+  PORT=$((10#$PORT))
+  if (( PORT < 1 || PORT > 65535 )); then die "--port must be between 1 and 65535"; fi
   (( PORT != BUYER_PORT )) || die "--port $BUYER_PORT is the buyer's port; pick another"
   [[ "$HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || die "--host must be an IP address or hostname"
   [[ "$CLI_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || die "--cli-version must be an npm version or tag"
