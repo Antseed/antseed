@@ -121,7 +121,7 @@ The buyer independently recomputes token and unit costs before signing the next 
 
 ### Video Payments {#video-payments}
 
-Video services publish a versioned `video_generations` or `video_seconds` billing model per service for the `venice-video` protocol. The request context captures `model` and `resolution` for matching. The price is fixed when the job is created and charged once, when the finished video is delivered:
+Video services publish a versioned `video_generations` or `video_seconds` billing model per service for the `venice-video` or `fal-video` protocol. The request context captures `model` and `resolution` for matching. The price is fixed when the job is created and charged once, when the finished video is delivered:
 
 ```text title="video cost calculation"
 unitCostUSD   = matchedComponent.priceUsd * (unit == video_seconds ? requestedDurationSeconds : 1)

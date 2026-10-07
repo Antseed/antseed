@@ -9,6 +9,7 @@ export interface TrustedPlugin {
 
 export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
   { name: 'venice-video', type: 'provider', description: 'Venice video API', package: '@antseed/provider-venice-video' },
+  { name: 'fal-video', type: 'provider', description: 'fal.ai video models (queue API)', package: '@antseed/provider-fal-video' },
   {
     name: 'anthropic',
     type: 'provider',

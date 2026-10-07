@@ -16,6 +16,7 @@ import type { NodePaymentsConfig, PeerInfo, Provider } from '@antseed/node';
 import { createLocalBootstrap } from './helpers/local-bootstrap.js';
 import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
 import veniceVideoPlugin from '../../plugins/provider-venice-video/src/index.js';
+import falVideoPlugin from '../../plugins/provider-fal-video/src/index.js';
 
 const execFileAsync = promisify(execFile);
 const liveVeniceKey = process.env.VENICE_INFERENCE_KEY?.trim();
@@ -465,6 +466,68 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       await vi.waitFor(() => {
         const auths = (buyerNode as any)._verificationStorage.listResponseAuthsBySeller(discoveredSeller.peerId);
         expect(auths.filter((auth: any) => !auth.verified).map((auth: any) => auth.verificationError)).toEqual([]);
+      });
+    } finally { vi.unstubAllGlobals(); }
+  }, 60_000);
+
+  it('runs a fal queue, status poll and streamed download through the buyer proxy with one charge', async () => {
+    await setupRpc();
+    const originalFetch = globalThis.fetch;
+    const model = 'fal-ai/kling-video/v2.1/standard/text-to-video';
+    const video = mp4Video(5_000, 512 * 1024);
+    const falCalls: string[] = [];
+    let ready = false;
+    vi.stubGlobal('fetch', async (input: Parameters<typeof fetch>[0], init?: RequestInit) => {
+      const url = String(input);
+      if (url === 'https://v3.fal.media/files/out.mp4') {
+        expect(new Headers(init?.headers).get('authorization')).toBeNull();
+        falCalls.push('media');
+        return new Response(video, { headers: { 'content-type': 'video/mp4', 'content-length': String(video.length) } });
+      }
+      if (!url.startsWith('https://queue.fal.run/')) {
+        const headers = new Headers(init?.headers);
+        headers.set('connection', 'close');
+        return originalFetch(input, { ...init, headers });
+      }
+      expect(new Headers(init?.headers).get('authorization')).toBe('Key seller-secret');
+      const path = new URL(url).pathname;
+      falCalls.push(`${init?.method ?? 'GET'} ${path}`);
+      if (path === `/${model}`) {
+        expect(JSON.parse(Buffer.from(init!.body as Uint8Array).toString())).toEqual({ prompt: 'boat', duration: '5' });
+        return Response.json({ request_id: 'fal-req-1', status_url: 'https://queue.fal.run/x', queue_position: 0 });
+      }
+      if (path.endsWith('/status')) return Response.json({ status: ready ? 'COMPLETED' : 'IN_PROGRESS' }, { status: ready ? 200 : 202 });
+      return Response.json({ video: { url: 'https://v3.fal.media/files/out.mp4' } });
+    });
+    try {
+      const provider = await falVideoPlugin.createProvider({
+        FAL_VIDEO_API_KEY: 'seller-secret',
+        ANTSEED_ALLOWED_SERVICES: model,
+        ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [model]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.01 }] } } }),
+      });
+      const { port, discoveredSeller } = await setupProxyNetwork(provider);
+      const base = `http://127.0.0.1:${port}`;
+      const post = (path: string, body: object) => fetch(`${base}${path}`, { method: 'POST', headers: { 'content-type': 'application/json' }, body: JSON.stringify(body) });
+      const created = await post('/fal/v1/video/queue', { model, prompt: 'boat', duration: '5' });
+      expect(created.status).toBe(200);
+      expect(await created.json()).toMatchObject({ model, request_id: 'fal-req-1', status: 'IN_QUEUE' });
+      const pending = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-req-1' });
+      expect(pending.status).toBe(200);
+      expect((await pending.json()).status).toBe('IN_PROGRESS');
+      ready = true;
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        const download = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-req-1' });
+        expect(download.status).toBe(200);
+        expect(download.headers.get('content-type')).toBe('video/mp4');
+        expect(Buffer.from(await download.arrayBuffer())).toEqual(video);
+      }
+      expect((await post('/fal/v1/video/retrieve', { model, request_id: 'unknown' })).status).toBe(404);
+      expect(falCalls.filter(call => call === `POST /${model}`)).toHaveLength(1);
+      expect(buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
+      await vi.waitFor(() => {
+        const videoChannels = (buyerNode as any)._channelStore.listAllChannels(100, 'one_off');
+        expect(videoChannels).toHaveLength(1);
+        expect(videoChannels[0]).toMatchObject({ peerId: discoveredSeller.peerId, authMax: '50000', status: 'settled' });
       });
     } finally { vi.unstubAllGlobals(); }
   }, 60_000);

@@ -90,7 +90,7 @@ describe('encodeMetadata / decodeMetadata', () => {
   it.each([
     ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
     ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
-    ['venice-video', 6],
+    ['venice-video', 6], ['fal-video', 7],
   ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
     const metadata = makeMetadata();
     const marker = 'billing-wire-id';

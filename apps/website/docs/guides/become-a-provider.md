@@ -296,7 +296,7 @@ The `--upstream` flag maps the buyer-facing service name to the upstream model i
 
 For an `openai-images` service, `outputs: ["image"]` identifies an image result. Input modalities are an operational routing contract: `inputs: ["text"]` means generation only, while `inputs: ["text", "image"]` means the seller can accept both `/v1/images/generations` and multipart `/v1/images/edits`. Do not advertise `image` input merely because the upstream platform offers editing somewhere; the exact configured service and provider adapter must support the edit request end to end. In particular, Venice-backed services must remain generation-only until Antseed has a native Venice edit adapter.
 
-Unit billing is supported by the `openai` provider for `openai-images` and by the `venice-video` provider for video; startup warns if a different plugin ignores the setting. Image and video services remain advertised but are skipped by periodic health checks to avoid generating paid probes.
+Unit billing is supported by the `openai` provider for `openai-images` and by the `venice-video` and `fal-video` providers for video; startup warns if a different plugin ignores the setting. Image and video services remain advertised but are skipped by periodic health checks to avoid generating paid probes.
 
 ### Video services
 
@@ -312,6 +312,18 @@ antseed config seller add-service venice-video <video-model> \
 ```
 
 The service id is sent unchanged as `model` to your API. Your offer must add value beyond reselling raw upstream access.
+
+To serve [fal.ai](https://fal.ai/models) video models, use the `fal-video` provider. The service id must be the fal endpoint ID, and pricing uses the `fal-video` protocol:
+
+```bash
+export FAL_VIDEO_API_KEY=<your-fal-key>
+antseed config seller add-provider fal --plugin fal-video
+
+antseed config seller add-service fal fal-ai/kling-video/v2.1/standard/text-to-video \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
+```
+
+The examples below use `venice-video`; for fal, use the `fal-video` key instead.
 
 #### Pricing
 

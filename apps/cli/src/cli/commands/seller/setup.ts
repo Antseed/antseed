@@ -92,6 +92,8 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'export TYPESAFE_API_KEY=<key>';
     case 'venice-video':
       return 'export VENICE_VIDEO_API_KEY=<seller-api-key>';
+    case 'fal-video':
+      return 'export FAL_VIDEO_API_KEY=<seller-fal-key>';
     default:
       return `set the credentials required by ${pluginName}`;
   }

@@ -1,8 +1,8 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
 
-test('native video runtime configuration maps the Venice seller endpoint to its credentials', () => {
-  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video']] as const) {
+test('native video runtime configuration maps each video seller endpoint to its credentials', () => {
+  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video']] as const) {
     const config = createDefaultConfig();
     config.seller.providers = { video: { plugin, baseUrl: 'https://seller.example.test', apiKeyEnv: 'TEST_VIDEO_KEY', services: { model: { unitBillingModels: { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } } };
     const previous = process.env['TEST_VIDEO_KEY'];

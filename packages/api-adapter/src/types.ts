@@ -25,7 +25,8 @@ export interface SerializedHttpResponseChunk {
   done: boolean;
 }
 
-export const NATIVE_VIDEO_PROTOCOLS = ['venice-video'] as const;
+/** Appended only: billing metadata encodes protocols by list position. */
+export const NATIVE_VIDEO_PROTOCOLS = ['venice-video', 'fal-video'] as const;
 
 export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   'anthropic-messages',

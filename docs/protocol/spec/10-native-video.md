@@ -1,8 +1,8 @@
 # Native video API integration
 
-AntSeed relays native Venice video requests to seller-operated APIs. Models from other vendors can still be used through Venice; their separate native APIs are not supported. Sellers own execution, storage, and refund policy. AntSeed does not cache artifacts.
+AntSeed relays native video requests to seller-operated APIs in two formats: the Venice video API (`venice-video`) and fal.ai's queue API (`fal-video`). Other vendors' native APIs are not supported. Sellers own execution, storage, and refund policy. AntSeed does not cache artifacts.
 
-Finished Venice videos are streamed through the original seller; its API key never leaves the seller. Other providers and seller-hosted result URLs remain unchanged and must be accessible to buyers without seller credentials.
+Finished videos are streamed through the original seller; its API key never leaves the seller. Other providers and seller-hosted result URLs remain unchanged and must be accessible to buyers without seller credentials.
 
 ## Supported requests
 
@@ -10,8 +10,14 @@ Finished Venice videos are streamed through the original seller; its API key nev
 | --- | --- | --- |
 | `venice-video` | POST | `/api/v1/video/queue` |
 | `venice-video` | POST | `/api/v1/video/retrieve` (JSON result or streamed MP4) |
+| `fal-video` | POST | `/fal/v1/video/queue` |
+| `fal-video` | POST | `/fal/v1/video/retrieve` (JSON status or streamed MP4) |
 
 Venice uses the body `model` as the service. Retrieve carries `queue_id` in the JSON body instead of the path; the seller rebuilds it as `{model, queue_id}` (plus `delete_media_on_completion`) from the owned job and routed service. Venice `/api/v1/video/complete` and `/api/v1/video/quote` are not relayed. The API path, job ID field, and billing fields are declared in `packages/api-adapter/src/native-video.ts`. Create requests use the same model routing as images: `antseed` resolves to the selected route, and `<peerId>@<model>` pins that peer and is rewritten to `<model>` before forwarding. Other body fields are unchanged. Video services appear in `GET /v1/models?type=videos`.
+
+### fal
+
+fal's own API puts the endpoint ID in the URL (`queue.fal.run/{endpoint}`), which AntSeed cannot route on. AntSeed therefore uses fixed paths and carries the fal endpoint ID (for example `fal-ai/kling-video/v2.1/standard/text-to-video`) in the body `model`, which is also the service ID. The create body is fal's model input plus `model`; the seller removes `model` and `service` and submits the rest to `POST {base}/{model}`. The job ID is fal's `request_id`. Retrieve sends `{model, request_id}`; the seller polls `GET {base}/{owner}/{alias}/requests/{request_id}/status` and, once `COMPLETED`, fetches the result and streams the `https` `video.url` (or first `videos[].url`) to the buyer without the seller key. fal's `status_url` and `response_url` are not returned to buyers. A `COMPLETED` status with an `error` is returned as `{"status":"FAILED"}`. Durations are numbers or strings such as `"5"` and `"5s"`. Cancel and webhooks are not relayed.
 
 ## Image-to-video and video inputs
 
@@ -67,7 +73,7 @@ Input kinds are `first_frame`, `last_frame`, `reference_image`, `video`, `refere
 
 ## Billing
 
-Discovery billing entries use the protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`; `venice-video` is ID `6`.
+Discovery billing entries use the protocol's position in `WELL_KNOWN_SERVICE_API_PROTOCOLS`; `venice-video` is ID `6` and `fal-video` is ID `7`.
 
 A video is charged when it is delivered: the first retrieve that returns the finished video (a streamed download that passes the delivery check below) charges the video price once per job. The create itself is not charged; the seller stores the price and the job's one-off channel with the accepted `queue_id` (`resource_charges` in the metering database) and charges it on the first delivery. Later downloads of the same job are free. A job that is never delivered (provider failure, moderation rejection, expired file, or never downloaded) is not charged beyond the serious fee described below. Pricing uses `video_generations` or `video_seconds`; per-second pricing requires an explicit positive duration (`duration`). Venice durations such as `"5s"` are read as seconds. Venice `auto`, `-1`, and `1 gen` requests have no explicit duration, so they need `video_generations` pricing. Each create bills one video.
 

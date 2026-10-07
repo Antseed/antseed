@@ -127,6 +127,8 @@ The proxy accepts these API formats. Use whichever matches your tool:
 | `/v1/images/edits` | OpenAI Images edits | OpenAI-compatible multipart image clients |
 | `/api/v1/video/queue` | Venice video queue | Venice-compatible video clients |
 | `/api/v1/video/retrieve` | Venice video status and MP4 download | Venice-compatible video clients |
+| `/fal/v1/video/queue` | fal video queue | fal model input with the endpoint ID as `model` |
+| `/fal/v1/video/retrieve` | fal video status and MP4 download | fal video jobs |
 | `/v1/models` | OpenAI model list | network-wide, answered locally; `?type=images` and `?type=videos` filter (free) |
 | `/v1/messages/count_tokens` | Anthropic token counting | answered locally, never routed or billed |
 
@@ -186,6 +188,20 @@ curl http://localhost:8377/api/v1/video/retrieve \
 ```
 
 Retrieve requests always go back to the seller that accepted the job. For image-to-video, add Venice media fields such as `image_url` (a public URL or `data:` URL) and pick a model that supports them.
+
+Sellers of [fal.ai](https://fal.ai/models) models (`fal-video`) use the fal endpoint ID as the model and take that model's fal input fields:
+
+```bash
+# Queue a job; the response includes a request_id
+curl http://localhost:8377/fal/v1/video/queue \
+  -H 'content-type: application/json' \
+  -d '{"model": "fal-ai/kling-video/v2.1/standard/text-to-video", "prompt": "A tiny ant carrying a seed", "duration": "5"}'
+
+# Poll: IN_QUEUE / IN_PROGRESS JSON until the response is video/mp4
+curl http://localhost:8377/fal/v1/video/retrieve \
+  -H 'content-type: application/json' \
+  -d '{"model": "fal-ai/kling-video/v2.1/standard/text-to-video", "request_id": "<request_id>"}' -o result.out
+```
 
 **Payment**
 

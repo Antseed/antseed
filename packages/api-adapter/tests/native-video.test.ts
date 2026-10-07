@@ -67,8 +67,29 @@ describe('native video API contracts', () => {
     expect(() => nativeVideoFacts(request('/api/v1/video/queue', { model: 'video', duration: 'soon' }))).toThrow(/duration/);
   });
 
-  it('shares only the Venice native video protocol', () => {
-    expect(NATIVE_VIDEO_PROTOCOLS).toEqual(['venice-video']);
+  it('routes fal video with the endpoint ID as the service', () => {
+    const model = 'fal-ai/kling-video/v2.1/standard/text-to-video';
+    const create = request('/fal/v1/video/queue', { model, prompt: 'cat', duration: '5' });
+    expect(nativeVideoRoute(create)).toEqual({ protocol: 'fal-video', action: 'create' });
+    expect(detectRequestServiceApiProtocol(create)).toBe('fal-video');
+    expect(requestService(create)).toBe(model);
+    expect(nativeVideoFacts(create)).toEqual({ protocol: 'fal-video', action: 'create', duration: 5 });
+    expect(nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: 8 }))?.duration).toBe(8);
+    expect(nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: '6s' }))?.duration).toBe(6);
+    expect(() => nativeVideoFacts(request('/fal/v1/video/queue', { model, duration: 'auto' }))).toThrow(/duration/);
+    expect(nativeVideoRoute(request('/fal/v1/video/retrieve', { request_id: '764cabcf-b745-4b3e-ae38-1200304cf45b' })))
+      .toEqual({ protocol: 'fal-video', action: 'retrieve', resourceId: '764cabcf-b745-4b3e-ae38-1200304cf45b' });
+    expect(nativeVideoRoute(request('/fal/v1/video/retrieve', { request_id: '../x' }))?.resourceId).toBeUndefined();
+    expect(nativeVideoRoute(request('/fal/v1/video/retrieve', { queue_id: 'venice-id' }))?.resourceId).toBeUndefined();
+    const response = (body: object) => ({ requestId: 'request', statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)) });
+    expect(nativeVideoAcceptance('fal-video', response({ request_id: 'abc-123' }))).toBe('abc-123');
+    expect(nativeVideoAcceptance('fal-video', response({ queue_id: 'abc-123' }))).toBeNull();
+    expect(nativeVideoAcceptance('venice-video', response({ request_id: 'abc-123' }))).toBeNull();
+  });
+
+  it('shares the Venice and fal native video protocols', () => {
+    expect(NATIVE_VIDEO_PROTOCOLS).toEqual(['venice-video', 'fal-video']);
+    expect(isNativeVideoProtocol('fal-video')).toBe(true);
     expect(isNativeVideoProtocol('venice-video')).toBe(true);
     expect(isNativeVideoProtocol('seedance-video')).toBe(false);
     expect(inferProviderDefaultServiceApiProtocols('venice')).toEqual([]);

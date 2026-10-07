@@ -16,9 +16,24 @@ const VENICE_DOWNLOAD_PATH = '/api/v1/video/retrieve';
 const VENICE_QUEUE_ID = /^[A-Za-z0-9_-]{1,256}$/;
 const VENICE_AUTO_DURATIONS = new Set(['auto', 'Auto', '-1', '1 gen']);
 
+/**
+ * fal's own API puts the model in the URL. AntSeed routes on the body `model`,
+ * so fal video uses fixed paths with the fal endpoint ID as `model`; the
+ * seller rebuilds fal's queue URLs from it.
+ */
+const FAL_CREATE_PATH = '/fal/v1/video/queue';
+const FAL_DOWNLOAD_PATH = '/fal/v1/video/retrieve';
+const FAL_REQUEST_ID = /^[A-Za-z0-9-]{1,128}$/;
+
+const ROUTES: Record<string, NativeVideoRoute> = {
+  [VENICE_CREATE_PATH]: { protocol: 'venice-video', action: 'create' },
+  [VENICE_DOWNLOAD_PATH]: { protocol: 'venice-video', action: 'retrieve' },
+  [FAL_CREATE_PATH]: { protocol: 'fal-video', action: 'create' },
+  [FAL_DOWNLOAD_PATH]: { protocol: 'fal-video', action: 'retrieve' },
+};
+
 export function detectNativeVideoProtocol(path: string): NativeVideoProtocol | null {
-  const normalizedPath = normalizedRequestPath(path);
-  return normalizedPath === VENICE_CREATE_PATH || normalizedPath === VENICE_DOWNLOAD_PATH ? 'venice-video' : null;
+  return ROUTES[normalizedRequestPath(path)]?.protocol ?? null;
 }
 
 /**
@@ -28,11 +43,10 @@ export function detectNativeVideoProtocol(path: string): NativeVideoProtocol | n
  */
 export function nativeVideoRoute(request: Pick<SerializedHttpRequest, 'path' | 'method'> & { body?: Uint8Array }): NativeVideoRoute | null {
   if (request.method !== 'POST') return null;
-  const path = normalizedRequestPath(request.path);
-  if (path === VENICE_CREATE_PATH) return { protocol: 'venice-video', action: 'create' };
-  if (path !== VENICE_DOWNLOAD_PATH) return null;
-  const resourceId = request.body ? veniceQueueId(parseJsonObject(request.body)) : null;
-  return { protocol: 'venice-video', action: 'retrieve', ...(resourceId ? { resourceId } : {}) };
+  const route = ROUTES[normalizedRequestPath(request.path)];
+  if (!route || route.action === 'create') return route ? { ...route } : null;
+  const resourceId = request.body ? jobId(route.protocol, parseJsonObject(request.body)) : null;
+  return { ...route, ...(resourceId ? { resourceId } : {}) };
 }
 
 /** Job ID from a successful create response, or null when the seller did not accept a job. */
@@ -40,7 +54,7 @@ export function nativeVideoAcceptance(protocol: NativeVideoProtocol, response: S
   if (response.statusCode < 200 || response.statusCode >= 300) return null;
   const body = parseJsonObject(response.body);
   if (!body || body.error) return null;
-  return protocol === 'venice-video' ? veniceQueueId(body) : null;
+  return jobId(protocol, body);
 }
 
 /**
@@ -94,7 +108,7 @@ export function nativeVideoFacts(request: SerializedHttpRequest): NativeVideoFac
   if (route.action === 'retrieve') return { protocol: route.protocol, action: route.action };
   const body = parseJsonObject(request.body);
   if (!body) throw new Error('Video submission requires a JSON object');
-  const duration = veniceDuration(body.duration);
+  const duration = route.protocol === 'fal-video' ? falDuration(body.duration) : veniceDuration(body.duration);
   if (duration === null) throw new Error('Video duration must be a positive integer');
   return {
     protocol: route.protocol, action: route.action,
@@ -107,6 +121,14 @@ function normalizedRequestPath(path: string): string {
   return path.split('?')[0] ?? '';
 }
 
+function jobId(protocol: NativeVideoProtocol, body: JsonObject | null): string | null {
+  if (protocol === 'fal-video') {
+    const requestId = body?.request_id;
+    return typeof requestId === 'string' && FAL_REQUEST_ID.test(requestId) ? requestId : null;
+  }
+  return veniceQueueId(body);
+}
+
 function veniceQueueId(body: JsonObject | null): string | null {
   const queueId = body?.queue_id;
   return typeof queueId === 'string' && VENICE_QUEUE_ID.test(queueId) ? queueId : null;
@@ -115,6 +137,11 @@ function veniceQueueId(body: JsonObject | null): string | null {
 function veniceDuration(value: unknown): number | undefined | null {
   if (typeof value === 'string' && VENICE_AUTO_DURATIONS.has(value)) return undefined;
   return positiveInteger(typeof value === 'string' ? value.replace(/s$/, '') : value);
+}
+
+/** fal models take seconds as a number, `"5"` or `"5s"`. */
+function falDuration(value: unknown): number | undefined | null {
+  return positiveInteger(typeof value === 'string' ? value.trim().replace(/s$/, '') : value);
 }
 
 /** Positive integer from a number or decimal string; undefined when absent, null when invalid. */
