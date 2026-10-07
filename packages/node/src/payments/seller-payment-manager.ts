@@ -20,6 +20,7 @@ import { debugLog, debugWarn } from '../utils/debug.js';
 import { peerIdToAddress } from '../types/peer.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store.js';
 import { classifyOnChainChannel, matchesChannelParties } from './channel-session-state.js';
+import type { Provider, ProviderPricing } from '../interfaces/seller-provider.js';
 
 export interface SellerPaymentConfig {
   rpcUrl: string;
@@ -174,6 +175,9 @@ export class SellerPaymentManager {
   private readonly _minSettleDelta: bigint;
 
   private readonly _serveWhileClosePending: boolean;
+  /** Provider token pricing pinned when each channel was reserved/recovered (memory only). */
+  private readonly _channelPricing = new Map<string, ReadonlyMap<Provider, ProviderPricing>>();
+  private _pricingSource: (() => ReadonlyMap<Provider, ProviderPricing>) | null = null;
 
   /** Max close() retries before giving up (buyer must requestClose on-chain) */
   private static readonly MAX_CLOSE_RETRIES = 3;
@@ -312,6 +316,7 @@ export class SellerPaymentManager {
     this._pendingTopUp.delete(channelId);
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
+    this._channelPricing.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     this._deactivateBuyerForChannel(peerId, channelId);
     debugLog(`[SellerPayment] Evicted stale channel ${channelId.slice(0, 18)}... — ${reason}`);
@@ -1152,6 +1157,10 @@ export class SellerPaymentManager {
   ): void {
     this._channelStore.upsertChannel(session);
     this._hydratedChannelIds.delete(session.sessionId);
+    const pricing = this._pricingSource?.();
+    if (pricing && !this._channelPricing.has(session.sessionId)) {
+      this._channelPricing.set(session.sessionId, pricing);
+    }
     this._acceptedCumulative.set(session.sessionId, cumulativeAmount);
     this._reserveMax.set(session.sessionId, reserveMaxAmount);
     this._spent.set(session.sessionId, spent);
@@ -1279,6 +1288,7 @@ export class SellerPaymentManager {
     this._blockedChannels.delete(channelId);
     this._lastSettledCumulative.delete(channelId);
     this._hydratedChannelIds.delete(channelId);
+    this._channelPricing.delete(channelId);
     this._releaseAcceptedWaiters(channelId);
     this._deactivateBuyerForChannel(buyerPeerId, channelId);
   }
@@ -1510,6 +1520,21 @@ export class SellerPaymentManager {
   }
 
   // ── Queries ───────────────────────────────────────────────────
+
+  /** Snapshot source used to pin token pricing when a channel is activated. */
+  setPricingSource(source: () => ReadonlyMap<Provider, ProviderPricing>): void {
+    this._pricingSource = source;
+    // Channels hydrated from disk keep the prices this process started with.
+    const startupPricing = source();
+    for (const channel of this._channelStore.getActiveChannels(CHANNEL_ROLE.SELLER)) {
+      if (!this._channelPricing.has(channel.sessionId)) this._channelPricing.set(channel.sessionId, startupPricing);
+    }
+  }
+
+  /** Pricing pinned for a channel activated in this process, if any. */
+  getChannelPricing(channelId: string): ReadonlyMap<Provider, ProviderPricing> | undefined {
+    return this._channelPricing.get(channelId);
+  }
 
   hasSession(buyerPeerId: string): boolean {
     return this._activeBuyers.has(buyerPeerId);

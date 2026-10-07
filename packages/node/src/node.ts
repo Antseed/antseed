@@ -1824,13 +1824,8 @@ export class AntseedNode extends EventEmitter {
           ...(p.serviceCapabilities ? { serviceCapabilities: { ...p.serviceCapabilities } } : {}),
           maxConcurrency: p.maxConcurrency,
           isAvailable: () => this._advertisingPausedReason === null && p.healthCheckAvailable !== false,
-          pricing: {
-            defaults: {
-              inputUsdPerMillion: p.pricing.defaults.inputUsdPerMillion,
-              outputUsdPerMillion: p.pricing.defaults.outputUsdPerMillion,
-            },
-            ...(p.pricing.services ? { services: { ...p.pricing.services } } : {}),
-          },
+          // Live per-instance object: hot price reloads replace its fields in place.
+          pricing: p.pricing,
         })),
         ...(this._config.displayName ? { displayName: this._config.displayName } : {}),
         ...(this._config.publicAddress ? { publicAddress: this._config.publicAddress } : {}),
@@ -2277,6 +2272,11 @@ export class AntseedNode extends EventEmitter {
           : {}),
       };
       this._sellerPaymentManager = new SellerPaymentManager(this._identity, sellerConfig, this._channelStore);
+      const providers = this._providers;
+      this._sellerPaymentManager.setPricingSource(() => new Map(providers.map((p) => [
+        p,
+        { defaults: p.pricing.defaults, ...(p.pricing.services ? { services: p.pricing.services } : {}) },
+      ])));
       debugLog(`[Node] SellerPaymentManager initialized`);
 
       // Deposit-sweep relayer (opt-out — ON by default when the chain has a relay)

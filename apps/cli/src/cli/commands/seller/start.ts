@@ -43,6 +43,7 @@ import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antsee
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
 import { initializeProvider } from './provider-init.js'
+import { startSellerPriceReload, type PriceReloadTarget } from './price-reload.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -449,6 +450,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       await ensurePluginsUpToDate(selectedProviderPackages)
 
       const providers: Provider[] = []
+      const priceReloadTargets: PriceReloadTarget[] = []
       for (const providerName of selectedProviderNames) {
         const providerCfg = effectiveSellerConfig.providers[providerName]!
         const packageName = resolvePluginPackage(providerCfg.plugin)
@@ -473,6 +475,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             }
           }
           providers.push(provider)
+          priceReloadTargets.push({ name: providerName, provider, configFields, basePluginConfig })
           spinner.succeed(chalk.green(`Provider "${providerName}" loaded via ${packageName}`))
         } catch (err) {
           spinner.fail(chalk.red(`Failed to load provider "${providerName}": ${(err as Error).message}`))
@@ -1031,7 +1034,23 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
+      // Hot-reload token pricing from the config file. Only new payment
+      // channels pick up new prices; open channels keep their pinned rates.
+      const priceReload = startSellerPriceReload({
+        configPath: globalOpts.config,
+        targets: priceReloadTargets,
+        runtimeOverrides,
+        forcePricingOverride,
+        onApplied: async () => {
+          await node.refreshSellerMetadata()
+          scheduleDaemonStateWrite()
+        },
+        log: (message) => console.log(chalk.green(message)),
+        warn: (message) => console.warn(chalk.yellow(message)),
+      })
+
       setupShutdownHandler(async () => {
+        priceReload.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
         clearInterval(stateInterval)
