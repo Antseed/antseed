@@ -2666,7 +2666,7 @@ export function initChatModule({
       }
       if (pendingRouteUpdates.get(convId) === routeUpdate) pendingRouteUpdates.delete(convId);
     }
-    if ((selection.id === 'antseed' || selection.id === 'levanto-auto') && !await syncBuyerDefaultRoute(bridge, uiState)) {
+    if (selection.id === 'antseed' && !await syncBuyerDefaultRoute(bridge, uiState)) {
       reportChatError(uiState.vprRouteError ?? 'Could not apply route selection', 'Request failed');
       setConversationSending(convId, false);
       return;
@@ -2903,7 +2903,7 @@ export function initChatModule({
     // Write the explicit pick through to the AI VPN route selection so the two
     // never disagree about which model+peer a new conversation targets. The
     // service options are per-peer entries, so a dropdown pick is a peer pin.
-    if (nextServiceId && nextServiceId !== 'antseed' && nextServiceId !== 'levanto-auto') {
+    if (nextServiceId && nextServiceId !== 'antseed') {
       const catalogEntry = nextProvider
         ? findCatalogEntry(uiState.vprModelCatalog, nextProvider, nextServiceId)
         : null;

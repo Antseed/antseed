@@ -164,7 +164,7 @@ export function loadVprRouteSelection(fallback: VprRouteSelection): VprRouteSele
     return fallback;
   }
   if (isDesktopRouterSelection(parsed.router)) {
-    return { model: null, mode: 'auto', peerId: null, router: parsed.router };
+    return { model: null, mode: 'auto', peerId: null, router: createDesktopRouterSelection(parsed.router.service, parsed.router.costQualityTradeoff, parsed.router.allowedModels) };
   }
   if (parsed.mode !== 'auto' && parsed.mode !== 'pinned-peer') {
     return fallback;
@@ -191,7 +191,7 @@ function routerSettingsStorageKey(service: RoutingServiceTarget): string {
 export function loadVprRouterSettings(service: RoutingServiceTarget): DesktopRouterSelection | null {
   const stored = loadJson(routerSettingsStorageKey(service));
   if (!isDesktopRouterSelection(stored) || routerSettingsStorageKey(stored.service) !== routerSettingsStorageKey(service)) return null;
-  return stored;
+  return createDesktopRouterSelection(stored.service, stored.costQualityTradeoff, stored.allowedModels);
 }
 
 export function saveVprRouterSettings(settings: DesktopRouterSelection): void {

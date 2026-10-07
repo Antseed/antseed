@@ -17,7 +17,6 @@ const child = spawn('pnpm', ['run', 'dev'], {
     ANTSEED_PAYMENTS_PORT: String(ports.payments),
     ANTSEED_SYSTEM_PROXY_PORT: String(ports.systemProxy),
     ANTSEED_SYSTEM_PROXY_DATA_DIR: path.join(instanceDir, 'system-proxy'),
-    ANTSEED_DEV_ROUTING_DHT_PORT: String(ports.levantoDht),
   },
   stdio: 'inherit',
 });

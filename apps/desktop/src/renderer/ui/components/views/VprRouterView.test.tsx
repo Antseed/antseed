@@ -104,7 +104,7 @@ test('browsing router detail shows settings without changing the selected model'
   assert.doesNotMatch(markup, /Chooses a model for each request from the models you allow/);
   assert.doesNotMatch(markup, /levanto \/ route/);
   assert.ok(!markup.includes(service.peerId));
-  assert.match(markup, /type="checkbox" checked=""/);
+  assert.match(markup, /type="checkbox"[^>]*checked=""/);
   assert.deepEqual(state.vprRouteSelection, previous);
   assert.equal(selectRouter.mock.calls.length, 0);
 });
@@ -120,19 +120,20 @@ test('saved preferences remain visible and unavailable routers cannot be applied
   assert.doesNotMatch(markup, /\/completed request/);
 });
 
-test('empty allowlist cannot be applied and unavailable selected models remain visible', () => {
+test('empty and stale selections show all models without a previously-selected section', () => {
   const state = createInitialUiState();
+  state.chatDiscoverRowsLoaded = true;
   state.vprRoutingServices = [service];
   state.vprRouteSelection.router = { service, costQualityTradeoff: 5, allowedModels: [] };
   initStore(state);
   const empty = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(empty, /Select at least one model/);
-  assert.match(empty, /disabled=""/);
+  assert.doesNotMatch(empty, /Select at least one model/);
+  assert.match(empty, /type="checkbox"[^>]*checked=""/);
   state.vprRouteSelection.router.allowedModels = [{ provider: 'openai', serviceId: 'missing-model' }];
   initStore(state);
   const missing = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(missing, /Previously selected models not currently available/);
-  assert.match(missing, /missing-model/);
+  assert.doesNotMatch(missing, /Previously selected models|missing-model/);
+  assert.match(missing, /type="checkbox"[^>]*checked=""/);
 });
 
 test('unknown and stale catalogs never claim support for the entire network', () => {
@@ -162,8 +163,9 @@ test('unset tradeoff displays router default without persisting an explicit valu
   assert.deepEqual(state.vprRouteSelection.router.costQualityTradeoff, undefined);
 });
 
-test('catalog intersection excludes unsupported providers and keeps unavailable selections visible', () => {
+test('catalog intersection excludes unsupported providers and drops stale selections from display', () => {
   const state = createInitialUiState();
+  state.chatDiscoverRowsLoaded = true;
   const catalogService = { ...service, catalog: createRoutingCatalog([
     { provider: 'openai', serviceId: 'model-a' }, { provider: 'openai', serviceId: 'offline-model' },
   ]) };
@@ -181,9 +183,8 @@ test('catalog intersection excludes unsupported providers and keeps unavailable 
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
   assert.doesNotMatch(markup, /unsupported-provider/);
   assert.match(markup, /offline-model/);
-  assert.match(markup, /removed-model/);
-  assert.match(markup, /No selected supported models are currently available/);
-  assert.deepEqual(state.vprRouteSelection.router.allowedModels, [{ provider: 'openai', serviceId: 'removed-model' }]);
+  assert.doesNotMatch(markup, /removed-model|Previously selected models|No selected supported models/);
+  assert.equal((markup.match(/aria-checked="true"/g) ?? []).length, 1);
 });
 
 test('checkbox identity distinguishes provider and model IDs containing separators', () => {

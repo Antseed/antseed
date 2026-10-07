@@ -12,7 +12,7 @@ test('response indicators retain their actual model independently of later selec
 });
 
 test('router aliases, unknown models and user messages never invent a resolved model', () => {
-  for (const service of [undefined, '', 'antseed', 'levanto-auto', 'peer@antseed']) {
+  for (const service of [undefined, '', 'antseed', 'peer@antseed']) {
     assert.equal(routedModelLabel({ role: 'assistant', content: '', meta: { service } }), null);
   }
   assert.equal(routedModelLabel({ role: 'user', content: '', meta: { service: 'gpt-6-astra' } }), null);

@@ -9,42 +9,6 @@ hide_title: true
 
 Router plugins enforce general buyer policy and record request results. For model-only requests, the buyer proxy first resolves the canonical model and uses the shared model-route ranking from `@antseed/node/model-routing`, so the desktop catalog, `/v1/models/:id`, internal chat, and CLI proxy agree on seller order. Retryable peer failures may advance to the next eligible seller; recognized conversations softly prefer their previous successful route, while explicit pins remain hard.
 
-## Router Plugins vs. Routing Services
-
-A **router plugin** is local buyer code implementing the `Router` interface
-below. The CLI's `antseed buyer start --router <name>` selects that plugin; it
-does not select a remote model-ranking service.
-
-A **routing service** is a seller's advertised `model-routing` service. Select
-its exact peer, provider, and service in the desktop's Router picker or through
-[`POST /_antseed/route`](/docs/guides/using-the-api#select-a-routing-service).
-The built-in `ModelRoutingClient` in `@antseed/router-core` uses
-[Inference Routing Protocol (IRP)](https://github.com/inference-routing/spec/blob/main/SPEC.md)
-suggest-only mode without replacing the installed router plugin:
-
-1. `listModels` fetches free `GET /v1/routing/models` from the selected service.
-2. The buyer filters eligible destinations by its own policy and optional
-   `allowedModels`, then matches their model names to the router's list using
-   canonical model keys.
-3. `POST /v1/routing/rank` sends the conversation and candidates with IDs, model
-   names, and pricing. The response ranks those candidates by `candidate_id`.
-4. The buyer sends inference to the chosen seller and pays that seller separately.
-   The router only ranks; it does not execute or forward inference.
-
-Each successful ranking is billed as one `completed_requests` unit at the
-routing service's advertised price. Reused rankings during a tool loop do not
-require another ranking purchase. The router receives the whole conversation
-included in the request, so only choose services you trust with that content.
-
-The service setting `costQualityTradeoff` is an optional integer from **0 (best
-quality)** to **10 (cheapest)**; unset uses the router default **5**. On the IRP
-wire it is `routing.cost_quality_tradeoff`. It is separate from the buyer's
-Price + Trust policy below. Routing-service selection does not add model-ranking
-methods to the local `Router` interface or require a service-specific adapter.
-
-To offer a ranking service rather than write a buyer-policy plugin, see
-[offering a model-routing service](/docs/guides/become-a-provider#offering-a-model-routing-service).
-
 ## Model-Only Routing Preferences
 
 The shared defaults are:

@@ -55,7 +55,7 @@ test('editing a different router does not replace the selected router or its set
   updateVprRouterSettings(undefined, state, other, 1, []);
   assert.equal(state.vprRouteSelection, previous);
   assert.equal(loadVprRouterSettings(service), null);
-  assert.deepEqual(loadVprRouterSettings(other)?.allowedModels, []);
+  assert.equal(loadVprRouterSettings(other)?.allowedModels, undefined);
 });
 
 test('active edits sync automatically without reselecting chats or restarting connected profiles', async () => {
@@ -73,12 +73,12 @@ test('active edits sync automatically without reselecting chats or restarting co
   assert.deepEqual(loadVprRouteSelection(createInitialUiState().vprRouteSelection), state.vprRouteSelection);
 });
 
-test('empty and all-model selections remain distinct through autosave and reselection', () => {
+test('empty selections reset to all models through autosave and reselection', () => {
   const state = createInitialUiState();
   initStore(state);
   updateVprRouterSettings(undefined, state, service, undefined, []);
   selectVprRouter(undefined, state, chat, service);
-  assert.deepEqual(state.vprRouteSelection.router?.allowedModels, []);
+  assert.equal(state.vprRouteSelection.router?.allowedModels, undefined);
   updateVprRouterSettings(undefined, state, service, undefined, undefined);
   assert.equal(state.vprRouteSelection.router?.allowedModels, undefined);
   assert.equal(loadVprRouterSettings(service)?.allowedModels, undefined);

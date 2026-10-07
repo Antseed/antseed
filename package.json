@@ -36,7 +36,6 @@
     "typecheck:diem-staking": "pnpm --filter=@antseed/diem-staking run typecheck",
     "test": "pnpm -r run test",
     "test:e2e": "pnpm --filter=@antseed/e2e run test",
-    "test:levanto": "pnpm --filter=@antseed/e2e run test:levanto",
     "typecheck": "pnpm -r run typecheck",
     "contracts:deploy": "node scripts/deploy-contracts.mjs",
     "contracts:snapshot": "cd packages/contracts && FOUNDRY_PROFILE=snapshot forge test",
@@ -48,7 +47,6 @@
     "clean:all": "node ./scripts/remove-paths.mjs node_modules apps/cli/node_modules apps/desktop/node_modules apps/diem-staking/node_modules apps/network-stats/node_modules apps/relay/node_modules apps/website/node_modules e2e/node_modules packages/antseed-verifier/node_modules packages/api-adapter/node_modules packages/web-sdk/node_modules packages/bound-agent/node_modules packages/node/node_modules packages/provider-core/node_modules packages/router-core/node_modules plugins/provider-anthropic/node_modules plugins/provider-claude-code/node_modules plugins/provider-claude-oauth/node_modules plugins/provider-local-llm/node_modules plugins/provider-openai/node_modules plugins/provider-openai-responses/node_modules plugins/provider-typesafe/node_modules plugins/router-local/node_modules",
     "dev:website": "pnpm --filter=@antseed/website run dev",
     "dev:desktop": "pnpm run build:tier0 && pnpm run build:tier1 && pnpm run build:tier2 && pnpm run build:tier3 && pnpm --filter=@antseed/cli run build && pnpm --filter=@antseed/desktop run dev",
-    "dev:desktop:instance": "pnpm --filter=@antseed/desktop run dev:instance --",
-    "dev:levanto": "pnpm --filter=@antseed/e2e run dev:levanto --"
+    "dev:desktop:instance": "pnpm --filter=@antseed/desktop run dev:instance --"
   }
 }

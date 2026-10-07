@@ -1,12 +1,14 @@
-export type RoutingServiceTarget = { peerId: string; provider: string; serviceId: string };
-export type RouterAllowedModel = { provider: string; serviceId: string };
-export type DesktopRouterSelection = {
+import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node';
+
+export type { RoutingServiceTarget } from '@antseed/node';
+
+type RouterSelection = Extract<RoutingSelection, { kind: 'router' }>;
+export type RouterAllowedModel = NonNullable<RouterSelection['allowedModels']>[number];
+export type DesktopRouterSelection = Omit<RouterSelection, 'kind' | 'service'> & {
   service: RoutingServiceTarget;
-  costQualityTradeoff?: number;
-  allowedModels?: RouterAllowedModel[];
 };
 export type DesktopRoutingSelection =
-  | { kind: 'model'; model: string | null }
+  | Extract<RoutingSelection, { kind: 'model' }>
   | ({ kind: 'router' } & DesktopRouterSelection);
 export type RoutingServiceEntry = RoutingServiceTarget & {
   label: string;
@@ -37,7 +39,15 @@ export function routingServiceKey(service: RoutingServiceTarget): string {
   return `${service.peerId}:${service.provider}:${service.serviceId}`;
 }
 
+export function normalizeRouterAllowedModels(allowedModels: RouterAllowedModel[] | undefined, availableModels?: RouterAllowedModel[]): RouterAllowedModel[] | undefined {
+  if (!allowedModels?.length || allowedModels.length > 512) return undefined;
+  if (!availableModels) return allowedModels;
+  const valid = allowedModels.filter(model => availableModels.some(available => available.provider === model.provider && available.serviceId === model.serviceId));
+  return valid.length === allowedModels.length ? allowedModels : valid.length ? valid : undefined;
+}
+
 export function createDesktopRouterSelection(service: RoutingServiceTarget, costQualityTradeoff?: number, allowedModels?: RouterAllowedModel[]): DesktopRouterSelection {
+  allowedModels = normalizeRouterAllowedModels(allowedModels);
   return { service: { peerId: service.peerId, provider: service.provider, serviceId: service.serviceId },
     ...(costQualityTradeoff === undefined ? {} : { costQualityTradeoff }),
     ...(allowedModels === undefined ? {} : { allowedModels: allowedModels.map(({ provider, serviceId }) => ({ provider, serviceId })) }) };

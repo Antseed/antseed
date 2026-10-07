@@ -111,14 +111,6 @@ test('buyer start defaults router name to local', () => {
   assert.equal(resolveBuyerRouterName({ router: 'claude-code' }), 'claude-code');
 });
 
-test('development routing bootstrap is loopback-only and preserves normal discovery', () => {
-  assert.deepEqual(buildBuyerBootstrapEntries(['example.org:6881'], undefined, '18001'), ['127.0.0.1:18001', 'example.org:6881']);
-  assert.deepEqual(buildBuyerBootstrapEntries(['127.0.0.1:18001'], undefined, '18001'), ['127.0.0.1:18001']);
-  for (const invalid of ['', '0', '-1', '65536', '1.5', 'host:1234', 'NaN']) {
-    assert.throws(() => buildBuyerBootstrapEntries([], undefined, invalid), /ANTSEED_DEV_ROUTING_DHT_PORT/);
-  }
-});
-
 test('buyer start recognizes legacy proxies that only return no_peer_pinned', async () => {
   await withProbeServer((_req, res) => {
     res.writeHead(400, { 'content-type': 'application/json' });

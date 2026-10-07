@@ -1172,7 +1172,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               kind={imageUiMode ? 'image' : 'text'}
               selectedProvider={selectedModelProvider}
               selectedServiceId={selectedModelServiceId}
-              routerActive={!!snap.vprRouteSelection.router && (!selectedModelServiceId || selectedModelServiceId === 'antseed' || selectedModelServiceId === 'levanto-auto')}
+              routerActive={!!snap.vprRouteSelection.router && (!selectedModelServiceId || selectedModelServiceId === 'antseed')}
               fallbackLabel={currentServiceLabel}
               disabled={(snap.chatInputDisabled || snap.chatSending) && !imageRequestInProgress}
               onSelect={handleModelSwitch}

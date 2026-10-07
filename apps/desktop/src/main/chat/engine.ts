@@ -962,7 +962,7 @@ export function registerPiChatHandlers({
     const pinnedPeerId = routeMode === 'pinned' ? peerId : null;
 
     if (conversationId) {
-      if (!pinnedPeerId && (service === 'antseed' || service === 'levanto-auto')) {
+      if (!pinnedPeerId && service === 'antseed') {
         try {
           const port = await resolveProxyPort(configPath);
           const response = await fetch(`${LOCALHOST_URL}:${port}/_antseed/conversations/update`, {

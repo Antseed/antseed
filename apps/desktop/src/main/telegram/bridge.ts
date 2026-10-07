@@ -29,7 +29,7 @@ import {
 } from './store.js';
 import { LOCALHOST_URL } from '../constants.js';
 import { asErrorMessage } from '../utils.js';
-import { telegramModelPickerText, telegramRouteModel } from './routing.js';
+import { telegramModelPickerText } from './routing.js';
 
 export type TelegramBridgeStatus = {
   configured: boolean;
@@ -378,7 +378,7 @@ export function createTelegramBridge({ engine, appendLog, onStatusChanged }: Tel
       if (!response.ok) throw new Error(`Read route failed (${response.status})`);
       const body = await response.json() as { ok?: boolean; model?: string | null; router?: unknown };
       if (!body.model && body.router) return { service: 'antseed' };
-      const model = telegramRouteModel({ kind: 'model', model: body.model });
+      const model = typeof body.model === 'string' ? body.model.trim() : '';
       const at = model.indexOf('@');
       if (at > 0) {
         routed = { peerId: model.slice(0, at), service: model.slice(at + 1) };

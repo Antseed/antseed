@@ -5,13 +5,15 @@ request. The router only ranks; the buyer still sends the inference to the
 chosen seller and pays that seller normally.
 
 The wire format is [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md)
-(IRP) **suggest-only mode**, unchanged. AntSeed adds nothing to IRP bodies:
-which routing service is being bought travels in a header, and seller identity
-stays on the buyer.
+(IRP) **suggest-only mode**, unchanged: plain IRP paths and bodies, with no AntSeed
+headers or fields. Seller identity stays on the buyer.
 
 A routing seller advertises a service with API protocol `model-routing` and
 a completed-request unit billing model (see
-[unit-billing-services.md](unit-billing-services.md)).
+[unit-billing-services.md](unit-billing-services.md)). A seller offers **at most
+one** routing service, so the request path alone says what is being bought: the
+node refuses to start with two, and buyers do not select a peer that advertises
+two. Run a second seller node to offer another router.
 
 ## Endpoints
 
@@ -20,12 +22,8 @@ a completed-request unit billing model (see
 | `GET /v1/routing/models` | Free, rate limited | IRP §4: models the router can score |
 | `POST /v1/routing/rank` | One completed request | IRP §5: candidates ranked best first, for one user turn |
 
-Both requests carry two AntSeed transport headers:
-
-| Header | Meaning |
-| --- | --- |
-| `x-antseed-provider` | Seller provider that serves the routing service (as for every AntSeed request) |
-| `x-antseed-service` | Routing service ID being described or bought. Sellers use it to pick the provider and the paid offer |
+The seller node answers `GET /v1/routing/models` with a 404 problem when it offers
+no routing service.
 
 ## Models
 
@@ -120,11 +118,7 @@ Response:
 
 The buyer maps each `candidate_id` back through the candidates it sent and never
 parses it, so a router cannot name a destination the buyer filtered out. Unknown and
-duplicate IDs are dropped. If none remain, the response is rejected before
-inference. Candidate validation is separate from billing: a 2xx response with
-`object: "routing.ranking"` and a non-empty `ranked` list counts as one completed
-request even if its candidates are later rejected. See [completed-request
-billing](unit-billing-services.md).
+duplicate IDs are dropped. If none remain, the response is rejected and not paid.
 Optional predictions (`expected_quality`, `expected_cost_usd`, `expected_usage`,
 `reasoning_effort`) are kept when well-formed. `reasoning_effort` is carried with the
 recommendation but not yet applied to the inference request.
@@ -149,7 +143,7 @@ Non-success responses are not charged, so the 422 retry is free.
 2. Build candidates from eligible sellers whose model is listed, named the way the
    router lists it.
 3. Call rank with the buyer's `cost_quality_tradeoff`, if set.
-4. Validate the response (ranking billing follows the separate rule above) and
+4. Validate the response (a well-formed ranking is billed as one completed request) and
    send the inference to the first ranked candidate. Later candidates are fallbacks for
    retryable inference errors. Tool-loop continuations of the same user turn reuse the
    ranking instead of paying again (IRP §7).

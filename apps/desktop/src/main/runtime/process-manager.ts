@@ -323,10 +323,8 @@ export function buildCliChildEnv(
   const childEnv = { ...baseEnv };
   if (isLocalDevScript) {
     delete childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'];
-    childEnv['ANTSEED_DEV_ROUTER_LOCAL_PATH'] = resolve(WORKSPACE_APPS_DIR, '..', 'plugins', 'router-local', 'dist', 'index.js');
   } else {
     childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'] = '1';
-    delete childEnv['ANTSEED_DEV_ROUTER_LOCAL_PATH'];
   }
   return childEnv;
 }

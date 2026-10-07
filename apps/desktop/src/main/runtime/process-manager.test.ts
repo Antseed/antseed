@@ -9,13 +9,11 @@ import { buildCliChildEnv, ProcessManager, resolveCommandArgs } from './process-
 test('local desktop CLI runs may prepare trusted plugins', () => {
   const env = buildCliChildEnv({ ANTSEED_SKIP_PLUGIN_UPDATE_CHECK: '1' }, true);
   assert.equal(env['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'], undefined);
-  assert.match(env['ANTSEED_DEV_ROUTER_LOCAL_PATH'] ?? '', /plugins\/router-local\/dist\/index\.js$/);
 });
 
 test('packaged desktop CLI runs remain offline-only', () => {
-  const env = buildCliChildEnv({ ANTSEED_DEV_ROUTER_LOCAL_PATH: '/tmp/dev-plugin.js' }, false);
+  const env = buildCliChildEnv({}, false);
   assert.equal(env['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'], '1');
-  assert.equal(env['ANTSEED_DEV_ROUTER_LOCAL_PATH'], undefined);
 });
 
 test('live QA does not bypass native-module preflight', async () => {

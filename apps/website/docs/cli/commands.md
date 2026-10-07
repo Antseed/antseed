@@ -72,7 +72,7 @@ Every dashboard action maps to one of these commands; the dashboard runs on
 
 ```bash title="buyer"
 antseed buyer start                   Start the buyer proxy
-antseed buyer start --router <name>   Start with a non-default local buyer-policy router plugin
+antseed buyer start --router <name>   Start the buyer proxy with a non-default router
 antseed buyer deposit                       Show funding address + QR; incoming USDC deposits automatically (gasless)
 antseed buyer sweep                   Gaslessly sweep hot-wallet USDC into deposits (fixed relay fee)
 antseed buyer deposit --onchain <usdc>  Direct on-chain deposit from the hot wallet (requires ETH for gas)
@@ -82,14 +82,6 @@ antseed buyer activity                Activity summary: tokens, spend history, s
 antseed buyer balance                 Check wallet and deposit balance
 antseed network browse                Browse peers, models, and pricing (same catalog as /v1/models)
 ```
-
-`--router` selects a local plugin, not a remote IRP ranking service. Select a
-`model-routing` service in the desktop or through the local buyer's
-[`POST /_antseed/route`](/docs/guides/using-the-api#select-a-routing-service)
-with `{ router: { service, costQualityTradeoff?, allowedModels? } }`.
-`costQualityTradeoff` is **0 = best quality** through **10 = cheapest**; unset
-uses the router default **5**. This selection is persisted by the route API;
-there is no separate buyer-start flag for the cost/quality setting.
 
 ### Network and monitoring
 

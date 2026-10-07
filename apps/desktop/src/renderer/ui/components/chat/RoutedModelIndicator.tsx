@@ -9,7 +9,7 @@ export function routedModelLabel(message: ChatMessage): string | null {
   const value = message.meta?.service;
   if (typeof value !== 'string' || !value.trim()) return null;
   const service = value.trim().split('@').at(-1)!;
-  if (service === 'antseed' || service === 'levanto-auto') return null;
+  if (service === 'antseed') return null;
   return displayModelLabel(service, service);
 }
 

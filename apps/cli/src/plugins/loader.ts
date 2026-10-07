@@ -185,14 +185,6 @@ export async function loadProviderPlugin(nameOrPackage: string): Promise<Antseed
 }
 
 export async function loadRouterPlugin(nameOrPackage: string): Promise<AntseedRouterPlugin> {
-  const devPath = process.env['ANTSEED_DEV_ROUTER_LOCAL_PATH']?.trim()
-  if (resolvePackageName(nameOrPackage) === '@antseed/router-local' && devPath) {
-    if (!path.isAbsolute(devPath)) throw new Error('ANTSEED_DEV_ROUTER_LOCAL_PATH must be an absolute path')
-    const mod = await import(pathToFileURL(devPath).href) as Record<string, unknown>
-    const plugin = selectPluginExport(mod, 'router', 'createRouter')
-    if (!plugin) throw new Error(`Development router at "${devPath}" does not export a router plugin`)
-    return plugin as unknown as AntseedRouterPlugin
-  }
   return loadPlugin<AntseedRouterPlugin>(nameOrPackage, 'router', 'createRouter')
 }
 

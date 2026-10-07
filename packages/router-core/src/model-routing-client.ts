@@ -4,7 +4,6 @@ import {
   MODEL_ROUTING_MODELS_PATH,
   MODEL_ROUTING_PROTOCOL,
   MODEL_ROUTING_RANK_PATH,
-  ROUTING_SERVICE_HEADER,
   detectRequestServiceApiProtocol,
   parseRoutingModelsResponse,
   parseRoutingProblem,
@@ -82,6 +81,10 @@ function findRouterPeer(peers: PeerInfo[], target: RoutingServiceTarget): PeerIn
   if (!provider.serviceApiProtocols?.[target.serviceId]?.includes(MODEL_ROUTING_PROTOCOL)) {
     throw new Error('Selected service does not advertise model-routing')
   }
+  // IRP paths carry no service name, so a router peer must offer exactly one routing service.
+  const routingServices = peer.metadata!.providers.flatMap(entry => entry.services
+    .filter(service => entry.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL)))
+  if (routingServices.length !== 1) throw new Error('Selected peer advertises more than one model-routing service')
   return peer
 }
 
@@ -136,7 +139,7 @@ export class ModelRoutingClient {
   async listModels(target: RoutingServiceTarget, peers: PeerInfo[], context: RoutingModelsContext): Promise<string[]> {
     const response = await context.sendRequest(findRouterPeer(peers, target), {
       requestId: randomUUID(), method: 'GET', path: MODEL_ROUTING_MODELS_PATH,
-      headers: { accept: 'application/json', 'x-antseed-provider': target.provider, [ROUTING_SERVICE_HEADER]: target.serviceId },
+      headers: { accept: 'application/json' },
       body: new Uint8Array(),
     })
     context.signal.throwIfAborted()
@@ -201,11 +204,7 @@ export class ModelRoutingClient {
   private async rank(rankRequest: RoutingRankRequestV1, routerPeer: PeerInfo, context: RouteSelectionContext): Promise<RouteRecommendation[]> {
     const response = await context.sendRequest(routerPeer, {
       requestId: randomUUID(), method: 'POST', path: MODEL_ROUTING_RANK_PATH,
-      headers: {
-        'content-type': 'application/json',
-        'x-antseed-provider': context.routingService.provider,
-        [ROUTING_SERVICE_HEADER]: context.routingService.serviceId,
-      },
+      headers: { 'content-type': 'application/json' },
       body: encodeJson(rankRequest),
     }, { signal: context.signal })
     context.signal.throwIfAborted()

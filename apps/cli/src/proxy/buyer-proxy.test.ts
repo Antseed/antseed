@@ -80,13 +80,13 @@ test('the buyer switches between a model and a model-routing service without rep
     if (request.path === '/v1/routing/models') {
       assert.equal(peer.peerId, routingPeer.peerId)
       assert.equal(options.controlPlane, true)
-      assert.equal(request.headers['x-antseed-service'], 'alpha-route')
+      assert.equal(request.headers['x-antseed-service'], undefined)
       return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from(JSON.stringify(models)) }
     }
     if (request.path === '/v1/routing/rank') {
       assert.equal(peer.peerId, routingPeer.peerId)
       const payload = JSON.parse(Buffer.from(request.body).toString())
-      assert.equal(request.headers['x-antseed-service'], 'alpha-route')
+      assert.equal(request.headers['x-antseed-service'], undefined)
       assert.deepEqual(payload, {
         request: { messages: [{ role: 'user', content: 'Hello' }] },
         routing: { cost_quality_tradeoff: 1, candidates: [{ id: `openai:model-a@${inferencePeer.peerId}`, model: 'model-a', pricing: { input: 1, cache_read: 1, output: 2 } }] },

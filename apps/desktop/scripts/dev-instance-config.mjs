@@ -18,7 +18,5 @@ export function resolveInstancePorts(instanceName) {
     renderer: 5174 + slot,
     payments: 3118 + slot,
     systemProxy: 8378 + slot,
-    levantoDht: 18000 + slot,
-    levantoSignaling: 20000 + slot,
   };
 }

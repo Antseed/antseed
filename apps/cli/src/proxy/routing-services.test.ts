@@ -72,6 +72,16 @@ test('discovery caches listModels, surfaces failures and recovers without stale 
   assert.equal(calls, 3);
 });
 
+test('discovery rejects multiple routing services on a seller before fetching models', async () => {
+  const sameProvider = peer();
+  sameProvider.metadata!.providers[0]!.services.push('other-route');
+  sameProvider.metadata!.providers[0]!.serviceApiProtocols!['other-route'] = ['model-routing'];
+  const otherProvider = peer();
+  otherProvider.metadata!.providers.push({ ...structuredClone(otherProvider.metadata!.providers[0]!), provider: 'other-router' });
+  const noModels = { ...client, listModels: async () => { throw new Error('Ambiguous sellers must be filtered before model discovery'); } };
+  assert.deepEqual(await buildRoutingServices([sameProvider, otherProvider], noModels, node), []);
+});
+
 test('discovery uses free IRP models requests and rejects malformed model responses', async () => {
   let invalid = false;
   const routingClient = new ModelRoutingClient();
@@ -79,7 +89,7 @@ test('discovery uses free IRP models requests and rejects malformed model respon
     assert.equal(target.peerId, peer().peerId);
     assert.equal(request.method, 'GET');
     assert.equal(request.path, '/v1/routing/models');
-    assert.equal(request.headers['x-antseed-service'], 'routing');
+    assert.deepEqual(request.headers, { accept: 'application/json' });
     assert.equal(options?.controlPlane, true);
     return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from(JSON.stringify(
       invalid ? { models: ['gpt-5'] } : { object: 'list', data: [{ id: 'openai/gpt-5', object: 'model' }] },

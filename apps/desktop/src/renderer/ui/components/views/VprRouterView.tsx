@@ -1,7 +1,7 @@
-import { useMemo, useState } from 'react';
+import { useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { HierarchyIcon, InformationCircleIcon } from '@hugeicons/core-free-icons';
-import { routingServiceKey, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
+import { normalizeRouterAllowedModels, routingServiceKey, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
 import { useUiSelector, shallowEqual } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { projectRowsToVprModelCatalog } from '../../../modules/catalog/model-catalog';
@@ -18,13 +18,13 @@ const modelKey = (model: RouterAllowedModel) => JSON.stringify([model.provider, 
 export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const actions = useActions();
   const snapshot = useUiSelector((state) => ({ services: state.vprRoutingServices, selected: state.vprRouteSelection.router,
-    rows: state.vprRoutableRows, error: state.vprRouteError, discoveryError: state.vprRoutingServicesError }), shallowEqual);
+    rows: state.vprRoutableRows, rowsLoaded: state.chatDiscoverRowsLoaded, error: state.vprRouteError, discoveryError: state.vprRoutingServicesError }), shallowEqual);
   const key = routingServiceKey(service);
   const current = snapshot.services.find((entry) => routingServiceKey(entry) === key);
   const active = !!snapshot.selected && routingServiceKey(snapshot.selected.service) === key;
   const [initialSettings] = useState(() => active ? snapshot.selected : loadVprRouterSettings(service));
   const [costQualityTradeoff, setCostQualityTradeoff] = useState<number | undefined>(initialSettings?.costQualityTradeoff);
-  const [allowedModels, setAllowedModels] = useState<RouterAllowedModel[] | undefined>(initialSettings?.allowedModels);
+  const [savedAllowedModels, setAllowedModels] = useState<RouterAllowedModel[] | undefined>(initialSettings?.allowedModels);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const supported = current?.catalog;
@@ -33,16 +33,25 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const catalog = useMemo(() => (supported?.models ?? []).flatMap(model => projectRowsToVprModelCatalog(
     snapshot.rows.filter(row => row.provider === model.provider && row.serviceId === model.serviceId),
   )).filter(entry => entry.kind === 'text'), [snapshot.rows, supported]);
+  const availableModels = supported && !catalogError && snapshot.rowsLoaded ? catalog : undefined;
+  const allowedModels = useMemo(() => normalizeRouterAllowedModels(savedAllowedModels, availableModels), [savedAllowedModels, availableModels]);
+  useEffect(() => {
+    if (allowedModels === savedAllowedModels) return;
+    try {
+      actions.updateVprRouterSettings(service, costQualityTradeoff, allowedModels);
+      setAllowedModels(allowedModels);
+      setSaveError(null);
+    } catch (error) {
+      setSaveError(`Could not save router settings: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }, [actions, service, costQualityTradeoff, allowedModels, savedAllowedModels]);
   const checkedKeys = useMemo(() => new Set((allowedModels ?? catalog).map(modelKey)), [allowedModels, catalog]);
   const visible = catalog.filter(entry => `${entry.label} ${entry.serviceId} ${entry.provider}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const missing = (allowedModels ?? []).filter(model => !catalog.some(entry => modelKey(entry) === modelKey(model)));
-  const unavailable = (supported?.models ?? []).filter(model => !catalog.some(entry => modelKey(entry) === modelKey(model))
-    && !missing.some(entry => modelKey(entry) === modelKey(model)));
-  const emptySelection = allowedModels?.length === 0;
-  const tooManyModels = (allowedModels?.length ?? 0) > 512;
+  const unavailable = (supported?.models ?? []).filter(model => !catalog.some(entry => modelKey(entry) === modelKey(model)));
   const noAvailableModels = !!supported && !catalog.some(model => checkedKeys.has(modelKey(model)));
   const label = current?.label ?? service.label;
   function updateSettings(nextCostQualityTradeoff: number | undefined, nextAllowedModels: RouterAllowedModel[] | undefined): void {
+    nextAllowedModels = normalizeRouterAllowedModels(nextAllowedModels, availableModels);
     setCostQualityTradeoff(nextCostQualityTradeoff);
     setAllowedModels(nextAllowedModels);
     try {
@@ -70,7 +79,7 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
             <div className={modelStyles.badgeRow}><span className={modelStyles.modelTag}>Router</span></div>
           </div>
           <button type="button" className={modelStyles.use} aria-label={active ? 'Selected router' : 'Use router'}
-            disabled={active || !current || !supported || !!catalogError || emptySelection || tooManyModels || noAvailableModels}
+            disabled={active || !current || !supported || !!catalogError || noAvailableModels}
             onClick={() => { if (current) actions.selectVprRouter(current, costQualityTradeoff, false, allowedModels); }}>
             {active ? 'Selected' : 'Use'}
           </button>
@@ -103,15 +112,15 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
         </div>
         <div className={styles.modelHeading}>
           <h2>Allowed models</h2>
-          {supported && <label className={styles.allModels}><input type="checkbox" checked={allowedModels === undefined} disabled={!!catalogError}
-            onChange={event => updateSettings(costQualityTradeoff, event.currentTarget.checked ? undefined : [])} />All supported models</label>}
+          {supported && <label className={styles.allModels}><input type="checkbox" checked={allowedModels === undefined} disabled={!!catalogError || !catalog.length}
+            onChange={event => updateSettings(costQualityTradeoff, event.currentTarget.checked ? undefined : catalog)} />All supported models</label>}
         </div>
         {!supported && !catalogError && <p role="status" className={styles.hint}>Router models are not available yet. Refresh discovery before routing.</p>}
         {catalogError && <p role="alert" className={styles.hint}>{catalogError}</p>}
         {supported && <>
         <p className={styles.hint}>Choose which supported models this router can use. If the router returns no allowed model, the request fails.</p>
         <VprSearch value={search} onChange={setSearch} placeholder="Search allowed models" />
-        {noAvailableModels && !emptySelection && <p role="status" className={styles.hint}>No selected supported models are currently available.</p>}
+        {noAvailableModels && <p role="status" className={styles.hint}>No supported models are currently available.</p>}
         <fieldset disabled={!!catalogError} className={styles.modelChoices}>
           <VprModelRowList entries={visible} checkedKeys={checkedKeys} selectOnly onSelect={toggleModel} emptyLabel="No matching supported models" />
         </fieldset>
@@ -121,14 +130,6 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
             <label key={modelKey(model)} className={styles.allModels}><input type="checkbox" disabled checked={allowedModels === undefined} readOnly />{model.serviceId} · {model.provider} · Unavailable</label>)}
         </div>}
         </>}
-        {emptySelection && <p role="alert" className={styles.hint}>Select at least one model or enable All supported models.</p>}
-        {tooManyModels && <p role="alert" className={styles.hint}>Select up to 512 models or enable All supported models.</p>}
-        {missing.length > 0 && <div className={styles.missing}>
-          <p className={styles.hint}>Previously selected models not currently available or supported</p>
-          {missing.map(model => <label key={modelKey(model)} className={styles.allModels}>
-            <input type="checkbox" checked onChange={() => toggleModel(model.provider, model.serviceId)} />{model.serviceId} · {model.provider}
-          </label>)}
-        </div>}
         {snapshot.discoveryError && <p role="alert" className={styles.hint}>{snapshot.discoveryError}</p>}
         {!current && <p role="status" className={styles.hint}>This router is unavailable. Wait for discovery or select another model or router.</p>}
         {saveError && <p role="alert" className={styles.hint}>{saveError}</p>}

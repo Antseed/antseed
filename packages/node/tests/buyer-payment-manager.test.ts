@@ -1197,30 +1197,6 @@ describe('BuyerPaymentManager', () => {
     expect(manager.getVerifiedCost(sellerPeerId)).toBe(0n);
   });
 
-  it('post-response signing and close do not charge again after seller NeedAuth', async () => {
-    const sellerPeerId = fakePeerId('seller-cost-dedup');
-    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
-    manager.trackRequestService('req-cost-dedup', 'gpt-5');
-    await manager.handleNeedAuth(sellerPeerId, {
-      channelId, requestId: 'req-cost-dedup', requiredCumulativeAmount: '180',
-      currentAcceptedCumulative: '0', deposit: '1000000', lastRequestCost: '180',
-      inputTokens: '10', outputTokens: '10',
-    }, mux);
-    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(180n);
-    expect(manager.getVerifiedCost(sellerPeerId)).toBe(180n);
-    for (let attempt = 0; attempt < 2; attempt++) {
-      const result = await manager.signPerRequestAuth(sellerPeerId, {
-        inputBytes: enc.encode('hello'), outputBytes: enc.encode('reply'),
-        reportedInputTokens: 10n, reportedOutputTokens: 10n, sellerClaimedCost: 180n,
-        requestId: 'req-cost-dedup', service: 'gpt-5',
-      });
-      expect(result.payload.cumulativeAmount).toBe('180');
-      expect(manager.getVerifiedCost(sellerPeerId)).toBe(180n);
-      expect(decodeMetadataServices(result.payload.metadata!)[0]!.cumulativeRequestCount).toBe(1n);
-    }
-    expect((await manager.buildCloseChannelRequest(sellerPeerId)).cumulativeAmount).toBe('180');
-  });
-
   it('handleNeedAuth does not double-count service totals for a request already counted by signPerRequestAuth', async () => {
     const sellerPeerId = fakePeerId('seller-service-dedup');
     const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);

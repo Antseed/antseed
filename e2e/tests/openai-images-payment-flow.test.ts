@@ -433,7 +433,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
 
     const rank = (text = 'hi') => buyerNode!.sendRequest(discoveredSeller, {
       requestId: crypto.randomUUID(), method: 'POST', path: '/v1/routing/rank',
-      headers: { 'content-type': 'application/json', 'x-antseed-provider': 'alpha', 'x-antseed-service': 'alpha-route' },
+      headers: { 'content-type': 'application/json' },
       body: Buffer.from(JSON.stringify({ request: { messages: [{ role: 'user', content: text }] },
         routing: { candidates: [{ id: 'm@b', model: 'm', pricing: { input: 1, cache_read: 1, output: 1 } }] } })),
     });

@@ -43,22 +43,20 @@ describe('ModelRoutingClient', () => {
     const sendRequest = vi.fn(async (_peer: PeerInfo, serviceRequest: SerializedHttpRequest) =>
       ({ requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: encode(modelsResponse) }))
     expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual(['model-a', 'model-b'])
-    expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/models',
-      headers: { 'x-antseed-provider': 'alpha', 'x-antseed-service': 'route' } })
+    expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/models', headers: { accept: 'application/json' } })
     sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ ...modelsResponse, data: 'model-a' }) })
     await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('models response')
     sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 503, headers: {}, body: encode({ type: 'urn:irp:problem:unavailable', title: 'Unavailable', status: 503, detail: 'Try later.' }) })
     await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('temporarily unavailable: Try later.')
   })
 
-  it('sends a plain IRP rank request with the routing service in a header', async () => {
+  it('sends a plain IRP rank request with no AntSeed headers', async () => {
     const state = setup()
     expect(await state.client.selectRoute(request(), [peer], state.context)).toEqual([{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai' }])
     const [, serviceRequest, options] = state.sendRequest.mock.calls[0]!
     expect(serviceRequest.path).toBe('/v1/routing/rank')
     expect(serviceRequest.requestId).not.toBe('inference')
-    expect(serviceRequest.headers['x-antseed-provider']).toBe('alpha')
-    expect(serviceRequest.headers['x-antseed-service']).toBe('route')
+    expect(serviceRequest.headers).toEqual({ 'content-type': 'application/json' })
     expect(options.signal).toBe(state.context.signal)
     expect(decode(serviceRequest.body)).toEqual({
       request: { messages: [{ role: 'user', content: 'Help me' }] },
@@ -167,6 +165,10 @@ describe('ModelRoutingClient', () => {
     const wrongProtocol = structuredClone(peer)
     wrongProtocol.metadata!.providers[0]!.serviceApiProtocols!.route = ['openai-chat-completions']
     await expect(plain.client.selectRoute(request(), [wrongProtocol], plain.context)).rejects.toThrow('does not advertise model-routing')
+    const twoRouters = structuredClone(peer)
+    twoRouters.metadata!.providers[0]!.services.push('other')
+    twoRouters.metadata!.providers[0]!.serviceApiProtocols!.other = ['model-routing']
+    await expect(plain.client.selectRoute(request(), [twoRouters], plain.context)).rejects.toThrow('more than one model-routing service')
     expect(plain.sendRequest).not.toHaveBeenCalled()
   })
 

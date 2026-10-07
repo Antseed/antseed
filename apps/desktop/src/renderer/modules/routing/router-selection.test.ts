@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test, vi } from 'vitest';
-import { createDesktopRouterSelection, isDesktopRouterSelection } from '../../../shared/routing-selection';
+import { createDesktopRouterSelection, isDesktopRouterSelection, normalizeRouterAllowedModels } from '../../../shared/routing-selection';
 import { loadVprRouteSelection, saveVprRouteSelection, VPR_ROUTE_SELECTION_STORAGE_KEY } from './preferences';
 import { createInitialUiState } from '../../core/state';
 
@@ -21,12 +21,30 @@ test('router persistence round-trips IRP integer settings including both endpoin
   assert.deepEqual(loadVprRouteSelection(createInitialUiState().vprRouteSelection), createInitialUiState().vprRouteSelection);
 });
 
-test('desktop allowlists reject malformed entries and preserve an explicit empty list', () => {
+test('desktop allowlists reject malformed entries and reset empty lists to all models', () => {
   const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, undefined, []);
+  assert.equal(router.allowedModels, undefined);
   assert.equal(isDesktopRouterSelection(router), true);
   for (const allowedModels of [null, ['model-a'], [{ provider: 'openai' }], [{ provider: '', serviceId: 'model-a' }]]) {
     assert.equal(isDesktopRouterSelection({ ...router, allowedModels }), false);
   }
+});
+
+test('stale model selections are removed, resetting to all only when no valid selection remains', () => {
+  const available = [{ provider: 'openai', serviceId: 'model-a' }];
+  const stale = { provider: 'openai', serviceId: 'removed-model' };
+  assert.deepEqual(normalizeRouterAllowedModels([...available, stale], available), available);
+  assert.equal(normalizeRouterAllowedModels([stale], available), undefined);
+  assert.equal(normalizeRouterAllowedModels([], available), undefined);
+  assert.equal(normalizeRouterAllowedModels(undefined, available), undefined);
+  assert.deepEqual(normalizeRouterAllowedModels([stale]), [stale]);
+});
+
+test('legacy empty saved selections restore as all models', () => {
+  const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' };
+  vi.stubGlobal('localStorage', { getItem: () => JSON.stringify({ router: { service, allowedModels: [] } }) });
+  const restored = loadVprRouteSelection(createInitialUiState().vprRouteSelection);
+  assert.deepEqual(restored.router, { service });
 });
 
 test('invalid IRP tradeoffs and legacy preferences cannot be restored', () => {
