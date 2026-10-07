@@ -69,6 +69,10 @@
       "import": "./dist/peer-metadata.js",
       "types": "./dist/peer-metadata.d.ts"
     },
+    "./reasoning": {
+      "import": "./dist/reasoning.js",
+      "types": "./dist/reasoning.d.ts"
+    },
     "./peer-pricing": {
       "import": "./dist/peer-pricing.js",
       "types": "./dist/peer-pricing.d.ts"

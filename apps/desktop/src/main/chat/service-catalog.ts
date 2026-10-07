@@ -5,7 +5,7 @@ import type {
   PeerInfo,
 } from '@antseed/node';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
-import { isReasoningEffortList } from '@antseed/protocol';
+import { isReasoningEffortList } from '@antseed/protocol/reasoning';
 import {
   buildNetworkServiceOffers,
   normalizedModelReputationScore,

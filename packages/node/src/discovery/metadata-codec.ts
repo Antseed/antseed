@@ -472,7 +472,8 @@ const CAP_HAS_TOOL_USE = 1 << 4;
 const CAP_HAS_STRUCTURED_OUTPUT = 1 << 5;
 const CAP_HAS_OUTPUTS = 1 << 6;
 const CAP_HAS_SUPPORTED_PARAMETERS = 1 << 7;
-const CAP_HAS_REASONING_EFFORTS = 1 << 9;
+// v13+: the presence mask is two bytes wide.
+const CAP_HAS_REASONING_EFFORTS = 1 << 8;
 const CAP_PRESENCE_MASK = CAP_HAS_CONTEXT_WINDOW | CAP_HAS_MAX_OUTPUT_TOKENS | CAP_HAS_INPUTS
   | CAP_HAS_REASONING | CAP_HAS_TOOL_USE | CAP_HAS_STRUCTURED_OUTPUT
   | CAP_HAS_OUTPUTS | CAP_HAS_SUPPORTED_PARAMETERS;
@@ -648,11 +649,11 @@ function decodeServiceCapabilities(
     if (presence & CAP_HAS_REASONING_EFFORTS) {
       checkBounds(offset, 1, data.length);
       const count = data[offset++]!;
-      const efforts: NonNullable<ServiceCapabilities['reasoningEfforts']> = [];
+      const efforts: string[] = [];
       for (let index = 0; index < count; index += 1) {
         const [effort, nextOffset] = readUtf8(data, offset, checkBounds);
         offset = nextOffset;
-        efforts.push(effort as (typeof efforts)[number]);
+        efforts.push(effort);
       }
       caps.reasoningEfforts = efforts;
       const errors = validateServiceCapabilityFields(caps);

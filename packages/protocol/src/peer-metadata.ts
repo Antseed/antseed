@@ -78,7 +78,7 @@ export function validateServiceCapabilityFields(caps: ServiceCapabilities): stri
   const errors: string[] = [];
   if (caps.reasoningEfforts !== undefined) {
     if (!isReasoningEffortList(caps.reasoningEfforts)) {
-      errors.push('reasoningEfforts must contain at most 32 unique nonempty labels of at most 64 UTF-8 bytes, without surrounding whitespace or control characters');
+      errors.push('reasoningEfforts must contain at most 32 unique nonempty labels of at most 64 UTF-8 bytes, without surrounding whitespace, control, format, or separator characters');
     } else if (caps.reasoning === false && caps.reasoningEfforts.length > 0) {
       errors.push('reasoningEfforts must be empty when reasoning is false');
     }

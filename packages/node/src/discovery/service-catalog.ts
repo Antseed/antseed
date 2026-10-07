@@ -1,5 +1,6 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
+import type { ReasoningEffort } from '@antseed/protocol/reasoning';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
@@ -14,7 +15,7 @@ export type CatalogServiceCapabilities = {
   inputs?: string[];
   outputs?: string[];
   reasoning?: boolean;
-  reasoningEfforts?: import('@antseed/protocol').ReasoningEffort[];
+  reasoningEfforts?: ReasoningEffort[];
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];

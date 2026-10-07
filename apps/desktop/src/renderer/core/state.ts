@@ -7,6 +7,7 @@ import type {
   LogEvent,
   RuntimeProcessState,
 } from '../types/bridge';
+import type { ReasoningEffort } from '@antseed/protocol/reasoning';
 import type { ChatMessage } from '../ui/components/chat/chat-shared';
 import type { ChatPermissionMode, ToolApprovalRequest } from '../types/bridge';
 import {
@@ -71,7 +72,7 @@ export type ServiceCapabilitiesView = {
   inputs?: string[];
   outputs?: string[];
   reasoning?: boolean;
-  reasoningEfforts?: import('@antseed/protocol').ReasoningEffort[];
+  reasoningEfforts?: ReasoningEffort[];
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];

@@ -2,7 +2,7 @@ import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, Trus
 import type { DiscoverVerificationLink } from '../../core/state';
 import { isTextCapableRow } from './model-capabilities';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
-import { isReasoningEffortList } from '@antseed/protocol';
+import { isReasoningEffortList } from '@antseed/protocol/reasoning';
 
 const CHAT_SERVICE_SELECTION_SEPARATOR = '\u0001';
 

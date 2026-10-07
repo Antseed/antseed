@@ -8,7 +8,7 @@
 
 import { readFile } from 'node:fs/promises';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
-import { isReasoningEffortList } from '@antseed/protocol';
+import { isReasoningEffortList } from '@antseed/protocol/reasoning';
 import { readPeerHealth, type RawPeerHealth } from '../runtime/peer-health.js';
 import {
   DESKTOP_DEFAULT_MAX_INPUT_USD_PER_MILLION,

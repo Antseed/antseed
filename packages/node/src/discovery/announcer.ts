@@ -11,7 +11,7 @@ import {
 } from "./dht-node.js";
 import type { PeerOffering } from "../types/capability.js";
 import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, PeerVerifications, ProviderAnnouncement, ServiceCapabilities } from "./peer-metadata.js";
-import { METADATA_VERSION, SERVICE_CAPABILITIES_METADATA_VERSION } from "./peer-metadata.js";
+import { SERVICE_CAPABILITIES_METADATA_VERSION, SERVICE_REASONING_EFFORTS_METADATA_VERSION } from "./peer-metadata.js";
 import {
   MAX_DOMAIN_LENGTH,
   MAX_DOMAIN_VERIFICATION_CLAIMS,
@@ -344,7 +344,7 @@ export class PeerAnnouncer {
       peerId: this.config.identity.peerId,
       version: providers.some(provider => Object.values(provider.serviceCapabilities ?? {})
         .some(caps => caps.reasoningEfforts !== undefined))
-        ? METADATA_VERSION : SERVICE_CAPABILITIES_METADATA_VERSION,
+        ? SERVICE_REASONING_EFFORTS_METADATA_VERSION : SERVICE_CAPABILITIES_METADATA_VERSION,
       ...(this.config.displayName ? { displayName: this.config.displayName } : {}),
       ...(this.config.publicAddress ? { publicAddress: this.config.publicAddress } : {}),
       providers,

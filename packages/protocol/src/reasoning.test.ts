@@ -8,7 +8,7 @@ describe('seller-defined reasoning capabilities', () => {
     expect(validateServiceCapabilityFields({ reasoningEfforts: [effort] })).toEqual([]);
   });
 
-  it.each([null, undefined, 1, {}, '', ' ', ' high', 'high ', 'hi\nthere', '\ud800', 'x'.repeat(65), '深'.repeat(22)])('rejects malformed label %j', (effort) => {
+  it.each([null, undefined, 1, {}, '', ' ', ' high', 'high ', 'hi\nthere', '\ud800', 'hi\u0085', 'a\u009fb', 'high\u202e', 'lo\u200bw', 'lo\u200dw', '\ufeffhigh', 'lo\u00adw', 'a\u2028b', 'a\u2029b', 'x'.repeat(65), '深'.repeat(22)])('rejects malformed label %j', (effort) => {
     expect(isReasoningEffort(effort)).toBe(false);
     expect(isReasoningEffortList([effort])).toBe(false);
   });

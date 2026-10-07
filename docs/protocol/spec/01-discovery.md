@@ -172,7 +172,7 @@ Per provider (repeated providerCount times):
     [service][presenceBits:1 in v12, 2 in v13+][optional uint32 token limits][optional input bitset:1][optional output bitset:1][boolean value bits:1][optional supported parameters][optional reasoning efforts]
     Presence bits: contextWindow(0), maxOutputTokens(1), inputs(2), reasoning(3),
     toolUse(4), structuredOutput(5), outputs(6), supportedParameters(7),
-    reserved for routing(8), reasoningEfforts(9, v13+).
+    reasoningEfforts(8, v13+).
     Input/output bitsets index into ["text","image","audio","video","pdf"].
     Supported parameters encode as [count:1] then per parameter [len:1][utf8],
     in code-unit sorted order so re-encoding decoded metadata is byte-stable.

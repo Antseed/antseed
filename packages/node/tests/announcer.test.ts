@@ -133,7 +133,7 @@ describe('PeerAnnouncer capabilities', () => {
 });
 
 describe('PeerAnnouncer metadata versions', () => {
-  it('announces signed v13 effort capabilities without billing or routing', async () => {
+  it('announces signed v13 effort capabilities without billing', async () => {
     const config = makeBaseConfig();
     config.providers[0]!.serviceCapabilities = {
       'gpt-4.1': { reasoning: true, reasoningEfforts: ['none', 'high'] },
