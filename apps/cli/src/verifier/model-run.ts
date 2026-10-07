@@ -108,6 +108,7 @@ export interface ProxyVerificationContext {
   fetchFn?: typeof fetch
   sleepFn?: (delayMs: number) => Promise<void>
   randomFn?: () => number
+  writeCheckpoint?: (path: string, checkpoint: ModelAuditCheckpointV1) => Promise<void>
 }
 
 export interface ModelVerificationResumeInput {
@@ -402,28 +403,41 @@ export async function verifyModelTarget(input: {
     ? []
     : [{ probes: batch.probes, batchIndex }])
   let checkpointTail = Promise.resolve()
+  let checkpointFailure: Error | null = null
   const persistCheckpoint = async (): Promise<void> => {
     const snapshot = [...exchangeByBatch.values()].sort((left, right) => left.batchIndex - right.batchIndex)
-    checkpointTail = checkpointTail.then(() => writeJsonAtomic(
-      join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`),
-      {
-        version: 1,
-        kind: 'antseed-verifier-audit-checkpoint',
-        auditId,
-        parentAuditId: input.resume?.parentAuditId ?? null,
-        reservationAuditId: input.resume?.reservationAuditId ?? auditId,
-        runId: input.checkpointIdentity?.runId ?? '',
-        epoch: input.checkpointIdentity?.epoch ?? '',
-        model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
-        targetPeerId: input.target.peerId,
-        service: input.service,
-        referenceId: input.reference.referenceId,
-        queryProfileHash: queryProfileHash(input.reference.queryProfile),
-        probeIds: input.reference.probes.map((probe) => probe.id),
-        exchanges: snapshot,
-        updatedAt: new Date().toISOString(),
-      },
-    ))
+    const checkpoint: ModelAuditCheckpointV1 = {
+      version: 1,
+      kind: 'antseed-verifier-audit-checkpoint',
+      auditId,
+      parentAuditId: input.resume?.parentAuditId ?? null,
+      reservationAuditId: input.resume?.reservationAuditId ?? auditId,
+      runId: input.checkpointIdentity?.runId ?? '',
+      epoch: input.checkpointIdentity?.epoch ?? '',
+      model: input.checkpointIdentity?.model ?? input.reference.referenceModel,
+      targetPeerId: input.target.peerId,
+      service: input.service,
+      referenceId: input.reference.referenceId,
+      queryProfileHash: queryProfileHash(input.reference.queryProfile),
+      probeIds: input.reference.probes.map((probe) => probe.id),
+      exchanges: snapshot,
+      updatedAt: new Date().toISOString(),
+    }
+    const path = join(input.context.checkpointRootDir ?? input.context.evidenceDir, '.checkpoints', `${auditId}.json`)
+    checkpointTail = checkpointTail.then(async () => {
+      for (let attempt = 0; attempt < 2; attempt += 1) {
+        try {
+          await (input.context.writeCheckpoint ?? writeJsonAtomic)(path, checkpoint)
+          return
+        } catch (error) {
+          if (attempt === 1) {
+            checkpointFailure = new Error(`audit stopped: checkpoint could not be persisted at ${path}; resume from the last durable checkpoint`, { cause: error })
+            deadline.controller.abort()
+            throw checkpointFailure
+          }
+        }
+      }
+    })
     await checkpointTail
   }
   try {
@@ -431,6 +445,7 @@ export async function verifyModelTarget(input: {
       pending,
       input.context.batchConcurrency,
       async ({ probes, batchIndex }, _pendingIndex, control) => input.context.batchLimiter.run(async () => {
+        if (checkpointFailure) throw checkpointFailure
         const exchange = await executeProxyProbeBatch(
         { ...input.context, signal: deadline.start() },
         input.target,
@@ -775,6 +790,7 @@ async function executeProxyProbeBatch(
           requestId,
           sellerPeerId: target.peerId,
           advertisedService: service,
+          serviceAliases: reference.serviceAliases,
           signal: context.signal,
         })
         : {
@@ -973,7 +989,9 @@ function classifyProxyFailure(
       },
     }
   }
-  if (normalizedMessage.includes('invalid temperature')
+  const adapterProfileMismatch = (statusCode === 400 || statusCode === 422)
+    && /^unsupported chat feature for claude messages:\s*(n|reasoning)\s*$/.test(normalizedMessage.trim())
+  if (adapterProfileMismatch || normalizedMessage.includes('invalid temperature')
     || normalizedMessage.includes('invalid request parameter')
     || normalizedMessage.includes('only 0.6 is allowed')) {
     return {
@@ -985,7 +1003,7 @@ function classifyProxyFailure(
         summary: sanitizeOutcomeSummary(message),
         retryable: false,
         source: 'request_profile',
-        nextAction: 'seller must support canonical request profile',
+        nextAction: adapterProfileMismatch ? 'inspect verifier evidence' : 'seller must support canonical request profile',
       },
     }
   }

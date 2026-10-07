@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { canonicalHashBytes32 } from '@antseed/fingerprints'
+import { canonicalHashBytes32, canonicalJsonStringify, computeReferenceId } from '@antseed/fingerprints'
 import {
   SERVICE_MODEL_MATCH,
   SERVICE_PRICE_MATCH,
@@ -159,6 +159,135 @@ test('auditor groups results per agent across models and the verifier re-derives
     }
   })
 })
+
+test('signed routed alias retains requested report identity and passes independent auth and price checks', async () => {
+  const reference = referenceFixture('claude-opus-5.5')
+  reference.serviceAliases = ['claude-opus-5.5', 'claude-opus-5-5']
+  reference.referenceId = computeReferenceId(reference)
+  await withRun([sameAudit('1', sellers[0]!, 'claude-opus-5.5', {
+    reference, routedService: 'claude-opus-5-5',
+  })], async (fixture) => {
+    const report = fixture.prepared.reports[0]!
+    const claim = report.evidence.services[0]!
+    assert.equal(claim.serviceHash, serviceHash('claude-opus-5.5'))
+    assert.equal(claim.priceCheck.passed, true)
+    assert.equal(claim.priceCheck.requests[0]?.cost?.service, 'claude-opus-5-5')
+    const verified = await verify(fixture, await signAndWrite(fixture, report))
+    assert.deepEqual(failedChecks(verified), [])
+    assert.equal(verified.ok, true)
+  })
+})
+
+for (const [name, aliases, routedService] of [
+  ['unenrolled alias', ['claude-opus-5.5'], 'claude-opus-5-5'],
+  ['unrelated enrollment', ['other-model', 'claude-opus-5-5'], 'claude-opus-5-5'],
+  ['provider prefix', ['claude-opus-5.5', 'claude-opus-5-5'], 'provider/claude-opus-5-5'],
+  ['another generation', ['claude-opus-5.5', 'claude-opus-5-5'], 'claude-opus-4-5'],
+  ['coding-only service', ['claude-opus-5.5', 'claude-opus-5-5'], 'claude-opus-5-5-code'],
+] as const) {
+  test(`independent verifier rejects ${name} despite an auditor-supplied alias claim`, async () => {
+    const reference = referenceFixture('claude-opus-5.5')
+    reference.serviceAliases = [...aliases]
+    reference.referenceId = computeReferenceId(reference)
+    await withRun([sameAudit('1', sellers[0]!, 'claude-opus-5.5', { reference, routedService })], async (fixture) => {
+      const report = fixture.prepared.reports[0]!
+      const claim = report.evidence.services[0]!
+      Object.assign(claim.reference, { serviceAliases: ['claude-opus-5.5', routedService] })
+      report.evidenceHash = canonicalHashBytes32(report.evidence)
+      assert.equal(claim.priceCheck.passed, false)
+      const verified = await verify(fixture, await signAndWrite(fixture, report))
+      assert.equal(verified.ok, false)
+      assert.match(verified.checks.responseAuth!.detail, /enrolled alias/)
+      assert.equal(verified.checks.price?.ok, true)
+    })
+  })
+}
+
+test('independent alias verification rejects tampered or unavailable content-addressed references', async () => {
+  const reference = referenceFixture('claude-opus-5.5')
+  reference.serviceAliases.push('claude-opus-5-5')
+  reference.referenceId = computeReferenceId(reference)
+  await withRun([sameAudit('1', sellers[0]!, 'claude-opus-5.5', {
+    reference, routedService: 'claude-opus-5-5',
+  })], async (fixture) => {
+    const report = fixture.prepared.reports[0]!
+    const path = await signAndWrite(fixture, report)
+    const exported = report.references[0]!
+    await writeFile(exported.path, JSON.stringify({ ...exported.reference, serviceAliases: ['forged'] }))
+    const tampered = await verify(fixture, path)
+    assert.equal(tampered.ok, false)
+    assert.match(tampered.checks.responseAuth!.detail, /referenceId mismatch/)
+    assert.equal(tampered.checks.price?.ok, false)
+    await rm(exported.path)
+    const missing = await verify(fixture, path)
+    assert.match(missing.checks.responseAuth!.detail, /unavailable/)
+    assert.equal(missing.checks.price?.ok, false)
+  })
+})
+
+for (const [name, mutate] of [
+  ['wrong request', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.requestIds = ['another-request'] }],
+  ['wrong seller', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.responseAuth.record!.sellerPeerId = '99'.repeat(20) }],
+  ['bad signature', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.responseAuth.record!.signature = `0x${'00'.repeat(65)}` }],
+  ['missing preimages', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.responseAuth.signedPreimages = null }],
+  ['tampered request', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.responseAuth.signedPreimages!.requestBase64 = 'AA==' }],
+  ['tampered response', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.responseAuth.signedPreimages!.responseBase64 = 'AA==' }],
+  ['rewritten signing payload', (audit: ProxyAuditEvidenceV1) => { audit.exchanges[0]!.responseAuth.record!.advertisedService = audit.target.service }],
+] as const) {
+  test(`independent alias verification still rejects ${name}`, async () => {
+    const reference = referenceFixture('claude-opus-5.5')
+    reference.serviceAliases.push('claude-opus-5-5')
+    reference.referenceId = computeReferenceId(reference)
+    await withRun([sameAudit('1', sellers[0]!, 'claude-opus-5.5', {
+      reference, routedService: 'claude-opus-5-5',
+    })], async (fixture) => {
+      const report = fixture.prepared.reports[0]!
+      const auditPath = report.auditEvidencePaths[0]!
+      const audit = JSON.parse(await readFile(auditPath, 'utf8')) as ProxyAuditEvidenceV1
+      mutate(audit)
+      await writeFile(auditPath, canonicalJsonStringify(audit))
+      report.evidence.services[0]!.audit.evidenceHash = canonicalHashBytes32(audit)
+      report.evidenceHash = canonicalHashBytes32(report.evidence)
+      const verified = await verify(fixture, await signAndWrite(fixture, report))
+      assert.equal(verified.checks.evidence?.ok, true)
+      assert.equal(verified.checks.responseAuth?.ok, false)
+      assert.equal(verified.ok, false)
+    })
+  })
+}
+
+for (const [name, costOverrides] of [
+  ['seller', { sellerPeerId: '99'.repeat(20) }],
+  ['request', { requestId: 'unrelated-request' }],
+  ['channel', { channelId: `0x${'99'.repeat(32)}` }],
+  ['service', { service: 'other-model' }],
+] as const) {
+  test(`alias price checks reject another ${name}'s cost in report generation and recomputation`, async () => {
+    const reference = referenceFixture('claude-opus-5.5')
+    reference.serviceAliases.push('claude-opus-5-5')
+    reference.referenceId = computeReferenceId(reference)
+    await withRun([sameAudit('1', sellers[0]!, 'claude-opus-5.5', {
+      reference, routedService: 'claude-opus-5-5', costOverrides,
+    })], async (fixture) => {
+      const report = fixture.prepared.reports[0]!
+      const claim = report.evidence.services[0]!
+      assert.equal(claim.priceCheck.passed, false)
+      assert.match(claim.priceCheck.reason ?? '', new RegExp(`another ${name}`))
+      const verified = await verify(fixture, await signAndWrite(fixture, report))
+      assert.deepEqual(failedChecks(verified), [])
+      claim.priceCheck.passed = true
+      claim.flags |= SERVICE_PRICE_MATCH
+      report.results = sortServiceResults(report.evidence.services.map((service) => ({
+        serviceHash: service.serviceHash, modelHash: service.modelHash, flags: service.flags,
+      })))
+      report.resultsHash = hashServiceResults(report.results)
+      report.evidenceHash = canonicalHashBytes32(report.evidence)
+      const forged = await verify(fixture, await signAndWrite(fixture, report))
+      assert.equal(forged.checks.price?.ok, false)
+      assert.equal(forged.ok, false)
+    })
+  })
+}
 
 test('auditor skips agents it owns and records the exclusion', async () => {
   await withRun([

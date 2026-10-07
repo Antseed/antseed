@@ -34,6 +34,34 @@ function responseAuth(overrides: Partial<StoredResponseAuth> = {}): StoredRespon
   }
 }
 
+test('ResponseAuth accepts only explicitly enrolled aliases of the requested service', () => {
+  const expected = {
+    requestId: 'request-1', sellerPeerId: '22'.repeat(20), advertisedService: 'CLAUDE-OPUS-5.5',
+    serviceAliases: ['claude-opus-5.5', 'claude-opus-5-5'],
+  }
+  const record = responseAuth({ advertisedService: 'claude-opus-5-5' })
+  assert.equal(validateStoredResponseAuth(record, expected).status, 'verified')
+  for (const overrides of [
+    { serviceAliases: [] },
+    { serviceAliases: ['other-model', 'claude-opus-5-5'] },
+    { advertisedService: 'other-model' },
+  ]) {
+    assert.equal(validateStoredResponseAuth(record, { ...expected, ...overrides }).status, 'invalid')
+  }
+  for (const overrides of [
+    { advertisedService: 'provider/claude-opus-5-5' },
+    { advertisedService: 'claude-opus-5-5-code' },
+    { advertisedService: 'claude-opus-4-5' },
+    { requestId: 'other-request' },
+    { sellerPeerId: '33'.repeat(20) },
+    { verified: false, verificationError: 'bad signature' },
+    { requestPreimage: null },
+    { responsePreimage: Buffer.from('tampered') },
+  ]) {
+    assert.equal(validateStoredResponseAuth({ ...record, ...overrides }, expected).status, 'invalid')
+  }
+})
+
 test('ResponseAuth reader polls until the record is available', async () => {
   let calls = 0
   const reader = createResponseAuthReader({
