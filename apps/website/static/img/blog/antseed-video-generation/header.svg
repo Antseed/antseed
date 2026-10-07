@@ -1,0 +1,38 @@
+<svg xmlns="http://www.w3.org/2000/svg" width="1600" height="840" viewBox="0 0 1600 840" role="img" aria-labelledby="title desc">
+  <title id="title">Video generation is live on Antseed</title>
+  <desc id="desc">A peer-to-peer network of video providers connected to a film strip.</desc>
+  <defs>
+    <linearGradient id="bg" x1="0" y1="0" x2="1" y2="1">
+      <stop offset="0" stop-color="#07130f"/>
+      <stop offset="1" stop-color="#173d2d"/>
+    </linearGradient>
+    <linearGradient id="green" x1="0" y1="0" x2="1" y2="0">
+      <stop offset="0" stop-color="#3ddc97"/>
+      <stop offset="1" stop-color="#b8f36b"/>
+    </linearGradient>
+  </defs>
+  <rect width="1600" height="840" fill="url(#bg)"/>
+  <g opacity="0.18" stroke="#b8f36b" stroke-width="2">
+    <path d="M175 590 L360 455 L548 560 L770 410 L980 515 L1210 360 L1415 495"/>
+    <path d="M360 455 L425 270 L770 410 L1010 250 L1210 360"/>
+  </g>
+  <g fill="#b8f36b">
+    <circle cx="175" cy="590" r="11"/><circle cx="360" cy="455" r="13"/><circle cx="548" cy="560" r="10"/>
+    <circle cx="770" cy="410" r="15"/><circle cx="980" cy="515" r="10"/><circle cx="1210" cy="360" r="13"/>
+    <circle cx="1415" cy="495" r="11"/><circle cx="425" cy="270" r="9"/><circle cx="1010" cy="250" r="9"/>
+  </g>
+  <text x="110" y="150" fill="#ffffff" font-family="Inter, Arial, sans-serif" font-size="74" font-weight="800">Video generation</text>
+  <text x="110" y="238" fill="url(#green)" font-family="Inter, Arial, sans-serif" font-size="74" font-weight="800">is live on Antseed</text>
+  <text x="114" y="306" fill="#c7d8cf" font-family="Inter, Arial, sans-serif" font-size="30">Independent providers. Pay when the video is delivered.</text>
+  <g transform="translate(840 515) rotate(-4)">
+    <rect x="0" y="0" width="610" height="220" rx="24" fill="#020806" stroke="#3ddc97" stroke-width="4"/>
+    <g fill="#173d2d">
+      <rect x="25" y="18" width="28" height="18" rx="4"/><rect x="85" y="18" width="28" height="18" rx="4"/><rect x="145" y="18" width="28" height="18" rx="4"/><rect x="205" y="18" width="28" height="18" rx="4"/><rect x="265" y="18" width="28" height="18" rx="4"/><rect x="325" y="18" width="28" height="18" rx="4"/><rect x="385" y="18" width="28" height="18" rx="4"/><rect x="445" y="18" width="28" height="18" rx="4"/><rect x="505" y="18" width="28" height="18" rx="4"/><rect x="565" y="18" width="28" height="18" rx="4"/>
+      <rect x="25" y="184" width="28" height="18" rx="4"/><rect x="85" y="184" width="28" height="18" rx="4"/><rect x="145" y="184" width="28" height="18" rx="4"/><rect x="205" y="184" width="28" height="18" rx="4"/><rect x="265" y="184" width="28" height="18" rx="4"/><rect x="325" y="184" width="28" height="18" rx="4"/><rect x="385" y="184" width="28" height="18" rx="4"/><rect x="445" y="184" width="28" height="18" rx="4"/><rect x="505" y="184" width="28" height="18" rx="4"/><rect x="565" y="184" width="28" height="18" rx="4"/>
+    </g>
+    <rect x="35" y="55" width="160" height="110" rx="12" fill="#21533d"/>
+    <rect x="225" y="55" width="160" height="110" rx="12" fill="#2b6d4f"/>
+    <rect x="415" y="55" width="160" height="110" rx="12" fill="#3ddc97"/>
+    <path d="M478 82 L478 138 L527 110 Z" fill="#07130f"/>
+  </g>
+</svg>

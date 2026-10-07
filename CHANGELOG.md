@@ -15,6 +15,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - Website: `https://antseed.com/install-gateway.sh` sets up the buyer and API-key gateway on a Linux server in one command: Node.js and the CLI under `/opt/antseed`, `antseed-buyer` and `antseed-gateway` systemd services running as a dedicated `antseed` user, optional HTTPS through Caddy (`--domain`) or a Cloudflare named tunnel (`--cloudflare-token`, `--public-url`), and a first API key. Re-running it upgrades in place; `--uninstall` removes it and keeps the wallets. Documented in the new Run a Gateway on a Server guide.
 - CLI buyer: `GET /_antseed/attributed-spend` reports the signed spend of requests tagged by a local front end with `x-antseed-attribution-tag`. The tag is stripped before a request reaches a seller.
 - Docs: add the Shared Gateway API Keys guide.
+- Website: blog post "Video Generation Is Live on Antseed" (`/blog/video-generation-live-on-antseed`) on video models from network providers, paying when a video is delivered, making videos with an agent in AI VPN chat, and video products providers and builders can create.
 - Website: blog post "Deploy Your Own Antseed Gateway" (`/blog/deploy-your-own-antseed-gateway`) on deploying an OpenAI-compatible gateway with one command, per-key API keys with spend limits, buyer identities (a separate wallet per key), team and friend sharing, and x402 top-ups for key holders.
 
 ### Fixed
