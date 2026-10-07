@@ -28,8 +28,7 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const [saveError, setSaveError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   const supported = current?.catalog;
-  const catalogError = current?.catalogError ?? (current?.catalogExpiresAt !== undefined && current.catalogExpiresAt <= Date.now()
-    ? 'Router model catalog is stale. Refresh discovery before routing.' : null);
+  const catalogError = current?.catalogError ?? null;
   const catalog = useMemo(() => (supported?.models ?? []).flatMap(model => projectRowsToVprModelCatalog(
     snapshot.rows.filter(row => row.provider === model.provider && row.serviceId === model.serviceId),
   )).filter(entry => entry.kind === 'text'), [snapshot.rows, supported]);
@@ -47,7 +46,6 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   }, [actions, service, costQualityTradeoff, allowedModels, savedAllowedModels]);
   const checkedKeys = useMemo(() => new Set((allowedModels ?? catalog).map(modelKey)), [allowedModels, catalog]);
   const visible = catalog.filter(entry => `${entry.label} ${entry.serviceId} ${entry.provider}`.toLowerCase().includes(search.trim().toLowerCase()));
-  const unavailable = (supported?.models ?? []).filter(model => !catalog.some(entry => modelKey(entry) === modelKey(model)));
   const noAvailableModels = !!supported && !catalog.some(model => checkedKeys.has(modelKey(model)));
   const label = current?.label ?? service.label;
   function updateSettings(nextCostQualityTradeoff: number | undefined, nextAllowedModels: RouterAllowedModel[] | undefined): void {
@@ -124,11 +122,6 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
         <fieldset disabled={!!catalogError} className={styles.modelChoices}>
           <VprModelRowList entries={visible} checkedKeys={checkedKeys} selectOnly onSelect={toggleModel} emptyLabel="No matching supported models" />
         </fieldset>
-        {unavailable.length > 0 && <div className={styles.missing}>
-          <p className={styles.hint}>Supported but not currently available</p>
-          {unavailable.filter(model => `${model.serviceId} ${model.provider}`.toLowerCase().includes(search.trim().toLowerCase())).map(model =>
-            <label key={modelKey(model)} className={styles.allModels}><input type="checkbox" disabled checked={allowedModels === undefined} readOnly />{model.serviceId} · {model.provider} · Unavailable</label>)}
-        </div>}
         </>}
         {snapshot.discoveryError && <p role="alert" className={styles.hint}>{snapshot.discoveryError}</p>}
         {!current && <p role="status" className={styles.hint}>This router is unavailable. Wait for discovery or select another model or router.</p>}

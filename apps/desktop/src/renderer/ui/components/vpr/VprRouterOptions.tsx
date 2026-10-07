@@ -24,7 +24,7 @@ export function VprRouterRow({ service, active = false, menu = false, chat = fal
       <span className={styles.itemPricing}>{routerPriceLabel(service.priceMicroUsdc)}{Number(service.priceMicroUsdc) > 0 && ' / request'}</span>
     </span>
     <span className={styles.itemMeta}>
-      <span className={rowStyles.peerMeta} title={service.sellerName || service.provider}>{service.sellerName || service.provider}</span>
+      <span className={rowStyles.peerMeta} title={service.provider}>{service.provider}</span>
       <span className={styles.imageBadge}>Router</span>
     </span>
   </button>;
@@ -38,7 +38,7 @@ export function VprRouterRow({ service, active = false, menu = false, chat = fal
         <span className={rowStyles.modelTag}>Router</span>
       </span>
       <span className={rowStyles.metaLine}>
-        <span className={rowStyles.peerMeta} title={service.sellerName || service.provider}>{service.sellerName || service.provider}</span>
+        <span className={rowStyles.peerMeta} title={service.provider}>{service.provider}</span>
         <span className={rowStyles.metaDivider} aria-hidden="true">·</span>
         <span className={rowStyles.metaPrice}>{routerPriceLabel(service.priceMicroUsdc)}{Number(service.priceMicroUsdc) > 0 && <> <span className={rowStyles.perTok}>/ request</span></>}</span>
       </span>

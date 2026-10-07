@@ -1,7 +1,5 @@
 import type { RendererUiState } from '../../core/state';
 import type { DesktopRoutingSelection } from '../../../shared/routing-selection';
-import { createDesktopRouterSelection, isDesktopRouterSelection } from '../../../shared/routing-selection';
-import { saveVprRouteSelection } from './preferences';
 import { notifyUiStateChanged } from '../../core/store';
 import type { DesktopBridge, RuntimeProcessState } from '../../types/bridge';
 import { chooseBestVprRoute } from './select';
@@ -108,27 +106,6 @@ export async function syncBuyerDefaultRoute(
   uiState: RendererUiState,
 ): Promise<boolean> {
   if (!bridge?.chatSetBuyerDefaultRoute) return false;
-  if (!uiState.vprRouteHydrated && bridge.chatGetBuyerDefaultRoute) {
-    const previous = uiState.vprRouteSelection;
-    const current = await bridge.chatGetBuyerDefaultRoute().catch(() => ({ ok: false, selection: undefined }));
-    if (!current.ok) return false;
-    if (!uiState.vprRouteHydrated && uiState.vprRouteSelection === previous) {
-      if (current.selection?.kind === 'router') {
-        const restored = { service: current.selection.service, costQualityTradeoff: current.selection.costQualityTradeoff, allowedModels: current.selection.allowedModels };
-        if (!isDesktopRouterSelection(restored)) {
-          uiState.vprRouteError = 'The saved router selection is unsupported. Choose a model or a compatible routing service.';
-          notifyUiStateChanged();
-          return false;
-        }
-        uiState.vprRouteSelection = { model: null, mode: 'auto', peerId: null,
-          router: createDesktopRouterSelection(restored.service, restored.costQualityTradeoff, restored.allowedModels) };
-        uiState.vprDefaultModelProvisional = false;
-        saveVprRouteSelection(uiState.vprRouteSelection);
-        notifyUiStateChanged();
-      }
-      uiState.vprRouteHydrated = true;
-    }
-  }
   const target = resolveRouteTarget(uiState);
   if (!target) return false;
   const selection = uiState.vprRouteSelection;

@@ -12,10 +12,8 @@ export type DesktopRoutingSelection =
   | ({ kind: 'router' } & DesktopRouterSelection);
 export type RoutingServiceEntry = RoutingServiceTarget & {
   label: string;
-  sellerName?: string;
   priceMicroUsdc: string;
   catalog?: { models: RouterAllowedModel[] };
-  catalogExpiresAt?: number;
   catalogError?: string;
 };
 

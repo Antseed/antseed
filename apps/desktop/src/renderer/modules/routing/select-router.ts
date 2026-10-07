@@ -20,7 +20,6 @@ export function selectVprRouter(
     costQualityTradeoff ?? stored?.costQualityTradeoff,
     allowedModels ?? stored?.allowedModels);
   saveVprRouterSettings(router);
-  state.vprRouteHydrated = true;
   if (forConversation) chat.handleServiceChange('antseed', undefined, false, 'auto');
   state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router };
   state.chatImageRouteSelection = null;
@@ -40,7 +39,6 @@ export function updateVprRouterSettings(
   const router = createDesktopRouterSelection(service, costQualityTradeoff, allowedModels);
   saveVprRouterSettings(router);
   if (!state.vprRouteSelection.router || routingServiceKey(state.vprRouteSelection.router.service) !== routingServiceKey(service)) return;
-  state.vprRouteHydrated = true;
   state.vprRouteSelection = { ...state.vprRouteSelection, router };
   saveVprRouteSelection(state.vprRouteSelection);
   notifyUiStateChanged();

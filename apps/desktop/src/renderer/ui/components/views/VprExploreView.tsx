@@ -163,7 +163,7 @@ export function VprExploreView({ onSelectView }: Props) {
     if (kinds.length && !kinds.includes('kind:router')) return false;
     if (listInputs.types.some((value) => value.startsWith('tag:')) || listInputs.families.length || listInputs.teeFilter === 'tee') return false;
     if (listInputs.types.includes('free') && Number(service.priceMicroUsdc) !== 0) return false;
-    return `${service.label} ${service.sellerName ?? ''} ${service.provider} ${service.serviceId} router`.toLowerCase().includes(listInputs.search.trim().toLowerCase());
+    return `${service.label} ${service.provider} ${service.serviceId} router`.toLowerCase().includes(listInputs.search.trim().toLowerCase());
   });
   const selectedEntry = selectedModel
     ? findCatalogEntry(snap.catalog, selectedModel.provider, selectedModel.serviceId)

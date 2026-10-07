@@ -445,7 +445,6 @@ export type RendererUiState = {
   vprRoutingServices: RoutingServiceEntry[];
   vprRoutingServicesError: string | null;
   vprRouteError: string | null;
-  vprRouteHydrated: boolean;
   /** True while the auto-picked default model is provisional: no trusted free
    * route is discovered yet, so the pick keeps being re-evaluated. Surfaces a
    * "finding free peers" hint during the first-use discovery warm-up. */
@@ -622,7 +621,6 @@ export function createInitialUiState(): RendererUiState {
     vprRoutingServices: [],
     vprRoutingServicesError: null,
     vprRouteError: null,
-    vprRouteHydrated: false,
     chatImageRouteSelection: null,
     vprModelPins: {},
     vprRoutingPreferences: {

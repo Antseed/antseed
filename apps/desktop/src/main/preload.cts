@@ -312,9 +312,6 @@ const api = {
   chatGetRoutingServices(): Promise<{ ok: boolean; services?: import('../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }> {
     return ipcRenderer.invoke('chat:get-routing-services');
   },
-  chatGetBuyerDefaultRoute(): Promise<{ ok: boolean; selection?: import('../shared/routing-selection.js').DesktopRoutingSelection; error?: string }> {
-    return ipcRenderer.invoke('chat:get-buyer-default-route');
-  },
   chatSetBuyerDefaultRoute(payload: { selection: import('../shared/routing-selection.js').DesktopRoutingSelection }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:set-buyer-default-route', payload);
   },

@@ -49,15 +49,14 @@ test.each([false, true])('router rows use one standard tag and omit units for fr
 });
 
 test.each(['0', '1000'])('chat router uses the model picker layout and pricing (%s)', (priceMicroUsdc) => {
-  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'route', label: 'Auto Router', sellerName: 'Levanto', priceMicroUsdc };
+  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'route', label: 'Auto Router', priceMicroUsdc };
   const markup = renderToStaticMarkup(<VprRouterRow service={service} chat active onClick={() => {}} />);
   assert.ok(markup.includes(`class="${dropdownStyles.modelDropdownItem} ${dropdownStyles.active}"`));
   assert.ok(markup.includes(`class="${dropdownStyles.itemTopRow}"`));
   assert.ok(markup.includes(`class="${dropdownStyles.itemName}"`));
   assert.ok(markup.includes(`class="${dropdownStyles.imageBadge}">Router</span>`));
-  assert.ok(markup.includes(`class="${dropdownStyles.itemMeta}"><span class="${rowStyles.peerMeta}" title="Levanto">Levanto</span>`));
+  assert.ok(markup.includes(`class="${dropdownStyles.itemMeta}"><span class="${rowStyles.peerMeta}" title="fake-levanto">fake-levanto</span>`));
   assert.match(markup, />Auto Router</);
-  assert.doesNotMatch(markup, /fake-levanto/);
   assert.match(markup, /role="option" aria-selected="true"/);
   assert.equal((markup.match(/>Router</g) ?? []).length, 1);
   assert.ok(markup.includes(`class="${dropdownStyles.itemPricing}">${priceMicroUsdc === '0' ? 'Free' : '$0.001 / request'}</span>`));
@@ -65,13 +64,10 @@ test.each(['0', '1000'])('chat router uses the model picker layout and pricing (
 });
 
 test.each([false, true])('model and home rows put seller before price on the second line (menu=%s)', menu => {
-  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'route', label: 'Auto Router', sellerName: 'Levanto', priceMicroUsdc: '0' };
+  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'route', label: 'Auto Router', priceMicroUsdc: '0' };
   const markup = renderToStaticMarkup(<VprRouterRow service={service} menu={menu} onClick={() => {}} />);
-  assert.ok(markup.includes(`class="${rowStyles.metaLine}"><span class="${rowStyles.peerMeta}" title="Levanto">Levanto</span>`));
-  assert.ok(markup.indexOf('>Levanto<') < markup.indexOf('>Free<'));
-  assert.doesNotMatch(markup, /fake-levanto/);
-  const fallback = renderToStaticMarkup(<VprRouterRow service={{ ...service, sellerName: undefined }} menu={menu} onClick={() => {}} />);
-  assert.match(fallback, />fake-levanto</);
+  assert.ok(markup.includes(`class="${rowStyles.metaLine}"><span class="${rowStyles.peerMeta}" title="fake-levanto">fake-levanto</span>`));
+  assert.ok(markup.indexOf('>fake-levanto<') < markup.indexOf('>Free<'));
 });
 
 test('fixed-model chats do not mark the global router as their active selection', () => {

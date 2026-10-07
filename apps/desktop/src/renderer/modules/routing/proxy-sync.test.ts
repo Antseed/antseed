@@ -53,12 +53,12 @@ test('failed route updates surface errors and do not claim success', async () =>
   assert.equal(state.vprRouteError, 'Router unavailable');
 });
 
-test('connecting an app hydrates a saved router before resolving its alias target', async () => {
+test('connecting an app syncs the selected router before resolving its alias target', async () => {
   const state = createInitialUiState();
   const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' });
+  state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router };
   const events: string[] = [];
   const result = await connectVprProfile({
-    chatGetBuyerDefaultRoute: async () => ({ ok: true, selection: { kind: 'router', service: router.service } }),
     chatSetBuyerDefaultRoute: async (payload) => {
       assert.deepEqual(payload, { selection: { kind: 'router', ...router } });
       events.push('route');
@@ -74,59 +74,6 @@ test('connecting an app hydrates a saved router before resolving its alias targe
   }, state, 'codex');
   assert.equal(result.ok, true);
   assert.deepEqual(events, ['route', 'start']);
-});
-
-test('an unsupported saved router fails closed without writing a model default', async () => {
-  const state = createInitialUiState();
-  let writes = 0;
-  const result = await syncBuyerDefaultRoute({
-    chatGetBuyerDefaultRoute: async () => ({ ok: true, selection: { kind: 'router', service: { peerId: 'bad', provider: 'levanto', serviceId: 'route' } } }),
-    chatSetBuyerDefaultRoute: async () => { writes++; return { ok: true }; },
-  }, state);
-  assert.equal(result, false);
-  assert.equal(writes, 0);
-  assert.match(state.vprRouteError!, /unsupported/);
-});
-
-test('first sync adopts the saved buyer router instead of overwriting it with a provisional model', async () => {
-  const state = createInitialUiState();
-  state.vprRouteSelection = { model, mode: 'auto', peerId: null };
-  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' });
-  const posted: unknown[] = [];
-  await syncBuyerDefaultRoute({
-    chatGetBuyerDefaultRoute: async () => ({ ok: true, selection: { kind: 'router', ...router } }),
-    chatSetBuyerDefaultRoute: async (payload) => { posted.push(payload); return { ok: true }; },
-  }, state);
-  assert.deepEqual(state.vprRouteSelection.router, router);
-  assert.deepEqual(posted, [{ selection: { kind: 'router', ...router } }]);
-});
-
-test('router allowlist survives startup hydration and subsequent proxy sync', async () => {
-  const state = createInitialUiState();
-  const router = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, 0, [{ provider: 'openai', serviceId: 'model-a' }]);
-  const posted: unknown[] = [];
-  await syncBuyerDefaultRoute({
-    chatGetBuyerDefaultRoute: async () => ({ ok: true, selection: { kind: 'router', ...router } }),
-    chatSetBuyerDefaultRoute: async payload => { posted.push(payload); return { ok: true }; },
-  }, state);
-  assert.deepEqual(state.vprRouteSelection.router, router);
-  assert.deepEqual(posted, [{ selection: { kind: 'router', ...router } }]);
-});
-
-test('an explicit selection wins over a late startup read', async () => {
-  const state = createInitialUiState();
-  const first = createDesktopRouterSelection({ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' });
-  const second = createDesktopRouterSelection({ peerId: 'e'.repeat(40), provider: 'levanto', serviceId: 'other' }, 0);
-  const posted: unknown[] = [];
-  await syncBuyerDefaultRoute({
-    chatGetBuyerDefaultRoute: async () => {
-      state.vprRouteHydrated = true;
-      state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router: second };
-      return { ok: true, selection: { kind: 'router', ...first } };
-    },
-    chatSetBuyerDefaultRoute: async (payload) => { posted.push(payload); return { ok: true }; },
-  }, state);
-  assert.deepEqual(posted, [{ selection: { kind: 'router', ...second } }]);
 });
 
 test('desktop Auto replaces a stale coding-only selection with an unrestricted route', async () => {

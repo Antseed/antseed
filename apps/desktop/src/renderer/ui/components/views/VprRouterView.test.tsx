@@ -136,7 +136,7 @@ test('empty and stale selections show all models without a previously-selected s
   assert.match(missing, /type="checkbox"[^>]*checked=""/);
 });
 
-test('unknown and stale catalogs never claim support for the entire network', () => {
+test('unknown catalogs never claim support for the entire network', () => {
   const state = createInitialUiState();
   const withoutCatalog = { ...service, catalog: undefined };
   state.vprRoutingServices = [withoutCatalog];
@@ -144,12 +144,6 @@ test('unknown and stale catalogs never claim support for the entire network', ()
   const unknown = renderToStaticMarkup(<VprRouterView service={withoutCatalog} />);
   assert.match(unknown, /Router models are not available yet/);
   assert.doesNotMatch(unknown, /All supported models/);
-  state.vprRoutingServices = [{ ...service, catalogExpiresAt: 1 }];
-  initStore(state);
-  const stale = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(stale, /catalog is stale/);
-  assert.match(stale, /disabled=""/);
-  assert.match(stale, /model-a/);
 });
 
 test('unset tradeoff displays router default without persisting an explicit value', () => {
@@ -182,8 +176,7 @@ test('catalog intersection excludes unsupported providers and drops stale select
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
   assert.doesNotMatch(markup, /unsupported-provider/);
-  assert.match(markup, /offline-model/);
-  assert.doesNotMatch(markup, /removed-model|Previously selected models|No selected supported models/);
+  assert.doesNotMatch(markup, /offline-model|removed-model|Previously selected models|No selected supported models/);
   assert.equal((markup.match(/aria-checked="true"/g) ?? []).length, 1);
 });
 
@@ -222,6 +215,6 @@ test('supported exact providers remain selectable even when the main model catal
   assert.equal(state.vprModelCatalog[0]!.provider, 'cheap-provider');
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
-  assert.doesNotMatch(markup, /No selected supported models|Supported but not currently available/);
+  assert.doesNotMatch(markup, /No selected supported models/);
   assert.equal((markup.match(/aria-checked="true"/g) ?? []).length, 1);
 });

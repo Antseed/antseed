@@ -315,7 +315,6 @@ function actionSelectVprModel(provider: string, serviceId: string, peerId: strin
   // The text route is persisted and propagated to connected apps after the
   // corresponding chat option has been resolved above.
   uiState.vprRouteSelection = selection;
-  uiState.vprRouteHydrated = true;
   // An explicit pick ends the provisional-default window even when no chat
   // option resolved above (handleServiceChange, which also ends it, only runs
   // when one did) and even when the pick is the provisional model itself —

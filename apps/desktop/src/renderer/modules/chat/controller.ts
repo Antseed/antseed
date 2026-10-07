@@ -2879,7 +2879,6 @@ export function initChatModule({
     rememberModelPin = true,
     routeMode?: 'auto' | 'pinned',
   ): void {
-    uiState.vprRouteHydrated = true;
     uiState.chatSelectedServiceValue = value;
     pendingServiceOptions = null;
     clearTransientChatNotices();
@@ -3121,7 +3120,6 @@ export function initChatModule({
       // its own conversation — so the next catalog poll re-posts the new
       // route instead of stomping it with the stale selection.
       bridge.onChatDefaultRouteChanged((data) => {
-        uiState.vprRouteHydrated = true;
         const peerId = typeof data.peerId === 'string' ? data.peerId.trim() : '';
         const serviceId = normalizeChatServiceId(data.service);
         if (!serviceId) return;
