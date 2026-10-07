@@ -38,6 +38,7 @@ import {
 import { parseResponseUsage } from './utils/response-usage.js';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
+type ProviderPricing = import('./interfaces/seller-provider.js').ProviderPricing;
 
 function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
   return pricing.inputUsdPerMillion === 0
@@ -232,7 +233,13 @@ export class SellerRequestHandler {
         return;
       }
 
-      const requestPricing = this.resolveProviderPricing(provider, request);
+      // Buyers with an open channel are billed at the rates pinned when that
+      // channel was reserved; everyone else sees the live (possibly reloaded) rates.
+      const pinnedChannel = this._deps.sellerPaymentManager?.getChannelByPeer(buyerPeerId);
+      const pinnedPricing = pinnedChannel
+        ? this._deps.sellerPaymentManager?.getChannelPricing?.(pinnedChannel.sessionId)?.get(provider)
+        : undefined;
+      const requestPricing = this.resolveProviderPricing(provider, request, pinnedPricing);
       const requestBilling = this._captureSellerBillingContext(provider, request);
       const unitBillingModel = requestBilling
         ? this.resolveProviderUnitBillingModel(provider, requestBilling.context)
@@ -816,15 +823,16 @@ export class SellerRequestHandler {
   resolveProviderPricing(
     provider: Provider,
     request: SerializedHttpRequest,
+    pricing: ProviderPricing = provider.pricing,
   ): ProviderTokenPricing {
     const requestedService = this._extractRequestedService(request);
     if (requestedService) {
-      const servicePricing = provider.pricing.services?.[requestedService];
+      const servicePricing = pricing.services?.[requestedService];
       if (servicePricing) {
         return servicePricing;
       }
     }
-    return provider.pricing.defaults;
+    return pricing.defaults;
   }
 
   resolveProviderUnitBillingModel(

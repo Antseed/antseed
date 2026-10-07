@@ -322,6 +322,24 @@ antseed buyer start --disable-metadata-v2-services
 
 For production sellers, prefer a dedicated Base JSON-RPC endpoint over public defaults. You can set it durably with `payments.crypto.rpcUrl`, at runtime with `ANTSEED_BASE_RPC_URL`, or for one run with `antseed seller start --base-rpc-url <url>`.
 
+### Hot price reload
+
+A running `antseed seller start` watches its config file and applies edits to
+token pricing — `seller.providers.<name>.defaults` and
+`seller.providers.<name>.services.<id>.pricing`, including
+`cachedInputUsdPerMillion` — without a restart, then re-signs and re-announces
+discovery metadata. Runtime `--input-usd-per-million` / `--output-usd-per-million`
+flags and pricing env vars keep precedence, as at startup. An invalid or missing
+config keeps the current prices and logs a warning.
+
+New payment channels use the new prices. Channels that are already open keep the
+rates in effect when they were reserved, for both price increases and cuts. That
+pinning lives in memory only: after a seller restart, open channels use the
+prices from the config at startup.
+
+Everything else (unit/image billing, credentials, providers and services, agents,
+payments, and network settings) still requires a restart.
+
 ### Metadata v12 rollout
 
 This release announces metadata v12. Buyers supporting only older metadata versions drop v12 sellers from discovery, while updated buyers continue accepting older v10/v11 sellers. Upgrade buyer CLIs and desktop apps before upgrading sellers. Removing capability or unit-billing fields does not downgrade the metadata version; rollback requires running the older seller binary.
