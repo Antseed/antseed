@@ -4,7 +4,8 @@ import {
   parseRoutingModelsResponse,
   parseRoutingProblem,
   routingProblemBody,
-  routingServiceFromHeaders,
+  findRoutingService,
+  isModelRoutingPath,
   validateRoutingRankRequest,
   validateRoutingRankResponse,
   type RoutingCandidateV1,
@@ -66,11 +67,18 @@ describe('model-routing rank request (IRP §5.1)', () => {
     ]) expect(() => validateRoutingRankRequest(rank({ candidates: [candidate as RoutingCandidateV1] }))).toThrow('candidate');
   });
 
-  it('checks tradeoff values and reads the routing service header', () => {
+  it('checks tradeoff values', () => {
     expect([0, 5, 10].every(isCostQualityTradeoff)).toBe(true);
     expect([-1, 11, 1.5, '5', null].some(isCostQualityTradeoff)).toBe(false);
-    expect(routingServiceFromHeaders({ 'X-AntSeed-Service': ' route ' })).toBe('route');
-    expect(routingServiceFromHeaders({ 'x-antseed-service': ' ' })).toBeUndefined();
+  });
+
+  it('identifies routing paths and a peer\'s single routing service', () => {
+    expect(['/v1/routing/models', '/v1/routing/rank?x=1'].every(isModelRoutingPath)).toBe(true);
+    expect(isModelRoutingPath('/v1/chat/completions')).toBe(false);
+    const route = { alpha: { services: { route: ['model-routing'], chat: ['openai-chat-completions'] } } };
+    expect(findRoutingService(route)).toEqual({ provider: 'alpha', serviceId: 'route' });
+    expect(findRoutingService({ ...route, beta: { services: { other: ['model-routing'] } } })).toBeNull();
+    expect(findRoutingService(undefined)).toBeNull();
   });
 });
 

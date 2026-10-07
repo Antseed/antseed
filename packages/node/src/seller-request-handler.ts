@@ -36,9 +36,23 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { MODEL_ROUTING_MODELS_PATH, MODEL_ROUTING_PROTOCOL, ROUTING_PROBLEM_TYPES, routingProblemBody, routingServiceFromHeaders } from '@antseed/protocol/model-routing';
+import { MODEL_ROUTING_MODELS_PATH, MODEL_ROUTING_PROTOCOL, ROUTING_PROBLEM_TYPES, isModelRoutingPath, routingProblemBody } from '@antseed/protocol/model-routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
+
+/** A seller's routing services; IRP paths carry no service name, so a seller may offer at most one. */
+function routingServices(providers: readonly Provider[]): Array<{ provider: Provider; service: string }> {
+  return providers.flatMap(provider => provider.services
+    .filter(service => provider.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL))
+    .map(service => ({ provider, service })));
+}
+
+export function assertSingleRoutingService(providers: readonly Provider[]): void {
+  const found = routingServices(providers);
+  if (found.length > 1) {
+    throw new Error(`A seller can offer at most one model-routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
+  }
+}
 
 function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
   return pricing.inputUsdPerMillion === 0
@@ -754,23 +768,17 @@ export class SellerRequestHandler {
   // -- Local /v1/models handler --
 
   /**
-   * Free router model list (IRP `GET /v1/routing/models`): forward to the provider advertising
-   * `model-routing` for the service named by `x-antseed-service`. Rate-limited like attestation
-   * because it reaches the upstream router. Local failures use IRP problem details.
+   * Free router model list (IRP `GET /v1/routing/models`): forward to this seller's routing
+   * service. Rate-limited like attestation because it reaches the upstream router. Local
+   * failures use IRP problem details.
    */
   private async _handleRoutingModels(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
     const problem = (statusCode: number, type: string, title: string, detail: string, headers: Record<string, string> = {}): SerializedHttpResponse => ({
       requestId: request.requestId, statusCode, headers: { 'content-type': 'application/problem+json', ...headers },
       body: routingProblemBody(statusCode, type, title, detail),
     });
-    const service = routingServiceFromHeaders(request.headers);
-    if (!service) return problem(400, ROUTING_PROBLEM_TYPES.invalidRequest, 'Invalid request', 'Routing models requires an x-antseed-service header.');
-    // Like other requests, the optional x-antseed-provider header disambiguates providers sharing a service ID.
-    const providerName = this._extractRequestedProvider(request);
-    const provider = this._deps.providers.find(candidate => (!providerName || candidate.name.toLowerCase() === providerName)
-      && candidate.services.includes(service)
-      && candidate.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL));
-    if (!provider) return problem(404, ROUTING_PROBLEM_TYPES.invalidRequest, 'Unknown routing service', `No model-routing service "${service}".`);
+    const provider = routingServices(this._deps.providers)[0]?.provider;
+    if (!provider) return problem(404, ROUTING_PROBLEM_TYPES.invalidRequest, 'No routing service', 'This seller offers no model-routing service.');
     if (!this._allowAttest(buyerPeerId)) {
       return problem(503, ROUTING_PROBLEM_TYPES.unavailable, 'Rate limited', 'Routing models rate limit exceeded.', { 'retry-after': '60' });
     }
@@ -898,8 +906,10 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    // IRP paths name no service: they address this seller's single routing service.
+    if (isModelRoutingPath(request.path)) return routingServices(this._deps.providers)[0]?.service ?? null;
     const body = extractRequestBodyFields(request.headers, request.body);
-    const service = routingServiceFromHeaders(request.headers) ?? body?.["service"] ?? body?.["model"];
+    const service = body?.["service"] ?? body?.["model"];
     if (typeof service !== "string" || service.trim().length === 0) {
       return null;
     }

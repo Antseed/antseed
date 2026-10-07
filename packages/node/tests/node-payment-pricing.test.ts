@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { SellerRequestHandler } from '../src/seller-request-handler.js';
+import { SellerRequestHandler, assertSingleRoutingService } from '../src/seller-request-handler.js';
 import type { SerializedHttpRequest } from '../src/types/http.js';
 import type { Provider } from '../src/interfaces/seller-provider.js';
 import { decodeHttpResponse, encodeHttpRequest } from '../src/proxy/request-codec.js';
@@ -13,12 +13,12 @@ const ATTEST_ROUTE = `${ANTSEED_ATTEST_PATH}/${ATTEST_ID}`;
 describe('completed-request seller payments', () => {
   const candidate = { id: 'model-a@a', model: 'model-a', pricing: { input: 1, cache_read: 1, output: 3 } };
   const body = { request: { messages: [{ role: 'user', content: 'Help with code' }] }, routing: { cost_quality_tradeoff: 5, candidates: [candidate] } };
-  const routingHeaders = { 'x-antseed-provider': 'alpha', 'x-antseed-service': 'alpha-route' };
+  const routingHeaders = {};
   const result = { id: 'rank-1', object: 'routing.ranking', created: 1, router: { id: 'alpha', version: '1' }, ranked: [{ candidate_id: candidate.id }] };
-  function setup(overrides: Record<string, unknown> = {}) {
+  function setup(overrides: Record<string, unknown> = {}, routing = true) {
     let spend = 0n;
     const provider = makeProvider(10, 10, { name: 'alpha', services: ['alpha-route', 'image'] });
-    provider.serviceApiProtocols = { 'alpha-route': ['model-routing'] };
+    provider.serviceApiProtocols = routing ? { 'alpha-route': ['model-routing'] } : {};
     provider.serviceUnitBillingModels = { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
     provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { 'alpha-route': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) }));
@@ -54,15 +54,18 @@ describe('completed-request seller payments', () => {
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });
-  it('rejects invalid routing model-list requests before the provider with problem details', async () => {
-    const harness = setup();
-    const get = (requestId: string, headers: Record<string, string>) => harness.send(requestId, { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() });
-    const missing = await get('missing', { 'x-antseed-provider': 'alpha' });
-    expect(missing.statusCode).toBe(400);
-    expect(missing.headers['content-type']).toBe('application/problem+json');
-    expect(JSON.parse(new TextDecoder().decode(missing.body))).toMatchObject({ type: 'urn:irp:problem:invalid-request', status: 400 });
-    expect((await get('not-routing', { 'x-antseed-service': 'image' })).statusCode).toBe(404);
+  it('answers routing model-list requests with a 404 problem when the seller offers no router', async () => {
+    const harness = setup({}, false);
+    const response = await harness.send('none', { method: 'GET', path: '/v1/routing/models', headers: {}, body: new Uint8Array() });
+    expect(response.statusCode).toBe(404);
+    expect(response.headers['content-type']).toBe('application/problem+json');
+    expect(JSON.parse(new TextDecoder().decode(response.body))).toMatchObject({ type: 'urn:irp:problem:invalid-request', status: 404 });
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
+  });
+  it('allows at most one routing service per seller', () => {
+    const routing = (name: string, service: string) => Object.assign(makeProvider(0, 0, { name, services: [service] }), { serviceApiProtocols: { [service]: ['model-routing'] } }) as Provider;
+    expect(() => assertSingleRoutingService([routing('alpha', 'route')])).not.toThrow();
+    expect(() => assertSingleRoutingService([routing('alpha', 'route'), routing('beta', 'other')])).toThrow('at most one model-routing service');
   });
   it('rate limits routing model-list requests with an IRP 503', async () => {
     const harness = setup();

@@ -1,8 +1,8 @@
 /**
  * AntSeed's binding of Inference Routing Protocol (IRP) suggest-only mode:
  * https://github.com/inference-routing/spec/blob/main/SPEC.md
- * Bodies are plain IRP. The purchased routing service travels in the `x-antseed-service`
- * header, like `x-antseed-provider`, so no AntSeed data is added to the bodies.
+ * Requests are plain IRP paths and bodies. A seller offers at most one `model-routing`
+ * service, so the path alone identifies the routing service being bought.
  */
 
 /** Service API protocol advertised by sellers that rank inference destinations. */
@@ -11,8 +11,6 @@ export const MODEL_ROUTING_PROTOCOL = 'model-routing';
 export const MODEL_ROUTING_MODELS_PATH = '/v1/routing/models';
 /** IRP §5: suggest-only ranking (one completed request on AntSeed). */
 export const MODEL_ROUTING_RANK_PATH = '/v1/routing/rank';
-/** Header naming the AntSeed routing service a models or rank request is for. */
-export const ROUTING_SERVICE_HEADER = 'x-antseed-service';
 export const ROUTING_RANKING_OBJECT = 'routing.ranking';
 export const MAX_ROUTING_CANDIDATES = 512;
 export const MAX_ROUTING_CANDIDATE_ID_LENGTH = 128;
@@ -111,12 +109,24 @@ function chatRequest(value: unknown): value is RoutingInferenceRequestV1 {
     && value.messages.every(message => object(message) && typeof message.role === 'string' && CHAT_ROLES.has(message.role));
 }
 
-/** The routing service named by the `x-antseed-service` header, if any. */
-export function routingServiceFromHeaders(headers: Record<string, string>): string | undefined {
-  for (const [name, value] of Object.entries(headers)) {
-    if (name.toLowerCase() === ROUTING_SERVICE_HEADER && typeof value === 'string' && value.trim()) return value.trim();
-  }
-  return undefined;
+/** Whether `path` (query string ignored) is an IRP routing endpoint. */
+export function isModelRoutingPath(path: string): boolean {
+  const pathOnly = path.split('?')[0];
+  return pathOnly === MODEL_ROUTING_MODELS_PATH || pathOnly === MODEL_ROUTING_RANK_PATH;
+}
+
+/**
+ * A peer's routing service from its advertised provider → service → protocols matrix.
+ * Sellers offer at most one; `null` when there is none or (invalidly) more than one.
+ */
+export function findRoutingService(
+  matrix: Record<string, { services: Record<string, readonly string[] | undefined> } | undefined> | undefined,
+): { provider: string; serviceId: string } | null {
+  const found = Object.entries(matrix ?? {}).flatMap(([provider, entry]) =>
+    Object.entries(entry?.services ?? {})
+      .filter(([, protocols]) => protocols?.includes(MODEL_ROUTING_PROTOCOL))
+      .map(([serviceId]) => ({ provider, serviceId })));
+  return found.length === 1 ? found[0]! : null;
 }
 
 /** Validate `GET /v1/routing/models` and return the model IDs. Unknown members are ignored (IRP §2). */

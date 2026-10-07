@@ -5,13 +5,15 @@ request. The router only ranks; the buyer still sends the inference to the
 chosen seller and pays that seller normally.
 
 The wire format is [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md)
-(IRP) **suggest-only mode**, unchanged. AntSeed adds nothing to IRP bodies:
-which routing service is being bought travels in a header, and seller identity
-stays on the buyer.
+(IRP) **suggest-only mode**, unchanged: plain IRP paths and bodies, with no AntSeed
+headers or fields. Seller identity stays on the buyer.
 
 A routing seller advertises a service with API protocol `model-routing` and
 a completed-request unit billing model (see
-[unit-billing-services.md](unit-billing-services.md)).
+[unit-billing-services.md](unit-billing-services.md)). A seller offers **at most
+one** routing service, so the request path alone says what is being bought: the
+node refuses to start with two, and buyers do not select a peer that advertises
+two. Run a second seller node to offer another router.
 
 ## Endpoints
 
@@ -20,12 +22,8 @@ a completed-request unit billing model (see
 | `GET /v1/routing/models` | Free, rate limited | IRP §4: models the router can score |
 | `POST /v1/routing/rank` | One completed request | IRP §5: candidates ranked best first, for one user turn |
 
-Both requests carry two AntSeed transport headers:
-
-| Header | Meaning |
-| --- | --- |
-| `x-antseed-provider` | Seller provider that serves the routing service (as for every AntSeed request) |
-| `x-antseed-service` | Routing service ID being described or bought. Sellers use it to pick the provider and the paid offer |
+The seller node answers `GET /v1/routing/models` with a 404 problem when it offers
+no routing service.
 
 ## Models
 
