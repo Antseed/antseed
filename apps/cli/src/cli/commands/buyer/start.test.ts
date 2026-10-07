@@ -8,6 +8,8 @@ import {
   buildBuyerBootstrapEntries,
   buildRouterRuntimeEnvFromBuyerConfig,
   isCompatibleBuyerProxy,
+  proxyDisplayUrl,
+  resolveBuyerProxyListenOptions,
   resolveBuyerRouterName,
 } from './start.js';
 
@@ -126,5 +128,52 @@ test('buyer start recognizes current proxies by AntSeed response header', async 
     res.end(JSON.stringify({ object: 'list', data: [] }));
   }, async (port) => {
     assert.equal(await isCompatibleBuyerProxy(port), true);
+  });
+});
+
+test('buyer start defaults to a loopback bind with no auth token', () => {
+  assert.deepEqual(resolveBuyerProxyListenOptions({}, {}), { host: '127.0.0.1', authToken: null });
+});
+
+test('buyer start takes the auth token from --auth-token or ANTSEED_PROXY_TOKEN, flag first', () => {
+  assert.deepEqual(
+    resolveBuyerProxyListenOptions({ host: '0.0.0.0' }, { ANTSEED_PROXY_TOKEN: 'env-token-0123456789' }),
+    { host: '0.0.0.0', authToken: 'env-token-0123456789' },
+  );
+  assert.equal(
+    resolveBuyerProxyListenOptions({ authToken: 'flag-token-0123456789' }, { ANTSEED_PROXY_TOKEN: 'env-token-0123456789' }).authToken,
+    'flag-token-0123456789',
+  );
+});
+
+test('buyer start refuses a non-loopback bind without an auth token', () => {
+  for (const host of ['0.0.0.0', '::', '192.168.1.20']) {
+    assert.throws(() => resolveBuyerProxyListenOptions({ host }, {}), /Refusing to listen/);
+  }
+  assert.equal(resolveBuyerProxyListenOptions({ host: 'localhost' }, {}).host, 'localhost');
+});
+
+test('buyer start rejects weak auth tokens', () => {
+  assert.throws(() => resolveBuyerProxyListenOptions({ authToken: 'short' }, {}), /at least 16/);
+  assert.throws(() => resolveBuyerProxyListenOptions({}, { ANTSEED_PROXY_TOKEN: 'short' }), /at least 16/);
+});
+
+test('buyer start shows a reachable URL for the bind host', () => {
+  assert.equal(proxyDisplayUrl('127.0.0.1', 8377), 'http://localhost:8377');
+  assert.equal(proxyDisplayUrl('0.0.0.0', 8377), 'http://localhost:8377');
+  assert.equal(proxyDisplayUrl('10.0.0.5', 8377), 'http://10.0.0.5:8377');
+  assert.equal(proxyDisplayUrl('fd00::5', 8377), 'http://[fd00::5]:8377');
+});
+
+test('buyer start probe sends auth headers to a token-protected proxy', async () => {
+  await withProbeServer((req, res) => {
+    if (req.headers.authorization !== 'Bearer probe-token-0123456789') {
+      res.writeHead(401).end();
+      return;
+    }
+    res.writeHead(200, { 'x-antseed-request-id': 'probe' }).end('{}');
+  }, async (port) => {
+    assert.equal(await isCompatibleBuyerProxy(port), false);
+    assert.equal(await isCompatibleBuyerProxy(port, 1200, { authorization: 'Bearer probe-token-0123456789' }), true);
   });
 });

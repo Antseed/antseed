@@ -15,7 +15,7 @@ import { AntseedNode, buildReceiveAuthorization, makeUsdcDomain, peerRelaysSweep
 import type { DepositRelayClient, DepositsClient, SweepRequestPayload, SweepReceiptPayload } from '@antseed/node'
 import { parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { buildBuyerBootstrapEntries } from './start.js'
-import { daemonFetch } from './daemon.js'
+import { daemonFetch, type BuyerDaemonTarget } from './daemon.js'
 
 const AUTH_VALIDITY_SECS = 3600
 const POLL_INTERVAL_MS = 3000
@@ -45,10 +45,10 @@ function parseTimeoutSecs(value: string | undefined): { value: number; usedDefau
  *  reachable on the proxy port. The generous timeout covers the daemon's
  *  sequential offer round (~10s per candidate relayer). */
 async function daemonBroadcast(
-  port: number,
+  daemon: BuyerDaemonTarget,
   payload: SweepRequestPayload,
 ): Promise<{ sent: number; accepted?: boolean } | null> {
-  const res = await daemonFetch(port, '/_antseed/sweep', {
+  const res = await daemonFetch(daemon, '/_antseed/sweep', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
     body: JSON.stringify(payload),
@@ -63,16 +63,16 @@ async function daemonBroadcast(
 }
 
 /** Ask the daemon to refresh discovery and eagerly connect to a few sellers. */
-async function daemonRefreshAndConnect(port: number): Promise<void> {
-  await daemonFetch(port, '/_antseed/peers/refresh', { method: 'POST' }, 30_000)
-  const res = await daemonFetch(port, '/_antseed/peers')
+async function daemonRefreshAndConnect(daemon: BuyerDaemonTarget): Promise<void> {
+  await daemonFetch(daemon, '/_antseed/peers/refresh', { method: 'POST' }, 30_000)
+  const res = await daemonFetch(daemon, '/_antseed/peers')
   const body = await res?.json().catch(() => null) as {
     peers?: Array<{ peerId: string; capabilities?: string[]; metadata?: { capabilities?: string[] } }>
   } | null
   const peers = (body?.peers ?? []).filter(peerRelaysSweeps)
   await Promise.allSettled(
     peers.slice(0, MAX_PEERS_TO_CONNECT).map((p) =>
-      daemonFetch(port, '/_antseed/connect', {
+      daemonFetch(daemon, '/_antseed/connect', {
         method: 'POST',
         headers: { 'content-type': 'application/json' },
         body: JSON.stringify({ peerId: p.peerId }),
@@ -81,8 +81,8 @@ async function daemonRefreshAndConnect(port: number): Promise<void> {
   )
 }
 
-async function daemonGetReceipt(port: number, nonce: string): Promise<SweepReceiptPayload | null> {
-  const res = await daemonFetch(port, `/_antseed/sweep/${nonce}`, undefined, 3000)
+async function daemonGetReceipt(daemon: BuyerDaemonTarget, nonce: string): Promise<SweepReceiptPayload | null> {
+  const res = await daemonFetch(daemon, `/_antseed/sweep/${nonce}`, undefined, 3000)
   const body = await res?.json().catch(() => null) as { receipt?: SweepReceiptPayload | null } | null
   return body?.receipt ?? null
 }
@@ -298,15 +298,16 @@ export function registerBuyerSweepCommand(buyerCmd: Command): void {
         // collide with the daemon's peerId on the network.
         const proxyPort = config.buyer.proxyPort
         const netSpinner = ora(`Checking for a running buyer daemon on port ${proxyPort}...`).start()
-        let dispatchResult = await daemonBroadcast(proxyPort, payload)
+        const daemon = { port: proxyPort, dataDir: globalOpts.dataDir }
+        let dispatchResult = await daemonBroadcast(daemon, payload)
         let getReceipt: () => Promise<SweepReceiptPayload | null>
         let sent: number
 
         if (dispatchResult !== null) {
           if (dispatchResult.sent === 0) {
             netSpinner.text = 'Daemon has no connected sweep relayers — refreshing discovery...'
-            await daemonRefreshAndConnect(proxyPort)
-            dispatchResult = await daemonBroadcast(proxyPort, payload) ?? { sent: 0 }
+            await daemonRefreshAndConnect(daemon)
+            dispatchResult = await daemonBroadcast(daemon, payload) ?? { sent: 0 }
           }
           sent = dispatchResult.sent
           if (sent === 0) {
@@ -323,7 +324,7 @@ export function registerBuyerSweepCommand(buyerCmd: Command): void {
             process.exit(1)
           }
           netSpinner.text = `Broadcast via running daemon to ${sent} peer${sent === 1 ? '' : 's'} — waiting for a relayer...`
-          getReceipt = () => daemonGetReceipt(proxyPort, message.nonce)
+          getReceipt = () => daemonGetReceipt(daemon, message.nonce)
         } else {
           // Fallback: no daemon — join the network with an ephemeral node.
           netSpinner.text = 'No running daemon — connecting to P2P network directly...'

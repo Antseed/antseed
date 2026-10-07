@@ -21,7 +21,7 @@ import {
   DepositWatcher,
   type DepositWatchEvent,
 } from '../../../proxy/deposit-watcher.js'
-import { daemonDepositsStatus, daemonSetWatchMode } from './daemon.js'
+import { daemonDepositsStatus, daemonSetWatchMode, type BuyerDaemonTarget } from './daemon.js'
 
 const DAEMON_STATUS_POLL_MS = 1_000
 const BALANCE_CHECK_INTERVAL_MS = 5_000
@@ -167,8 +167,8 @@ async function checkExternalCompletion(ctx: WatchContext, sweeping: boolean): Pr
 }
 
 /** Watch through the running buyer daemon's watcher (the normal path). */
-async function watchViaDaemon(ctx: WatchContext, port: number): Promise<void> {
-  await daemonSetWatchMode(port, 'active')
+async function watchViaDaemon(ctx: WatchContext, daemon: BuyerDaemonTarget): Promise<void> {
+  await daemonSetWatchMode(daemon, 'active')
   // discardStdin would put the TTY in raw mode for the whole (long-lived)
   // watch, which stops the terminal from ever delivering SIGINT on Ctrl+C.
   const spinner = ora({
@@ -182,7 +182,7 @@ async function watchViaDaemon(ctx: WatchContext, port: number): Promise<void> {
     demoted = true
     // Not a hard stop: the daemon keeps a slow background watch, so a
     // transfer that lands after Ctrl+C is still swept automatically.
-    return daemonSetWatchMode(port, 'background').catch(() => {})
+    return daemonSetWatchMode(daemon, 'background').catch(() => {})
   }
   process.on('SIGINT', () => {
     spinner.info('Stopped watching. The connection keeps sweeping incoming USDC in the background.')
@@ -199,13 +199,13 @@ async function watchViaDaemon(ctx: WatchContext, port: number): Promise<void> {
   }
 
   let lastSeq = 0
-  const initial = await daemonDepositsStatus(port)
+  const initial = await daemonDepositsStatus(daemon)
   if (initial?.status?.lastEvent) lastSeq = initial.status.lastEvent.seq
   let lastBalanceCheckAt = 0
 
   for (;;) {
     await sleep(DAEMON_STATUS_POLL_MS)
-    const current = await daemonDepositsStatus(port)
+    const current = await daemonDepositsStatus(daemon)
     if (!current) {
       spinner.text = 'Lost contact with the buyer connection — waiting for it to come back...'
       continue
@@ -370,10 +370,10 @@ export async function runDepositAction(cmd: Command, options: DepositCommandOpti
     const ctx = await makeWatchContext(config, globalOpts.dataDir, address, options.amount ?? null)
     printWebCheckoutHint(ctx.web)
 
-    const proxyPort = config.buyer.proxyPort
-    const daemon = await daemonDepositsStatus(proxyPort)
+    const daemonTarget = { port: config.buyer.proxyPort, dataDir: globalOpts.dataDir }
+    const daemon = await daemonDepositsStatus(daemonTarget)
     if (daemon?.watcher) {
-      await watchViaDaemon(ctx, proxyPort)
+      await watchViaDaemon(ctx, daemonTarget)
     } else if (daemon) {
       // A daemon is running but has no watcher (payments disabled, or it
       // predates deposit watching). An ephemeral node here would collide

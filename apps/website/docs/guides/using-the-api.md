@@ -51,7 +51,9 @@ antseed buyer deposit
 
 Model-only requests automatically rank compatible offers using your Price + Trust preferences, peer health, and model-specific pricing metadata. The default minimum trust score is `60`; lower-trust or unscored sellers are ineligible unless you lower `buyer.routingPreferences.minTrustScore` (set it to `0` to disable the gate). To force one seller, encode the peer in the model field: `"model": "<peerId>@deepseek-v4-flash"`. See [Automatic routing and explicit pins](#automatic-routing-and-explicit-pins) below.
 
-`antseed buyer start` does not require a pre-existing `~/.antseed/config.json`. If the file is missing, the CLI starts with built-in defaults such as router `local` and proxy port `8377`. The proxy binds to `127.0.0.1` only — it is never exposed to your LAN.
+`antseed buyer start` does not require a pre-existing `~/.antseed/config.json`. If the file is missing, the CLI starts with built-in defaults such as router `local` and proxy port `8377`. By default the proxy binds to `127.0.0.1` only and is not exposed to your LAN. To run it on a server, use `--host` with `--auth-token` / `ANTSEED_PROXY_TOKEN` (see [Buyer Start Flags](/docs/flags#bind-host-and-proxy-auth-token)).
+
+The proxy never forwards your client's own credentials to a seller: `Authorization`, `Proxy-Authorization`, `Cookie`, `x-api-key`, `x-goog-api-key` and `api-key` (Azure OpenAI) are removed before a request leaves your machine. Only these exact header names are removed; if your tool sends a key in some other custom header, it is forwarded. Sellers call their upstream with their own keys, and you pay through your payment channel, so a tool configured with a real provider key does not hand that key to the network.
 
 ## Follow the AI VPN model picker with `model: "antseed"`
 

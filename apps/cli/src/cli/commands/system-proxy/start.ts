@@ -11,6 +11,7 @@ import { SystemProxyServer } from '../../../system-proxy/proxy-server.js'
 import { resolveProxiedDomains, resolveProxiedPathPrefixes, resolveSystemProxyForwardRules, resolveSystemProxySources, CONFIGURED_PROFILES } from '../../../system-proxy/profiles.js'
 import { writeNodeProxyHook } from '../../../system-proxy/node-hook.js'
 import type { SystemProxySnapshot } from '../../../system-proxy/system-proxy.js'
+import { proxyAuthHeaders } from '../../../proxy/proxy-auth.js'
 
 const DEFAULT_SYSTEM_PROXY_PORT = 8378
 const DEFAULT_BUYER_PORT = 8377
@@ -105,6 +106,7 @@ export function registerSystemProxyStartCommand(cmd: Command): void {
       const proxy = new SystemProxyServer({
         port,
         buyerProxyPort: buyerPort,
+        buyerAuthHeaders: () => proxyAuthHeaders(dataDir, buyerPort),
         certCache,
         proxiedDomains,
         proxiedPathPrefixes,

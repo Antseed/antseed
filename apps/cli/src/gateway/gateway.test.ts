@@ -67,10 +67,12 @@ async function request(port: number, path: string, options: { method?: string; k
  */
 async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string } = {}) {
   const feed = new SpendAttributionFeed()
-  const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string }> = []
+  const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string; headers: http.IncomingHttpHeaders }> = []
+  const feedAuth: Array<string | undefined> = []
   let requestCounter = 0
   const server = http.createServer((req, res) => {
     if (req.url?.startsWith('/_antseed/attributed-spend')) {
+      feedAuth.push(req.headers.authorization)
       if (options.spendFeed === false) {
         res.writeHead(404).end()
         return
@@ -90,6 +92,7 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
         auth: req.headers.authorization,
         source: req.headers['x-antseed-system-proxy-source'] as string | undefined,
         tag,
+        headers: req.headers,
       })
       const requestId = `req-${++requestCounter}`
       if (tag && options.costUsdc) {
@@ -110,13 +113,20 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
     })
   })
   const port = await listen(server)
-  return { port, captured, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
+  return { port, captured, feedAuth, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
 }
 
-async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 300_000, topup: GatewayTopupOptions | null = null) {
+async function startGateway(
+  store: GatewayStore,
+  buyerPort: number,
+  holdUsdc = 300_000,
+  topup: GatewayTopupOptions | null = null,
+  buyerAuthHeaders?: () => Record<string, string>,
+) {
   const accounting = new GatewayAccounting(store, { holdUsdc, settleGraceMs: 50 })
   const feed = new SpendFeedPoller({
     buyerPort,
+    ...(buyerAuthHeaders ? { buyerAuthHeaders } : {}),
     onPage: (page) => { accounting.ingest(page.bootId, page.events) },
     intervalMs: 60_000,
   })
@@ -126,6 +136,7 @@ async function startGateway(store: GatewayStore, buyerPort: number, holdUsdc = 3
     accounting,
     buyerPort,
     topup,
+    ...(buyerAuthHeaders ? { buyerAuthHeaders } : {}),
     identityAddress: async (name) => (name === 'team-a' ? '0x00000000000000000000000000000000000000aa' : null),
     spendFeedState: () => feed.state,
     refreshSpendFeed: () => feed.pollOnce(),
@@ -375,6 +386,54 @@ test('gateway exposes only authenticated supported API routes', async () => {
     ])
     // Every forwarded request carries a gateway tag, never the client's.
     assert.ok(buyer.captured.every((entry) => entry.tag?.startsWith('gw_')))
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway never forwards client credential headers to the buyer (#1104)', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Remote', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const res = await request(gateway.port, '/v1/messages', {
+      method: 'POST', key: secret, body: '{"model":"m"}',
+      headers: {
+        'x-api-key': 'sk-ant-real',
+        'x-goog-api-key': 'AIza-real',
+        'api-key': 'azure-real',
+        'proxy-authorization': 'Basic cHJveHk6c2VjcmV0',
+        cookie: 'session=real',
+        'anthropic-version': '2023-06-01',
+      },
+    })
+    assert.equal(res.status, 200)
+    const forwarded = buyer.captured[0]!.headers
+    for (const name of ['authorization', 'proxy-authorization', 'cookie', 'x-api-key', 'x-goog-api-key', 'api-key']) {
+      assert.equal(forwarded[name], undefined, `${name} must not reach the buyer`)
+    }
+    assert.equal(forwarded['anthropic-version'], '2023-06-01')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway authenticates to a token-protected buyer with the buyer token, not the client key', async () => {
+  const { store, cleanup } = tempStore()
+  const buyer = await fakeBuyer({ costUsdc: 1 })
+  const { secret } = store.createKey({ label: 'Remote', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 300_000, null, () => ({ authorization: 'Bearer buyer-proxy-token-123' }))
+  try {
+    assert.equal((await request(gateway.port, '/v1/messages', { method: 'POST', key: secret, body: '{"model":"m"}' })).status, 200)
+    assert.equal(buyer.captured[0]!.auth, 'Bearer buyer-proxy-token-123')
+    await gateway.feed.pollOnce()
+    assert.ok(buyer.feedAuth.length > 0)
+    assert.ok(buyer.feedAuth.every((auth) => auth === 'Bearer buyer-proxy-token-123'))
   } finally {
     await gateway.stop()
     await buyer.close()

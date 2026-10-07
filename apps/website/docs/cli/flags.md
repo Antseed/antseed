@@ -28,6 +28,35 @@ hide_title: true
 
 The same value can be supplied with `ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS`. Precedence is: flag, environment variable, `buyer.metadataFetchTimeoutMs`, built-in default.
 
+### Bind host and proxy auth token
+
+```bash title="buyer start"
+--host <host>            Interface the proxy listens on (default: 127.0.0.1)
+--auth-token <token>     Require Authorization: Bearer <token> on every request (env: ANTSEED_PROXY_TOKEN)
+```
+
+By default the buyer proxy listens on `127.0.0.1` and accepts any local request. To reach it from another machine or container (a VPS, a CI runner, a remote agent), give it a token:
+
+```bash
+export ANTSEED_PROXY_TOKEN=$(openssl rand -hex 32)
+antseed buyer start --host 0.0.0.0
+```
+
+With a token set, every request (API routes and the `/_antseed/*` control plane) must send `Authorization: Bearer <token>`, and anything else gets `401`. The token is compared in constant time and is never forwarded to a seller. Tokens must be at least 16 printable characters.
+
+`antseed buyer start` **refuses to start** on a non-loopback `--host` without a token: anyone who can reach the port could spend the buyer's wallet. Exposing the proxy without a token is not supported. The proxy speaks plain HTTP, so put TLS in front of it (a reverse proxy or tunnel) when it crosses an untrusted network. For per-user keys with spend limits, use [`antseed gateway`](/docs/guides/gateway-api-keys) instead.
+
+Clients send the token as their API key:
+
+```bash
+export ANTHROPIC_BASE_URL=http://buyer-host:8377
+export ANTHROPIC_AUTH_TOKEN=$ANTSEED_PROXY_TOKEN     # Claude Code (sent as Authorization: Bearer)
+export OPENAI_BASE_URL=http://buyer-host:8377/v1
+export OPENAI_API_KEY=$ANTSEED_PROXY_TOKEN
+```
+
+The CLI's own commands on the same machine (`antseed buyer deposit`, `sweep`, `activity`, `channels close`, `antseed gateway`, `antseed tunnel`, `antseed system-proxy`, and the `antseed claude` / `codex` / `opencode` wrappers) find the running buyer's token automatically: it is written to `<data-dir>/buyer-proxy-auth-<port>.json` with `0600` permissions while the buyer runs. For a buyer on another host, set `ANTSEED_PROXY_TOKEN` in the client's environment. Buyers started by the desktop app never use a token.
+
 ## Seller Start Flags
 
 `antseed seller start` also supports runtime-only overrides for seller operations:

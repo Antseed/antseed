@@ -4,6 +4,7 @@ import ora from 'ora';
 import type { CloseChannelResultPayload, StoredChannel } from '@antseed/node';
 import { CHANNEL_STATUS } from '@antseed/node/payments';
 import { getGlobalOptions } from '../types.js';
+import { proxyAuthHeaders } from '../../../proxy/proxy-auth.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
   createChannelsClient,
@@ -87,6 +88,7 @@ const REJECT_HINTS: Record<string, string> = {
 
 async function daemonRequestClose(
   port: number,
+  dataDir: string,
   peerId: string,
   includeAuth: boolean,
 ): Promise<CloseChannelResultPayload> {
@@ -94,7 +96,7 @@ async function daemonRequestClose(
   try {
     res = await fetch(`http://127.0.0.1:${port}/_antseed/channels/close`, {
       method: 'POST',
-      headers: { 'content-type': 'application/json' },
+      headers: { 'content-type': 'application/json', ...proxyAuthHeaders(dataDir, port) },
       body: JSON.stringify({ peerId, includeAuth }),
       signal: AbortSignal.timeout(90_000),
     });
@@ -145,7 +147,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const spinner = ora(`Asking seller ${shortId(localChannel.peerId, 12)} to close ${shortId(localChannel.sessionId, 18)}...`).start();
       let result: CloseChannelResultPayload;
       try {
-        result = await daemonRequestClose(config.buyer.proxyPort, localChannel.peerId, options.auth);
+        result = await daemonRequestClose(config.buyer.proxyPort, globalOpts.dataDir, localChannel.peerId, options.auth);
       } catch (err) {
         // An unreachable seller lands here, and that is the likeliest reason to
         // be running this command at all — so give the same actionable fallback

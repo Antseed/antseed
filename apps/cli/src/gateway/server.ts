@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
+import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { newRequestTag, type GatewayAccounting } from './accounting.js'
 import { parseBearerToken } from './keys.js'
 import { hasSpendLimits, LIMIT_PERIODS, type LimitBreach } from './limits.js'
@@ -63,6 +64,8 @@ export interface GatewayServerOptions {
   store: GatewayStore
   accounting: GatewayAccounting
   buyerPort: number
+  /** Headers authenticating the gateway to a token-protected buyer; read per request. */
+  buyerAuthHeaders?: () => Record<string, string>
   /** Wallet address of a buyer identity, for key holders' usage view. */
   identityAddress: (buyerIdentity: string) => Promise<string | null>
   spendFeedState: () => SpendFeedState
@@ -209,13 +212,16 @@ export class GatewayServer {
     const headers: http.OutgoingHttpHeaders = {}
     for (const [name, value] of Object.entries(req.headers)) {
       const normalized = name.toLowerCase()
-      if (normalized === 'host' || normalized === 'authorization' || normalized === 'cookie') continue
+      // The client's key authenticated it to this gateway; its other
+      // credentials are never needed downstream (see credential-headers.ts).
+      if (normalized === 'host' || isClientCredentialHeader(normalized)) continue
       // The key decides who pays and how spend is tagged, never the client.
       if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
       if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
       headers[name] = value
     }
     headers.host = `127.0.0.1:${buyerPort}`
+    Object.assign(headers, this._options.buyerAuthHeaders?.() ?? {})
     headers.connection = 'close'
     headers['content-length'] = String(body.length)
     headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)

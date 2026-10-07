@@ -12,7 +12,9 @@ import {
   normalizeAntseedBaseUrl,
   parseWrappedToolArgs,
   resolveDefaultAntseedBaseUrl,
+  resolveWrappedToolProxyToken,
 } from './wrapped-tools.js'
+import { publishProxyToken } from '../../proxy/proxy-auth.js'
 
 const ROOT_PROXY_URL = 'http://localhost:8378'
 const V1_PROXY_URL = `${ROOT_PROXY_URL}/v1`
@@ -147,6 +149,27 @@ test('resolveDefaultAntseedBaseUrl prefers active buyer state over config', asyn
     await writeFile(join(dataDir, 'buyer.state.json'), JSON.stringify({ port: 8378 }))
     assert.equal(await resolveDefaultAntseedBaseUrl(dataDir, configPath), 'http://localhost:8378')
   })
+})
+
+test('resolveWrappedToolProxyToken uses the local daemon token file, or ANTSEED_PROXY_TOKEN for a remote buyer', async () => {
+  await withTempWorkspace(async ({ dataDir }) => {
+    assert.equal(resolveWrappedToolProxyToken('http://localhost:8378', dataDir, {}), null)
+    await publishProxyToken(dataDir, 8378, 'local-token-0123456789')
+    assert.equal(resolveWrappedToolProxyToken('http://localhost:8378', dataDir, {}), 'local-token-0123456789')
+    assert.equal(resolveWrappedToolProxyToken('http://127.0.0.1:8378/v1', dataDir, {}), 'local-token-0123456789')
+    assert.equal(resolveWrappedToolProxyToken('http://buyer.internal:8378', dataDir, {}), null)
+    assert.equal(
+      resolveWrappedToolProxyToken('http://buyer.internal:8378', dataDir, { ANTSEED_PROXY_TOKEN: 'remote-token-0123456789' }),
+      'remote-token-0123456789',
+    )
+  })
+})
+
+test('buildOpenCodeConfigContent uses the proxy token as the API key when given', () => {
+  const config = JSON.parse(buildOpenCodeConfigContent(V1_PROXY_URL, MODEL_ID, 'proxy-token-0123456789')) as {
+    provider: { antseed: { options: { apiKey: string } } }
+  }
+  assert.equal(config.provider.antseed.options.apiKey, 'proxy-token-0123456789')
 })
 
 test('buildCodexConfigArgs uses ephemeral config overrides on the real Codex home', () => {

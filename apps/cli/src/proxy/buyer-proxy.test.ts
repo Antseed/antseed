@@ -19,6 +19,8 @@ import {
 } from '@antseed/node'
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
 import { TeeVerification } from './tee-verification.js'
+import { PROXY_TOKEN_ENV, proxyAuthFile, readProxyToken } from './proxy-auth.js'
+import { daemonJson } from '../cli/commands/buyer/daemon.js'
 import {
   BuyerProxy,
   isModelNotFoundResponse,
@@ -3738,4 +3740,179 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   assert.equal(proxy.getSweepReceipt(nonce), receipt)
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)
   assert.equal(proxy.getSweepReceipt('0x' + '00'.repeat(32)), null)
+})
+
+// Issue #1104: a client's own provider credentials must never reach a seller.
+// Sellers authenticate their upstream with their own keys; the buyer pays
+// on-chain. A malicious seller would otherwise read the raw key off the wire.
+const CLIENT_CREDENTIAL_HEADERS: Record<string, string> = {
+  authorization: 'Bearer sk-real',
+  'proxy-authorization': 'Basic cHJveHk6c2VjcmV0',
+  'x-api-key': 'sk-ant-real',
+  'x-goog-api-key': 'AIza-real',
+  'api-key': 'azure-real',
+  cookie: 'session=real',
+}
+
+test('buyer proxy does not forward client credential headers to the seller (buffered)', async () => {
+  const peer = makePeer('e', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let seen: Record<string, string> | null = null
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+    seen = request.headers
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: {
+      ...CLIENT_CREDENTIAL_HEADERS,
+      'x-antseed-pin-peer': peer.peerId,
+      'anthropic-version': '2023-06-01',
+      'x-antseed-spending-auth': 'signed-auth-payload',
+    },
+  }))
+  assert.equal(res.statusCode, 200)
+  assert.ok(seen, 'seller received a request')
+  const leaked = Object.keys(CLIENT_CREDENTIAL_HEADERS).filter((name) => seen![name] !== undefined)
+  assert.deepEqual(leaked, [], `credential headers reached the seller: ${leaked.join(', ')}`)
+  // Non-credential client headers still pass through.
+  assert.equal(seen!['anthropic-version'], '2023-06-01')
+  assert.equal(seen!['content-type'], 'application/json')
+  // AntSeed's own payment-auth header is not a client credential.
+  assert.equal(seen!['x-antseed-spending-auth'], 'signed-auth-payload')
+})
+
+test('buyer proxy does not forward client credential headers to the seller (streaming)', async () => {
+  const peer = makePeer('f', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let seen: Record<string, string> | null = null
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string; headers: Record<string, string> },
+  ) => {
+    seen = request.headers
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  ;(proxy as any)._node.sendRequest = (proxy as any)._node.sendRequestStream
+  await invokeProxy(proxy, makeProxyRequest({
+    headers: { ...CLIENT_CREDENTIAL_HEADERS, accept: 'text/event-stream', 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'gpt-4o', stream: true, messages: [] },
+  }))
+  assert.ok(seen, 'seller received a request')
+  const leaked = Object.keys(CLIENT_CREDENTIAL_HEADERS).filter((name) => seen![name] !== undefined)
+  assert.deepEqual(leaked, [], `credential headers reached the seller: ${leaked.join(', ')}`)
+})
+
+// Issue #1104: optional proxy auth token for `antseed buyer start`.
+const PROXY_TOKEN = 'proxy-token-0123456789abcdef'
+
+async function startTokenProxy(t: { after: (fn: () => Promise<void>) => void }) {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-proxy-auth-'))
+  const dispatched: Array<Record<string, string>> = []
+  const peer = makePeer('9', ['openai'])
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: dir,
+    authToken: PROXY_TOKEN,
+    node: {
+      router: permissiveRouter(),
+      on: () => undefined,
+      startBackgroundPeerDiscoverySweep: () => {},
+      dhtNodeCount: 0,
+      sendRequest: async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+        dispatched.push(request.headers)
+        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+      },
+    } as any,
+    backgroundRefreshIntervalMs: 60 * 60_000,
+  })
+  ;(proxy as any)._refreshPeersNow = async () => [peer]
+  ;(proxy as any)._getPeers = async () => [peer]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  await proxy.start()
+  const address = (proxy as any)._server.address() as { port: number }
+  t.after(async () => {
+    await proxy.stop()
+    await rm(dir, { recursive: true, force: true })
+  })
+  return { proxy, dir, port: address.port, peer, dispatched }
+}
+
+test('token-protected buyer proxy rejects requests without the bearer token', async (t) => {
+  const { port } = await startTokenProxy(t)
+  const cases: Array<[string, Record<string, string>]> = [
+    ['/_antseed/status', {}],
+    ['/_antseed/status', { authorization: 'Bearer wrong-token-0123456789' }],
+    ['/_antseed/status', { authorization: PROXY_TOKEN }],
+    ['/_antseed/status', { 'x-api-key': PROXY_TOKEN }],
+    ['/v1/models', {}],
+  ]
+  for (const [path, headers] of cases) {
+    const res = await fetch(`http://127.0.0.1:${port}${path}`, { headers })
+    assert.equal(res.status, 401, `${path} ${JSON.stringify(headers)}`)
+    assert.equal(res.headers.get('www-authenticate'), 'Bearer')
+    const body = await res.json() as { error: { code: string } }
+    assert.equal(body.error.code, 'invalid_proxy_token')
+  }
+  const ok = await fetch(`http://127.0.0.1:${port}/_antseed/status`, { headers: { authorization: `Bearer ${PROXY_TOKEN}` } })
+  assert.equal(ok.status, 200)
+})
+
+test('token-protected buyer proxy strips its own token before dispatching to the seller', async (t) => {
+  const { port, peer, dispatched } = await startTokenProxy(t)
+  const res = await fetch(`http://127.0.0.1:${port}/v1/chat/completions`, {
+    method: 'POST',
+    headers: {
+      authorization: `Bearer ${PROXY_TOKEN}`,
+      'content-type': 'application/json',
+      'x-antseed-pin-peer': peer.peerId,
+    },
+    body: JSON.stringify({ model: 'gpt-4o', messages: [] }),
+  })
+  assert.equal(res.status, 200)
+  assert.equal(dispatched.length, 1)
+  assert.equal(dispatched[0]!['authorization'], undefined)
+  assert.ok(!JSON.stringify(dispatched[0]).includes(PROXY_TOKEN))
+})
+
+test('token-protected buyer proxy publishes a 0600 credential file for local clients and removes it on stop', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-proxy-auth-file-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: dir,
+    authToken: PROXY_TOKEN,
+    node: { router: null, on: () => undefined, startBackgroundPeerDiscoverySweep: () => {} } as any,
+    backgroundRefreshIntervalMs: 60 * 60_000,
+  })
+  ;(proxy as any)._refreshPeersNow = async () => []
+  await proxy.start()
+  const port = ((proxy as any)._server.address() as { port: number }).port
+  const file = proxyAuthFile(dir, port)
+  const { stat } = await import('node:fs/promises')
+  if (process.platform !== 'win32') assert.equal((await stat(file)).mode & 0o777, 0o600)
+  assert.equal(readProxyToken(dir, port), PROXY_TOKEN)
+  // The CLI's daemon client picks the token up from the data dir.
+  const status = await daemonJson({ port, dataDir: dir }, '/_antseed/status')
+  assert.equal(status?.['ok'], true)
+  const withoutToken = await daemonJson({ port, dataDir: join(dir, 'elsewhere') }, '/_antseed/status')
+  assert.equal(withoutToken, null)
+  await proxy.stop()
+  await assert.rejects(stat(file))
+})
+
+test('buyer proxy without a token keeps serving unauthenticated loopback requests', async (t) => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-proxy-noauth-'))
+  t.after(() => rm(dir, { recursive: true, force: true }))
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: dir,
+    node: { router: null, on: () => undefined, startBackgroundPeerDiscoverySweep: () => {}, dhtNodeCount: 0 } as any,
+    backgroundRefreshIntervalMs: 60 * 60_000,
+  })
+  ;(proxy as any)._refreshPeersNow = async () => []
+  await proxy.start()
+  t.after(() => proxy.stop())
+  const port = ((proxy as any)._server.address() as { port: number }).port
+  assert.equal((await fetch(`http://127.0.0.1:${port}/_antseed/status`)).status, 200)
+  assert.equal(readProxyToken(dir, port), process.env[PROXY_TOKEN_ENV]?.trim() || null)
 })

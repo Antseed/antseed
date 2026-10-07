@@ -8,6 +8,7 @@ import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 import { X402Facilitator, type X402Asset } from './x402.js'
 import { cdpAuthorization, type CdpCredentials } from './cdp-auth.js'
+import { proxyAuthHeaders } from '../proxy/proxy-auth.js'
 
 const DEFAULT_MAX_PER_REQUEST_USDC = '300000'
 // AntseedDeposits takes at least 1 USDC on a first deposit, after the sweep fee.
@@ -92,8 +93,13 @@ function facilitatorAuth(config: GatewayTopupConfig): { authorize?: (endpointUrl
   return {}
 }
 
-export async function liveBuyerIdentityAddress(buyerPort: number, name: string): Promise<string | null> {
+export async function liveBuyerIdentityAddress(
+  buyerPort: number,
+  name: string,
+  headers: Record<string, string> = {},
+): Promise<string | null> {
   const response = await fetch(`http://127.0.0.1:${buyerPort}/_antseed/buyer-identities`, {
+    headers,
     signal: AbortSignal.timeout(3_000),
   })
   if (!response.ok) return null
@@ -122,13 +128,17 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     throw error
   }
 
-  const identityAddress = (name: string): Promise<string | null> => liveBuyerIdentityAddress(buyerPort, name)
+  // Re-read per request: a restarted buyer may come back with a new token.
+  const buyerAuthHeaders = (): Record<string, string> => proxyAuthHeaders(options.dataDir, buyerPort)
+  const identityAddress = (name: string): Promise<string | null> =>
+    liveBuyerIdentityAddress(buyerPort, name, buyerAuthHeaders())
 
   const accounting = new GatewayAccounting(store, {
     holdUsdc: parseBaseUnits(config.payments?.maxPerRequestUsdc ?? DEFAULT_MAX_PER_REQUEST_USDC),
   })
   const spendFeed = new SpendFeedPoller({
     buyerPort,
+    buyerAuthHeaders,
     onPage: (page) => {
       const recorded = accounting.ingest(page.bootId, page.events)
       if (recorded > 0) options.onLog?.(`recorded ${recorded} spend event(s)`)
@@ -148,6 +158,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     store,
     accounting,
     buyerPort,
+    buyerAuthHeaders,
     identityAddress,
     spendFeedState: () => spendFeed.state,
     refreshSpendFeed: () => spendFeed.pollOnce(),

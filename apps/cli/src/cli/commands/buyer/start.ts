@@ -15,6 +15,13 @@ import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVers
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
+import {
+  DEFAULT_PROXY_HOST,
+  PROXY_TOKEN_ENV,
+  isLoopbackHost,
+  proxyAuthHeaders,
+  validateProxyToken,
+} from '../../../proxy/proxy-auth.js'
 import { DepositWatcher } from '../../../proxy/deposit-watcher.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
@@ -149,7 +156,38 @@ async function isPortReachable(port: number, timeoutMs = 700): Promise<boolean> 
   })
 }
 
-export async function isCompatibleBuyerProxy(port: number, timeoutMs = 1200): Promise<boolean> {
+export interface BuyerProxyListenOptions {
+  host: string
+  authToken: string | null
+}
+
+/**
+ * Resolve `--host` / `--auth-token` (falling back to ANTSEED_PROXY_TOKEN).
+ *
+ * A non-loopback host without a token is refused rather than warned about:
+ * whoever can reach the port spends the buyer's wallet, and a warning in a
+ * daemon's or container's log is easy to miss.
+ */
+export function resolveBuyerProxyListenOptions(
+  options: { host?: string; authToken?: string },
+  env: NodeJS.ProcessEnv = process.env,
+): BuyerProxyListenOptions {
+  const host = options.host?.trim() || DEFAULT_PROXY_HOST
+  const authToken = options.authToken?.trim() || env[PROXY_TOKEN_ENV]?.trim() || null
+  if (authToken !== null) {
+    const problem = validateProxyToken(authToken)
+    if (problem) throw new Error(problem)
+  }
+  if (!isLoopbackHost(host) && authToken === null) {
+    throw new Error(
+      `Refusing to listen on ${host} without authentication: anyone who can reach the proxy could spend this buyer's wallet. `
+      + `Set --auth-token or ${PROXY_TOKEN_ENV}, or keep the default --host ${DEFAULT_PROXY_HOST}.`,
+    )
+  }
+  return { host, authToken }
+}
+
+export async function isCompatibleBuyerProxy(port: number, timeoutMs = 1200, headers: Record<string, string> = {}): Promise<boolean> {
   const overallBudgetMs = Math.max(1, timeoutMs)
   const startedAt = Date.now()
   const reachabilityTimeoutMs = Math.min(overallBudgetMs, 700)
@@ -164,7 +202,7 @@ export async function isCompatibleBuyerProxy(port: number, timeoutMs = 1200): Pr
   try {
     const response = await fetch(`http://127.0.0.1:${Math.floor(port)}/v1/models`, {
       method: 'GET',
-      headers: { accept: 'application/json' },
+      headers: { accept: 'application/json', ...headers },
       signal: controller.signal,
     })
     const antseedHeaderNames = ['x-antseed-request-id', 'x-antseed-peer-id', 'x-antseed-provider']
@@ -184,11 +222,19 @@ export async function isCompatibleBuyerProxy(port: number, timeoutMs = 1200): Pr
   }
 }
 
+/** URL to show for a proxy bound to `host`; wildcard binds show localhost. */
+export function proxyDisplayUrl(host: string, port: number): string {
+  const display = host === '0.0.0.0' || host === '::' || isLoopbackHost(host) ? 'localhost' : host
+  return `http://${display.includes(':') ? `[${display}]` : display}:${port}`
+}
+
 export function registerBuyerStartCommand(buyerCmd: Command): void {
   buyerCmd
     .command('start')
     .description('Start the buyer proxy and connect to sellers on the P2P network')
     .option('-p, --port <number>', 'local proxy port', (v) => parseInt(v, 10))
+    .option('--host <host>', `interface the proxy listens on; a non-loopback host requires --auth-token (default: ${DEFAULT_PROXY_HOST})`)
+    .option('--auth-token <token>', `require Authorization: Bearer <token> on every proxy request (env: ${PROXY_TOKEN_ENV})`)
     .option('--router <name>', 'router plugin name or npm package')
     .option('--instance <id>', 'use a configured plugin instance by ID')
     .option('--max-input-usd-per-million <number>', 'runtime-only max input pricing override in USD per 1M tokens', parseFloat)
@@ -207,6 +253,17 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       if (logFilter.length > 0) {
         process.env['ANTSEED_DEBUG'] = '1'
         process.env['ANTSEED_LOG_FILTER'] = logFilter
+      }
+
+      let listenOptions: BuyerProxyListenOptions
+      try {
+        listenOptions = resolveBuyerProxyListenOptions({
+          host: options.host as string | undefined,
+          authToken: options.authToken as string | undefined,
+        })
+      } catch (err) {
+        console.error(chalk.red(`Error: ${(err as Error).message}`))
+        process.exit(1)
       }
 
       const pinnedPeerId = options.peer as string | undefined
@@ -473,6 +530,8 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const proxy = new BuyerProxy({
         buyerIdentities,
         port: proxyPort,
+        host: listenOptions.host,
+        ...(listenOptions.authToken ? { authToken: listenOptions.authToken } : {}),
         node,
         pinnedPeerId,
         dataDir: globalOpts.dataDir,
@@ -486,7 +545,10 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       try {
         await proxy.start()
         ownsProxyListener = true
-        proxySpinner.succeed(chalk.green(`Proxy listening on http://localhost:${proxyPort}`))
+        proxySpinner.succeed(chalk.green(`Proxy listening on ${proxyDisplayUrl(listenOptions.host, proxyPort)}`))
+        if (listenOptions.authToken) {
+          console.log(chalk.dim('  Auth: Authorization: Bearer <token> required on every request'))
+        }
         if (verifierPolicy) {
           const sel = verifierPolicy.prefer?.length ? verifierPolicy.prefer.join(', ') : 'seller default (trusted set)'
           console.log(chalk.dim(`  Verifier: ${sel} (${verifierPolicy.require ? 'required' : 'optional'})`))
@@ -494,7 +556,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           console.log(chalk.dim('  Verifier: disabled'))
         }
       } catch (err) {
-        if (isAddrInUseError(err) && await isCompatibleBuyerProxy(proxyPort)) {
+        if (isAddrInUseError(err) && await isCompatibleBuyerProxy(proxyPort, 1200, proxyAuthHeaders(globalOpts.dataDir, proxyPort))) {
           proxySpinner.succeed(chalk.yellow(`Proxy port ${proxyPort} already in use; reusing existing local proxy.`))
           console.log(chalk.yellow('Proxy request logs will be emitted by the process that already owns this port.'))
         } else {
@@ -569,7 +631,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         }
       }
 
-      const proxyUrl = `http://localhost:${proxyPort}`
+      const proxyUrl = proxyDisplayUrl(listenOptions.host, proxyPort)
       console.log('')
       if (toolHints.length > 0) {
         console.log(chalk.bold('Configure your tools:'))
@@ -580,6 +642,11 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         console.log(chalk.bold('Configure your CLI tools:'))
         console.log(`  export ANTHROPIC_BASE_URL=${proxyUrl}`)
         console.log(`  export OPENAI_BASE_URL=${proxyUrl}`)
+      }
+      if (listenOptions.authToken) {
+        console.log(chalk.dim('  # The proxy token is your client API key, sent as Authorization: Bearer <token>:'))
+        console.log(`  export ANTHROPIC_AUTH_TOKEN=<token>   # Claude Code`)
+        console.log(`  export OPENAI_API_KEY=<token>`)
       }
       console.log('')
       console.log(chalk.dim('Enable debug logs: export ANTSEED_DEBUG=1'))

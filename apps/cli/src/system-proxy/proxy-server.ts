@@ -12,6 +12,7 @@ import type {
   SystemProxyResponseTransform,
   SystemProxySource,
 } from './types.js'
+import { CLIENT_CREDENTIAL_HEADERS } from '../proxy/credential-headers.js'
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -19,8 +20,7 @@ const HOP_BY_HOP = new Set([
 ])
 
 const ROUTED_SENSITIVE_HEADERS = new Set([
-  'authorization',
-  'cookie',
+  ...CLIENT_CREDENTIAL_HEADERS,
   'x-csrf-token',
 ])
 
@@ -58,6 +58,8 @@ export interface ConversationForwardContext {
 export interface SystemProxyConfig {
   port: number
   buyerProxyPort: number
+  /** Headers authenticating to a token-protected buyer; read per request. */
+  buyerAuthHeaders?: () => Record<string, string>
   certCache: CertCache
   proxiedDomains: Set<string>
   proxiedPathPrefixes: Map<string, Set<string>>
@@ -298,6 +300,7 @@ export class SystemProxyServer {
         }
       }
       forwardHeaders['host'] = `127.0.0.1:${this.config.buyerProxyPort}`
+      Object.assign(forwardHeaders, this.config.buyerAuthHeaders?.() ?? {})
       forwardHeaders['connection'] = 'close'
       forwardHeaders[SYSTEM_PROXY_SOURCE_HEADER] = buyerRequest.source
       if (buyerRequest.modelRouted) {
