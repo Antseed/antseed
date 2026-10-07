@@ -14,7 +14,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - CLI gateway: key holders can top up a key's buyer wallet with x402. `POST /v1/key/topup` answers `402` with an x402 v2 `PAYMENT-REQUIRED` header (USDC on Base via EIP-3009, paid to the key's wallet), settles a signed `PAYMENT-SIGNATURE` through the configured facilitator (`--x402-facilitator` or `ANTSEED_X402_FACILITATOR_URL`: a URL, `cdp` for Coinbase CDP signed with `CDP_API_KEY_ID`/`CDP_API_KEY_SECRET`, or `payai`), records the top-up on the key, and leaves the running buyer to sweep it into the identity's credits. Top-ups are off per key until the owner enables them (`key create --allow-topup`, `key topup <id> on|off`). `GET /v1/key` reports `topup_enabled` and `topped_up_usd`.
 - CLI buyer: `GET /_antseed/attributed-spend` reports the signed spend of requests tagged by a local front end with `x-antseed-attribution-tag`. The tag is stripped before a request reaches a seller.
 - Docs: add the Shared Gateway API Keys guide.
-- Website: blog post "Share Antseed With Your Team, Friends, and Customers" (`/blog/shared-gateway-api-keys`) on per-key API keys with spend limits, buyer identities (a separate wallet per key), team and friend sharing, x402 top-ups for key holders, and the one-command Linux server installer.
+- Website: blog post "Deploy Your Own Antseed Gateway" (`/blog/deploy-your-own-antseed-gateway`) on deploying an OpenAI-compatible gateway with one command, per-key API keys with spend limits, buyer identities (a separate wallet per key), team and friend sharing, and x402 top-ups for key holders.
 
 ### Fixed
 

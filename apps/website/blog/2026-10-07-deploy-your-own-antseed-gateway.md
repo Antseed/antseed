@@ -1,20 +1,35 @@
 ---
-slug: shared-gateway-api-keys
-title: "Share Antseed With Your Team, Friends, and Customers"
+slug: deploy-your-own-antseed-gateway
+title: "Deploy Your Own Antseed Gateway"
 authors: [antseed]
-tags: [API keys, gateway, teams, buyers, x402, product]
-description: "One Antseed buyer can now serve many people. Give each person or app their own API key with spend limits, a separate wallet if you want one, and usage they can check themselves."
-keywords: [antseed api keys, shared ai api keys, ai api spend limits, team ai budget, openai compatible gateway, x402 top up, multiple wallets one buyer]
+tags: [API keys, gateway, self-hosting, teams, buyers, x402, product]
+description: "Run your own OpenAI-compatible Antseed endpoint on a server with one command. Give every person or app their own API key with spend limits, a separate wallet if you want one, and usage they can check themselves."
+keywords: [antseed gateway, deploy ai gateway, self-hosted ai api gateway, openai compatible gateway, shared ai api keys, ai api spend limits, team ai budget, x402 top up]
+image: /img/blog/deploy-your-own-antseed-gateway/header.jpg
 date: 2026-10-07
 ---
 
-Until now, one Antseed buyer meant one wallet and one set of requests. If you wanted to share it, you shared everything: the balance, the usage, and no way to tell who spent what.
+![Deploy your own Antseed gateway: one command, API keys per person, spend limits](/img/blog/deploy-your-own-antseed-gateway/header.webp)
 
-One buyer can now serve many people. Each person or app gets their own API key, with its own usage history and optional spend limits. Each key can pay from your wallet or from a wallet of its own.
+You can now run your own Antseed gateway: an OpenAI-compatible API endpoint, on your own server, that many people can use at once.
+
+Each person or app gets their own API key, with its own usage history and optional spend limits. Each key can pay from your wallet or from a wallet of its own. All of it runs through one Antseed buyer.
 
 <!-- truncate -->
 
-You can use it to give your team access under one budget, hand a friend a key without handing over your balance, or offer Antseed access to the people who use your product.
+Use it to give your team access under one budget, hand a friend a key without handing over your balance, or offer Antseed access to the people who use your product.
+
+## Deploy it with one command
+
+On a Linux server, one command installs the Antseed buyer and the gateway as services that restart on failure and start on boot. It sets up HTTPS on your own domain and creates your first key:
+
+```bash
+curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
+```
+
+When it finishes, it prints your base URL, such as `https://llm.example.com/v1`, the first API key, and the wallet address to fund for paid models. Point the DNS record at the server first; the installer gets a TLS certificate for the domain automatically.
+
+No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](/docs/guides/gateway-server) covers the options.
 
 ## A key for everyone you share with
 
@@ -87,34 +102,20 @@ The flow is standard x402 v2 over HTTP, so x402 client libraries handle it. The 
 
 This lets you put Antseed behind your own product: issue a key per user, let each user fund their own wallet, and serve them all from one buyer. The gateway doesn't add a margin on top of provider prices today. A key holder pays what providers charge.
 
-## Where it runs
+## Run it on your own machine
 
-Start your buyer, or the AI VPN, then run the gateway in front of it:
+You don't need a server to try it. Start your buyer, or the AI VPN, then run the gateway in front of it:
 
 ```bash
+antseed gateway key create --label "My first key" --new-identity --monthly-limit 10
 antseed gateway start                  # http://127.0.0.1:8379/v1
 antseed gateway start --host 0.0.0.0   # serve other machines on your network
 ```
 
-To reach people outside your network, use a [public HTTPS tunnel](/docs/guides/public-tunnels). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
-
-For a gateway that stays up, run it on a server. On Linux, one command installs the buyer and the gateway as services that restart on failure and start on boot. It sets up HTTPS on your own domain and creates your first key:
-
-```bash
-curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
-```
-
-[Run a Gateway on a Server](/docs/guides/gateway-server) covers the options, including Cloudflare Tunnel instead of a domain.
+To reach people outside your network from your own machine, use a [public HTTPS tunnel](/docs/guides/public-tunnels). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
 
 ## Get started
 
-With the [Antseed CLI installed](/docs/install) and your buyer running:
-
-```bash
-antseed gateway key create --label "My first key" --new-identity --monthly-limit 10
-antseed gateway start
-```
-
-Then point any OpenAI-compatible client at the gateway with the new key.
+Deploy a gateway on a server with the [installer](/docs/guides/gateway-server), or run one locally with the [Antseed CLI](/docs/install). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
 
 The [Shared Gateway API Keys guide](/docs/guides/gateway-api-keys) covers limits, identities, top-ups, and where the gateway stores its data.
