@@ -80,6 +80,8 @@ const IDENTITY_REGISTRY_ABI = [
   'function ownerOf(uint256 agentId) external view returns (address)',
 ] as const;
 
+const BUNDLE_LOG_BLOCK_RANGE = 500;
+
 export function serviceHash(service: string): string {
   return keccak256(toUtf8Bytes(service.trim().toLowerCase()));
 }
@@ -178,6 +180,68 @@ export class VerifierClient extends BaseEvmClient {
     const filterFactory = contract.filters.VerificationBundleSubmitted;
     if (!filterFactory) throw new Error('VerificationBundleSubmitted event is missing from verification ABI');
     return this._bundleEvents(await contract.queryFilter(filterFactory(evidenceHash), fromBlock, toBlock));
+  }
+
+  async findBundleSubmission(
+    evidenceHash: string,
+    transactionHash: string | null = null,
+  ): Promise<VerificationBundleSubmittedEvent | null> {
+    if (transactionHash) {
+      const event = await this.bundleFromTransaction(evidenceHash, transactionHash);
+      if (event) return event;
+    }
+    const bundle = await this._contract().getFunction('verificationBundle')(evidenceHash) as { submittedAt: bigint };
+    const submittedAt = Number(bundle.submittedAt);
+    if (submittedAt === 0) return null;
+    const latestBlock = await this._provider.getBlockNumber();
+    const firstBlock = await this._firstBlockAtOrAfter(submittedAt, latestBlock);
+    const lastBlock = (await this._firstBlockAtOrAfter(submittedAt + 1, latestBlock)) - 1;
+    for (let fromBlock = firstBlock; fromBlock <= lastBlock; fromBlock += BUNDLE_LOG_BLOCK_RANGE) {
+      const toBlock = Math.min(lastBlock, fromBlock + BUNDLE_LOG_BLOCK_RANGE - 1);
+      const event = (await this.queryBundles(evidenceHash, fromBlock, toBlock)).at(-1);
+      if (event) return event;
+    }
+    return null;
+  }
+
+  async bundleFromTransaction(
+    evidenceHash: string,
+    transactionHash: string,
+  ): Promise<VerificationBundleSubmittedEvent | null> {
+    const receipt = await this._provider.getTransactionReceipt(transactionHash);
+    if (!receipt || receipt.status !== 1) return null;
+    const contract = this._contract();
+    const expectedHash = evidenceHash.toLowerCase();
+    for (const log of receipt.logs) {
+      if (getAddress(log.address) !== getAddress(this._contractAddress)) continue;
+      const parsed = contract.interface.parseLog({ topics: [...log.topics], data: log.data });
+      if (parsed?.name !== 'VerificationBundleSubmitted') continue;
+      const loggedHash = String(parsed.args.evidenceHash ?? parsed.args[0]);
+      if (loggedHash.toLowerCase() !== expectedHash) continue;
+      return {
+        evidenceHash: loggedHash,
+        verifier: getAddress(String(parsed.args.verifier ?? parsed.args[1])),
+        resultCount: Number(parsed.args.resultCount ?? parsed.args[2]),
+        evidenceUri: String(parsed.args.evidenceUri ?? parsed.args[3]),
+        blockNumber: log.blockNumber,
+        logIndex: log.index,
+        transactionHash: log.transactionHash,
+      };
+    }
+    return null;
+  }
+
+  private async _firstBlockAtOrAfter(timestamp: number, latestBlock: number): Promise<number> {
+    let low = 0;
+    let high = latestBlock + 1;
+    while (low < high) {
+      const middle = Math.floor((low + high) / 2);
+      const block = await this._provider.getBlock(middle);
+      if (!block) throw new Error(`block ${middle} is unavailable`);
+      if (block.timestamp < timestamp) low = middle + 1;
+      else high = middle;
+    }
+    return low;
   }
 
   private _bundleEvents(logs: readonly unknown[]): VerificationBundleSubmittedEvent[] {

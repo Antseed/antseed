@@ -197,9 +197,14 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           const { bundle } = item
           const now = new Date().toISOString()
           let publication = ledger.models[bundle.model]?.publication
+          let submittedTransactionHash: string | null = null
           try {
             if (item.alreadySubmitted) {
-              const event = await requireBundleEvent(verifierClient, bundle.evidenceHash)
+              const event = await requireBundleEvent(
+                verifierClient,
+                bundle.evidenceHash,
+                ledger.models[bundle.model]?.transactionHash ?? null,
+              )
               if (options.publishIpfs) {
                 if (!event.evidenceUri) {
                   throw new Error('bundle was already submitted without an IPFS URI and cannot be retroactively anchored')
@@ -286,7 +291,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
               evidenceUri,
               results: bundle.results,
             })
-            const event = await requireBundleEvent(verifierClient, bundle.evidenceHash)
+            submittedTransactionHash = transactionHash
+            const event = await requireBundleEvent(verifierClient, bundle.evidenceHash, transactionHash)
             if (event.evidenceUri !== evidenceUri) {
               throw new Error(`submitted bundle event URI mismatch: expected ${evidenceUri || '(empty)'}`)
             }
@@ -313,7 +319,7 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
             const failure = asError(error)
             ledger.models[bundle.model] = ledgerEntry(bundle, {
               status: 'failed',
-              transactionHash: ledger.models[bundle.model]?.transactionHash ?? null,
+              transactionHash: submittedTransactionHash ?? ledger.models[bundle.model]?.transactionHash ?? null,
               blockNumber: null,
               error: failure.message,
               lastAttemptAt: new Date().toISOString(),
@@ -395,9 +401,9 @@ async function confirmSubmission(bundleCount: number): Promise<void> {
 async function requireBundleEvent(
   verifierClient: ReturnType<typeof createVerifierClient>,
   evidenceHash: string,
+  transactionHash: string | null,
 ) {
-  const events = await verifierClient.queryBundles(evidenceHash)
-  const event = events.at(-1)
+  const event = await verifierClient.findBundleSubmission(evidenceHash, transactionHash)
   if (!event) throw new Error(`submitted bundle event not found for ${evidenceHash}`)
   return event
 }
