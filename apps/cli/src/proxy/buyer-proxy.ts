@@ -1,5 +1,6 @@
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { buildRoutingServices } from './routing-services.js'
 import { watchFile, unwatchFile } from 'node:fs'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -1832,6 +1833,12 @@ export class BuyerProxy {
       this._rollbackPeerHealth([normalized], 'cleared by request')
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, peerId: normalized }))
+      return
+    }
+
+    if (path === '/_antseed/routing-services' && method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, services: await buildRoutingServices(await this._getPeers(), this._modelRoutingClient, this._node, this._routingModels) }))
       return
     }
 

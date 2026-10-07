@@ -118,6 +118,10 @@ test('the buyer switches between a model and a model-routing service without rep
   assert.equal((await infer()).statusCode, 200)
   assert.equal(requests.filter(request => request.path === '/v1/routing/rank').length, 1)
   assert.equal(requests.filter(request => request.path === '/v1/routing/models').length, 1)
+  const discovery = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/routing-services' }))
+  assert.equal(discovery.statusCode, 200)
+  assert.deepEqual(JSON.parse(discovery.body).services[0].catalog, { models: [{ provider: 'openai', serviceId: 'model-a' }] })
+  assert.equal(requests.filter(request => request.path === '/v1/routing/models').length, 1)
   assert.equal((proxy as any)._node.router, router)
 })
 

@@ -41,6 +41,10 @@ export class RoutingModelsCache {
   invalidate(target: RoutingServiceTarget): void {
     this.queries.removeQueries({ queryKey: modelsKey(target), exact: true })
   }
+
+  expiresAt(target: RoutingServiceTarget): number {
+    return (this.queries.getQueryState(modelsKey(target))?.dataUpdatedAt ?? 0) + this.ttlMs
+  }
 }
 
 function modelsKey(target: RoutingServiceTarget): readonly [string, string, string] {
