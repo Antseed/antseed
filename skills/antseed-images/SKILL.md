@@ -11,7 +11,7 @@ Generate an image through the user's local Antseed buyer proxy using network-wid
 
 - Antseed Desktop or `antseed buyer start` must be running.
 - The buyer must have enough deposited USDC for an eligible seller serving the selected model.
-- The default buyer endpoint is `http://127.0.0.1:8377`. Use a different port only when the user provides one.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm sandbox` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
