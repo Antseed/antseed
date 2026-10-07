@@ -341,6 +341,52 @@ body {
   font-weight: 450;
 }
 
+/* Funding announcement above the shared navigation. */
+.theme-announcement-bar {
+  --docusaurus-announcement-bar-height: auto;
+  min-height: 42px;
+  border-bottom: none;
+  font-family: var(--as-font-app);
+}
+
+.theme-announcement-bar .funding-announcement {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px 12px;
+  padding: 5px 8px;
+  color: var(--as-on-void);
+  font-size: 14px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+.funding-announcement > span {
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.theme-announcement-bar .funding-announcement:hover {
+  color: var(--as-mint);
+}
+
+.theme-announcement-bar .close {
+  color: var(--as-on-void);
+  opacity: 0.8;
+}
+
+.theme-announcement-bar .close:hover {
+  opacity: 1;
+}
+
+.funding-announcement:focus-visible {
+  outline: 2px solid var(--as-mint);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* =============================================
    Navbar — floating white pill on brand-white page
    ============================================= */
