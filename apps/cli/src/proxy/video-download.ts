@@ -5,6 +5,23 @@ import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWN
 type SendDownload = (request: SerializedHttpRequest, callbacks: RequestStreamCallbacks, signal: AbortSignal) => Promise<SerializedHttpResponse>
 let activeDownloads = 0
 
+/** Seller error codes safe to pass to clients, so they can tell a temporary failure from a lasting one. */
+const SELLER_ERROR_CODES = new Set([
+  'video_download_failed', 'video_download_unavailable', 'video_download_busy', 'video_status_unavailable',
+  'unsupported_video_download', 'unsupported_video_request', 'resource_ownership_unavailable',
+])
+const RETURNED_STATUSES = new Set([400, 404, 409, 410, 413, 429, 502, 503, 504])
+
+function sellerErrorCode(body: Uint8Array): string | null {
+  if (body.length > 4096) return null
+  try {
+    const code = (JSON.parse(Buffer.from(body).toString('utf8')) as { error?: { code?: unknown } })?.error?.code
+    return typeof code === 'string' && SELLER_ERROR_CODES.has(code) ? code : null
+  } catch {
+    return null
+  }
+}
+
 /** Streams a finished video from the seller that owns the job to the client. */
 export async function downloadVideo(request: SerializedHttpRequest, response: ServerResponse, send: SendDownload, clientSignal: AbortSignal): Promise<void> {
   const error = (status: number, code: string) => {
@@ -43,7 +60,8 @@ export async function downloadVideo(request: SerializedHttpRequest, response: Se
         response.end(Buffer.from(result.body))
         return
       }
-      error([400, 404, 409, 410, 413, 429, 503, 504].includes(result.statusCode) ? result.statusCode : 502, 'video_download_unavailable')
+      const code = result.headers['content-type']?.startsWith('application/json') ? sellerErrorCode(result.body) : null
+      error(RETURNED_STATUSES.has(result.statusCode) ? result.statusCode : 502, code ?? 'video_download_unavailable')
       return
     }
     if (result.statusCode !== 200 || (length !== null && received !== length)) throw new Error('Incomplete video')

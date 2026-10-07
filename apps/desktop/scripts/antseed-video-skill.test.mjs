@@ -11,6 +11,12 @@ import { promisify } from 'node:util';
 import {
   assertSafeHttps,
   createBody,
+  incompatibilities,
+  isTransientRetrieveError,
+  MAX_TRANSIENT_FAILURES,
+  MAX_TRANSIENT_FAILURES_AFTER_COMPLETED,
+  VideoError,
+  waitForVideo,
   isUnsafeIp,
   parseCliArgs,
   priceEstimate,
@@ -114,6 +120,64 @@ test('selectedPeer filters incompatible sellers and ranks by reputation then pri
   assert.throws(() => selectedPeer(MODEL, { audio: true, prefer: 'reputation' }), { code: 'no_compatible_video_offer' });
 });
 
+test('incompatibilities rejects an aspect ratio the seller does not advertise', () => {
+  const imageToVideo = { peerId: 'ii', protocols: ['venice-video'], capabilities: { video: { durationsSeconds: [4], inputs: ['first_frame'], requiredInputs: ['first_frame'] } } };
+  assert.deepEqual(incompatibilities(imageToVideo, { duration: 4, aspectRatio: '16:9', firstFrame: 'start.png' }), ['aspect ratio']);
+  assert.deepEqual(incompatibilities(imageToVideo, { duration: 4, firstFrame: 'start.png' }), []);
+});
+
+test('isTransientRetrieveError retries 429 and 5xx but not client errors', () => {
+  for (const status of [429, 502, 503, 504]) assert.equal(isTransientRetrieveError(new VideoError('x', 'video_download_failed', { status })), true, String(status));
+  for (const status of [400, 401, 402, 403, 404, 410, 413, 422]) assert.equal(isTransientRetrieveError(new VideoError('x', 'http', { status })), false, String(status));
+  assert.equal(isTransientRetrieveError(new VideoError('x', 'proxy_unreachable')), true);
+  assert.equal(isTransientRetrieveError(new VideoError('x', 'invalid_video')), false);
+  assert.equal(isTransientRetrieveError(new Error('x')), false);
+});
+
+const scripted = (steps) => {
+  let calls = 0;
+  const retrieve = async () => {
+    const step = steps[Math.min(calls, steps.length - 1)];
+    calls += 1;
+    if (step instanceof Error) throw step;
+    return step;
+  };
+  return { retrieve, calls: () => calls };
+};
+const transient = (extra = {}) => new VideoError('Video download unavailable', 'video_download_failed', { status: 502, ...extra });
+const fast = { delays: [0] };
+
+test('waitForVideo rides out temporary errors during rendering', async () => {
+  const run = scripted([{ state: 'processing' }, transient(), transient(), { state: 'processing' }, transient(), { state: 'done', bytes: 7 }]);
+  const result = await waitForVideo('http://x', 'm', 'job', 'out.mp4', null, 0, 30, { ...fast, retrieve: run.retrieve });
+  assert.deepEqual(result, { state: 'done', bytes: 7 });
+  assert.equal(run.calls(), 6);
+});
+
+test('waitForVideo gives up after consecutive temporary errors with a resumable job', async () => {
+  const run = scripted([transient()]);
+  await assert.rejects(waitForVideo('http://x', 'm', 'job-7', 'out.mp4', null, 0, 30, { ...fast, retrieve: run.retrieve }), (error) => {
+    assert.equal(error.code, 'video_retrieve_unavailable');
+    assert.deepEqual(error.details, { jobId: 'job-7', lastStatus: 502, lastCode: 'video_download_failed', attempts: MAX_TRANSIENT_FAILURES, resumable: true });
+    return true;
+  });
+  assert.equal(run.calls(), MAX_TRANSIENT_FAILURES);
+});
+
+test('waitForVideo stops immediately on lasting errors', async () => {
+  for (const status of [401, 404]) {
+    const run = scripted([new VideoError('nope', 'video_route_not_found', { status })]);
+    await assert.rejects(waitForVideo('http://x', 'm', 'job', 'out.mp4', null, 0, 30, { ...fast, retrieve: run.retrieve }), { code: 'video_route_not_found' });
+    assert.equal(run.calls(), 1);
+  }
+});
+
+test('waitForVideo allows fewer retries once rendering completed', async () => {
+  const run = scripted([new VideoError('Video download failed.', 'download_failed', { status: 503, completed: true })]);
+  await assert.rejects(waitForVideo('http://x', 'm', 'job', 'out.mp4', 'https://cdn', 0, 30, { ...fast, retrieve: run.retrieve }), { code: 'video_retrieve_unavailable' });
+  assert.equal(run.calls(), MAX_TRANSIENT_FAILURES_AFTER_COMPLETED);
+});
+
 test('createBody pins the seller and inlines frames as data URLs', async () => {
   await withTempDir(async (dir) => {
     const frame = path.join(dir, 'start.png');
@@ -192,6 +256,30 @@ test('CLI generate creates exactly one pinned job, polls, and saves the MP4', as
       assert.deepEqual(creates[0].body, { model: 'bb@seedance', prompt: 'ants', duration: '10s' });
       const retrieve = requests.find((request) => request.url === '/api/v1/video/retrieve');
       assert.deepEqual(retrieve.body, { model: 'seedance', queue_id: 'job-1', delete_media_on_completion: false });
+    });
+  });
+});
+
+test('CLI generate retries a seller 502 during polling without a second create', async () => {
+  await withTempDir(async (dir) => {
+    let polls = 0;
+    const handler = catalogHandler((request) => {
+      if (request.url === '/api/v1/video/queue') return { body: { queue_id: 'job-2' }, headers: { 'x-antseed-seller-peer': 'bb' } };
+      if (request.url === '/api/v1/video/retrieve') {
+        polls += 1;
+        if (polls === 1) return { body: { status: 'PROCESSING' } };
+        if (polls === 2) return { status: 502, body: { error: { code: 'video_download_failed', message: 'Video download unavailable' } } };
+        return { type: 'video/mp4', body: MP4 };
+      }
+      return { status: 404 };
+    });
+    await withProxy(handler, async (base, requests) => {
+      const output = path.join(dir, 'video.mp4');
+      const { code, json } = await cli(['--proxy-url', base, 'generate', '--model', 'seedance', '--peer', 'bb', '--prompt', 'ants', '--duration', '10', '--poll-interval', '0', '--output', output]);
+      assert.equal(code, 0, JSON.stringify(json));
+      assert.equal(json.jobId, 'job-2');
+      assert.equal(requests.filter((request) => request.url === '/api/v1/video/queue').length, 1);
+      assert.equal(polls, 3);
     });
   });
 });

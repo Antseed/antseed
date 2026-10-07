@@ -199,6 +199,7 @@ export function incompatibilities(peer, args) {
     const allowed = video[key];
     if (value != null && Array.isArray(allowed) && !allowed.includes(value)) reasons.push(label);
   }
+  if (args.aspectRatio != null && !Array.isArray(video.aspectRatios)) reasons.push('aspect ratio');
   if (args.audio != null && video.audio !== true) reasons.push('audio setting');
   const inputs = requestedInputs(args);
   if (Array.isArray(video.inputs)) reasons.push(...inputs.filter((kind) => !video.inputs.includes(kind)));
@@ -459,19 +460,72 @@ async function retrieveOnce(base, modelId, jobId, output, downloadUrl) {
   if (status === 'FAILED' || status === 'CANCELLED') throw errorFrom(422, statusBody.parsed, 'Video generation failed.');
   if (status === 'COMPLETED') {
     if (!downloadUrl) throw new VideoError('Video completed without a download URL.', 'missing_download_url');
-    return { state: 'done', bytes: await downloadCompleted(downloadUrl, output) };
+    try {
+      return { state: 'done', bytes: await downloadCompleted(downloadUrl, output) };
+    } catch (error) {
+      if (error instanceof VideoError) error.details.completed = true;
+      throw error;
+    }
   }
   return { state: status.toLowerCase() || 'pending' };
 }
 
-async function waitForVideo(base, modelId, jobId, output, downloadUrl, interval, timeout) {
+const TRANSIENT_STATUSES = new Set([429, 502, 503, 504]);
+const TRANSIENT_CODES = new Set(['proxy_unreachable', 'proxy_timeout', 'download_timeout', 'download_failed']);
+export const RETRY_DELAYS_SECONDS = [5, 10, 20, 40, 60];
+export const MAX_TRANSIENT_FAILURES = RETRY_DELAYS_SECONDS.length;
+export const MAX_TRANSIENT_FAILURES_AFTER_COMPLETED = 3;
+
+/** Retrieve errors that may clear on their own; everything else is final. */
+export function isTransientRetrieveError(error) {
+  if (!(error instanceof VideoError)) return false;
+  const status = error.details.status;
+  return status === undefined ? TRANSIENT_CODES.has(error.code) : TRANSIENT_STATUSES.has(status);
+}
+
+const sleep = (seconds) => new Promise((resolve) => setTimeout(resolve, seconds * 1000));
+
+/**
+ * Polls one accepted job until it is saved. Retrieves never create jobs, so
+ * retrying is free; temporary errors are retried with backoff, but only a
+ * bounded number of times in a row so a lasting failure surfaces quickly.
+ */
+export async function waitForVideo(base, modelId, jobId, output, downloadUrl, interval, timeout, { retrieve = retrieveOnce, delays = RETRY_DELAYS_SECONDS } = {}) {
   const deadline = Date.now() + timeout * 1000;
+  let failures = 0;
+  let completed = false;
+  let lastError = null;
   while (Date.now() < deadline) {
-    const result = await retrieveOnce(base, modelId, jobId, output, downloadUrl);
+    let result;
+    try {
+      result = await retrieve(base, modelId, jobId, output, downloadUrl);
+    } catch (error) {
+      if (!isTransientRetrieveError(error)) throw error;
+      if (error.details.completed) completed = true;
+      failures += 1;
+      lastError = error;
+      const limit = completed ? MAX_TRANSIENT_FAILURES_AFTER_COMPLETED : MAX_TRANSIENT_FAILURES;
+      if (failures >= limit) throw retrieveUnavailable(jobId, error, failures);
+      const delay = Math.min(delays[Math.min(failures - 1, delays.length - 1)], Math.max(0, (deadline - Date.now()) / 1000));
+      await sleep(delay);
+      continue;
+    }
     if (result.state === 'done') return result;
-    await new Promise((resolve) => setTimeout(resolve, interval * 1000));
+    failures = 0;
+    await sleep(interval);
   }
-  throw new VideoError('Timed out while waiting for the video.', 'video_timeout', { jobId });
+  if (lastError && failures > 0) throw retrieveUnavailable(jobId, lastError, failures);
+  throw new VideoError('Timed out while waiting for the video.', 'video_timeout', { jobId, resumable: true });
+}
+
+function retrieveUnavailable(jobId, error, attempts) {
+  return new VideoError('The video job was accepted, but its status or download kept failing. Retry later with download --job-id; this does not create a new job.', 'video_retrieve_unavailable', {
+    jobId,
+    lastStatus: error.details.status ?? null,
+    lastCode: error.code,
+    attempts,
+    resumable: true,
+  });
 }
 
 async function commandModels(args) {

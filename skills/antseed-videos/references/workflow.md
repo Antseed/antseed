@@ -12,7 +12,7 @@ Ask in one compact message. Include only choices advertised by at least one sell
 
 - **Duration:** list advertised seconds. If no list exists, ask the user for an explicit duration or use the model's automatic duration only when the user accepts it.
 - **Resolution:** list advertised values and recommend the highest. If none is advertised, ask whether to omit it.
-- **Aspect ratio:** list advertised values. Omit it only when the user does not care.
+- **Aspect ratio:** list advertised values. Omit it only when the user does not care. When no seller advertises aspect ratios (for example image-to-video models, which take the shape from the start frame), do not pass `--aspect-ratio`; the helper rejects it.
 - **Audio:** ask only when a seller advertises `audio: true`; only then pass `--audio` or `--no-audio`. With `audio: false` or no `audio` field, omit both flags. Some models, such as Flux 3 First/Last Frame, add their own soundtrack and reject an audio setting.
 - **Frames and media:** explain supported and required inputs. Ask whether to upload, generate, or omit optional inputs.
 - **Output:** default to `generated-video.mp4` in the current directory unless the user chooses a path.
@@ -111,7 +111,9 @@ The helper checks the seller again, creates exactly one job, waits, and saves th
 
 If the create fails without a job id, do not create again on your own. Report the error and ask the user, because a repeated create can start a second paid job.
 
-If generation times out after acceptance, use the returned job id:
+While waiting, the helper retries temporary status or download errors (`429`, `502`, `503`, `504`, an unreachable proxy) with backoff, without creating a job. It stops after 5 such errors in a row (about 2 to 3 minutes), or 3 after the video was reported finished, and returns `video_retrieve_unavailable` with `jobId`, `lastStatus`, `lastCode`, and `resumable: true`. Lasting errors such as `400`, `401`, `402`, `404`, or `410` stop at once.
+
+If generation times out or returns `video_retrieve_unavailable` after acceptance, do not create again. Tell the user the job id, then use it later; downloads are free:
 
 ```bash
 node scripts/antseed_video.mjs download --model "$model" --job-id "$job_id" --output generated-video.mp4
@@ -121,6 +123,8 @@ node scripts/antseed_video.mjs download --model "$model" --job-id "$job_id" --ou
 
 - `402`: buyer needs more deposited USDC or payment-channel capacity.
 - `404` or `video_route_not_found`: unknown job, missing route, or expired file.
+- `video_retrieve_unavailable`: the job was accepted but status or download kept failing. The job may still finish; retry with `download --job-id` later.
+- `502 video_download_failed`: the seller could not reach the upstream video service for this check. The helper retries it.
 - `409 video_create_in_progress`: another video from this buyer is still being created. Wait for it to finish before creating the next one.
 - `400 unsupported_video_options` or `no_compatible_video_offer`: options do not fit a seller.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.
