@@ -111,6 +111,9 @@ importers:
       '@peculiar/x509':
         specifier: ^2.0.0
         version: 2.0.0
+      better-sqlite3:
+        specifier: ^12.6.2
+        version: 12.6.2
       '@tanstack/query-core':
         specifier: 5.97.0
         version: 5.97.0
@@ -139,6 +142,9 @@ importers:
         specifier: ^0.2.2
         version: 0.2.2
     devDependencies:
+      '@types/better-sqlite3':
+        specifier: ^7.6.13
+        version: 7.6.13
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.33
@@ -172,6 +178,9 @@ importers:
       '@sinclair/typebox':
         specifier: ^0.34.48
         version: 0.34.48
+      '@tanstack/query-core':
+        specifier: 5.97.0
+        version: 5.97.0
       better-sqlite3:
         specifier: ^12.6.2
         version: 12.6.2

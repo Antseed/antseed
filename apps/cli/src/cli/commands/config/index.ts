@@ -346,6 +346,8 @@ const DYNAMIC_KEYS = new Set([
   'seller.freeTier.maxRequestsPerAddress',
   'seller.freeTier.maxRequestsPerIp',
   'seller.freeTier.windowMs',
+  'seller.freeUsage.recordBatchSize',
+  'seller.freeUsage.recordFlushIntervalMs',
 ]);
 
 export function isDynamicKey(key: string): boolean {

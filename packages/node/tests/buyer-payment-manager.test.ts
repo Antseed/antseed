@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { AbiCoder, id, keccak256, Wallet } from 'ethers';
-import { BuyerPaymentManager, type BuyerPaymentConfig } from '../src/payments/buyer-payment-manager.js';
+import { BuyerPaymentManager, type BuyerPaymentConfig, type BuyerSpendEvent } from '../src/payments/buyer-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -1842,6 +1842,21 @@ describe('BuyerPaymentManager', () => {
     const channel = store.getActiveChannelByPeer(sellerPeerId, CHANNEL_ROLE.BUYER);
     expect(channel).not.toBeNull();
     expect(channel!.authMax).toBe(extended.cumulativeAmount);
+  });
+
+  it('extendCurrentSpendingAuth reports the newly signed amount as spend', async () => {
+    const sellerPeerId = fakePeerId('seller-extend-spend');
+    await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId: (mux.sentSpendingAuths[0] as Record<string, string>).channelId! });
+    const before = manager.getCumulativeAmount(sellerPeerId);
+    const spendEvents: BuyerSpendEvent[] = [];
+    manager.setSpendListener((event) => spendEvents.push(event));
+
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 50_000n, mux, undefined, 'req-extend');
+
+    expect(spendEvents).toHaveLength(1);
+    expect(spendEvents[0]).toMatchObject({ sellerPeerId, requestId: 'req-extend', outputTokens: '0' });
+    expect(BigInt(spendEvents[0]!.amountUsdc)).toBe(manager.getCumulativeAmount(sellerPeerId) - before);
   });
 
   it('extendCurrentSpendingAuth advances verifiedCost to unblock a collapsed overdraft window', async () => {

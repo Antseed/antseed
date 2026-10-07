@@ -68,7 +68,7 @@ const FREE_USAGE_METADATA_ABI = [
 ] as const;
 
 const DEFAULT_RECORD_BATCH_SIZE = 16;
-const DEFAULT_RECORD_FLUSH_INTERVAL_MS = 5 * 60_000;
+const DEFAULT_RECORD_FLUSH_INTERVAL_MS = 15 * 60_000;
 
 function normalizeTokenCount(value: number): bigint {
   if (!Number.isFinite(value) || value <= 0) return 0n;
@@ -377,16 +377,29 @@ export class SellerFreeUsageManager {
     opts: { retry?: boolean } = {},
   ): void {
     if (!session.pendingRecord || session.flushPromise) return;
+    if (opts.retry && session.deadline * 1000 <= Date.now()) {
+      // The contract rejects records after the channel deadline, so retrying can never succeed.
+      debugWarn(
+        `[SellerFreeUsage] Dropping unrecorded usage for ${buyerPeerId.slice(0, 12)}... ` +
+        `channel=${session.channelId.slice(0, 18)}... sequence=${session.pendingRecord.sequence}: channel expired`,
+      );
+      session.pendingRecord = null;
+      session.recordsSinceFlush = 0;
+      return;
+    }
     if (!opts.retry && session.recordsSinceFlush >= this._recordBatchSize) {
       this._clearFlushTimer(session);
       void this._flushPendingRecord(buyerPeerId, session);
       return;
     }
     if (session.flushTimer) return;
+    // Records revert on-chain after the channel deadline, so never wait past it.
+    const untilDeadlineMs = session.deadline * 1000 - Date.now() - 60_000;
+    const delayMs = Math.min(this._recordFlushIntervalMs, Math.max(1_000, untilDeadlineMs));
     session.flushTimer = setTimeout(() => {
       session.flushTimer = null;
       void this._flushPendingRecord(buyerPeerId, session);
-    }, this._recordFlushIntervalMs);
+    }, delayMs);
     (session.flushTimer as { unref?: () => void }).unref?.();
   }
 

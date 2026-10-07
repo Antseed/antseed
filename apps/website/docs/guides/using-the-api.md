@@ -203,7 +203,7 @@ antseed buyer channels withdraw <channelId>
 
 ## Claude Code
 
-**Recommended:** launch Claude Code from the AI VPN's **Apps** view — it detects the installed tool, wires it to the proxy, and handles peer and model routing automatically.
+**Recommended:** connect Claude Code from the AI VPN's **Apps** view. Antseed updates `~/.claude/settings.json` so new and running Claude Code sessions use the `antseed` model alias, which follows the model selected in the AI VPN. Disconnecting restores the settings Antseed changed. While connected, plain `claude` requests go through Antseed instead of your Anthropic login.
 
 CLI alternative — the `antseed claude` wrapper resolves the running buyer proxy, sets `ANTHROPIC_BASE_URL` and a placeholder `ANTHROPIC_API_KEY` for the child process, and forwards the rest of your flags to Claude Code:
 
@@ -221,6 +221,8 @@ export ANTHROPIC_BASE_URL=http://localhost:8377
 export ANTHROPIC_API_KEY=antseed   # any non-empty placeholder
 claude --model kimi-k2.6           # or <peerId>@kimi-k2.6
 ```
+
+Use `--model antseed` with the wrapper or manual setup to follow the AI VPN selection instead of pinning a concrete model.
 
 Claude Code sends requests to `/v1/messages`. Bare model ids use automatic routing and conversation affinity; explicitly prefixed model ids remain hard-pinned. The proxy translates to the selected seller's native format when needed.
 
@@ -353,6 +355,8 @@ antseed --data-dir "$BUYDIR" buyer start \
 ```
 
 Use `--data-dir <path>` in service/systemd scripts because it is explicit. `ANTSEED_DATA_DIR=<path>` is useful for wrappers and local scripts. Do not reuse the same buyer data directory across concurrent processes.
+
+To pay from several wallets on one machine, you don't need a buyer process per wallet. Add buyer identities to one buyer and pick one per request with the `x-antseed-buyer-identity` header. See [buyer identities](/docs/guides/gateway-api-keys#buyer-identities).
 
 If the buyer proxy starts but appears to use stale pins, waits on broad discovery, times out before payment negotiation, or shows sessions/channels in an unexpected place, check the startup log for the resolved data directory and `buyer.state.json` path. `ANTSEED_HOME` is not the CLI state-isolation setting; use `--data-dir` or `ANTSEED_DATA_DIR`.
 
