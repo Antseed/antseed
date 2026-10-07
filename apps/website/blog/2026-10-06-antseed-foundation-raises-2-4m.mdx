@@ -9,6 +9,26 @@ image: /img/blog/antseed-foundation-raises-2-4m/cover.png
 date: 2026-10-06
 ---
 
+import {useEffect} from 'react';
+
+export function Tweet({url, label}) {
+  useEffect(() => {
+    if (window.twttr?.widgets) {
+      window.twttr.widgets.load();
+      return;
+    }
+    const script = document.createElement('script');
+    script.src = 'https://platform.twitter.com/widgets.js';
+    script.async = true;
+    document.body.appendChild(script);
+  }, []);
+  return (
+    <blockquote className="twitter-tweet" data-dnt="true">
+      <a href={url}>{label}</a>
+    </blockquote>
+  );
+}
+
 ![The Antseed Foundation's $2.4M raise, with Spark Capital, Reciprocal Ventures, Relayer Capital, Collider, Venice, North Island Ventures, and DCG](/img/blog/antseed-foundation-raises-2-4m/cover.png)
 
 The Antseed Foundation has raised $2.4M in a token round led by Spark Capital, with participation from Collider, DCG, North Island Ventures, Reciprocal Ventures, Relayer Capital, and Venice.ai.
@@ -16,6 +36,8 @@ The Antseed Foundation has raised $2.4M in a token round led by Spark Capital, w
 What BitTorrent did for files, we want to do for AI inference. Anyone should be able to buy and sell access to AI models, on their own terms.
 
 <!-- truncate -->
+
+<Tweet url="https://x.com/AmosMeiri/status/2107459165207593046" label="Read Amos Meiri’s post on X →" />
 
 You should be able to choose which models your agents use, who serves them, and what you pay. And if you can provide useful inference, you should be able to reach buyers, earn from your work, and build a reputation.
 

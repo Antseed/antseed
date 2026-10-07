@@ -147,6 +147,8 @@ Other paths return `404 Not Found`. Requests without the exact bearer key return
 
 For a headless machine, start the buyer proxy first and run the tunnel as a separate CLI process.
 
+On a Linux server, the [gateway installer](/docs/guides/gateway-server) sets this up as systemd services: pass `--cloudflare-token` and `--public-url`.
+
 Cloudflare example:
 
 ```bash
