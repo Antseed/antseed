@@ -234,6 +234,25 @@ test('CLI select resolves aliases and returns the confirmed seller with a price'
   });
 });
 
+test('CLI models summarizes advertised options so the agent can offer them up front', async () => {
+  await withProxy(catalogHandler(() => ({ status: 404 })), async (base) => {
+    const { code, json } = await cli(['models'], { ANTSEED_PROXY_URL: base });
+    assert.equal(code, 0);
+    assert.deepEqual(json.models[0].video, { durationsSeconds: [5, 10], inputs: ['first_frame'], resolutions: ['1080p', '720p'] });
+  });
+});
+
+test('CLI image-models lists image models for generating start and end frames', async () => {
+  await withProxy((request) => {
+    if (request.url === '/v1/models?type=images') return { body: { data: [{ id: 'flux-2', name: 'Flux 2', aliases: [], peers: [{}, {}] }] } };
+    return { status: 404 };
+  }, async (base) => {
+    const { code, json } = await cli(['image-models'], { ANTSEED_PROXY_URL: base });
+    assert.equal(code, 0);
+    assert.deepEqual(json.models, [{ aliases: [], id: 'flux-2', name: 'Flux 2', sellers: 2 }]);
+  });
+});
+
 test('CLI generate creates exactly one pinned job, polls, and saves the MP4', async () => {
   await withTempDir(async (dir) => {
     let polls = 0;

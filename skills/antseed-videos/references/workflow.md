@@ -2,33 +2,44 @@
 
 ## Ask before paying
 
-Inspect the selected model first:
+Follow the turn order in SKILL.md: what video and which model, then that model's frame inputs, then settings, then frames, then confirmation. `models` already summarizes each model's advertised options under `video` (`durationsSeconds`, `resolutions`, `aspectRatios`, `inputs`, `requiredInputs`, `audio`). Use it for the first question. Then inspect the chosen model per seller:
 
 ```bash
 node scripts/antseed_video.mjs options --model "$model"
+node scripts/antseed_video.mjs image-models   # image models available to generate frames
 ```
 
-Ask in one compact message. Include only choices advertised by at least one seller:
+Include only choices advertised by at least one seller:
 
+- **Start and end images (ask right after the model is chosen):** explain what the model takes, for example only a start image or both start and end. Offer two choices: the user uploads images, or you generate them with one of the image models from `image-models`. Prefer a first-last-frame or image-to-video model. Offer text-to-video only if the user explicitly skips images or no compatible model accepts frames.
 - **Duration:** list advertised seconds. If no list exists, ask the user for an explicit duration or use the model's automatic duration only when the user accepts it.
 - **Resolution:** list advertised values and recommend the highest. If none is advertised, ask whether to omit it.
 - **Aspect ratio:** list advertised values. Omit it only when the user does not care. When no seller advertises aspect ratios (for example image-to-video models, which take the shape from the start frame), do not pass `--aspect-ratio`; the helper rejects it.
 - **Audio:** ask only when a seller advertises `audio: true`; only then pass `--audio` or `--no-audio`. With `audio: false` or no `audio` field, omit both flags. Some models, such as Flux 3 First/Last Frame, add their own soundtrack and reject an audio setting.
-- **Frames and media:** explain supported and required inputs. Ask whether to upload, generate, or omit optional inputs.
+- **Other media:** explain any other supported or required inputs.
 - **Output:** default to `generated-video.mp4` in the current directory unless the user chooses a path.
 
-Do not ask about options that no seller advertises. Do not infer support from the model name.
+Example exchange (models and options are illustrative; always use the real `models` and `options` output):
+
+> **User:** I want to create a video.
+> **Agent:** What should it show? Video models on the network now: Seedance 2.0 (5–15 s, 480p/720p/1080p, start and end image), Wan 2.5 (5 or 10 s, 720p/1080p, text only, audio)…
+> **User:** A fox running through snow, Seedance.
+> **Agent:** Seedance takes a start shot and an end shot. You can upload them, or I can generate them with an image model on the network (GPT Image 1, Flux 2…). Which do you prefer?
+> **User:** Generate them.
+> **Agent:** Settings: duration 5, 10 or 15 s? Resolution 480p, 720p or 1080p (recommended)?
+
+Do not ask about options that no seller advertises. Do not infer support from the model name, and do not claim support for a resolution, duration, or aspect ratio that `options` did not show.
 
 ## Storyboards and generated frames
 
-When the user asks for creative help, draft:
+For every video request, unless the user supplies the frames or explicitly skips them, draft:
 
 1. a short script or shot description,
 2. the final video prompt,
 3. a first-frame prompt, and
 4. a last-frame prompt when supported.
 
-Ask for approval before generating images or video. Use `antseed-images` for frames, save them as local PNG, JPEG, or WebP files, and pass those paths to the video helper. Keep both frames visually consistent: same subject, setting, style, and aspect ratio.
+Ask for approval before generating images or video, and include the image cost with the video cost. Use `antseed-images` for frames, save them as local PNG, JPEG, or WebP files, and pass those paths to the video helper. Keep frames visually consistent: same subject, setting, style, and aspect ratio. Generate images at the target video aspect ratio, or the closest one available.
 
 Ask the user to approve each saved frame, showing it when the agent environment supports images, before generating the video.
 
@@ -40,6 +51,8 @@ In Antseed Desktop:
 Map the user's start image to `--first-frame` and end image to `--last-frame`. With two images, ask which is the start and which is the end unless the request makes it clear. With one image, use it as the start image unless the user says otherwise.
 
 ## Frame support
+
+Model families often come in variants, for example `seedance-2-0-mini-text-to-video-basic` and `seedance-2-0-mini-image-to-video-basic`. Always check the image-to-video and first-last-frame variants before planning a text-only video.
 
 Check `video.inputs` in `options` output:
 
@@ -66,7 +79,7 @@ If the requested length is longer than the longest advertised duration, for exam
      node scripts/antseed_video.mjs frame --video seg1.mp4 --position last --output seg1-last.png
      ```
 
-   - If no frames are supported, generate independent segments and tell the user the cuts will not be continuous.
+   - Use frame-free segments only if the user explicitly skips images or no compatible model accepts frames. Tell the user the subject, look, and cuts will not be consistent.
 5. Show the segment plan, model, seller, per-segment price and total price. Ask for one confirmation for the whole plan.
 6. Generate the approved segments:
    - If every segment has its prompt and frames, use `batch`. It submits creates one at a time, starts waiting as soon as each job is accepted, and renders the accepted jobs in parallel.

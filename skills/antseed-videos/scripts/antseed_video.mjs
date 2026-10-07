@@ -120,9 +120,9 @@ export function errorFrom(status, body, fallback) {
   return new VideoError(String(error || body.message || fallback), `http_${status}`, { status });
 }
 
-async function catalog(base) {
-  const { status, body } = await requestJson('GET', `${base}/v1/models?type=videos`);
-  if (status !== 200) throw errorFrom(status, body, 'Could not list video models.');
+async function catalog(base, type = 'videos') {
+  const { status, body } = await requestJson('GET', `${base}/v1/models?type=${type}`);
+  if (status !== 200) throw errorFrom(status, body, `Could not list ${type === 'videos' ? 'video' : 'image'} models.`);
   return Array.isArray(body.data) ? body.data.filter(isObject) : [];
 }
 
@@ -233,9 +233,11 @@ export function compatiblePeers(model, args) {
   return { compatible, rejected };
 }
 
-function alternatives(model) {
-  const keys = ['durationsSeconds', 'resolutions', 'aspectRatios', 'inputs'];
+export function alternatives(model) {
+  const keys = ['durationsSeconds', 'resolutions', 'aspectRatios', 'inputs', 'requiredInputs'];
   const result = {};
+  const peers = (Array.isArray(model.peers) ? model.peers : []).filter(isObject);
+  if (peers.some((peer) => peerOptions(peer).audio === true)) result.audio = true;
   for (const key of keys) {
     const values = new Set();
     for (const peer of Array.isArray(model.peers) ? model.peers : []) {
@@ -535,6 +537,17 @@ async function commandModels(args) {
     name: entry.name ?? null,
     aliases: entry.aliases ?? null,
     sellers: Array.isArray(entry.peers) ? entry.peers.length : 0,
+    video: alternatives(entry),
+  }));
+  return { ok: true, models };
+}
+
+async function commandImageModels(args) {
+  const models = (await catalog(args.proxyUrl, 'images')).map((entry) => ({
+    id: entry.id ?? null,
+    name: entry.name ?? null,
+    aliases: entry.aliases ?? null,
+    sellers: Array.isArray(entry.peers) ? entry.peers.length : 0,
   }));
   return { ok: true, models };
 }
@@ -726,6 +739,7 @@ const WAIT_OPTIONS = {
 };
 const COMMANDS = {
   models: { options: {}, run: commandModels },
+  'image-models': { options: {}, run: commandImageModels },
   options: { options: { model: { type: 'string' }, duration: { type: 'string' }, resolution: { type: 'string' } }, required: ['model'], run: commandOptions },
   select: { options: REQUEST_OPTIONS, required: ['model'], run: commandSelect },
   generate: { options: { ...REQUEST_OPTIONS, ...WAIT_OPTIONS }, required: ['model'], run: commandGenerate },
