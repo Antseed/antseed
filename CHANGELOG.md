@@ -6,6 +6,12 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Added
+
+- Development: `pnpm sandbox` runs an isolated AntSeed stack per git worktree for end-to-end testing: a Base fork on Anvil, sellers backed by an OpenAI-compatible mock (or real upstreams with `--live`), a buyer and its proxy, a private bootstrap DHT node, and optionally an attach-only desktop window. Commands: `up`, `down` (settles and closes channels before stopping), `status`, `run <scenario>` (writes `report.json`, exits nonzero on failure), `desktop`, `logs`, `list`. Sandboxes never use default ports, `~/.antseed` or the keychain, and only stop processes they started. Scenarios `chat-basic` and `routing-smoke` ship in `e2e/sandbox/scenarios/`. See `e2e/sandbox/README.md`.
+- Desktop: attach-only mode (`ANTSEED_DESKTOP_ATTACH_ONLY=1`) connects to an existing buyer proxy without starting its own buyer, reading the OS keychain, writing `~/.antseed` or changing system proxy settings. Used by `pnpm sandbox desktop`.
+- `@antseed/node`: `bindHost` option for the DHT and seller signaling listeners (default unchanged: all interfaces) and `natTraversal: false` to skip UPnP/NAT-PMP port mapping.
+
 ### Fixed
 
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.

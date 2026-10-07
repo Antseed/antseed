@@ -44,3 +44,6 @@ prds/
 # Napkin
 .napkin/
 NAPKIN.md
+
+# Per-worktree sandbox config (pnpm sandbox)
+.antseed-sandbox.json

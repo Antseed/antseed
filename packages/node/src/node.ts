@@ -250,6 +250,10 @@ export interface NodeConfig {
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
+  /** Local address the DHT (UDP) and seller signaling (TCP) sockets bind to. Default: all interfaces. */
+  bindHost?: string;
+  /** Map seller ports via UPnP/NAT-PMP on start. Default: true. Disable for isolated local testing. */
+  natTraversal?: boolean;
   bootstrapNodes?: Array<{ host: string; port: number }>;
   requestTimeoutMs?: number;  // Default: 300000
   /** Timeout in ms for each HTTP metadata fetch during peer discovery. Default: 1500 */
@@ -1422,6 +1426,7 @@ export class AntseedNode extends EventEmitter {
       reannounceIntervalMs: DEFAULT_DHT_CONFIG.reannounceIntervalMs,
       operationTimeoutMs: this._config.dhtOperationTimeoutMs ?? DEFAULT_DHT_CONFIG.operationTimeoutMs,
       allowPrivateIPs: this._config.allowPrivateIPs,
+      ...(this._config.bindHost ? { bindHost: this._config.bindHost } : {}),
     };
   }
 
@@ -1609,7 +1614,7 @@ export class AntseedNode extends EventEmitter {
     await this._connectionManager.startListening({
       peerId: identity.peerId,
       port: signalingPort,
-      host: "0.0.0.0",
+      host: this._config.bindHost ?? "0.0.0.0",
     });
 
     // Resolve actual bound port (important when port 0 is used for OS-assigned)
@@ -1617,18 +1622,20 @@ export class AntseedNode extends EventEmitter {
     const actualDhtPort = this._dht.getPort();
 
     // NAT traversal: automatically map ports via UPnP/NAT-PMP
-    this._nat = new NatTraversal();
-    const natResult = await this._nat.mapPorts([
-      { port: actualSignalingPort, protocol: "TCP" },
-      { port: actualDhtPort, protocol: "UDP" },
-    ]);
+    if (this._config.natTraversal !== false) {
+      this._nat = new NatTraversal();
+      const natResult = await this._nat.mapPorts([
+        { port: actualSignalingPort, protocol: "TCP" },
+        { port: actualDhtPort, protocol: "UDP" },
+      ]);
 
-    if (natResult.success) {
-      this.emit("nat:mapped", natResult);
-    } else {
-      debugWarn("[NAT] UPnP/NAT-PMP mapping failed — seller may not be reachable from the internet");
-      debugWarn("[NAT] Ensure port forwarding is configured manually, or peers on the same LAN can still connect");
-      this.emit("nat:failed");
+      if (natResult.success) {
+        this.emit("nat:mapped", natResult);
+      } else {
+        debugWarn("[NAT] UPnP/NAT-PMP mapping failed — seller may not be reachable from the internet");
+        debugWarn("[NAT] Ensure port forwarding is configured manually, or peers on the same LAN can still connect");
+        this.emit("nat:failed");
+      }
     }
 
     // Set up announcer for providers

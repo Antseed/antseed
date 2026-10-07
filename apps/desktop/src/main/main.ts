@@ -20,6 +20,7 @@ import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desk
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
 import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity, secureIdentityEnv } from './identity.js';
+import { isAttachOnly } from './runtime/attach-only.js';
 import type { LogEvent, RuntimeActivityEvent } from './runtime/log-parser.js';
 import { parseRuntimeActivityFromLog } from './runtime/log-parser.js';
 import {
@@ -441,7 +442,9 @@ app.whenReady().then(async () => {
   if (process.platform === 'darwin' && APP_ICON_PATH && app.dock) {
     app.dock.setIcon(APP_ICON_PATH);
   }
-  const hadExistingIdentity = hasStoredIdentity();
+  const hadExistingIdentity = !isAttachOnly() && hasStoredIdentity();
+  // Attach-only loads the sandbox buyer key from its data dir (memory only,
+  // never the keychain) so balance and wallet views show the fork wallet.
   await ensureSecureIdentity();
   telemetryReady = initializeTelemetry(hadExistingIdentity);
   await telemetryReady;

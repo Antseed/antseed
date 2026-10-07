@@ -1,5 +1,12 @@
 import type { ProcessManager } from './process-manager.js';
 
+export function assertAttachOnlyRuntime(mode: string, compatible: boolean, attachOnly: boolean): void {
+  if (!attachOnly) return;
+  if (mode !== 'connect' || !compatible) {
+    throw new Error('This desktop is attached to an isolated sandbox. Start the sandbox buyer first; starting another runtime is disabled.');
+  }
+}
+
 export async function isCompatibleSharedBuyer(port: number, timeoutMs = 1_200): Promise<boolean> {
   const controller = new AbortController();
   const timeout = setTimeout(() => controller.abort(), timeoutMs);

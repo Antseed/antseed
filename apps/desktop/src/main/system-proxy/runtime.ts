@@ -55,6 +55,7 @@ import {
 } from './paths.js';
 import { clearWslTargetsForTool, isWslTool, readWslTargets } from './wsl.js';
 import { stopWslRelays, syncWslRelays } from './wsl-relay.js';
+import { isAttachOnly } from '../runtime/attach-only.js';
 
 /** What this module needs from the app around it — injected once at startup. */
 export type SystemProxyDeps = {
@@ -534,6 +535,9 @@ export async function startSystemProxyRuntime(opts: SystemProxyStartRequest): Pr
 }
 
 export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest): Promise<RuntimeProcessState | null> {
+  if (isAttachOnly()) {
+    throw new Error('System proxy and connected-app changes are disabled in the isolated sandbox desktop.');
+  }
   const port = opts.port ?? DEFAULT_SYSTEM_PROXY_PORT;
   const allProfiles = opts.profiles ?? [];
   const proxyProfiles = allProfiles.filter((name) => !isConfigPatchProfileName(name));
