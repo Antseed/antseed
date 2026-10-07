@@ -152,6 +152,5 @@ node scripts/antseed_video.mjs download --model "$model" --job-id "$job_id" --ou
 - `404` or `video_route_not_found`: unknown job, missing route, or expired file.
 - `video_retrieve_unavailable`: the job was accepted but status or download kept failing. The job may still finish; retry with `download --job-id` later.
 - `502 video_download_failed`: the seller could not reach the upstream video service for this check. The helper retries it.
-- `409 video_create_in_progress`: another create from this buyer is still being submitted. Wait for that create request to return, then submit the next one.
 - `400 unsupported_video_options` or `no_compatible_video_offer`: options do not fit a seller.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.

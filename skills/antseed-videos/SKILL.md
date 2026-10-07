@@ -30,7 +30,7 @@ Read [references/workflow.md](references/workflow.md) for question flow, frame h
 
 - Pin only the paid create, as `<peerId>@<model>`, after filtering compatible sellers. Never change the proxy's session pin, default route, chat model, or state files.
 - Pass the selected seller from `select` to `generate --peer`; `generate` checks it again before paying.
-- Create one video unless the user asks for more or approves a segment plan. Submit creates one at a time, then let accepted jobs render in parallel; sellers reject only overlapping create submissions from the same buyer.
+- Create one video unless the user asks for more or approves a segment plan. Submit creates one at a time, then let accepted jobs render in parallel.
 - If the user asks for a test, the first segment, or only some segments, generate only those.
 - Never move a create to another seller automatically. After an unclear create failure, check with the user before creating again, because a second create can start a second paid job.
 - Status checks and downloads use the accepted job id and must not create jobs.
