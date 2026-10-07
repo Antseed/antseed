@@ -114,6 +114,33 @@ Cached-input pricing is treated as model-specific metadata completeness. If at l
 
 The desktop's **Auto** route stores the selected model without a peer id. Telegram model selections, automatic in-app chats, and connected apps configured with the `antseed` model alias therefore use the same shared Price + Trust policy, cooldown avoidance, and peer fallback. Recognized conversations softly prefer the seller that actually served their previous turn while it remains healthy and eligible. Explicitly choosing a seller in the desktop stores `<peerId>@<serviceId>` instead and intentionally keeps that route single-peer.
 
+## Routing services
+
+A routing service is a paid ranking service offered by another peer. When selected, it ranks the sellers your local policy already allows, then the proxy sends the inference to the top seller and falls back to later ranked sellers on retryable errors. A routing service never receives sellers you filtered out. See [Model Routing](/docs/model-routing) for the wire format and billing.
+
+List available routing services and the catalog models each one can score:
+
+```bash
+curl http://127.0.0.1:8377/_antseed/routing-services
+```
+
+Each service includes its exact `peerId`, `provider`, and `serviceId`, plus `priceMicroUsdc` for one ranking. Set one as the default for the `antseed` model alias:
+
+```bash
+curl -X POST http://127.0.0.1:8377/_antseed/route \
+  -H 'content-type: application/json' \
+  -d '{
+    "router": {
+      "service": { "peerId": "<routerPeerId>", "provider": "<provider>", "serviceId": "<serviceId>" },
+      "costQualityTradeoff": 3
+    }
+  }'
+```
+
+`costQualityTradeoff` is optional: `0` favors quality, `10` favors the cheapest acceptable candidate, and the router default is `5`. Use either `model` or `router` in `POST /_antseed/route`, not both. To select a router for one existing conversation, send the same router object as `routingSelection` with `kind: "router"` to `POST /_antseed/conversations/update`.
+
+Routing charges count toward the conversation's spend. Tool-loop continuations of the same user turn reuse the ranking instead of paying again. Because a routing service receives the conversation to rank it, select only routers you trust with that content.
+
 ## Supported API Formats
 
 The proxy accepts these API formats. Use whichever matches your tool:

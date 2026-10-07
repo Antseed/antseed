@@ -304,6 +304,24 @@ You only have to do this once per service. To see what you've configured:
 antseed config seller show
 ```
 
+### Offer a routing service
+
+A routing service ranks other sellers for a buyer request; it does not serve inference. Advertise the service with the `model-routing` API protocol and bill one `completed_requests` unit per well-formed ranking. A seller can offer only one routing service; run a separate seller node for another router.
+
+```json title="provider service settings"
+{
+  "services": ["alpha-route"],
+  "serviceApiProtocols": { "alpha-route": ["model-routing"] },
+  "serviceUnitBillingModels": {
+    "alpha-route": {
+      "model-routing": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
+    }
+  }
+}
+```
+
+The upstream router must implement IRP suggest-only mode: `GET /v1/routing/models` and `POST /v1/routing/rank`. Malformed rankings and error responses are not billed. Older buyers reject announcements that contain the `completed_requests` unit, so run routing services on separate peers until buyers upgrade. See [Model Routing](/docs/model-routing) for the full contract.
+
 ## 8. Set Your API Key and Start Selling
 
 Upstream credentials stay in environment variables. Your provider shape, service list, pricing, and `baseUrl` stay in `config.json`.

@@ -41,6 +41,7 @@ const sidebars: SidebarsConfig = {
         'protocol/transport',
         'protocol/metering',
         'protocol/payments',
+        'protocol/model-routing',
         'protocol/recognized-usage',
         'protocol/reward-policies',
         'protocol/legacy-emissions',

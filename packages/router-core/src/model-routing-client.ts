@@ -43,7 +43,7 @@ function contentText(content: unknown): string {
  * without text (e.g. Anthropic `tool_result`-only turns) are skipped, so a tool loop keeps
  * resolving to the prompt that started it.
  */
-export function latestUserText(body: Record<string, unknown>): string {
+function latestUserText(body: Record<string, unknown>): string {
   const messages = Array.isArray(body.messages) ? body.messages : Array.isArray(body.input) ? body.input : []
   for (let index = messages.length - 1; index >= 0; index--) {
     const message = messages[index]
@@ -59,7 +59,7 @@ export function latestUserText(body: Record<string, unknown>): string {
  * bodies run through the same adapters used for dispatch. `model` and `stream` are dropped:
  * routers ignore them and never forward the request.
  */
-export function routingInferenceRequest(request: SerializedHttpRequest, body: Record<string, unknown>): RoutingInferenceRequestV1 {
+function routingInferenceRequest(request: SerializedHttpRequest, body: Record<string, unknown>): RoutingInferenceRequestV1 {
   const protocol = detectRequestServiceApiProtocol(request)
   const chat = protocol ? renderRequestBodyAsOpenAIChat(protocol, body) : null
   if (!chat) throw new Error('Routing supports Chat Completions, Anthropic Messages and Responses requests')
