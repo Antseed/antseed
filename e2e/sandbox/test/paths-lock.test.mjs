@@ -3,7 +3,7 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { after, describe, it } from 'node:test';
-import { acquireLock, inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry, releaseLock, withLock } from '../lib/lock.mjs';
+import { acquireLock, inspectLock, isOwnedProcessAlive, killOwned, ownProcessEntry, processStartTime, releaseLock, withLock } from '../lib/lock.mjs';
 import { resetRunState, sandboxName, sandboxPaths, sandboxRoot, validateSlot } from '../lib/paths.mjs';
 
 const tmp = await mkdtemp(join(tmpdir(), 'sandbox-test-'));
@@ -123,5 +123,19 @@ describe('locks', () => {
     assert.equal(entry.pid, process.pid);
     assert.ok(entry.startedAt);
     assert.equal(isOwnedProcessAlive(entry), true);
+  });
+
+  it('reads process start times independent of the shell locale', () => {
+    const original = { LANG: process.env.LANG, LC_ALL: process.env.LC_ALL, LC_TIME: process.env.LC_TIME };
+    try {
+      Object.assign(process.env, { LANG: 'de_DE.UTF-8', LC_TIME: 'de_DE.UTF-8' });
+      delete process.env.LC_ALL;
+      assert.match(processStartTime(process.pid), /^(Mon|Tue|Wed|Thu|Fri|Sat|Sun) (Jan|Feb|Mar|Apr|May|Jun|Jul|Aug|Sep|Oct|Nov|Dec) /);
+    } finally {
+      for (const [key, value] of Object.entries(original)) {
+        if (value === undefined) delete process.env[key];
+        else process.env[key] = value;
+      }
+    }
   });
 });

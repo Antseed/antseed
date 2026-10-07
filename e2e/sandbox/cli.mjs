@@ -9,7 +9,7 @@ import { resolveInstancePorts } from '../../apps/desktop/scripts/dev-instance-co
 import { legacyCacheHome, sharedCacheHome } from './lib/cache.mjs';
 import { loadSourceConfig, resolveConfigSource } from './lib/config.mjs';
 import { loadControlClient } from './lib/control.mjs';
-import { isolatedEnv } from './lib/env.mjs';
+import { isolatedEnv, parseEnvFile, resolveLiveKeys } from './lib/env.mjs';
 import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
@@ -90,13 +90,25 @@ async function up(options, ctx, topologyOverride) {
   const topology = normalizeTopology(topologyOverride ?? scenario?.topology ?? {}, config.cleaned, { depositUsdc: options.depositUsdc, block: options.block });
   const upstream = options.live ? 'live' : 'mock';
   const liveKeys = [];
+  let liveEnv = {};
   if (upstream === 'live') {
+    const names = new Map();
     for (const seller of topology.sellers) {
       for (const [providerName, provider] of Object.entries(seller.providers)) {
-        if (!provider.apiKeyEnv || !process.env[provider.apiKeyEnv]?.trim()) throw new Error(`--live requires ${provider.apiKeyEnv ?? 'apiKeyEnv'} for provider ${providerName}`);
-        liveKeys.push(provider.apiKeyEnv);
+        if (!provider.apiKeyEnv) throw new Error(`--live requires apiKeyEnv for provider ${providerName}`);
+        names.set(provider.apiKeyEnv, [...(names.get(provider.apiKeyEnv) ?? []), providerName]);
       }
     }
+    const envFile = options.envFile ? resolve(options.envFile) : join(ctx.worktree, '.antseed-sandbox.env');
+    if (options.envFile && !existsSync(envFile)) throw new Error(`--env-file ${envFile} does not exist`);
+    const fileValues = existsSync(envFile) ? parseEnvFile(await readFile(envFile, 'utf8')) : {};
+    const resolved = resolveLiveKeys([...names.keys()], { fileValues });
+    if (resolved.missing.length) {
+      throw new Error(`--live requires ${resolved.missing.map((name) => `${name} (providers ${names.get(name).join(', ')})`).join(', ')}; export it or put it in ${envFile}`);
+    }
+    liveKeys.push(...names.keys());
+    liveEnv = resolved.values;
+    say(`Live keys: ${[...names].map(([name, providers]) => `${name} from ${resolved.sources[name]} -> ${providers.join(', ')}`).join('; ')}`);
   }
   for (const dir of [paths.dir, paths.config, paths.logs]) await mkdir(dir, { recursive: true, mode: 0o700 });
   await saveJson(join(paths.config, 'source.cleaned.json'), { origin: config.origin, path: config.path, hash: config.hash, dropped: config.dropped, config: config.cleaned });
@@ -109,16 +121,17 @@ async function up(options, ctx, topologyOverride) {
   say(`Starting ${ctx.name} (config: ${config.origin}, upstream: ${upstream}, sellers: ${topology.sellers.map((seller) => seller.id).join(', ')})`);
   if (config.dropped.length) say(`Ignored config settings: ${config.dropped.join(', ')}`);
   const logPath = join(paths.logs, 'supervisor.log');
+  const logOffset = existsSync(logPath) ? statSync(logPath).size : 0;
   const out = openSync(logPath, 'a');
   const env = isolatedEnv(process.env, paths.home, {
     ANTSEED_SANDBOX_FORK_URL: forkUrl,
-    ...Object.fromEntries(liveKeys.map((key) => [key, process.env[key]])),
+    ...liveEnv,
   });
   const child = spawn(process.execPath, [join(here, 'supervisor.mjs'), ctx.root, ctx.name], { cwd: repo, env, detached: true, stdio: ['ignore', out, out] });
   closeSync(out);
   child.unref();
   const deadline = Date.now() + Number(options.timeout ?? 600) * 1000;
-  let offset = 0;
+  let offset = logOffset;
   while (Date.now() < deadline) {
     await new Promise((r) => setTimeout(r, 1000));
     const text = await readFile(logPath, 'utf8').catch(() => '');
@@ -208,6 +221,10 @@ async function runScenario(options, ctx) {
   const scenario = await scenarioModule(options.scenario);
   assertScenarioSupported(scenario, 'fork');
   const before = await runningState(ctx.paths);
+  const live = before.running ? before.manifest.upstream === 'live' : Boolean(options.live);
+  if (scenario.requires.includes('liveUpstream') && !live) {
+    throw new Error(`Scenario ${scenario.name} needs a real upstream; ${before.running ? 'restart the sandbox with pnpm sandbox up --live' : 'rerun with --live'}`);
+  }
   let manifest;
   let startedHere = false;
   if (before.running) {
@@ -273,7 +290,10 @@ async function desktop(options, ctx) {
   const response = await fetch(`${manifest.proxyUrl}/_antseed/status`, { signal: AbortSignal.timeout(5000) }).then((r) => r.json()).catch(() => null);
   if (!response?.ok || response.startedAt !== manifest.buyerStartedAt) throw new Error('Sandbox buyer is not healthy; refusing to start a desktop (it would start its own buyer)');
   const instance = await chooseDesktopInstance(manifest.desktopInstance ?? manifest.name);
-  const env = isolatedEnv(process.env, manifest.home, {
+  // Keep the real macOS HOME for Electron's login Keychain. Attach-only mode
+  // reads the sandbox wallet/config through explicit paths below and never
+  // falls back to HOME for its buyer state.
+  const env = isolatedEnv(process.env, process.env.HOME ?? manifest.home, {
     VOLTA_HOME: process.env.VOLTA_HOME || join(process.env.HOME, '.volta'),
     ANTSEED_DESKTOP_ATTACH_ONLY: '1',
     ANTSEED_CONFIG_PATH: manifest.buyerConfig,
@@ -281,7 +301,7 @@ async function desktop(options, ctx) {
     ANTSEED_PROXY_URL: manifest.proxyUrl,
     ANTSEED_BASE_RPC_URL: manifest.rpcUrl,
   });
-  say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, sandbox wallet, no keychain)`);
+  say(`Attaching desktop instance ${instance} to ${manifest.proxyUrl} (attach-only, sandbox wallet)`);
   const child = spawn('pnpm', ['dev:desktop:instance', instance], { cwd: repo, env, stdio: 'inherit' });
   for (const signal of ['SIGINT', 'SIGTERM']) process.once(signal, () => child.kill(signal));
   const code = await new Promise((resolveExit) => child.once('exit', (exitCode) => resolveExit(exitCode ?? 1)));

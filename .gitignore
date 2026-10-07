@@ -47,3 +47,4 @@ NAPKIN.md
 
 # Per-worktree sandbox config (pnpm sandbox)
 .antseed-sandbox.json
+.antseed-sandbox.env

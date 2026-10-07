@@ -1,7 +1,7 @@
 import { DEFAULT_SLOT, validateSlot } from './paths.mjs';
 
 export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'help']);
-const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout' };
+const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile' };
 const BOOL_FLAGS = { '--live': 'live', '--verbose': 'verbose', '--json': 'json', '--env': 'env', '--follow': 'follow', '--keep': 'keep', '--force': 'force', '--strict': 'strict', '--help': 'help', '-h': 'help' };
 
 export function parseArgs(argv) {
@@ -41,7 +41,7 @@ export function parseArgs(argv) {
 export const HELP = `pnpm sandbox <command> [options]
 
   up        Start this worktree's sandbox (reattaches if it is already running)
-            --config FILE  --live  --deposit-usdc N  --block N  --scenario NAME  --verbose
+            --config FILE  --live  --env-file FILE  --deposit-usdc N  --block N  --scenario NAME  --verbose
   down      Settle and close channels, then stop only this sandbox's processes  [--force]
   status    Ports, wallets, balances, peers, URLs  [--json] [--env]
   run NAME  Run e2e/sandbox/scenarios/NAME.mjs, write report.json, exit nonzero on failure
@@ -51,5 +51,7 @@ export const HELP = `pnpm sandbox <command> [options]
   logs      [component] [--follow]  (supervisor, anvil, seller-<id>)
   list      All sandboxes on this machine
 
+  --env-file FILE  load live provider keys (only names used by apiKeyEnv) from a dotenv file;
+               defaults to .antseed-sandbox.env in the worktree. Shell variables win.
   --slot NAME  run an additional sandbox for this worktree (default: "default")
 `;

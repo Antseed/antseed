@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict';
 import { createServer } from 'node:net';
 import { describe, it } from 'node:test';
-import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry } from '../lib/env.mjs';
+import { assertLocalUrl, assertNetworkOptions, FORBIDDEN_PORTS, freePort, isolatedEnv, listenWithRetry, parseEnvFile, resolveLiveKeys } from '../lib/env.mjs';
 import { validateManifest, MANIFEST_VERSION } from '../lib/manifest.mjs';
 import { sandboxNodeOptions } from '../lib/node-options.mjs';
 import { parseArgs } from '../lib/options.mjs';
@@ -142,5 +142,27 @@ describe('parseArgs', () => {
     assert.throws(() => parseArgs(['run']), /Usage/);
     assert.throws(() => parseArgs(['run', '../evil']), /Invalid scenario/);
     assert.throws(() => parseArgs(['up', '--slot', 'A B']), /Invalid sandbox slot/);
+  });
+});
+
+describe('live key env files', () => {
+  it('parses dotenv lines without evaluating shell syntax', () => {
+    const values = parseEnvFile('# comment\nexport VENICE_API_KEY="quoted value"\nPLAIN=abc # note\nSINGLE=\'$(rm -rf x)\'\nnot a line\n');
+    assert.deepEqual(values, { VENICE_API_KEY: 'quoted value', PLAIN: 'abc', SINGLE: '$(rm -rf x)' });
+  });
+
+  it('resolves only requested keys, preferring the shell, and reports sources without values', () => {
+    const resolved = resolveLiveKeys(['VENICE_API_KEY', 'OPENAI_API_KEY'], {
+      env: { OPENAI_API_KEY: 'shell-key', UNRELATED: 'x' },
+      fileValues: { VENICE_API_KEY: 'file-key', OPENAI_API_KEY: 'file-openai', OTHER_SECRET: 'nope' },
+    });
+    assert.deepEqual(resolved.values, { VENICE_API_KEY: 'file-key', OPENAI_API_KEY: 'shell-key' });
+    assert.deepEqual(resolved.sources, { VENICE_API_KEY: 'env file', OPENAI_API_KEY: 'shell' });
+    assert.deepEqual(resolved.missing, []);
+    assert.deepEqual(resolveLiveKeys(['MISSING_KEY'], { env: {}, fileValues: { MISSING_KEY: ' ' } }).missing, ['MISSING_KEY']);
+  });
+
+  it('parses --env-file', () => {
+    assert.equal(parseArgs(['up', '--live', '--env-file', 'keys.env']).envFile, 'keys.env');
   });
 });
