@@ -6,7 +6,7 @@
 # optionally publishes the gateway over HTTPS (Caddy or Cloudflare Tunnel),
 # and creates a first API key.
 #
-#   curl -fsSL https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
+#   curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
 #
 # Re-running it upgrades the CLI and rewrites the services. Wallets and keys in
 # /var/lib/antseed are never touched. Docs: https://antseed.com/docs/guides/gateway-server
@@ -22,15 +22,19 @@ WRAPPER_MARKER='# antseed-gateway-wrapper'
 NODE_MAJOR=24
 BUYER_PORT=8377
 
-DOMAIN=""
+# Every option can also be set in the environment, for cloud-init and other automation.
+DOMAIN="${ANTSEED_GATEWAY_DOMAIN:-}"
 CLOUDFLARE_TOKEN="${CLOUDFLARED_TUNNEL_TOKEN:-}"
-PUBLIC_URL=""
-HOST=127.0.0.1
-PORT=8379
-KEY_LABEL="admin"
-CLI_VERSION=latest
-X402_FACILITATOR=""
+PUBLIC_URL="${ANTSEED_TUNNEL_PUBLIC_URL:-}"
+HOST="${ANTSEED_GATEWAY_HOST:-127.0.0.1}"
+PORT="${ANTSEED_GATEWAY_PORT:-8379}"
+KEY_LABEL="${ANTSEED_GATEWAY_KEY_LABEL:-admin}"
+CLI_VERSION="${ANTSEED_CLI_VERSION:-latest}"
+X402_FACILITATOR="${ANTSEED_X402_FACILITATOR_URL:-}"
+DRY_RUN="${ANTSEED_INSTALL_DRY_RUN:-0}"
+VERBOSE="${ANTSEED_INSTALL_VERBOSE:-0}"
 UNINSTALL=false
+TMP_DIR=""
 
 usage() {
   cat <<'EOF'
@@ -39,8 +43,10 @@ Usage: install-gateway.sh [options]
 Exposure (pick at most one; default is 127.0.0.1 only, reach it over SSH):
   --domain <host>              Serve https://<host> with Caddy (automatic TLS).
                                DNS must point at this server; ports 80 and 443 open.
-  --cloudflare-token <token>   Publish through a Cloudflare named tunnel
-                               (or set CLOUDFLARED_TUNNEL_TOKEN). Needs --public-url.
+  --cloudflare-token <token>   Publish through a Cloudflare named tunnel. Needs --public-url.
+                               Prefer passing CLOUDFLARED_TUNNEL_TOKEN in the environment
+                               (sudo CLOUDFLARED_TUNNEL_TOKEN=... bash ...): a flag value is
+                               visible in ps and shell history.
   --public-url <https://...>   Public hostname configured on the Cloudflare tunnel.
   --host <addr>                Gateway listen address without a proxy (default: 127.0.0.1).
                                0.0.0.0 serves plain HTTP; use it only on a private network.
@@ -49,35 +55,67 @@ Options:
   --port <n>                   Gateway port (default: 8379).
   --key-label <name>           Label of the first API key (default: admin).
   --x402-facilitator <value>   Accept x402 key top-ups: cdp, payai or a facilitator URL.
-  --cli-version <version>      @antseed/cli version to install (default: latest).
+                               cdp needs CDP_API_KEY_ID and CDP_API_KEY_SECRET in the environment.
+  --cli-version <version>      @antseed/cli version or dist-tag to install (default: latest).
+  --dry-run                    Validate the options and print the plan, without changing anything.
+  --verbose                    Print every command (set -x) and npm output.
   --uninstall                  Remove the services and the CLI. Keeps /var/lib/antseed.
   -h, --help                   Show this help.
+
+Environment variables (same as the flags):
+  ANTSEED_GATEWAY_DOMAIN, ANTSEED_GATEWAY_HOST, ANTSEED_GATEWAY_PORT,
+  ANTSEED_GATEWAY_KEY_LABEL, ANTSEED_CLI_VERSION, ANTSEED_X402_FACILITATOR_URL,
+  CLOUDFLARED_TUNNEL_TOKEN, ANTSEED_TUNNEL_PUBLIC_URL,
+  ANTSEED_INSTALL_DRY_RUN=1, ANTSEED_INSTALL_VERBOSE=1, NO_COLOR=1
+  CDP_API_KEY_ID, CDP_API_KEY_SECRET (for --x402-facilitator cdp)
+
+Examples:
+  curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
+  curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh \
+    | sudo CLOUDFLARED_TUNNEL_TOKEN=... bash -s -- --public-url https://llm.example.com
+  curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --dry-run
 EOF
 }
 
-die() { printf '\033[31merror:\033[0m %s\n' "$*" >&2; exit 1; }
-step() { printf '\033[1;32m==>\033[0m %s\n' "$*"; }
+if [[ -z "${NO_COLOR:-}" && -t 1 ]]; then
+  C_RED=$'\033[31m' C_GREEN=$'\033[1;32m' C_YELLOW=$'\033[33m' C_RESET=$'\033[0m'
+else
+  C_RED="" C_GREEN="" C_YELLOW="" C_RESET=""
+fi
+die() { printf '%serror:%s %s\n' "$C_RED" "$C_RESET" "$*" >&2; exit 1; }
+warn() { printf '%swarning:%s %s\n' "$C_YELLOW" "$C_RESET" "$*" >&2; }
+step() { printf '%s==>%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 note() { printf '    %s\n' "$*"; }
 
-while [[ $# -gt 0 ]]; do
-  case "$1" in
-    --domain) DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
-    --cloudflare-token) CLOUDFLARE_TOKEN="${2:?--cloudflare-token needs a value}"; shift 2 ;;
-    --public-url) PUBLIC_URL="${2:?--public-url needs a value}"; shift 2 ;;
-    --host) HOST="${2:?--host needs a value}"; shift 2 ;;
-    --port) PORT="${2:?--port needs a value}"; shift 2 ;;
-    --key-label) KEY_LABEL="${2:?--key-label needs a value}"; shift 2 ;;
-    --x402-facilitator) X402_FACILITATOR="${2:?--x402-facilitator needs a value}"; shift 2 ;;
-    --cli-version) CLI_VERSION="${2:?--cli-version needs a value}"; shift 2 ;;
-    --uninstall) UNINSTALL=true; shift ;;
-    -h|--help) usage; exit 0 ;;
-    *) usage >&2; die "unknown option: $1" ;;
-  esac
-done
+cleanup() { if [[ -n "$TMP_DIR" ]]; then rm -rf "$TMP_DIR"; fi; }
+abort() { printf '\n' >&2; die "interrupted; re-run the installer to finish. Nothing in $SERVICE_HOME was removed."; }
 
-[[ "$(id -u)" -eq 0 ]] || die "run as root, e.g. curl -fsSL https://antseed.com/install-gateway.sh | sudo bash -s -- <options>"
-[[ "$(uname -s)" == Linux ]] || die "this installer supports Linux only"
-command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      --domain) DOMAIN="${2:?--domain needs a value}"; shift 2 ;;
+      --cloudflare-token) CLOUDFLARE_TOKEN="${2:?--cloudflare-token needs a value}"; shift 2 ;;
+      --public-url) PUBLIC_URL="${2:?--public-url needs a value}"; shift 2 ;;
+      --host) HOST="${2:?--host needs a value}"; shift 2 ;;
+      --port) PORT="${2:?--port needs a value}"; shift 2 ;;
+      --key-label) KEY_LABEL="${2:?--key-label needs a value}"; shift 2 ;;
+      --x402-facilitator) X402_FACILITATOR="${2:?--x402-facilitator needs a value}"; shift 2 ;;
+      --cli-version|--version) CLI_VERSION="${2:?--cli-version needs a value}"; shift 2 ;;
+      --dry-run) DRY_RUN=1; shift ;;
+      --verbose) VERBOSE=1; shift ;;
+      --uninstall) UNINSTALL=true; shift ;;
+      -h|--help) usage; exit 0 ;;
+    *) usage >&2; die "unknown option: $1" ;;
+    esac
+  done
+}
+
+check_system() {
+  [[ "$(id -u)" -eq 0 || "$DRY_RUN" == 1 ]] \
+    || die "run as root, e.g. curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- <options>"
+  [[ "$(uname -s)" == Linux ]] || die "this installer supports Linux only"
+  command -v systemctl >/dev/null 2>&1 || die "systemd is required"
+}
 
 uninstall() {
   step "Removing Antseed services"
@@ -86,7 +124,11 @@ uninstall() {
   systemctl daemon-reload
   if [[ -f /etc/caddy/antseed.caddy ]]; then
     rm -f /etc/caddy/antseed.caddy
-    sed -i '\#^import /etc/caddy/antseed.caddy$#d' /etc/caddy/Caddyfile 2>/dev/null || true
+    if [[ -f /etc/caddy/Caddyfile.antseed-backup ]]; then
+      mv /etc/caddy/Caddyfile.antseed-backup /etc/caddy/Caddyfile
+    else
+      sed -i '\#^import /etc/caddy/antseed.caddy$#d' /etc/caddy/Caddyfile 2>/dev/null || true
+    fi
     systemctl reload caddy 2>/dev/null || true
   fi
   if [[ -f "$WRAPPER" ]] && grep -q "$WRAPPER_MARKER" "$WRAPPER"; then rm -f "$WRAPPER"; fi
@@ -95,30 +137,54 @@ uninstall() {
   note "They hold USDC credits: back them up before deleting them."
 }
 
-if [[ "$UNINSTALL" == true ]]; then uninstall; exit 0; fi
+HOSTNAME_RE='^([a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,63}$'
 
-MODE=local
-if [[ -n "$DOMAIN" && -n "$CLOUDFLARE_TOKEN" ]]; then die "use either --domain or --cloudflare-token, not both"; fi
-if [[ -n "$DOMAIN" ]]; then
-  MODE=caddy
-  DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%%/*}"
-  HOST=127.0.0.1
-elif [[ -n "$CLOUDFLARE_TOKEN" ]]; then
-  MODE=cloudflare
-  [[ "$PUBLIC_URL" == https://* ]] || die "--public-url https://<hostname> is required with a Cloudflare tunnel"
-  HOST=127.0.0.1
-fi
-[[ "$PORT" =~ ^[0-9]+$ ]] || die "--port must be a number"
+# Values written into systemd units, env files and the Caddyfile must not
+# contain whitespace, quotes or backslashes, which those formats parse.
+check_value() {
+  local name="$1" value="$2"
+  [[ "$value" =~ ^[^[:space:]\"\'\\]*$ ]] || die "$name must not contain spaces, quotes or backslashes"
+}
 
-for tool in curl tar sha256sum; do
-  command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
-done
+# Validate everything before changing the system.
+validate() {
+  MODE=local
+  if [[ -n "$DOMAIN" && -n "$CLOUDFLARE_TOKEN" ]]; then die "use either --domain or --cloudflare-token, not both"; fi
+  if [[ -n "$DOMAIN" ]]; then
+    MODE=caddy
+    DOMAIN="$(printf '%s' "$DOMAIN" | tr '[:upper:]' '[:lower:]')"
+    DOMAIN="${DOMAIN#http://}"; DOMAIN="${DOMAIN#https://}"; DOMAIN="${DOMAIN%%/*}"; DOMAIN="${DOMAIN%%:*}"
+    [[ "$DOMAIN" =~ $HOSTNAME_RE ]] || die "--domain must be a hostname such as llm.example.com"
+    HOST=127.0.0.1
+  elif [[ -n "$CLOUDFLARE_TOKEN" ]]; then
+    MODE=cloudflare
+    [[ "$PUBLIC_URL" =~ ^https://[A-Za-z0-9.-]+(:[0-9]+)?/?$ ]] \
+      || die "--public-url https://<hostname> is required with a Cloudflare tunnel"
+    check_value "the Cloudflare tunnel token" "$CLOUDFLARE_TOKEN"
+    HOST=127.0.0.1
+  fi
+  if ! [[ "$PORT" =~ ^[0-9]{1,5}$ ]] || (( PORT < 1 || PORT > 65535 )); then die "--port must be between 1 and 65535"; fi
+  (( PORT != BUYER_PORT )) || die "--port $BUYER_PORT is the buyer's port; pick another"
+  [[ "$HOST" =~ ^[A-Za-z0-9.:-]+$ ]] || die "--host must be an IP address or hostname"
+  [[ "$CLI_VERSION" =~ ^[A-Za-z0-9._-]+$ ]] || die "--cli-version must be an npm version or tag"
+  [[ -n "${KEY_LABEL// /}" ]] || die "--key-label cannot be empty"
+  check_value "--x402-facilitator" "$X402_FACILITATOR"
+  check_value "CDP_API_KEY_ID" "${CDP_API_KEY_ID:-}"
+  check_value "CDP_API_KEY_SECRET" "${CDP_API_KEY_SECRET:-}"
+  if [[ "$X402_FACILITATOR" == cdp && -z "${CDP_API_KEY_SECRET:-}" ]] \
+    && ! grep -qs '^CDP_API_KEY_SECRET=' "$ENV_FILE"; then
+    die "--x402-facilitator cdp needs CDP_API_KEY_ID and CDP_API_KEY_SECRET in the environment (sudo CDP_API_KEY_ID=... CDP_API_KEY_SECRET=... bash ...) or in $ENV_FILE"
+  fi
 
-case "$(uname -m)" in
-  x86_64|amd64) NODE_ARCH=x64 ;;
-  aarch64|arm64) NODE_ARCH=arm64 ;;
-  *) die "unsupported CPU architecture: $(uname -m)" ;;
-esac
+  for tool in curl tar sha256sum; do
+    command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
+  done
+  case "$(uname -m)" in
+    x86_64|amd64) NODE_ARCH=x64 ;;
+    aarch64|arm64) NODE_ARCH=arm64 ;;
+    *) die "unsupported CPU architecture: $(uname -m)" ;;
+  esac
+}
 
 install_node() {
   local current=""
@@ -134,20 +200,26 @@ install_node() {
     || die "could not find a Node.js $NODE_MAJOR build for linux-$NODE_ARCH"
   sum="${line%% *}"
   file="${line##* }"
-  tmp="$(mktemp -d)"
+  TMP_DIR="$(mktemp -d)"
+  tmp="$TMP_DIR"
   curl -fsSL "$base/$file" -o "$tmp/$file"
   echo "$sum  $tmp/$file" | sha256sum -c --quiet - || die "Node.js checksum mismatch"
-  rm -rf "$PREFIX/node"
-  mkdir -p "$PREFIX/node"
-  tar -xzf "$tmp/$file" -C "$PREFIX/node" --strip-components=1
-  rm -rf "$tmp"
+  # Extract beside the old version and swap, so a failed install leaves it in place.
+  rm -rf "$PREFIX/node.new"
+  mkdir -p "$PREFIX/node.new"
+  tar -xzf "$tmp/$file" -C "$PREFIX/node.new" --strip-components=1
+  rm -rf "$tmp" "$PREFIX/node.old"
+  TMP_DIR=""
+  [[ -d "$PREFIX/node" ]] && mv "$PREFIX/node" "$PREFIX/node.old"
+  mv "$PREFIX/node.new" "$PREFIX/node"
+  rm -rf "$PREFIX/node.old"
 }
 
 install_cli() {
   step "Installing @antseed/cli@$CLI_VERSION"
   PATH="$PREFIX/node/bin:$PATH" "$PREFIX/node/bin/npm" install --global --prefix "$PREFIX/cli" \
-    --no-fund --no-audit --loglevel=error "@antseed/cli@$CLI_VERSION"
-  note "antseed $(PATH="$PREFIX/node/bin:$PATH" "$PREFIX/cli/bin/antseed" --version 2>/dev/null | head -1)"
+    --no-fund --no-audit --loglevel="$([[ "$VERBOSE" == 1 ]] && echo notice || echo error)" "@antseed/cli@$CLI_VERSION"
+  note "antseed $(PATH="$PREFIX/node/bin:$PATH" "$PREFIX/cli/bin/antseed" --version 2>/dev/null | head -1 || true)"
 }
 
 create_user() {
@@ -180,7 +252,7 @@ EOF
 
 write_env_file() {
   mkdir -p "$(dirname "$ENV_FILE")"
-  touch "$ENV_FILE"
+  (umask 077 && touch "$ENV_FILE")
   chmod 0600 "$ENV_FILE"
   set_env() {
     local name="$1" value="$2"
@@ -195,9 +267,6 @@ write_env_file() {
   [[ -n "$X402_FACILITATOR" ]] && set_env ANTSEED_X402_FACILITATOR_URL "$X402_FACILITATOR"
   [[ -n "${CDP_API_KEY_ID:-}" ]] && set_env CDP_API_KEY_ID "$CDP_API_KEY_ID"
   [[ -n "${CDP_API_KEY_SECRET:-}" ]] && set_env CDP_API_KEY_SECRET "$CDP_API_KEY_SECRET"
-  if [[ "$X402_FACILITATOR" == cdp ]] && ! grep -q '^CDP_API_KEY_SECRET=' "$ENV_FILE"; then
-    die "--x402-facilitator cdp needs CDP_API_KEY_ID and CDP_API_KEY_SECRET in the environment (sudo CDP_API_KEY_ID=… CDP_API_KEY_SECRET=… bash …) or in $ENV_FILE"
-  fi
   return 0
 }
 
@@ -214,7 +283,14 @@ NoNewPrivileges=true
 PrivateTmp=true
 ProtectSystem=strict
 ProtectHome=true
-ReadWritePaths=$SERVICE_HOME"
+ReadWritePaths=$SERVICE_HOME
+ProtectKernelTunables=true
+ProtectKernelModules=true
+ProtectControlGroups=true
+RestrictAddressFamilies=AF_INET AF_INET6 AF_UNIX AF_NETLINK
+RestrictSUIDSGID=true
+LockPersonality=true
+CapabilityBoundingSet="
 
   cat >/etc/systemd/system/antseed-buyer.service <<EOF
 [Unit]
@@ -257,6 +333,10 @@ wait_for_buyer() {
   local _
   for _ in $(seq 1 90); do
     if curl -fsS -o /dev/null "http://127.0.0.1:$BUYER_PORT/_antseed/buyer-identities" 2>/dev/null; then return 0; fi
+    if (( $(systemctl show -p NRestarts --value antseed-buyer.service) > 0 )); then
+      journalctl -u antseed-buyer -n 30 --no-pager >&2 || true
+      die "the buyer exited during startup; see the log above or: journalctl -u antseed-buyer -n 100"
+    fi
     sleep 1
   done
   die "the buyer did not start within 90s; check: journalctl -u antseed-buyer -n 100"
@@ -317,62 +397,110 @@ EOF
   elif ! grep -qx 'import /etc/caddy/antseed.caddy' "$caddyfile"; then
     printf '\nimport /etc/caddy/antseed.caddy\n' >>"$caddyfile"
   fi
-  caddy validate --config "$caddyfile" --adapter caddyfile >/dev/null 2>&1 \
-    || die "Caddy rejected $caddyfile; run: caddy validate --config $caddyfile"
+  local validation
+  if ! validation="$(caddy validate --config "$caddyfile" --adapter caddyfile 2>&1)"; then
+    printf '%s\n' "$validation" | tail -5 >&2
+    die "Caddy rejected $caddyfile"
+  fi
   systemctl enable caddy >/dev/null 2>&1
   systemctl reload-or-restart caddy
 }
 
-install_node
-install_cli
-create_user
-install_wrapper
-write_env_file
-write_units
+print_plan() {
+  step "Dry run: nothing will be changed"
+  note "Node.js $NODE_MAJOR ($NODE_ARCH) and @antseed/cli@$CLI_VERSION -> $PREFIX"
+  note "System user $SERVICE_USER, data in $SERVICE_HOME"
+  note "Services: antseed-buyer (port $BUYER_PORT), antseed-gateway ($HOST:$PORT)"
+  case "$MODE" in
+    caddy) note "HTTPS: Caddy for https://$DOMAIN -> 127.0.0.1:$PORT" ;;
+    cloudflare) note "HTTPS: Cloudflare named tunnel at $PUBLIC_URL" ;;
+    *) note "Exposure: none beyond $HOST:$PORT" ;;
+  esac
+  if [[ -n "$X402_FACILITATOR" ]]; then note "x402 top-ups through $X402_FACILITATOR"; fi
+  note "First API key label: $KEY_LABEL (only if no keys exist)"
+}
 
-step "Starting the buyer"
-systemctl enable antseed-buyer.service >/dev/null 2>&1
-systemctl restart antseed-buyer.service
-wait_for_buyer
+# The gateway answers 401 to a request without a key once it is serving.
+verify_gateway() {
+  local _ code=""
+  for _ in $(seq 1 30); do
+    code="$(curl -s -o /dev/null -w '%{http_code}' "http://127.0.0.1:$PORT/v1/models" || true)"
+    if [[ "$code" == 401 ]]; then return 0; fi
+    sleep 1
+  done
+  journalctl -u antseed-gateway -n 30 --no-pager >&2 || true
+  die "the gateway is not answering on 127.0.0.1:$PORT (last status: ${code:-none}); see the log above"
+}
 
-create_first_key
+# The whole script runs from main, so a truncated download executes nothing.
+main() {
+  parse_args "$@"
+  check_system
+  if [[ "$UNINSTALL" == true ]]; then uninstall; return; fi
+  validate
+  if [[ "$HOST" != 127.0.0.1 && "$HOST" != localhost && "$HOST" != ::1 ]]; then
+    warn "the gateway will serve plain HTTP on $HOST; API keys cross the network unencrypted."
+  fi
+  if [[ "$DRY_RUN" == 1 ]]; then print_plan; return; fi
+  if [[ "$VERBOSE" == 1 ]]; then set -x; fi
+  trap cleanup EXIT
+  trap abort INT TERM
 
-step "Starting the gateway"
-systemctl enable antseed-gateway.service >/dev/null 2>&1
-systemctl restart antseed-gateway.service
+  install_node
+  install_cli
+  create_user
+  install_wrapper
+  write_env_file
+  write_units
 
-[[ "$MODE" == caddy ]] && install_caddy
+  step "Starting the buyer"
+  systemctl enable antseed-buyer.service >/dev/null 2>&1
+  systemctl restart antseed-buyer.service
+  wait_for_buyer
 
-case "$MODE" in
-  caddy) BASE_URL="https://$DOMAIN/v1" ;;
-  cloudflare) BASE_URL="${PUBLIC_URL%/}/v1" ;;
-  *) BASE_URL="http://$HOST:$PORT/v1" ;;
-esac
-[[ -n "$WALLET" ]] || WALLET="$("$WRAPPER" buyer identity list --json 2>/dev/null \
-  | "$PREFIX/node/bin/node" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const l=JSON.parse(s);console.log((l.find?.(i=>i.name==="default")??{}).address??"")}catch{console.log("")}})' || true)"
+  create_first_key
 
-echo
-step "Antseed gateway is running"
-note "Base URL:  $BASE_URL"
-if [[ -n "$API_KEY" ]]; then
-  note "API key:   $API_KEY"
-  note "           (shown once; store it now)"
-fi
-[[ -n "$WALLET" ]] && note "Wallet:    $WALLET  (send USDC on Base to fund paid models)"
-echo
-note "Test it:"
-note "  curl $BASE_URL/models -H \"Authorization: Bearer <api-key>\""
-echo
-note "Manage keys:   antseed gateway key create --label alice --new-identity --monthly-limit 20"
-note "Fund wallet:   antseed buyer deposit --no-watch"
-note "Logs:          journalctl -u antseed-gateway -u antseed-buyer -f"
-if [[ "$MODE" == local && "$HOST" == 127.0.0.1 ]]; then
+  step "Starting the gateway"
+  systemctl enable antseed-gateway.service >/dev/null 2>&1
+  systemctl restart antseed-gateway.service
+
+  if [[ "$MODE" == caddy ]]; then install_caddy; fi
+  verify_gateway
+
+  case "$MODE" in
+    caddy) BASE_URL="https://$DOMAIN/v1" ;;
+    cloudflare) BASE_URL="${PUBLIC_URL%/}/v1" ;;
+    *) BASE_URL="http://$HOST:$PORT/v1" ;;
+  esac
+  [[ -n "$WALLET" ]] || WALLET="$("$WRAPPER" buyer identity list --json 2>/dev/null \
+    | "$PREFIX/node/bin/node" -e 'let s="";process.stdin.on("data",d=>s+=d).on("end",()=>{try{const l=JSON.parse(s);console.log((l.find?.(i=>i.name==="default")??{}).address??"")}catch{console.log("")}})' || true)"
+
   echo
-  note "The gateway only listens on this server. From your machine:"
-  note "  ssh -N -L $PORT:127.0.0.1:$PORT <user>@<this-server>"
-  note "or re-run with --domain <host> to publish it over HTTPS."
-fi
-if [[ "$MODE" == caddy ]]; then
+  step "Antseed gateway is running"
+  note "Base URL:  $BASE_URL"
+  if [[ -n "$API_KEY" ]]; then
+    note "API key:   $API_KEY"
+    note "           (shown once; store it now)"
+  fi
+  if [[ -n "$WALLET" ]]; then note "Wallet:    $WALLET  (send USDC on Base to fund paid models)"; fi
   echo
-  note "Caddy requests the TLS certificate on first use; ports 80 and 443 must be reachable."
-fi
+  note "Test it:"
+  note "  curl $BASE_URL/models -H \"Authorization: Bearer <api-key>\""
+  echo
+  note "Manage keys:   antseed gateway key create --label alice --new-identity --monthly-limit 20"
+  note "Fund wallet:   antseed buyer deposit --no-watch"
+  note "Logs:          journalctl -u antseed-gateway -u antseed-buyer -f"
+  if [[ "$MODE" == local && "$HOST" == 127.0.0.1 ]]; then
+    echo
+    note "The gateway only listens on this server. From your machine:"
+    note "  ssh -N -L $PORT:127.0.0.1:$PORT <user>@<this-server>"
+    note "or re-run with --domain <host> to publish it over HTTPS."
+  fi
+  if [[ "$MODE" == caddy ]]; then
+    echo
+    note "Caddy requests the TLS certificate on first use; ports 80 and 443 must be reachable."
+  fi
+}
+
+# ANTSEED_INSTALL_SH_NO_RUN=1 loads the functions without running, for tests.
+if [[ "${ANTSEED_INSTALL_SH_NO_RUN:-0}" != 1 ]]; then main "$@"; fi
