@@ -101,7 +101,7 @@ To reach people outside your network, use a [public HTTPS tunnel](/docs/guides/p
 For a gateway that stays up, run it on a server. On Linux, one command installs the buyer and the gateway as services that restart on failure and start on boot. It sets up HTTPS on your own domain and creates your first key:
 
 ```bash
-curl -fsSL https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
+curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
 ```
 
 [Run a Gateway on a Server](/docs/guides/gateway-server) covers the options, including Cloudflare Tunnel instead of a domain.
