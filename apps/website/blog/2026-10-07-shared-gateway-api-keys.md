@@ -98,6 +98,14 @@ antseed gateway start --host 0.0.0.0   # serve other machines on your network
 
 To reach people outside your network, use a [public HTTPS tunnel](/docs/guides/public-tunnels). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
 
+For a gateway that stays up, run it on a server. On Linux, one command installs the buyer and the gateway as services that restart on failure and start on boot. It sets up HTTPS on your own domain and creates your first key:
+
+```bash
+curl -fsSL https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
+```
+
+[Run a Gateway on a Server](/docs/guides/gateway-server) covers the options, including Cloudflare Tunnel instead of a domain.
+
 ## Get started
 
 With the [Antseed CLI installed](/docs/install) and your buyer running:
