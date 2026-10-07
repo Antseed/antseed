@@ -36,8 +36,23 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
+import { MODEL_ROUTING_MODELS_PATH, MODEL_ROUTING_PROTOCOL, ROUTING_PROBLEM_TYPES, isModelRoutingPath, routingProblemBody } from '@antseed/protocol/model-routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
+
+/** A seller's routing services; IRP paths carry no service name, so a seller may offer at most one. */
+function routingServices(providers: readonly Provider[]): Array<{ provider: Provider; service: string }> {
+  return providers.flatMap(provider => provider.services
+    .filter(service => provider.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL))
+    .map(service => ({ provider, service })));
+}
+
+export function assertSingleRoutingService(providers: readonly Provider[]): void {
+  const found = routingServices(providers);
+  if (found.length > 1) {
+    throw new Error(`A seller can offer at most one model-routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
+  }
+}
 
 function isZeroTokenPricing(pricing: ProviderTokenPricing): boolean {
   return pricing.inputUsdPerMillion === 0
@@ -70,7 +85,7 @@ interface SellerBillingContext {
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
 const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
-/** Per-buyer rate limit for the free attestation route. */
+/** Per-buyer rate limit for the free attestation and routing-models routes. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
 const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
@@ -135,6 +150,11 @@ export class SellerRequestHandler {
       if (request.method === 'GET' && (pathOnly === '/v1/models' || pathOnly.startsWith('/v1/models/'))) {
         const modelsResponse = this._handleModelsRequest(request);
         mux.sendProxyResponse(modelsResponse);
+        return;
+      }
+
+      if (request.method === 'GET' && pathOnly === MODEL_ROUTING_MODELS_PATH) {
+        mux.sendProxyResponse(await this._handleRoutingModels(request, buyerPeerId));
         return;
       }
 
@@ -747,6 +767,29 @@ export class SellerRequestHandler {
 
   // -- Local /v1/models handler --
 
+  /**
+   * Free router model list (IRP `GET /v1/routing/models`): forward to this seller's routing
+   * service. Rate-limited like attestation because it reaches the upstream router. Local
+   * failures use IRP problem details.
+   */
+  private async _handleRoutingModels(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
+    const problem = (statusCode: number, type: string, title: string, detail: string, headers: Record<string, string> = {}): SerializedHttpResponse => ({
+      requestId: request.requestId, statusCode, headers: { 'content-type': 'application/problem+json', ...headers },
+      body: routingProblemBody(statusCode, type, title, detail),
+    });
+    const provider = routingServices(this._deps.providers)[0]?.provider;
+    if (!provider) return problem(404, ROUTING_PROBLEM_TYPES.invalidRequest, 'No routing service', 'This seller offers no model-routing service.');
+    if (!this._allowAttest(buyerPeerId)) {
+      return problem(503, ROUTING_PROBLEM_TYPES.unavailable, 'Rate limited', 'Routing models rate limit exceeded.', { 'retry-after': '60' });
+    }
+    try {
+      const response = await provider.handleRequest(request);
+      return { ...response, requestId: request.requestId };
+    } catch (error) {
+      return problem(503, ROUTING_PROBLEM_TYPES.unavailable, 'Router unavailable', `Routing models failed: ${error instanceof Error ? error.message : String(error)}`);
+    }
+  }
+
   private _handleModelsRequest(request: SerializedHttpRequest): SerializedHttpResponse {
     const allServices = this._deps.providers.flatMap((p) => p.services);
     const now = Math.floor(Date.now() / 1000);
@@ -863,6 +906,8 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
+    // IRP paths name no service: they address this seller's single routing service.
+    if (isModelRoutingPath(request.path)) return routingServices(this._deps.providers)[0]?.service ?? null;
     const body = extractRequestBodyFields(request.headers, request.body);
     const service = body?.["service"] ?? body?.["model"];
     if (typeof service !== "string" || service.trim().length === 0) {

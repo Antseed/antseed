@@ -20,3 +20,6 @@ export {
   formatToolHints,
   type ToolHint,
 } from './tool-hints.js'
+export { ModelRoutingClient, RouterCannotRankError, type ModelRoutingClientApi } from './model-routing-client.js'
+export { CacheObservations } from './cache-observations.js'
+export { routerModelResolver } from './router-model-names.js'

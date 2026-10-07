@@ -108,6 +108,9 @@ importers:
       '@antseed/provider-core':
         specifier: workspace:*
         version: link:../../packages/provider-core
+      '@antseed/router-core':
+        specifier: workspace:*
+        version: link:../../packages/router-core
       '@peculiar/x509':
         specifier: ^2.0.0
         version: 2.0.0
@@ -139,6 +142,9 @@ importers:
         specifier: ^0.2.2
         version: 0.2.2
     devDependencies:
+      '@antseed/router-local':
+        specifier: workspace:*
+        version: link:../../plugins/router-local
       '@types/node':
         specifier: ^20.11.0
         version: 20.19.33

@@ -111,6 +111,18 @@ describe('buildHealthProbeRequest', () => {
 });
 
 describe('ModelHealthChecker', () => {
+  it('does not probe routing services as inference models even without unit pricing', async () => {
+    const onRequest = vi.fn(async request => jsonResponse(request.requestId, 200));
+    const provider = makeProvider({
+      services: ['alpha-route', 'model-a'], onRequest,
+      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+    });
+    const checker = new ModelHealthChecker({ targets: [{ provider }] });
+    await checker.runSweep();
+    expect(onRequest).toHaveBeenCalledOnce();
+    expect(JSON.parse(new TextDecoder().decode(onRequest.mock.calls[0]![0].body)).model).toBe('model-a');
+    expect(provider.services).toEqual(['alpha-route', 'model-a']);
+  });
   it('unadvertises a service after the failure threshold and emits an event', async () => {
     const provider = makeProvider({
       onRequest: statusSequence({ 'model-a': [500, 500, 500], 'model-b': [200, 200, 200] }),

@@ -20,6 +20,7 @@ import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth } from './response-auth.js';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { findRoutingService, isModelRoutingPath } from '@antseed/protocol/model-routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
@@ -125,7 +126,7 @@ export class BuyerRequestHandler {
     }
 
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
-    const requestedService = options?.controlPlane ? undefined : extractServiceFromBody(req);
+    const requestedService = options?.controlPlane ? undefined : extractRequestedService(peer, req);
     const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
@@ -477,8 +478,9 @@ export class BuyerRequestHandler {
   }
 }
 
-/** Extract the service/model name from a JSON or multipart request body, or undefined if not found. */
-function extractServiceFromBody(request: SerializedHttpRequest): string | undefined {
+/** The requested service: the peer's single routing service on IRP paths, else `service`/`model` from a JSON or multipart body. */
+function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
+  if (isModelRoutingPath(request.path)) return findRoutingService(peer.providerServiceApiProtocols)?.serviceId;
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;
   if (typeof service === 'string' && service.length > 0) return service;

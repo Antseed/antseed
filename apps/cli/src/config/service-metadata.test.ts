@@ -29,3 +29,8 @@ test('parseServiceUnitBillingModelsInput validates CLI billing JSON', () => {
     /known service API protocol/,
   );
 });
+
+test('completed requests use the same CLI unit-price configuration as images', () => {
+  const models = { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } };
+  assert.deepEqual(parseServiceUnitBillingModelsInput(JSON.stringify(models)), models);
+});
