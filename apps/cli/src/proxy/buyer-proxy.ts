@@ -112,6 +112,8 @@ import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
+import { isClientCredentialHeader } from './credential-headers.js'
+import { DEFAULT_PROXY_HOST, bearerMatches, publishProxyToken, removeProxyToken } from './proxy-auth.js'
 import { loadConfig } from '../config/loader.js'
 
 // Re-export for backward compatibility (used by tests and other consumers)
@@ -134,6 +136,14 @@ const WATCHER_ABSENCE_ERRORS: Record<DepositWatcherAbsenceReason, string> = {
 
 export interface BuyerProxyConfig {
   port: number
+  /** Interface to listen on. Default: 127.0.0.1 (loopback only). */
+  host?: string
+  /**
+   * When set, every request must carry `Authorization: Bearer <authToken>`
+   * (401 otherwise); the header is never forwarded to a seller. The token is
+   * also published to a 0600 file in `dataDir` for the CLI's local clients.
+   */
+  authToken?: string
   node: AntseedNode
   /** Data directory used to persist buyer.state.json (discovered peers, session peer pin). */
   dataDir: string
@@ -781,6 +791,8 @@ export class BuyerProxy {
   private readonly _server: Server
   private readonly _node: AntseedNode
   private readonly _port: number
+  private readonly _host: string
+  private readonly _authToken: string | null
   private readonly _bgRefreshIntervalMs: number
   private readonly _peerCacheTtlMs: number
   private readonly _stateDir: string
@@ -865,6 +877,8 @@ export class BuyerProxy {
     this._teeVerification = new TeeVerification(config.verifier)
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port
+    this._host = config.host ?? DEFAULT_PROXY_HOST
+    this._authToken = config.authToken ? config.authToken : null
     this._bgRefreshIntervalMs = Math.max(1, config.backgroundRefreshIntervalMs ?? DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS)
     this._peerCacheTtlMs = Math.max(0, config.peerCacheTtlMs ?? Math.max(6 * 60_000, this._bgRefreshIntervalMs + 60_000))
     this._stateDir = config.dataDir
@@ -1009,14 +1023,16 @@ export class BuyerProxy {
     await this._reloadSessionOverrides({ preservePeerPin: this._pinnedPeer !== null })
     await new Promise<void>((resolve, reject) => {
       this._server.once('error', reject)
-      this._server.listen(this._port, '127.0.0.1', () => {
+      this._server.listen(this._port, this._host, () => {
         this._server.removeListener('error', reject)
         resolve()
       })
     })
     try {
       const address = this._server.address()
-      await this._teeControl.publish(this._stateDir, typeof address === 'object' && address ? address.port : this._port)
+      const boundPort = typeof address === 'object' && address ? address.port : this._port
+      if (this._authToken) await publishProxyToken(this._stateDir, boundPort, this._authToken)
+      await this._teeControl.publish(this._stateDir, boundPort)
     } catch (error) {
       await new Promise<void>((resolve) => this._server.close(() => resolve()))
       throw error
@@ -1065,6 +1081,11 @@ export class BuyerProxy {
   async stop(): Promise<void> {
     this._teeVerification.close()
     await this._teeControl.close()
+    if (this._authToken) {
+      const address = this._server.address()
+      const boundPort = typeof address === 'object' && address ? address.port : this._port
+      await removeProxyToken(this._stateDir, boundPort, this._authToken)
+    }
     if (this._stateWatchDebounce) {
       clearTimeout(this._stateWatchDebounce)
       this._stateWatchDebounce = null
@@ -2239,6 +2260,24 @@ export class BuyerProxy {
 
     log(`${method} ${path}`)
 
+    // Proxy auth gates everything, control plane included. The verification
+    // endpoints are the one exception: they already require their own
+    // per-session bearer token from a loopback socket, carried in the same
+    // `Authorization` header.
+    if (this._authToken && !path.startsWith('/_antseed/verification')
+      && !bearerMatches(req.headers.authorization, this._authToken)) {
+      log(`rejected unauthenticated request: ${method} ${path}`)
+      res.writeHead(401, { 'content-type': 'application/json', 'www-authenticate': 'Bearer' })
+      res.end(JSON.stringify({
+        error: {
+          type: 'authentication_error',
+          code: 'invalid_proxy_token',
+          message: 'This AntSeed buyer proxy requires Authorization: Bearer <token> (the --auth-token / ANTSEED_PROXY_TOKEN it was started with).',
+        },
+      }))
+      return
+    }
+
     // Control-plane endpoints — handle before collecting proxy body
     if (path.startsWith('/_antseed/')) {
       return this._handleControlPlane(req, res, method, path)
@@ -2287,9 +2326,12 @@ export class BuyerProxy {
       return
     }
 
-    // Build serialized request
+    // Build serialized request. Client credentials (provider keys, cookies,
+    // this proxy's own token) never leave the machine — see
+    // credential-headers.ts for why no seller needs them.
     const headers: Record<string, string> = {}
     for (const [key, value] of Object.entries(req.headers)) {
+      if (isClientCredentialHeader(key)) continue
       if (typeof value === 'string') {
         headers[key] = value
       } else if (Array.isArray(value)) {

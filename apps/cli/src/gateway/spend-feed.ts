@@ -12,6 +12,8 @@ export type SpendFeedState = 'reporting' | 'unsupported' | 'unreachable'
 
 export interface SpendFeedOptions {
   buyerPort: number
+  /** Headers authenticating to a token-protected buyer; read per poll. */
+  buyerAuthHeaders?: () => Record<string, string>
   onPage: (page: AttributedSpendPage) => void
   onLog?: (message: string) => void
   intervalMs?: number
@@ -59,7 +61,7 @@ export class SpendFeedPoller {
       try {
         response = await fetchImpl(
           `http://127.0.0.1:${this._options.buyerPort}/_antseed/attributed-spend?after=${this._after}`,
-          { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) },
+          { headers: this._options.buyerAuthHeaders?.() ?? {}, signal: AbortSignal.timeout(POLL_TIMEOUT_MS) },
         )
       } catch {
         this._setState('unreachable')

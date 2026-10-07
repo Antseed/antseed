@@ -16,6 +16,11 @@ test('packaged desktop CLI runs remain offline-only', () => {
   assert.equal(env['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'], '1');
 });
 
+test('desktop-managed buyers never inherit a proxy auth token', () => {
+  const env = buildCliChildEnv({ ANTSEED_PROXY_TOKEN: 'shell-token-0123456789' }, false);
+  assert.equal(env['ANTSEED_PROXY_TOKEN'], undefined);
+});
+
 test('live QA does not bypass native-module preflight', async () => {
   const previousDirectory = process.cwd();
   const previousQa = process.env['ANTSEED_LIVE_QA'];

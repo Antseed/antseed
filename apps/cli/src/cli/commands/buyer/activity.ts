@@ -448,8 +448,8 @@ export function registerBuyerActivityCommand(buyerCmd: Command): void {
 
       const proxyPort = config.buyer.proxyPort
       const [channelsBody, usageBody] = await Promise.all([
-        daemonJson(proxyPort, '/_antseed/channels?all=1'),
-        daemonJson(proxyPort, '/_antseed/buyer-usage'),
+        daemonJson({ port: proxyPort, dataDir: globalOpts.dataDir }, '/_antseed/channels?all=1'),
+        daemonJson({ port: proxyPort, dataDir: globalOpts.dataDir }, '/_antseed/buyer-usage'),
       ])
       if (!channelsBody || !usageBody) {
         console.error(chalk.red(`No buyer connection reachable on port ${proxyPort}.`))

@@ -7,6 +7,7 @@ import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { delimiter, join } from 'node:path'
 import { getGlobalOptions } from './types.js'
+import { PROXY_TOKEN_ENV, isLoopbackHost, readProxyToken } from '../../proxy/proxy-auth.js'
 
 type ToolName = 'codex' | 'claude' | 'opencode'
 
@@ -41,6 +42,20 @@ export type ParsedWrappedToolArgs = {
 type NormalizedBaseUrl = {
   root: string
   v1: string
+}
+
+/**
+ * Bearer token for the buyer proxy at `baseUrl`, when it requires one. A
+ * local buyer publishes its token in the data dir; a remote one is reached
+ * with ANTSEED_PROXY_TOKEN.
+ */
+export function resolveWrappedToolProxyToken(baseUrl: string, dataDir: string, env: NodeJS.ProcessEnv = process.env): string | null {
+  const url = new URL(baseUrl)
+  if (isLoopbackHost(url.hostname)) {
+    const port = url.port ? Number(url.port) : url.protocol === 'https:' ? 443 : 80
+    return readProxyToken(dataDir, port)
+  }
+  return env[PROXY_TOKEN_ENV]?.trim() || null
 }
 
 type PreparedInvocation = {
@@ -165,7 +180,7 @@ export function buildCodexConfigArgs(baseUrlV1: string, model: string): string[]
   ]
 }
 
-export function buildOpenCodeConfigContent(baseUrlV1: string, model: string): string {
+export function buildOpenCodeConfigContent(baseUrlV1: string, model: string, apiKey: string = DEFAULT_RUNTIME_API_KEY): string {
   return JSON.stringify({
     provider: {
       antseed: {
@@ -173,7 +188,7 @@ export function buildOpenCodeConfigContent(baseUrlV1: string, model: string): st
         name: 'AntSeed',
         options: {
           baseURL: baseUrlV1,
-          apiKey: 'antseed',
+          apiKey,
         },
         models: {
           [model]: {
@@ -268,42 +283,49 @@ async function prepareToolInvocation(
   toolName: ToolName,
   parsed: ParsedWrappedToolArgs,
   baseUrl: NormalizedBaseUrl,
+  proxyToken: string | null,
 ): Promise<PreparedInvocation> {
   switch (toolName) {
     case 'codex':
-      return prepareCodexInvocation(parsed, baseUrl)
+      return prepareCodexInvocation(parsed, baseUrl, proxyToken)
     case 'claude':
-      return prepareClaudeInvocation(parsed, baseUrl)
+      return prepareClaudeInvocation(parsed, baseUrl, proxyToken)
     case 'opencode':
-      return await prepareOpenCodeInvocation(parsed, baseUrl)
+      return await prepareOpenCodeInvocation(parsed, baseUrl, proxyToken)
   }
 }
 
-function prepareCodexInvocation(parsed: ParsedWrappedToolArgs, baseUrl: NormalizedBaseUrl): PreparedInvocation {
+function prepareCodexInvocation(parsed: ParsedWrappedToolArgs, baseUrl: NormalizedBaseUrl, proxyToken: string | null): PreparedInvocation {
   const model = resolveModel(parsed.model, 'codex')
   return {
     args: [...buildCodexConfigArgs(baseUrl.v1, model), ...parsed.childArgs],
-    env: withDefaultEnv('ANTSEED_API_KEY', DEFAULT_RUNTIME_API_KEY),
+    // Codex sends ANTSEED_API_KEY as `Authorization: Bearer`.
+    env: proxyToken
+      ? { ...process.env, ANTSEED_API_KEY: proxyToken }
+      : withDefaultEnv('ANTSEED_API_KEY', DEFAULT_RUNTIME_API_KEY),
     cleanup: NOOP_CLEANUP,
   }
 }
 
-function prepareClaudeInvocation(parsed: ParsedWrappedToolArgs, baseUrl: NormalizedBaseUrl): PreparedInvocation {
+function prepareClaudeInvocation(parsed: ParsedWrappedToolArgs, baseUrl: NormalizedBaseUrl, proxyToken: string | null): PreparedInvocation {
   return {
     args: parsed.model ? ['--model', parsed.model, ...parsed.childArgs] : parsed.childArgs,
     env: {
       ...withDefaultEnv('ANTHROPIC_API_KEY', DEFAULT_RUNTIME_API_KEY),
+      // Claude Code sends ANTHROPIC_AUTH_TOKEN as `Authorization: Bearer`
+      // (ANTHROPIC_API_KEY goes out as x-api-key, which the proxy never uses).
+      ...(proxyToken ? { ANTHROPIC_AUTH_TOKEN: proxyToken } : {}),
       ANTHROPIC_BASE_URL: baseUrl.root,
     },
     cleanup: NOOP_CLEANUP,
   }
 }
 
-async function prepareOpenCodeInvocation(parsed: ParsedWrappedToolArgs, baseUrl: NormalizedBaseUrl): Promise<PreparedInvocation> {
+async function prepareOpenCodeInvocation(parsed: ParsedWrappedToolArgs, baseUrl: NormalizedBaseUrl, proxyToken: string | null): Promise<PreparedInvocation> {
   const model = resolveModel(parsed.model, 'opencode')
   const configDir = await mkdtemp(join(tmpdir(), OPENCODE_CONFIG_PREFIX))
   const configPath = join(configDir, 'opencode.json')
-  await writeFile(configPath, buildOpenCodeConfigContent(baseUrl.v1, model), 'utf-8')
+  await writeFile(configPath, buildOpenCodeConfigContent(baseUrl.v1, model, proxyToken ?? DEFAULT_RUNTIME_API_KEY), { encoding: 'utf-8', mode: 0o600 })
   return {
     args: parsed.childArgs,
     env: {
@@ -333,7 +355,7 @@ async function runWrappedTool(toolName: ToolName, rawArgs: string[], dataDir: st
   try {
     parsed = parseWrappedToolArgs(rawArgs)
     baseUrl = normalizeAntseedBaseUrl(parsed.antseedBaseUrl ?? await resolveDefaultAntseedBaseUrl(dataDir, configPath))
-    prepared = await prepareToolInvocation(toolName, parsed, baseUrl)
+    prepared = await prepareToolInvocation(toolName, parsed, baseUrl, resolveWrappedToolProxyToken(baseUrl.root, dataDir))
   } catch (err) {
     console.error(chalk.red((err as Error).message))
     process.exitCode = 1

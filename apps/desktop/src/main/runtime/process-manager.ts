@@ -321,6 +321,10 @@ export function buildCliChildEnv(
   isLocalDevScript: boolean,
 ): NodeJS.ProcessEnv {
   const childEnv = { ...baseEnv };
+  // The desktop talks to its buyer's control plane on loopback without a
+  // proxy token, so a token inherited from the user's shell would lock the
+  // app out of its own buyer. Remote/headless buyers set it explicitly.
+  delete childEnv['ANTSEED_PROXY_TOKEN'];
   if (isLocalDevScript) {
     delete childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'];
   } else {

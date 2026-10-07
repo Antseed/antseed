@@ -606,13 +606,14 @@ function tlsHttpRequest(opts: {
   })
 }
 
-async function makeProxy(tmpDir: string, buyerPort: number) {
+async function makeProxy(tmpDir: string, buyerPort: number, buyerAuthHeaders?: () => Record<string, string>) {
   const caManager = new CAManager(tmpDir)
   const caKeys = await caManager.generate()
   const certCache = new CertCache(caKeys)
   const proxy = new SystemProxyServer({
     port: 0,
     buyerProxyPort: buyerPort,
+    ...(buyerAuthHeaders ? { buyerAuthHeaders } : {}),
     certCache,
     proxiedDomains: new Set(['api-b.example.test', 'api-a.example.test', 'conversation.com', 'workflow.example.test']),
     proxiedPathPrefixes: new Map([
@@ -673,6 +674,45 @@ test('Proxy: rewrites model field and strips Authorization header', { timeout: 1
       const capturedBody = JSON.parse(captured.body.toString('utf8')) as { model: string }
       assert.equal(capturedBody.model, 'testPeer@model-default', 'model should be rewritten with peerId prefix')
       assert.equal(captured.headers['authorization'], undefined, 'Authorization header should be stripped')
+    } finally {
+      await proxy.stop()
+      await buyer.close()
+    }
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true })
+  }
+})
+
+test('Proxy: strips every client credential header and authenticates to a token-protected buyer (#1104)', { timeout: 15_000 }, async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'antseed-proxy-test-'))
+  try {
+    const buyer = await startFakeBuyerProxy()
+    const { proxy, caKeys } = await makeProxy(tmpDir, buyer.port, () => ({ authorization: 'Bearer buyer-token-0123456789' }))
+    try {
+      const result = await tlsHttpRequest({
+        host: '127.0.0.1',
+        port: proxy.innerTlsPort,
+        servername: 'api-b.example.test',
+        caCert: caKeys.certPem,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': 'Bearer sk-secret-key',
+          'x-api-key': 'sk-ant-secret',
+          'x-goog-api-key': 'AIza-secret',
+          'api-key': 'azure-secret',
+          'cookie': 'session=secret',
+        },
+        body: Buffer.from(JSON.stringify({ model: 'model-default', messages: [] })),
+      })
+      assert.equal(result.statusCode, 200)
+      const captured = buyer.captured[0]!
+      assert.equal(captured.headers['authorization'], 'Bearer buyer-token-0123456789')
+      assert.equal(captured.headers['x-api-key'], undefined)
+      assert.equal(captured.headers['x-goog-api-key'], undefined)
+      assert.equal(captured.headers['api-key'], undefined)
+      assert.equal(captured.headers['cookie'], undefined)
     } finally {
       await proxy.stop()
       await buyer.close()
