@@ -38,14 +38,11 @@ export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, Routin
 export type { RoutingUsageObservation } from './interfaces/model-routing-client.js';
 export * from './routing/selection.js';
 export {
-  DEFAULT_COST_QUALITY_TRADEOFF,
-  MAX_ROUTING_CANDIDATES,
   MAX_ROUTING_CANDIDATE_ID_LENGTH,
   MODEL_ROUTING_PROTOCOL,
   MODEL_ROUTING_MODELS_PATH,
   MODEL_ROUTING_RANK_PATH,
   ROUTING_PROBLEM_TYPES,
-  ROUTING_RANKING_OBJECT,
   isCostQualityTradeoff,
   parseRoutingModelsResponse,
   parseRoutingProblem,
@@ -56,11 +53,7 @@ export {
   validateRoutingRankResponse,
   type RoutingCandidateV1,
   type RoutingInferenceRequestV1,
-  type RoutingModelsResponseV1,
-  type RoutingProblem,
-  type RoutingRankedEntryV1,
   type RoutingRankRequestV1,
-  type RoutingRankResponseV1,
 } from '@antseed/protocol';
 
 // Types (re-export everything)

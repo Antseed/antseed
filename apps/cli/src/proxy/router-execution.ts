@@ -51,7 +51,7 @@ function modelsKey(target: RoutingServiceTarget): readonly [string, string, stri
   return [target.peerId, target.provider, target.serviceId]
 }
 
-export type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
+type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
 
 /** Build the text-model destinations this buyer's policies allow. The router chooses among them. */
 export function eligibleRouterCandidates(
