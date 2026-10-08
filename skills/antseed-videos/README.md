@@ -24,7 +24,7 @@ Provide the skill with:
 
 - `model` — video model id or alias; optional when you want the skill to inspect the current catalog first
 - `prompt` — video description
-- `duration` and, for models with several resolutions, `resolution`
+- `duration`, plus `resolution` and `aspect_ratio` when the model advertises them
 - `image` — optional starting frame for image-to-video models
 
 The skill queries `/v1/models?type=videos`, reads the chosen model's advertised durations, resolutions and prices, quotes the price, queues the job (`venice-video` or `fal-video` format), polls until the MP4 is ready, and saves it. You pay once, when the finished video is delivered.
@@ -37,6 +37,7 @@ model: gemini-omni-flash-1-1-text-to-video
 prompt: A tiny ant carrying a glowing seed across a mossy forest floor
 duration: 4
 resolution: 360p
+aspect_ratio: 16:9
 ```
 
 See [SKILL.md](SKILL.md) for request, polling, pricing, safety, and error-handling instructions.

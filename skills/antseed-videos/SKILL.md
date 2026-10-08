@@ -19,7 +19,7 @@ Generate a video through the user's local Antseed buyer proxy using network-wide
 - `prompt` — the user's video description
 - `duration` — length in seconds; required (see below)
 - `resolution` — required when the model advertises more than one
-- `aspect_ratio` — optional; send only a value the model advertises
+- `aspect_ratio` — required when the model advertises aspect ratios (see below)
 - `image` — optional path or HTTPS URL of a starting frame, for image-to-video models
 - `output` — optional destination path; default `generated-video.mp4`
 - `proxy_url` — optional buyer URL; default `http://127.0.0.1:8377`
@@ -57,7 +57,7 @@ Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. 
 
 - **Duration**: always send one. Pick a value from `durationsSeconds`; use the user's value when it is listed, otherwise the closest listed value, and tell the user. Never send `auto`: per-second pricing needs an explicit duration, and the buyer rejects the request without one.
 - **Resolution**: when `resolutions` is advertised, send one of them exactly as written (case matters, for example `768P`). Sellers price by resolution, and a request that matches no price component is refused. Default to the lowest resolution unless the user asked for more.
-- **Aspect ratio**: send only when the user asked for one and it is listed.
+- **Aspect ratio**: when `aspectRatios` is advertised, always send one; some upstreams reject the request without it. Use the user's value when it is listed, otherwise `16:9` when listed, otherwise the first listed value.
 - **Image input**: for a model whose `requiredInputs` contains `first_frame`, an image is required; for a text-only model (`inputs: []`), do not send one.
 
 Compute the price before queueing. Add every component whose `match` is absent or equals the request's values (`resolution`, `model`):
@@ -81,8 +81,10 @@ curl --fail-with-body "$proxy_url/api/v1/video/queue" \
   --data-binary "$(jq -n \
     --arg model "$model" --arg prompt "$prompt" \
     --arg duration "${duration}s" --arg resolution "$resolution" \
+    --arg aspect_ratio "$aspect_ratio" \
     '{model: $model, prompt: $prompt, duration: $duration}
-     + (if $resolution != "" then {resolution: $resolution} else {} end)')" \
+     + (if $resolution != "" then {resolution: $resolution} else {} end)
+     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)')" \
   --output "$queue_file"
 job_id="$(jq -r '.queue_id // empty' "$queue_file")"
 ```
@@ -97,9 +99,10 @@ curl --fail-with-body "$proxy_url/fal/v1/video/queue" \
   -H 'authorization: Bearer antseed-desktop' \
   --data-binary "$(jq -n \
     --arg model "$model" --arg prompt "$prompt" --arg duration "$duration" \
-    --arg resolution "$resolution" \
+    --arg resolution "$resolution" --arg aspect_ratio "$aspect_ratio" \
     '{model: $model, prompt: $prompt, duration: $duration}
-     + (if $resolution != "" then {resolution: $resolution} else {} end)')" \
+     + (if $resolution != "" then {resolution: $resolution} else {} end)
+     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)')" \
   --output "$queue_file"
 job_id="$(jq -r '.request_id // empty' "$queue_file")"
 ```
@@ -149,6 +152,7 @@ Stop on `FAILED`, `ERROR`, or `CANCELLED`: the job ended and is not charged. Vid
 - HTTP `402` with `one_off_channel_required`: the buyer opened the video's payment channel but retried before the seller registered it. Buyers before `@antseed/cli@0.1.171` hit this; update the buyer. Each failed attempt leaves a funded channel that `antseed buyer channels request-close <channelId>` releases.
 - Price above $5.00 or "above the configured limit": choose a shorter duration or lower resolution.
 - "Explicit video duration is required" or "No billing component matched": send a listed `duration`, and a listed `resolution` when the model advertises any.
-- `model_not_found`: refresh `/v1/models?type=videos` and resolve the id again.
+- HTTP `400` with `antseed_fault: "peer"` on queue: the upstream rejected the options. Check that `duration`, `resolution` and `aspect_ratio` are all advertised values, and that a required image input is present. A rejected queue is not charged.
+- `model_not_found` ("No policy-allowed peer currently serves model"): refresh `/v1/models?type=videos`, resolve the id again, and retry once after a few seconds; routing can briefly exclude a seller right after a failed request.
 - HTTP `502`: no policy-allowed serving peer accepted the job.
 - Connection refused: start Antseed Desktop or `antseed buyer start`.
