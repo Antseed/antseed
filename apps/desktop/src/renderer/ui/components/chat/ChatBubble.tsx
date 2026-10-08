@@ -584,7 +584,8 @@ function mergeThinkingBlocks(blocks: ContentBlock[], fallbackIndex = 0): Content
   };
 }
 
-const VIDEO_GENERATION_COMMAND = /antseed_video\.mjs["']?\s+generate\b/;
+// The antseed-videos skill waits for a queued video by polling the native video retrieve route.
+const VIDEO_GENERATION_COMMAND = /\/v1\/video\/retrieve\b/;
 
 export function isRunningVideoGenerationTool(block: ContentBlock): boolean {
   if (block.type !== 'tool_use' || block.status !== 'running') return false;

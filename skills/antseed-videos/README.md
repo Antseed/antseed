@@ -1,6 +1,6 @@
 # antseed-videos
 
-Guided video generation through Antseed's local buyer proxy.
+Guided video generation through Antseed's local buyer proxy, with plain `curl` and `jq`.
 
 ## Install
 
@@ -14,27 +14,28 @@ Add `--scope user` to install it for every project supported by your agent, or u
 
 ## What it does
 
-The skill walks the user through three approved gates before it pays for a video:
+The skill walks the user through three approved stages before it pays for a video:
 
-1. **Idea and model.** Feedback on the idea, and a recommended video model with alternatives.
-2. **Script, prompts, and frames.** A short script, a video prompt written for the chosen model, first- and last-frame prompts, and frames made with a top-ranked image model through the `antseed-images` skill. Each frame is shown for approval.
-3. **Settings and go.** A recap, then duration, resolution, audio, seller, and price before the paid create.
+1. **Idea and model.** Feedback on the idea, an improved version, and a recommended video model that takes first and last frames, with alternatives.
+2. **Prompts and frames.** A video prompt written for the chosen model, first- and last-frame prompts, and frames made with a strong image model through the `antseed-images` skill. Each frame is shown for approval.
+3. **Settings and go.** A recap, then duration, resolution, and the price before the create.
 
-Video and image models are ranked by [LMArena](https://lmarena.ai)'s public blind-vote leaderboards (CC BY 4.0), read without an API key from the [Hugging Face dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset) and cached for a day in `~/.antseed/cache/model-rankings.json`. Only the leaderboard is requested; nothing about the user's prompt or media leaves the machine. When the leaderboard is unreachable, a built-in snapshot is used. Set `ANTSEED_MODEL_RANKINGS=off` to disable the lookup.
+Both `venice-video` and `fal-video` sellers are supported. The skill writes a job file right after the create, so an interrupted wait resumes instead of creating another video. The buyer pays once, when the finished MP4 is delivered, and refuses any single video priced above $5.00.
 
-Both `venice-video` and `fal-video` sellers are supported. After the user confirms, the skill pins only that create to one compatible seller as `<peerId>@<model>`; status and download requests go back to the seller that accepted the job. The buyer pays once, when the finished MP4 is delivered, and refuses any single video priced above $5.00.
+## Files
 
-For videos longer than one clip, the skill plans frame-matched segments and stitches them with ffmpeg. When all keyframes are ready, `antseed_video.mjs batch` submits creates one at a time and waits for accepted jobs in parallel.
+- [`SKILL.md`](SKILL.md): the three stages and rules.
+- [`references/requests.md`](references/requests.md): catalog, price, create, wait, and error commands.
+- [`references/prompting.md`](references/prompting.md): model picks and prompt styles per model.
 
 ## Prerequisites
 
-Antseed Desktop or `antseed buyer start` must be running, normally at `http://127.0.0.1:8377`, and the buyer needs deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. Node.js 18 or newer runs the helper script.
+Antseed Desktop or `antseed buyer start` must be running, normally at `http://127.0.0.1:8377`, and the buyer needs deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The commands need `curl` and `jq`.
 
 ## Example
 
 ```text
-Use the antseed-videos skill. I want a short video of a lighthouse keeper
-watching a storm roll in at dusk.
+Use the antseed-videos skill. Make a surf video with ants.
 ```
 
 See [`SKILL.md`](SKILL.md) for the agent workflow and safety rules.

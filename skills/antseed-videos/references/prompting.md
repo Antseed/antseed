@@ -1,6 +1,15 @@
 # Writing prompts for video and frames
 
-Use this in Gate 2a. Paste every prompt in full so the user can edit it. The guidance below follows each vendor's published prompt guide (sources at the end); when a model is not listed, use the shared formula.
+Use this in Stages 1 and 2a. Paste every prompt in full so the user can edit it. The guidance below follows each vendor's published prompt guide (sources at the end); when a model is not listed, use the shared formula.
+
+## Choosing models
+
+Pick from what the catalog actually lists; these are starting points, not a fixed ranking.
+
+- **Video, with first and last frame:** Seedance 2.5 or 2.0 (`seedance-*-image-to-video-basic`, or `bytedance/seedance-*/image-to-video` on fal), MiniMax H3 (fal `minimax/h3/image-to-video`), Wan 3.0, Kling V3. Seedance is the default pick for cinematic shots with a start and end frame.
+- **Video, first frame only:** MiniMax H3 (Venice `minimax-h3-image-to-video`), Veo 3.1, Gemini Omni Flash, Grok Imagine 1.5, Flux 3.
+- **Frames:** use a high-quality image model such as GPT Image 2.5, Nano Banana Pro or 2.1, Seedream 5 Pro, Flux 2 Max, or Qwen Image 3 Pro. Do not use fast, lite, turbo, or small models for frames unless the user asks; a weak frame makes a weak video.
+- Prefer a model with more than one seller when quality is equal, and say when a model is a faster or cheaper tier of another.
 
 ## Shared formula
 
@@ -20,6 +29,9 @@ Weak prompts usually stop at subject and motion and get a static camera in an un
 When a start frame (and end frame) is used, the image fixes the subject, scene, and style. The video prompt should be **motion + camera**: what moves, how fast, how the camera behaves, and where the shot ends. Do not re-describe the picture or a different scene; contradicting the frame causes jumps. Repeat one short style phrase so the model keeps it.
 
 ## Frame prompts (for antseed-images)
+
+Make frames at the video's aspect ratio. When the image model takes a `size`, pick the supported size closest to that ratio; a frame with the wrong shape is cropped or rejected.
+
 
 - A frame is a still: framing (wide, medium, close-up), subject pose, background, light, at one instant.
 - First and last frames share the same style phrase, subject wording, setting, and aspect ratio, and differ only in pose, position, or framing.
