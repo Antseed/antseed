@@ -2505,6 +2505,10 @@ export class BuyerProxy {
         this._trackRequestConversation(serializedReq.requestId, tracked.id)
       }
     }
+    // A chat switched while this request is in flight must keep the new route.
+    const conversationPinAtRouting = trackedConversationId
+      ? this._conversations.get(trackedConversationId)?.pinnedModel ?? null
+      : null
 
     const {
       body: servicePinBody,
@@ -2749,6 +2753,7 @@ export class BuyerProxy {
               this._conversations.recordRoutedModel(
                 trackedConversationId,
                 `${selected.peer.peerId}@${selected.serviceId}`,
+                conversationPinAtRouting,
               )
             }
             return
@@ -2991,6 +2996,7 @@ export class BuyerProxy {
       this._conversations.recordRoutedModel(
         trackedConversationId,
         `${selectedPeer.peerId}@${pinnedServiceId}`,
+        conversationPinAtRouting,
       )
     }
     if (!result.done) {

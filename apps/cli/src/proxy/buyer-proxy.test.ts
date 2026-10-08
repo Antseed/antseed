@@ -3930,3 +3930,91 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)
   assert.equal(proxy.getSweepReceipt('0x' + '00'.repeat(32)), null)
 })
+
+test('switching a chat route while a request is in flight is not reverted when that request completes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-route-race-'))
+  try {
+    const oldPeer = makePeer('a', ['openai'])
+    oldPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+    const newPeer = makePeer('b', ['openai'])
+    newPeer.providerServiceApiProtocols = { openai: { services: { 'claude-sonnet': ['openai-chat-completions'] } } }
+    const proxy = new BuyerProxy({
+      port: 0,
+      dataDir: dir,
+      node: { router: permissiveRouter() } as any,
+    })
+    ;(proxy as any)._getPeers = async () => [oldPeer, newPeer]
+    ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+    ;(proxy as any)._defaultRoutedModel = 'gpt-5'
+
+    const attempts: string[] = []
+    let holdNext = false
+    let releaseHeld: (() => void) | null = null
+    let markDispatched: (() => void) | null = null
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve })
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.peerId)
+      if (holdNext) {
+        holdNext = false
+        markDispatched?.()
+        await new Promise<void>((resolve) => { releaseHeld = resolve })
+      }
+      return {
+        requestId: request.requestId,
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ peerId: peer.peerId })),
+      }
+    }
+
+    const headers = { 'x-vpr-session-id': 'route-race' }
+    const chatId = 'vpr:route-race'
+    const store = (proxy as any)._conversations
+
+    // Turn 1 settles the chat on the old route as soft (auto) affinity.
+    const first = await invokeProxy(proxy, makeProxyRequest({
+      headers,
+      body: { model: 'antseed', messages: [{ role: 'user', content: 'first turn' }] },
+    }))
+    assert.equal(first.statusCode, 200)
+    assert.equal(store.get(chatId)?.pinnedModel, `${oldPeer.peerId}@gpt-5`)
+    assert.equal(store.get(chatId)?.peerSource, 'auto')
+
+    // Turn 2 is held open upstream on the old route.
+    holdNext = true
+    const inFlight = invokeProxy(proxy, makeProxyRequest({
+      headers,
+      body: { model: 'antseed', messages: [{ role: 'user', content: 'long turn' }] },
+    }))
+    await dispatched
+
+    // The user switches the chat's model mid-flight.
+    const update = await invokeProxy(proxy, makeProxyRequest({
+      path: '/_antseed/conversations/update',
+      body: { id: chatId, pinnedModel: 'claude-sonnet', peerSource: 'auto' },
+    }))
+    assert.equal(update.statusCode, 200)
+
+    // The old request finishes afterwards.
+    ;(releaseHeld as (() => void) | null)?.()
+    const finished = await inFlight
+    assert.equal(finished.statusCode, 200)
+    assert.equal(store.get(chatId)?.pinnedModel, 'claude-sonnet')
+    assert.equal(store.get(chatId)?.peerSource, 'auto')
+    assert.equal(store.get(chatId)?.lastModel, `${oldPeer.peerId}@gpt-5`)
+
+    // The next turn routes to the newly selected model.
+    attempts.length = 0
+    const next = await invokeProxy(proxy, makeProxyRequest({
+      headers,
+      body: { model: 'antseed', messages: [{ role: 'user', content: 'after switch' }] },
+    }))
+    assert.equal(next.statusCode, 200)
+    assert.deepEqual(attempts, [newPeer.peerId])
+    assert.equal(store.get(chatId)?.pinnedModel, `${newPeer.peerId}@claude-sonnet`)
+
+    await store.flush()
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  }
+})
