@@ -94,8 +94,8 @@ function combine(store: GatewayStore, sources: RoutePreview['sources']): Routing
  * Effective policy for a request or a preview: gateway default → workspace
  * (org admins' policy, then the workspace admins') → member (the key's
  * owner) → key (admins', then the owner's) → preset, each level only
- * narrowing the one above. The buyer applies its own config on top, so the
- * `buyer` source has no policy here. A key implies its workspace and owner
+ * narrowing the one above. The buyer applies its hard limits on top, so the
+ * `buyer` source has no policy here (`previewRoute` fills it in). A key implies its workspace and owner
  * unless given.
  */
 export function resolvePolicy(store: GatewayStore, target: PolicyTarget): ResolvedPolicy {

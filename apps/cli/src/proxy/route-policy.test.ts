@@ -1,10 +1,12 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
 import {
-  buyerConfigPolicy,
+  buyerConfigReason,
+  buyerHardPolicy,
   orderByPolicy,
   pinnedPeerExclusionReasons,
   policyExclusionReasons,
+  rankingPreferences,
   secretsMatch,
   type PolicyPeerFacts,
 } from './route-policy.js'
@@ -60,18 +62,28 @@ test('policyExclusionReasons explains every exclusion in plain words', () => {
   )
 })
 
-test('buyer config narrows a gateway policy so it can never widen it', () => {
-  const buyer = buyerConfigPolicy({
-    routingPreferences: { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [id('c')] },
-    minPeerReputation: 50,
-    verifierRequired: true,
-  })
-  const effective = narrowPolicy(buyer, { minTrustScore: 10, blockedPeerIds: [id('d')], requireVerified: false })
-  assert.equal(effective.minTrustScore, 60)
+test('buyer hard limits narrow a gateway policy; routing preferences are not part of them', () => {
+  const buyer = buyerHardPolicy({ minPeerReputation: 50, verifierRequired: true })
+  assert.deepEqual(buyer, { minReputation: 50, requireVerified: true })
+  const effective = narrowPolicy(buyer, { minTrustScore: 5, minReputation: 10, blockedPeerIds: [id('d')], requireVerified: false })
+  assert.equal(effective.minTrustScore, 5, 'the gateway decides the trust minimum')
   assert.equal(effective.minReputation, 50)
   assert.equal(effective.requireVerified, true)
-  assert.deepEqual(effective.blockedPeerIds, [id('c'), id('d')])
-  assert.deepEqual(policyExclusionReasons(effective, facts({ peerId: id('c') })), ['blocked'])
+  assert.deepEqual(effective.blockedPeerIds, [id('d')])
+  assert.deepEqual(buyerHardPolicy({ minPeerReputation: 0 }), {})
+})
+
+test('ranking preferences exclude nobody and let the policy decide preferFree', () => {
+  const prefs = { preferFreePeers: true, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [id('a')], blockedPeerIds: [id('b')] }
+  assert.deepEqual(rankingPreferences(prefs, {}), { preferFreePeers: true, maxInputUsdPerMillion: 25, minTrustScore: 0, allowedPeerIds: [], blockedPeerIds: [] })
+  assert.equal(rankingPreferences(prefs, { preferFreePeers: false }).preferFreePeers, false)
+})
+
+test('buyer-limit reasons name their level', () => {
+  assert.equal(buyerConfigReason('reputation 30 below 40'), 'buyer config: reputation 30 below 40')
+  assert.equal(buyerConfigReason('reputation 30 below buyer minimum 40'), 'buyer config: reputation 30 below 40')
+  assert.equal(buyerConfigReason('input price $9 over buyer cap $5'), 'buyer config: input price $9 over cap $5')
+  assert.equal(buyerConfigReason('outside buyer pricing/reputation limits'), 'buyer config: outside pricing/reputation limits')
 })
 
 type C = { peerId: string; price: number | null; trust: number | null; latency: number | null; cooling?: boolean }

@@ -393,3 +393,70 @@ test('the buyer\'s own limits are judged once, by its router, not again by a gat
   assert.equal((await chat(h, withPolicy({ sort: 'price', minReputation: 80 }))).status, 200)
   assert.equal(h.dispatched[1]?.peerId, pricey.peerId)
 })
+
+// The gateway console is the authority for its keys: under a gateway policy
+// the buyer's routing preferences only rank, and never exclude.
+const prefs60 = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
+const trust58 = makePeer('d', { input: 1, output: 1, trust: 58 })
+
+test('a pin through a gateway default with an unrelated model route ignores the buyer trust preference', async (t) => {
+  const h = await startHarness(t, [trust58, pricey], { routingPreferences: prefs60 })
+  const policy = withPolicy({ modelRoutes: { 'other-model': { peerIds: [pricey.peerId] } } })
+  const res = await chat(h, policy, `${trust58.peerId}@gpt-5`)
+  assert.equal(res.status, 200)
+  assert.equal(h.dispatched[0]?.peerId, trust58.peerId)
+  // The same pin without a gateway behaves as before (pins never checked preferences).
+  assert.equal((await chat(h, {}, `${trust58.peerId}@gpt-5`)).status, 200)
+})
+
+test('a workspace minTrustScore below the buyer preference is the one that applies', async (t) => {
+  const h = await startHarness(t, [trust58], { routingPreferences: { ...prefs60, blockedPeerIds: [trust58.peerId] } })
+  // Without a gateway policy the buyer's own preferences still exclude it, as on main.
+  const direct = await chat(h)
+  assert.notEqual(direct.status, 200)
+  assert.equal(h.dispatched.length, 0)
+
+  const res = await chat(h, withPolicy({ minTrustScore: 5 }))
+  assert.equal(res.status, 200)
+  assert.equal(h.dispatched[0]?.peerId, trust58.peerId)
+
+  const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ minTrustScore: 5 }) })
+  const body = await preview.json() as { candidates: Array<{ peerId: string; eligible: boolean }> }
+  assert.equal(body.candidates[0]?.eligible, true)
+
+  const stricter = await chat(h, withPolicy({ minTrustScore: 70 }))
+  assert.notEqual(stricter.status, 200)
+})
+
+test('hard buyer limits still apply to pins under a gateway policy and are named in the reason', async (t) => {
+  const h = await startHarness(t, [cheap, pricey], { minPeerReputation: 80, routingPreferences: prefs60 })
+  const res = await chat(h, { ...withPolicy({ minTrustScore: 5 }), 'x-antseed-pin-peer': cheap.peerId })
+  assert.equal(res.status, 403)
+  const error = ((await res.json()) as any).error
+  assert.equal(error.code, 'peer_not_allowed')
+  assert.match(error.message, /buyer config: reputation 70 below 80/)
+  assert.equal((await chat(h, { ...withPolicy({ minTrustScore: 5 }), 'x-antseed-pin-peer': pricey.peerId })).status, 200)
+
+  const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
+  assert.deepEqual(((await preview.json()) as any).buyer, { minReputation: 80 })
+})
+
+test('router-enforced buyer limits are labelled in the preview', async (t) => {
+  const h = await startHarness(t, [cheap, pricey])
+  ;(h.proxy as any)._node.router = {
+    allowsPeerForPolicy: (_req: SerializedHttpRequest, peer: PeerInfo) => peer.peerId !== cheap.peerId,
+    explainPolicyRejection: () => 'reputation 30 below buyer minimum 40',
+    onResult: () => {},
+  }
+  const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ sort: 'price' }) })
+  const body = await preview.json() as { candidates: Array<{ peerId: string; reasons: string[] }> }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(byId.get(cheap.peerId)?.reasons, ['buyer config: reputation 30 below 40'])
+})
+
+test('under a gateway policy a cheap low-trust seller is ranked, not excluded', async (t) => {
+  const free = makePeer('e', { input: 0, output: 0, trust: 20 })
+  const h = await startHarness(t, [cheap, free], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  await chat(h, withPolicy({ minTrustScore: 5 }))
+  assert.equal(h.dispatched[0]?.peerId, free.peerId)
+})

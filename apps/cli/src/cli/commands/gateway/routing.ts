@@ -81,8 +81,8 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
   ))
     .option('--all', 'also list ineligible sellers', false)
     .option('--json', 'print machine-readable JSON', false)
-    .action((options: TargetOptions & { model: string; all: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, buyer }) => {
-      const preview = await previewRoute(store, await buyer(), options.model.trim(), previewTarget(store, options))
+    .action((options: TargetOptions & { model: string; all: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async ({ store, buyer, configPath }) => {
+      const preview = await previewRoute(store, await buyer(), options.model.trim(), previewTarget(store, options), undefined, configPath)
       if (options.json) {
         printJson(preview)
         return
@@ -92,8 +92,10 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
         console.log(chalk.red('This model is not allowed by the effective policy (allowedModels); the gateway answers 403 model_not_allowed.'))
         return
       }
-      const levels = preview.sources.filter((source) => source.policy && Object.keys(source.policy).length > 0).map((source) => source.level)
-      console.log(`${chalk.bold('Policy from:')} ${levels.length ? levels.join(' → ') : 'no gateway-side restrictions'} ${chalk.dim('(plus the buyer\'s own config)')}`)
+      const levels = preview.sources.filter((source) => source.level !== 'buyer' && source.policy && Object.keys(source.policy).length > 0).map((source) => source.level)
+      console.log(`${chalk.bold('Policy from:')} ${levels.length ? levels.join(' → ') : 'no gateway-side restrictions'}`)
+      const buyerLimits = preview.sources.find((source) => source.level === 'buyer')?.policy
+      if (buyerLimits) console.log(`${chalk.bold('Buyer limits:')} ${describePolicy(buyerLimits, store).join('; ')} ${chalk.dim('(apply to every key)')}`)
       const shown = preview.candidates.filter((candidate) => options.all || candidate.eligible)
       if (shown.length === 0) {
         console.log(chalk.yellow(preview.candidates.length ? 'No eligible seller; rerun with --all to see why.' : 'No seller offers this model right now.'))

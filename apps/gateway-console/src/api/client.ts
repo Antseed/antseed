@@ -1,5 +1,5 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
   GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
@@ -222,6 +222,7 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       peers: () => get<Peer[]>('/peers'),
       routePreview: (query: { model: string; workspace?: string; key?: string; member?: string; preset?: string }) => get<RoutePreview>('/route-preview', query),
       gatewayPolicy: () => get<RoutingPolicy>('/routing'),
+      buyerLimits: () => get<BuyerLimits>('/routing/buyer-limits'),
       /** The body is the policy itself, so save flags go in the query string. */
       setGatewayPolicy: (policy: RoutingPolicy, options?: SaveOptions) => request<RoutingPolicy>('PUT', '/routing', {
         body: policy, query: { confirmEmpty: options?.confirmEmpty ? 1 : undefined, acceptNarrowed: options?.acceptNarrowed ? 1 : undefined },

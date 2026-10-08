@@ -3,7 +3,7 @@ import { after, before, test } from 'node:test'
 import { decodePolicyHeader, GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, type RoutingPolicy } from '../../../routing-policy/policy.js'
 import type { ResolvedPolicy } from '../../policy-resolver.js'
 import { ConsoleRouter, type Principal } from '../router.js'
-import type { Peer, RoutePreview } from '../types.js'
+import type { BuyerLimits, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
 import { enrichCandidates, mapPeers, peerServices, teeVerifiedPeers } from './network-mapping.js'
 import {
@@ -92,6 +92,7 @@ before(async () => {
           { peerId: PEER_A, displayName: null, rank: 1, eligible: true, reasons: ['cheapest'], inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, trustScore: null },
           { peerId: PEER_C, displayName: 'Named By Buyer', rank: null, eligible: false, reasons: ['blocked by workspace'], inputUsdPerMillion: null, outputUsdPerMillion: null, trustScore: 40 },
         ],
+        buyer: { minReputation: 40, requireVerified: true },
       },
     }),
   })
@@ -233,6 +234,25 @@ test('GET route-preview sends the resolved policy and enriches candidates', asyn
   const sent = lastRequest(buyer, (url) => url.startsWith('/_antseed/route-preview'))
   assert.equal(sent?.url, '/_antseed/route-preview?model=open-model-a')
   assert.deepEqual(decodePolicyHeader(String(sent?.headers[ROUTING_POLICY_HEADER])), preview.policy)
+})
+
+test('GET route-preview shows the buyer hard limits as the buyer source', async () => {
+  const preview = await call(setup(), 'GET', '/route-preview?model=open-model-a&workspace=ws_team', member) as RoutePreview
+  const source = preview.sources.find((entry) => entry.level === 'buyer')
+  assert.equal(source?.policy?.minReputation, 40)
+  assert.equal(source?.policy?.requireVerified, true)
+  // Max pricing comes from the buyer config (defaults: the test config file does not exist).
+  assert.equal(typeof source?.policy?.maxInputUsdPerMillion, 'number')
+  assert.equal(source?.policy?.minTrustScore, undefined, 'routing preferences are not buyer limits')
+  // The buyer limits are not folded into the policy the gateway sends.
+  assert.equal(preview.policy.minReputation, undefined)
+})
+
+test('GET routing/buyer-limits reports the running buyer\'s hard limits to any member or key', async () => {
+  const limits = await call(setup(), 'GET', '/routing/buyer-limits', keySession) as BuyerLimits
+  assert.equal(limits.minPeerReputation, 40)
+  assert.equal(limits.requireVerifier, true)
+  assert.equal(typeof limits.maxPricing?.inputUsdPerMillion, 'number')
 })
 
 test('GET route-preview with a disallowed model skips the buyer', async () => {

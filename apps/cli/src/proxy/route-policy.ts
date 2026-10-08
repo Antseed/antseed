@@ -10,7 +10,7 @@ import {
 /**
  * Buyer-side evaluation of a gateway routing policy. The buyer proxy applies
  * the policy the local gateway sends with each request (see
- * `routing-policy/policy.ts`) on top of its own process-wide routing config.
+ * `routing-policy/policy.ts`) under its own hard limits (see `buyerHardPolicy`).
  * Everything here is pure so the real routing path and
  * `GET /_antseed/route-preview` share one implementation.
  */
@@ -23,31 +23,52 @@ export function secretsMatch(provided: string, expected: string): boolean {
 }
 
 /**
- * The buyer's own routing config expressed as a policy, so a gateway policy
- * can be narrowed under it. Buyer max pricing is not included: it is
- * hierarchical (per provider / per service) and stays enforced by the router
- * plugin's `allowsPeerForPolicy`, which every candidate still passes through.
- * `routingPreferences.maxInputUsdPerMillion` is likewise left out because it
- * is a ranking penalty, not a hard cap, in the buyer's own ranking.
+ * The buyer's hard limits expressed as a policy, so a gateway policy narrows
+ * under them: `buyer.minPeerReputation` and a required verifier. Buyer max
+ * pricing is not included: it is hierarchical (per provider / per service)
+ * and stays enforced by the router plugin's `allowsPeerForPolicy`, which
+ * every candidate still passes through.
+ *
+ * `buyer.routingPreferences` (minTrustScore, allow/block lists, preferFree,
+ * the soft input-price cap) are deliberately absent: they are the buyer's
+ * defaults for automatic routing, and a gateway policy replaces them (the
+ * gateway console is the authority for its keys). See `rankingPreferences`.
  */
-export function buyerConfigPolicy(input: {
-  routingPreferences: ModelRoutingPreferences | null
+export function buyerHardPolicy(input: {
   minPeerReputation?: number | null
   verifierRequired?: boolean
 }): RoutingPolicy {
-  const prefs = input.routingPreferences
   const policy: RoutingPolicy = {}
-  if (prefs) {
-    if (prefs.allowedPeerIds.length > 0) policy.allowedPeerIds = [...prefs.allowedPeerIds]
-    if (prefs.blockedPeerIds.length > 0) policy.blockedPeerIds = [...prefs.blockedPeerIds]
-    if (prefs.minTrustScore > 0) policy.minTrustScore = prefs.minTrustScore
-    if (prefs.preferFreePeers) policy.preferFreePeers = true
-  }
   if (typeof input.minPeerReputation === 'number' && input.minPeerReputation > 0) {
     policy.minReputation = input.minPeerReputation
   }
   if (input.verifierRequired) policy.requireVerified = true
   return policy
+}
+
+/**
+ * The buyer's routing preferences reduced to ranking only, for requests that
+ * carry a gateway policy: nothing is excluded (no trust minimum, no allow or
+ * block list), while preferFree and the soft input-price penalty still order
+ * candidates. A policy that sets `preferFreePeers` decides it.
+ */
+export function rankingPreferences(prefs: ModelRoutingPreferences, policy: RoutingPolicy): ModelRoutingPreferences {
+  return {
+    ...prefs,
+    preferFreePeers: policy.preferFreePeers ?? prefs.preferFreePeers,
+    minTrustScore: 0,
+    allowedPeerIds: [],
+    blockedPeerIds: [],
+  }
+}
+
+/** A buyer-limit reason labelled with its level, e.g. "buyer config: reputation 30 below 40". */
+export function buyerConfigReason(reason: string): string {
+  const plain = reason
+    .replace(/ below buyer minimum /, ' below ')
+    .replace(/ over buyer cap /, ' over cap ')
+    .replace(/^outside buyer /, 'outside ')
+  return `buyer config: ${plain}`
 }
 
 /** What the policy evaluator needs to know about one seller's offer for the requested model. */

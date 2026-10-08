@@ -14,7 +14,7 @@ import { listAuditEntries } from './audit.js'
 import { CLI_ACTOR, PolicyProblemError, recordAudit, type ServiceContext } from './context.js'
 import { createKey, revokeKey, rotateKey, updateKey } from './keys.js'
 import { disableMember, inviteMember, removeCredential, updateMember, type CredentialStore } from './members.js'
-import { listNetworkPeers, previewRoute } from './network.js'
+import { listNetworkPeers, previewRoute, readBuyerLimits } from './network.js'
 import { createPeerList, deletePeerList, updatePeerList } from './peer-lists.js'
 import { createPreset, findPreset, updatePreset } from './presets.js'
 import { gatewayDefaultPolicy, setGatewayDefaultPolicy } from './routing.js'
@@ -385,5 +385,21 @@ describe('network', () => {
     const blocked = await previewRoute(store, buyer, 'closed-model', {})
     assert.equal(blocked.modelAllowed, false)
     assert.equal(buyer.calls.filter((call) => call.includes('route-preview')).length, 1)
+  })
+
+  test('buyer limits: pricing from the config, reputation and verifier from the running buyer', async () => {
+    const configPath = join(dir, 'buyer-limits.json')
+    writeFileSync(configPath, JSON.stringify({ buyer: {
+      minPeerReputation: 25,
+      maxPricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 9 } },
+      routingPreferences: { minTrustScore: 60, preferFreePeers: true, maxInputUsdPerMillion: 25, allowedPeerIds: [], blockedPeerIds: [] },
+    } }))
+    assert.deepEqual(await readBuyerLimits(configPath, null), {
+      minPeerReputation: 25, requireVerifier: false, maxPricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 9, cachedInputUsdPerMillion: null },
+    })
+    const live = await readBuyerLimits(configPath, { minReputation: 40, requireVerified: true })
+    assert.equal(live.minPeerReputation, 40)
+    assert.equal(live.requireVerifier, true)
+    assert.deepEqual(await readBuyerLimits(null, {}), { minPeerReputation: 0, requireVerifier: false, maxPricing: null })
   })
 })

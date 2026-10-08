@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, GatewayExposure, GatewayExposureMode, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BuyerLimits, GatewayExposure, GatewayExposureMode, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
 } from '../api/types'
 import { LIMIT_PERIODS } from '../lib/format'
@@ -281,6 +281,22 @@ function usage(query: URLSearchParams) {
   }
 }
 
+function buyerLimits(): BuyerLimits {
+  const { maxPricing, minPeerReputation, requireVerifier } = db.settings.buyer
+  return { maxPricing: { ...maxPricing }, minPeerReputation, requireVerifier }
+}
+
+/** The buyer's hard limits as the preview's `buyer` source (not combined into the gateway policy). */
+function buyerLimitsPolicy(): RoutingPolicy {
+  const limits = buyerLimits()
+  return {
+    ...(limits.minPeerReputation > 0 ? { minReputation: limits.minPeerReputation } : {}),
+    ...(limits.requireVerifier ? { requireVerified: true } : {}),
+    maxInputUsdPerMillion: limits.maxPricing!.inputUsdPerMillion,
+    maxOutputUsdPerMillion: limits.maxPricing!.outputUsdPerMillion,
+  }
+}
+
 function preview(query: URLSearchParams): RoutePreview {
   const model = query.get('model') ?? ''
   const key = query.get('key') ? db.keys.find((entry) => entry.id === query.get('key')) ?? null : null
@@ -290,7 +306,7 @@ function preview(query: URLSearchParams): RoutePreview {
   const keyOwner = key ? db.members.find((entry) => entry.id === key.ownerMemberId) ?? null : null
   requireWorkspace(workspace.id)
   const sources: RoutePreview['sources'] = [
-    { level: 'buyer', id: null, policy: null },
+    { level: 'buyer', id: null, policy: buyerLimitsPolicy() },
     { level: 'gateway', id: null, policy: db.gatewayPolicy },
     { level: 'workspace-org', id: workspace.id, policy: workspace.orgRoutingPolicy },
     { level: 'workspace', id: workspace.id, policy: workspace.routingPolicy },
@@ -298,7 +314,7 @@ function preview(query: URLSearchParams): RoutePreview {
     ...(key ? [{ level: 'key' as const, id: key.id, policy: key.routingPolicy }, { level: 'key-owner' as const, id: key.id, policy: key.ownerRoutingPolicy ?? null }] : []),
     ...(preset ? [{ level: 'preset' as const, id: preset.slug, policy: preset.routingPolicy }] : []),
   ]
-  const policy = combinePolicies(...sources.map((source) => source.policy && expandLists(source.policy, db.peerLists)))
+  const policy = combinePolicies(...sources.map((source) => source.level === 'buyer' || !source.policy ? null : expandLists(source.policy, db.peerLists)))
   const modelAllowed = !policy.allowedModels || policy.allowedModels.some((entry) => entry.toLowerCase() === model.toLowerCase())
   const allowed = policy.allowedPeerIds ? new Set(policy.allowedPeerIds) : null
   const candidates = db.peers.filter((peer) => peer.services.some((service) => service.service === model)).map((peer) => {
@@ -717,6 +733,7 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/peers', () => db.peers],
   ['GET', '/route-preview', ({ query }) => preview(query)],
   ['GET', '/routing', () => { currentMember(); return db.gatewayPolicy }],
+  ['GET', '/routing/buyer-limits', () => buyerLimits()],
   ['PUT', '/routing', ({ body, query }) => {
     requireOrgAdmin()
     guardPolicies({ confirmEmpty: query.get('confirmEmpty') === '1' }, [{ field: 'routing policy', above: [], sent: body }])

@@ -429,6 +429,7 @@ export interface ChainInfo {
 
 // GET  /peers                     → Peer[]
 // GET  /route-preview?model=&workspace=&key=&member=&preset=   → RoutePreview
+// GET  /routing/buyer-limits      → BuyerLimits
 // GET  /routing                   → RoutingPolicy   (gateway default)
 // PUT  /routing                   RoutingPolicy     → RoutingPolicy
 // GET/POST /peer-lists, PATCH/DELETE /peer-lists/:id
@@ -463,11 +464,27 @@ export interface Peer {
   requests24h: number
 }
 
+/**
+ * Limits from the buyer's own config that apply to every request whatever
+ * its policy. The buyer's routing preferences (trust minimum, allow/block
+ * lists, preferFree, soft price cap) are not among them: a gateway policy
+ * replaces those. `maxPricing` is null when the config cannot be read.
+ */
+export interface BuyerLimits {
+  minPeerReputation: number
+  requireVerifier: boolean
+  maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null } | null
+}
+
 export interface RoutePreview {
   model: string
   /** The policy that applies after combining every level. */
   policy: RoutingPolicy
-  /** Which levels contributed, top to bottom. */
+  /**
+   * Which levels contributed, top to bottom. The `buyer` entry holds the
+   * buyer's hard limits (`BuyerLimits` as a policy); they apply on top of
+   * `policy` and are not part of it.
+   */
   sources: Array<{ level: 'buyer' | 'gateway' | 'workspace-org' | 'workspace' | 'member' | 'key' | 'key-owner' | 'preset'; id: string | null; policy: RoutingPolicy | null }>
   modelAllowed: boolean
   candidates: Array<{

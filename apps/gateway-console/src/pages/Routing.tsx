@@ -11,9 +11,9 @@ import { PolicyChips } from '../components/PolicySummary'
 import { PolicySource, RoutePreviewPanel } from '../components/RoutePreview'
 import { Badge, ErrorAlert, LoadingRows, PageHeader, Panel, TabPanel, Tabs } from '../components/ui'
 import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
-import { describePolicy, draftToPolicy, policyOrNull, policyToDraft, type PolicyDraft } from '../lib/policy'
+import { describeBuyerLimits, describePolicy, draftToPolicy, policyOrNull, policyToDraft, type PolicyDraft } from '../lib/policy'
 import { combinePolicies, expandLists } from '../lib/policy-match'
-import { qk, useGatewayPolicy, useWorkspace, usePeerLists, usePeers } from '../lib/queries'
+import { qk, useBuyerLimits, useGatewayPolicy, useWorkspace, usePeerLists, usePeers } from '../lib/queries'
 
 type Level = 'gateway' | 'workspace'
 type Layer = 'gateway' | 'org' | 'workspace'
@@ -174,6 +174,22 @@ function WorkspaceLevel() {
   )
 }
 
+/**
+ * Hard limits from the buyer's own config (max pricing, min reputation, a
+ * required verifier) that apply to every key whatever its policy. The
+ * buyer's routing preferences are not shown: these policies replace them.
+ */
+function BuyerLimitsLine() {
+  const limits = useBuyerLimits()
+  if (!limits.data) return null
+  const parts = describeBuyerLimits(limits.data)
+  return (
+    <p className="gc-fineprint">
+      Buyer limits, applied to every key: {parts.length > 0 ? parts.join(' · ') : 'none'}.
+    </p>
+  )
+}
+
 /** Org admins switch between the gateway default and this workspace; everyone else sees the workspace. */
 function PolicyLevels() {
   const { viewer } = useConsole()
@@ -193,6 +209,7 @@ export default function Routing() {
   return (
     <div className="gc-page">
       <PageHeader title="Routing" description="Which sellers serve your requests and how they are ranked. Each level can only narrow the one above." />
+      <BuyerLimitsLine />
       <PolicyLevels />
       <RoutePreviewPanel />
     </div>

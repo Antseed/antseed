@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PeerList, RoutingPolicy } from '../api/types'
 import {
-  applyPeerAction, describePolicy, draftToPolicy, DraftError, emptyDraft, moveItem, policyOrNull, policyToDraft, POLICY_TEMPLATES, templatePolicy,
+  applyPeerAction, describeBuyerLimits, describePolicy, draftToPolicy, DraftError, emptyDraft, moveItem, policyOrNull, policyToDraft, POLICY_TEMPLATES, templatePolicy,
 } from './policy'
 
 const A = '0xfa1e000000000000000000000000000000000001'
@@ -121,5 +121,13 @@ describe('helpers', () => {
     expect(describePolicy(null)).toBe('Inherits')
     expect(describePolicy({})).toBe('Inherits')
     expect(describePolicy({ blockedPeerIds: [A], requireVerified: true, sort: 'price' })).toBe('1 blocked · verified only · lowest price')
+  })
+})
+
+describe('describeBuyerLimits', () => {
+  it('lists the hard buyer limits, or nothing', () => {
+    expect(describeBuyerLimits({ minPeerReputation: 40, requireVerifier: true, maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null } }))
+      .toEqual(['reputation ≥ 40', 'verified sellers only', '≤ $15.00/M in', '≤ $60.00/M out'])
+    expect(describeBuyerLimits({ minPeerReputation: 0, requireVerifier: false, maxPricing: null })).toEqual([])
   })
 })

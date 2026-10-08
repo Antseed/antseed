@@ -1,10 +1,10 @@
 /** Sellers the buyer knows about, and which of them a request would route to. */
 import { resolvePolicy } from '../../policy-resolver.js'
-import { listNetworkPeers, previewRoute, type PreviewTarget } from '../../services/network.js'
+import { buyerLimits, listNetworkPeers, previewRoute, type PreviewTarget } from '../../services/network.js'
 import { canSeeWorkspace, requireOrgAdmin } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
-import type { Peer, RoutePreview } from '../types.js'
+import type { BuyerLimits, Peer, RoutePreview } from '../types.js'
 import { defaultBuyerClient, type BuyerClient } from './network-buyer.js'
 
 /** Seams for tests; production uses the defaults. */
@@ -57,6 +57,10 @@ export function registerNetworkRoutes(router: ConsoleRouter, deps: ConsoleDeps, 
   router.add('GET', '/route-preview', async (request): Promise<RoutePreview> => {
     const requested = param(request, 'model')
     if (!requested) throw new ConsoleError(400, 'bad_request', 'model is required.')
-    return previewRoute(deps.store, buyer, requested, previewTarget(request), resolve)
+    return previewRoute(deps.store, buyer, requested, previewTarget(request), resolve, deps.configPath)
   }, { allow: ['member', 'token', 'key'] })
+
+  /** The buyer's hard limits, which apply to every key whatever its policy. */
+  router.add('GET', '/routing/buyer-limits', async (): Promise<BuyerLimits> => buyerLimits(deps.configPath, buyer),
+    { allow: ['member', 'token', 'key'] })
 }

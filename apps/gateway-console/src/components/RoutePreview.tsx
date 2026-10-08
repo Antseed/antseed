@@ -91,7 +91,7 @@ const LEVEL_LABELS: Record<Source['level'], string> = {
 
 function sourcePolicy(source: Source): ReactNode {
   if (source.policy !== null) return describePolicy(source.policy)
-  return <span className="gc-muted">{source.level === 'buyer' ? 'Buyer config' : 'Inherits'}</span>
+  return <span className="gc-muted">{source.level === 'buyer' ? 'No hard limits' : 'Inherits'}</span>
 }
 
 function PreviewResult({ preview }: { preview: RoutePreview }) {

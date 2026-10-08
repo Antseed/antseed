@@ -1,4 +1,5 @@
-import type { PeerList, RoutingPolicy, RoutingSort } from '../api/types'
+import type { BuyerLimits, PeerList, RoutingPolicy, RoutingSort } from '../api/types'
+import { formatPricePerMillion } from './format'
 import { samePeerId } from './peer-id'
 
 /**
@@ -193,6 +194,22 @@ export function describePolicy(policy: RoutingPolicy | null | undefined): string
   if (p.sort) parts.push(SORT_LABELS[p.sort].toLowerCase())
   if (p.preferFreePeers) parts.push('free first')
   return parts.join(' · ') || 'Custom'
+}
+
+/**
+ * The buyer's hard limits as short phrases, e.g. ["reputation ≥ 40",
+ * "verified sellers only", "≤ $15.00/M in", "≤ $60.00/M out"]. Empty when none apply.
+ */
+export function describeBuyerLimits(limits: BuyerLimits): string[] {
+  const parts: string[] = []
+  if (limits.minPeerReputation > 0) parts.push(`reputation ≥ ${limits.minPeerReputation}`)
+  if (limits.requireVerifier) parts.push('verified sellers only')
+  if (limits.maxPricing) {
+    parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.inputUsdPerMillion)}/M in`)
+    parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.outputUsdPerMillion)}/M out`)
+    if (limits.maxPricing.cachedInputUsdPerMillion !== null) parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.cachedInputUsdPerMillion)}/M cached`)
+  }
+  return parts
 }
 
 const plural = (count: number, noun: string) => `${count} ${noun}${count === 1 ? '' : 's'}`

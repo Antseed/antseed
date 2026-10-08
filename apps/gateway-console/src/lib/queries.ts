@@ -32,6 +32,7 @@ export const qk = {
   peers: ['peers'] as const,
   peerLists: ['peer-lists'] as const,
   gatewayPolicy: ['routing', 'gateway'] as const,
+  buyerLimits: ['routing', 'buyer-limits'] as const,
   routePreview: (query: object) => ['routing', 'preview', query] as const,
   presets: (workspaceId: string | null) => ['presets', workspaceId] as const,
   adminTokens: ['admin-tokens'] as const,
@@ -86,6 +87,10 @@ export function useWallet(workspaceId: string, enabled = true) {
 
 export function useGatewayPolicy() {
   return useQuery({ queryKey: qk.gatewayPolicy, queryFn: api.network.gatewayPolicy })
+}
+
+export function useBuyerLimits() {
+  return useQuery({ queryKey: qk.buyerLimits, queryFn: api.network.buyerLimits })
 }
 
 export function useAdminTokens() {

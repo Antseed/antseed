@@ -136,11 +136,13 @@ import {
   type RoutingPolicy,
 } from '../routing-policy/policy.js'
 import {
-  buyerConfigPolicy,
+  buyerConfigReason,
+  buyerHardPolicy,
   orderByPolicy,
   pinnedPeerExclusionReasons,
   policyExclusionReasons,
   preferenceExclusionReasons,
+  rankingPreferences,
   secretsMatch,
   type PolicyPeerFacts,
 } from './route-policy.js'
@@ -1201,15 +1203,21 @@ export class BuyerProxy {
     return Object.keys(meaningful).length > 0 ? { kind: 'policy', policy: meaningful } : { kind: 'none' }
   }
 
-  /** The buyer's own routing config narrowed by a gateway policy; null when the request carries none. */
-  private _effectivePolicy(requestPolicy: RoutingPolicy | null): RoutingPolicy | null {
-    if (!requestPolicy) return null
-    const buyerPolicy = buyerConfigPolicy({
-      routingPreferences: this._routingPreferences,
+  /**
+   * The buyer's hard limits (min reputation, required verifier). Its routing
+   * preferences are not among them: a gateway policy replaces those.
+   */
+  private _buyerHardPolicy(): RoutingPolicy {
+    return buyerHardPolicy({
       minPeerReputation: this._minPeerReputation,
       verifierRequired: this._verifier?.require === true,
     })
-    return narrowPolicy(buyerPolicy, requestPolicy)
+  }
+
+  /** A gateway policy narrowed under the buyer's hard limits; null when the request carries none. */
+  private _effectivePolicy(requestPolicy: RoutingPolicy | null): RoutingPolicy | null {
+    if (!requestPolicy) return null
+    return narrowPolicy(this._buyerHardPolicy(), requestPolicy)
   }
 
   /** Null when the seller can be verified with this buyer's verifier, else why not. */
@@ -1265,10 +1273,9 @@ export class BuyerProxy {
     const { modelPeers, modelPlans, request, requestProtocol, requestedService, explicitProvider, requiredParameters } = input
     const policyRouter = this._node.router as BuyerPolicyRouter | null | undefined
     const effectivePolicy = this._effectivePolicy(input.requestPolicy)
-    // Sellers are excluded by the gateway's policy alone: the buyer's own
-    // config is already enforced on this path the way it is without a
-    // gateway (the router plugin's policy check, then the routing
-    // preferences below), so it is not judged a second time with different
+    // Sellers are excluded by the gateway's policy alone: the buyer's hard
+    // limits are already enforced on this path by the router plugin's
+    // policy check, so they are not judged a second time with different
     // inputs (e.g. raw instead of effective reputation).
     const exclusionPolicy = input.requestPolicy
     const verdicts = new Map<string, ModelRouteVerdict>()
@@ -1294,7 +1301,7 @@ export class BuyerProxy {
       }
       const requestForPolicy = withRoutedModel(request, plan.serviceId)
       if (!peerAllowedByPolicy(policyRouter, requestForPolicy, peer)) {
-        verdict.reasons.push(policyRouter?.explainPolicyRejection?.(requestForPolicy, peer) ?? 'outside buyer pricing/reputation limits')
+        verdict.reasons.push(buyerConfigReason(policyRouter?.explainPolicyRejection?.(requestForPolicy, peer) ?? 'outside buyer pricing/reputation limits'))
         continue
       }
       if (exclusionPolicy) {
@@ -1334,7 +1341,11 @@ export class BuyerProxy {
     })
     let candidates: typeof ranked
     const routingPreferences = this._routingPreferences
-    if (routingPreferences) {
+    if (routingPreferences && input.requestPolicy) {
+      // Under a gateway policy the buyer's preferences only rank: the
+      // policy (already applied above) decides who is excluded.
+      candidates = rankModelRoutes(ranked, rankingPreferences(routingPreferences, input.requestPolicy), now)
+    } else if (routingPreferences) {
       candidates = []
       for (const candidate of rankModelRoutes(ranked, routingPreferences, now)) {
         if (isModelRouteEligible(candidate, routingPreferences)) {
@@ -1531,7 +1542,9 @@ export class BuyerProxy {
       }
       if (Object.keys(meaningfulPolicy(policy)).length === 0) policy = null
     }
-    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy) })
+    // `buyer`: the hard limits that apply under every gateway policy, so the
+    // console can show them (max pricing lives in the router plugin's config).
+    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerHardPolicy() })
   }
 
   /** `GET /_antseed/balances?identity=<name>`: on-chain balances of a buyer identity. */
@@ -3567,13 +3580,20 @@ export class BuyerProxy {
     }
     const pinnedRequest = pinnedServiceId ? withRoutedModel(serializedReq, pinnedServiceId) : serializedReq
     // A hard pin cannot escape the gateway's policy: an excluded seller is
-    // refused rather than silently swapped for another.
+    // refused rather than silently swapped for another. Only the gateway
+    // policy and the buyer's hard limits judge a pin, never the buyer's
+    // routing preferences (they are automatic-routing defaults, as without
+    // a gateway).
     const pinnedPolicy = this._effectivePolicy(requestPolicy)
-    if (pinnedPolicy) {
+    if (requestPolicy && pinnedPolicy) {
       const offer = selectedPlan && pinnedServiceId
         ? findAdvertisedServiceOffer(selectedPeer, selectedPlan.provider, pinnedServiceId)
         : null
-      const reasons = pinnedPeerExclusionReasons(pinnedPolicy, this._policyFacts(selectedPeer, offer), requestedService)
+      const facts = this._policyFacts(selectedPeer, offer)
+      const reasons = pinnedPeerExclusionReasons(requestPolicy, facts, requestedService)
+      for (const reason of policyExclusionReasons(this._buyerHardPolicy(), facts)) {
+        if (!reasons.includes(reason)) reasons.push(buyerConfigReason(reason))
+      }
       if (reasons.length > 0) {
         log(`Pinned peer ${selectedPeer.peerId.slice(0, 12)}... refused by routing policy: ${reasons.join('; ')}`)
         sendJson(res, 403, {

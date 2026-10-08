@@ -185,7 +185,7 @@ A routing policy says which sellers may serve a request and how the eligible one
 
 Policies can be set at several levels, applied in order:
 
-1. The buyer's own configuration (price caps, minimum reputation, in **Settings**)
+1. The buyer's hard limits (price caps and minimum reputation, in **Settings**, and a verifier the buyer was started to require with `--require-verifier`)
 2. The gateway default (**Routing**)
 3. The workspace's organization policy, set by organization admins
 4. The workspace's own policy, set by its workspace admins
@@ -196,6 +196,8 @@ Policies can be set at several levels, applied in order:
 A workspace therefore has two policies. Organization admins set the **organization policy** (for example, TEE sellers only, or a price cap) and workspace admins cannot change it; workspace admins set the **workspace policy**, which can only narrow it further. On the **Network** page, **Allow**, **Block** and **Prefer** add one seller to the policy at the scope you choose (gateway, a workspace's organization policy, a workspace, a member or a key) and keep everything else in that policy.
 
 Each level can only narrow the ones above it: allow lists intersect, block lists add up, minimums take the higher value, caps the lower one, and "require verified" and "TEE sellers only" stay on once any level sets them. Ranking choices (sort, free-first, per-model routes) take the most specific level that sets them. A member can therefore never give their own key more than their workspace allows.
+
+The buyer's routing preferences (`buyer.routingPreferences`: minimum trust score, allowed and blocked sellers, free-first and the soft input-price limit, the same settings the desktop app uses for automatic routing) are not a level. They are the buyer's defaults for requests that arrive without a gateway policy. For requests through the gateway, the gateway's policies replace them: a workspace with a minimum trust of 5 admits sellers at trust 5 even if the buyer's preference is 60, and a pinned seller is refused only by a gateway policy or a hard limit. When no gateway level sets a sort order or free-first, the buyer's preferences still decide the order of eligible sellers, but never exclude one. The **Routing** page lists the hard limits that apply to every key, and the route preview shows them as the **Buyer** level; exclusions they cause read `buyer config: …`, for example `buyer config: reputation 30 below 40`.
 
 The gateway enforces allowed models itself and hands the combined policy to the buyer with each request, authenticated by a secret only the gateway and buyer share (`<data-dir>/gateway/buyer-control.secret`). The buyer applies it to automatic routing and to pinned requests alike (`<peerId>@<model>` or the `x-antseed-pin-peer` header), so a client cannot get around it by pinning a seller.
 
