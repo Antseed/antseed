@@ -30,6 +30,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.
+- `@antseed/provider-claude-oauth`: sellers no longer replace the buyer's system prompt with the Claude Code identity line. The plugin now puts the identity first and keeps the request's own `system` (string or block array) after it, so Desktop app instructions, the skill list (including `antseed-images` and `antseed-videos`), and custom system prompts reach the model again. The identity is not added twice when the request already starts with it. Subscription OAuth plugins remain for testing and development only.
 - Development/testing OAuth: optionally persist Claude credentials with `CLAUDE_AUTH_FILE`, retain rotated tokens across restarts, and back off failed refresh attempts without logging upstream credential responses. With model health checks enabled, OAuth refresh failures during CLI provider initialization no longer terminate multi-provider development sessions; affected services stay hidden until a successful probe. Configuration errors remain fatal. Subscription OAuth plugins remain for testing and development only.
 
 ### Changed
