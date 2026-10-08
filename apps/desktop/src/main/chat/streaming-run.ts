@@ -20,6 +20,13 @@ import {
 import type { AssistantMessage, AssistantMessageEvent, Message } from '@mariozechner/pi-ai';
 import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.js';
 import { webFetchTool } from './web-fetch.js';
+import {
+  createChatImagePathTool,
+  createShowMediaTool,
+  GET_CHAT_IMAGE_PATH_TOOL_NAME,
+  resolveBundledChatSkillPaths,
+  SHOW_MEDIA_TOOL_NAME,
+} from './media-tools.js';
 import { buildVprSystemPrompt } from './system-prompt.js';
 import {
   classifyChatStreamFailure,
@@ -193,6 +200,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     }
 
     const proxyPort = await resolveProxyPort(configPath);
+    process.env['ANTSEED_PROXY_URL'] = `http://127.0.0.1:${String(proxyPort)}`;
     const runtimeRunning = isBuyerRuntimeRunning();
     let proxyAvailable = await isProxyAvailable(proxyPort);
     if (!proxyAvailable && ensureBuyerRuntimeStarted) {
@@ -386,6 +394,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       cwd: chatWorkspaceDir,
       agentDir: CHAT_AGENT_DIR,
       settingsManager,
+      additionalSkillPaths: resolveBundledChatSkillPaths(),
       extensionFactories: [toolApprovalExtension],
       systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
     });
@@ -402,6 +411,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         webFetchTool,
         createBrowserPreviewTool(sendToRenderer),
         createStartDevServerTool(sendToRenderer),
+        createShowMediaTool(conversationId, chatWorkspaceDir),
+        createChatImagePathTool(conversationId),
       ],
       resourceLoader,
     });
@@ -412,6 +423,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     session.setActiveToolsByName([
       'read', 'bash', 'edit', 'write', 'grep', 'find', 'ls',
       'web_fetch', 'open_browser_preview', 'start_dev_server',
+      SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME,
     ]);
 
     await session.setModel(proxyModel);

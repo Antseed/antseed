@@ -8,6 +8,7 @@ import { findSensitiveChatArtifacts } from './chat-safety';
 import styles from './ChatBubble.module.scss';
 import { AttachmentViewer, type ViewerAttachment } from './AttachmentViewer';
 import { ChatCopyButton } from './ChatCopyButton';
+import { ImageGenerationPlaceholder } from './ImageGenerationPlaceholder';
 import type { ChatMessage, ContentBlock } from './chat-shared';
 import {
   buildChatMetaParts,
@@ -583,6 +584,34 @@ function mergeThinkingBlocks(blocks: ContentBlock[], fallbackIndex = 0): Content
   };
 }
 
+const VIDEO_GENERATION_COMMAND = /antseed_video\.mjs["']?\s+generate\b/;
+
+export function isRunningVideoGenerationTool(block: ContentBlock): boolean {
+  if (block.type !== 'tool_use' || block.status !== 'running') return false;
+  if (getToolKind(block.name) !== 'bash') return false;
+  return VIDEO_GENERATION_COMMAND.test(getToolInputString(block.input, ['command', 'cmd']));
+}
+
+/** Converts a successful show_media tool result into an inline generated file block. */
+export function toolMediaAttachmentBlock(block: ContentBlock): ContentBlock | null {
+  if (block.type !== 'tool_use' || block.is_error || block.status === 'error') return null;
+  if (getToolKind(block.name) !== 'show_media') return null;
+  const media = block.details?.mediaAttachment;
+  if (!media || typeof media !== 'object') return null;
+  const { attachmentId, fileName, mimeType, size } = media as Record<string, unknown>;
+  if (typeof attachmentId !== 'string' || !attachmentId) return null;
+  if (typeof mimeType !== 'string' || !/^(video|image)\//.test(mimeType)) return null;
+  return {
+    type: 'file',
+    fileName: typeof fileName === 'string' && fileName ? fileName : 'media',
+    mimeType,
+    ...(typeof size === 'number' ? { size } : {}),
+    status: 'ready',
+    attachmentId,
+    generated: true,
+  };
+}
+
 function renderAssistantBlocks(
   blocks: ContentBlock[],
   streaming = false,
@@ -616,13 +645,23 @@ function renderAssistantBlocks(
 
   const flushToolGroup = (): void => {
     if (toolGroup.length === 0) return;
+    const groupKey = `${messagePrefix}-tool-group-${nodes.length}-${String(toolGroup[0]?.id || toolGroup[0]?.tool_use_id || '')}`;
     nodes.push(
       <ToolGroupView
-        key={`${messagePrefix}-tool-group-${nodes.length}-${String(toolGroup[0]?.id || toolGroup[0]?.tool_use_id || '')}`}
+        key={groupKey}
         blocks={toolGroup}
         onOpenPreview={onOpenPreview}
       />,
     );
+    // Skill-driven media: a running video job shows the generation
+    // placeholder, and show_media results render inline as generated files.
+    if (toolGroup.some(isRunningVideoGenerationTool)) {
+      nodes.push(<ImageGenerationPlaceholder key={`${groupKey}-video-pending`} media="video" phaseLabel="Generating video" />);
+    }
+    toolGroup.forEach((toolBlock, toolIndex) => {
+      const media = toolMediaAttachmentBlock(toolBlock);
+      if (media) nodes.push(<FileAttachmentBlock key={`${groupKey}-media-${toolIndex}`} block={media} conversationId={conversationId} />);
+    });
     toolGroup = [];
   };
 
@@ -694,6 +733,34 @@ function FileAttachmentBlock({ block, conversationId }: { block: ContentBlock; c
   const inlineImageSrc = block.generated && canPreview && viewer.src && mimeType.startsWith('image/')
     ? viewer.src
     : null;
+
+  const inlineVideoSrc = block.generated && canPreview && viewer.src && mimeType.startsWith('video/')
+    ? viewer.src
+    : null;
+
+  if (inlineVideoSrc) {
+    return (
+      <div className={styles.generatedVideoWrap}>
+        <video
+          src={inlineVideoSrc}
+          className={styles.generatedVideo}
+          controls
+          playsInline
+          preload="metadata"
+          aria-label={`Generated video ${fileName}`}
+        />
+        <button
+          type="button"
+          className={styles.generatedVideoOpen}
+          onClick={() => setViewerOpen(true)}
+          aria-label={`Open ${fileName}`}
+        >
+          Open
+        </button>
+        {viewerOpen && <AttachmentViewer attachment={viewer} onClose={() => setViewerOpen(false)} />}
+      </div>
+    );
+  }
 
   if (inlineImageSrc) {
     return (
