@@ -66,6 +66,11 @@ export interface StoredChannel {
   confirmedReserveAmount?: string | null;
   /** One-off channels only: requestId of the single request this channel pays for. */
   oneOffRequestId?: string | null;
+  /**
+   * One-off video channels only: the accepted, not yet delivered job this
+   * channel pays for (JSON), so a restarted buyer can still sign its delivery.
+   */
+  oneOffVideoJob?: string | null;
   createdAt: number;
   updatedAt: number;
 }

@@ -120,6 +120,8 @@ interface Harness {
   retrieveRequest(requestId: string, queueId: string): SerializedHttpRequest;
   chatRequest(requestId: string): SerializedHttpRequest;
   settle(): Promise<void>;
+  /** A fresh buyer payment manager on the same identity and channel store, as after a restart. */
+  restartBuyer(): BuyerPaymentManager;
 }
 
 describe('one-off video channel flow over the real buyer and seller stacks', () => {
@@ -159,7 +161,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     });
 
     const common = { rpcUrl: 'http://127.0.0.1:1', chainId: 31337, channelsContractAddress: '0x' + 'cc'.repeat(20) };
-    const buyer = new BuyerPaymentManager(buyerIdentity, {
+    const buyerConfig = {
       ...common,
       depositsContractAddress: '0x' + 'dd'.repeat(20),
       usdcAddress: '0x' + 'ee'.repeat(20),
@@ -169,7 +171,8 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       maxReserveAmountUsdc: FIRST_RESERVE,
       maxVideoRequestUsdc: 5_000_000n,
       dataDir: join(directory, 'buyer'),
-    }, buyerStore);
+    };
+    const buyer = new BuyerPaymentManager(buyerIdentity, buyerConfig, buyerStore);
     buyer.setSigner(buyerIdentity.wallet);
     const seller = new SellerPaymentManager(sellerIdentity, {
       ...common, dataDir: join(directory, 'seller'), minBudgetPerRequest: '10000',
@@ -384,6 +387,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       retrieveRequest,
       chatRequest,
       settle: async () => { await negotiator.drainPendingNeedAuth(); await new Promise((resolve) => setTimeout(resolve, 20)); },
+      restartBuyer: () => new BuyerPaymentManager(buyerIdentity, buyerConfig, buyerStore),
     };
   }
 
@@ -475,6 +479,31 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     // The chat channel is still open and still at its own spend.
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ settled: 0n, status: 1 });
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
+  });
+
+  it('still charges the video on delivery after the chat session is cleaned up', async () => {
+    const h = setup();
+    await openChannelWithChat(h);
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+
+    h.buyer.cleanupSession(h.peer.peerId);
+
+    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+    expect(h.close.mock.calls.find((call) => call[1] === channelId)?.[2]).toBe(VIDEO_PRICE);
+  });
+
+  it('keeps an accepted video job across a buyer restart', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    const restarted = h.restartBuyer();
+
+    expect(restarted.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-1', 'retrieve-after-restart')).toBe(true);
+    expect(h.buyer.trackVideoRetrieve(h.peer.peerId, 'venice-video', 'job-unknown', 'retrieve-unknown')).toBe(false);
   });
 
   it('polls and downloads a paid video without using the free tier', async () => {

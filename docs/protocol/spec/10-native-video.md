@@ -136,7 +136,7 @@ If the seller disappears, the buyer can still `requestClose()` and `withdraw()` 
 
 List these channels with `antseed buyer channels list` or `antseed buyer channels --json` for full channel IDs. To recover an abandoned video's remaining reserve without the seller, run `antseed buyer channels request-close <channelId>`, wait the 15-minute grace period, then run `antseed buyer channels withdraw <channelId>`. This releases only the unspent reserve, not the already-settled serious fee. One-off video channels also appear in buyer channel history, but stay separate from chat sessions; the cooperative `close` command is only for session channels.
 
-The buyer keeps accepted-but-undelivered video jobs in memory only. If the buyer process restarts before the download, it cannot verify the seller's delivery charge and does not sign it; the seller keeps only the serious fee. Already-settled funds are **not automatically refunded**: a video that is never delivered costs at most the serious fee, which `topUp()` settles on-chain.
+The buyer stores each accepted-but-undelivered video job on its one-off channel record, so a buyer restart or the end of its chat session with the seller does not stop it from verifying and signing the delivery charge. Already-settled funds are **not automatically refunded**: a video that is never delivered costs at most the serious fee, which `topUp()` settles on-chain.
 
 ## Routing and ownership
 

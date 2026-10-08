@@ -286,6 +286,7 @@ export class ChannelStore {
         latestReserveDeadline: channel.latestReserveDeadline,
         reserveAuthPending: channel.reserveAuthPending,
         confirmedReserveAmount: channel.confirmedReserveAmount,
+        oneOffVideoJob: channel.oneOffVideoJob,
       }),
       oneOffRequestId: channel.oneOffRequestId ?? null,
       createdAt: channel.createdAt,

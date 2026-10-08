@@ -145,6 +145,14 @@ interface NewChannelTerms {
 }
 
 /** In-memory state of a buyer one-off channel (one video). */
+/** An accepted video job as stored on its one-off channel row. */
+interface PersistedVideoJob {
+  protocol: string;
+  jobId: string;
+  createdAtMs: number;
+  entry: BuyerRequestBillingEntry;
+}
+
 interface OneOffChannelState {
   sellerPeerId: string;
   requestId: string;
@@ -312,6 +320,7 @@ export class BuyerPaymentManager {
         confirmed: channel.reserveAuthPending !== true,
         ackWaiters: [],
       });
+      this._restoreVideoJob(channel);
     }
   }
 
@@ -829,11 +838,13 @@ export class BuyerPaymentManager {
   }
 
   private _clearRequestBillingForSeller(sellerPeerId: string): void {
+    // A video paid from its own one-off channel outlives the session channel:
+    // keep its job and in-flight retrieve so its delivery can still be signed.
     for (const [key, job] of this._videoJobs) {
-      if (job.context.sellerPeerId === sellerPeerId) this._videoJobs.delete(key);
+      if (job.context.sellerPeerId === sellerPeerId && !job.oneOffChannelId) this._videoJobs.delete(key);
     }
     for (const [requestId, entry] of this._requestBillingEntries) {
-      if (entry.context.sellerPeerId === sellerPeerId) {
+      if (entry.context.sellerPeerId === sellerPeerId && !entry.oneOffChannelId) {
         this.clearRequestBilling(requestId);
       }
     }
@@ -2269,6 +2280,7 @@ export class BuyerPaymentManager {
       createdAtMs: now,
       ...(oneOffChannelId ? { oneOffChannelId } : {}),
     });
+    if (oneOffChannelId) this._persistVideoJob(oneOffChannelId, { protocol, jobId, createdAtMs: now, entry });
     while (this._videoJobs.size > MAX_VIDEO_JOBS) {
       const oldest = this._videoJobs.keys().next().value;
       if (oldest === undefined) break;
@@ -2301,7 +2313,40 @@ export class BuyerPaymentManager {
     const facts = entry?.requestFacts;
     if (!job || facts?.kind !== 'video') return;
     this._videoJobs.delete(key);
+    if (job.oneOffChannelId) this._persistVideoJob(job.oneOffChannelId, null);
     this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
+  }
+
+  /** Store (or clear) the undelivered job on its one-off channel row. */
+  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): void {
+    const channel = this._channelStore.getChannel(channelId);
+    if (!channel) return;
+    try {
+      this._channelStore.upsertChannel({
+        ...channel,
+        oneOffVideoJob: job ? JSON.stringify(job, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value) : null,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      debugWarn(`[BuyerPayment] Failed to persist video job for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private _restoreVideoJob(channel: StoredChannel): void {
+    if (!channel.oneOffVideoJob) return;
+    try {
+      const job = JSON.parse(channel.oneOffVideoJob, (_key, value) => (
+        value && typeof value === 'object' && typeof value.$bigint === 'string' ? BigInt(value.$bigint) : value
+      )) as PersistedVideoJob;
+      if (Date.now() - job.createdAtMs > VIDEO_JOB_TTL_MS) return;
+      this._videoJobs.set(videoJobKey(channel.peerId, job.protocol, job.jobId), {
+        ...job.entry,
+        createdAtMs: job.createdAtMs,
+        oneOffChannelId: channel.sessionId,
+      });
+    } catch (err) {
+      debugWarn(`[BuyerPayment] Ignoring unreadable video job on ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+    }
   }
 
   clearRequestBilling(requestId: string): void {
