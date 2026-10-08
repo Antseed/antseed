@@ -70,6 +70,13 @@ const CLOSE_REQUEST_TIMEOUT_MS = 60_000;
 const ONE_OFF_ACK_POLL_MS = 1_000;
 /** Maximum time to wait for a seller to open a one-off video channel before failing the request. */
 const ONE_OFF_ACK_TIMEOUT_MS = 45_000;
+/**
+ * How long to keep waiting for the seller's AuthAck after the full reserve is
+ * already visible on-chain. The seller registers the channel only once its own
+ * reserve receipt arrives, which can lag this buyer's RPC; retrying before the
+ * AuthAck gets the same one-off 402 back.
+ */
+const ONE_OFF_CHAIN_CONFIRM_GRACE_MS = 15_000;
 /** Emitter interface — subset of EventEmitter used by the negotiator. */
 export interface NegotiationEmitter {
   emit(event: string, ...args: unknown[]): boolean;
@@ -477,12 +484,14 @@ export class BuyerPaymentNegotiator {
 
   /**
    * Wait until the seller acknowledges the one-off channel. The chain is read
-   * between waits, so a lost AuthAck still confirms once the full reserve is
-   * visible, and a channel the seller already closed (for example after a
-   * reverted topUp) fails fast instead of waiting out the timeout.
+   * between waits, so a lost AuthAck still confirms once the full reserve has
+   * been visible for ONE_OFF_CHAIN_CONFIRM_GRACE_MS, and a channel the seller
+   * already closed (for example after a reverted topUp) fails fast instead of
+   * waiting out the timeout.
    */
   private async _waitForOneOffChannel(channelId: string, price: bigint): Promise<void> {
     const deadline = Date.now() + ONE_OFF_ACK_TIMEOUT_MS;
+    let fundedSince: number | null = null;
     for (;;) {
       if (await this._bpm.waitForOneOffAck(channelId, ONE_OFF_ACK_POLL_MS)) return;
       let channel;
@@ -494,6 +503,9 @@ export class BuyerPaymentNegotiator {
       }
       if (this._bpm.isOneOffChannelConfirmed(channelId)) return;
       if (channel.deposit >= price && (channel.status == null || channel.status === 1)) {
+        const now = Date.now();
+        fundedSince ??= now;
+        if (now - fundedSince < ONE_OFF_CHAIN_CONFIRM_GRACE_MS && now < deadline) continue;
         await this._bpm.confirmOneOffChannelOnChain(channelId, channel.deposit);
         debugLog(`[BuyerNegotiator] One-off channel ${channelId.slice(0, 18)}... confirmed on-chain: deposit=${channel.deposit}`);
         return;
