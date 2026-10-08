@@ -270,11 +270,15 @@ export class SellerRequestHandler {
       }
       const videoRoute = nativeVideoRoute(request);
       if (videoRoute && this._handleVideoPrecheck(mux, request, videoRoute, buyerPeerId, unitBillingModel)) return;
-      const isFreeService = videoRoute?.action === 'retrieve' || isZeroTokenPricing(requestPricing)
+      const isVideoRetrieve = videoRoute?.action === 'retrieve';
+      const isFreeService = isVideoRetrieve || isZeroTokenPricing(requestPricing)
         && (!unitBillingModel || isFreeUnitBillingModel(unitBillingModel));
+      // A video retrieve is paid by its job's create, never by the free tier:
+      // status polls and downloads must not use up or report free usage.
+      const isFreeTierRequest = isFreeService && !isVideoRetrieve;
       let requestCostEstimate: ReturnType<SellerRequestHandler['_estimateRequestCostUsdc']> = null;
       try {
-        requestCostEstimate = requestBilling && videoRoute?.action !== 'retrieve'
+        requestCostEstimate = requestBilling && !isVideoRetrieve
           ? this._estimateRequestCostUsdc(request, requestBilling, requestPricing, unitBillingModel)
           : null;
       } catch (err) {
@@ -285,7 +289,7 @@ export class SellerRequestHandler {
       }
       const estimatedRequestCost = requestCostEstimate?.cost ?? 0n;
 
-      if (isFreeService && this._deps.sellerFreeTierLimiter) {
+      if (isFreeTierRequest && this._deps.sellerFreeTierLimiter) {
         const requestedService = this._extractRequestedService(request) ?? 'unknown';
         let decision: FreeTierDecision;
         try {
@@ -794,7 +798,7 @@ export class SellerRequestHandler {
               billingUsage: billingUsageReport ?? undefined,
             }, buyerPeerId, 'post-response');
           }
-        } else if (isFreeService) {
+        } else if (isFreeTierRequest) {
           this._deps.sellerFreeUsageManager?.reportUsageRequest(buyerPeerId, paymentMux, {
             requestId: request.requestId,
             inputTokens: responseUsage.inputTokens,
@@ -803,7 +807,7 @@ export class SellerRequestHandler {
           });
         }
 
-        if (videoRoute?.action === 'retrieve' && responseForAuth) {
+        if (isVideoRetrieve && responseForAuth) {
           this._chargeDeliveredVideo(videoRoute, responseForAuth, buyerPeerId, paymentMux, request.requestId);
           this._closeFailedVideoJob(videoRoute, responseForAuth, buyerPeerId);
         }

@@ -145,6 +145,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     createResponse?: 'rejected';
     availableBalance?: bigint;
     reserveEstimateOverdraftUsdc?: bigint;
+    freeTier?: { consume: ReturnType<typeof vi.fn>; reportUsageRequest: ReturnType<typeof vi.fn> };
   } = {}): Harness {
     const buyerIdentity = identity();
     const sellerIdentity = identity();
@@ -301,6 +302,10 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
       identity: sellerIdentity, providers: [provider], sellerPaymentManager: seller, sessionTracker: null,
       channelsClient: seller.channelsClient, announcer: null, emit: () => false, resourceOwnershipStore: ownership,
       reserveEstimateOverdraftUsdc: options.reserveEstimateOverdraftUsdc,
+      ...(options.freeTier ? {
+        sellerFreeTierLimiter: { maxRequestsPerAddress: 1, maxRequestsPerIp: 1, windowMs: 60_000, consume: options.freeTier.consume } as any,
+        sellerFreeUsageManager: { reportUsageRequest: options.freeTier.reportUsageRequest } as any,
+      } : {}),
     });
     const { mux: sellerProxy } = sellerHandler.handleConnection(sellerSide, buyerIdentity.peerId, sellerPayment, sellerVerification);
     wireFrames(sellerSide, { proxy: sellerProxy, payment: sellerPayment, verification: sellerVerification });
@@ -470,6 +475,27 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     // The chat channel is still open and still at its own spend.
     expect(h.chain.get(h.sessionChannelId())).toMatchObject({ settled: 0n, status: 1 });
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
+  });
+
+  it('polls and downloads a paid video without using the free tier', async () => {
+    const freeTier = {
+      consume: vi.fn(() => ({ allowed: false, retryAfterMs: 60_000, limitedBy: 'address', buyerAddress: 'buyer', remoteIp: null })),
+      reportUsageRequest: vi.fn(),
+    };
+    const h = setup({ processingPolls: 1, freeTier });
+    expect((await h.send(h.videoRequest('video-1'))).statusCode).toBe(200);
+    await h.settle();
+
+    const processing = await h.send(h.retrieveRequest('poll-1', 'job-1'));
+    expect(processing.statusCode).toBe(200);
+    const delivered = await h.send(h.retrieveRequest('retrieve-1', 'job-1'));
+    expect(delivered.statusCode).toBe(200);
+    expect(delivered.headers['content-type']).toBe('video/mp4');
+    await h.settle();
+
+    expect(freeTier.consume).not.toHaveBeenCalled();
+    expect(freeTier.reportUsageRequest).not.toHaveBeenCalled();
+    expect(h.close.mock.calls[0]![2]).toBe(VIDEO_PRICE);
   });
 
   it.each(['flat', 'per-second', 'resolution-tiered'] as const)('polls and delivers a %s video without repricing or charging twice', async (videoPricing) => {
