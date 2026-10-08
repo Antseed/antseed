@@ -51,6 +51,10 @@ let lastForwardedSeq = 0;
 // The daemon can start seconds after the deposit view opens (process-manager
 // races) — remember the requested mode and re-send it once it answers.
 let pendingDaemonMode: 'active' | 'background' | null = null;
+// The daemon drops an unrefreshed active watch back to background after five
+// minutes, so re-request it while the deposit view stays open.
+const DEPOSIT_WATCH_ACTIVE_REFRESH_MS = 60_000;
+let activeRequestedAt = 0;
 
 function sendDepositWatchStatus(status: DepositWatchStatus): void {
   // Funds arriving at the hot wallet means an in-flight checkout (Fun card /
@@ -91,6 +95,7 @@ async function daemonWatchStatus(): Promise<{ watcher: boolean; reason: string |
 }
 
 async function daemonSetWatchMode(mode: 'active' | 'background'): Promise<boolean> {
+  if (mode === 'active') activeRequestedAt = Date.now();
   const res = await buyerDaemonFetch('/_antseed/deposits/watch', {
     method: 'POST',
     headers: { 'content-type': 'application/json' },
@@ -120,6 +125,10 @@ async function pollDaemonWatch(): Promise<void> {
     const ok = await daemonSetWatchMode(mode);
     // Clear only when no newer request superseded this one during the await.
     if (ok && pendingDaemonMode === mode) pendingDaemonMode = null;
+  }
+
+  if (pollMode === 'active' && !pendingDaemonMode && Date.now() - activeRequestedAt >= DEPOSIT_WATCH_ACTIVE_REFRESH_MS) {
+    void daemonSetWatchMode('active');
   }
 
   const status = current.status;

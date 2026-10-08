@@ -1,12 +1,9 @@
 import { useCallback, useEffect, useState } from 'react';
 import { useWriteContract, useWaitForTransactionReceipt } from 'wagmi';
-import { parseAbi, parseUnits } from 'viem';
+import { parseUnits } from 'viem';
+import { DEPOSITS_ABI } from '@antseed/wallet-config/abis';
 import type { PaymentConfig } from '../types';
 import { getErrorMessage, usePaymentNetwork } from '../payment-network';
-
-const DEPOSITS_WITHDRAW_ABI = parseAbi([
-  'function withdraw(address buyer, uint256 amount) external',
-]);
 
 export interface UseWithdrawResult {
   /** Sends `withdraw(buyer, parseUnits(amount, 6))` from the connected wallet. */
@@ -76,7 +73,7 @@ export function useWithdraw(config: PaymentConfig | null, onSuccess?: () => void
       await ensureCorrectNetwork();
       writeContract({
         address: config.depositsContractAddress as `0x${string}`,
-        abi: DEPOSITS_WITHDRAW_ABI,
+        abi: DEPOSITS_ABI,
         functionName: 'withdraw',
         chainId: expectedChainId,
         args: [buyer as `0x${string}`, units],

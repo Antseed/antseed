@@ -1,4 +1,5 @@
 import type { AttributedSpendPage } from '../proxy/spend-attribution.js'
+import { GATEWAY_CONTROL_HEADER } from '../routing-policy/policy.js'
 
 const DEFAULT_POLL_INTERVAL_MS = 2_000
 const POLL_TIMEOUT_MS = 3_000
@@ -12,6 +13,11 @@ export type SpendFeedState = 'reporting' | 'unsupported' | 'unreachable'
 
 export interface SpendFeedOptions {
   buyerPort: number
+  /**
+   * Gateway control secret. Sent with each poll so the buyer may treat the
+   * cursor as an acknowledgement and prune the events before it.
+   */
+  controlSecret?: string | null
   onPage: (page: AttributedSpendPage) => void
   onLog?: (message: string) => void
   intervalMs?: number
@@ -59,7 +65,10 @@ export class SpendFeedPoller {
       try {
         response = await fetchImpl(
           `http://127.0.0.1:${this._options.buyerPort}/_antseed/attributed-spend?after=${this._after}`,
-          { signal: AbortSignal.timeout(POLL_TIMEOUT_MS) },
+          {
+            signal: AbortSignal.timeout(POLL_TIMEOUT_MS),
+            ...(this._options.controlSecret ? { headers: { [GATEWAY_CONTROL_HEADER]: this._options.controlSecret } } : {}),
+          },
         )
       } catch {
         this._setState('unreachable')
@@ -80,7 +89,8 @@ export class SpendFeedPoller {
       }
       this._setState('reporting')
       if (page.bootId !== this._bootId) {
-        // A restarted buyer numbers its events from 1 again.
+        // A different feed (an in-memory one after a buyer restart, or a
+        // deleted feed file) numbers its events from 1 again.
         const restarted = this._bootId !== null
         this._bootId = page.bootId
         if (restarted || this._after > 0) {

@@ -8,7 +8,8 @@
   "type": "module",
   "main": "dist/index.js",
   "exports": {
-    ".": "./dist/index.js"
+    ".": "./dist/index.js",
+    "./card-link": "./dist/card-link.js"
   },
   "scripts": {
     "build": "npm run build:server && npm run build:web",
@@ -29,6 +30,7 @@
   },
   "devDependencies": {
     "@antseed/ui": "workspace:*",
+    "@antseed/wallet-config": "workspace:*",
     "@metamask/sdk": "^0.34.0",
     "@rainbow-me/rainbowkit": "^2.2.10",
     "@tanstack/react-query": "^5.94.5",

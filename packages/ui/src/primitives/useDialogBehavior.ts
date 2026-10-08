@@ -69,6 +69,10 @@ export function useDialogBehavior(
 
     function onKeyDown(event: KeyboardEvent) {
       if (!isTopDialog(activePanel)) return;
+      // A third-party dialog opened from this one (e.g. a wallet picker) closes itself first.
+      const target = event.target instanceof Element ? event.target : null;
+      const foreignDialog = target?.closest('[role="dialog"]');
+      if (foreignDialog && foreignDialog !== activePanel && !activePanel.contains(foreignDialog)) return;
 
       if (event.key === 'Escape') {
         event.preventDefault();

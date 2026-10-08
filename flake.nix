@@ -245,6 +245,9 @@
               # to import.meta.url, which is the bundle's directory once built.
               cp -r apps/payments/dist/web "$out/libexec/antseed/web"
               cp -r apps/ants/dist/ants-web "$out/libexec/antseed/ants-web"
+              # Gateway console web app: @antseed/gateway-console resolves
+              # ./dist/ relative to import.meta.url, i.e. the bundle's directory.
+              cp -r apps/gateway-console/dist "$out/libexec/antseed/dist"
 
               for pkg in ${lib.concatStringsSep " " runtimeNodeModules}; do
                 if [ -e "node_modules/$pkg" ]; then

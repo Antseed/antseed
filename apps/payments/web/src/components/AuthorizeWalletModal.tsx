@@ -4,7 +4,7 @@ import { useAccount, useDisconnect } from 'wagmi';
 import { ActionModal } from '../layout/ActionModal';
 import { useSetOperator } from '../hooks/useSetOperator';
 import type { PaymentConfig } from '../types';
-import { Button } from './Button';
+import { Button } from '@antseed/ui';
 import { ConnectWalletAction } from './ConnectWalletAction';
 
 interface AuthorizeWalletModalProps {

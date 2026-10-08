@@ -8,6 +8,7 @@ import {
   buildBuyerBootstrapEntries,
   buildRouterRuntimeEnvFromBuyerConfig,
   isCompatibleBuyerProxy,
+  isSupervisedProcess,
   resolveBuyerRouterName,
 } from './start.js';
 
@@ -127,4 +128,12 @@ test('buyer start recognizes current proxies by AntSeed response header', async 
   }, async (port) => {
     assert.equal(await isCompatibleBuyerProxy(port), true);
   });
+});
+
+test('buyer restart is only offered under a supervisor (systemd INVOCATION_ID or ANTSEED_SUPERVISED=1)', () => {
+  assert.equal(isSupervisedProcess({}), false);
+  assert.equal(isSupervisedProcess({ INVOCATION_ID: '0123456789abcdef0123456789abcdef' }), true);
+  assert.equal(isSupervisedProcess({ INVOCATION_ID: '' }), false);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: '1' }), true);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: 'true' }), false);
 });

@@ -152,6 +152,35 @@ export class LocalRouter implements Router {
     return this.allowsPeerForPricing(req, peer);
   }
 
+  /**
+   * Human-readable reason `allowsPeerForPolicy` rejects this peer, or null
+   * when it is allowed. Used by route previews; must stay in step with
+   * `allowsPeerForPolicy`.
+   */
+  explainPolicyRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const reputation = this._effectiveReputation(peer);
+    if (reputation < this._minReputation) {
+      return `reputation ${Math.round(reputation)} below buyer minimum ${this._minReputation}`;
+    }
+    const requestedService = this._extractRequestedService(req);
+    const provider = this._selectProviderForPeer(peer, requestedService);
+    if (!provider) return 'no provider for this model';
+    const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
+    if (!offer) return 'no valid price advertised';
+    const max = this._resolveBuyerMaxPrice(provider, requestedService);
+    const maxCachedInput = max.cachedInputUsdPerMillion ?? max.inputUsdPerMillion;
+    if (offer.inputUsdPerMillion > max.inputUsdPerMillion) {
+      return `input price ${formatUsd(offer.inputUsdPerMillion)} over buyer cap ${formatUsd(max.inputUsdPerMillion)}`;
+    }
+    if (offer.outputUsdPerMillion > max.outputUsdPerMillion) {
+      return `output price ${formatUsd(offer.outputUsdPerMillion)} over buyer cap ${formatUsd(max.outputUsdPerMillion)}`;
+    }
+    if (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput) {
+      return `cached input price ${formatUsd(offer.cachedInputUsdPerMillion)} over buyer cap ${formatUsd(maxCachedInput)}`;
+    }
+    return null;
+  }
+
   private _effectiveReputation(p: PeerInfo): number {
     return normalizedModelReputationScore(p) ?? 0;
   }
@@ -273,4 +302,8 @@ export class LocalRouter implements Router {
       || offer.outputUsdPerMillion > max.outputUsdPerMillion
       || (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput);
   }
+}
+
+function formatUsd(value: number): string {
+  return `$${Math.round(value * 10_000) / 10_000}`;
 }
