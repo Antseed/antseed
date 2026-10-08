@@ -77,7 +77,11 @@ export function controlClient({ url, token }) {
     stopSeller: (id) => call('POST', `/sellers/${id}/stop`),
     startSeller: (id) => call('POST', `/sellers/${id}/start`, {}, 180_000),
     setMockLatency: (id, latencyMs) => call('POST', `/sellers/${id}/mock`, { latencyMs }),
+    setMockProfile: (id, patch, { replace = false, resetDraws = false } = {}) => call('POST', `/sellers/${id}/mock`, { patch, replace, resetDraws }),
+    resetMockDraws: (id) => call('POST', `/sellers/${id}/mock`, { resetDraws: true }),
     mockRequests: (id) => call('GET', `/sellers/${id}/mock`),
+    seedRouter: (id, seed) => call('POST', `/routers/${id}/seed`, { seed }),
+    routerStats: (id) => call('GET', `/routers/${id}`),
     shutdown: () => call('POST', '/shutdown', {}, 10_000),
   };
 }

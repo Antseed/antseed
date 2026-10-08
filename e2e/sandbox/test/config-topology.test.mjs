@@ -164,12 +164,21 @@ describe('topology', () => {
     assert.deepEqual(prefs.allowedPeerIds, ['aa', 'bb']);
     assert.deepEqual(prefs.blockedPeerIds, []);
     assert.equal(prefs.preferLowLatency, true);
+    assert.deepEqual(buyerRoutingPreferences(normalizeTopology({}, source), ['aa'], ['rr']).allowedPeerIds, ['aa', 'rr']);
+  });
+
+  it('declares routing peers explicitly', () => {
+    const topology = normalizeTopology({ routers: [{ id: 'levanto', priceUsd: '0.001' }] }, source);
+    assert.deepEqual(topology.routers, [{ id: 'levanto', priceUsd: '0.001' }]);
+    assert.throws(() => normalizeTopology({ sellers: [{ id: 'same' }], routers: [{ id: 'same' }] }, source), /Duplicate peer/);
+    assert.throws(() => normalizeTopology({ routers: [{ id: 'bad', priceUsd: -1 }] }, source), /priceUsd/);
   });
 
   it('fingerprints sellers and models for reuse checks', () => {
     const one = topologyFingerprint(normalizeTopology({}, source));
     assert.equal(one, topologyFingerprint(normalizeTopology({ buyer: { depositUsdc: '3' } }, source)));
     assert.notEqual(one, topologyFingerprint(normalizeTopology({ sellers: [{ id: 'a' }, { id: 'b' }] }, source)));
+    assert.notEqual(one, topologyFingerprint(normalizeTopology({ routers: [{ id: 'levanto' }] }, source)));
   });
 });
 
@@ -185,7 +194,7 @@ describe('scenario modules', () => {
   });
 
   it('every shipped scenario is valid', async () => {
-    for (const name of ['chat-basic', 'routing-smoke']) {
+    for (const name of ['chat-basic', 'routing-smoke', 'load-mixed', 'load-ramp', 'chaos-seller-drop']) {
       const scenario = validateScenarioModule(await import(`../scenarios/${name}.mjs`), name);
       assertScenarioSupported(scenario, 'fork');
       assert.ok(scenario.description);

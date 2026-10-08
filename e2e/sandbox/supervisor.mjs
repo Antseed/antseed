@@ -104,7 +104,7 @@ async function startSellerWorker(seller) {
     child.on('message', onMessage);
     child.once('exit', (code) => rejectReady(new Error(`seller ${seller.id} exited with ${code} (see logs/seller-${seller.id}.log)`)));
   });
-  child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments });
+  child.send({ type: 'start', id: seller.id, dataDir: seller.dataDir, configPath: seller.configPath, bootstrapNodes: seller.bootstrapNodes, payments: seller.payments, router: seller.router });
   const info = await Promise.race([ready, new Promise((_, rejectTimeout) => setTimeout(() => rejectTimeout(new Error(`seller ${seller.id} start timeout`)), 120_000))]);
   const entry = { child, info, process: { pid: child.pid, startedAt: processStartTime(child.pid) } };
   state.workers.set(seller.id, entry);
@@ -124,12 +124,33 @@ async function stopSellerWorker(id) {
   return true;
 }
 
+let routerRequestSeq = 0;
+/** Asks a sandbox router worker to reseed (op 'seed') or report its counters (op 'stats'). */
+async function routerCall(id, op, extra = {}) {
+  const worker = state.workers.get(id);
+  if (!worker || !(manifest.routers ?? []).some((router) => router.id === id)) throw Object.assign(new Error(`Router ${id} is not running`), { statusCode: 404 });
+  const requestId = ++routerRequestSeq;
+  const reply = new Promise((resolveReply, rejectReply) => {
+    const timer = setTimeout(() => { worker.child.off('message', onMessage); rejectReply(new Error(`router ${id} did not answer`)); }, 10_000);
+    const onMessage = (message) => {
+      if (message.type !== 'router-reply' || message.requestId !== requestId) return;
+      clearTimeout(timer);
+      worker.child.off('message', onMessage);
+      resolveReply(message);
+    };
+    worker.child.on('message', onMessage);
+  });
+  worker.child.send({ type: 'router', op, requestId, ...extra });
+  const { type, requestId: _ignored, ...stats } = await reply;
+  return stats;
+}
+
 async function discover(sellerIds) {
   await waitFor(async () => {
     for (const id of sellerIds) state.workers.get(id)?.child.send({ type: 'announce' });
     const peers = await state.buyer.discoverPeers();
     return sellerIds.every((id) => peers.some((peer) => peer.peerId === state.workers.get(id)?.info.peerId));
-  }, 'buyer discovering sandbox sellers', 90_000, 1000);
+  }, 'buyer discovering sandbox peers', 90_000, 1000);
   const response = await fetch(`${manifest.proxyUrl}/_antseed/peers/refresh`, { method: 'POST', signal: AbortSignal.timeout(60_000) });
   assert(response.ok, 'proxy peer refresh failed');
 }
@@ -137,15 +158,15 @@ async function discover(sellerIds) {
 async function closeChannels(sellerIds) {
   const results = {};
   for (const id of sellerIds) {
-    const seller = manifest.sellers.find((entry) => entry.id === id);
-    if (!seller) throw Object.assign(new Error(`Unknown seller ${id}`), { statusCode: 404 });
+    const seller = [...manifest.sellers, ...(manifest.routers ?? [])].find((entry) => entry.id === id);
+    if (!seller) throw Object.assign(new Error(`Unknown sandbox peer ${id}`), { statusCode: 404 });
     const active = state.buyer.getActiveBuyerChannels().filter((channel) => channel.peerId === seller.peerId);
     if (active.length === 0) { results[id] = 'no-channel'; continue; }
     if (!state.workers.has(id)) { results[id] = 'seller-offline'; continue; }
     await waitFor(async () => {
       const closed = await state.buyer.requestChannelClose(seller.peerId, { timeoutMs: 60_000 });
       if (closed.status === 'closed') return true;
-      if (!['busy', 'no_channel'].includes(closed.code)) throw new Error(`close ${id}: ${JSON.stringify(closed)}`);
+      if (!['busy', 'pending_auth', 'no_channel'].includes(closed.code)) throw new Error(`close ${id}: ${JSON.stringify(closed)}`);
       return closed.code === 'no_channel';
     }, `channel close for ${id}`, 180_000, 2000);
     results[id] = 'closed';
@@ -161,6 +182,10 @@ async function liveStatus() {
   for (const seller of manifest.sellers) {
     sellers.push({ id: seller.id, peerId: seller.peerId, address: seller.address, online: state.workers.has(seller.id), usdcMicro: String(await state.reader.usdcBalance(seller.address)), mockLatencyMs: state.mocks.get(seller.id)?.state.latencyMs ?? null });
   }
+  const routers = [];
+  for (const router of manifest.routers ?? []) {
+    routers.push({ id: router.id, peerId: router.peerId, address: router.address, online: state.workers.has(router.id), usdcMicro: String(await state.reader.usdcBalance(router.address)) });
+  }
   let peers = [];
   try {
     const response = await fetch(`${manifest.proxyUrl}/_antseed/peers`, { signal: AbortSignal.timeout(5000) });
@@ -171,6 +196,7 @@ async function liveStatus() {
     live: {
       buyer: { address: manifest.buyer.address, availableMicroUsdc: String(balance.available), reservedMicroUsdc: String(balance.reserved), usdcMicro: String(await state.reader.usdcBalance(manifest.buyer.address)) },
       sellers,
+      routers,
       peersSeenByBuyer: peers,
       channels: state.buyer.getActiveBuyerChannels(),
       chainBlock: await state.reader.provider.getBlockNumber(),
@@ -189,7 +215,7 @@ async function shutdown(reason) {
     if (manifest?.running) await writeManifest({ running: false, stoppingAt: new Date().toISOString() });
     if (state.buyer && state.reader && manifest?.sellers) {
       await step('settle and close channels', async () => {
-        const summary = await closeChannels(manifest.sellers.map((seller) => seller.id).filter((id) => state.workers.has(id)));
+        const summary = await closeChannels([...manifest.sellers, ...(manifest.routers ?? [])].map((seller) => seller.id).filter((id) => state.workers.has(id)));
         log(`Channels: ${JSON.stringify(summary.results)} reserved=${summary.buyer.reservedMicroUsdc}`);
         await writeManifest({ finalBalances: summary.buyer });
       });
@@ -246,7 +272,7 @@ async function main() {
     supervisor: ownProcessEntry(), home: paths.home, buyerDir: paths.buyer, buyerConfig: join(paths.buyer, 'config.json'),
     chainId: 8453, configHash: plan.configHash, configOrigin: plan.configOrigin, upstream: plan.upstream,
     topology: plan.topology, startedAt: new Date().toISOString(),
-    rpcUrl: 'http://127.0.0.1:1', proxyUrl: 'http://127.0.0.1:1', sellers: [],
+    rpcUrl: 'http://127.0.0.1:1', proxyUrl: 'http://127.0.0.1:1', sellers: [], routers: [],
   };
   await saveJson(paths.manifest, manifest);
 
@@ -263,7 +289,7 @@ async function main() {
   const { BuyerProxy } = await import(join(repo, 'apps/cli/dist/proxy/buyer-proxy.js'));
   const buyerIdentity = await sdk.loadOrCreateIdentity(paths.buyer);
   const sellerIdentities = [];
-  for (const seller of plan.topology.sellers) {
+  for (const seller of [...plan.topology.sellers, ...plan.topology.routers]) {
     await mkdir(paths.seller(seller.id), { recursive: true, mode: 0o700 });
     sellerIdentities.push({ id: seller.id, identity: await sdk.loadOrCreateIdentity(paths.seller(seller.id)) });
   }
@@ -284,7 +310,7 @@ async function main() {
   for (const seller of plan.topology.sellers) {
     let mockUrl;
     if (plan.upstream === 'mock') {
-      const mock = await startMock({ models: [...new Set(Object.values(seller.providers).flatMap((p) => Object.keys(p.services)))], label: `sandbox seller ${seller.id}`, latencyMs: seller.mock.latencyMs });
+      const mock = await startMock({ models: [...new Set(Object.values(seller.providers).flatMap((p) => Object.keys(p.services)))], label: `sandbox seller ${seller.id}`, profile: seller.mock });
       state.mocks.set(seller.id, mock);
       mockUrl = mock.url;
     }
@@ -297,10 +323,18 @@ async function main() {
     sellers.push({ id: seller.id, peerId: worker.info.peerId, address: chainSeller.address, agentId: chainSeller.agentId, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort, process: worker.process, mockUrl: mockUrl ?? null, models: listModels({ seller: { providers } }), spec });
     log(`Seller ${seller.id} peer ${worker.info.peerId}`);
   }
+  const routers = [];
+  for (const router of plan.topology.routers) {
+    const spec = { id: router.id, dataDir: paths.seller(router.id), bootstrapNodes, payments, env: {}, router: { ...router, models: [...new Set(sellers.flatMap((seller) => seller.models))] } };
+    const worker = await startSellerWorker(spec);
+    const chainRouter = chainState.sellers.find((entry) => entry.id === router.id);
+    routers.push({ id: router.id, peerId: worker.info.peerId, address: chainRouter.address, agentId: chainRouter.agentId, dhtPort: worker.info.dhtPort, signalingPort: worker.info.signalingPort, process: worker.process, provider: 'sandbox-levanto', serviceId: 'levanto-route', priceUsd: router.priceUsd, spec });
+    log(`Router ${router.id} peer ${worker.info.peerId}`);
+  }
 
   state.buyer = new sdk.AntseedNode(sandboxNodeOptions({ role: 'buyer', dataDir: paths.buyer, bootstrapNodes, payments }));
   await state.buyer.start();
-  const routingPreferences = buyerRoutingPreferences(plan.topology, sellers.map((seller) => seller.peerId));
+  const routingPreferences = buyerRoutingPreferences(plan.topology, sellers.map((seller) => seller.peerId), routers.map((router) => router.peerId));
   const { port: proxyPort, value: proxy } = await listenWithRetry(async (port) => {
     await saveJson(manifest.buyerConfig, {
       buyer: { proxyPort: port, minPeerReputation: 0, routingPreferences, ...(plan.topology.buyer.maxPricing ? { maxPricing: plan.topology.buyer.maxPricing } : {}) },
@@ -325,21 +359,22 @@ async function main() {
     proxyUrl, proxyPort, buyerStartedAt: buyerStatus.startedAt,
     buyer: { peerId: state.buyer.peerId, address: chainState.buyer, dhtPort: state.buyer.dhtPort },
     sellers: sellers.map(({ spec, ...rest }) => rest),
+    routers: routers.map(({ spec, ...rest }) => rest),
     bootstrap: { host: '127.0.0.1', port: state.bootstrap.getPort() },
     chain: { deposits: chainState.chain.depositsContractAddress, channels: chainState.chain.channelsContractAddress, usdc: chainState.chain.usdcContractAddress },
     chainStartBlock: chainState.startBlock, sellerUsdcBefore: chainState.sellerUsdcBefore, depositMicros: chainState.depositMicros, stake: chainState.stake,
     desktopInstance: name.slice(0, 40),
   });
   const specs = new Map(sellers.map((seller) => [seller.id, seller.spec]));
-  await discover(sellers.map((seller) => seller.id));
-  log('Buyer discovered all sandbox sellers');
+  await discover([...sellers, ...routers].map((peer) => peer.id));
+  log('Buyer discovered all sandbox sellers and routers');
 
   const token = newToken();
   state.control = await startControlServer({
     token, log,
     routes: {
       'GET /status': () => liveStatus(),
-      'POST /channels/close': ({ body }) => closeChannels(body.sellerId ? [body.sellerId] : manifest.sellers.map((seller) => seller.id)),
+      'POST /channels/close': ({ body }) => closeChannels(body.sellerId ? [body.sellerId] : [...manifest.sellers, ...(manifest.routers ?? [])].map((seller) => seller.id)),
       'POST /chain/warp': async ({ body }) => {
         const seconds = Number(body.seconds);
         if (!Number.isInteger(seconds) || seconds <= 0 || seconds > 365 * 86_400) throw Object.assign(new Error('seconds must be 1..31536000'), { statusCode: 400 });
@@ -361,18 +396,31 @@ async function main() {
         await discover([params.id]);
         return { started: true };
       },
+      'POST /routers/:id/seed': async ({ params, body }) => {
+        const seed = Number(body.seed);
+        if (!Number.isInteger(seed) || seed < 0 || seed > 0xffffffff) throw Object.assign(new Error('seed must be 0..4294967295'), { statusCode: 400 });
+        return routerCall(params.id, 'seed', { seed });
+      },
+      'GET /routers/:id': ({ params }) => routerCall(params.id, 'stats'),
       'POST /sellers/:id/mock': ({ params, body }) => {
         const mock = state.mocks.get(params.id);
         if (!mock) throw Object.assign(new Error(`No mock for seller ${params.id}`), { statusCode: 404 });
-        const latencyMs = Number(body.latencyMs);
-        if (!Number.isInteger(latencyMs) || latencyMs < 0 || latencyMs > 60_000) throw Object.assign(new Error('latencyMs must be 0..60000'), { statusCode: 400 });
-        mock.setLatency(latencyMs);
-        return { latencyMs };
+        let profile;
+        try {
+          if (body.resetDraws) {
+            mock.resetDraws();
+            if (body.patch === undefined) return { latencyMs: mock.profile().latencyMs, profile: mock.profile() };
+          }
+          profile = body.patch !== undefined ? mock.setProfile(body.patch, { replace: Boolean(body.replace) }) : mock.setProfile(body);
+        } catch (error) {
+          throw Object.assign(error, { statusCode: 400 });
+        }
+        return { latencyMs: profile.latencyMs, profile };
       },
       'GET /sellers/:id/mock': ({ params }) => {
         const mock = state.mocks.get(params.id);
         if (!mock) throw Object.assign(new Error(`No mock for seller ${params.id}`), { statusCode: 404 });
-        return { requests: mock.state.requests };
+        return { requests: mock.state.requests, profile: mock.profile(), raw: mock.rawProfile(), stats: mock.stats() };
       },
       'POST /shutdown': () => {
         setTimeout(() => void shutdown('control request'), 10);

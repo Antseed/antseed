@@ -1,0 +1,20 @@
+{
+  "description": "Backend job calling the proxy over HTTP (summaries, classification, extraction). Independent single requests, non-streaming, medium input, short output.",
+  "assumptions": [
+    "Each session is a single request (no conversation).",
+    "Input ~1500 tokens median (a document chunk), output ~120 tokens.",
+    "Arrivals are Poisson; batch bursts are modelled by raising rateMultiplier.",
+    "Never streams; gives up after 30 s."
+  ],
+  "share": 0.15,
+  "arrival": { "process": "poisson", "perMinute": 20 },
+  "turns": 1,
+  "thinkTimeMs": 0,
+  "systemTokens": 150,
+  "inputTokens": { "type": "lognormal", "median": 1500, "p99": 6000 },
+  "carryContext": false,
+  "outputTokens": { "type": "lognormal", "median": 120, "p99": 600 },
+  "models": { "zipf": 0.5 },
+  "streamRatio": 0,
+  "abandonAfterMs": 30000
+}

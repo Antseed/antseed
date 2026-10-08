@@ -1,7 +1,7 @@
 import { DEFAULT_SLOT, validateSlot } from './paths.mjs';
 
 export const COMMANDS = new Set(['up', 'down', 'status', 'desktop', 'run', 'logs', 'list', 'help']);
-const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--env-file': 'envFile' };
+const VALUE_FLAGS = { '--config': 'config', '--deposit-usdc': 'depositUsdc', '--block': 'block', '--slot': 'slot', '--scenario': 'scenario', '--timeout': 'timeout', '--seed': 'seed', '--repeat': 'repeat', '--env-file': 'envFile' };
 const BOOL_FLAGS = { '--live': 'live', '--verbose': 'verbose', '--json': 'json', '--env': 'env', '--follow': 'follow', '--keep': 'keep', '--force': 'force', '--strict': 'strict', '--help': 'help', '-h': 'help' };
 
 export function parseArgs(argv) {
@@ -28,6 +28,14 @@ export function parseArgs(argv) {
     throw new Error('--deposit-usdc must be a USDC amount between 0 and 1000');
   }
   if (options.timeout !== undefined && !/^\d+$/.test(options.timeout)) throw new Error('--timeout must be seconds');
+  if (options.seed !== undefined) {
+    if (!/^\d{1,10}$/.test(options.seed) || Number(options.seed) > 0xffffffff) throw new Error('--seed must be an integer 0..4294967295');
+    options.seed = Number(options.seed);
+  }
+  if (options.repeat !== undefined) {
+    if (!/^\d{1,3}$/.test(options.repeat) || Number(options.repeat) < 1 || Number(options.repeat) > 100) throw new Error('--repeat must be 1..100');
+    options.repeat = Number(options.repeat);
+  }
   if (command === 'run') {
     if (options.positional.length !== 1) throw new Error('Usage: pnpm sandbox run <scenario>');
     if (!/^[a-z0-9][a-z0-9-]{0,63}$/.test(options.positional[0])) throw new Error('Invalid scenario name');
@@ -47,6 +55,8 @@ export const HELP = `pnpm sandbox <command> [options]
   run NAME  Run e2e/sandbox/scenarios/NAME.mjs, write report.json, exit nonzero on failure
             Starts the sandbox with the scenario topology if needed and stops it afterwards unless --keep
             --strict  also fail on known issues (recorded in report.json either way)
+            --seed N  seed for workloads and mock randomness (default 1)
+            --repeat N  run N times in one sandbox (seeds N, N+1, ...) and aggregate mean/95% CI
   desktop   Attach-only Electron desktop to this sandbox's buyer
   logs      [component] [--follow]  (supervisor, anvil, seller-<id>)
   list      All sandboxes on this machine

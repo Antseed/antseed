@@ -170,7 +170,7 @@ export function chainReader(rpcUrl, chain) {
 export async function verifySettlement({ reader, manifest, expectedBySeller }) {
   const observed = { sellers: {}, transactions: [] };
   let total = 0n;
-  for (const seller of manifest.sellers) {
+  for (const seller of [...manifest.sellers, ...(manifest.routers ?? [])]) {
     const expected = BigInt(expectedBySeller[seller.id] ?? 0n);
     const events = await reader.settledEvents(manifest.buyer.address, seller.address, manifest.chainStartBlock);
     const paid = events.reduce((sum, event) => sum + event.args.delta, 0n);

@@ -1,0 +1,21 @@
+{
+  "description": "Coding agent (Claude Code / Aider style) driving the proxy. Large tool-heavy contexts, short-to-medium outputs, many back-to-back turns with almost no think time.",
+  "assumptions": [
+    "A session is one task: 5-60 model calls, median 15.",
+    "Each call resends a large context: ~12k tokens median (repo files, tool output), up to ~60k.",
+    "Outputs are tool calls or short edits: ~200 tokens median.",
+    "Think time is tool execution: ~1.5 s median, up to ~15 s.",
+    "Streams ~70% of calls; retries are left to the proxy; abandons after 120 s."
+  ],
+  "share": 0.3,
+  "arrival": { "process": "poisson", "perMinute": 1.5 },
+  "turns": { "type": "lognormal", "median": 15, "p99": 60, "clampMin": 3, "clampMax": 80 },
+  "thinkTimeMs": { "type": "lognormal", "median": 1500, "p99": 15000 },
+  "systemTokens": 3000,
+  "inputTokens": { "type": "lognormal", "median": 12000, "p99": 60000, "clampMax": 120000 },
+  "carryContext": false,
+  "outputTokens": { "type": "lognormal", "median": 200, "p99": 2000, "clampMax": 8192 },
+  "models": { "zipf": 1.5 },
+  "streamRatio": 0.7,
+  "abandonAfterMs": 120000
+}

@@ -40,14 +40,5 @@ export async function run(sb) {
   sb.metric('settledMicroUsdc', settlement.totalPaidMicroUsdc);
   sb.metric('feesMicroUsdc', settlement.sellers[seller.id].feesMicroUsdc);
 
-  if (sb.manifest.upstream === 'mock') {
-    const delivered = sb.mockCostPerChat(seller.id, model) * 2n;
-    sb.metric('deliveredWorkMicroUsdc', String(delivered));
-    sb.knownIssue(
-      'settled amount equals the cost of delivered work',
-      BigInt(settlement.totalPaidMicroUsdc) === delivered,
-      { settled: settlement.totalPaidMicroUsdc, delivered: String(delivered), signedBeforeClose: open[0].cumulativeSigned },
-      'cooperative close settles one extra request cost (buyer-core close path)',
-    );
-  }
+  // Settled vs delivered work is a global invariant (known issue while close settles one extra request).
 }

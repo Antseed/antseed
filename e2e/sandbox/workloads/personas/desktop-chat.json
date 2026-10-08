@@ -1,0 +1,21 @@
+{
+  "description": "Person chatting in the desktop app. Short prompts that grow with the conversation, medium answers, almost always streamed, reads the answer before the next turn.",
+  "assumptions": [
+    "A session is one conversation: 1-12 turns, median 3.",
+    "New user text per turn ~60 tokens (median); the full history is resent each turn, so input grows.",
+    "Answers ~250 tokens median, long tail to ~1500.",
+    "Think time is reading + typing: ~20 s median, up to ~2 min.",
+    "Gives up on a request after 60 s without the full answer."
+  ],
+  "share": 0.55,
+  "arrival": { "process": "poisson", "perMinute": 6 },
+  "turns": { "type": "lognormal", "median": 3, "p99": 12, "clampMin": 1, "clampMax": 20 },
+  "thinkTimeMs": { "type": "lognormal", "median": 20000, "p99": 120000 },
+  "systemTokens": 400,
+  "inputTokens": { "type": "lognormal", "median": 60, "p99": 600 },
+  "carryContext": true,
+  "outputTokens": { "type": "lognormal", "median": 250, "p99": 1500, "clampMax": 4096 },
+  "models": { "zipf": 1.0 },
+  "streamRatio": 0.95,
+  "abandonAfterMs": 60000
+}

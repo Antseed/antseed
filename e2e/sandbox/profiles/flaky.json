@@ -1,0 +1,11 @@
+{
+  "description": "Mid-speed seller with an unreliable upstream: 5% 5xx, 2% mid-stream drops, 1% hangs, occasional stalls.",
+  "rttMs": { "type": "uniform", "min": 30, "max": 90 },
+  "prefillTokensPerSec": { "type": "lognormal", "median": 6000, "p99": 10000 },
+  "decodeTokensPerSec": { "type": "lognormal", "median": 55, "p99": 85 },
+  "jitterMs": { "type": "lognormal", "median": 150, "p99": 900 },
+  "outputTokens": { "type": "lognormal", "median": 300, "p99": 1500, "clampMax": 4096 },
+  "concurrency": 8,
+  "tailSpike": { "p": 0.05, "multiplier": 5 },
+  "errors": { "http5xx": 0.05, "status5xx": 502, "midStreamDrop": 0.02, "timeout": 0.01, "timeoutHoldMs": 30000, "stall": 0.03, "stallMs": 4000, "rateLimitQueue": 16 }
+}

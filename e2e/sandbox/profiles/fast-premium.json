@@ -1,0 +1,11 @@
+{
+  "description": "Fast, well-provisioned seller (frontier API behind a strong network). TTFT ~0.3-0.5 s, ~90 tok/s decode, 16 slots.",
+  "rttMs": { "type": "uniform", "min": 15, "max": 40 },
+  "prefillTokensPerSec": { "type": "lognormal", "median": 12000, "p99": 20000 },
+  "decodeTokensPerSec": { "type": "lognormal", "median": 90, "p99": 140 },
+  "jitterMs": { "type": "lognormal", "median": 120, "p99": 450 },
+  "outputTokens": { "type": "lognormal", "median": 300, "p99": 1500, "clampMax": 4096 },
+  "concurrency": 16,
+  "tailSpike": { "p": 0.01, "multiplier": 3 },
+  "errors": { "http5xx": 0.002, "rateLimitQueue": 32, "retryAfterSec": 1 }
+}

@@ -1,4 +1,6 @@
 import { sanitizeConfig } from './config.mjs';
+import { normalizeProfile } from './profiles.mjs';
+import { normalizeDeclarative, runDeclarative } from './scenario.mjs';
 
 export const MAX_SELLERS = 8;
 const SELLER_ID = /^[a-z0-9][a-z0-9-]{0,23}$/;
@@ -33,16 +35,27 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
     const providers = seller.providers
       ? sanitizeConfig({ seller: { providers: seller.providers } }).cleaned.seller.providers
       : structuredClone(source.seller.providers);
-    const latencyMs = seller.mock?.latencyMs ?? 0;
-    if (!Number.isInteger(latencyMs) || latencyMs < 0 || latencyMs > 60_000) throw new Error(`seller ${id} mock.latencyMs must be 0-60000`);
-    return { id, providers, mock: { latencyMs } };
+    const mockIn = typeof seller.mock === 'string' ? { profile: seller.mock } : (seller.mock ?? {});
+    const profile = normalizeProfile(mockIn, { label: `seller ${id} mock` });
+    return { id, providers, mock: { ...structuredClone(mockIn), latencyMs: profile.latencyMs } };
+  });
+  const routersIn = topology.routers ?? [];
+  if (!Array.isArray(routersIn) || routersIn.length > 4) throw new Error('topology.routers must list at most four routers');
+  const routers = routersIn.map((router, index) => {
+    const id = router.id ?? `router-${index + 1}`;
+    if (!SELLER_ID.test(id)) throw new Error(`Invalid router id "${id}"`);
+    if (ids.has(id)) throw new Error(`Duplicate peer id "${id}"`);
+    ids.add(id);
+    const priceUsd = router.priceUsd ?? 0;
+    if (!/^\d+(\.\d{1,6})?$/.test(String(priceUsd)) || Number(priceUsd) < 0 || Number(priceUsd) > 1000) throw new Error(`router ${id} priceUsd must be between 0 and 1000`);
+    return { id, priceUsd: String(priceUsd) };
   });
   const buyerIn = topology.buyer ?? {};
   const depositUsdc = overrides.depositUsdc ?? buyerIn.depositUsdc ?? '10';
   const block = overrides.block ?? topology.chain?.block;
   if (block !== undefined && !(/^\d+$/.test(String(block)) && Number.isSafeInteger(Number(block)))) throw new Error('block must be a block number');
   return {
-    sellers,
+    sellers, routers,
     buyer: {
       depositMicros: String(microsFromUsdc(depositUsdc, 'depositUsdc')),
       routingPreferences: { ...(source.buyer.routingPreferences ?? {}), ...(buyerIn.routingPreferences ?? {}) },
@@ -53,23 +66,37 @@ export function normalizeTopology(topology = {}, source, overrides = {}) {
 }
 
 /** Buyer routing preferences: config/topology values, but only our sellers and no trust floor. */
-export function buyerRoutingPreferences(normalized, sellerPeerIds) {
+export function buyerRoutingPreferences(normalized, sellerPeerIds, routerPeerIds = []) {
   return {
     ...normalized.buyer.routingPreferences,
     minTrustScore: 0,
-    allowedPeerIds: [...sellerPeerIds],
+    allowedPeerIds: [...sellerPeerIds, ...routerPeerIds],
     blockedPeerIds: [],
   };
 }
 
+/**
+ * A scenario module is either imperative (`export const meta/topology`, `export async function run(sb)`)
+ * or declarative (`export default { meta, topology, workload, phases, expect, setup? }`, see lib/scenario.mjs).
+ */
 export function validateScenarioModule(mod, name) {
-  const meta = mod.meta ?? {};
-  if (typeof mod.run !== 'function') throw new Error(`Scenario ${name} must export async function run(sb)`);
+  const source = mod.default && typeof mod.default === 'object' ? mod.default : mod;
+  const declarative = normalizeDeclarative(source, name);
+  const meta = source.meta ?? {};
+  if (!declarative && typeof source.run !== 'function') throw new Error(`Scenario ${name} must export async function run(sb) or a declarative default export with phases`);
+  if (declarative && source.run !== undefined) throw new Error(`Scenario ${name}: a declarative scenario uses setup(sb), not run(sb)`);
   const targets = meta.targets ?? ['fork'];
-  const requires = meta.requires ?? [];
+  const requires = meta.requires ?? (declarative ? ['mockControl'] : []);
   if (!Array.isArray(targets) || targets.length === 0) throw new Error(`Scenario ${name} meta.targets must be a non-empty array`);
   if (!Array.isArray(requires)) throw new Error(`Scenario ${name} meta.requires must be an array`);
-  return { name, description: meta.description ?? '', targets, requires, topology: mod.topology, run: mod.run };
+  const capabilities = new Set(requires);
+  if (declarative?.phases.some((phase) => phase.faults.some((fault) => fault.kind === 'stop' || fault.kind === 'start'))) capabilities.add('sellerControl');
+  if (declarative?.phases.some((phase) => phase.faults.some((fault) => fault.kind === 'warp'))) capabilities.add('warpTime');
+  return {
+    name, description: meta.description ?? '', targets, requires: [...capabilities], topology: source.topology,
+    run: declarative ? (sb) => runDeclarative(sb, declarative) : source.run,
+    declarative,
+  };
 }
 
 export function assertScenarioSupported(scenario, target) {
@@ -82,5 +109,5 @@ export function assertScenarioSupported(scenario, target) {
 
 /** Two topologies are compatible when they produce the same sellers/models; used before reusing a running sandbox. */
 export function topologyFingerprint(normalized) {
-  return normalized.sellers.map((seller) => `${seller.id}:${Object.entries(seller.providers).map(([name, p]) => `${name}=${Object.keys(p.services).sort().join('+')}`).sort().join(',')}`).join('|');
+  return `${normalized.sellers.map((seller) => `${seller.id}:${Object.entries(seller.providers).map(([name, p]) => `${name}=${Object.keys(p.services).sort().join('+')}`).sort().join(',')}`).join('|')}::${normalized.routers.map((router) => `${router.id}:${router.priceUsd}`).join('|')}`;
 }

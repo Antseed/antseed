@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 import { spawn, spawnSync } from 'node:child_process';
 import { closeSync, existsSync, openSync, statSync } from 'node:fs';
-import { mkdir, readdir, readFile, rm } from 'node:fs/promises';
+import { mkdir, readdir, readFile, rm, writeFile } from 'node:fs/promises';
 import { createConnection } from 'node:net';
 import { dirname, join, resolve } from 'node:path';
 import { fileURLToPath, pathToFileURL } from 'node:url';
@@ -14,6 +14,7 @@ import { inspectLock, isOwnedProcessAlive, killOwned } from './lib/lock.mjs';
 import { readJson, saveJson, validateManifest } from './lib/manifest.mjs';
 import { HELP, parseArgs } from './lib/options.mjs';
 import { sandboxName, sandboxPaths, sandboxRoot, worktreeRoot } from './lib/paths.mjs';
+import { aggregateRuns, flattenNumeric } from './lib/metrics.mjs';
 import { createSandboxApi } from './lib/sb.mjs';
 import { assertScenarioSupported, normalizeTopology, topologyFingerprint, validateScenarioModule } from './lib/topology.mjs';
 
@@ -217,6 +218,13 @@ async function status(options, ctx) {
   console.log(`\n${envExports(m)}`);
 }
 
+function gitCommit() {
+  const head = spawnSync('git', ['rev-parse', 'HEAD'], { cwd: repo, encoding: 'utf8' });
+  if (head.status !== 0) return null;
+  const dirty = spawnSync('git', ['status', '--porcelain'], { cwd: repo, encoding: 'utf8' }).stdout.trim().length > 0;
+  return `${head.stdout.trim()}${dirty ? '-dirty' : ''}`;
+}
+
 async function runScenario(options, ctx) {
   const scenario = await scenarioModule(options.scenario);
   assertScenarioSupported(scenario, 'fork');
@@ -243,31 +251,91 @@ async function runScenario(options, ctx) {
   const sdk = await import(join(repo, 'packages/node/dist/index.js'));
   const chain = sdk.getChainConfig('base-mainnet');
   const control = await loadControlClient(ctx.paths.control);
-  const sb = createSandboxApi({ manifest, control, eventsPath: join(reportDir, 'events.jsonl'), chain, strict: Boolean(options.strict) });
+  const baseSeed = options.seed ?? 1;
+  const repeat = options.repeat ?? 1;
   const report = {
     scenario: scenario.name, description: scenario.description, target: 'fork', sandbox: manifest.name, result: 'running',
     startedAt: new Date().toISOString(), configHash: manifest.configHash, configOrigin: manifest.configOrigin, upstream: manifest.upstream,
     forkBlock: manifest.forkBlock, forkCache: manifest.forkCache, topology: manifest.topology,
     sellers: manifest.sellers.map(({ id, peerId, address }) => ({ id, peerId, address })), buyer: manifest.buyer,
+    routers: (manifest.routers ?? []).map(({ id, peerId, address, priceUsd }) => ({ id, peerId, address, priceUsd })),
+    seed: baseSeed, ...(repeat > 1 ? { repeat } : {}), gitCommit: gitCommit(), declarative: Boolean(scenario.declarative),
   };
-  say(`Running scenario ${scenario.name} against ${manifest.name}`);
-  try {
-    await scenario.run(sb);
-    report.result = 'passed';
-  } catch (error) {
-    report.result = 'failed';
-    report.error = error.message;
-    process.exitCode = 1;
-  } finally {
-    const summary = sb.summary();
-    Object.assign(report, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, strict: Boolean(options.strict), metrics: summary.metrics });
-    await saveJson(join(reportDir, 'report.json'), report);
-    await saveJson(join(reportDir, 'metrics.json'), summary.metrics);
-    sb.dispose();
+  say(`Running scenario ${scenario.name} against ${manifest.name}${repeat > 1 ? ` (${repeat} repeats, seeds ${baseSeed}..${baseSeed + repeat - 1})` : ''}`);
+  const runs = [];
+  for (let index = 0; index < repeat; index += 1) {
+    const seed = baseSeed + index;
+    const runDir = repeat > 1 ? join(reportDir, `run-${index + 1}`) : reportDir;
+    await mkdir(runDir, { recursive: true, mode: 0o700 });
+    // Every run starts from the same random state for its seed: mock draws and router rankings are reseeded.
+    if (manifest.upstream === 'mock') {
+      for (const seller of manifest.sellers) await control.setMockProfile(seller.id, { seed }, { resetDraws: true });
+    }
+    for (const router of manifest.routers ?? []) await control.seedRouter(router.id, seed);
+    const sb = createSandboxApi({ manifest, control, eventsPath: join(runDir, 'events.jsonl'), chain, strict: Boolean(options.strict), seed });
+    const run = { seed, result: 'running', startedAt: new Date().toISOString() };
+    try {
+      try {
+        await sb.begin();
+        await scenario.run(sb);
+      } catch (error) {
+        run.error = error.message;
+      }
+      // Global invariants run after every scenario, also after a failed one (on what it got to do).
+      try {
+        await sb.finish();
+      } catch (error) {
+        run.error ??= `invariants: ${error.message}`;
+      }
+      const failures = sb.failures();
+      run.result = run.error || failures.length ? 'failed' : 'passed';
+      if (!run.error && failures.length) run.error = `${failures.length} check${failures.length === 1 ? '' : 's'} failed: ${failures.slice(0, 3).join('; ')}${failures.length > 3 ? '; ...' : ''}`;
+      if (run.result === 'failed') process.exitCode = 1;
+    } finally {
+      const summary = sb.summary();
+      Object.assign(run, { finishedAt: new Date().toISOString(), checks: summary.checks, knownIssues: summary.knownIssues, metrics: summary.metrics, workloads: summary.workloads, invariants: summary.invariants });
+      if (summary.workloadRecords.length) await writeFile(join(runDir, 'requests.jsonl'), summary.workloadRecords.map((record) => JSON.stringify(record)).join('\n') + '\n', { mode: 0o600 });
+      if (repeat > 1) await saveJson(join(runDir, 'report.json'), { ...report, ...run, scenarioRun: index + 1 });
+      sb.dispose();
+    }
+    runs.push(run);
+    if (repeat > 1) say(`Run ${index + 1}/${repeat} (seed ${seed}): ${run.result.toUpperCase()}${run.error ? ` - ${run.error}` : ''}`);
   }
-  for (const check of report.checks) say(`${check.ok ? 'PASS' : 'FAIL'} ${check.name}`);
+  const failed = runs.find((run) => run.result === 'failed');
+  if (repeat === 1) {
+    const [run] = runs;
+    Object.assign(report, { result: run.result, ...(run.error ? { error: run.error } : {}), finishedAt: run.finishedAt, checks: run.checks, knownIssues: run.knownIssues, strict: Boolean(options.strict), metrics: run.metrics });
+    if (Object.keys(run.workloads).length) report.workloads = run.workloads;
+    if (run.invariants.length) report.invariants = run.invariants;
+  } else {
+    Object.assign(report, {
+      result: failed ? 'failed' : 'passed', ...(failed ? { error: `run with seed ${failed.seed} failed: ${failed.error}` } : {}),
+      finishedAt: new Date().toISOString(), strict: Boolean(options.strict),
+      checks: runs.flatMap((run) => run.checks.map((check) => ({ ...check, seed: run.seed }))),
+      knownIssues: runs.flatMap((run) => run.knownIssues.map((issue) => ({ ...issue, seed: run.seed }))),
+      runs: runs.map(({ seed, result, error, metrics }) => ({ seed, result, ...(error ? { error } : {}), metrics })),
+      aggregate: aggregateRuns(runs.map((run) => flattenNumeric(run.metrics))),
+    });
+    report.metrics = report.aggregate;
+  }
+
+  for (const check of report.checks) say(`${check.ok ? 'PASS' : 'FAIL'} ${check.name}${check.seed !== undefined ? ` (seed ${check.seed})` : ''}`);
   for (const issue of report.knownIssues ?? []) say(`${issue.ok ? 'PASS' : 'KNOWN'} ${issue.name}${issue.ok ? '' : ` (${issue.issue}; ${JSON.stringify(issue.detail)})`}`);
+  for (const [name, workload] of Object.entries(report.workloads ?? {})) {
+    const o = workload.overall;
+    say(`Workload ${name}: ${o.succeeded}/${o.requests} ok, TTFT p50/p95 ${o.ttftMs.p50}/${o.ttftMs.p95} ms, latency p95 ${o.latencyMs.p95} ms, ${o.outputTokensPerSec} out tok/s, gini ${o.loadSpreadGini}, dropped ${o.dropped}`);
+  }
+  if (report.aggregate) {
+    for (const [key, value] of Object.entries(report.aggregate).filter(([key]) => key.startsWith('workload.'))) say(`  ${key}: ${value.mean} ± ${value.ci95 ?? 'n/a'} (n=${value.n})`);
+  }
   if (report.error) say(`Error: ${report.error}`);
+  const failedSeeds = runs.filter((run) => run.result === 'failed').map((run) => run.seed);
+  if (failedSeeds.length) {
+    report.reproduce = failedSeeds.map((seed) => `pnpm sandbox run ${scenario.name} --seed ${seed}`);
+    for (const command of report.reproduce.slice(0, 5)) say(`Reproduce: ${command}`);
+  }
+  await saveJson(join(reportDir, 'report.json'), report);
+  await saveJson(join(reportDir, 'metrics.json'), report.metrics);
   say(`${report.result.toUpperCase()}: ${join(reportDir, 'report.json')}`);
   if (startedHere && !options.keep) {
     try { await down({}, ctx); } catch (error) { say(`Teardown failed: ${error.message}`); process.exitCode = 1; }

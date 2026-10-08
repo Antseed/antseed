@@ -37,7 +37,7 @@ export function validateManifest(manifest, { dir } = {}) {
   assertProcess(manifest.supervisor, 'supervisor');
   if (manifest.anvil) assertProcess(manifest.anvil, 'anvil');
   if (!Array.isArray(manifest.sellers) || manifest.sellers.length === 0) throw new Error('Manifest must list sellers');
-  for (const seller of manifest.sellers) {
+  for (const seller of [...manifest.sellers, ...(manifest.routers ?? [])]) {
     if (!/^[0-9a-f]{40}$/.test(seller.peerId)) throw new Error(`Invalid seller peerId ${seller.peerId}`);
     if (seller.process) assertProcess(seller.process, `seller ${seller.id}`);
     for (const port of [seller.dhtPort, seller.signalingPort]) {

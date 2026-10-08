@@ -1,0 +1,11 @@
+{
+  "description": "Good seller that periodically degrades (noisy neighbour, thermal throttling): decode drops to 20% for 30 s of every 90 s.",
+  "rttMs": { "type": "uniform", "min": 20, "max": 60 },
+  "prefillTokensPerSec": { "type": "lognormal", "median": 8000, "p99": 12000 },
+  "decodeTokensPerSec": { "type": "lognormal", "median": 70, "p99": 100 },
+  "jitterMs": { "type": "lognormal", "median": 120, "p99": 600 },
+  "outputTokens": { "type": "lognormal", "median": 300, "p99": 1500, "clampMax": 4096 },
+  "concurrency": 8,
+  "degradation": { "everyMs": 90000, "forMs": 30000, "decodeMultiplier": 0.2 },
+  "errors": { "http5xx": 0.003, "rateLimitQueue": 16 }
+}

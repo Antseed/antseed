@@ -1,0 +1,11 @@
+{
+  "description": "Cheap seller on shared or consumer hardware. Slower prefill, ~25 tok/s decode, 4 slots, so queueing shows up early under load.",
+  "rttMs": { "type": "uniform", "min": 40, "max": 120 },
+  "prefillTokensPerSec": { "type": "lognormal", "median": 2500, "p99": 4000 },
+  "decodeTokensPerSec": { "type": "lognormal", "median": 25, "p99": 40 },
+  "jitterMs": { "type": "lognormal", "median": 200, "p99": 1200 },
+  "outputTokens": { "type": "lognormal", "median": 300, "p99": 1500, "clampMax": 4096 },
+  "concurrency": 4,
+  "tailSpike": { "p": 0.03, "multiplier": 4 },
+  "errors": { "http5xx": 0.005, "rateLimitQueue": 16, "retryAfterSec": 2 }
+}

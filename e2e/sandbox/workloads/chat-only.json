@@ -1,0 +1,7 @@
+{
+  "description": "Desktop chat only, for routing and failover experiments where requests must be cheap and similar.",
+  "sessionsPerMinute": 20,
+  "personas": ["desktop-chat"],
+  "maxInFlight": 32,
+  "maxPromptChars": 8000
+}

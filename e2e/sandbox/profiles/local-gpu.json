@@ -1,0 +1,10 @@
+{
+  "description": "Single consumer GPU running a local model (Ollama/llama.cpp): 1-2 slots, fast prefill for short prompts, ~40 tok/s.",
+  "rttMs": { "type": "uniform", "min": 60, "max": 180 },
+  "prefillTokensPerSec": { "type": "lognormal", "median": 1500, "p99": 2500 },
+  "decodeTokensPerSec": { "type": "lognormal", "median": 40, "p99": 55 },
+  "jitterMs": { "type": "lognormal", "median": 60, "p99": 300 },
+  "outputTokens": { "type": "lognormal", "median": 250, "p99": 1200, "clampMax": 4096 },
+  "concurrency": 2,
+  "errors": { "rateLimitQueue": 8, "retryAfterSec": 3 }
+}

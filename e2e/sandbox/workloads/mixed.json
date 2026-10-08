@@ -1,0 +1,7 @@
+{
+  "description": "Mixed traffic: desktop chat, coding agents and API batch jobs at roughly a small production network's ratio.",
+  "sessionsPerMinute": 20,
+  "personas": ["desktop-chat", "coding-agent", "api-batch"],
+  "maxInFlight": 64,
+  "maxPromptChars": 16000
+}
