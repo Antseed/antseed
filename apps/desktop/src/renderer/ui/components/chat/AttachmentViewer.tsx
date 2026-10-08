@@ -57,10 +57,6 @@ function isImageMime(mimeType: string): boolean {
   return mimeType.toLowerCase().startsWith('image/');
 }
 
-function isVideoMime(mimeType: string): boolean {
-  return mimeType.toLowerCase().startsWith('video/');
-}
-
 function isPdfMime(mimeType: string): boolean {
   return mimeType.toLowerCase() === 'application/pdf';
 }
@@ -137,10 +133,6 @@ export function AttachmentViewer({ attachment, onClose }: AttachmentViewerProps)
   }, [close]);
 
   const imgSrc = useMemo(() => buildImageSrc(attachment), [attachment]);
-  const videoSrc = useMemo(
-    () => (attachment.src && isVideoMime(attachment.mimeType) ? attachment.src : null),
-    [attachment],
-  );
   const pdfSrc = useMemo(
     () => (attachment.src && isPdfMime(attachment.mimeType) ? attachment.src : null),
     [attachment],
@@ -154,12 +146,12 @@ export function AttachmentViewer({ attachment, onClose }: AttachmentViewerProps)
     [attachment],
   );
   const inlineHref = useMemo(() => buildDownloadHref(attachment), [attachment]);
-  const hasPreview = Boolean(imgSrc || videoSrc || pdfSrc || htmlSrc || textSrc);
+  const hasPreview = Boolean(imgSrc || pdfSrc || htmlSrc || textSrc);
 
   // Reset the loading indicator when we switch to a different attachment.
   useEffect(() => {
     setLoaded(false);
-  }, [imgSrc, videoSrc, pdfSrc, htmlSrc, textSrc]);
+  }, [imgSrc, pdfSrc, htmlSrc, textSrc]);
 
   const handleDownload = useCallback(async () => {
     const bridge = typeof window !== 'undefined'
@@ -239,18 +231,6 @@ export function AttachmentViewer({ attachment, onClose }: AttachmentViewerProps)
                 alt={attachment.name}
                 className={styles.image}
                 onLoad={() => setLoaded(true)}
-                onError={() => setLoaded(true)}
-              />
-            </div>
-          ) : videoSrc ? (
-            <div className={styles.imageWrap}>
-              <video
-                src={videoSrc}
-                className={styles.image}
-                controls
-                autoPlay
-                playsInline
-                onLoadedMetadata={() => setLoaded(true)}
                 onError={() => setLoaded(true)}
               />
             </div>

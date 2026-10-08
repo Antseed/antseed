@@ -14,9 +14,7 @@ import {
   DESKTOP_DEFAULT_MAX_OUTPUT_USD_PER_MILLION,
 } from '../runtime/config-io.js';
 import { normalizeProviderId } from './provider-hint.js';
-import { isNativeVideoProtocol } from '@antseed/node';
 import {
-  normalizeVideoOptions,
   sortChatServiceCatalogEntries,
   type CatalogServiceCapabilities,
   type CatalogServiceProtocol,
@@ -63,10 +61,6 @@ export type DiscoverRowEntry = {
   cachedInputUsdPerMillion: number | null;
   minImageUsdPerImage: number | null;
   maxImageUsdPerImage: number | null;
-  minVideoUsdPerSecond: number | null;
-  maxVideoUsdPerSecond: number | null;
-  minVideoUsdPerVideo: number | null;
-  maxVideoUsdPerVideo: number | null;
   lifetimeSessions: number;
   lifetimeRequests: number;
   lifetimeInputTokens: number;
@@ -128,7 +122,6 @@ function normalizeCatalogServiceCapabilities(raw: unknown): CatalogServiceCapabi
   const maxOutputTokens = positiveInteger(value.maxOutputTokens);
   const inputs = modalities(value.inputs);
   const outputs = modalities(value.outputs);
-  const video = normalizeVideoOptions(value.video);
   const normalized: CatalogServiceCapabilities = {
     ...(contextWindow ? { contextWindow } : {}),
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
@@ -138,7 +131,6 @@ function normalizeCatalogServiceCapabilities(raw: unknown): CatalogServiceCapabi
     ...(typeof value.toolUse === 'boolean' ? { toolUse: value.toolUse } : {}),
     ...(typeof value.structuredOutput === 'boolean' ? { structuredOutput: value.structuredOutput } : {}),
     ...(parameters?.length ? { supportedParameters: parameters } : {}),
-    ...(video ? { video } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : null;
 }
@@ -245,13 +237,7 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
   const id = normalizeServiceValue(entry.id);
   const provider = normalizeProviderId(entry.provider);
   const protocol = entry.protocol;
-  // Image and native video services are listed for browsing; the chat
-  // pipeline still only accepts chat protocols (see isChatServiceProtocol).
-  if (!id || !provider || (
-    protocol !== 'openai-images'
-    && !isNativeVideoProtocol(protocol)
-    && !isChatServiceProtocol(protocol)
-  )) {
+  if (!id || !provider || (protocol !== 'openai-images' && !isChatServiceProtocol(protocol))) {
     return null;
   }
 
@@ -265,12 +251,6 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
   const cachedInputUsd = normalizeOptionalNumber(entry.cachedInputUsdPerMillion);
   const minImageUsd = normalizeOptionalNumber(entry.minImageUsdPerImage);
   const maxImageUsd = normalizeOptionalNumber(entry.maxImageUsdPerImage);
-  const videoPrices = {
-    minVideoUsdPerSecond: normalizeNonNegativeNumber(entry.minVideoUsdPerSecond),
-    maxVideoUsdPerSecond: normalizeNonNegativeNumber(entry.maxVideoUsdPerSecond),
-    minVideoUsdPerVideo: normalizeNonNegativeNumber(entry.minVideoUsdPerVideo),
-    maxVideoUsdPerVideo: normalizeNonNegativeNumber(entry.maxVideoUsdPerVideo),
-  };
   const categories = Array.isArray(entry.categories) ? entry.categories.filter((c): c is string => typeof c === 'string') : undefined;
   const description = typeof entry.description === 'string' ? entry.description.trim() : undefined;
   const capabilities = normalizeCatalogServiceCapabilities(entry.capabilities);
@@ -291,7 +271,6 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
     ...(cachedInputUsd != null && cachedInputUsd >= 0 ? { cachedInputUsdPerMillion: cachedInputUsd } : {}),
     ...(minImageUsd != null && minImageUsd >= 0 ? { minImageUsdPerImage: minImageUsd } : {}),
     ...(maxImageUsd != null && maxImageUsd >= 0 ? { maxImageUsdPerImage: maxImageUsd } : {}),
-    ...Object.fromEntries(Object.entries(videoPrices).filter(([, value]) => value !== null)),
     ...(categories?.length ? { categories } : {}),
     ...(description ? { description } : {}),
   };
@@ -479,10 +458,6 @@ export async function buildDiscoverRows(
       cachedInputUsdPerMillion: entry.cachedInputUsdPerMillion ?? null,
       minImageUsdPerImage: entry.minImageUsdPerImage ?? null,
       maxImageUsdPerImage: entry.maxImageUsdPerImage ?? null,
-      minVideoUsdPerSecond: entry.minVideoUsdPerSecond ?? null,
-      maxVideoUsdPerSecond: entry.maxVideoUsdPerSecond ?? null,
-      minVideoUsdPerVideo: entry.minVideoUsdPerVideo ?? null,
-      maxVideoUsdPerVideo: entry.maxVideoUsdPerVideo ?? null,
       lifetimeSessions: stats?.totalSessions ?? 0,
       lifetimeRequests: stats?.totalRequests ?? 0,
       lifetimeInputTokens: stats?.totalInputTokens ?? 0,

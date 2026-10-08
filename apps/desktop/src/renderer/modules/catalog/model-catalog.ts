@@ -6,7 +6,7 @@ import type {
 } from '../../core/state';
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey, displayModelLabel, sameCanonicalModel } from './model-identity';
 import { entryMatchText, selectRecommendedVprCatalog } from './recommended';
-import { serviceModelKind, videoRowStartingPrice } from './model-capabilities';
+import { serviceModelKind } from './model-capabilities';
 
 const VPR_MODEL_CATALOG_SEPARATOR = '\u0001';
 
@@ -15,11 +15,9 @@ type ModelCatalogGroup = {
 };
 
 export function totalRowPrice(row: DiscoverRow): number | null {
-  const kind = serviceModelKind(row.protocol, row.capabilities);
-  if (kind === 'image') {
+  if (serviceModelKind(row.protocol, row.capabilities) === 'image') {
     return row.minImageUsdPerImage;
   }
-  if (kind === 'video') return videoRowStartingPrice(row);
   if (row.inputUsdPerMillion === null || row.outputUsdPerMillion === null) return null;
   return row.inputUsdPerMillion + row.outputUsdPerMillion;
 }
@@ -63,8 +61,9 @@ function projectGroupToEntry(
   const firstRow = group.rows[0];
   const categories = Array.from(new Set(group.rows.flatMap((row) => row.categories))).sort((a, b) => a.localeCompare(b));
   const protocols = [...new Set(group.rows.map((row) => row.protocol))].sort();
-  const rowKinds = new Set(group.rows.map((row) => serviceModelKind(row.protocol, row.capabilities)));
-  const kind = rowKinds.has('video') ? 'video' : rowKinds.has('image') ? 'image' : 'text';
+  const kind = group.rows.some((row) => serviceModelKind(row.protocol, row.capabilities) === 'image')
+    ? 'image'
+    : 'text';
   const peerIds = new Set(group.rows.map((row) => row.peerId));
   // Entry-level prices must reflect sellers auto-routing may actually pick:
   // an untrusted seller's $0 offer must not label the model "Free" (or drive
@@ -108,10 +107,6 @@ function projectGroupToEntry(
     maxCachedInputUsdPerMillion: maxPrice(pricingRows.map((row) => row.cachedInputUsdPerMillion)),
     minImageUsdPerImage: minPrice(pricingRows.map((row) => row.minImageUsdPerImage)),
     maxImageUsdPerImage: maxPrice(pricingRows.map((row) => row.maxImageUsdPerImage)),
-    minVideoUsdPerSecond: minPrice(pricingRows.map((row) => row.minVideoUsdPerSecond)),
-    maxVideoUsdPerSecond: maxPrice(pricingRows.map((row) => row.maxVideoUsdPerSecond)),
-    minVideoUsdPerVideo: minPrice(pricingRows.map((row) => row.minVideoUsdPerVideo)),
-    maxVideoUsdPerVideo: maxPrice(pricingRows.map((row) => row.maxVideoUsdPerVideo)),
     // Filled by applyOpenRouterBaselines once a retail reference is available.
     expectedSavingsPct: null,
     // Free means the route itself charges nothing, cached tokens included —

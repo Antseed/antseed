@@ -1635,9 +1635,7 @@ export function initChatModule({
         // it — re-picking here would flatten a pin back to auto.
         setProvisionalDefaultModel(null);
       }
-      if (!selectedRouteModel
-        || (selectedRouteEntry != null && selectedRouteEntry.kind !== 'text')
-        || provisionalDefaultModel !== null) {
+      if (!selectedRouteModel || selectedRouteEntry?.kind === 'image' || provisionalDefaultModel !== null) {
         adoptDefaultVprModel();
       }
       // Keep the buyer proxy's default route on the current selection. Runs

@@ -21,8 +21,7 @@ const TOP_MODEL_COUNT = 12;
 
 type VprModelDropdownProps = {
   catalog: VprModelCatalogEntry[];
-  /** Chat model kinds only — video models can't run in the built-in chat. */
-  kind: ChatModelKind;
+  kind: VprModelCatalogEntry['kind'];
   selectedProvider: string;
   selectedServiceId: string;
   /** Trigger label when the selection has no catalog entry (loading, none). */
@@ -32,23 +31,11 @@ type VprModelDropdownProps = {
   onBrowseAll: () => void;
 };
 
-export type ChatModelKind = Exclude<VprModelCatalogEntry['kind'], 'video'>;
-
 export function filterVprModelDropdownCatalog(
   catalog: VprModelCatalogEntry[],
-  kind: ChatModelKind,
+  kind: VprModelCatalogEntry['kind'],
 ): VprModelCatalogEntry[] {
   return catalog.filter((entry) => entry.kind === kind);
-}
-
-/** Models of the other kind, listed in their own section so either mode can switch to the other. */
-export function otherKindVprModelDropdownCatalog(
-  catalog: VprModelCatalogEntry[],
-  kind: ChatModelKind,
-): VprModelCatalogEntry[] {
-  const other = kind === 'image' ? 'text' : 'image';
-  const entries = filterVprModelDropdownCatalog(catalog, other);
-  return other === 'image' ? entries : selectRecommendedVprCatalog(entries).slice(0, TOP_MODEL_COUNT);
 }
 
 function isSelected(entry: VprModelCatalogEntry, provider: string, serviceId: string): boolean {
@@ -92,11 +79,6 @@ export function VprModelDropdown({
 
   const modeCatalog = useMemo(
     () => filterVprModelDropdownCatalog(catalog, kind),
-    [catalog, kind],
-  );
-
-  const otherKindEntries = useMemo(
-    () => otherKindVprModelDropdownCatalog(catalog, kind),
     [catalog, kind],
   );
 
@@ -199,12 +181,6 @@ export function VprModelDropdown({
             </>
           )}
           {recommendedEntries.map(renderEntry)}
-          {otherKindEntries.length > 0 && (
-            <>
-              <div className={styles.modelDropdownSection}>{kind === 'image' ? 'Text models' : 'Image models'}</div>
-              {otherKindEntries.map(renderEntry)}
-            </>
-          )}
           {kind === 'text' && (
             <button
               type="button"

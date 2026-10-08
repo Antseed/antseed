@@ -2,7 +2,6 @@
 
 import type { DiscoverRow, TrustBreakdown } from '../../core/state';
 import { formatUsdShort } from '../../core/format';
-import { isNativeVideoProtocol } from './model-capabilities';
 
 /** Effective model reputation is 0-100; the UI shows it on a 10-point scale. */
 export function sellerReputationLabel(route: DiscoverRow): string {
@@ -45,16 +44,7 @@ function trimmedUsd(value: number): string {
   return formatUsdShort(value).replace(/(\.\d*?)0+$/, '$1').replace(/\.$/, '');
 }
 
-function usdRange(min: number | null, max: number | null): string | null {
-  if (min === null) return null;
-  return max !== null && max !== min ? `${trimmedUsd(min)}-${trimmedUsd(max)}` : trimmedUsd(min);
-}
-
 export function isFreeRoute(route: DiscoverRow): boolean {
-  if (isNativeVideoProtocol(route.protocol)) {
-    const prices = [route.maxVideoUsdPerSecond, route.maxVideoUsdPerVideo];
-    return prices.some((price) => price !== null) && prices.every((price) => price === null || price <= 0);
-  }
   if (route.protocol === 'openai-images') {
     return route.maxImageUsdPerImage !== null && route.maxImageUsdPerImage <= 0;
   }
@@ -67,12 +57,6 @@ export function sellerMetaLabel(route: DiscoverRow): string {
   const parts: string[] = [];
   if (isFreeRoute(route)) {
     parts.push('Free');
-  } else if (isNativeVideoProtocol(route.protocol)) {
-    const perSecond = usdRange(route.minVideoUsdPerSecond, route.maxVideoUsdPerSecond);
-    const perVideo = usdRange(route.minVideoUsdPerVideo, route.maxVideoUsdPerVideo);
-    if (perVideo) parts.push(`${perVideo}/video`);
-    if (perSecond) parts.push(`${perSecond}/sec`);
-    if (!perVideo && !perSecond) parts.push('Price unknown');
   } else if (route.protocol === 'openai-images' && route.minImageUsdPerImage !== null) {
     const min = trimmedUsd(route.minImageUsdPerImage);
     const max = route.maxImageUsdPerImage;

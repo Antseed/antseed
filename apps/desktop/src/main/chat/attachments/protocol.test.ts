@@ -33,14 +33,3 @@ test('parseAttachmentUrl handles percent-encoded components', () => {
 test('parseAttachmentUrl returns null for malformed URLs', () => {
   assert.equal(parseAttachmentUrl('not a url'), null);
 });
-
-test('parseByteRange supports video seeking ranges', async () => {
-  const { parseByteRange } = await import('./protocol-url.js');
-  assert.equal(parseByteRange(null, 100), null);
-  assert.deepEqual(parseByteRange('bytes=10-19', 100), { start: 10, end: 19 });
-  assert.deepEqual(parseByteRange('bytes=90-', 100), { start: 90, end: 99 });
-  assert.deepEqual(parseByteRange('bytes=-5', 100), { start: 95, end: 99 });
-  assert.deepEqual(parseByteRange('bytes=95-500', 100), { start: 95, end: 99 });
-  assert.equal(parseByteRange('bytes=100-', 100), 'invalid');
-  assert.equal(parseByteRange('items=1-2', 100), 'invalid');
-});

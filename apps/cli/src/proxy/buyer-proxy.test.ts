@@ -3790,38 +3790,6 @@ test('adaptPeerFaultErrorResponse upgrades a generic wrapper for a pinned route'
   ].join('\n'))
 })
 
-test('adaptPeerFaultErrorResponse keeps string errors and validation details', () => {
-  const response = adaptPeerFaultErrorResponse({
-    requestId: 'req-venice-details',
-    statusCode: 400,
-    headers: { 'content-type': 'application/json' },
-    body: Buffer.from(JSON.stringify({
-      error: 'Invalid request parameters',
-      details: { _errors: [], audio: { _errors: ['Audio is not configurable for this model'] } },
-    })),
-  }, 'venice-video', { pinned: true })
-  const parsed = JSON.parse(Buffer.from(response.body).toString('utf8')) as {
-    error: { type: string; message: string; peer_message: string; peer_status: number }
-  }
-
-  assert.equal(parsed.error.type, 'Invalid request parameters')
-  assert.equal(parsed.error.peer_message, 'Invalid request parameters: audio: Audio is not configurable for this model')
-  assert.equal(parsed.error.peer_status, 400)
-  assert.match(parsed.error.message, /audio: Audio is not configurable for this model/)
-})
-
-test('adaptPeerFaultErrorResponse falls back to JSON for unstructured details', () => {
-  const response = adaptPeerFaultErrorResponse({
-    requestId: 'req-raw-details',
-    statusCode: 400,
-    headers: { 'content-type': 'application/json' },
-    body: Buffer.from(JSON.stringify({ error: 'Bad input', details: { field: 'resolution' } })),
-  }, 'venice-video')
-  const parsed = JSON.parse(Buffer.from(response.body).toString('utf8')) as { error: { peer_message: string } }
-
-  assert.equal(parsed.error.peer_message, 'Bad input: {"field":"resolution"}')
-})
-
 test('adaptPeerFaultErrorResponse preserves payment-required control messages', () => {
   const body = Buffer.from(JSON.stringify({
     error: 'payment_required',

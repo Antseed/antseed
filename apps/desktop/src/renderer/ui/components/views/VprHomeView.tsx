@@ -58,7 +58,7 @@ const DROPDOWN_MODEL_COUNT = 5;
 const DROPDOWN_FREE_COUNT = 3;
 
 function isFreeEntry(entry: VprModelCatalogEntry | undefined): boolean {
-  if (!entry || entry.kind !== 'text') return false;
+  if (!entry || entry.kind === 'image') return false;
   const { minInputUsdPerMillion: i, minOutputUsdPerMillion: o } = entry;
   return i !== null && o !== null && i <= 0 && o <= 0;
 }
@@ -227,7 +227,7 @@ export function VprHomeView({ onSelectView }: Props) {
     const entry = findCatalogEntry(snap.catalog, provider, serviceId);
     if (!entry) return;
     setModelMenuOpen(false);
-    if (entry.kind !== 'text') return;
+    if (entry.kind === 'image') return;
     applyModelForNewChats(entry);
   }
 

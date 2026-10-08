@@ -187,24 +187,6 @@
   box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
 }
 
-/* Hover/focus trigger around the disabled "Use in chat" of video models —
-   disabled buttons swallow pointer events, so the tooltip hangs off this. */
-.useDisabledTrigger {
-  display: inline-flex;
-  flex: 0 0 auto;
-  border-radius: 8px;
-  cursor: not-allowed;
-}
-
-.useDisabledTrigger > .use {
-  pointer-events: none;
-}
-
-.useDisabledTrigger:focus-visible {
-  outline: none;
-  box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
-}
-
 /* Secondary CTA as a plain text link under the Use button. */
 .startChat {
   flex: 0 0 auto;

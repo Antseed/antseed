@@ -54,22 +54,6 @@
   font-size: 11px;
 }
 
-.video {
-  width: min(460px, calc(100% - 32px));
-
-  .canvas {
-    aspect-ratio: 16 / 9;
-  }
-
-  .caption {
-    flex-wrap: wrap;
-  }
-}
-
-.hint {
-  color: color-mix(in srgb, var(--text-muted) 72%, transparent);
-}
-
 .pulse {
   width: 6px;
   height: 6px;

@@ -11,7 +11,7 @@ import { modelTagsFor } from './model-metadata';
 import { modelPinKey, vprModelPinFor, type VprModelPins } from '../routing/model-pins';
 import { chooseBestVprRoute } from '../routing/select';
 import { shortPeerId } from '../routing/tools';
-import { serviceModelKind, videoEntryStartingPrice } from './model-capabilities';
+import { serviceModelKind } from './model-capabilities';
 
 export type VprCatalogSort = 'Popular' | 'Price' | 'Savings' | 'Name';
 
@@ -49,15 +49,12 @@ function catalogSearchText(entry: VprModelCatalogEntry): string {
     entry.provider,
     ...entry.categories,
     ...modelTagsFor(entry.serviceId),
-    entry.kind === 'image'
-      ? 'image generation image-only'
-      : entry.kind === 'video' ? 'video generation video-only' : 'text chat',
+    entry.kind === 'image' ? 'image generation image-only' : 'text chat',
   ].join(' ').toLowerCase();
 }
 
 function entryMinTotalPrice(entry: VprModelCatalogEntry): number | null {
   if (entry.kind === 'image') return entry.minImageUsdPerImage;
-  if (entry.kind === 'video') return videoEntryStartingPrice(entry);
   if (entry.minInputUsdPerMillion === null || entry.minOutputUsdPerMillion === null) return null;
   return entry.minInputUsdPerMillion + entry.minOutputUsdPerMillion;
 }

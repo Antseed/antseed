@@ -110,18 +110,15 @@ export function initVprFloatModule({
   function floatModels(): { models: VprFloatModel[]; favoriteKeys: string[] } {
     const selection = uiState.vprRouteSelection.model;
     const favorites = loadFavoriteModels();
-    // Video models only run through the Antseed Videos skill, so they are
-    // never offered as a route for new sessions.
-    const catalog = uiState.vprModelCatalog.filter((entry) => entry.kind !== 'video');
-    const favoriteEntries = selectFavoriteVprCatalog(catalog, favorites);
-    const recommended = selectRecommendedVprCatalog(catalog)
+    const favoriteEntries = selectFavoriteVprCatalog(uiState.vprModelCatalog, favorites);
+    const recommended = selectRecommendedVprCatalog(uiState.vprModelCatalog)
       .filter((entry) => !favorites.has(catalogEntryKey(entry)));
     const models = [...favoriteEntries, ...recommended];
     if (
       selection &&
       !models.some((entry) => entry.provider === selection.provider && entry.serviceId === selection.serviceId)
     ) {
-      const selected = catalog.find(
+      const selected = uiState.vprModelCatalog.find(
         (entry) => entry.provider === selection.provider && entry.serviceId === selection.serviceId,
       );
       if (selected) models.unshift(selected);

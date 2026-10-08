@@ -16,13 +16,10 @@
  * tested without the Electron runtime.
  */
 import { net, protocol } from 'electron';
-import { createReadStream } from 'node:fs';
-import { stat } from 'node:fs/promises';
 import path from 'node:path';
-import { Readable } from 'node:stream';
 import { pathToFileURL } from 'node:url';
 import { resolveAttachmentPath } from './store.js';
-import { ATTACHMENT_SCHEME, parseAttachmentUrl, parseByteRange } from './protocol-url.js';
+import { ATTACHMENT_SCHEME, parseAttachmentUrl } from './protocol-url.js';
 
 export { ATTACHMENT_SCHEME, parseAttachmentUrl } from './protocol-url.js';
 
@@ -50,44 +47,6 @@ const FORCE_PLAIN_TEXT_EXTENSIONS = new Set<string>([
   '.sql', '.css', '.scss', '.less', '.sass',
   '.vue', '.svelte', '.php', '.lua',
 ]);
-
-const VIDEO_MIME_BY_EXTENSION: Record<string, string> = {
-  '.mp4': 'video/mp4',
-  '.m4v': 'video/mp4',
-  '.mov': 'video/quicktime',
-  '.webm': 'video/webm',
-};
-
-async function videoFileResponse(filePath: string, contentType: string, rangeHeader: string | null): Promise<Response> {
-  let size: number;
-  try {
-    size = (await stat(filePath)).size;
-  } catch {
-    return new Response('Not found', { status: 404 });
-  }
-  const range = parseByteRange(rangeHeader, size);
-  const baseHeaders = {
-    'Accept-Ranges': 'bytes',
-    'Content-Type': contentType,
-    'X-Content-Type-Options': 'nosniff',
-  };
-  if (range === 'invalid') {
-    return new Response(null, { status: 416, headers: { ...baseHeaders, 'Content-Range': `bytes */${String(size)}` } });
-  }
-  const start = range?.start ?? 0;
-  const end = range?.end ?? size - 1;
-  const body = size === 0
-    ? null
-    : Readable.toWeb(createReadStream(filePath, { start, end })) as ReadableStream<Uint8Array>;
-  return new Response(body, {
-    status: range ? 206 : 200,
-    headers: {
-      ...baseHeaders,
-      'Content-Length': String(size === 0 ? 0 : end - start + 1),
-      ...(range ? { 'Content-Range': `bytes ${String(start)}-${String(end)}/${String(size)}` } : {}),
-    },
-  });
-}
 
 /**
  * Must be called *before* `app.whenReady()` — Electron requires privileged
@@ -134,10 +93,6 @@ export async function handleAttachmentRequest(request: Request, rootDir?: string
   );
   if (!resolved) {
     return new Response('Not found', { status: 404 });
-  }
-  const videoMimeType = VIDEO_MIME_BY_EXTENSION[path.extname(resolved).toLowerCase()];
-  if (videoMimeType) {
-    return await videoFileResponse(resolved, videoMimeType, request.headers.get('range'));
   }
   let response: Response;
   try {

@@ -1043,43 +1043,6 @@ button.fileAttachment {
   object-fit: contain;
 }
 
-.generatedVideoWrap {
-  position: relative;
-  max-width: min(640px, 100%);
-  margin: 8px 0;
-  overflow: hidden;
-  border: 1px solid var(--border);
-  border-radius: 12px;
-  background: #000;
-}
-
-.generatedVideo {
-  display: block;
-  width: 100%;
-  max-height: 520px;
-  background: #000;
-}
-
-.generatedVideoOpen {
-  position: absolute;
-  top: 8px;
-  right: 8px;
-  padding: 4px 9px;
-  border: 1px solid color-mix(in srgb, #fff 24%, transparent);
-  border-radius: 999px;
-  background: color-mix(in srgb, #000 58%, transparent);
-  color: #fff;
-  font-size: 11px;
-  cursor: pointer;
-  opacity: 0;
-  transition: opacity 0.15s ease;
-
-  .generatedVideoWrap:hover &,
-  &:focus-visible {
-    opacity: 1;
-  }
-}
-
 .copyResponseBtn {
   position: relative;
   display: flex;

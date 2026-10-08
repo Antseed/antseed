@@ -219,8 +219,6 @@ test('storage callback runs for every non-error attachment and attachmentId is p
 
   const prompt = buildAttachmentPromptText(prepared);
   assert.match(prompt, /<file name="doc\.txt"[^>]*id="att-1"/);
-  assert.match(prompt, /<uploaded-image id="att-2" name="pixel\.png" mime="image\/png">/);
-  assert.equal(extractAttachmentImages(prepared).length, 1);
 });
 
 test('storage callback failure surfaces as an error attachment without aborting the batch', async () => {

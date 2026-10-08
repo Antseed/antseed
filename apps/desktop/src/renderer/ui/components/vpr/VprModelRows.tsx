@@ -54,14 +54,12 @@ export type VprModelRowListProps = {
 
 function entryMinTotalPrice(entry: VprModelCatalogEntry): number | null {
   if (entry.kind === 'image') return entry.minImageUsdPerImage;
-  // Video prices are per second/per video — not comparable to the others.
-  if (entry.kind === 'video') return null;
   if (entry.minInputUsdPerMillion === null || entry.minOutputUsdPerMillion === null) return null;
   return entry.minInputUsdPerMillion + entry.minOutputUsdPerMillion;
 }
 
 function isFreeEntry(entry: VprModelCatalogEntry): boolean {
-  if (entry.kind !== 'text') return false;
+  if (entry.kind === 'image') return false;
   const { minInputUsdPerMillion: input, minOutputUsdPerMillion: output } = entry;
   return input !== null && output !== null && input <= 0 && output <= 0;
 }
@@ -70,13 +68,6 @@ function discountLabel(entry: VprModelCatalogEntry): string | null {
   return entry.expectedSavingsPct !== null && entry.expectedSavingsPct > 0
     ? `${entry.expectedSavingsPct}% off`
     : null;
-}
-
-/** Lead price of a video model: per-second when advertised, else per video. */
-function videoPriceParts(entry: VprModelCatalogEntry): { price: number; unit: string } | null {
-  if (entry.minVideoUsdPerSecond !== null) return { price: entry.minVideoUsdPerSecond, unit: '/sec' };
-  if (entry.minVideoUsdPerVideo !== null) return { price: entry.minVideoUsdPerVideo, unit: '/video' };
-  return null;
 }
 
 function formatPrice(price: number | null): string {
@@ -110,20 +101,7 @@ function ModelRow({ entry, checked, favorite, badge, compact, dense, chevron = t
   const visibleModelTags = modelTags.slice(0, 1);
   const hiddenModelTags = modelTags.slice(visibleModelTags.length);
 
-  const videoPrice = entry.kind === 'video' ? videoPriceParts(entry) : null;
-  const priceParts = entry.kind === 'video' ? (
-    videoPrice ? (
-      <>
-        <span className={styles.priceLine}>
-          <span className={styles.pricePrefix}>From:</span>
-          <span>{formatPrice(videoPrice.price)}</span>
-        </span>
-        <span className={styles.perTok}>{videoPrice.unit}</span>
-      </>
-    ) : (
-      <span className={styles.perTok}>Price varies</span>
-    )
-  ) : entry.kind === 'image' ? (
+  const priceParts = entry.kind === 'image' ? (
     entry.minImageUsdPerImage !== null ? (
       <>
         <span className={styles.priceLine}>
@@ -171,7 +149,6 @@ function ModelRow({ entry, checked, favorite, badge, compact, dense, chevron = t
           <BrandIcon name={entry.provider} hints={[entry.label]} size={16} className={styles.logo} />
           <span className={styles.label}>{entry.label}</span>
           {entry.kind === 'image' && <span className={styles.modelTypeTag}>Image</span>}
-          {entry.kind === 'video' && <span className={styles.modelTypeTag}>Video</span>}
           {!compact && visibleModelTags.map((tag) => (
             <span
               key={tag}

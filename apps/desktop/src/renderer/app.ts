@@ -264,9 +264,6 @@ function rememberedPinFor(provider: string, serviceId: string): string | null {
 function actionSelectVprModel(provider: string, serviceId: string, peerId: string | null = null): void {
   const entry = findCatalogEntry(uiState.vprModelCatalog, provider, serviceId);
   if (!entry) return;
-  // Video models run through the Antseed Videos skill, never the built-in
-  // chat or the connected-apps route.
-  if (entry.kind === 'video') return;
   // Image models are internal-chat tools, not AI VPN defaults. Restore a
   // remembered explicit seller pin when the model page hands the model to
   // chat; clearing Auto removes that remembered pin first.

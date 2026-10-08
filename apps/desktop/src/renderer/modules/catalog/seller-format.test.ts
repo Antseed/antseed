@@ -75,23 +75,3 @@ test('seller metadata omits the last settlement date', () => {
   } as DiscoverRow;
   assert.equal(sellerMetaLabel(route), '$1/m input · $5/m output');
 });
-
-test('seller metadata shows video prices per video and per second', () => {
-  const route = {
-    protocol: 'venice-video',
-    inputUsdPerMillion: null,
-    outputUsdPerMillion: null,
-    minVideoUsdPerVideo: 0.25,
-    maxVideoUsdPerVideo: 0.25,
-    minVideoUsdPerSecond: 0.1,
-    maxVideoUsdPerSecond: 0.3,
-  } as DiscoverRow;
-  assert.equal(sellerMetaLabel(route), '$0.25/video · $0.1-$0.3/sec');
-  assert.equal(sellerMetaLabel({
-    protocol: 'fal-video',
-    minVideoUsdPerVideo: null,
-    maxVideoUsdPerVideo: null,
-    minVideoUsdPerSecond: null,
-    maxVideoUsdPerSecond: null,
-  } as DiscoverRow), 'Price unknown');
-});

@@ -18,7 +18,6 @@ import {
   Tag01Icon,
   TextIcon,
   TheaterIcon,
-  Video01Icon,
   ZapIcon,
 } from '@hugeicons/core-free-icons';
 import type { VprModelCatalogEntry, VprModelKind } from '../../../core/state';
@@ -113,7 +112,6 @@ export function VprExploreView({ onSelectView }: Props) {
   const typeOptions = useMemo<readonly VprFilterOption<string>[]>(() => [
     { value: 'kind:text', label: 'Text', description: 'Chat and language models', icon: <FilterIconView icon={TextIcon} /> },
     { value: 'kind:image', label: 'Image', description: 'Image generation models', icon: <FilterIconView icon={Image01Icon} /> },
-    { value: 'kind:video', label: 'Video', description: 'Video generation models', icon: <FilterIconView icon={Video01Icon} /> },
     { value: 'free', label: 'Free', description: 'Models with a free offer', icon: <FilterIconView icon={Dollar01Icon} /> },
     ...tags.map((modelTag) => ({
       value: `tag:${modelTag}`,
