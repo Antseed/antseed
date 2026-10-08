@@ -1,3 +1,4 @@
+import type { NativeVideoProtocol } from '@antseed/node';
 import type {
   DiscoverRow,
   ServiceCapabilitiesView,
@@ -5,12 +6,42 @@ import type {
   VprModelKind,
 } from '../../core/state';
 
+/** Renderer mirror of `NATIVE_VIDEO_PROTOCOLS`; the Record type keeps it exhaustive. */
+const NATIVE_VIDEO_PROTOCOLS: Record<NativeVideoProtocol, true> = {
+  'venice-video': true,
+  'fal-video': true,
+};
+
+export function isNativeVideoProtocol(protocol: string): boolean {
+  return Object.prototype.hasOwnProperty.call(NATIVE_VIDEO_PROTOCOLS, protocol);
+}
+
 export function serviceModelKind(
   protocol: string,
   capabilities: ServiceCapabilitiesView | null | undefined,
 ): VprModelKind {
+  if (isNativeVideoProtocol(protocol)) return 'video';
   if (protocol === 'openai-images' || capabilities?.outputs?.includes('image')) return 'image';
   return 'text';
+}
+
+/**
+ * Rough "from" price of one video on a route, used only to order routes and
+ * models: the per-video price plus the per-second price for the shortest
+ * advertised duration (one second when durations are unknown).
+ */
+export function videoRowStartingPrice(row: Pick<DiscoverRow,
+  'minVideoUsdPerSecond' | 'minVideoUsdPerVideo' | 'capabilities'>): number | null {
+  if (row.minVideoUsdPerSecond === null && row.minVideoUsdPerVideo === null) return null;
+  const shortest = row.capabilities?.video?.durationsSeconds?.[0] ?? 1;
+  return (row.minVideoUsdPerVideo ?? 0) + (row.minVideoUsdPerSecond ?? 0) * shortest;
+}
+
+/** Model-level counterpart of `videoRowStartingPrice` for catalog sorting. */
+export function videoEntryStartingPrice(entry: Pick<VprModelCatalogEntry,
+  'minVideoUsdPerSecond' | 'minVideoUsdPerVideo'>): number | null {
+  if (entry.minVideoUsdPerSecond === null && entry.minVideoUsdPerVideo === null) return null;
+  return (entry.minVideoUsdPerVideo ?? 0) + (entry.minVideoUsdPerSecond ?? 0);
 }
 
 export function isTextCapableRow(row: DiscoverRow): boolean {

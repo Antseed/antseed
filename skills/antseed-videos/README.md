@@ -1,43 +1,40 @@
 # antseed-videos
 
-Generate videos from text prompts or images through Antseed's network-wide video model routing.
+Guided video generation through Antseed's local buyer proxy.
 
 ## Install
 
-With the [GitHub CLI](https://cli.github.com/) (v2.90.0+):
+Antseed Desktop bundles this skill in chat. For other agents, install it with the [GitHub CLI](https://cli.github.com/) (v2.90.0+):
 
 ```bash
 gh skill install Antseed/antseed antseed-videos
 ```
 
-Add `--scope user` to install it for every project supported by your agent, or use `--agent <agent>` to target one agent.
+Add `--scope user` to install it for every project supported by your agent, or use `--agent <agent>` to target one agent. You can also point an agent directly at [`SKILL.md`](SKILL.md).
 
-You can also point an agent directly at [`SKILL.md`](SKILL.md).
+## What it does
+
+The skill walks the user through three approved gates before it pays for a video:
+
+1. **Idea and model.** Feedback on the idea, and a recommended video model with alternatives.
+2. **Script, prompts, and frames.** A short script, a video prompt written for the chosen model, first- and last-frame prompts, and frames made with a top-ranked image model through the `antseed-images` skill. Each frame is shown for approval.
+3. **Settings and go.** A recap, then duration, resolution, audio, seller, and price before the paid create.
+
+Video and image models are ranked by [LMArena](https://lmarena.ai)'s public blind-vote leaderboards (CC BY 4.0), read without an API key from the [Hugging Face dataset](https://huggingface.co/datasets/lmarena-ai/leaderboard-dataset) and cached for a day in `~/.antseed/cache/model-rankings.json`. Only the leaderboard is requested; nothing about the user's prompt or media leaves the machine. When the leaderboard is unreachable, a built-in snapshot is used. Set `ANTSEED_MODEL_RANKINGS=off` to disable the lookup.
+
+Both `venice-video` and `fal-video` sellers are supported. After the user confirms, the skill pins only that create to one compatible seller as `<peerId>@<model>`; status and download requests go back to the seller that accepted the job. The buyer pays once, when the finished MP4 is delivered, and refuses any single video priced above $5.00.
+
+For videos longer than one clip, the skill plans frame-matched segments and stitches them with ffmpeg. When all keyframes are ready, `antseed_video.mjs batch` submits creates one at a time and waits for accepted jobs in parallel.
 
 ## Prerequisites
 
-Antseed Desktop or `antseed buyer start` (`@antseed/cli@0.1.171` or newer) must be running, and the buyer must have enough deposited USDC for the video. The skill uses the local buyer proxy, normally at `http://127.0.0.1:8377`.
+Antseed Desktop or `antseed buyer start` must be running, normally at `http://127.0.0.1:8377`, and the buyer needs deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. Node.js 18 or newer runs the helper script.
 
-## Parameters
-
-Provide the skill with:
-
-- `model` — video model id or alias; optional when you want the skill to inspect the current catalog first
-- `prompt` — video description
-- `duration`, plus `resolution` and `aspect_ratio` when the model advertises them
-- `image` — optional starting frame for image-to-video models
-
-The skill queries `/v1/models?type=videos`, reads the chosen model's advertised durations, resolutions and prices, quotes the price, queues the job (`venice-video` or `fal-video` format), polls until the MP4 is ready, and saves it. You pay once, when the finished video is delivered.
-
-## Example prompt
+## Example
 
 ```text
-Use the antseed-videos skill with:
-model: gemini-omni-flash-1-1-text-to-video
-prompt: A tiny ant carrying a glowing seed across a mossy forest floor
-duration: 4
-resolution: 360p
-aspect_ratio: 16:9
+Use the antseed-videos skill. I want a short video of a lighthouse keeper
+watching a storm roll in at dusk.
 ```
 
-See [SKILL.md](SKILL.md) for request, polling, pricing, safety, and error-handling instructions.
+See [`SKILL.md`](SKILL.md) for the agent workflow and safety rules.
