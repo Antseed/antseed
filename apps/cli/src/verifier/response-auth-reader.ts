@@ -40,6 +40,7 @@ export interface ResponseAuthReader {
     requestId: string
     sellerPeerId: string
     advertisedService: string
+    serviceAliases?: readonly string[]
     timeoutMs?: number
     signal?: AbortSignal
   }): Promise<ResponseAuthEvidenceStatus>
@@ -104,16 +105,22 @@ export function createResponseAuthReader(
   }
 }
 
+export function matchesEnrolledService(requested: string, signed: string, serviceAliases: readonly string[] = []): boolean {
+  const aliases = serviceAliases.map(normalized)
+  return normalized(requested) === normalized(signed)
+    || (aliases.includes(normalized(requested)) && aliases.includes(normalized(signed)))
+}
+
 export function validateStoredResponseAuth(
   record: StoredResponseAuth,
-  expected: { requestId: string; sellerPeerId: string; advertisedService: string },
+  expected: { requestId: string; sellerPeerId: string; advertisedService: string; serviceAliases?: readonly string[] },
 ): ResponseAuthEvidenceStatus {
   const signedPreimages = responseAuthPreimages(record)
   const mismatch = record.requestId !== expected.requestId
     ? `request ID mismatch (${record.requestId} != ${expected.requestId})`
     : normalized(record.sellerPeerId) !== normalized(expected.sellerPeerId)
       ? `seller peer ID mismatch (${record.sellerPeerId} != ${expected.sellerPeerId})`
-      : normalized(record.advertisedService) !== normalized(expected.advertisedService)
+      : !matchesEnrolledService(expected.advertisedService, record.advertisedService, expected.serviceAliases)
         ? `advertised service mismatch (${record.advertisedService} != ${expected.advertisedService})`
         : record.verified !== true
           ? record.verificationError ?? 'ResponseAuth is not verified'

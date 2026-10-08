@@ -713,7 +713,7 @@ function bankFromReference(model: string, reference: KbfReferenceV1, cost: Refer
   }
 }
 
-function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): string {
+export function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): string {
   return canonicalHashBytes32({
     model: normalized(model),
     referenceModel: normalized(reference.referenceModel),
@@ -732,6 +732,64 @@ function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): s
       clopperPearsonConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
     },
   })
+}
+
+export async function loadBankEnrollmentReference(banksDir: string, model: string): Promise<KbfReferenceV1 | undefined> {
+  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  if (!bank) return undefined
+  if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
+    throw new Error(`invalid probe bank for ${model}`)
+  }
+  assertCurrentBankEnrollment(bank, model)
+  const reference = referenceFromBankEntries(bank, bank.probes, Date.parse(bank.updatedAt))
+  validateKbfReferenceV1(reference, { minimumStatisticalPower: Number.EPSILON })
+  if (probeBankCompatibilityHash(model, reference) !== bank.compatibilityHash) {
+    throw new Error(`probe bank for ${model} has inconsistent enrollment metadata`)
+  }
+  return reference
+}
+
+function referenceFromBankEntries(bank: ProbeBankV1, selected: BankProbeV1[], now: number): KbfReferenceV1 {
+  const selfTest = aggregateKbfSelfTestOutcomes(selected.map((entry) => entry.selfTest))
+  const power = computeBinomialPower({
+    selfHamming: selfTest.hamming,
+    selfTotal: selfTest.total,
+    probeCount: selected.length,
+    minimumMismatchDelta: bank.referenceTemplate.minimumMismatchDelta,
+    alpha: bank.statisticalAssumptions.alpha,
+    cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+  })
+  const reference: KbfReferenceV1 = {
+    version: KBF_REFERENCE_VERSION,
+    kind: 'kbf',
+    referenceId: '',
+    ...bank.referenceTemplate,
+    createdAt: new Date(now).toISOString(),
+    queryProfile: bank.queryProfile,
+    selfTest,
+    probes: selected.map((entry) => entry.probe),
+    selectedProbeCount: selected.length,
+    statisticalPower: power.power,
+    statisticalPowerEvidence: {
+      test: 'one-sided-binomial',
+      alpha: bank.statisticalAssumptions.alpha,
+      clopperPearsonConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      probeCount: selected.length,
+      p0UpperBound: power.p0,
+      alternativeMismatchRate: power.p1,
+      criticalMismatchCount: power.criticalMismatchCount,
+      power: power.power,
+    },
+    contrasts: bank.contrastModels.map((model) => ({
+      model,
+      distinguishingProbeIds: selected.filter((entry) => entry.distinguishingContrastModels.includes(model))
+        .map((entry) => entry.probe.id),
+    })),
+  }
+  reference.referenceId = computeReferenceId(reference)
+  return reference
 }
 
 function selectPoweredReference(
@@ -778,32 +836,7 @@ function selectPoweredReference(
     // DIFF. A contrast that distinguishes no bank probe at all never answered
     // during enrollment (for example, it was unavailable) and cannot be tested.
     if (contrastDetection.some((entry) => testableContrasts.has(entry.model) && !entry.detected)) continue
-    const reference: KbfReferenceV1 = {
-      version: KBF_REFERENCE_VERSION,
-      kind: 'kbf',
-      referenceId: '',
-      ...bank.referenceTemplate,
-      createdAt: new Date(now).toISOString(),
-      queryProfile: bank.queryProfile,
-      selfTest,
-      probes: selected.map((entry) => entry.probe),
-      selectedProbeCount: count,
-      statisticalPower: power.power,
-      statisticalPowerEvidence: {
-        test: 'one-sided-binomial',
-        alpha: bank.statisticalAssumptions.alpha,
-        clopperPearsonConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
-        selfHamming: selfTest.hamming,
-        selfTotal: selfTest.total,
-        probeCount: count,
-        p0UpperBound: power.p0,
-        alternativeMismatchRate: power.p1,
-        criticalMismatchCount: power.criticalMismatchCount,
-        power: power.power,
-      },
-      contrasts,
-      contrastDetection,
-    }
+    const reference = { ...referenceFromBankEntries(bank, selected, now), contrasts, contrastDetection }
     reference.referenceId = computeReferenceId(reference)
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })
   }
