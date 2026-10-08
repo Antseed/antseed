@@ -436,6 +436,7 @@ If you're using Pi, Codex or another agent, these skills can walk you through th
 - [`antseed/antseed-pi`](https://github.com/AntSeed/pi-antseed) — Use the Antseed local buyer proxy as a model provider in pi.
 - [`@skills/join-buyer`](https://github.com/AntSeed/antseed/tree/main/skills/join-buyer) — step-by-step buyer setup for Claude Code agents
 - [`@skills/antseed-images`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-images) — discover image models from `/v1/models?type=images` and generate through automatic model-only peer routing
+- [`@skills/antseed-videos`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-videos) — discover video models from `/v1/models?type=videos`, quote the price, queue a Venice or fal video job, and save the finished MP4
 - [`@skills/antseed-decisions`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-decisions) — discover decision models from `/v1/models?type=decisions` and ask typed `choice`, `score`, and `noul` questions through `/v1/systemone`
 - [`@skills/openclaw-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed) — connect OpenClaw to Antseed as a buyer
 - [`@skills/hermes-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) — connect Hermes Agent through the local AI VPN or its authenticated public endpoint
