@@ -635,6 +635,17 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.seller.claimOneOffChannel(channelId)).toBe(false);
     expect(h.providerCreates).toHaveLength(1);
   });
+
+  it('keeps a one-off channel claimed after its delivery is charged', async () => {
+    const h = setup();
+    await h.send(h.videoRequest('video-1'));
+    await h.settle();
+    const { channelId } = onlyOneOff(h);
+
+    h.seller.recordSpend(channelId, VIDEO_PRICE);
+
+    expect(h.seller.claimOneOffChannel(channelId)).toBe(false);
+  });
 });
 
 /** Minimal MP4 (ftyp, mvhd duration, small mdat) that passes the delivery check. */

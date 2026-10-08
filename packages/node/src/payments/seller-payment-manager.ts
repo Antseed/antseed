@@ -1605,8 +1605,10 @@ export class SellerPaymentManager {
     const newSpent = current + costUsdc;
     this._spent.set(sessionId, newSpent);
 
-    // Persist spent amount to ChannelStore (using tokensDelivered field)
-    this._channelStore.updateTokensDelivered(sessionId, newSpent.toString(), 0);
+    // Persist spent amount to ChannelStore (using tokensDelivered field). Keep
+    // the request count: it marks a one-off channel's create as started.
+    const requestCount = this._channelStore.getChannel(sessionId)?.requestCount ?? 0;
+    this._channelStore.updateTokensDelivered(sessionId, newSpent.toString(), requestCount);
   }
 
   // ── Settlement ──────────────────────────────────────────────
