@@ -22,8 +22,8 @@ test('failed or non-media tools render nothing extra', () => {
 });
 
 test('a running skill video job shows the generation placeholder', () => {
-  const command = 'node /x/skills/antseed-videos/scripts/antseed_video.mjs generate --model m --peer p --output a.mp4';
+  const command = 'case "$protocol" in venice-video) url="$proxy_url/api/v1/video/retrieve" ;; fal-video) url="$proxy_url/fal/v1/video/retrieve" ;; esac';
   assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'running', input: { command } }), true);
   assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'success', input: { command } }), false);
-  assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'running', input: { command: command.replace('generate', 'options') } }), false);
+  assert.equal(isRunningVideoGenerationTool({ type: 'tool_use', name: 'bash', status: 'running', input: { command: 'curl "$proxy_url/v1/models?type=videos"' } }), false);
 });
