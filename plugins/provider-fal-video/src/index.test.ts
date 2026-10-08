@@ -90,6 +90,23 @@ it('reports failed fal jobs as FAILED', async () => {
   expect(parse(response.body)).toEqual({ status: 'FAILED', error: 'NSFW content' });
 });
 
+it.each([429, 500, 503])('does not report a job as FAILED when its result fetch returns %i', async (statusCode) => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ detail: 'try again' }, { status: statusCode })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(response.statusCode).toBe(502);
+  expect(parse(response.body).status).toBeUndefined();
+});
+
+it('reports a job as FAILED when fal refuses its result', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(Response.json({ detail: 'invalid input' }, { status: 422 })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({ status: 'FAILED' });
+});
+
 it('streams the finished video from the fal media URL without the seller key', async () => {
   const bytes = new Uint8Array(3 * 1024 * 1024 + 17).fill(7);
   const fetchMock = vi.fn()

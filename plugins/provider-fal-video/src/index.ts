@@ -159,7 +159,14 @@ const plugin: AntseedProviderPlugin = {
 
           const resultResponse = await get(requestUrl);
           const result = await readJson(resultResponse);
-          if (!resultResponse.ok) return json(request, 200, { status: 'FAILED' });
+          if (!resultResponse.ok) {
+            // A temporary fal error must not end the job: FAILED releases its
+            // payment channel, and the next retrieve may still deliver the video.
+            if (resultResponse.status === 408 || resultResponse.status === 429 || resultResponse.status >= 500) {
+              return error(request, 502, 'video_result_unavailable', 'fal result is temporarily unavailable');
+            }
+            return json(request, 200, { status: 'FAILED' });
+          }
           const video = result?.video as { url?: unknown } | undefined;
           if (typeof video?.url !== 'string' || !video.url.startsWith('https://')) {
             return error(request, 502, 'video_download_unavailable', 'fal result has no video');
