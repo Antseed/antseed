@@ -622,6 +622,32 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
   });
 
+  it('retries a failed close of a rejected video on the next timeout check', async () => {
+    const h = setup({ createResponse: 'rejected' });
+    // The first close reaches an RPC node that has not seen the reserve yet.
+    const landOnChain = h.close.getMockImplementation()!;
+    h.close.mockImplementationOnce(async () => {
+      throw new Error('execution reverted: ChannelNotActive');
+    });
+
+    const response = await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    expect(response.statusCode).toBe(400);
+    const { channelId } = onlyOneOff(h);
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.chain.get(channelId)).toMatchObject({ status: 1 });
+
+    h.close.mockImplementation(landOnChain);
+    await h.seller.checkTimeouts();
+
+    expect(h.close).toHaveBeenCalledTimes(2);
+    expect(h.close.mock.calls[1]![1]).toBe(channelId);
+    expect(h.close.mock.calls[1]![2]).toBe(SERIOUS_FEE);
+    expect(h.chain.get(channelId)).toMatchObject({ status: 2 });
+    expect(h.seller.isOneOffChannel(channelId)).toBe(false);
+  });
+
   it('releases the whole reserve and does not send the create when topUp reverts', async () => {
     const h = setup({ topUpBehavior: 'revert' });
     await openChannelWithChat(h);

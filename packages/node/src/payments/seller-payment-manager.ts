@@ -158,6 +158,14 @@ export class SellerPaymentManager {
   /** channelId -> number of failed close() attempts. In-memory only; resets on node restart. */
   private readonly _closeRetryCount = new Map<string, number>();
 
+  /**
+   * One-off channel -> close reason, for closes that failed. Retried by the
+   * periodic one-off check: a close sent right after reserve() can reach an RPC
+   * node that has not seen the reserve yet and revert with ChannelNotActive.
+   * In-memory only; after a restart the TTL checks still close the channel.
+   */
+  private readonly _pendingOneOffCloses = new Map<string, string>();
+
   /** channelId -> deferred topUp params when on-chain topUp failed (e.g. TopUpThresholdNotMet).
    *  Retried after the next SpendingAuth raises the settle amount high enough.
    *  Latest / largest top-up intent wins: if multiple deferred ReserveAuths arrive
@@ -974,6 +982,7 @@ export class SellerPaymentManager {
     );
     if (!closeResult.closed) {
       if (!this._isRetryableTxSubmissionFailure(closeResult.error)) this._closeRetryCount.set(channelId, retries + 1);
+      this._pendingOneOffCloses.set(channelId, reason);
       debugWarn(`[SellerPayment] Failed to close one-off channel ${channelId.slice(0, 18)}...: ${this._formatError(closeResult.error)}`);
       return false;
     }
@@ -1215,8 +1224,11 @@ export class SellerPaymentManager {
         const age = now - channel.reservedAt;
         const spent = this._spent.get(channel.sessionId) ?? 0n;
         const accepted = this._acceptedCumulative.get(channel.sessionId) ?? 0n;
+        const pendingClose = this._pendingOneOffCloses.get(channel.sessionId);
         if (spent > 0n && accepted >= spent) {
           await this.closeOneOffChannel(channel.sessionId, 'request paid');
+        } else if (pendingClose) {
+          await this.closeOneOffChannel(channel.sessionId, pendingClose);
         } else if (age > ONE_OFF_CHANNEL_TTL_MS) {
           await this.closeOneOffChannel(channel.sessionId, 'unpaid past TTL');
         } else if (channel.requestCount === 0 && age > ONE_OFF_UNCLAIMED_TTL_MS) {
@@ -1716,6 +1728,7 @@ export class SellerPaymentManager {
     this._spent.delete(channelId);
     this._latestAuth.delete(channelId);
     this._closeRetryCount.delete(channelId);
+    this._pendingOneOffCloses.delete(channelId);
     this._reserveMax.delete(channelId);
     this._pendingTopUp.delete(channelId);
     this._blockedChannels.delete(channelId);
