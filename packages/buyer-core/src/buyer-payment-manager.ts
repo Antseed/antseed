@@ -1309,16 +1309,16 @@ export class BuyerPaymentManager {
     // but we still sign one to keep the seller's session alive.
 
     // NeedAuth may have counted this response first; its cost is then already
-    // in the signed cumulative and verified cost, so adding it again would
-    // charge the request twice.
+    // in the verified cost and (unless NeedAuth was capped at the reserve
+    // ceiling) the signed cumulative. Charge only the part it left unsigned,
+    // so the request is neither paid twice nor left short before a close.
     const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
     if (alreadyCounted) {
-      acceptedCost = 0n;
+      acceptedCost = this._serviceTokensCounted.unpaid(responseStats.requestId);
       verifiedCostDelta = 0n;
     }
 
-    // Advance cumulative amount by the accepted cost, then add overdraft headroom
-    // for the next request (so the seller has budget to serve it).
+    // Advance cumulative amount by the accepted cost.
     // maxSignable already caps at reserve ceiling, so one cap is sufficient
     const prevAmount = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
@@ -1335,14 +1335,18 @@ export class BuyerPaymentManager {
     const newMeta = this._advanceUsageMetadata(
       this._metadata.get(sellerPeerId),
       responseStats.service,
-      normalizeRequestUsageDelta({
+      {
+        ...normalizeRequestUsageDelta({
+          amount: signedDelta,
+          inputTokens: estimatedInputTokens,
+          cachedInputTokens: estimatedCachedInputTokens,
+          outputTokens: estimatedOutputTokens,
+          requests: 1n,
+          outputImages: estimatedOutputImages,
+        }, { deliveredResponse: true, alreadyCounted }),
+        // Any remainder of a NeedAuth-counted request is still this service's amount.
         amount: signedDelta,
-        inputTokens: estimatedInputTokens,
-        cachedInputTokens: estimatedCachedInputTokens,
-        outputTokens: estimatedOutputTokens,
-        requests: 1n,
-        outputImages: estimatedOutputImages,
-      }, { deliveredResponse: true, alreadyCounted }),
+      },
     );
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
@@ -1378,7 +1382,11 @@ export class BuyerPaymentManager {
     this._cumulativeAmount.set(sellerPeerId, newAmount);
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (!alreadyCounted) this._serviceTokensCounted.mark(responseStats.requestId);
+    if (alreadyCounted) {
+      this._serviceTokensCounted.pay(responseStats.requestId, signedDelta);
+    } else {
+      this._serviceTokensCounted.mark(responseStats.requestId);
+    }
     this._reportSpend({
       sellerPeerId,
       requestId: responseStats.requestId ?? null,
@@ -1654,7 +1662,9 @@ export class BuyerPaymentManager {
     );
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (deliveredResponse && !alreadyCounted) this._serviceTokensCounted.mark(payload.requestId);
+    if (deliveredResponse && !alreadyCounted) {
+      this._serviceTokensCounted.mark(payload.requestId, acceptedServiceCost - serviceAmountDelta);
+    }
     this._reportSpend({
       sellerPeerId,
       requestId: payload.requestId ?? null,

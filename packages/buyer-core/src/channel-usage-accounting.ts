@@ -13,12 +13,6 @@ function trimOldestMapEntry<K, V>(map: Map<K, V>, limit: number): void {
   if (oldest !== undefined) map.delete(oldest);
 }
 
-function trimOldestSetEntry<T>(set: Set<T>, limit: number): void {
-  if (set.size < limit) return;
-  const oldest = set.values().next().value;
-  if (oldest !== undefined) set.delete(oldest);
-}
-
 export class RequestServiceTracker {
   private readonly _services = new Map<string, string>();
 
@@ -43,18 +37,33 @@ export class RequestServiceTracker {
 }
 
 export class CountedRequestTracker {
-  private readonly _requestIds = new Set<string>();
+  // requestId -> part of the request's accepted cost not yet signed (a NeedAuth
+  // capped at the reserve ceiling counts the request but signs only part of it).
+  private readonly _unpaid = new Map<string, bigint>();
 
   constructor(private readonly _limit = DEFAULT_REQUEST_TRACKER_LIMIT) {}
 
   has(requestId: string | undefined): boolean {
-    return requestId != null && this._requestIds.has(requestId);
+    return requestId != null && this._unpaid.has(requestId);
   }
 
-  mark(requestId: string | undefined): void {
+  mark(requestId: string | undefined, unpaidAmount = 0n): void {
     if (!requestId) return;
-    trimOldestSetEntry(this._requestIds, this._limit);
-    this._requestIds.add(requestId);
+    trimOldestMapEntry(this._unpaid, this._limit);
+    this._unpaid.set(requestId, unpaidAmount > 0n ? unpaidAmount : 0n);
+  }
+
+  unpaid(requestId: string | undefined): bigint {
+    if (!requestId) return 0n;
+    return this._unpaid.get(requestId) ?? 0n;
+  }
+
+  /** Record that `amount` of a counted request's unpaid cost has now been signed. */
+  pay(requestId: string | undefined, amount: bigint): void {
+    if (!requestId || amount <= 0n) return;
+    const remaining = this._unpaid.get(requestId);
+    if (remaining == null) return;
+    this._unpaid.set(requestId, remaining > amount ? remaining - amount : 0n);
   }
 }
 
