@@ -465,7 +465,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)
           const basePluginConfig = buildPluginConfig(configFields)
-          const pluginConfig = mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride })
+          const pluginConfig = {
+            ...mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride }),
+            // Lets plugins keep small state (e.g. pending video download URLs) across restarts.
+            ANTSEED_DATA_DIR: globalOpts.dataDir,
+          }
           const provider = await plugin.createProvider(pluginConfig)
           if (provider.init) {
             spinner.text = `Validating credentials for "${providerName}"...`

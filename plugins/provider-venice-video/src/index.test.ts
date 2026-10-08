@@ -1,4 +1,7 @@
 import { afterEach, expect, it, vi } from 'vitest';
+import { mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
 import plugin from './index.js';
 
@@ -98,4 +101,26 @@ it('keeps private-model download URLs on the seller and streams the file on retr
   const [url, init] = fetchMock.mock.calls[2]!;
   expect(url).toBe('https://files.venice.ai/v/queue-1?sig=abc');
   expect(init.headers).not.toHaveProperty('authorization');
+});
+
+it('keeps private-model download URLs across a seller restart', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'venice-video-'));
+  try {
+    const bytes = new Uint8Array(1_000).fill(5);
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(Response.json({ model: 'wan-2.5', queue_id: 'queue-1', download_url: 'https://files.venice.ai/v/queue-1?sig=abc' }))
+      .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+      .mockResolvedValueOnce(new Response(bytes, { headers: { 'content-type': 'video/mp4', 'content-length': String(bytes.length) } }));
+    vi.stubGlobal('fetch', fetchMock);
+    await (plugin.createProvider({ ...config, ANTSEED_DATA_DIR: dataDir }) as Provider)
+      .handleRequest(request('/api/v1/video/queue', { model: 'wan-2.5', prompt: 'cat' }));
+
+    const restarted = plugin.createProvider({ ...config, ANTSEED_DATA_DIR: dataDir }) as Provider;
+    const response = await stream(restarted);
+
+    expect(response.headers).toMatchObject({ 'content-type': 'video/mp4' });
+    expect(fetchMock.mock.calls[2]![0]).toBe('https://files.venice.ai/v/queue-1?sig=abc');
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true });
+  }
 });
