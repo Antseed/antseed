@@ -1,6 +1,6 @@
 {
   "name": "@antseed/provider-openai-responses",
-  "version": "0.1.40",
+  "version": "0.1.41",
   "description": "OpenAI Responses provider plugin for Antseed via Codex backend auth",
   "type": "module",
   "files": [

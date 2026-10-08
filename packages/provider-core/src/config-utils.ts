@@ -1,5 +1,5 @@
 import type { Provider, ServiceApiProtocol, ServiceCapabilities, ServiceUnitBillingModelsV1, UnitBillingComponentV1, UnitBillingModelV1 } from '@antseed/node';
-import { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH, isKnownServiceApiProtocol, validateServiceCapabilityFields, validateUnitBillingModelV1 } from '@antseed/node';
+import { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH, isKnownServiceApiProtocol, validateServiceCapabilityFields, validateUnitBillingModelForProtocolV1 } from '@antseed/node';
 
 export function parseNonNegativeNumber(raw: string | undefined, key: string, fallback: number): number {
   const parsed = raw === undefined ? fallback : Number.parseFloat(raw);
@@ -77,7 +77,7 @@ export function parseServiceUnitBillingModelsJson(raw: string | undefined, key =
         throw new Error(`${key}.${service}.${protocol} must be a unit billing model object`);
       }
       const normalized = normalizeUnitBillingModel(model as Record<string, unknown>, `${key}.${service}.${protocol}`);
-      const errors = validateUnitBillingModelV1(normalized);
+      const errors = validateUnitBillingModelForProtocolV1(protocol, normalized);
       if (errors.length > 0) {
         throw new Error(`${key}.${service}.${protocol}: ${errors.join('; ')}`);
       }
@@ -164,6 +164,7 @@ export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANT
     if (caps.supportedParameters !== undefined) {
       normalized.supportedParameters = caps.supportedParameters as ServiceCapabilities['supportedParameters'];
     }
+    if (caps.video !== undefined) normalized.video = caps.video as ServiceCapabilities['video'];
     // Same validator the announce path uses, so anything accepted here is
     // guaranteed to announce instead of failing silently at announce time.
     const fieldErrors = validateServiceCapabilityFields(normalized);

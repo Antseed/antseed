@@ -296,7 +296,71 @@ The `--upstream` flag maps the buyer-facing service name to the upstream model i
 
 For an `openai-images` service, `outputs: ["image"]` identifies an image result. Input modalities are an operational routing contract: `inputs: ["text"]` means generation only, while `inputs: ["text", "image"]` means the seller can accept both `/v1/images/generations` and multipart `/v1/images/edits`. Do not advertise `image` input merely because the upstream platform offers editing somewhere; the exact configured service and provider adapter must support the edit request end to end. In particular, Venice-backed services must remain generation-only until Antseed has a native Venice edit adapter.
 
-Unit billing is currently supported by the `openai` provider for `openai-images`; startup warns if a different plugin ignores the setting. Image services remain advertised but are skipped by periodic health checks to avoid generating paid probe images.
+Unit billing is supported by the `openai` provider for `openai-images` and by the `venice-video` and `fal-video` providers for video; startup warns if a different plugin ignores the setting. Image and video services remain advertised but are skipped by periodic health checks to avoid generating paid probes.
+
+### Video services
+
+To integrate your video model, implement the [Venice video API](https://docs.venice.ai/api-reference/endpoint/video/queue) specification, then point the `venice-video` provider at it:
+
+```bash
+antseed config seller add-provider venice-video --plugin venice-video \
+  --base-url https://video.example.com
+
+antseed config seller add-service venice-video <video-model> \
+  --capabilities '{"video":{"durationsSeconds":[5,10],"resolutions":["720p"]}}' \
+  --unit-billing-models '{"venice-video":{"version":1,"components":[{"unit":"video_generations","priceUsd":0.5}]}}'
+```
+
+The service id is sent unchanged as `model` to your API. Your offer must add value beyond reselling raw upstream access.
+
+To serve [fal.ai](https://fal.ai/models) video models, use the `fal-video` provider. The service id must be the fal endpoint ID, and pricing uses the `fal-video` protocol:
+
+```bash
+export FAL_VIDEO_API_KEY=<your-fal-key>
+antseed config seller add-provider fal --plugin fal-video
+
+antseed config seller add-service fal fal-ai/kling-video/v2.1/standard/text-to-video \
+  --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
+```
+
+The examples below use `venice-video`; for fal, use the `fal-video` key instead.
+
+#### Pricing
+
+Set `--unit-billing-models` per service with one of these units:
+
+| Unit | Charge |
+|---|---|
+| `video_generations` | `priceUsd` per delivered video |
+| `video_seconds` | `priceUsd` × requested `duration` in seconds |
+
+Components can `match` the request's `resolution` to price tiers:
+
+```json
+{
+  "venice-video": {
+    "version": 1,
+    "components": [
+      { "unit": "video_seconds", "priceUsd": 0.05, "match": { "resolution": "720p" } },
+      { "unit": "video_seconds", "priceUsd": 0.1, "match": { "resolution": "1080p" } }
+    ]
+  }
+}
+```
+
+- Buyers are charged only when the finished video is delivered.
+- Every request must match a component; unmatched requests are refused, not free.
+- `video_seconds` requires an explicit `duration`. Use `video_generations` if buyers may send `auto`.
+- Buyers refuse videos priced above $5.00.
+
+#### Required endpoints
+
+| Endpoint | Returns |
+|---|---|
+| [`POST /api/v1/video/queue`](https://docs.venice.ai/api-reference/endpoint/video/queue) | JSON with a `queue_id` |
+| [`POST /api/v1/video/retrieve`](https://docs.venice.ai/api-reference/endpoint/video/retrieve) | JSON status while running; `video/mp4` when finished |
+
+A video is charged only when it is delivered as a complete MP4 of at least 90% of the requested duration and at most 64 MiB. A `status` of `FAILED`, `ERROR`, or `CANCELLED` ends the job unpaid.
 
 You only have to do this once per service. To see what you've configured:
 

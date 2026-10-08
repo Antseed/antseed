@@ -16,6 +16,8 @@ export const CHANNEL_STATUS = {
 export const CHANNEL_KIND = {
   PAID: 'paid',
   FREE: 'free',
+  /** Pays for exactly one request (a video) and is closed once that request is paid or abandoned. */
+  ONE_OFF: 'one_off',
 } as const;
 
 export const CHANNEL_ROLE = {
@@ -62,6 +64,13 @@ export interface StoredChannel {
   reserveAuthPending?: boolean;
   /** Last reserve ceiling acknowledged initially or observed on-chain. */
   confirmedReserveAmount?: string | null;
+  /** One-off channels only: requestId of the single request this channel pays for. */
+  oneOffRequestId?: string | null;
+  /**
+   * One-off video channels only: the accepted, not yet delivered job this
+   * channel pays for (JSON), so a restarted buyer can still sign its delivery.
+   */
+  oneOffVideoJob?: string | null;
   createdAt: number;
   updatedAt: number;
 }
@@ -76,6 +85,10 @@ export interface StoredChannelServiceTotal {
   cumulativeRequestCount: string; // bigint as string
   /** bigint as string; optional — rows/callers predating migration 005 default to '0'. */
   cumulativeOutputImages?: string;
+  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  cumulativeVideoGenerations?: string;
+  /** bigint as string; optional — rows/callers predating migration 007 default to '0'. */
+  cumulativeVideoSeconds?: string;
   updatedAt: number;
 }
 
@@ -104,6 +117,8 @@ export interface BuyerChannelStore {
     buyerEvmAddr: string,
     channelKind?: ChannelKind,
   ): StoredChannel[];
+  /** The one-off channel opened for this request, in any status. */
+  getOneOffChannelByRequest(peerId: string, role: ChannelRole, requestId: string): StoredChannel | null;
   updateChannelStatus(sessionId: string, status: ChannelStatus, settledAmount?: string): void;
   replaceMetadataServiceTotals(
     sessionId: string,

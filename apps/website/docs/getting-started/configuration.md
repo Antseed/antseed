@@ -205,7 +205,7 @@ Each service entry supports five optional fields:
 | `categories` | string[] | Normie-friendly tags announced in peer metadata (e.g. `chat`, `coding`, `math`, `study`, `fast`, `free`). |
 | `pricing` | object | Per-service pricing in USD per million tokens. If omitted, the provider's `defaults` are used. |
 | `capabilities` | object | Optional discovery hints: `contextWindow`, `maxOutputTokens`, `inputs`, `outputs`, `reasoning`, `toolUse`, `structuredOutput`, and `supportedParameters`. |
-| `unitBillingModels` | object | Optional per-protocol non-token pricing. Currently consumed by the `openai` provider for `openai-images` services. |
+| `unitBillingModels` | object | Optional per-protocol non-token pricing. Consumed by the `openai` provider for `openai-images` services and by the `venice-video` provider for `venice-video` services. |
 
 Capabilities are hints, not enforced limits. Omitted fields mean “unknown.” Supported modality values for `inputs` and `outputs` are `text`, `image`, `audio`, `video`, and `pdf`. `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, e.g. `background`, `output_format`, `seed`) — useful for image services where clients otherwise have to guess. The `openai` provider automatically advertises `outputs: ["image"]` for `openai-images` services; explicit config extends or overrides that default per field.
 

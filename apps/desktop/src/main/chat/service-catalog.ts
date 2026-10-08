@@ -1,6 +1,7 @@
 import type {
   CatalogServiceCapabilities,
   CatalogServiceProtocol,
+  NativeVideoProtocol,
   NetworkServiceCatalogPeer,
   PeerInfo,
 } from '@antseed/node';
@@ -11,7 +12,7 @@ import {
   preferredModelDisplayName,
 } from '@antseed/node';
 
-export type ChatServiceProtocol = Exclude<CatalogServiceProtocol, 'openai-images' | 'typesafe-systemone'>;
+export type ChatServiceProtocol = Exclude<CatalogServiceProtocol, 'openai-images' | 'typesafe-systemone' | NativeVideoProtocol>;
 export type { CatalogServiceCapabilities, CatalogServiceProtocol };
 
 export type ChatServiceCatalogEntry = {

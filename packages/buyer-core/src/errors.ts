@@ -9,6 +9,7 @@ export type AntseedErrorCode =
   | 'buyer-reserve-misconfigured'
   | 'buyer-session-state'
   | 'buyer-deposits-insufficient'
+  | 'buyer-reserve-topup-timeout'
   | 'buyer-transport-closed'
   | 'invalid-spending-auth-header'
   | 'chain-rpc-unavailable'
@@ -79,6 +80,6 @@ export function faultCodeOf(err: unknown, depth = 0): AntseedErrorCode | null {
 const ANTSEED_ERROR_CODES: ReadonlySet<AntseedErrorCode> = new Set<AntseedErrorCode>([
   'node-not-started', 'node-stopped', 'invalid-request', 'buyer-stream-limit',
   'buyer-budget-too-low', 'buyer-reserve-misconfigured', 'buyer-session-state',
-  'buyer-deposits-insufficient', 'buyer-transport-closed', 'invalid-spending-auth-header',
+  'buyer-deposits-insufficient', 'buyer-reserve-topup-timeout', 'buyer-transport-closed', 'invalid-spending-auth-header',
   'chain-rpc-unavailable', 'peer-not-authorized', 'peer-protocol-violation',
 ]);

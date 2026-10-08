@@ -318,6 +318,8 @@ export function buildSellerPluginRuntimeEnv(
     ? 'LOCAL_LLM'
     : pluginPackage === '@antseed/provider-typesafe'
       ? 'TYPESAFE'
+      : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
+      : pluginPackage === '@antseed/provider-fal-video' ? 'FAL_VIDEO'
       : 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl
@@ -463,7 +465,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)
           const basePluginConfig = buildPluginConfig(configFields)
-          const pluginConfig = mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride })
+          const pluginConfig = {
+            ...mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride }),
+            // Lets plugins keep small state (e.g. pending video download URLs) across restarts.
+            ANTSEED_DATA_DIR: globalOpts.dataDir,
+          }
           const provider = await plugin.createProvider(pluginConfig)
           if (provider.init) {
             spinner.text = `Validating credentials for "${providerName}"...`
