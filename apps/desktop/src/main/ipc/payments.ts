@@ -59,6 +59,7 @@ import {
   startPaymentsPortal,
 } from '../payments/portal.js';
 import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-window.js';
+import { resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
 import { getMainWindow } from '../ui/window.js';
 import {
   lookupPeer,
@@ -146,53 +147,20 @@ export function registerPaymentsIpc(): void {
       if (!provider) return { ok: false, error: 'card-not-configured' };
 
       const amount = Number(opts?.amountUsdc);
-      const hasAmount = Number.isFinite(amount) && amount > 0;
-      let template = provider.url.split('{address}').join(identity.wallet.address);
-      if (hasAmount) template = template.split('{amount}').join(String(amount));
+      const amountStr = Number.isFinite(amount) && amount > 0 ? String(amount) : '';
       let parsed: URL;
       try {
-        parsed = new URL(template);
-      } catch {
-        return { ok: false, error: 'Card provider URL is invalid' };
-      }
-      // https only — except loopback, so a locally-run payment page can be
-      // tested from the app before it is deployed.
-      const isLoopback = parsed.hostname === '127.0.0.1' || parsed.hostname === 'localhost';
-      if (parsed.protocol !== 'https:' && !(parsed.protocol === 'http:' && isLoopback)) {
-        return { ok: false, error: 'Card provider URL must be https' };
-      }
-      if (!hasAmount) {
-        // No amount entered — drop query params still carrying the placeholder.
-        for (const [key, value] of [...parsed.searchParams.entries()]) {
-          if (value.includes('{amount}')) parsed.searchParams.delete(key);
-        }
+        parsed = resolveCardProviderUrl(provider.url, identity.wallet.address, amountStr);
+      } catch (err) {
+        return { ok: false, error: err instanceof Error ? err.message : String(err) };
       }
 
-      // Antseed Pay authenticates the request: the page expects the buyer
-      // address, currency and amount plus a personal-sign signature over the
-      // canonical message below, proving the params came from this wallet.
-      // The signed message carries the LOWERCASED address (the URL param stays
-      // checksummed) — verified against the reference sig their page accepts.
-      // The header line is a wire-format constant that must match the page's
-      // `buildFundingMessage` byte for byte ("AntSeed Pay", capital S); it is
-      // not display copy and must not follow product-name renames.
+      // Antseed Pay authenticates the request: a personal-sign signature over
+      // the buyer address, currency and amount (see @antseed/payments/card-link,
+      // shared with the gateway console so both build the same link).
       const payPage = payPageProvider(provider.id);
       if (payPage) {
-        const cur = 'USD';
-        const amountStr = hasAmount ? String(amount) : '';
-        const message = [
-          'AntSeed Pay',
-          `address: ${identity.wallet.address.toLowerCase()}`,
-          `currency: ${cur}`,
-          `amount: ${amountStr}`,
-        ].join('\n');
-        parsed.searchParams.set('address', identity.wallet.address);
-        parsed.searchParams.set('cur', cur);
-        if (amountStr) parsed.searchParams.set('amount', amountStr);
-        parsed.searchParams.set('sig', await identity.wallet.signMessage(message));
-        // Open the page on exactly one integration (no provider tab strip).
-        // Unsigned, UX-only.
-        parsed.searchParams.set('provider', payPage);
+        await signAntseedPayUrl(parsed, { wallet: identity.wallet, amount: amountStr, integration: payPage });
       }
       const url = parsed.toString();
 

@@ -36,7 +36,7 @@ jobs:
       - name: Build tier 2 (plugins)
         run: pnpm run build:tier2
 
-      - name: Build tier 3 (payments)
+      - name: Build tier 3 (payments, ants, gateway console)
         run: pnpm run build:tier3
 
       # CLI test script builds itself; desktop has no tests — skip tier4
@@ -121,7 +121,7 @@ jobs:
       - name: Build tier 2 (plugins)
         run: pnpm run build:tier2
 
-      - name: Build tier 3 (payments)
+      - name: Build tier 3 (payments, ants, gateway console)
         run: pnpm run build:tier3
 
       - name: Typecheck

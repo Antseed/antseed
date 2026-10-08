@@ -181,6 +181,10 @@ describe('LocalRouter', () => {
     expect(router.allowsPeerForPolicy(makeRequest(), lowRepAllowedPrice)).toBe(false);
     expect(router.allowsPeerForPolicy(makeRequest(), highRepAllowedPrice)).toBe(true);
     expect(router.allowsPeerForPolicy(makeRequest(), highRepOverpriced)).toBe(false);
+
+    expect(router.explainPolicyRejection(makeRequest(), lowRepAllowedPrice)).toMatch(/^reputation \d+ below buyer minimum/);
+    expect(router.explainPolicyRejection(makeRequest(), highRepAllowedPrice)).toBeNull();
+    expect(router.explainPolicyRejection(makeRequest(), highRepOverpriced)).toMatch(/^output price \$100 over buyer cap \$/);
   });
 
   it('uses service-specific seller offer pricing when request service is present', () => {

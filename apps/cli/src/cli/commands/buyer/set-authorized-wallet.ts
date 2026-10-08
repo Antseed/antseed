@@ -24,11 +24,14 @@ interface AuthorizationServer {
 interface BrowserAuthorizationInput {
   dataDir: string;
   configPath?: string;
+  /** Sign for this wallet instead of the data dir's default identity (a named buyer identity's key). */
+  identityHex?: string;
   openBrowser?: (url: string) => Promise<unknown>;
   createServer: (options: {
     port: number;
     dataDir: string;
     configPath?: string;
+    identityHex?: string;
     onPaymentCompleted: () => void;
   }) => Promise<AuthorizationServer>;
   log?: (message: string) => void;
@@ -37,6 +40,24 @@ interface BrowserAuthorizationInput {
 interface SetAuthorizedWalletOptions {
   self: boolean;
   open: boolean;
+  identity?: string;
+}
+
+/**
+ * The wallet to authorize for: the data dir's default identity, or a named
+ * buyer identity (a gateway workspace's wallet). Throws for an unknown name.
+ */
+export async function loadAuthorizingIdentity(dataDir: string, name: string | undefined): Promise<Pick<CryptoContext, 'wallet' | 'address'> & { identityHex?: string }> {
+  const { DEFAULT_BUYER_IDENTITY } = await import('@antseed/node');
+  if (!name || name === DEFAULT_BUYER_IDENTITY) {
+    const { loadCryptoContext } = await import('../../payment-utils.js');
+    const context = await loadCryptoContext(dataDir);
+    return { wallet: context.wallet, address: context.address };
+  }
+  const { loadBuyerIdentity } = await import('../../../buyer-identities/store.js');
+  const identity = await loadBuyerIdentity(dataDir, name);
+  if (!identity) throw new Error(`Buyer identity "${name}" was not found (see \`antseed buyer identity list\`).`);
+  return { wallet: identity.wallet, address: identity.wallet.address, identityHex: identity.wallet.privateKey.replace(/^0x/, '') };
 }
 
 export function buildAuthorizedWalletUrl(port: number, token: string): string {
@@ -53,6 +74,7 @@ export async function runBrowserWalletAuthorization(input: BrowserAuthorizationI
     port: 0,
     dataDir: input.dataDir,
     ...(input.configPath ? { configPath: input.configPath } : {}),
+    ...(input.identityHex ? { identityHex: input.identityHex } : {}),
     onPaymentCompleted: complete,
   });
 
@@ -96,6 +118,7 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
     .description('Authorize an external wallet in the browser, or authorize the buyer wallet with --self')
     .option('--self', 'authorize the buyer hot wallet itself (requires ETH for gas)', false)
     .option('--no-open', 'print the secure local URL without opening a browser')
+    .option('--identity <name>', 'authorize for this buyer identity\'s wallet (e.g. a gateway workspace\'s) instead of the default one')
     .addHelpText('after', '\nBy default, opens the AI VPN wallet flow so the connected external wallet submits the transaction and pays gas. --self instead makes the buyer hot wallet its own authorized wallet. The authorized wallet controls withdrawals and future authorization transfers.')
     .action(async (options: SetAuthorizedWalletOptions) => {
       let spinner: ReturnType<typeof ora> | undefined;
@@ -103,6 +126,8 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
         if (options.self && !options.open) throw new Error('--no-open cannot be used with --self.');
 
         const globalOpts = getGlobalOptions(buyerCmd);
+        const authorizing = await loadAuthorizingIdentity(globalOpts.dataDir, options.identity);
+        if (options.identity) console.log(chalk.dim(`Identity: ${options.identity} (${authorizing.address})`));
         if (!options.self) {
           const { createServer } = await import('@antseed/payments');
           const openBrowser = options.open ? (await import('open')).default : undefined;
@@ -110,6 +135,7 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
             dataDir: globalOpts.dataDir,
             configPath: globalOpts.config,
             createServer,
+            ...(authorizing.identityHex ? { identityHex: authorizing.identityHex } : {}),
             ...(openBrowser ? { openBrowser } : {}),
             log: (message) => console.log(chalk.dim(message)),
           });
@@ -118,11 +144,11 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
         }
 
         const { loadConfig } = await import('../../../config/loader.js');
-        const { loadCryptoContext, createDepositsClient, requireCryptoConfig } = await import('../../payment-utils.js');
+        const { createDepositsClient, requireCryptoConfig } = await import('../../payment-utils.js');
         const { makeDepositsDomain, signSetOperator } = await import('@antseed/node');
         const config = await loadConfig(globalOpts.config);
         const crypto = requireCryptoConfig(config);
-        const context = await loadCryptoContext(globalOpts.dataDir);
+        const context = authorizing;
         console.log(chalk.dim(`Buyer: ${context.address}`));
         console.log(chalk.dim(`Chain: ${crypto.evmChainId} | Deposits: ${crypto.depositsContractAddress}`));
         console.log(chalk.yellow('The buyer wallet will control withdrawals and future authorization transfers.'));

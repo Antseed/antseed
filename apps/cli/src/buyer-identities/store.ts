@@ -6,7 +6,9 @@ import {
   FileIdentityStore,
   identityFromPrivateKeyHex,
   isValidBuyerIdentityName,
+  loadOrCreateIdentity,
   type Identity,
+  type IdentityStore,
 } from '@antseed/node'
 
 /**
@@ -158,17 +160,59 @@ export async function listBuyerIdentities(dataDir: string): Promise<StoredBuyerI
 /** The default wallet's address, or why the CLI cannot read it. */
 export async function readDefaultWallet(dataDir: string): Promise<{ address: string | null; note: string }> {
   try {
-    const hex = await new FileIdentityStore(dataDir).load()
-    if (hex && hex.length === 64) return { address: identityFromPrivateKeyHex(hex).wallet.address, note: '' }
+    const { identity, fromEnv } = await loadDefaultBuyerIdentity(dataDir)
+    if (identity) return { address: identity.wallet.address, note: fromEnv ? 'from ANTSEED_IDENTITY_HEX' : '' }
     return { address: null, note: 'created on first buyer start' }
   } catch {
     return { address: null, note: 'encrypted by the AI VPN' }
   }
 }
 
-/** Wallet address of any identity, default included; null when unknown or unreadable. */
+class NoStoredDefaultIdentity extends Error {}
+
+/**
+ * The default identity exactly as the buyer loads it: ANTSEED_IDENTITY_HEX
+ * (how the desktop app hands the buyer its wallet) first, then the data
+ * dir's identity.key. Goes through the node's own loader, so a key it already
+ * took from the environment in this process is found too, but never creates
+ * a key. `fromEnv` says the key did not come from the data dir.
+ */
+export async function loadDefaultBuyerIdentity(dataDir: string): Promise<{ identity: Identity | null; fromEnv: boolean }> {
+  let readDisk = false
+  const store: IdentityStore = {
+    load: () => {
+      readDisk = true
+      return new FileIdentityStore(dataDir).load()
+    },
+    save: () => Promise.reject(new NoStoredDefaultIdentity()),
+  }
+  try {
+    const identity = await loadOrCreateIdentity(store)
+    return { identity, fromEnv: !readDisk }
+  } catch (err) {
+    if (err instanceof NoStoredDefaultIdentity) return { identity: null, fromEnv: false }
+    throw err
+  }
+}
+
+/**
+ * The desktop app keeps the default wallet encrypted (identity.enc) and hands
+ * it to the buyer in ANTSEED_IDENTITY_HEX; without that variable a CLI
+ * process cannot know which wallet the buyer pays from.
+ */
+export function hasDesktopIdentity(dataDir: string): Promise<boolean> {
+  return exists(join(dataDir, 'identity.enc'))
+}
+
+/** The signing key of any identity, default included, as the buyer loads it; null when none is stored. */
+export async function loadBuyerSigningIdentity(dataDir: string, name: string): Promise<Identity | null> {
+  if (name === DEFAULT_BUYER_IDENTITY) return (await loadDefaultBuyerIdentity(dataDir)).identity
+  return loadBuyerIdentity(dataDir, name)
+}
+
+/** Wallet address of any identity, default included (honouring ANTSEED_IDENTITY_HEX); null when unknown or unreadable. */
 export async function buyerIdentityAddress(dataDir: string, name: string): Promise<string | null> {
-  if (name === DEFAULT_BUYER_IDENTITY) return (await readDefaultWallet(dataDir)).address
+  if (name === DEFAULT_BUYER_IDENTITY) return (await loadDefaultBuyerIdentity(dataDir).catch(() => null))?.identity?.wallet.address ?? null
   return (await loadBuyerIdentity(dataDir, name).catch(() => null))?.wallet.address ?? null
 }
 

@@ -1,9 +1,13 @@
 import { resolveChainConfig } from '@antseed/node'
-import { Contract, JsonRpcProvider } from 'ethers'
+import { Contract } from 'ethers'
+import { resolveBaseRpcUrlOverride } from '../cli/payment-utils.js'
+import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
 import { GatewayAccounting } from './accounting.js'
+import { loadOrCreateControlSecret } from './buyer-control.js'
+import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
-import { GatewayServer, type GatewayTopupOptions } from './server.js'
+import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 import { X402Facilitator, type X402Asset } from './x402.js'
@@ -41,11 +45,37 @@ export interface GatewayRuntimeOptions {
   /** Accept x402 top-ups into keys' buyer wallets. */
   topup?: GatewayTopupConfig
   onLog?: (message: string) => void
+  /**
+   * Builds the console handler (`/console`) once the store exists. With a
+   * console the gateway also starts without any keys, so the owner can
+   * claim it and create the first one there.
+   */
+  createConsole?: (context: GatewayConsoleContext) => GatewayConsoleHandle | null
+}
+
+/** What `createConsole` returns: the request handler plus start-up hooks. */
+export interface GatewayConsoleHandle extends NonNullable<GatewayServerOptions['console']> {
+  /** Called once the gateway listens, with the bound port. */
+  listening?(port: number): void
+  /** A fresh single-use owner setup link while the console is unclaimed; null once it has an owner. */
+  setupLink?(): string | null
+}
+
+export interface GatewayConsoleContext {
+  store: GatewayStore
+  buyerPort: number
+  controlSecret: string
+  spendFeedState: () => string
+  x402Enabled: boolean
+  /** The address the gateway listens on (`--host`), for judging who can reach it. */
+  listenHost?: string
 }
 
 export interface GatewayRuntime {
   port: number
   store: GatewayStore
+  /** The console, when `createConsole` was given. */
+  console: GatewayConsoleHandle | null
   stop: () => Promise<void>
 }
 
@@ -57,26 +87,19 @@ function usdcAsset(config: Awaited<ReturnType<typeof loadConfig>>): () => Promis
   const crypto = config.payments?.crypto
   const chain = resolveChainConfig({
     chainId: crypto?.chainId,
-    rpcUrl: crypto?.rpcUrl,
+    rpcUrl: resolveBaseRpcUrlOverride() ?? crypto?.rpcUrl,
     usdcContractAddress: crypto?.usdcContractAddress,
   })
   let asset: Promise<X402Asset> | null = null
   return () => {
+    // Read once per process through the shared provider (which fails over between endpoints).
     asset ??= (async () => {
-      let lastError: unknown
-      for (const rpcUrl of [chain.rpcUrl, ...(chain.fallbackRpcUrls ?? [])]) {
-        try {
-          const token = new Contract(chain.usdcContractAddress, [
-            'function name() view returns (string)',
-            'function version() view returns (string)',
-          ], new JsonRpcProvider(rpcUrl, chain.evmChainId, { staticNetwork: true }))
-          const [name, version] = await Promise.all([token.getFunction('name')(), token.getFunction('version')()]) as [string, string]
-          return { network: `eip155:${chain.evmChainId}`, chainId: chain.evmChainId, address: chain.usdcContractAddress, name, version }
-        } catch (error) {
-          lastError = error
-        }
-      }
-      throw lastError
+      const token = new Contract(chain.usdcContractAddress, [
+        'function name() view returns (string)',
+        'function version() view returns (string)',
+      ], sharedChainProvider(chain))
+      const [name, version] = await Promise.all([token.getFunction('name')(), token.getFunction('version')()]) as [string, string]
+      return { network: `eip155:${chain.evmChainId}`, chainId: chain.evmChainId, address: chain.usdcContractAddress, name, version }
     })().catch((error: unknown) => {
       asset = null
       throw error
@@ -114,7 +137,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     } else if (options.environmentApiKey === null && store.retireEnvironmentKey()) {
       options.onLog?.('ANTSEED_TUNNEL_API_KEY is unset; revoked the key it created')
     }
-    if (store.countActiveKeys() === 0) {
+    if (store.countActiveKeys() === 0 && !options.createConsole) {
       throw new Error('No active API keys. Create one with `antseed gateway key create --label <name>`.')
     }
   } catch (error) {
@@ -122,6 +145,10 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     throw error
   }
 
+  const controlSecret = loadOrCreateControlSecret(options.dataDir)
+  // Confirm the buyer applies routing policies before trusting it with them;
+  // an older buyer would ignore the header and route unrestricted.
+  const policyProbe = new BuyerPolicyProbe({ buyerPort, secret: controlSecret, onLog: options.onLog })
   const identityAddress = (name: string): Promise<string | null> => liveBuyerIdentityAddress(buyerPort, name)
 
   const accounting = new GatewayAccounting(store, {
@@ -129,6 +156,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   })
   const spendFeed = new SpendFeedPoller({
     buyerPort,
+    controlSecret,
     onPage: (page) => {
       const recorded = accounting.ingest(page.bootId, page.events)
       if (recorded > 0) options.onLog?.(`recorded ${recorded} spend event(s)`)
@@ -143,7 +171,18 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
       maxUsdc: parseUsdToUsdc(options.topup.maxUsd ?? DEFAULT_TOPUP_MAX_USD),
     }
     : null
+  const consoleHandler = options.createConsole?.({
+    store,
+    buyerPort,
+    controlSecret,
+    spendFeedState: () => spendFeed.state,
+    x402Enabled: Boolean(topup),
+    listenHost: options.listenHost ?? '127.0.0.1',
+  }) ?? null
   const server = new GatewayServer({
+    console: consoleHandler,
+    controlSecret,
+    buyerPolicyUnsupported: () => policyProbe.policyUnsupported(),
     topup,
     store,
     accounting,
@@ -160,16 +199,21 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
   try {
     port = await server.start()
   } catch (error) {
+    policyProbe.stop()
     accounting.dispose()
     store.close()
     throw error
   }
   spendFeed.start()
+  await policyProbe.start()
+  consoleHandler?.listening?.(port)
 
   return {
     port,
     store,
+    console: consoleHandler,
     stop: async () => {
+      policyProbe.stop()
       await server.stop()
       await spendFeed.stop()
       accounting.dispose()

@@ -1,5 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import QRCode from 'qrcode';
+import { buildUsdcPaymentUri } from '@antseed/wallet-config';
 import { HugeiconsIcon } from '@hugeicons/react';
 import {
   ArrowDown01Icon,
@@ -39,23 +40,10 @@ type DepositWatchInfo = {
   chainId: number;
 };
 
-function amountToBaseUnits(amount: string): bigint | null {
-  const value = Number(amount);
-  if (!Number.isFinite(value) || value <= 0) return null;
-  return BigInt(Math.round(value * 1e6));
-}
-
 function baseUnitsToUsd(baseUnits: string | undefined): string {
   if (!baseUnits) return '0';
   const value = Number(baseUnits) / 1e6;
   return value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: 2 });
-}
-
-/** EIP-681 payment request: opens a prefilled USDC transfer in mobile wallets. */
-function buildPaymentUri(info: DepositWatchInfo, amount: string): string {
-  const baseUnits = amountToBaseUnits(amount);
-  const base = `ethereum:${info.usdcAddress}@${info.chainId}/transfer?address=${info.address}`;
-  return baseUnits ? `${base}&uint256=${baseUnits.toString()}` : base;
 }
 
 // ─── Styled QR (round dots, rounded finders, Base badge) ───
@@ -666,7 +654,7 @@ export function VprDepositView({ onSelectView }: Props) {
 
           <VprCard className={styles.payCard}>
             {watchInfo ? (
-              <StyledQr text={buildPaymentUri(watchInfo, amount)} label="Scan to send USDC on Base" />
+              <StyledQr text={buildUsdcPaymentUri(watchInfo, amount)} label="Scan to send USDC on Base" />
             ) : (
               <div className={styles.qrPlaceholder} aria-hidden="true" />
             )}

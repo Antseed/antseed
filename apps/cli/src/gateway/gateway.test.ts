@@ -1,8 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync } from 'node:fs'
 import * as http from 'node:http'
-import { tmpdir } from 'node:os'
-import { join } from 'node:path'
 import { test } from 'node:test'
 import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed } from '../proxy/spend-attribution.js'
 import { GatewayAccounting } from './accounting.js'
@@ -17,6 +14,7 @@ import { GatewayStore } from './store.js'
 import { liveBuyerIdentityAddress } from './runtime.js'
 import { Wallet } from 'ethers'
 import { randomBytes } from 'node:crypto'
+import { tempDataDir } from './console-api/test-support.js'
 import {
   X402Facilitator,
   decodeHeaderJson,
@@ -28,12 +26,6 @@ import {
 } from './x402.js'
 
 const NO_LIMITS = { daily: null, monthly: null, total: null }
-
-function tempStore(): { store: GatewayStore; dir: string; cleanup: () => void } {
-  const dir = mkdtempSync(join(tmpdir(), 'antseed-gateway-'))
-  const store = new GatewayStore(dir)
-  return { store, dir, cleanup: () => { store.close(); rmSync(dir, { recursive: true, force: true }) } }
-}
 
 async function listen(server: http.Server): Promise<number> {
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
@@ -170,7 +162,7 @@ test('limits use UTC calendar periods and count in-flight holds', () => {
 })
 
 test('store keeps keys hashed, syncs the tunnel env key, and records ledger entries idempotently', () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   try {
     const { key, secret } = store.createKey({ label: 'Alice', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
     assert.equal(store.findKeyBySecret(secret)?.id, key.id)
@@ -212,7 +204,7 @@ test('store keeps keys hashed, syncs the tunnel env key, and records ledger entr
 })
 
 test('gateway pays with the key\'s buyer identity and ignores the client\'s choice', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 100_000 })
   const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
   const owner = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
@@ -237,7 +229,7 @@ test('gateway pays with the key\'s buyer identity and ignores the client\'s choi
 })
 
 test('spend signed by a different identity than the key\'s is not booked to the key', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 100_000, reportIdentity: 'other' })
   const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port)
@@ -345,7 +337,7 @@ test('gateway wallet lookup follows the live buyer until it reloads an identity'
 })
 
 test('gateway exposes only authenticated supported API routes', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const { secret } = store.createKey({ label: 'Cursor', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port)
@@ -383,7 +375,7 @@ test('gateway exposes only authenticated supported API routes', async () => {
 })
 
 test('gateway rejects revoked and expired keys', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const revoked = store.createKey({ label: 'Old', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const expired = store.createKey({ label: 'Trial', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: Date.now() - 1 })
@@ -405,7 +397,7 @@ test('gateway rejects revoked and expired keys', async () => {
 })
 
 test('gateway answers 413 to oversized bodies without forwarding them', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const { secret } = store.createKey({ label: 'Big', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
   const gateway = await startGateway(store, buyer.port)
@@ -422,7 +414,7 @@ test('gateway answers 413 to oversized bodies without forwarding them', async ()
 })
 
 test('gateway settles reported spend per key and answers 402 once a cap is reached', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   // Each request costs $0.40 against a $1.00 daily cap.
   const buyer = await fakeBuyer({ costUsdc: 400_000 })
   const limited = store.createKey({ label: 'Friend', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
@@ -472,7 +464,7 @@ test('gateway settles reported spend per key and answers 402 once a cap is reach
 })
 
 test('gateway holds block concurrent requests from slipping under a cap', () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const accounting = new GatewayAccounting(store, { holdUsdc: 300_000, settleGraceMs: 10 })
   try {
     const { key } = store.createKey({ label: 'Burst', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 500_000, monthly: null, total: null }, expiresAt: null })
@@ -488,7 +480,7 @@ test('gateway holds block concurrent requests from slipping under a cap', () => 
 })
 
 test('a finished request keeps its remaining hold after its first spend delta', () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const accounting = new GatewayAccounting(store, { holdUsdc: 300_000, settleGraceMs: 60_000 })
   try {
     const { key } = store.createKey({ label: 'Stream', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
@@ -506,7 +498,7 @@ test('a finished request keeps its remaining hold after its first spend delta', 
 })
 
 test('free routes neither reserve holds nor count against caps', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const { key, secret } = store.createKey({ label: 'Poller', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 400_000, monthly: null, total: null }, expiresAt: null })
   const gateway = await startGateway(store, buyer.port, 300_000)
@@ -524,7 +516,7 @@ test('free routes neither reserve holds nor count against caps', async () => {
 })
 
 test('gateway fails closed for capped keys when the buyer does not report spend', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ spendFeed: false })
   const capped = store.createKey({ label: 'Capped', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: null, monthly: 5_000_000, total: null }, expiresAt: null })
   const open = store.createKey({ label: 'Open', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
@@ -622,7 +614,7 @@ async function signPayment(payer: Pick<Wallet, 'address' | 'signTypedData'>, req
 }
 
 test('x402 top-up: 402 names the key wallet, a signed payment is settled and credited once', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
   const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
@@ -666,7 +658,7 @@ test('x402 top-up: 402 names the key wallet, a signed payment is settled and cre
 })
 
 test('x402 top-up rejects payments that do not match before asking the facilitator', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
   const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
@@ -700,7 +692,7 @@ test('x402 top-up rejects payments that do not match before asking the facilitat
 })
 
 test('x402 top-up still answers 200 when the settled payment cannot be booked', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
   const team = store.createKey({ label: 'Team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null, topupEnabled: true })
@@ -723,7 +715,7 @@ test('x402 top-up still answers 200 when the settled payment cannot be booked', 
 })
 
 test('x402 top-up is unavailable without a facilitator, for keys on the operator wallet, or when the owner has not allowed it', async () => {
-  const { store, cleanup } = tempStore()
+  const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
   const facilitator = await fakeFacilitator()
   const owner = store.createKey({ label: 'Owner', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null, topupEnabled: true })

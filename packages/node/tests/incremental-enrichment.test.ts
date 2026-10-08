@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AntseedNode, type PeerInfo } from '../src/node.js';
+import { AntseedNode, ON_CHAIN_STATS_TTL_MS, type PeerInfo } from '../src/node.js';
 import { GITHUB_VERIFICATION_PROOF_TYPE } from '../src/discovery/github-verification.js';
 import * as publicJson from '../src/reputation/public-json.js';
 
@@ -64,6 +64,75 @@ describe('AntseedNode incremental discovery enrichment', () => {
     expect(read.mock.calls[0]![0]).toHaveLength(2);
     expect(stale.every((p) => typeof p.onChainReputationScore === 'number')).toBe(true);
     expect(fresh.onChainAgentId).toBeUndefined();
+  });
+
+  it('reuses a fresh read for newly built PeerInfo objects of the same peer', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+    (node as any)._trustSignalsClient = { read };
+
+    await (node as any)._enrichPeersWithOnChainStats([makePeer('a'.repeat(40))]);
+    // A later discovery cycle rebuilds the PeerInfo without on-chain fields.
+    const rediscovered = makePeer('a'.repeat(40));
+    const unregistered = makePeer('b'.repeat(40));
+    read.mockImplementationOnce(async () => new Map());
+    await (node as any)._enrichPeersWithOnChainStats([rediscovered, unregistered]);
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[1]![0]).toHaveLength(1);
+    expect(rediscovered.onChainChannelCount).toBe(25);
+    expect(typeof rediscovered.onChainReputationScore).toBe('number');
+
+    // Both peers (including the one without an agent id) are now cached.
+    await (node as any)._enrichPeersWithOnChainStats([makePeer('a'.repeat(40)), makePeer('b'.repeat(40))]);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('re-reads a peer once the on-chain stats TTL (10 min) has passed', async () => {
+    vi.useFakeTimers();
+    try {
+      const node = new AntseedNode({ role: 'buyer' });
+      const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+      (node as any)._trustSignalsClient = { read };
+      expect(ON_CHAIN_STATS_TTL_MS).toBe(600_000);
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      vi.advanceTimersByTime(ON_CHAIN_STATS_TTL_MS - 1_000);
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      expect(read).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(2_000);
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      expect(read).toHaveBeenCalledTimes(2);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('merges partial discovery batches queued during a read into one batched read', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    (node as any)._started = true;
+    let release!: () => void;
+    const gate = new Promise<void>((resolve) => { release = resolve; });
+    const read = vi.fn(async (sellers: string[]) => {
+      if (read.mock.calls.length === 1) await gate;
+      return new Map(sellers.map((seller) => [seller, signals()]));
+    });
+    (node as any)._trustSignalsClient = { read };
+    const discovered = vi.fn();
+    node.on('peers:discovered', discovered);
+
+    (node as any)._queuePartialPeerEnrichment([makePeer('a'.repeat(40))]);
+    await new Promise((resolve) => setImmediate(resolve));
+    // Three more partial batches arrive while the first read is in flight.
+    (node as any)._queuePartialPeerEnrichment([makePeer('b'.repeat(40))]);
+    (node as any)._queuePartialPeerEnrichment([makePeer('c'.repeat(40))]);
+    (node as any)._queuePartialPeerEnrichment([makePeer('d'.repeat(40)), makePeer('b'.repeat(40))]);
+    release();
+    await (node as any)._partialPeerEnrichmentChain;
+    await (node as any)._partialPeerEnrichmentChain;
+
+    expect(read).toHaveBeenCalledTimes(2);
+    expect(read.mock.calls[1]![0]).toHaveLength(3);
+    expect(discovered).toHaveBeenCalledTimes(2);
+    expect((discovered.mock.calls[1]![0] as PeerInfo[]).map((p) => p.peerId[0]).sort()).toEqual(['b', 'c', 'd']);
   });
 
   it('keeps the last-known snapshot when the batched read fails or omits the peer', async () => {

@@ -4,6 +4,7 @@ import { Command } from 'commander';
 import { Wallet, ZeroAddress } from 'ethers';
 import {
   buildAuthorizedWalletUrl,
+  loadAuthorizingIdentity,
   registerBuyerSetAuthorizedWalletCommand,
   runBrowserWalletAuthorization,
   setSelfAuthorizedWallet,
@@ -137,7 +138,43 @@ test('command defaults to browser authorization and exposes explicit self and no
   const command = buyerCmd.commands[0]!;
   assert.equal(command.name(), 'set-authorized-wallet');
   assert.equal(command.registeredArguments.length, 0);
-  assert.deepEqual(command.options.map((option) => option.long), ['--self', '--no-open']);
+  assert.deepEqual(command.options.map((option) => option.long), ['--self', '--no-open', '--identity']);
   command.outputHelp();
   assert.match(help, /connected external wallet.*--self.*buyer hot wallet/s);
+});
+
+test('browser flow passes a named identity\'s key to the local page server', async () => {
+  const seen: Array<string | undefined> = [];
+  await runBrowserWalletAuthorization({
+    dataDir: '/tmp/buyer',
+    identityHex: 'ab'.repeat(32),
+    createServer: async (options) => {
+      seen.push(options.identityHex);
+      return {
+        bearerToken: 'token',
+        server: { address: () => ({ port: 4321 }) },
+        listen: async () => { queueMicrotask(options.onPaymentCompleted); },
+        close: async () => {},
+      };
+    },
+    log: () => {},
+  });
+  assert.deepEqual(seen, ['ab'.repeat(32)]);
+});
+
+test('loadAuthorizingIdentity loads a named buyer identity and refuses unknown names', async () => {
+  const { mkdtemp, rm } = await import('node:fs/promises');
+  const { tmpdir } = await import('node:os');
+  const { join } = await import('node:path');
+  const { createBuyerIdentity } = await import('../../../buyer-identities/store.js');
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-authorize-'));
+  try {
+    const created = await createBuyerIdentity(dir, 'team-a');
+    const loaded = await loadAuthorizingIdentity(dir, 'team-a');
+    assert.equal(loaded.address, created.address);
+    assert.equal(loaded.identityHex?.length, 64);
+    await assert.rejects(loadAuthorizingIdentity(dir, 'missing'), /Buyer identity "missing" was not found/);
+  } finally {
+    await rm(dir, { recursive: true, force: true });
+  }
 });

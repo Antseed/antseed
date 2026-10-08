@@ -3,7 +3,7 @@ import { homedir } from "node:os";
 import { join } from "node:path";
 import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
 import { computeTrustScore } from './reputation/trust-score.js';
-import { TrustSignalsClient } from './payments/evm/trust-signals-client.js';
+import { TrustSignalsClient, type TrustSignals } from './payments/evm/trust-signals-client.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
@@ -128,6 +128,29 @@ function applyTrust(peer: PeerInfo): void {
   if (!trust) return;
   peer.trust = trust;
   peer.onChainReputationScore = trust.score;
+}
+
+/** How long an on-chain trust read of a peer is reused before it is read again. */
+export const ON_CHAIN_STATS_TTL_MS = 10 * 60_000;
+const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
+
+/** Copy one batched trust read onto a peer. */
+function applyTrustSignals(p: PeerInfo, read: TrustSignals, fetchedAt: number): void {
+  p.onChainAgentId = read.agentId;
+  if (read.channelCount !== undefined) p.onChainChannelCount = read.channelCount;
+  if (read.ghostCount !== undefined) p.onChainGhostCount = read.ghostCount;
+  if (read.totalVolumeUsdcMicros !== undefined) p.onChainTotalVolumeUsdcMicros = read.totalVolumeUsdcMicros;
+  if (read.lastSettledAtSec !== undefined) p.onChainLastSettledAtSec = read.lastSettledAtSec;
+  if (read.usageEpoch !== undefined) {
+    p.onChainUsageEpoch = read.usageEpoch;
+    p.onChainUsageShareBps = read.usageShareBps;
+    p.onChainUsageLastEpochUsdcMicros = read.usageLastEpochUsdcMicros;
+  }
+  if (read.poolStakeAnts !== undefined) p.onChainPoolStakeAnts = read.poolStakeAnts;
+  if (read.poolPowerShareBps !== undefined) p.onChainPoolPowerShareBps = read.poolPowerShareBps;
+  if (read.washFlagged !== undefined) p.onChainWashFlagged = read.washFlagged;
+  if (read.washShareBps !== undefined) p.onChainWashShareBps = read.washShareBps;
+  p.onChainStatsFetchedAt = fetchedAt;
 }
 
 export type { Provider, ProviderStreamCallbacks };
@@ -424,6 +447,20 @@ export class AntseedNode extends EventEmitter {
   private _backgroundPeerDiscoveryPromise: Promise<PeerInfo[]> | null = null;
   /** Serializes non-blocking on-chain enrichment for incrementally discovered peers. */
   private _partialPeerEnrichmentChain: Promise<void> = Promise.resolve();
+  /**
+   * Partially discovered peers waiting for on-chain enrichment. DHT partial
+   * batches that arrive while a read is in flight accumulate here and are
+   * read together in the next pass, so a sweep costs one batched read per
+   * pass instead of one per partial batch.
+   */
+  private _pendingPartialEnrichment = new Map<PeerId, PeerInfo>();
+  /**
+   * Last on-chain trust read per peer (null = no agent id). Discovery builds
+   * fresh PeerInfo objects every cycle, so freshness is tracked here rather
+   * than on the objects; peers read within ON_CHAIN_STATS_TTL_MS skip both
+   * the seller-address resolution and the chain read.
+   */
+  private _onChainStatsCache = new Map<PeerId, { signals: TrustSignals | null; fetchedAt: number }>();
   /** Serializes non-blocking external claim verification for discovered peers. */
   private _externalVerificationChain: Promise<void> = Promise.resolve();
   private _identityHistoryCollector: IdentityHistoryCollector | undefined;
@@ -748,6 +785,8 @@ export class AntseedNode extends EventEmitter {
     this._sellerFreeTierLimiter = null;
     this._stakingClient = null;
     this._trustSignalsClient = null;
+    this._onChainStatsCache.clear();
+    this._pendingPartialEnrichment.clear();
     this._identityClient = null;
     this._sellerAddressResolver = null;
     this._buyerPaymentManager = null;
@@ -855,9 +894,14 @@ export class AntseedNode extends EventEmitter {
     if (peers.length === 0 || !this._trustSignalsClient) {
       return;
     }
-    const peersToEnrich = peers;
+    const wasEmpty = this._pendingPartialEnrichment.size === 0;
+    for (const peer of peers) this._pendingPartialEnrichment.set(peer.peerId, peer);
+    // A pass is already queued and will pick these peers up with the rest.
+    if (!wasEmpty) return;
     this._partialPeerEnrichmentChain = this._partialPeerEnrichmentChain.then(async () => {
-      if (!this._started || !this._trustSignalsClient) {
+      const peersToEnrich = [...this._pendingPartialEnrichment.values()];
+      this._pendingPartialEnrichment.clear();
+      if (!this._started || !this._trustSignalsClient || peersToEnrich.length === 0) {
         return;
       }
       await this._enrichPeersWithOnChainStats(peersToEnrich);
@@ -1053,10 +1097,11 @@ export class AntseedNode extends EventEmitter {
    * Verify claimed on-chain stats against actual contract data, and
    * populate volume / last-settled which are never announced by sellers.
    *
-   * Concurrency is capped so a wildcard DHT lookup returning hundreds of
-   * peers doesn't fan out into hundreds of simultaneous eth_calls (resolver
-   * isOperator + getAgentId + getAgentStats per peer). Most RPC endpoints
-   * will rate-limit past ~10-20 concurrent calls; we stay well under that.
+   * Every stale peer is read in one batched pass (two Multicall3 round
+   * trips via TrustSignalsClient), and peers read within
+   * ON_CHAIN_STATS_TTL_MS are served from `_onChainStatsCache`, so RPC usage
+   * is bounded by the refresh interval rather than by the peer count or the
+   * number of discovery batches.
    *
    * Mutates the supplied peers in place. No-op when chain clients aren't
    * configured — callers can safely invoke this regardless.
@@ -1067,18 +1112,26 @@ export class AntseedNode extends EventEmitter {
       return;
     }
     const resolver = this._sellerAddressResolver;
-    // Every stale peer is read in one batched pass (two Multicall3 round
-    // trips), so the refresh interval bounds RPC usage per discovery cycle
-    // instead of the peer count.
-    const ON_CHAIN_STATS_TTL_MS = 120_000;
     const nowMs = Date.now();
     const peersWithCompleteStats = new Set<PeerInfo>();
-    const stale: Array<{ peer: PeerInfo; address: string }> = [];
+    const toResolve: PeerInfo[] = [];
     for (const p of peers) {
       if (typeof p.onChainStatsFetchedAt === 'number' && nowMs - p.onChainStatsFetchedAt < ON_CHAIN_STATS_TTL_MS) {
         peersWithCompleteStats.add(p);
         continue;
       }
+      const cached = this._onChainStatsCache.get(p.peerId);
+      if (cached && nowMs - cached.fetchedAt < ON_CHAIN_STATS_TTL_MS) {
+        if (cached.signals) {
+          applyTrustSignals(p, cached.signals, cached.fetchedAt);
+          peersWithCompleteStats.add(p);
+        }
+        continue;
+      }
+      toResolve.push(p);
+    }
+    const stale: Array<{ peer: PeerInfo; address: string }> = [];
+    await Promise.all(toResolve.map(async (p) => {
       try {
         const address = resolver
           ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
@@ -1087,42 +1140,43 @@ export class AntseedNode extends EventEmitter {
       } catch {
         // Unresolvable seller address: leave the previous snapshot in place.
       }
-    }
+    }));
     if (stale.length === 0) {
       this._applyTrust(peers, peersWithCompleteStats);
       return;
     }
-    let signals: Awaited<ReturnType<TrustSignalsClient['read']>>;
+    let signals: Map<string, TrustSignals>;
     try {
-      signals = await client.read(stale.map((entry) => entry.address));
+      signals = await client.read([...new Set(stale.map((entry) => entry.address))]);
     } catch (err) {
       debugWarn(`[Node] On-chain trust signal read failed: ${err instanceof Error ? err.message : err}`);
       this._applyTrust(peers, peersWithCompleteStats);
       return;
     }
+    const fetchedAt = Date.now();
+    this._pruneOnChainStatsCache(fetchedAt);
     for (const { peer: p, address } of stale) {
       const read = signals.get(address);
       // A peer without an agent id (or a failed batch entry) keeps its
       // previous complete snapshot, or stays unenriched when newly discovered.
+      this._onChainStatsCache.set(p.peerId, { signals: read ?? null, fetchedAt });
       if (!read) continue;
-      p.onChainAgentId = read.agentId;
-      if (read.channelCount !== undefined) p.onChainChannelCount = read.channelCount;
-      if (read.ghostCount !== undefined) p.onChainGhostCount = read.ghostCount;
-      if (read.totalVolumeUsdcMicros !== undefined) p.onChainTotalVolumeUsdcMicros = read.totalVolumeUsdcMicros;
-      if (read.lastSettledAtSec !== undefined) p.onChainLastSettledAtSec = read.lastSettledAtSec;
-      if (read.usageEpoch !== undefined) {
-        p.onChainUsageEpoch = read.usageEpoch;
-        p.onChainUsageShareBps = read.usageShareBps;
-        p.onChainUsageLastEpochUsdcMicros = read.usageLastEpochUsdcMicros;
-      }
-      if (read.poolStakeAnts !== undefined) p.onChainPoolStakeAnts = read.poolStakeAnts;
-      if (read.poolPowerShareBps !== undefined) p.onChainPoolPowerShareBps = read.poolPowerShareBps;
-      if (read.washFlagged !== undefined) p.onChainWashFlagged = read.washFlagged;
-      if (read.washShareBps !== undefined) p.onChainWashShareBps = read.washShareBps;
-      p.onChainStatsFetchedAt = Date.now();
+      applyTrustSignals(p, read, fetchedAt);
       peersWithCompleteStats.add(p);
     }
     this._applyTrust(peers, peersWithCompleteStats);
+  }
+
+  private _pruneOnChainStatsCache(nowMs: number): void {
+    if (this._onChainStatsCache.size < ON_CHAIN_STATS_CACHE_MAX_ENTRIES) return;
+    for (const [peerId, entry] of this._onChainStatsCache) {
+      if (nowMs - entry.fetchedAt >= ON_CHAIN_STATS_TTL_MS) this._onChainStatsCache.delete(peerId);
+    }
+    // Still full of fresh entries: drop the oldest insertions.
+    for (const peerId of this._onChainStatsCache.keys()) {
+      if (this._onChainStatsCache.size < ON_CHAIN_STATS_CACHE_MAX_ENTRIES) break;
+      this._onChainStatsCache.delete(peerId);
+    }
   }
 
   /** Recompute the trust score and the display-only sybil heuristic. */

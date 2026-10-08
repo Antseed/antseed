@@ -3,7 +3,7 @@ import { RemoveScroll } from 'react-remove-scroll';
 import { useId, useRef, type CSSProperties, type ReactNode } from 'react';
 import { useDialogBehavior } from './useDialogBehavior';
 
-export type ModalSize = 'sm' | 'md' | 'lg';
+export type ModalSize = 'sm' | 'md' | 'lg' | 'xl';
 
 export interface ModalProps {
   bodyClassName?: string;
@@ -11,6 +11,8 @@ export interface ModalProps {
   closeLabel?: string;
   className?: string;
   eyebrow?: ReactNode;
+  /** Actions pinned to the bottom of the dialog while the body scrolls (e.g. Cancel / Save). */
+  footer?: ReactNode;
   isOpen: boolean;
   onClose: () => void;
   overlayClassName?: string;
@@ -23,6 +25,7 @@ const modalWidths: Record<ModalSize, string> = {
   sm: '24rem',
   md: '28.75rem',
   lg: '35rem',
+  xl: '52rem',
 };
 function CloseIcon() {
   return (
@@ -38,6 +41,7 @@ export function Modal({
   className,
   closeLabel = 'Close',
   eyebrow,
+  footer,
   isOpen,
   onClose,
   overlayClassName,
@@ -94,6 +98,7 @@ export function Modal({
               </IconButton>
             </header>
             <div className={bodyClasses}>{children}</div>
+            {footer && <footer className="as-modal__footer">{footer}</footer>}
           </div>
         </FocusLock>
       </RemoveScroll>
