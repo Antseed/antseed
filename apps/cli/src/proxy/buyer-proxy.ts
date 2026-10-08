@@ -1,3 +1,7 @@
+import { nativeVideoRoute } from '@antseed/api-adapter'
+import { ResourceRoutes } from './resource-routes.js'
+import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
+import { downloadVideo } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { watchFile, unwatchFile } from 'node:fs'
@@ -450,6 +454,15 @@ export function sanitizePeerBuyerFaultMarker(response: SerializedHttpResponse): 
     : response
 }
 
+function buyerFaultStatusCode(faultCode: string | null): number {
+  switch (faultCode) {
+    case 'invalid-request': return 400
+    case 'buyer-budget-too-low': return 422
+    case 'buyer-reserve-topup-timeout': return 504
+    default: return 503
+  }
+}
+
 /**
  * Inject the buyer-known peerId into a 402 payment_required JSON body.
  * The seller doesn't include its own peerId (and shouldn't — self-reported
@@ -813,6 +826,7 @@ export class BuyerProxy {
   private _routingPreferences: ModelRoutingPreferences | null
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
+  private readonly _resourceRoutes = new ResourceRoutes()
 
   private _cachedPeers: PeerInfo[] = []
   private _cacheLastUpdatedAtMs = 0
@@ -1002,6 +1016,10 @@ export class BuyerProxy {
     // startup route from the warm cache without blocking on DHT discovery.
     // The background refresh still runs to pick up fresh peers and IP changes.
     await this._hydratePeersFromStateFile()
+    try {
+      const state = JSON.parse(await readFile(this._stateFile, 'utf8'))
+      this._resourceRoutes.hydrate(state.resourceRoutes)
+    } catch {}
     // Adopt persisted session overrides (peer pin, default routed model) so
     // they survive daemon restart. A --peer CLI flag beats the persisted pin
     // at startup; runtime `connection set` writes still take over via the
@@ -1192,6 +1210,12 @@ export class BuyerProxy {
       }
     }).catch(() => {})
     return this._stateWriteChain
+  }
+
+  private async _persistResourceRoutes(): Promise<void> {
+    const write = this._stateWriteChain.then(() => mergeJsonStateFile(this._stateDir, this._stateFile, { resourceRoutes: this._resourceRoutes.snapshot() }))
+    this._stateWriteChain = write.catch(() => {})
+    return write
   }
 
   private async _writeStateFile(state: 'connected' | 'stopped'): Promise<void> {
@@ -2219,7 +2243,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", or "decisions".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", or "videos".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -2246,7 +2270,8 @@ export class BuyerProxy {
 
     // Only proxy known API paths — reject everything else with 404
     const normalizedPath = path.split('?')[0]?.trim().toLowerCase() ?? '/'
-    const isKnownApiPath =
+    const nativeVideo = nativeVideoRoute({ method, path })
+    const isKnownApiPath = nativeVideo !== null ||
       normalizedPath.startsWith('/v1/messages') ||
       normalizedPath.startsWith('/v1/chat/completions') ||
       normalizedPath.startsWith('/v1/responses') ||
@@ -2347,6 +2372,17 @@ export class BuyerProxy {
         },
       }))
       return
+    }
+
+    if (nativeVideo) {
+      // Re-classify with the body: some APIs (Venice) carry the job ID in it.
+      const prepared = prepareVideoRequest(nativeVideoRoute(serializedReq) ?? nativeVideo, serializedReq.headers, this._resourceRoutes)
+      if ('error' in prepared) {
+        res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(prepared.error.body))
+        return
+      }
+      serializedReq = { ...serializedReq, headers: prepared.headers }
     }
 
     // Snapshot the session overrides before any await so a concurrent
@@ -2715,6 +2751,13 @@ export class BuyerProxy {
                 `${selected.peer.peerId}@${selected.serviceId}`,
               )
             }
+            return
+          }
+          // Never retry a video on another seller: a create may already have
+          // started (and been charged), and follow-ups only exist on one seller.
+          if (nativeVideo) {
+            res.writeHead(result.statusCode, result.responseHeaders)
+            res.end(result.responseBody)
             return
           }
           lastRetry = result
@@ -3166,7 +3209,13 @@ export class BuyerProxy {
     this._markModelActivity()
 
     // Forward through P2P
-    const wantsStreaming = clientWantsStreaming
+    const videoRoute = nativeVideoRoute(requestForPeer)
+    // Video responses are JSON job objects or a streamed MP4, never SSE.
+    const wantsStreaming = clientWantsStreaming && !videoRoute
+    if (videoRoute?.action === 'retrieve') {
+      await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, { signal, pinned: true }), requestSignal)
+      return { done: true }
+    }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned })
@@ -3302,6 +3351,17 @@ export class BuyerProxy {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
         }
 
+        // Only the seller that accepted a video job knows its ID. Remember and
+        // persist job ID -> seller so later retrieve requests (even
+        // after a proxy restart) are pinned back to that seller.
+        if (videoRoute && recordVideoAcceptance(
+          videoRoute,
+          upstreamResponse,
+          { peerId: selectedPeer.peerId, provider: selectedRoutePlan.provider, service: requestedService },
+          this._resourceRoutes,
+        )) {
+          await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
+        }
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
         response = adaptPeerResponse(response)
         if (
@@ -3425,7 +3485,7 @@ export class BuyerProxy {
       if (fault === 'buyer') {
         const buyerResponse = adaptBuyerFaultErrorResponse({
           requestId: requestForPeer.requestId,
-          statusCode: 503,
+          statusCode: buyerFaultStatusCode(faultCode),
           headers: {
             'content-type': 'application/json',
             [ANTSEED_FAULT_ATTRIBUTION_HEADER]: 'buyer',

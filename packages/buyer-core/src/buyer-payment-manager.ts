@@ -7,6 +7,7 @@ import type {
   AuthAckPayload,
   NeedAuthPayload,
   CloseChannelRequestPayload,
+  OneOffChannelPlan,
 } from '@antseed/protocol/messages';
 import { DepositsClient } from './deposits-client.js';
 import {
@@ -20,12 +21,12 @@ import {
   ZERO_METADATA_HASH,
   computeChannelId,
 } from '@antseed/protocol/signatures';
-import type { SpendingAuthMessage, ReserveAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
+import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
 import { peerIdToAddress, type PeerId } from '@antseed/protocol/peer-id';
 import type { SellerAddressResolver } from './seller-address-resolver.js';
 import type { PeerMetadata } from '@antseed/protocol/peer-metadata';
-import { BuyerChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store-types.js';
+import { BuyerChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from './channel-store-types.js';
 import {
   advanceUsageMetadata,
   CountedRequestTracker,
@@ -38,8 +39,9 @@ import {
   type ServicePricing,
 } from './pricing.js';
 import type { UnitBillingContext, UnitBillingModelV1, UnitBillingUsage } from '@antseed/protocol/billing';
-import type { ImageRequestFacts } from '@antseed/api-adapter';
+import type { BillingRequestFacts } from './unit-billing.js';
 import { evaluateUnitBilling, unitUsageFromReport, validateUnitBillingUsage } from '@antseed/protocol/billing';
+import { isUnitBilledProtocol, nativeVideoUnitUsage } from './unit-billing.js';
 import { buyerFault, faultCodeOf } from './errors.js';
 
 /** Default tolerance: accept seller claims up to 1.4x buyer's estimate. */
@@ -49,7 +51,12 @@ const INITIAL_TOPUP_HEADROOM_PERCENT = 35n;
 /** Fixed remaining headroom that triggers every later top-up ($0.50). */
 const SUBSEQUENT_TOPUP_HEADROOM_USDC = 500_000n;
 const PERCENT_DENOMINATOR = 100n;
+/** Default max price of one video generation ($5.00). */
+export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000n;
 const REQUEST_BILLING_TTL_MS = 5 * 60_000;
+/** Accepted video jobs awaiting delivery are remembered this long (matches job routes). */
+const VIDEO_JOB_TTL_MS = 30 * 24 * 60 * 60_000;
+const MAX_VIDEO_JOBS = 1_000;
 const MAX_REQUEST_BILLING_ENTRIES = 512;
 /** How long NeedAuth validation waits for the buyer's own response processing
  *  to record delivered unit usage before rejecting a positive claim. */
@@ -57,6 +64,14 @@ const OBSERVED_UNIT_USAGE_WAIT_MS = 5_000;
 
 function countOutputImages(usage: UnitBillingUsage | undefined): bigint {
   return BigInt(Math.max(0, Math.floor(usage?.units.output_images ?? 0)));
+}
+
+function countVideoGenerations(usage: UnitBillingUsage | undefined): bigint {
+  return BigInt(Math.max(0, Math.floor(usage?.units.video_generations ?? 0)));
+}
+
+function countVideoSeconds(usage: UnitBillingUsage | undefined): bigint {
+  return BigInt(Math.max(0, Math.floor(usage?.units.video_seconds ?? 0)));
 }
 
 function validateUnitNormalizedCost(
@@ -84,6 +99,11 @@ export interface BuyerPaymentConfig {
   maxPerRequestUsdc: bigint;
   /** Max USDC to reserve per ReserveAuth signature (base units). Default: 1000000 ($1.00). */
   maxReserveAmountUsdc: bigint;
+  /**
+   * Max price of one video generation the buyer will pay for (base units).
+   * Default: 5000000 ($5.00).
+   */
+  maxVideoRequestUsdc?: bigint;
   /** Max ratio of seller-claimed cost to buyer's bytes/4 estimate. Default: 1.4. */
   costToleranceMultiplier?: number;
   /** Disable per-service attribution in metadata v2. Default: false. */
@@ -99,14 +119,48 @@ export interface PerRequestAuthResult {
 
 export interface BuyerRequestBillingEntry {
   context: UnitBillingContext;
-  requestFacts: ImageRequestFacts;
+  /** Absent for requests tracked only for attribution (no unit billing). */
+  requestFacts?: BillingRequestFacts;
   unitModel?: UnitBillingModelV1;
   tokenPricing?: ServicePricing;
   observedUnitUsage?: UnitBillingUsage;
+  /** Buyer-computed price of a video create, from the seller's advertised unit pricing. */
+  estimatedCostUsdc?: bigint;
 }
 
 interface StoredBuyerRequestBillingEntry extends BuyerRequestBillingEntry {
   createdAtMs: number;
+  /** Video jobs only: the one-off channel that pays for the job. */
+  oneOffChannelId?: string;
+}
+
+/** Identity of a not-yet-opened buyer channel: fresh salt, derived channelId, auth deadline. */
+interface NewChannelTerms {
+  sellerPeerId: string;
+  sellerEvmAddr: string;
+  buyerEvmAddr: string;
+  salt: string;
+  channelId: string;
+  deadline: number;
+}
+
+/** In-memory state of a buyer one-off channel (one video). */
+/** An accepted video job as stored on its one-off channel row. */
+interface PersistedVideoJob {
+  protocol: string;
+  jobId: string;
+  createdAtMs: number;
+  entry: BuyerRequestBillingEntry;
+}
+
+interface OneOffChannelState {
+  sellerPeerId: string;
+  requestId: string;
+  /** The video price: the only amount this channel will ever be asked for. */
+  price: bigint;
+  cumulative: bigint;
+  confirmed: boolean;
+  ackWaiters: Array<(confirmed: boolean) => void>;
 }
 
 interface PendingReserveAuthorization {
@@ -199,6 +253,14 @@ export class BuyerPaymentManager {
 
   /** Latest ReserveAuth awaiting seller acknowledgement, including top-ups. */
   private readonly _pendingReserveAuth = new Map<string, PendingReserveAuthorization>();
+  /**
+   * `${sellerPeerId}\n${protocol}\n${jobId}` -> billing of an accepted video
+   * that has not been delivered yet. Its price is signed only after the buyer
+   * receives the finished video.
+   */
+  private readonly _videoJobs = new Map<string, StoredBuyerRequestBillingEntry>();
+  /** One-off channels keyed by channelId. Never a seller's session channel. */
+  private readonly _oneOffChannels = new Map<string, OneOffChannelState>();
 
   /** Cached EIP-712 domain — static for the lifetime of this manager. */
   private readonly _channelsDomain: ReturnType<typeof makeChannelsDomain>;
@@ -242,6 +304,23 @@ export class BuyerPaymentManager {
 
     for (const channel of latestByPeer.values()) {
       this._hydrateChannel(channel, true);
+    }
+
+    for (const channel of this._channelStore.getActiveChannelsByBuyer(
+      CHANNEL_ROLE.BUYER,
+      this._identity.wallet.address,
+      CHANNEL_KIND.ONE_OFF,
+    )) {
+      if (!channel.oneOffRequestId) continue;
+      this._oneOffChannels.set(channel.sessionId, {
+        sellerPeerId: channel.peerId,
+        requestId: channel.oneOffRequestId,
+        price: BigInt(channel.reserveMaxAmount ?? '0'),
+        cumulative: BigInt(channel.authMax || '0'),
+        confirmed: channel.reserveAuthPending !== true,
+        ackWaiters: [],
+      });
+      this._restoreVideoJob(channel);
     }
   }
 
@@ -342,6 +421,8 @@ export class BuyerPaymentManager {
       cumulativeOutputTokens: current.cumulativeOutputTokens,
       cumulativeRequestCount: current.cumulativeRequestCount,
       cumulativeOutputImages: current.cumulativeOutputImages ?? 0n,
+      cumulativeVideoGenerations: current.cumulativeVideoGenerations ?? 0n,
+      cumulativeVideoSeconds: current.cumulativeVideoSeconds ?? 0n,
       services: [],
     };
   }
@@ -599,13 +680,8 @@ export class BuyerPaymentManager {
     const maxAmount = replayAmount > this._config.maxReserveAmountUsdc
       ? this._config.maxReserveAmountUsdc
       : replayAmount;
-    const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
-    const reserveMsg: ReserveAuthMessage = {
-      channelId: session.sessionId,
-      maxAmount,
-      deadline: BigInt(deadline),
-    };
-    const reserveAuthSig = await signReserveAuth(this._signer, this._channelsDomain, reserveMsg);
+    const deadline = this._authDeadline();
+    const reserveAuthSig = await this._signReserveAuth(session.sessionId, maxAmount, deadline);
 
     const pending: PendingReserveAuthorization = {
       signature: reserveAuthSig,
@@ -642,11 +718,7 @@ export class BuyerPaymentManager {
     const now = Math.floor(Date.now() / 1000);
     if (pending.deadline <= now + 30) {
       const deadline = now + this._config.defaultAuthDurationSecs;
-      const signature = await signReserveAuth(this._signer, this._channelsDomain, {
-        channelId: session.sessionId,
-        maxAmount: pending.maxAmount,
-        deadline: BigInt(deadline),
-      });
+      const signature = await this._signReserveAuth(session.sessionId, pending.maxAmount, deadline);
       pending = { ...pending, signature, deadline };
     }
 
@@ -766,8 +838,13 @@ export class BuyerPaymentManager {
   }
 
   private _clearRequestBillingForSeller(sellerPeerId: string): void {
+    // A video paid from its own one-off channel outlives the session channel:
+    // keep its job and in-flight retrieve so its delivery can still be signed.
+    for (const [key, job] of this._videoJobs) {
+      if (job.context.sellerPeerId === sellerPeerId && !job.oneOffChannelId) this._videoJobs.delete(key);
+    }
     for (const [requestId, entry] of this._requestBillingEntries) {
-      if (entry.context.sellerPeerId === sellerPeerId) {
+      if (entry.context.sellerPeerId === sellerPeerId && !entry.oneOffChannelId) {
         this.clearRequestBilling(requestId);
       }
     }
@@ -851,17 +928,32 @@ export class BuyerPaymentManager {
     metadata: SpendingAuthMetadata,
   ): Promise<SpendingAuthPayload> {
     const sanitizedMetadata = this._sanitizeMetadata(metadata);
-    const metadataHashHex = computeMetadataHash(sanitizedMetadata);
-    const encodedMetadata = encodeMetadata(sanitizedMetadata);
-    const metadataMsg: SpendingAuthMessage = {
-      channelId: session.sessionId,
+    const spendingAuth = await this._signAndCommitSpendingAuth(
+      session,
       cumulativeAmount,
-      metadataHash: metadataHashHex,
-    };
-    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, metadataMsg);
+      sanitizedMetadata,
+    );
+
+    this._cumulativeAmount.set(sellerPeerId, cumulativeAmount);
+    return spendingAuth;
+  }
+
+  private async _signAndCommitSpendingAuth(
+    channel: StoredChannel,
+    cumulativeAmount: bigint,
+    metadata: SpendingAuthMetadata,
+  ): Promise<SpendingAuthPayload> {
+    const sanitizedMetadata = this._sanitizeMetadata(metadata);
+    const metadataHash = computeMetadataHash(sanitizedMetadata);
+    const encodedMetadata = encodeMetadata(sanitizedMetadata);
+    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, {
+      channelId: channel.sessionId,
+      cumulativeAmount,
+      metadataHash,
+    });
 
     await this._commitAuthorization({
-      ...session,
+      ...channel,
       authMax: cumulativeAmount.toString(),
       latestBuyerSig: spendingAuthSig,
       latestSpendingAuthSig: spendingAuthSig,
@@ -869,11 +961,10 @@ export class BuyerPaymentManager {
       updatedAt: Date.now(),
     }, sanitizedMetadata);
 
-    this._cumulativeAmount.set(sellerPeerId, cumulativeAmount);
     return {
-      channelId: session.sessionId,
+      channelId: channel.sessionId,
       cumulativeAmount: cumulativeAmount.toString(),
-      metadataHash: metadataHashHex,
+      metadataHash,
       metadata: encodedMetadata,
       spendingAuthSig,
     };
@@ -911,9 +1002,7 @@ export class BuyerPaymentManager {
     pricingMap?: { defaults: ServicePricing; services: Record<string, ServicePricing> },
     metadataArg?: PeerMetadata,
   ): Promise<string> {
-    const sellerEvmAddr = this._sellerAddressResolver
-      ? await this._sellerAddressResolver.resolveSellerAddress(sellerPeerId as PeerId, metadataArg)
-      : peerIdToAddress(sellerPeerId);
+    const terms = await this._newChannelTerms(sellerPeerId, metadataArg);
     const reserveAmount = typeof reserveAmountOrPricing === 'bigint'
       ? reserveAmountOrPricing
       : this._config.maxReserveAmountUsdc;
@@ -949,30 +1038,15 @@ export class BuyerPaymentManager {
       });
     }
 
-    // Generate random salt and compute deterministic channelId
-    const salt = hexlify(randomBytes(32));
-    const buyerEvmAddr = this._identity.wallet.address;
-    const channelId = computeChannelId(buyerEvmAddr, sellerEvmAddr, salt);
-    const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
-
+    const { channelId, salt, deadline } = terms;
     debugLog(`[BuyerPayment] authorizeSpending: channel=${channelId.slice(0, 18)}... seller=${sellerPeerId.slice(0, 12)}... amount=${minBudgetPerRequest}`);
 
-    // Sign ReserveAuth — binds channelId, maxAmount, deadline on-chain
-    const channelsDomain = this._channelsDomain;
     const maxAmount = reserveAmount;
-    const reserveMsg: ReserveAuthMessage = {
-      channelId,
-      maxAmount,
-      deadline: BigInt(deadline),
-    };
-    const reserveAuthSig = await signReserveAuth(this._signer, channelsDomain, reserveMsg);
+    const reserveAuthSig = await this._signReserveAuth(channelId, maxAmount, deadline);
+    const initialMetadata = this._sanitizeMetadata({ ...ZERO_METADATA });
 
-    // Initialize state for this session.
-    // Start cumulative at 0 — the initial message is a ReserveAuth (not a SpendingAuth).
-    // The first real SpendingAuth will be sent by handleNeedAuth after the seller serves
-    // the first request and reports its cost.
     this._cumulativeAmount.set(sellerPeerId, 0n);
-    this._metadata.set(sellerPeerId, this._sanitizeMetadata({ ...ZERO_METADATA }));
+    this._metadata.set(sellerPeerId, initialMetadata);
     this._verifiedCost.set(sellerPeerId, 0n);
     this._currentReserveCeiling.set(sellerPeerId, 0n);
     this._initialReserveAmount.set(sellerPeerId, maxAmount);
@@ -985,19 +1059,46 @@ export class BuyerPaymentManager {
       confirmedAmount: 0n,
     });
 
-    // Store session
-    const now = Date.now();
-    const initialMetadata = this._sanitizeMetadata({ ...ZERO_METADATA });
-    const encodedInitialMetadata = encodeMetadata(initialMetadata);
-    const session: StoredChannel = {
-      sessionId: channelId,
-      peerId: sellerPeerId,
-      role: CHANNEL_ROLE.BUYER,
+    await this._commitAuthorization(this._newBuyerChannel(terms, maxAmount, reserveAuthSig, initialMetadata), initialMetadata);
+    this._sendOpeningReserveAuth(paymentMux, terms, maxAmount, reserveAuthSig, initialMetadata);
+    this._currentReserveCeiling.set(sellerPeerId, maxAmount);
+
+    return channelId;
+  }
+
+  private async _newChannelTerms(sellerPeerId: string, metadata?: PeerMetadata): Promise<NewChannelTerms> {
+    const sellerEvmAddr = this._sellerAddressResolver
+      ? await this._sellerAddressResolver.resolveSellerAddress(sellerPeerId as PeerId, metadata)
+      : peerIdToAddress(sellerPeerId);
+    const buyerEvmAddr = this._identity.wallet.address;
+    const salt = hexlify(randomBytes(32));
+    return {
+      sellerPeerId,
       sellerEvmAddr,
-      buyerEvmAddr: this._identity.wallet.address,
+      buyerEvmAddr,
+      salt,
+      channelId: computeChannelId(buyerEvmAddr, sellerEvmAddr, salt),
+      deadline: this._authDeadline(),
+    };
+  }
+
+  private _newBuyerChannel(
+    terms: NewChannelTerms,
+    openingReserve: bigint,
+    openingReserveSig: string,
+    metadata: SpendingAuthMetadata,
+    overrides: Partial<StoredChannel> = {},
+  ): StoredChannel {
+    const now = Date.now();
+    return {
+      sessionId: terms.channelId,
+      peerId: terms.sellerPeerId,
+      role: CHANNEL_ROLE.BUYER,
+      sellerEvmAddr: terms.sellerEvmAddr,
+      buyerEvmAddr: terms.buyerEvmAddr,
       nonce: 0,
       authMax: '0',
-      deadline,
+      deadline: terms.deadline,
       previousSessionId: '0x' + '0'.repeat(64),
       previousConsumption: '0',
       tokensDelivered: '0',
@@ -1006,40 +1107,94 @@ export class BuyerPaymentManager {
       settledAt: null,
       settledAmount: null,
       status: CHANNEL_STATUS.ACTIVE,
-      latestBuyerSig: reserveAuthSig,
+      latestBuyerSig: openingReserveSig,
       latestSpendingAuthSig: null,
-      latestMetadata: encodedInitialMetadata,
-      reserveSalt: salt,
-      initialReserveAmount: maxAmount.toString(),
-      reserveMaxAmount: maxAmount.toString(),
-      latestReserveAuthSig: reserveAuthSig,
-      latestReserveDeadline: deadline,
+      latestMetadata: encodeMetadata(metadata),
+      reserveSalt: terms.salt,
+      initialReserveAmount: openingReserve.toString(),
+      reserveMaxAmount: openingReserve.toString(),
+      latestReserveAuthSig: openingReserveSig,
+      latestReserveDeadline: terms.deadline,
       reserveAuthPending: true,
       confirmedReserveAmount: '0',
       createdAt: now,
       updatedAt: now,
+      ...overrides,
     };
-    await this._commitAuthorization(session, initialMetadata);
+  }
 
-    // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig
+  private _sendOpeningReserveAuth(
+    paymentMux: PaymentMux,
+    terms: NewChannelTerms,
+    openingReserve: bigint,
+    openingReserveSig: string,
+    metadata: SpendingAuthMetadata,
+    extra: Partial<SpendingAuthPayload> = {},
+  ): void {
     paymentMux.sendSpendingAuth({
-      channelId,
+      channelId: terms.channelId,
       cumulativeAmount: '0',
       metadataHash: ZERO_METADATA_HASH,
-      metadata: encodedInitialMetadata,
-      spendingAuthSig: reserveAuthSig,
-      reserveSalt: salt,
-      reserveMaxAmount: maxAmount.toString(),
-      reserveDeadline: deadline,
+      metadata: encodeMetadata(metadata),
+      spendingAuthSig: openingReserveSig,
+      reserveSalt: terms.salt,
+      reserveMaxAmount: openingReserve.toString(),
+      reserveDeadline: terms.deadline,
+      ...extra,
     });
-    this._currentReserveCeiling.set(sellerPeerId, maxAmount);
+  }
 
-    return channelId;
+  /** Sign the threshold SpendingAuth and the final ReserveAuth that let the seller run topUp() right after reserve(). */
+  private async _signReserveBatch(
+    channelId: string,
+    cumulativeAmount: bigint,
+    metadata: SpendingAuthMetadata,
+    maxAmount: bigint,
+    deadline: number,
+  ): Promise<NonNullable<SpendingAuthPayload['reserveBatch']>> {
+    const metadataHash = computeMetadataHash(metadata);
+    const spendingAuthSig = await signSpendingAuth(this._signer, this._channelsDomain, { channelId, cumulativeAmount, metadataHash });
+    return {
+      cumulativeAmount: cumulativeAmount.toString(),
+      metadataHash,
+      metadata: encodeMetadata(metadata),
+      spendingAuthSig,
+      maxAmount: maxAmount.toString(),
+      deadline,
+      reserveAuthSig: await this._signReserveAuth(channelId, maxAmount, deadline),
+    };
+  }
+
+  private _authDeadline(): number {
+    return Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
+  }
+
+  private _signReserveAuth(channelId: string, maxAmount: bigint, deadline: number): Promise<string> {
+    return signReserveAuth(this._signer, this._channelsDomain, { channelId, maxAmount, deadline: BigInt(deadline) });
+  }
+
+  /** Report a unit-billed charge that carries no token usage. */
+  private _reportUnitSpend(sellerPeerId: string, requestId: string | null, amount: bigint): void {
+    this._reportSpend({
+      sellerPeerId,
+      requestId,
+      amountUsdc: amount.toString(),
+      inputTokens: '0',
+      cachedInputTokens: '0',
+      outputTokens: '0',
+      outputImages: '0',
+    });
   }
 
   // ── AuthAck handler ───────────────────────────────────────────
 
   async handleAuthAck(sellerPeerId: string, payload: AuthAckPayload): Promise<void> {
+    const oneOff = this._oneOffChannels.get(payload.channelId);
+    if (oneOff) {
+      if (oneOff.sellerPeerId !== sellerPeerId) return;
+      await this._confirmOneOffChannel(payload.channelId, oneOff);
+      return;
+    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] AuthAck for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
@@ -1278,6 +1433,8 @@ export class BuyerPaymentManager {
     // buyer's own observation of the delivered response, so it survives a
     // headroom NeedAuth having already consumed the request-billing entry.
     const estimatedOutputImages = countOutputImages(responseStats.unitUsage);
+    const estimatedVideoGenerations = countVideoGenerations(responseStats.unitUsage);
+    const estimatedVideoSeconds = countVideoSeconds(responseStats.unitUsage);
     if (estimatedOutputImages > 0n) {
       if (byteEstimatedTokens) {
         // Byte estimates of an image response are base64 noise, not tokens.
@@ -1287,7 +1444,7 @@ export class BuyerPaymentManager {
       }
       estimatedOutputTokens += estimatedOutputImages * OUTPUT_IMAGE_TOKEN_EQUIVALENT;
       if (estimatedInputTokens <= 0n) {
-        estimatedInputTokens = BigInt(requestBilling?.requestFacts.promptTokens ?? 0);
+        estimatedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
 
@@ -1345,6 +1502,8 @@ export class BuyerPaymentManager {
         outputTokens: estimatedOutputTokens,
         requests: 1n,
         outputImages: estimatedOutputImages,
+        videoGenerations: estimatedVideoGenerations,
+        videoSeconds: estimatedVideoSeconds,
       }, { deliveredResponse: true, alreadyCounted }),
     );
     debugLog(
@@ -1418,9 +1577,17 @@ export class BuyerPaymentManager {
     payload: NeedAuthPayload,
     paymentMux: PaymentMux,
   ): Promise<void> {
+    if (this._oneOffChannels.has(payload.channelId)) {
+      await this._handleOneOffNeedAuth(sellerPeerId, payload, paymentMux);
+      return;
+    }
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       debugWarn(`[BuyerPayment] NeedAuth for unknown seller: ${sellerPeerId.slice(0, 12)}...`);
+      return;
+    }
+    if (session.sessionId !== payload.channelId) {
+      debugWarn(`[BuyerPayment] NeedAuth for unknown channel ${payload.channelId.slice(0, 18)}... — ignoring`);
       return;
     }
 
@@ -1441,6 +1608,8 @@ export class BuyerPaymentManager {
     }
     let acceptedServiceCost = 0n;
     let acceptedOutputImages = 0n;
+    let acceptedVideoGenerations = 0n;
+    let acceptedVideoSeconds = 0n;
     let verifiedCostDelta = 0n;
     const reportedInputTokens = BigInt(payload.inputTokens ?? '0');
     const reportedCachedInputTokens = BigInt(payload.cachedInputTokens ?? '0');
@@ -1493,7 +1662,10 @@ export class BuyerPaymentManager {
             this._costTolerance,
             observedUnitUsage,
           );
-          acceptedOutputImages = countOutputImages(unitUsageFromReport(payload.billingUsage));
+          const acceptedUnitUsage = unitUsageFromReport(payload.billingUsage);
+          acceptedOutputImages = countOutputImages(acceptedUnitUsage);
+          acceptedVideoGenerations = countVideoGenerations(acceptedUnitUsage);
+          acceptedVideoSeconds = countVideoSeconds(acceptedUnitUsage);
         }
 
         const buyerEstimate = tokenEstimate + acceptedUnitCost;
@@ -1515,7 +1687,7 @@ export class BuyerPaymentManager {
       }
     } else if (payload.lastRequestCost) {
       const sellerCost = BigInt(payload.lastRequestCost);
-      if (sellerCost > 0n && unitBillingModel && buyerBillingContext?.serviceApiProtocol === 'openai-images') {
+      if (sellerCost > 0n && unitBillingModel && isUnitBilledProtocol(buyerBillingContext?.serviceApiProtocol)) {
         debugWarn(
           `[BuyerPayment] NeedAuth rejected: positive unit cost omitted verifiable billingUsage`,
         );
@@ -1542,7 +1714,7 @@ export class BuyerPaymentManager {
           : sellerIn);
         const buyerEstimate = computeCostUsdc(Number(freshIn), Number(sellerOut), pricing, Number(sellerCached));
         const maxAcceptable = BigInt(Math.ceil(Number(buyerEstimate) * this._costTolerance));
-        if (buyerEstimate <= 0n && sellerCost > 0n && buyerBillingContext?.serviceApiProtocol === 'openai-images') {
+        if (buyerEstimate <= 0n && sellerCost > 0n && isUnitBilledProtocol(buyerBillingContext?.serviceApiProtocol)) {
           debugWarn(
             `[BuyerPayment] NeedAuth rejected: positive unit cost recomputed to zero`,
           );
@@ -1595,7 +1767,7 @@ export class BuyerPaymentManager {
 
     // When a topUp is needed, first sign at the current ceiling so the seller
     // has a high-enough settled amount to pass the on-chain TopUpThresholdNotMet
-    // check (contract requires 85% of deposit to be settleable before topUp).
+    // check (contract requires TOP_UP_SETTLED_THRESHOLD_BPS of deposit to be settleable before topUp).
     // We cap at the old ceiling here; the topUp is sent AFTER so the seller
     // processes the SpendingAuth first, then the topUp with adequate settle amount.
     const effectiveAmount = needsTopUp
@@ -1631,7 +1803,7 @@ export class BuyerPaymentManager {
     if (acceptedOutputImages > 0n) {
       attributedOutputTokens += acceptedOutputImages * OUTPUT_IMAGE_TOKEN_EQUIVALENT;
       if (attributedInputTokens <= 0n) {
-        attributedInputTokens = BigInt(requestBilling?.requestFacts.promptTokens ?? 0);
+        attributedInputTokens = BigInt(imagePromptTokens(requestBilling));
       }
     }
     const newMeta = this._advanceUsageMetadata(
@@ -1644,6 +1816,8 @@ export class BuyerPaymentManager {
         outputTokens: attributedOutputTokens,
         requests: 1n,
         outputImages: acceptedOutputImages,
+        videoGenerations: acceptedVideoGenerations,
+        videoSeconds: acceptedVideoSeconds,
       }, { deliveredResponse, alreadyCounted }),
     );
     // Persistence and transport failures must propagate to the connection
@@ -1672,7 +1846,7 @@ export class BuyerPaymentManager {
 
     // Send topUp AFTER the SpendingAuth so the seller processes the higher
     // cumulative first — this ensures the on-chain settle amount meets the
-    // contract's TopUpThresholdNotMet requirement (85% of deposit must be
+    // contract's TopUpThresholdNotMet requirement (TOP_UP_SETTLED_THRESHOLD_BPS of deposit must be
     // settleable before topUp is allowed). Also proactively send the top-up
     // once the signed cumulative reaches the buyer's remaining-headroom
     // threshold; the seller may defer it until the contract gate is satisfied.
@@ -1704,7 +1878,7 @@ export class BuyerPaymentManager {
     const prevCeiling = this._getCeiling(sellerPeerId);
     const newCeiling = prevCeiling + this._config.maxReserveAmountUsdc;
     const additionalReserve = newCeiling - prevCeiling;
-    const deadline = Math.floor(Date.now() / 1000) + this._config.defaultAuthDurationSecs;
+    const deadline = this._authDeadline();
 
     try {
       const balance = await this.getBalance();
@@ -1726,14 +1900,7 @@ export class BuyerPaymentManager {
 
     debugLog(`[BuyerPayment] topUpReserve: channel=${session.sessionId.slice(0, 18)}... ceiling ${prevCeiling} → ${newCeiling}`);
 
-    // Sign ReserveAuth with new maxAmount
-    const channelsDomain = this._channelsDomain;
-    const reserveMsg: ReserveAuthMessage = {
-      channelId: session.sessionId,
-      maxAmount: newCeiling,
-      deadline: BigInt(deadline),
-    };
-    const reserveAuthSig = await signReserveAuth(this._signer, channelsDomain, reserveMsg);
+    const reserveAuthSig = await this._signReserveAuth(session.sessionId, newCeiling, deadline);
 
     const currentCumulative = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
     const salt = this._reserveSalt.get(sellerPeerId) ?? '0x' + '00'.repeat(32);
@@ -1766,7 +1933,208 @@ export class BuyerPaymentManager {
     return this._config.maxReserveAmountUsdc;
   }
 
-  /** Current buyer-verified cost for a seller. */
+  /** Max price of one video generation from buyer config. */
+  get maxVideoRequestUsdc(): bigint {
+    return this._config.maxVideoRequestUsdc ?? DEFAULT_MAX_VIDEO_REQUEST_USDC;
+  }
+
+  // ── One-off channels ─────────────────────────────────────────
+
+  /**
+   * Open a one-off channel that pays for exactly one video. It is a fresh
+   * on-chain channel (new salt), never this seller's session channel: chat
+   * and image spending cannot touch it, and the seller closes it once the
+   * video is paid or abandoned.
+   *
+   * For a price above the opening reserve, signs the opening ReserveAuth, the
+   * contract-required threshold SpendingAuth (the serious fee, credited toward
+   * the price) and the final ReserveAuth together; the seller runs reserve()
+   * and topUp() before acknowledging. Returns the channelId once persisted
+   * and sent; await `waitForOneOffAck` for the seller's confirmation.
+   */
+  async openOneOffChannel(
+    sellerPeerId: string,
+    requestId: string,
+    plan: OneOffChannelPlan,
+    paymentMux: PaymentMux,
+    metadataArg?: PeerMetadata,
+  ): Promise<string> {
+    const price = BigInt(plan.requestCost);
+    const openingReserve = BigInt(plan.openingReserveAmount);
+    const requiredCumulative = BigInt(plan.requiredCumulativeAmount);
+    const billing = this.getRequestBilling(requestId);
+    const facts = billing?.requestFacts;
+    if (
+      !billing || facts?.kind !== 'video' || facts.video.action !== 'create'
+      || billing.context.sellerPeerId !== sellerPeerId || billing.estimatedCostUsdc !== price
+    ) {
+      throw buyerFault(`[BuyerPayment] One-off channel requires a tracked video create (${requestId})`, 'buyer-session-state');
+    }
+    if (price > this.maxVideoRequestUsdc || requiredCumulative >= price) {
+      throw buyerFault(`[BuyerPayment] Refusing one-off channel: price=${price} fee=${requiredCumulative}`, 'buyer-session-state');
+    }
+    const existing = this.getOneOffChannelForRequest(sellerPeerId, requestId);
+    if (existing) return existing;
+    const terms = await this._newChannelTerms(sellerPeerId, metadataArg);
+    const { channelId, deadline } = terms;
+    const metadata = this._sanitizeMetadata({ ...ZERO_METADATA });
+    const openingReserveSig = await this._signReserveAuth(channelId, openingReserve, deadline);
+    const reserveBatch = requiredCumulative > 0n
+      ? await this._signReserveBatch(channelId, requiredCumulative, metadata, price, deadline)
+      : undefined;
+
+    await this._commitAuthorization(this._newBuyerChannel(terms, openingReserve, openingReserveSig, metadata, {
+      channelKind: CHANNEL_KIND.ONE_OFF,
+      oneOffRequestId: requestId,
+      reserveMaxAmount: price.toString(),
+      ...(reserveBatch ? {
+        authMax: reserveBatch.cumulativeAmount,
+        latestBuyerSig: reserveBatch.spendingAuthSig,
+        latestSpendingAuthSig: reserveBatch.spendingAuthSig,
+        latestReserveAuthSig: reserveBatch.reserveAuthSig,
+      } : {}),
+    }), metadata);
+    this._oneOffChannels.set(channelId, {
+      sellerPeerId,
+      requestId,
+      price,
+      cumulative: requiredCumulative,
+      confirmed: false,
+      ackWaiters: [],
+    });
+
+    this._sendOpeningReserveAuth(paymentMux, terms, openingReserve, openingReserveSig, metadata, {
+      ...(reserveBatch ? { reserveBatch } : {}),
+      oneOffRequestId: requestId,
+    });
+    if (requiredCumulative > 0n) this._reportUnitSpend(sellerPeerId, requestId, requiredCumulative);
+    debugLog(`[BuyerPayment] One-off channel ${channelId.slice(0, 18)}... sent for request ${requestId} (price=${price}, fee=${requiredCumulative})`);
+    return channelId;
+  }
+
+  /** The active one-off channel opened for this request, or null. */
+  getOneOffChannelForRequest(sellerPeerId: string, requestId: string): string | null {
+    for (const [channelId, state] of this._oneOffChannels) {
+      if (state.sellerPeerId === sellerPeerId && state.requestId === requestId) return channelId;
+    }
+    return null;
+  }
+
+  isOneOffChannelConfirmed(channelId: string): boolean {
+    return this._oneOffChannels.get(channelId)?.confirmed === true;
+  }
+
+  /** Resolve true once the seller acknowledges the channel, false on timeout. */
+  waitForOneOffAck(channelId: string, timeoutMs: number): Promise<boolean> {
+    const state = this._oneOffChannels.get(channelId);
+    if (!state) return Promise.resolve(false);
+    if (state.confirmed) return Promise.resolve(true);
+    return new Promise((resolve) => {
+      let done = false;
+      const finish = (confirmed: boolean): void => {
+        if (done) return;
+        done = true;
+        clearTimeout(timer);
+        resolve(confirmed);
+      };
+      const timer = setTimeout(() => {
+        state.ackWaiters = state.ackWaiters.filter((waiter) => waiter !== finish);
+        finish(false);
+      }, timeoutMs);
+      timer.unref?.();
+      state.ackWaiters.push(finish);
+    });
+  }
+
+  /** Mark the one-off channel confirmed once its full reserve is seen on-chain. */
+  async confirmOneOffChannelOnChain(channelId: string, onChainDeposit: bigint): Promise<void> {
+    const state = this._oneOffChannels.get(channelId);
+    if (state && onChainDeposit >= state.price) await this._confirmOneOffChannel(channelId, state);
+  }
+
+  /**
+   * Forget a one-off channel locally once it is closed or abandoned. If it is
+   * still open on-chain, the buyer can still requestClose() it.
+   */
+  retireOneOffChannel(channelId: string, status: typeof CHANNEL_STATUS[keyof typeof CHANNEL_STATUS] = CHANNEL_STATUS.SETTLED): void {
+    const state = this._oneOffChannels.get(channelId);
+    if (!state) return;
+    this._oneOffChannels.delete(channelId);
+    for (const waiter of state.ackWaiters.splice(0)) waiter(false);
+    this._channelStore.updateChannelStatus(channelId, status);
+  }
+
+  private async _confirmOneOffChannel(channelId: string, state: OneOffChannelState): Promise<void> {
+    if (!state.confirmed) {
+      const channel = this._channelStore.getChannel(channelId);
+      if (channel) {
+        this._channelStore.upsertChannel({
+          ...channel,
+          reserveAuthPending: false,
+          confirmedReserveAmount: channel.reserveMaxAmount ?? state.price.toString(),
+          updatedAt: Date.now(),
+        });
+        await this._channelStore.flush?.();
+      }
+      state.confirmed = true;
+      debugLog(`[BuyerPayment] One-off channel confirmed: ${channelId.slice(0, 18)}...`);
+    }
+    for (const waiter of state.ackWaiters.splice(0)) waiter(true);
+  }
+
+  /**
+   * Sign a one-off channel's only charge: the video price, after the buyer
+   * received the finished video. Anything else is refused: the channel never
+   * pays for more than its video, and never before delivery.
+   */
+  private async _handleOneOffNeedAuth(
+    sellerPeerId: string,
+    payload: NeedAuthPayload,
+    paymentMux: PaymentMux,
+  ): Promise<void> {
+    const { channelId, requestId } = payload;
+    const state = this._oneOffChannels.get(channelId);
+    const channel = this._channelStore.getChannel(channelId);
+    if (!state || !channel || state.sellerPeerId !== sellerPeerId) return;
+    const required = BigInt(payload.requiredCumulativeAmount);
+    if (required <= state.cumulative) return;
+    const billing = requestId ? this._requestBillingEntries.get(requestId) : undefined;
+    if (
+      required !== state.price || BigInt(payload.lastRequestCost ?? '0') !== state.price
+      || !requestId || !billing?.unitModel || billing.oneOffChannelId !== channelId || !payload.billingUsage
+    ) {
+      debugWarn(`[BuyerPayment] One-off NeedAuth rejected: request ${requestId ?? 'n/a'} required=${required} price=${state.price}`);
+      return;
+    }
+    let usage: UnitBillingUsage;
+    try {
+      const observed = billing.observedUnitUsage ?? await this._waitForObservedUnitUsage(requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
+      validateUnitBillingUsage(billing.unitModel, billing.context, payload.billingUsage, state.price, this._costTolerance, observed);
+      usage = unitUsageFromReport(payload.billingUsage);
+    } catch (err) {
+      debugWarn(`[BuyerPayment] One-off NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
+      return;
+    }
+
+    const metadata = this._advanceUsageMetadata(this._channelStore.getChannelMetadata(channel), billing.context.service, {
+      amount: state.price,
+      inputTokens: 0n,
+      cachedInputTokens: 0n,
+      outputTokens: 0n,
+      requests: 1n,
+      outputImages: 0n,
+      videoGenerations: countVideoGenerations(usage),
+      videoSeconds: countVideoSeconds(usage),
+    });
+    const spendingAuth = await this._signAndCommitSpendingAuth(channel, state.price, metadata);
+    this._reportUnitSpend(sellerPeerId, requestId, state.price - state.cumulative);
+    state.cumulative = state.price;
+    paymentMux.sendSpendingAuth(spendingAuth);
+    this.clearRequestBilling(requestId);
+    // The seller closes the channel on receiving this; it pays for nothing else.
+    this.retireOneOffChannel(channelId);
+  }
+
   getVerifiedCost(sellerPeerId: string): bigint {
     return this._verifiedCost.get(sellerPeerId) ?? 0n;
   }
@@ -1884,16 +2252,110 @@ export class BuyerPaymentManager {
     return publicEntry;
   }
 
+  /**
+   * The one-off channel a video create was paid from, for ResponseAuth
+   * verification. Only the create itself is signed with that channel; the
+   * seller signs retrieves of the same job with the session channel, so they
+   * return null and fall back to it.
+   */
+  getResponseAuthChannelId(sellerPeerId: string, requestId: string): string | null {
+    return this.getOneOffChannelForRequest(sellerPeerId, requestId);
+  }
+
+  /** Remember an accepted video job; its price is charged on delivery. */
+  trackVideoJob(
+    sellerPeerId: string,
+    protocol: string,
+    jobId: string,
+    entry: BuyerRequestBillingEntry,
+    requestId?: string,
+  ): void {
+    const now = Date.now();
+    for (const [key, job] of this._videoJobs) {
+      if (now - job.createdAtMs > VIDEO_JOB_TTL_MS) this._videoJobs.delete(key);
+    }
+    const oneOffChannelId = requestId ? this.getOneOffChannelForRequest(sellerPeerId, requestId) ?? undefined : undefined;
+    this._videoJobs.set(videoJobKey(sellerPeerId, protocol, jobId), {
+      ...entry,
+      createdAtMs: now,
+      ...(oneOffChannelId ? { oneOffChannelId } : {}),
+    });
+    if (oneOffChannelId) this._persistVideoJob(oneOffChannelId, { protocol, jobId, createdAtMs: now, entry });
+    while (this._videoJobs.size > MAX_VIDEO_JOBS) {
+      const oldest = this._videoJobs.keys().next().value;
+      if (oldest === undefined) break;
+      this._videoJobs.delete(oldest);
+    }
+  }
+
+  /**
+   * Bind a retrieve request to its accepted job so the seller's delivery
+   * NeedAuth is validated against the job's own billing facts.
+   */
+  trackVideoRetrieve(sellerPeerId: string, protocol: string, jobId: string, requestId: string): boolean {
+    const job = this._videoJobs.get(videoJobKey(sellerPeerId, protocol, jobId));
+    if (!job) return false;
+    const { createdAtMs: _createdAtMs, observedUnitUsage: _observed, oneOffChannelId, ...entry } = job;
+    this.trackRequestBilling(requestId, entry);
+    const tracked = this._requestBillingEntries.get(requestId);
+    if (tracked && oneOffChannelId) tracked.oneOffChannelId = oneOffChannelId;
+    return true;
+  }
+
+  /**
+   * Record that the buyer received the finished video. Only now may the
+   * seller's NeedAuth for the job's price be signed, and only once.
+   */
+  recordVideoDelivered(sellerPeerId: string, protocol: string, jobId: string, requestId: string): void {
+    const key = videoJobKey(sellerPeerId, protocol, jobId);
+    const job = this._videoJobs.get(key);
+    const entry = this._requestBillingEntries.get(requestId);
+    const facts = entry?.requestFacts;
+    if (!job || facts?.kind !== 'video') return;
+    this._videoJobs.delete(key);
+    if (job.oneOffChannelId) this._persistVideoJob(job.oneOffChannelId, null);
+    this.recordObservedUnitUsage(requestId, nativeVideoUnitUsage(facts.video));
+  }
+
+  /** Store (or clear) the undelivered job on its one-off channel row. */
+  private _persistVideoJob(channelId: string, job: PersistedVideoJob | null): void {
+    const channel = this._channelStore.getChannel(channelId);
+    if (!channel) return;
+    try {
+      this._channelStore.upsertChannel({
+        ...channel,
+        oneOffVideoJob: job ? JSON.stringify(job, (_key, value) => typeof value === 'bigint' ? { $bigint: value.toString() } : value) : null,
+        updatedAt: Date.now(),
+      });
+    } catch (err) {
+      debugWarn(`[BuyerPayment] Failed to persist video job for ${channelId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
+  private _restoreVideoJob(channel: StoredChannel): void {
+    if (!channel.oneOffVideoJob) return;
+    try {
+      const job = JSON.parse(channel.oneOffVideoJob, (_key, value) => (
+        value && typeof value === 'object' && typeof value.$bigint === 'string' ? BigInt(value.$bigint) : value
+      )) as PersistedVideoJob;
+      if (Date.now() - job.createdAtMs > VIDEO_JOB_TTL_MS) return;
+      this._videoJobs.set(videoJobKey(channel.peerId, job.protocol, job.jobId), {
+        ...job.entry,
+        createdAtMs: job.createdAtMs,
+        oneOffChannelId: channel.sessionId,
+      });
+    } catch (err) {
+      debugWarn(`[BuyerPayment] Ignoring unreadable video job on ${channel.sessionId.slice(0, 18)}...: ${err instanceof Error ? err.message : String(err)}`);
+    }
+  }
+
   clearRequestBilling(requestId: string): void {
     this._requestBillingEntries.delete(requestId);
     this._requestService.take(requestId);
   }
 
   trackRequestBillingContext(requestId: string, context: UnitBillingContext): void {
-    this.trackRequestBilling(requestId, {
-      context,
-      requestFacts: {},
-    });
+    this.trackRequestBilling(requestId, { context });
   }
 
   /** Get the live response token totals for a seller, or null if none recorded this session. */
@@ -1962,4 +2424,13 @@ export class BuyerPaymentManager {
   }
 
   // parseResponseCost removed — cost data now flows through NeedAuth on PaymentMux.
+}
+
+function videoJobKey(sellerPeerId: string, protocol: string, jobId: string): string {
+  return `${sellerPeerId.toLowerCase()}\n${protocol}\n${jobId}`;
+}
+
+function imagePromptTokens(billing: BuyerRequestBillingEntry | undefined): number {
+  const facts = billing?.requestFacts;
+  return facts?.kind === 'image' ? facts.image.promptTokens ?? 0 : 0;
 }

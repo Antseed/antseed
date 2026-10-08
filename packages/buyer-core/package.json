@@ -15,6 +15,7 @@
     "typecheck": "tsc --noEmit"
   },
   "dependencies": {
+    "@noble/hashes": "1.3.2",
     "@antseed/api-adapter": "workspace:*",
     "@antseed/protocol": "workspace:*",
     "ethers": "~6.16.0",

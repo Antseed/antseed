@@ -27,10 +27,19 @@ function fakePeerId(label: string): string {
   return hex;
 }
 
-function decodeMetadataTokens(metadata: string): { inputTokens: bigint; outputTokens: bigint; outputImages: bigint } {
+function decodeMetadataTokens(metadata: string): {
+  inputTokens: bigint;
+  outputTokens: bigint;
+  outputImages: bigint;
+  videoGenerations: bigint;
+  videoSeconds: bigint;
+} {
   const coder = AbiCoder.defaultAbiCoder();
-  const [, inputTokens, outputTokens, , outputImages] = coder.decode(['uint256', 'uint256', 'uint256', 'uint256', 'uint256'], metadata);
-  return { inputTokens, outputTokens, outputImages };
+  const [, inputTokens, outputTokens, , outputImages, videoGenerations, videoSeconds] = coder.decode(
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'],
+    metadata,
+  );
+  return { inputTokens, outputTokens, outputImages, videoGenerations, videoSeconds };
 }
 
 function decodeMetadataServices(metadata: string): Array<{
@@ -43,13 +52,15 @@ function decodeMetadataServices(metadata: string): Array<{
   cumulativeOutputImages: bigint;
 }> {
   const coder = AbiCoder.defaultAbiCoder();
-  const [, , , , , services] = coder.decode([
+  const [, , , , , , , services] = coder.decode([
     'uint256',
     'uint256',
     'uint256',
     'uint256',
     'uint256',
-    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]',
+    'uint256',
+    'uint256',
+    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]',
   ], metadata);
   return [...services].map((service) => ({
     serviceId: service.serviceId as string,
@@ -162,8 +173,9 @@ describe('BuyerPaymentManager', () => {
     expect(sent.metadata).toBeTypeOf('string');
     expect(sent.metadata).not.toBe('');
     expect((sent.metadata as string).startsWith('0x')).toBe(true);
-    // v3 zero metadata: five head words + empty services array (offset + length) = 7 words.
-    expect((sent.metadata as string).length).toBe(2 + 7 * 64);
+    // v4 zero metadata: seven head words (version, input, output, requests,
+    // images, video generations, video seconds) + empty services array (offset + length) = 9 words.
+    expect((sent.metadata as string).length).toBe(2 + 9 * 64);
   });
 
   it('does not transmit ReserveAuth when durable persistence fails', async () => {
@@ -865,7 +877,7 @@ describe('BuyerPaymentManager', () => {
         attributes: { model: service },
         unitLimits: { output_images: 1 },
       },
-      requestFacts: { model: service, requestedImages: 1 },
+      requestFacts: { kind: 'image', image: { model: service, requestedImages: 1 } },
       unitModel,
     });
     mux.sentSpendingAuths.length = 0;
@@ -975,7 +987,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1036,7 +1048,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '256x256' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1088,7 +1100,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       tokenPricing: TEST_PRICING,
       unitModel: imageModel,
     });
@@ -1140,7 +1152,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
