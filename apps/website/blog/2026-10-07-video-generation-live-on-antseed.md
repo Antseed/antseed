@@ -9,11 +9,11 @@ image: /og-image.jpg
 date: 2026-10-07
 ---
 
-![Video generation is live on Antseed](/img/blog/antseed-video-generation/header.svg)
+![Video generation is live on Antseed](/img/blog/antseed-video-generation/header.webp)
 
 Video generation is live on Antseed, and you're not stuck with one company's models or one company's rules.
 
-Pick from video models offered by independent providers, each setting its own price. Want a polished commercial look? A strange art-house style? An uncensored creative model? The network can offer it, provider by provider. Describe the video you want, and you pay when the finished file is delivered.
+Pick from video models offered by independent providers, each setting its own price. Need a slick demo for your app? A short ad for your product? An uncensored creative model? The network can offer it, provider by provider. Describe the video you want, and you pay when the finished file is delivered.
 
 <!-- truncate -->
 
