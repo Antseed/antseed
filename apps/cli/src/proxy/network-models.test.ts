@@ -2,6 +2,7 @@ import assert from 'node:assert/strict'
 import test from 'node:test'
 import { normalizedModelReputationScore, type PeerInfo } from '@antseed/node'
 import { buildNetworkModels, parseModelTypeFilter } from './network-models.js'
+import { findAdvertisedServiceOffer } from './routing.js'
 
 const NOW_MS = 1_700_000_000_000
 
@@ -852,4 +853,17 @@ test('native video protocols are discoverable separately from text models', () =
   assert.equal(models[0]?.peers[0]?.inputUsdPerMillion, undefined)
   assert.equal(models[0]?.peers[0]?.unitBillingModels?.['venice-video']?.components[0]?.priceUsd, 0.1)
   assert.deepEqual(models[0]?.peers[0]?.capabilities?.video, { durationsSeconds: [5, 10], resolutions: ['1080p'] })
+})
+
+test('fal endpoints that share a trailing segment stay separate models and routes', () => {
+  const ids = { 'bytedance/seedance-2.5/text-to-video': 0.27, 'xai/grok-imagine-video/v1.5/lite/text-to-video': 0.02 }
+  const peer = makePeer({ peerId: 'a'.repeat(40), providers: ['fal'] })
+  peer.providerPricing = { fal: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } }
+  peer.providerServiceApiProtocols = { fal: { services: Object.fromEntries(Object.keys(ids).map(id => [id, ['fal-video']])) } }
+  peer.providerServiceUnitBillingModels = { fal: { services: Object.fromEntries(Object.entries(ids).map(([id, priceUsd]) => [
+    id, { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd }] } },
+  ])) } }
+  const models = buildNetworkModels([peer], NOW_MS)
+  assert.deepEqual(models.map(model => model.id).sort(), Object.keys(ids).sort())
+  assert.equal(findAdvertisedServiceOffer(peer, 'fal', 'bytedance/seedance-2.5/text-to-video')?.serviceId, 'bytedance/seedance-2.5/text-to-video')
 })
