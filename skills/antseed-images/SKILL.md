@@ -11,7 +11,7 @@ Generate an image through the user's local Antseed buyer proxy using network-wid
 
 - Antseed Desktop or `antseed buyer start` must be running.
 - The buyer must have enough deposited USDC for an eligible seller serving the selected model.
-- The default buyer endpoint is `http://127.0.0.1:8377`. Use a different port only when the user provides one.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm sandbox` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
@@ -20,14 +20,14 @@ Use these values for the request:
 - `model` — image model id or alias; optional only when the user has not chosen a model yet
 - `prompt` — the user's image description
 - `output` — optional destination path
-- `proxy_url` — optional buyer URL; default `http://127.0.0.1:8377`
+- `proxy_url` — optional buyer URL; default `$ANTSEED_PROXY_URL`, then `http://127.0.0.1:8377`
 
 ## Discover the Image Model
 
 Always fetch the current image catalog before generating:
 
 ```bash
-proxy_url="${proxy_url:-http://127.0.0.1:8377}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
   -H 'authorization: Bearer antseed-desktop' \
   "$proxy_url/v1/models?type=images"
