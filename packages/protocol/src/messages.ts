@@ -242,9 +242,10 @@ export interface OneOffChannelPlan {
 /** AntseedChannels FIRST_SIGN_CAP default: the largest reserve() a fresh channel may open with. */
 export const DEFAULT_FIRST_SIGN_CAP = 1_000_000n;
 /**
- * AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS default, used when the live,
- * owner-configurable value (Base mainnet: 6500) cannot be read. It only makes
- * the serious fee larger, never too small to unlock topUp().
+ * AntseedChannels TOP_UP_SETTLED_THRESHOLD_BPS default, used by the seller when
+ * the live, owner-configurable value (Base mainnet: 6500) cannot be read. It
+ * only makes the serious fee larger, never too small to unlock topUp(). Buyers
+ * never assume it: they refuse a plan they cannot check against the contract.
  */
 export const DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS = 8_500n;
 

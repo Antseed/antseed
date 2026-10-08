@@ -156,6 +156,16 @@ describe('BuyerPaymentNegotiator', () => {
       expect(bpm.openOneOffChannel).not.toHaveBeenCalled();
     });
 
+    it('does not blame the seller when the contract limits cannot be read', async () => {
+      const { negotiator, bpm } = makeNegotiator();
+      (negotiator as any)._channelsClient.getTopUpSettledThresholdBps.mockRejectedValue(new Error('rpc down'));
+
+      await expect(negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan())).rejects.toMatchObject({
+        code: 'chain-rpc-unavailable',
+      });
+      expect(bpm.openOneOffChannel).not.toHaveBeenCalled();
+    });
+
     it('falls back to the on-chain reserve when the AuthAck is lost', async () => {
       const { negotiator, bpm, getSession } = makeNegotiator({ acked: false });
 

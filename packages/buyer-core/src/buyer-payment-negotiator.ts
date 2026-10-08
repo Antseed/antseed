@@ -10,8 +10,6 @@ import {
 } from '@antseed/protocol/http';
 import {
   computeOneOffChannelPlan,
-  DEFAULT_FIRST_SIGN_CAP,
-  DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS,
   PAYMENT_CODE_CHANNEL_EXHAUSTED,
   PAYMENT_CODE_ONE_OFF_CHANNEL_REQUIRED,
   type PaymentRequiredPayload,
@@ -413,7 +411,14 @@ export class BuyerPaymentNegotiator {
         'buyer-session-state',
       );
     }
-    const expected = computeOneOffChannelPlan(price, await this._firstSignCap(), await this._topUpSettledThresholdBps());
+    const firstSignCap = await this._firstSignCap();
+    const thresholdBps = await this._topUpSettledThresholdBps();
+    // Without the live contract values the plan cannot be checked; a guessed
+    // default could wrongly flag an honest seller's plan as a violation.
+    if (firstSignCap == null || thresholdBps == null) {
+      throw buyerFault('Could not read the payment channel contract limits; try again', 'chain-rpc-unavailable');
+    }
+    const expected = computeOneOffChannelPlan(price, firstSignCap, thresholdBps);
     if (!sameOneOffPlan(plan, expected)) {
       throw peerFault('Seller sent an invalid one-off channel plan', 'peer-protocol-violation');
     }
@@ -440,8 +445,8 @@ export class BuyerPaymentNegotiator {
     return videoCost;
   }
 
-  /** AntseedChannels FIRST_SIGN_CAP, the largest reserve a fresh channel may open with. */
-  private async _firstSignCap(): Promise<bigint> {
+  /** AntseedChannels FIRST_SIGN_CAP, the largest reserve a fresh channel may open with; null when unreadable. */
+  private async _firstSignCap(): Promise<bigint | null> {
     if (this._firstSignCapValue != null) return this._firstSignCapValue;
     try {
       const value = await this._channelsClient?.getFirstSignCap?.();
@@ -450,13 +455,13 @@ export class BuyerPaymentNegotiator {
         return value;
       }
     } catch (error) {
-      debugWarn(`[BuyerNegotiator] Could not read FIRST_SIGN_CAP: ${error instanceof Error ? error.message : error} — using ${DEFAULT_FIRST_SIGN_CAP}`);
+      debugWarn(`[BuyerNegotiator] Could not read FIRST_SIGN_CAP: ${error instanceof Error ? error.message : error}`);
     }
-    return DEFAULT_FIRST_SIGN_CAP;
+    return null;
   }
 
-  /** Contract share of the deposit that must be settled before topUp(), in basis points. */
-  private async _topUpSettledThresholdBps(): Promise<bigint> {
+  /** Contract share of the deposit that must be settled before topUp(), in basis points; null when unreadable. */
+  private async _topUpSettledThresholdBps(): Promise<bigint | null> {
     if (this._topUpThresholdBps != null) return this._topUpThresholdBps;
     try {
       const value = await this._channelsClient?.getTopUpSettledThresholdBps?.();
@@ -465,9 +470,9 @@ export class BuyerPaymentNegotiator {
         return value;
       }
     } catch (error) {
-      debugWarn(`[BuyerNegotiator] Could not read TOP_UP_SETTLED_THRESHOLD_BPS: ${error instanceof Error ? error.message : error} — using ${DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS}`);
+      debugWarn(`[BuyerNegotiator] Could not read TOP_UP_SETTLED_THRESHOLD_BPS: ${error instanceof Error ? error.message : error}`);
     }
-    return DEFAULT_TOP_UP_SETTLED_THRESHOLD_BPS;
+    return null;
   }
 
   /**

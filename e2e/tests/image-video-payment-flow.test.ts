@@ -189,6 +189,10 @@ async function handleSingleRpcRequest(parsed: { id: number; method: string; para
       if (selector === selectorFor('getAgentStats')) {
         return makeResult('0x' + encode256(0n).repeat(4));
       }
+      if (selector === selectorFor('TOP_UP_SETTLED_THRESHOLD_BPS')) {
+        // Basis points, so it must be a real value: the buyer refuses to check a plan without it.
+        return makeResult('0x' + encode256(8_500n));
+      }
       if (selector === selectorFor('channelsAddress')) {
         // The configured mock address is a plain channels contract, not a facade.
         return makeResult('0x');
