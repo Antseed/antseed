@@ -120,12 +120,23 @@ async function requestJson(method, url, body, timeoutSeconds = 120) {
   return { status: response.status, headers: response.headers, body: parseJson(await readLimited(response, JSON_LIMIT)) };
 }
 
+/**
+ * Keeps everything the proxy and seller said about a failure: the full message,
+ * the seller's own reason and status, and any per-field validation details, so
+ * the agent can see which request field was rejected.
+ */
 export function errorFrom(status, body, fallback) {
   const error = body.error;
+  const details = { status };
+  const source = isObject(error) ? error : body;
+  if (typeof source.peer_message === 'string' && source.peer_message.trim()) details.peerMessage = source.peer_message.trim();
+  if (Number.isInteger(source.peer_status)) details.peerStatus = source.peer_status;
+  const extra = (isObject(error) ? error.details : undefined) ?? body.details;
+  if (extra !== undefined && extra !== null) details.details = extra;
   if (isObject(error)) {
-    return new VideoError(String(error.message || fallback), String(error.code || error.type || `http_${status}`), { status });
+    return new VideoError(String(error.message || fallback), String(error.code || error.type || `http_${status}`), details);
   }
-  return new VideoError(String(error || body.message || fallback), `http_${status}`, { status });
+  return new VideoError(String(error || body.message || fallback), `http_${status}`, details);
 }
 
 async function catalog(base, type = 'videos') {

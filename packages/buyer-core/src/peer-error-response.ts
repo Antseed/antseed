@@ -46,10 +46,13 @@ function parsePeerError(response: SerializedHttpResponse): PeerErrorDetails {
     : null;
   const idCandidate = [error?.code, error?.type, body?.code, body?.type, body?.error]
     .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
-  const messageCandidate = [error?.peer_message, error?.message, body?.message]
+  const messageCandidate = [error?.peer_message, error?.message, body?.message, body?.error]
     .find((value): value is string => typeof value === 'string' && value.trim().length > 0);
 
   let message = messageCandidate?.trim() ?? null;
+  // Some upstreams (e.g. Venice) explain a 400 only in `details`, keyed by field.
+  const detail = describeErrorDetails(body?.details ?? error?.details);
+  if (detail && !message?.includes(detail)) message = message ? `${message}: ${detail}` : detail;
   if (!message && responseHeader(response, 'content-type')?.toLowerCase().includes('text/plain')) {
     message = new TextDecoder().decode(response.body).trim() || null;
   }
@@ -60,6 +63,37 @@ function parsePeerError(response: SerializedHttpResponse): PeerErrorDetails {
     id: idCandidate?.trim() ?? null,
     message: message?.slice(0, 1_000) ?? null,
   };
+}
+
+const MAX_DETAIL_ISSUES = 10;
+
+/**
+ * Flattens a validation `details` payload into "field: problem" text. Handles
+ * zod-style `{ _errors: [...], field: { _errors: [...] } }` trees and falls
+ * back to compact JSON for any other shape.
+ */
+function describeErrorDetails(details: unknown): string | null {
+  if (typeof details === 'string') return details.trim() || null;
+  if (!details || typeof details !== 'object' || Array.isArray(details)) return null;
+  const issues: string[] = [];
+  const visit = (node: unknown, path: string[]) => {
+    if (issues.length >= MAX_DETAIL_ISSUES || !node || typeof node !== 'object' || Array.isArray(node)) return;
+    for (const [key, value] of Object.entries(node as Record<string, unknown>)) {
+      if (key === '_errors' && Array.isArray(value)) {
+        for (const item of value) {
+          if (typeof item === 'string' && item.trim() && issues.length < MAX_DETAIL_ISSUES) {
+            issues.push(path.length ? `${path.join('.')}: ${item.trim()}` : item.trim());
+          }
+        }
+      } else {
+        visit(value, [...path, key]);
+      }
+    }
+  };
+  visit(details, []);
+  if (issues.length) return issues.join('; ');
+  const json = JSON.stringify(details);
+  return json === '{}' || json === '{"_errors":[]}' ? null : json;
 }
 
 function isUserActionablePeerError(response: SerializedHttpResponse, errorId: string | null): boolean {

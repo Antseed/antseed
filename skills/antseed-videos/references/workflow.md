@@ -150,6 +150,8 @@ For a job on a `fal-video` seller, add `--protocol fal-video`; `generate` report
 
 ## Errors
 
+Failed commands return `error` with `code`, the full `message`, `status`, and, when the seller explained itself, `peerMessage` (the seller's own reason), `peerStatus`, and `details` (per-field validation problems). Read `peerMessage` and `details` before choosing a fix: a `400` that names a field means that field is wrong for this model, so change that field rather than switching sellers or models, and ask the user before creating again.
+
 - `402`: buyer needs more deposited USDC or payment-channel capacity.
 - `402 one_off_channel_required`: the buyer retried before the seller registered the video's payment channel. Buyers before `@antseed/cli@0.1.171` hit this; update the buyer. Each failed attempt leaves a funded channel that `antseed buyer channels request-close <channelId>` releases.
 - Price above $5.00, or "above the configured limit": choose a shorter duration or lower resolution. `select` already treats such sellers as incompatible.

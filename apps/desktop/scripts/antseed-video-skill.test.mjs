@@ -331,6 +331,51 @@ test('CLI generate reports create failures without retrying and rejects non-MP4 
   });
 });
 
+test('CLI generate passes the seller reason and validation details to the agent', async () => {
+  await withTempDir(async (dir) => {
+    const wrapped = {
+      error: {
+        type: 'Invalid request parameters',
+        message: 'Oops, pinned peer could not complete the request.\nOriginal Response: {"message":"Invalid request parameters: audio: Expected false","status":400}',
+        antseed_fault: 'peer',
+        antseed_pinned: true,
+        peer_message: 'Invalid request parameters: audio: Expected false',
+        peer_status: 400,
+      },
+    };
+    await withProxy(catalogHandler((request) => {
+      if (request.url === '/api/v1/video/queue') return { status: 400, body: wrapped };
+      return { status: 404 };
+    }), async (base) => {
+      const { code, json } = await cli(['--proxy-url', base, 'generate', '--model', 'seedance', '--peer', 'bb', '--prompt', 'x', '--output', path.join(dir, 'a.mp4')]);
+      assert.equal(code, 1);
+      assert.deepEqual(json.error, {
+        code: 'Invalid request parameters',
+        message: wrapped.error.message,
+        status: 400,
+        peerMessage: 'Invalid request parameters: audio: Expected false',
+        peerStatus: 400,
+        peerId: 'bb',
+      });
+    });
+
+    const raw = { error: 'Invalid request parameters', details: { audio: { _errors: ['Expected false'] } } };
+    await withProxy(catalogHandler((request) => {
+      if (request.url === '/api/v1/video/queue') return { status: 400, body: raw };
+      return { status: 404 };
+    }), async (base) => {
+      const { json } = await cli(['--proxy-url', base, 'generate', '--model', 'seedance', '--peer', 'bb', '--prompt', 'x', '--output', path.join(dir, 'b.mp4')]);
+      assert.deepEqual(json.error, {
+        code: 'http_400',
+        message: 'Invalid request parameters',
+        status: 400,
+        details: raw.details,
+        peerId: 'bb',
+      });
+    });
+  });
+});
+
 test('CLI batch creates segments one by one and renders accepted jobs in parallel', async () => {
   await withTempDir(async (dir) => {
     await writeFile(path.join(dir, 'k0.png'), PNG);
