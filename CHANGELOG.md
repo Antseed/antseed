@@ -14,6 +14,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- CLI verifier: add opt-in pre-audit reference top-up with `--enroll-if-needed --max-enrollment-requests <count>`. Reuse compatible enrolled questions and pooled self-test runs, prefer new probes that distinguish failing contrasts, retain checkpointed calls, and audit only models whose bank passes a post-enrollment readiness check.
 - Desktop AI VPN: far fewer Base RPC calls and rate-limit errors. Balance, channel and rewards reads share one rotating RPC provider, contract addresses are cached for five minutes, channel status checks are batched through Multicall3, and display-only reads are cached briefly (balance 4 s, channel status 20 s, rewards 60 s). Payment decisions, explicit refreshes and the payment card always read live, and the cache is cleared after payments, deposits, closes and staking actions.
 - Docs: document `seller.freeUsage` record batching in the configuration guide and the CLI README.
 - CLI/node: free-usage channels opened by buyers now default to a 1-hour deadline (was 15 minutes), so sellers submit fewer open/close transactions per active buyer. Sellers can batch free-usage record transactions with `seller.freeUsage.recordBatchSize` (default 16) and `seller.freeUsage.recordFlushIntervalMs` (default 900000, flushed earlier when the channel deadline is near).

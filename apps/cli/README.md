@@ -612,6 +612,38 @@ Use `base-sepolia` for testing with MockUSDC.
 
 Provider-specific options are configured via each plugin's config schema (see `antseed plugin add --help`).
 
+## Model Audits With Reference Enrollment
+
+Audits normally use existing reference banks and do not make reference-building
+calls. Opt in to bounded enrollment when a selected model's bank is missing or
+fails the self-test, statistical-power, or contrast-detection checks:
+
+```bash
+antseed --config ./audit-config.json verifier run gpt-6.1-sol \
+  --enroll-if-needed --max-enrollment-requests 2000 --allow-probe-reuse
+```
+
+The request budget is **per model**, includes retries and requests already used
+by a compatible enrollment checkpoint, and cannot exceed a lower configured
+`referenceMaxRequestsPerBuild`. It is a request limit, not a dollar spending cap.
+Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
+configured no-progress limit. `--all` applies this process to each enabled model
+with eligible sellers; it can therefore spend up to the per-model limit for each.
+
+Compatible banks retain their enrolled probes and self-test answers. New stable
+candidates are checked against the existing contrasts, with preference given to
+probes distinguishing failing contrasts. Existing contrast models are not replaced
+with easier ones. A ready bank causes no enrollment calls. The CLI checks the bank
+again after appending new probes and skips any model that is still not ready;
+incompatible enrollment settings fail before new model calls. Per-seller probe
+availability is still checked when reserving each audit.
+
+Enrollment cannot be combined with `--resume-run` or an automatic audit repair.
+Failed enrollment retains compatible cached requests for a bounded retry. No
+seller audit starts for a model whose enrollment failed. Use explicit local
+`verifier.banksDir`, `verifier.referencesDir`, and `verifier.evidenceDir` settings
+when existing operator artifacts must not be changed.
+
 ## Metrics
 
 Expose a Prometheus-compatible endpoint for a buyer or seller:
