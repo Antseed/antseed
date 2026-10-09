@@ -143,7 +143,7 @@ test('the buyer trust score wins over a seller-reported score', () => {
     peerId: 'e'.repeat(40),
     reputationScore: 100,
     onChainReputationScore: 12,
-    trust: { score: 12, history: null, usage: null, power: null, identity: { score: 12, kind: 'domain', claim: 'example.com' }, washFlagged: null },
+    trust: { score: 12, history: null, usage: null, power: null, identity: { score: 12, kind: 'domain', claim: 'example.com' }, freeModels: null, washFlagged: null },
     providerServiceApiProtocols: {
       openai: { services: { 'qwen3-coder': ['openai-chat-completions'] } },
     },

@@ -316,7 +316,7 @@ export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
 export { UptimeTracker } from './reputation/uptime-tracker.js';
 export {
   computeTrustScore, historyCurve, trustScore, shareCurve, SHARE_CURVE_RANGE,
-  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS,
+  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
   type TrustBreakdown,
 } from './reputation/trust-score.js';
 export {

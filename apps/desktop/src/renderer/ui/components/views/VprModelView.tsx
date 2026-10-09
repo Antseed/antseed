@@ -209,7 +209,7 @@ export function VprModelView({ onSelectView }: Props) {
                   content={(
                     <span>
                       Video models can't be selected in chat yet. To make a video, start a chat with a text model
-                      and ask it to generate one with {entry.label}. It will guide you through the options and price.
+                      and ask it to make one. It will guide you through the model, frames, settings, and price.
                     </span>
                   )}
                 >

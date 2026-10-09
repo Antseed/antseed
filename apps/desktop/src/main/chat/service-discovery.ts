@@ -380,8 +380,16 @@ export function normalizeTrustBreakdown(raw: unknown): TrustBreakdown | null {
     usage: normalizeSharePart(asPlainObject(value.usage)),
     power: normalizeSharePart(asPlainObject(value.power)),
     identity: normalizeIdentityPart(asPlainObject(value.identity)),
+    freeModels: normalizeFreeModelsPart(asPlainObject(value.freeModels)),
     washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
   };
+}
+
+function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  if (score === null || typeof raw.service !== 'string' || raw.service.length === 0) return null;
+  return { score, service: raw.service };
 }
 
 function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {

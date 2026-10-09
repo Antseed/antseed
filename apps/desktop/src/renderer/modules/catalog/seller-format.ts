@@ -18,7 +18,7 @@ const IDENTITY_KIND_LABELS: Record<NonNullable<TrustBreakdown['identity']>['kind
 
 /**
  * Tooltip spelling out the trust formula for one seller, e.g.
- * `Trust 6.5/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub. Not flagged for wash trading.`
+ * `Trust 7.0/10 = history 3.0 + usage 1.0 + power 0.5 + identity 2.0 GitHub + free models 0.5. Not flagged for wash trading.`
  * Flagged sellers read `Trust 0/10: flagged as a proven wash trader by the on-chain registry.`
  */
 export function sellerReputationExplanation(route: DiscoverRow): string {
@@ -31,8 +31,9 @@ export function sellerReputationExplanation(route: DiscoverRow): string {
   const identity = trust.identity
     ? `identity ${reputationScaleLabel(trust.identity.score)} ${IDENTITY_KIND_LABELS[trust.identity.kind]}`
     : 'identity none';
+  const free = trust.freeModels ? ` + free models ${reputationScaleLabel(trust.freeModels.score)}` : '';
   const wash = trust.washFlagged === false ? ' Not flagged for wash trading.' : ' Wash-trading registry unavailable.';
-  return `Trust ${reputationScaleLabel(trust.score)}/10 = ${history} + ${usage} + ${power} + ${identity}.${wash}`;
+  return `Trust ${reputationScaleLabel(trust.score)}/10 = ${history} + ${usage} + ${power} + ${identity}${free}.${wash}`;
 }
 
 /** 0-100 score → "9.8" (10-point scale). */
