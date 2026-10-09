@@ -41,7 +41,7 @@ Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. 
 
 Send an OpenAI-compatible request to `<proxy_url>/v1/images/generations`. Use a JSON encoder such as `jq`; do not interpolate an unescaped prompt into JSON.
 
-Capture the response in a private temporary file, then decode `data[0].b64_json` directly into the output file without printing it:
+Capture the response in a private temporary file, then decode the image directly into the output file without printing it. Most sellers return `data[0].b64_json`; some return Venice's `images[0]`:
 
 ```bash
 response_file="$(mktemp)"
@@ -57,7 +57,8 @@ curl --fail-with-body "$proxy_url/v1/images/generations" \
     '{model: $model, prompt: $prompt, n: 1, response_format: "b64_json"}')" \
   --output "$response_file"
 
-jq -r '.data[0].b64_json // empty' "$response_file" | base64 --decode > "$output"
+jq -r '.data[0].b64_json // .images[0] // empty' "$response_file" | base64 --decode > "$output"
+[ -s "$output" ] || echo "no base64 image in response; check data[0].url" >&2
 ```
 
 If the response contains `data[0].url` instead, download it immediately to the output file. Accept only an HTTPS URL. Do not follow redirects to private, loopback, link-local, or otherwise unsafe destinations.

@@ -23,7 +23,7 @@ End every stage with a question and wait for the answer. Never start the next st
 
 1. Fetch the video catalog (`/v1/models?type=videos`).
 2. Give a short, honest take on the idea: what will work on screen, what is missing, and one or two ways to make it stronger. Offer an improved one-paragraph version of the idea.
-3. Recommend one video model that takes a first frame (and a last frame when possible) and say why, using the picks in [references/prompting.md](references/prompting.md). List three to five alternatives from the catalog, one line each.
+3. Recommend one video model that takes a first frame (and a last frame when possible) and say why, following [references/prompting.md](references/prompting.md#choosing-models). List three to five alternatives from the catalog, one line each, using only what the catalog shows.
 4. Ask: "Does this version of the idea work for you? Shall I use **<model>**, or another one from the list?"
 
 ### Stage 2 — Prompts and frames
@@ -41,11 +41,11 @@ This stage has two approvals, because frames cost money.
 
 **2b. Frames (paid).**
 
-1. Generate each frame with the `antseed-images` skill, the approved image model, and a size matching the aspect ratio.
+1. Generate each frame with the `antseed-images` skill and the approved image model. Check the saved frame's shape; if it does not match the agreed ratio, tell the user and either redo it or use the frame's ratio.
 2. Show each saved frame (in Antseed Desktop, call `show_media`).
 3. Ask: "Is the first frame right, or should I redo it? And the last frame?" Redo a frame, with an adjusted prompt if needed, until the user approves.
 
-If the user uploads frames, skip making them: get their paths (in Antseed Desktop, `get_chat_image_path`), show them, and confirm which is first and which is last. Use a text-to-video model only when the user asks to skip frames; say that the look may drift.
+If the user uploads frames, skip making them: get their paths (in Antseed Desktop, `get_chat_image_path`), show them, and confirm which is first and which is last. Use a text-to-video model (catalog with `frames=no`) only when the user asks to skip frames; say that the look may drift.
 
 ### Stage 3 — Recap, settings, and go
 
@@ -62,7 +62,7 @@ After "go", queue the video once, save the job file, wait, and save the MP4 ([re
 
 - **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered, so a failed or rejected create costs nothing, but a repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
 - Status checks and downloads use the saved job id and never create jobs.
-- Send only values the seller advertises. Do not send `audio` unless the user asks for a specific setting and the seller advertises `audio: true`.
+- Send only values the seller advertises. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
 - Always send the create to the chosen seller, as `<peerId>@<model>` (the cheapest compatible seller from the price step).
-- After a failed create, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first.
+- After a failed create or job, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first. Before an approved retry, rename `<name>.job.json` to `<name>.failed.job.json`.
 - Never print base64 media, signed URLs, authorization headers, private keys, or full API responses. Keep the buyer proxy on loopback.
