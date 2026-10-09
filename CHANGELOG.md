@@ -39,6 +39,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Website: refresh the Antseed Gateway blog header and social-preview image, mention agents in the introduction, and clarify the buyer's role and wallets assigned to shared keys.
 - Node, CLI, desktop: seller trust score adds a 5-point bonus for sellers that offer at least one free model ($0 input and output, and $0 cached input when priced), on top of the existing weights and capped at 100. A free model only adds to an already-scored seller. `antseed network peer` and the desktop trust tooltip show the new part.
 - Desktop AI VPN: video models (`venice-video`, `fal-video`) now appear in the Explore and Models lists with a "Video" tag, a "Video" type filter, and their advertised per-second or per-video price. Video models stay out of the chat model pickers, connected apps and Telegram. On a video model's page, "Use in chat" is disabled, and its tooltip explains how to make a video instead: start a chat with a text model and ask it to generate one with that model.
 - Skills: `antseed-images` and `antseed-decisions` send requests to `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop chat and `pnpm sandbox` set it to the active buyer proxy) and fall back to `http://127.0.0.1:8377` only otherwise, so agents no longer hard-code the default port and reach a different buyer than the one the app is attached to.
