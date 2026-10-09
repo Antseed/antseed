@@ -22,6 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- `@antseed/provider-openai-responses`: Codex chats that used web search no longer get stuck when Codex compacts them. The ChatGPT backend now rejects requests that replay `web_search_call` history without declaring the `web_search` tool (`response protection is unavailable`), and Codex's compaction requests send no tools; the seller now adds a cached-only `web_search` tool to such requests, with `tool_choice` set to `none` when the request had no tools so no new search runs.
 - ANTS dashboard: Stake rewards and Claim no longer fail with "Position N is not owned by this wallet" when the indexer still lists a position NFT that was transferred to another wallet; such positions are skipped (`@antseed/node` `previewPoolRewards` now treats `includeIds` as hints). Restaking an explicitly selected position the wallet does not own still fails.
 - ANTS dashboard: the position menu disables Enable max lock and Move allocation when the action cannot take effect (for example, an expired lock) and shows why, instead of opening a form that cannot be submitted. The expired-lock message now says to withdraw and stake again.
 

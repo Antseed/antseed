@@ -270,6 +270,21 @@ function extractAccountIdFromTokens(accessToken: string, idToken: string | undef
   return fallbackAccountId;
 }
 
+// TODO: remove once OpenAI fixes the upstream regression (openai/codex#51962).
+// Since 2026-10 the ChatGPT backend fails requests that replay `web_search_call`
+// history without declaring `web_search` ("response protection is unavailable"),
+// and Codex compaction sends `tools: []`, so chats that used web search get stuck.
+function declareWebSearchForHistory(parsed: Record<string, unknown>): void {
+  const input = Array.isArray(parsed.input) ? parsed.input as Array<{ type?: unknown }> : [];
+  const tools = Array.isArray(parsed.tools) ? parsed.tools as Array<{ type?: unknown }> : [];
+  if (!input.some((item) => item?.type === 'web_search_call')) return;
+  if (tools.some((tool) => String(tool?.type).startsWith('web_search'))) return;
+  if (tools.length === 0 && (parsed.tool_choice ?? 'auto') === 'auto') {
+    parsed.tool_choice = 'none';
+  }
+  parsed.tools = [...tools, { type: 'web_search', external_web_access: false }];
+}
+
 function prepareRequestBody(
   request: SerializedHttpRequest,
   serviceRewriteMap: Record<string, string> | undefined,
@@ -309,6 +324,8 @@ function prepareRequestBody(
     delete parsed.max_output_tokens;
     delete parsed.temperature;
     delete parsed.top_p;
+
+    declareWebSearchForHistory(parsed);
 
     // The upstream backend requires `instructions` as a top-level field.
     // Some clients (e.g. pi's openai-responses provider) send the system

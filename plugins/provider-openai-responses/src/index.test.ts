@@ -368,6 +368,50 @@ describe('provider-openai-responses plugin', () => {
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
+  async function relayAndCaptureBody(fields: Record<string, unknown>): Promise<Record<string, unknown>> {
+    const authFile = writeAuthFile({ tokens: { access_token: makeJwt({}), account_id: 'acct-file' } });
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ id: 'resp_1' }), { status: 200 }));
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+    const provider = plugin.createProvider({ OPENAI_RESPONSES_AUTH_FILE: authFile, ANTSEED_ALLOWED_SERVICES: 'gpt-5.5' });
+    await provider.handleRequest({
+      requestId: 'req-web-search',
+      method: 'POST',
+      path: '/v1/responses',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'gpt-5.5', stream: true, ...fields })),
+    });
+    rmSync(dirname(authFile), { recursive: true, force: true });
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return JSON.parse(new TextDecoder().decode(init.body as Uint8Array)) as Record<string, unknown>;
+  }
+
+  const webSearchHistory = [
+    { type: 'message', role: 'user', content: [{ type: 'input_text', text: 'hi' }] },
+    { type: 'web_search_call', id: 'ws_1', status: 'completed', action: { type: 'search', query: 'antseed' } },
+  ];
+
+  it('declares an uncallable web search for tool-less requests replaying web_search_call history', async () => {
+    const body = await relayAndCaptureBody({ input: webSearchHistory, tools: [] });
+    expect(body.input).toEqual(webSearchHistory);
+    expect(body.tools).toEqual([{ type: 'web_search', external_web_access: false }]);
+    expect(body.tool_choice).toBe('none');
+  });
+
+  it('declares web search alongside caller tools without changing tool_choice', async () => {
+    const functionTool = { type: 'function', name: 'shell' };
+    const body = await relayAndCaptureBody({ input: webSearchHistory, tools: [functionTool] });
+    expect(body.input).toEqual(webSearchHistory);
+    expect(body.tools).toEqual([functionTool, { type: 'web_search', external_web_access: false }]);
+    expect(body.tool_choice).toBeUndefined();
+  });
+
+  it('leaves tools unchanged when web search is declared or absent from history', async () => {
+    const declared = await relayAndCaptureBody({ input: webSearchHistory, tools: [{ type: 'web_search' }] });
+    expect(declared.tools).toEqual([{ type: 'web_search' }]);
+    const noHistory = await relayAndCaptureBody({ input: [webSearchHistory[0]] });
+    expect(noHistory.tools).toBeUndefined();
+  });
+
   it('forces upstream streaming and collapses SSE for non-stream callers', async () => {
     const authFile = writeAuthFile({
       tokens: {
