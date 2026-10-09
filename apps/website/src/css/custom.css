@@ -739,36 +739,91 @@ aside.theme-doc-sidebar-container {
   font-weight: 500;
 }
 
-/* Category heading labels — small, uppercase, muted. Scoped to the docs
-   sidebar: the mobile navbar's "Use it for" dropdown also carries
-   .menu__link--sublist and must keep normal casing. */
-.theme-doc-sidebar-item-category > .menu__list-item-collapsible > .menu__link,
+/* Category rows — icon + label + chevron, collapsible. Scoped to the
+   docs sidebar: the mobile navbar's "Use it for" dropdown also carries
+   .menu__link--sublist and keeps its own styling. */
+.theme-doc-sidebar-menu > .theme-doc-sidebar-item-category {
+  margin-top: 2px;
+}
+
 .theme-doc-sidebar-menu .menu__link--sublist {
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--ifm-font-color-secondary);
-  padding: 8px 12px;
-  margin: 12px 4px 4px;
-  cursor: default;
+  color: var(--as-heading);
+  padding: 8px 10px 8px 12px;
+  margin: 0 4px;
+  cursor: pointer;
 }
 
-.theme-doc-sidebar-item-category > .menu__list-item-collapsible > .menu__link:hover,
-.menu__link--sublist:hover {
+.theme-doc-sidebar-menu .menu__link--sublist:hover {
+  background: var(--ifm-menu-color-background-hover);
+  color: var(--as-heading);
+}
+
+/* Section icon — drawn via mask so it follows currentColor */
+.sidebar-icon > .menu__list-item-collapsible > .menu__link::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background-color: var(--as-text-3);
+  -webkit-mask: var(--sidebar-icon) center / contain no-repeat;
+  mask: var(--sidebar-icon) center / contain no-repeat;
+}
+
+.sidebar-icon:has(.menu__link--active) > .menu__list-item-collapsible > .menu__link::before {
+  background-color: var(--as-green-deep);
+}
+
+.sidebar-icon--start { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15l-3-3c.7-2.6 2.1-5 4-6.9C14.9 3.2 17.8 2.4 21.5 2.5c.1 3.7-.7 6.6-2.6 8.5-1.9 1.9-4.3 3.3-6.9 4z"/><path d="M9 12H5.5l2.2-3.3c.5-.7 1.2-1.1 2-1.2L12 7.3"/><path d="M12 15v3.5l3.3-2.2c.7-.5 1.1-1.2 1.2-2l.2-2.3"/><path d="M5.5 16.5c-1.3 1.3-1.5 4.5-1.5 4.5s3.2-.2 4.5-1.5c.8-.8.8-2.2 0-3-.8-.8-2.2-.8-3 0z"/></svg>'); }
+.sidebar-icon--guides { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10.5 5 8 4.5 3 4.5v13c5 0 7.5.5 9 2 1.5-1.5 4-2 9-2v-13c-5 0-7.5.5-9 2z"/><path d="M12 6.5v13"/></svg>'); }
+.sidebar-icon--protocol { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 4.5-9 4.5-9-4.5z"/><path d="M3 12l9 4.5 9-4.5"/><path d="M3 16.5l9 4.5 9-4.5"/></svg>'); }
+.sidebar-icon--plugins { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5a2 2 0 1 1 4 0V6h4.5v4.5H19a2 2 0 1 1 0 4h-1.5V19H13v-1.5a2 2 0 1 0-4 0V19H4.5v-4.5H6a2 2 0 1 0 0-4H4.5V6H9z"/></svg>'); }
+.sidebar-icon--cli { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h17v13h-17z"/><path d="M7 9.5l2.5 2.5L7 14.5"/><path d="M12 14.5h4.5"/></svg>'); }
+.sidebar-icon--papers { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>'); }
+
+/* Chevron — points down when open, right when collapsed */
+.theme-doc-sidebar-menu .menu__link--sublist-caret::after {
+  content: '';
+  display: block !important;
+  flex: none;
+  margin-left: auto;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  background: var(--as-text-3);
+  -webkit-mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>') center / contain no-repeat;
+  mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>') center / contain no-repeat;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+
+.theme-doc-sidebar-menu .menu__list-item--collapsed > .menu__list-item-collapsible > .menu__link--sublist-caret::after {
+  transform: rotate(-90deg);
+}
+
+.theme-doc-sidebar-menu .menu__list-item-collapsible:hover {
   background: transparent;
-  color: var(--ifm-font-color-secondary);
 }
 
-/* Hide collapse arrows since categories are non-collapsible */
-.menu__caret,
-.menu__link--sublist-caret::after {
-  display: none !important;
-}
-
-/* Remove extra padding from nested category lists */
-.menu__list .menu__list {
+/* Nested pages — indented under a hairline guide */
+.theme-doc-sidebar-menu .menu__list {
+  margin: 2px 0 8px 23px;
   padding-left: 0;
+  border-left: 1px solid var(--as-line);
+}
+
+.theme-doc-sidebar-menu .menu__list .menu__link {
+  padding: 6px 10px;
+  margin: 1px 4px 1px 8px;
+}
+
+/* Hide the separate caret button Docusaurus adds to linked categories */
+.theme-doc-sidebar-menu .menu__caret {
+  display: none !important;
 }
 
 /* =============================================
