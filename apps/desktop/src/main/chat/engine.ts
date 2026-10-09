@@ -79,6 +79,7 @@ import {
   projectPersistedConversationRoute,
 } from './conversation-store.js';
 import { createStreamingRunner } from './streaming-run.js';
+import { ChatSessionCache } from './session-cache.js';
 import { generateChatImage } from './image-generation.js';
 import type {
   ActiveRun,
@@ -130,6 +131,8 @@ export type PiChatEngine = {
    * inherit) and tells the renderer so the UI selection follows suit.
    */
   setDefaultRoute(peerId: string, service: string, provider?: string): Promise<{ ok: boolean; error?: string }>;
+  /** Disposes every cached Pi session (app quit). */
+  dispose(): void;
 };
 
 export function registerPiChatHandlers({
@@ -149,6 +152,13 @@ export function registerPiChatHandlers({
   void loadChatWorkspaceDir().catch(() => {});
   const store = new PiConversationStore();
   const activeRunsByConversation = new Map<string, ActiveRun>();
+  // One long-lived Pi AgentSession per conversation, reused across sends.
+  const sessionCache = new ChatSessionCache({
+    isInUse: (conversationId) => activeRunsByConversation.has(conversationId),
+    onDispose: (conversationId, session) => {
+      store.detachLiveSessionManager(conversationId, session.sessionManager);
+    },
+  });
   const activeImageRunsByConversation = new Map<string, AbortController>();
   const serviceProviderHints = new Map<string, string[]>();
   /** Cached payment-required info from 402 responses, keyed by conversationId. */
@@ -262,12 +272,8 @@ export function registerPiChatHandlers({
       // Ignore listener cleanup failures.
     }
 
-    try {
-      run.session.dispose();
-    } catch {
-      // Ignore disposal races.
-    }
-
+    // The session itself is long-lived (see ChatSessionCache); only the
+    // per-turn state is torn down here.
     if (activeRunsByConversation.get(run.conversationId) === run) {
       activeRunsByConversation.delete(run.conversationId);
     }
@@ -279,7 +285,6 @@ export function registerPiChatHandlers({
     }
 
     try {
-      run.onAbort?.();
       run.session.abortCompaction();
       await run.session.abort();
     } catch {
@@ -449,6 +454,7 @@ export function registerPiChatHandlers({
   const runStreamingPrompt = createStreamingRunner({
     store,
     activeRunsByConversation,
+    sessionCache,
     cachedPaymentRequired,
     preferredPeerByConversationId,
     configPath,
@@ -814,6 +820,8 @@ export function registerPiChatHandlers({
   });
 
   ipcMain.handle('chat:ai-delete-conversation', async (_event, id: string) => {
+    await abortAndClearActiveRun(activeRunsByConversation.get(id) ?? null);
+    sessionCache.disposeConversation(id);
     preferredPeerByConversationId.delete(id);
     cachedPaymentRequired.delete(id);
     await store.delete(id);
@@ -907,7 +915,7 @@ export function registerPiChatHandlers({
     activeImageRunsByConversation.set(conversationId, controller);
     try {
       const proxyPort = await resolveProxyPort(configPath);
-      return await generateChatImage(store, proxyPort, {
+      const result = await generateChatImage(store, proxyPort, {
         conversationId,
         prompt,
         ...(peerId ? { peerId } : {}),
@@ -915,6 +923,10 @@ export function registerPiChatHandlers({
         service,
         ...(sourceImageAttachmentId ? { sourceImageAttachmentId } : {}),
       }, { signal: controller.signal });
+      // The image turn is appended to the session file behind Pi's back;
+      // rebuild the agent context from the session on the next send.
+      if (result.ok) sessionCache.invalidate(conversationId);
+      return result;
     } finally {
       if (activeImageRunsByConversation.get(conversationId) === controller) {
         activeImageRunsByConversation.delete(conversationId);
@@ -1065,6 +1077,18 @@ export function registerPiChatHandlers({
       const result = await setBuyerDefaultRoute(peerId, service);
       sendToRenderer('chat:default-route-changed', { peerId, service, provider: provider ?? null });
       return result;
+    },
+    dispose: () => {
+      for (const run of activeRunsByConversation.values()) {
+        try {
+          run.session.abortCompaction();
+          void run.session.abort().catch(() => {});
+        } catch {
+          // Ignore abort races during shutdown.
+        }
+        clearActiveRun(run);
+      }
+      sessionCache.disposeAll();
     },
   };
 }

@@ -112,6 +112,12 @@ export class PiConversationStore {
   private readonly ready: Promise<void>;
   private readonly pathCache = new Map<string, string>();
   private readonly pendingManagers = new Map<string, SessionManager>();
+  /**
+   * SessionManagers owned by long-lived cached AgentSessions. While attached,
+   * every write for the conversation goes through this instance so the live
+   * session never holds stale entries and the file keeps a single writer.
+   */
+  private readonly liveManagers = new Map<string, SessionManager>();
   private readonly summaryCache = new Map<string, CachedSummary>();
   private refreshInFlight: Promise<AiConversationSummary[]> | null = null;
 
@@ -387,6 +393,7 @@ export class PiConversationStore {
   }
 
   async delete(id: string): Promise<void> {
+    this.liveManagers.delete(id);
     const pending = this.pendingManagers.get(id);
     const pendingPath = pending?.getSessionFile() ?? null;
     this.pendingManagers.delete(id);
@@ -405,7 +412,21 @@ export class PiConversationStore {
     this.pathCache.delete(id);
   }
 
+  attachLiveSessionManager(id: string, manager: SessionManager): void {
+    this.liveManagers.set(id, manager);
+  }
+
+  detachLiveSessionManager(id: string, manager: SessionManager): void {
+    if (this.liveManagers.get(id) === manager) {
+      this.liveManagers.delete(id);
+    }
+  }
+
   async openSessionManager(id: string): Promise<SessionManager | null> {
+    const live = this.liveManagers.get(id);
+    if (live) {
+      return live;
+    }
     const pending = this.pendingManagers.get(id);
     if (pending) {
       return pending;
