@@ -4,12 +4,12 @@ Use this in Stages 1 and 2a. Paste every prompt in full so the user can edit it.
 
 ## Choosing models
 
-Pick from what the catalog actually lists; these are starting points, not a fixed ranking.
+Choose only from the live catalog tables in [requests.md](requests.md#catalog); never from memory. The network changes, so there is no fixed list.
 
-- **Video, with first and last frame:** Seedance 2.5 or 2.0 (`seedance-*-image-to-video-basic`, or `bytedance/seedance-*/image-to-video` on fal), MiniMax H3 (fal `minimax/h3/image-to-video`), Wan 3.0, Kling V3. Seedance is the default pick for cinematic shots with a start and end frame.
-- **Video, first frame only:** MiniMax H3 (Venice `minimax-h3-image-to-video`), Veo 3.1, Gemini Omni Flash, Grok Imagine 1.5, Flux 3.
-- **Frames:** use a high-quality image model such as GPT Image 2.5, Nano Banana Pro or 2.1, Seedream 5 Pro, Flux 2 Max, or Qwen Image 3 Pro. Do not use fast, lite, turbo, or small models for frames unless the user asks; a weak frame makes a weak video.
-- Prefer a model with more than one seller when quality is equal, and say when a model is a faster or cheaper tier of another.
+- **Video:** prefer `first+last` when the shot moves from one state to another, `first` otherwise. Then weigh what the sellers advertise: audio, max resolution and duration, price per second, and more sellers with higher reputation. The same model can appear under two ids (a Venice id like `seedance-2-5-image-to-video-basic` and a fal id like `bytedance/seedance-2.5/image-to-video`) with different frames, audio, and sellers; compare both.
+- **Quality:** the catalog has no quality score. Use the model family and tier in the id: `fast`, `lite`, `mini`, `turbo`, and `standard` are cheaper, lower-fidelity tiers of `pro`, `max`, `full`, or the plain model. Say which tier you picked and why.
+- **Frames:** pick from the image table. Prefer models that take `image` input (they can keep a subject consistent across frames), several sellers, and a non-lite tier. Do not use fast, lite, turbo, or small models for frames unless the user asks; a weak frame makes a weak video.
+- When describing a model, state only what the tables show (frames, audio, resolution, duration, price, sellers). Label anything else as your own judgment.
 
 ## Shared formula
 
@@ -30,7 +30,7 @@ When a start frame (and end frame) is used, the image fixes the subject, scene, 
 
 ## Frame prompts (for antseed-images)
 
-Make frames at the video's aspect ratio. When the image model takes a `size`, pick the supported size closest to that ratio; a frame with the wrong shape is cropped or rejected.
+Make frames at the video's aspect ratio. Image sellers may return a different shape, so check each saved frame. A frame with the wrong shape is not reliably handled: some models keep the frame's shape, others reframe it.
 
 
 - A frame is a still: framing (wide, medium, close-up), subject pose, background, light, at one instant.
