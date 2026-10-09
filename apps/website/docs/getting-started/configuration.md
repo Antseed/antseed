@@ -336,12 +336,12 @@ Omit `windowMs` to use the 24-hour default. Remove `seller.freeTier` to restore 
 
 ## Restricted Countries
 
-By default a seller refuses inbound connections from IP addresses in Cuba, Iran, North Korea and Syria. The country is looked up locally in the bundled [`geoip-country`](https://www.npmjs.com/package/geoip-country) database, so no buyer address leaves the seller. The check is best effort: buyers behind a VPN or proxy are seen at that server's address.
+By default a seller refuses inbound connections from IP addresses in Cuba, Iran, North Korea, Syria and Russia. The country is looked up locally in the bundled [`geoip-country`](https://www.npmjs.com/package/geoip-country) database, so no buyer address leaves the seller. The check is best effort: buyers behind a VPN or proxy are seen at that server's address.
 
 Set your own list of ISO country codes, or `[]` to turn the check off:
 
 ```bash
-antseed config seller set restrictedCountries '["CU","IR","KP","SY"]'
+antseed config seller set restrictedCountries '["CU","IR","KP","SY","RU"]'
 antseed config seller set restrictedCountries '[]'
 ```
 

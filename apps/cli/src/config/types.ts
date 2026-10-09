@@ -190,7 +190,7 @@ export interface SellerCLIConfig {
   freeTier?: SellerFreeTierCLIConfig;
   /**
    * ISO country codes whose IPs are refused on connect (best effort: VPNs get
-   * through). Default: CU, IR, KP, SY. Set `[]` to opt out.
+   * through). Default: CU, IR, KP, SY, RU. Set `[]` to opt out.
    */
   restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
