@@ -17,7 +17,7 @@ import {
 } from './network-test-helpers.js'
 import { registerWalletRoutes, type WalletRouteOverrides } from './wallet.js'
 import { buildCardLink, cardAmountString, cardLinkMessage, DEFAULT_ANTSEED_PAY_URL } from './wallet-card-link.js'
-import { baseUnitsToUsdc, chainInfo, decimalUsdc, mapBalances, mapChannel, mapDepositWatch } from './wallet-mapping.js'
+import { applyChannelChainState, baseUnitsToUsdc, chainInfo, decimalUsdc, mapBalances, mapChannel, mapDepositWatch } from './wallet-mapping.js'
 
 // Obvious fakes: fixed test keys and peer ids, never real ones.
 const DEFAULT_WALLET = new Wallet(`0x${'11'.repeat(32)}`)
@@ -132,6 +132,8 @@ function setup(extra: WalletRouteOverrides = {}, now: () => number = () => 1_700
     loadWallet: async (name) => (name === 'default' ? DEFAULT_WALLET : name === 'team-a' ? TEAM_WALLET : null),
     walletAddress: async (name) => (name === 'default' ? DEFAULT_WALLET.address : name === 'team-a' ? TEAM_WALLET.address : null),
     payBaseUrl: () => DEFAULT_ANTSEED_PAY_URL,
+    resolveChain: async () => CHAIN,
+    readChannelStates: async () => new Map(),
     ...extra,
   })
   return router
@@ -210,9 +212,11 @@ test('balance mapping normalizes decimals and drops a zero operator', () => {
 })
 
 test('deposit watch mapping', () => {
-  assert.deepEqual(mapDepositWatch({ watcher: false, reason: 'payments-disabled', status: null }, DEFAULT_WALLET.address), { mode: 'off', status: 'payments-disabled', lastTxHash: null })
+  assert.deepEqual(mapDepositWatch({ watcher: false, reason: 'payments-disabled', status: null }, DEFAULT_WALLET.address), { mode: 'off', status: 'payments-disabled', lastTxHash: null, event: null })
   const active = { watcher: true, status: { mode: 'active', address: DEFAULT_WALLET.address, sweepInFlight: true, lastEvent: null } }
-  assert.deepEqual(mapDepositWatch(active, DEFAULT_WALLET.address.toLowerCase()), { mode: 'active', status: 'sweeping', lastTxHash: null })
+  assert.deepEqual(mapDepositWatch(active, DEFAULT_WALLET.address.toLowerCase()), { mode: 'active', status: 'sweeping', lastTxHash: null, event: null })
+  const received = { watcher: true, status: { mode: 'active', address: DEFAULT_WALLET.address, sweepInFlight: false, lastEvent: { seq: 4, phase: 'received', amountBaseUnits: '25000000', at: 9 } } }
+  assert.deepEqual(mapDepositWatch(received, DEFAULT_WALLET.address).event, { seq: 4, phase: 'received', amount: '25.000000', txHash: null, error: null, at: 9 })
   assert.equal(mapDepositWatch(active, TEAM_WALLET.address).status, 'not-watched')
 })
 
@@ -227,11 +231,11 @@ test('GET wallet merges balances and the deposit watcher', async () => {
     walletUsdc: '0.000000',
     creditLimit: '100.000000',
     operator: OPERATOR,
-    deposit: { mode: 'background', status: 'credited', lastTxHash: '0xfeed' },
+    deposit: { mode: 'background', status: 'credited', lastTxHash: '0xfeed', event: { seq: 1, phase: 'credited', amount: null, txHash: '0xfeed', error: null, at: 1 } },
   })
   const team = await call(router, 'GET', '/workspaces/ws_team/wallet', member) as ConsoleWallet
   assert.equal(team.address, TEAM_WALLET.address)
-  assert.deepEqual(team.deposit, { mode: 'off', status: 'not-watched', lastTxHash: null })
+  assert.deepEqual(team.deposit, { mode: 'off', status: 'not-watched', lastTxHash: null, event: null })
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/balances?identity=team-a'))
 })
 
@@ -250,7 +254,7 @@ test('GET wallet reports an unreachable buyer', async () => {
 test('POST wallet/watch drives the default watcher and refuses other wallets', async () => {
   const router = setup()
   const watch = await call(router, 'POST', '/workspaces/ws_default/wallet/watch', member, { mode: 'active' }) as DepositWatch
-  assert.deepEqual(watch, { mode: 'active', status: 'watching', lastTxHash: null })
+  assert.deepEqual(watch, { mode: 'active', status: 'watching', lastTxHash: null, event: null })
   const sent = lastRequest(buyer, (url) => url === '/_antseed/deposits/watch')
   assert.deepEqual(sent?.body, { mode: 'active', identity: 'default' })
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/watch', member, { mode: 'active' }), 409, 'watch_unavailable')
@@ -263,7 +267,7 @@ test('POST wallet/watch drives the default watcher and refuses other wallets', a
 test('channel mapping', () => {
   assert.equal(mapChannel({ peerId: PEER_A }), null)
   const mapped = mapChannel({ sessionId: '0xs', sellerPeerId: PEER_A, latestCumulativeAmount: '10', status: 'open', cooperativeCloseSupported: true })
-  assert.deepEqual(mapped, { channelId: '0xs', peerId: PEER_A, sellerName: null, status: 'open', reserved: '0.000000', spent: '0.000010', openedAt: null, canCooperativeClose: true })
+  assert.deepEqual(mapped, { channelId: '0xs', peerId: PEER_A, sellerName: null, status: 'open', reserved: '0.000000', spent: '0.000010', openedAt: null, canCooperativeClose: true, closeRequestedAt: null, settled: null })
 })
 
 test('GET channels passes all=1 and the identity', async () => {
@@ -271,12 +275,51 @@ test('GET channels passes all=1 and the identity', async () => {
   const channels = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?all=1&identity=team-a'))
   assert.deepEqual(channels, [
-    { channelId: '0xchannel', peerId: PEER_A, sellerName: 'Fake Seller', status: 'active', reserved: '5.000000', spent: '1.250000', openedAt: 1_700_000_000_000, canCooperativeClose: true },
-    { channelId: '0xold', peerId: PEER_A, sellerName: null, status: 'settled', reserved: '0.000000', spent: '0.000042', openedAt: null, canCooperativeClose: false },
+    { channelId: '0xchannel', peerId: PEER_A, sellerName: 'Fake Seller', status: 'active', reserved: '5.000000', spent: '1.250000', openedAt: 1_700_000_000_000, canCooperativeClose: true, closeRequestedAt: null, settled: null },
+    { channelId: '0xold', peerId: PEER_A, sellerName: null, status: 'settled', reserved: '0.000000', spent: '0.000042', openedAt: null, canCooperativeClose: false, closeRequestedAt: null, settled: null },
   ])
   await call(router, 'GET', '/workspaces/ws_default/channels', member)
   assert.ok(buyer.requests.some((req) => req.url === '/_antseed/channels?identity=default'))
   await rejectsWith(call(router, 'GET', '/workspaces/ws_team/channels', outsider), 403)
+})
+
+test('GET channels takes status and reserve from the chain over the buyer store', async () => {
+  const reads: string[][] = []
+  const router = setup({
+    readChannelStates: async (_chain, ids) => {
+      reads.push(ids)
+      return new Map([['0xchannel', { status: 2, deposit: 5_000_000n, settled: 1_000_000n, closeRequestedAt: 0n }]])
+    },
+  })
+  // Settled on-chain: gone from the open view, listed as settled with all=1.
+  assert.deepEqual(await call(router, 'GET', '/workspaces/ws_team/channels', member), [])
+  const all = await call(router, 'GET', '/workspaces/ws_team/channels?all=1', member) as Channel[]
+  assert.deepEqual(all[0], { channelId: '0xchannel', peerId: PEER_A, sellerName: 'Fake Seller', status: 'settled', reserved: '0.000000', spent: '1.250000', openedAt: 1_700_000_000_000, canCooperativeClose: false, closeRequestedAt: null, settled: '1.000000' })
+  // Only rows the buyer calls open are read, and the read is cached.
+  assert.deepEqual(reads, [['0xchannel']])
+})
+
+test('GET channels shows the on-chain deposit, and keeps the buyer rows when the chain fails', async () => {
+  const live = setup({ readChannelStates: async () => new Map([['0xchannel', { status: 1, deposit: 2_000_000n, settled: 0n, closeRequestedAt: 0n }]]) })
+  const [open] = await call(live, 'GET', '/workspaces/ws_team/channels', member) as Channel[]
+  assert.equal(open?.reserved, '2.000000')
+  assert.equal(open?.canCooperativeClose, true)
+  const down = setup({ readChannelStates: async () => { throw new Error('rpc down') } })
+  const [kept] = await call(down, 'GET', '/workspaces/ws_team/channels', member) as Channel[]
+  assert.equal(kept?.status, 'active')
+  assert.equal(kept?.reserved, '5.000000')
+})
+
+test('applyChannelChainState maps close requests and ignores unknown channels', () => {
+  const base = mapChannel({ channelId: '0xc', peerId: PEER_A, status: 'active', reserveCeiling: '1000000', cooperativeCloseSupported: true })!
+  assert.equal(applyChannelChainState(base, undefined, 0), base)
+  assert.equal(applyChannelChainState(base, { status: 0, deposit: 0n, settled: 0n, closeRequestedAt: 0n }, 0), base)
+  assert.equal(applyChannelChainState(base, { status: 3, deposit: 1n, settled: 0n, closeRequestedAt: 0n }, 0).status, 'timedout')
+  const closing = applyChannelChainState(base, { status: 1, deposit: 1_000_000n, settled: 0n, closeRequestedAt: 1000n }, 1000 + 899)
+  assert.equal(closing.status, 'closing')
+  assert.equal(closing.closeRequestedAt, 1_000_000)
+  assert.equal(closing.canCooperativeClose, false)
+  assert.equal(applyChannelChainState(base, { status: 1, deposit: 1_000_000n, settled: 0n, closeRequestedAt: 1000n }, 1000 + 900).status, 'withdrawable')
 })
 
 test('POST channels/close needs an org admin', async () => {
@@ -329,6 +372,20 @@ function rewardsView(buyerTotal: string): RewardsView {
   }
 }
 
+test('GET rewards offers the legacy buyer emissions as their own claim', async () => {
+  const LEGACY = `0x${'1e'.repeat(20)}`
+  const router = setup({
+    resolveChain: async () => CHAIN,
+    readRewards: async () => {
+      const view = rewardsView('0')
+      return { ...view, legacy: { ...view.legacy, contract: LEGACY }, legacyEpochs: [0, 1, 2] }
+    },
+  })
+  const rewards = await call(router, 'GET', '/workspaces/ws_team/rewards', member) as Rewards
+  assert.equal(rewards.pendingAnts, '0.5')
+  assert.deepEqual(rewards.legacy, { pendingAnts: '0.5', contract: LEGACY, epochs: [0, 1, 2] })
+})
+
 test('GET rewards maps buyer rewards and caches them for 5 min, then refreshes in the background', async () => {
   let now = 1_700_000_000_000
   const reads: string[] = []
@@ -342,6 +399,8 @@ test('GET rewards maps buyer rewards and caches them for 5 min, then refreshes i
     pendingAnts: '2.5',
     claimedAnts: '0',
     epochs: [{ epoch: 7, pendingAnts: '2', claimed: false }, { epoch: 6, pendingAnts: '0', claimed: true }],
+    // Legacy ANTS without a contract (or epochs) to claim from are counted but not offered.
+    legacy: null,
     operator: OPERATOR,
   })
   now += 299_000

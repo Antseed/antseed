@@ -5,6 +5,7 @@
  * GET  /workspaces/:id/wallet/operator?fresh=1  → OperatorState   (any workspace member; fresh=1 re-reads the chain, throttled)
  * POST /workspaces/:id/wallet/operator/sync     { txHash? } → OperatorState  (re-reads the chain after a browser transaction; audits a change)
  * POST /workspaces/:id/wallet/operator-auth     { operator } → OperatorAuthorization  (see types.ts)
+ * GET  /wallet/operators                         → WorkspaceOperatorSummary[]  (every workspace the caller can open; cached reads)
  *
  * Contract rules (AntseedDeposits):
  *   - setOperator(buyer, operator, nonce, buyerSig): only while no operator is
@@ -26,6 +27,16 @@
  * - `unknown`: an address no member signs in with.
  */
 export type OperatorRelation = 'none' | 'self' | 'yours' | 'member' | 'unknown'
+
+/** One workspace's authorized-wallet status, for markers in the switcher, the nav and the Workspaces list. */
+export interface WorkspaceOperatorSummary {
+  workspaceId: string
+  operator: string | null
+  /** null when the wallet or the chain could not be read. */
+  relation: OperatorRelation | null
+  /** The caller may authorize a wallet for it (org owner, none set). */
+  canAuthorize: boolean
+}
 
 export interface OperatorState {
   /** The workspace wallet (the buyer in AntseedDeposits). */

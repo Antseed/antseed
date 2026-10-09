@@ -282,6 +282,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   svg { color: var(--as-text-muted); flex: 0 0 auto; }
   &:hover { background: var(--as-bg-muted); color: var(--as-text-primary); }
 }
+/* Something about money needs attention (no authorized wallet, a reserve ready to withdraw). */
+.gc-attention { flex: 0 0 auto; width: 0.4375rem; height: 0.4375rem; border-radius: 999px; background: var(--as-warning); }
+.gc-nav__attention { margin-left: auto; }
 .gc-nav__item--on {
   background: var(--as-bg-muted); color: var(--as-text-primary); font-weight: 550;
   svg { color: var(--as-text-primary); }
@@ -313,6 +316,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-nowrap { white-space: nowrap; }
 .gc-ellipsis { display: inline-block; max-width: 22rem; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom; }
 .gc-fineprint { color: var(--as-text-muted); font-size: 0.75rem; }
+.gc-panel-note { margin: 0; padding: 0.75rem 1rem; border-top: 1px solid var(--as-border); }
 .gc-warn { color: var(--as-warning); font-size: 0.8125rem; }
 .gc-link { color: var(--as-text-primary); font-weight: 500; text-decoration: underline; text-decoration-color: var(--as-border-strong); text-underline-offset: 0.2em;
   &:hover { text-decoration-color: currentColor; }
@@ -321,6 +325,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-load-more { display: flex; justify-content: center; padding: 0.875rem; border-top: 1px solid var(--as-border); }
 
 .gc-figures { gap: 1.25rem; }
+.gc-anchor { scroll-margin-top: 4.5rem; }
 .gc-figure { min-width: 0; }
 .gc-figure__label { color: var(--as-text-secondary); font-size: 0.8125rem; }
 .gc-figure__value { font-size: 1.0625rem; font-weight: 550; font-variant-numeric: tabular-nums; margin-top: 0.1875rem; letter-spacing: -0.01em; }
@@ -410,16 +415,76 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-source__policy { font-size: 0.8125rem; margin-top: 0.125rem; }
 
 /* Funding */
-.gc-send { display: grid; grid-template-columns: auto minmax(0, 1fr); gap: 1.25rem; align-items: start; }
-.gc-send__qr { padding: 0.5rem; background: #fff; border-radius: var(--as-radius-md); border: 1px solid var(--as-border); line-height: 0; img { display: block; } }
 .gc-kv { display: flex; align-items: center; gap: 0.75rem; flex-wrap: wrap; padding: 0.5rem 0.625rem; border-radius: var(--as-radius-md); background: var(--as-bg-muted); font-size: 0.8125rem;
   > span:first-child { color: var(--as-text-muted); }
   > span:last-child { margin-left: auto; font-weight: 600; }
 }
-.gc-watch { display: flex; align-items: center; gap: 0.5rem; color: var(--as-text-muted); font-size: 0.8125rem; }
-.gc-pulse { width: 0.5rem; height: 0.5rem; border-radius: 50%; background: var(--success); animation: gc-pulse 1.6s ease-in-out infinite; }
-@keyframes gc-pulse { 50% { opacity: 0.3; } }
-@media (prefers-reduced-motion: reduce) { .gc-pulse { animation: none; } }
+/* Add funds: the desktop deposit view's layout (VprDepositView.module.scss) on the console's tokens. */
+.gc-fund { display: flex; flex-direction: column; gap: 0.75rem; max-width: 26rem; margin: 0 auto; width: 100%;
+  > .as-button--link { align-self: flex-start; }
+}
+.gc-fund-balance { display: grid; gap: 0.125rem; padding: 0.75rem 1rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface); }
+.gc-fund-balance__label { color: var(--as-text-muted); font-size: 0.75rem; }
+.gc-fund-balance__value { font-size: 1.5rem; font-weight: 650; font-variant-numeric: tabular-nums; }
+.gc-fund-amount { display: grid; gap: 0.5rem; padding: 0.75rem 1rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface); }
+.gc-fund-amount__label { color: var(--as-text-muted); font-size: 0.75rem; }
+.gc-fund-amount__row { display: flex; align-items: stretch; gap: 0.375rem; }
+.gc-preset { flex: 0 0 auto; min-height: 2rem; padding: 0.25rem 0.75rem; border: 1px solid var(--as-border); border-radius: 999px; background: var(--as-bg-surface); color: var(--as-text-secondary); font: inherit; font-size: 0.8125rem; font-weight: 600; cursor: pointer;
+  &:hover { border-color: var(--as-border-strong); }
+  &:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+}
+.gc-preset--on { border-color: var(--as-text-primary); color: var(--as-text-primary); }
+.gc-fund-amount__input { flex: 1 1 auto; min-width: 0; display: inline-flex; align-items: center; gap: 0.125rem; padding: 0 0.625rem; border: 1px solid var(--as-border); border-radius: 999px; color: var(--as-text-muted); font-size: 0.8125rem;
+  &:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+  input { width: 100%; min-width: 0; border: 0; background: transparent; color: var(--as-text-primary); font: inherit; font-weight: 600; outline: none; }
+}
+.gc-method { display: flex; align-items: center; gap: 0.75rem; width: 100%; padding: 0.625rem 0.875rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface); color: var(--as-text-primary); font: inherit; text-align: left; cursor: pointer;
+  transition: border-color 0.12s ease, transform 0.12s ease;
+  &:hover { border-color: var(--as-border-strong); transform: translateY(-1px); }
+  &:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
+  &:disabled { cursor: default; opacity: 0.7; transform: none; }
+}
+/* The primary option: the console's primary-button surface, high contrast in both themes. */
+.gc-method--primary { border-color: transparent; background: var(--as-accent); color: var(--as-accent-contrast);
+  .gc-method__caption { color: inherit; opacity: 0.65; }
+  &:hover { border-color: transparent; filter: brightness(1.15); }
+}
+.gc-method__icon { flex: 0 0 auto; display: inline-flex; align-items: center; justify-content: center; width: 2rem; height: 2rem; border-radius: 0.625rem; background: var(--as-bg-muted); }
+.gc-method__text { flex: 1 1 auto; min-width: 0; display: grid; gap: 0.125rem; }
+.gc-method__title { font-size: 0.9375rem; font-weight: 650; line-height: 1.25rem; }
+.gc-method__caption { color: var(--as-text-muted); font-size: 0.75rem; line-height: 1rem; }
+.gc-method__badges { flex: 0 0 auto; display: flex; align-items: center; gap: 0.25rem; svg { display: block; } }
+.gc-method__arrow { flex: 0 0 auto; color: var(--as-text-muted); }
+.gc-fund-chip { display: inline-flex; align-items: center; justify-content: center; width: 1.125rem; height: 1.125rem; border-radius: 50%; background: var(--as-bg-muted); color: var(--as-text-secondary); }
+.gc-fund-group { display: grid; justify-items: center; gap: 0.375rem; > .gc-method { justify-self: stretch; } }
+.gc-fund-more { align-self: center; display: inline-flex; align-items: center; gap: 0.25rem; padding: 0; border: 0; background: transparent; color: var(--as-text-secondary); font: inherit; font-size: 0.8125rem; font-weight: 500; cursor: pointer;
+  &:hover { color: var(--as-text-primary); }
+}
+.gc-fund-more__chevron { transition: transform 0.12s ease; }
+.gc-fund-more__chevron--open { transform: rotate(180deg); }
+.gc-fund-options { display: grid; gap: 0.5rem; }
+.gc-fund-trust { display: grid; justify-items: center; gap: 0.25rem; color: var(--as-text-muted); font-size: 0.6875rem;
+  > span { display: inline-flex; align-items: center; gap: 0.3125rem; }
+}
+.gc-fund-fine { text-align: center; margin: 0; }
+.gc-fund-pay { display: flex; flex-direction: column; align-items: center; gap: 0.5rem; padding: 0.875rem 1rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface); text-align: center; }
+.gc-fund-pay__address { display: inline-flex; align-items: center; gap: 0.375rem; padding: 0.125rem 0.25rem 0.125rem 0.625rem; border: 1px solid var(--as-border); border-radius: 999px; font-size: 0.75rem; }
+.gc-fund-pay__warn { padding: 0.375rem 0.625rem; border-radius: 0.5rem; background: var(--as-bg-muted); color: var(--as-text-secondary); font-size: 0.6875rem; line-height: 1rem;
+  strong { color: var(--as-text-primary); }
+}
+.gc-qr { display: block; width: 11rem; height: 11rem; padding: 0.5rem; border: 1px solid var(--as-border); border-radius: 0.75rem; background: var(--as-bg-surface); color: var(--as-text-primary); }
+.gc-qr__badge { fill: var(--as-bg-surface); }
+.gc-qr--placeholder { background: var(--as-bg-muted); }
+/* Deposit progress: the mark carries the state (waiting pulse, busy pulse, credited check, error dot). */
+.gc-depwatch { display: flex; align-items: center; justify-content: center; gap: 0.5rem; color: var(--as-text-secondary); font-size: 0.8125rem; font-weight: 500; text-align: center; }
+.gc-depwatch__dot { position: relative; flex: 0 0 auto; width: 0.375rem; height: 0.375rem; border-radius: 50%; background: var(--as-warning);
+  &::after { content: ''; position: absolute; inset: 0; border-radius: 50%; background: inherit; animation: gc-depwatch-ring 1.8s ease-out infinite; }
+}
+.gc-depwatch--busy { color: var(--as-text-primary); font-weight: 600; .gc-depwatch__dot { background: var(--as-success); } }
+.gc-depwatch--done { color: var(--as-success); font-weight: 600; }
+.gc-depwatch--error { color: var(--as-danger); .gc-depwatch__dot { background: var(--as-danger); &::after { display: none; } } }
+@keyframes gc-depwatch-ring { 0% { transform: scale(1); opacity: 0.55; } 70%, 100% { transform: scale(2.7); opacity: 0; } }
+@media (prefers-reduced-motion: reduce) { .gc-depwatch__dot::after { animation: none; display: none; } }
 .gc-connected { display: flex; flex-wrap: wrap; align-items: center; gap: 0.3125rem; color: var(--as-text-secondary); font-size: 0.8125rem; }
 .gc-connected__dot { width: 0.4375rem; height: 0.4375rem; border-radius: 50%; background: var(--success); }
 
@@ -467,7 +532,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .gc-topbar__link { display: none; }
   .gc-main { padding: 1.5rem 0 3rem; }
   .gc-grid--2, .gc-grid--3 { grid-template-columns: minmax(0, 1fr); }
-  .gc-send { grid-template-columns: minmax(0, 1fr); justify-items: center; }
   .gc-narrow-only { display: inline; }
   div.gc-narrow-only { display: block; }
   .gc-page { gap: 1.5rem; }

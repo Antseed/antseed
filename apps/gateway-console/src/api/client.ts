@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, Peer, PeerList, Preset,
+  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -207,13 +207,17 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       /** The authorized wallet (AntseedDeposits operator); `fresh` re-reads the chain (the gateway throttles it). */
       operator: (workspaceId: string, fresh = false) =>
         get<OperatorState>(`/workspaces/${id(workspaceId)}/wallet/operator`, { fresh: fresh ? 1 : undefined }),
+      /** Authorized-wallet status of every workspace the caller can open (cached reads). */
+      operators: () => get<WorkspaceOperatorSummary[]>('/wallet/operators'),
       /** Re-read after a confirmed transaction; the gateway audits a change the chain confirms. */
       operatorSync: (workspaceId: string, txHash?: string | null) =>
         post<OperatorState>(`/workspaces/${id(workspaceId)}/wallet/operator/sync`, txHash ? { txHash } : {}),
       /** Org owners only, after a fresh sign-in (`reauth_required` otherwise). */
       operatorAuth: (workspaceId: string, operator: string) =>
         post<OperatorAuthorization>(`/workspaces/${id(workspaceId)}/wallet/operator-auth`, { operator }),
-      channels: (workspaceId: string, all = false) => get<Channel[]>(`/workspaces/${id(workspaceId)}/channels`, { all: all ? 1 : undefined }),
+      /** `fresh` re-reads the channels from the chain now (after a close request or withdrawal). */
+      channels: (workspaceId: string, all = false, fresh = false) =>
+        get<Channel[]>(`/workspaces/${id(workspaceId)}/channels`, { all: all ? 1 : undefined, fresh: fresh ? 1 : undefined }),
       closeChannel: (workspaceId: string, peerId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
       chain: () => get<ChainInfo>('/chain'),

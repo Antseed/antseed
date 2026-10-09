@@ -13,6 +13,7 @@ import { draftToLimits, limitsToDraft } from '../lib/limits'
 import { useConsoleMutation } from '../lib/mutations'
 import { isOrgAdmin } from '../lib/nav'
 import { describePolicy } from '../lib/policy'
+import { lacksOperator, useWorkspaceOperators } from '../lib/operator'
 import { qk, useWorkspaces } from '../lib/queries'
 import { navigate } from '../lib/router'
 
@@ -73,6 +74,8 @@ export default function Workspaces() {
   // PATCH /workspaces/:id needs admin in that workspace, not just in the one open.
   const canEdit = (ws: Workspace) => orgAdmin || me.workspaces.some((entry) => entry.workspace.id === ws.id && entry.role === 'admin')
   const workspaces = useWorkspaces()
+  const operators = useWorkspaceOperators()
+  const operatorOf = (ws: Workspace) => operators.data?.find((row) => row.workspaceId === ws.id)
   const [editing, setEditing] = useState<Workspace | 'new' | null>(null)
   const [deleting, setDeleting] = useState<Workspace | null>(null)
   const remove = useConsoleMutation({
@@ -101,6 +104,20 @@ export default function Workspaces() {
                   <span className="gc-strong">{ws.name} {ws.isDefault && <Badge>Default</Badge>} {ws.id === current.id && <Badge tone="info">Open</Badge>}</span>
                 ) },
                 { key: 'wallet', header: 'Wallet', secondary: true, render: (ws) => ws.walletAddress ? <Mono title={ws.walletAddress}>{shortId(ws.walletAddress)}</Mono> : <span className="gc-muted">{ws.buyerIdentity}</span> },
+                { key: 'operator', header: 'Authorized wallet', secondary: true, render: (ws) => {
+                  const summary = operatorOf(ws)
+                  if (!summary) return <span className="gc-muted">{operators.isLoading ? '…' : '—'}</span>
+                  if (summary.relation === null) return <span className="gc-muted" title="The wallet or the chain could not be read">unknown</span>
+                  if (lacksOperator(summary)) {
+                    return (
+                      <span className="gc-inline">
+                        <Badge tone="warning">Not set</Badge>
+                        {summary.canAuthorize && <Button variant="link" size="sm" onClick={(event) => { event.stopPropagation(); setWorkspaceId(ws.id); navigate('wallet') }}>Authorize</Button>}
+                      </span>
+                    )
+                  }
+                  return summary.relation === 'self' ? <span className="gc-muted">Workspace wallet</span> : <Mono title={summary.operator ?? undefined}>{shortId(summary.operator)}</Mono>
+                } },
                 { key: 'members', header: 'Members', align: 'right', secondary: true, sortValue: (ws) => ws.memberCount, render: (ws) => ws.memberCount },
                 { key: 'keys', header: 'Keys', align: 'right', sortValue: (ws) => ws.keyCount, render: (ws) => ws.keyCount },
                 { key: 'limits', header: 'Budgets', secondary: true, optional: true, render: (ws) => <span className="gc-muted">{describeLimits(ws.limits)}</span> },

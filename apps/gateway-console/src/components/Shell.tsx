@@ -6,6 +6,7 @@ import { useConsole } from '../app/context'
 import { useTheme, type ThemeChoice } from '../app/theme'
 import { ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
+import { useWalletAttention } from '../lib/attention'
 import { AccountModal } from './AccountModal'
 import { ExposureBanner } from './ExposureBanner'
 import { Icon } from './icons'
@@ -29,26 +30,40 @@ export function Brand({ to = 'overview', tagged, size = 26 }: { to?: string | nu
   return <a className={className} href={href(to)} onClick={linkHandler(to)} aria-label="Antseed console home">{content}</a>
 }
 
+const NO_OPERATOR = 'No authorized wallet: nobody can withdraw funds or claim ANTS rewards'
+
 function WorkspaceSwitcher() {
   const { me, workspace, setWorkspaceId } = useConsole()
+  const { missingOperator, currentMissingOperator } = useWalletAttention()
+  const marker = currentMissingOperator && <span className="gc-attention" role="img" aria-label={NO_OPERATOR} title={NO_OPERATOR} />
   if (me.workspaces.length <= 1) {
-    return <span className="gc-ws" title="Workspace"><Icon.workspaces size={14} /><span className="gc-ws__name">{workspace.name}</span></span>
+    return <span className="gc-ws" title="Workspace"><Icon.workspaces size={14} /><span className="gc-ws__name">{workspace.name}</span>{marker}</span>
   }
   return (
     <label className="gc-ws gc-ws--select">
       <Icon.workspaces size={14} />
       <select className="gc-ws__select" value={workspace.id} onChange={(event) => setWorkspaceId(event.target.value)} aria-label="Switch workspace">
         {me.workspaces.map(({ workspace: ws, role }) => (
-          <option key={ws.id} value={ws.id}>{ws.name}{role === 'admin' ? ' (admin)' : ''}</option>
+          <option key={ws.id} value={ws.id}>{ws.name}{role === 'admin' ? ' (admin)' : ''}{ws.id !== workspace.id && missingOperator.has(ws.id) ? ' · no authorized wallet' : ''}</option>
         ))}
       </select>
+      {marker}
       <Icon.down size={14} className="gc-ws__chevron" />
     </label>
   )
 }
 
+/** Why a nav item has a dot, or null. */
+function navAttention(id: PageId, attention: ReturnType<typeof useWalletAttention>): string | null {
+  if (id !== 'wallet') return null
+  if (attention.currentMissingOperator) return NO_OPERATOR
+  if (attention.withdrawable.count > 0) return `${attention.withdrawable.count} channel${attention.withdrawable.count === 1 ? '' : 's'} ready to withdraw`
+  return null
+}
+
 function Nav({ current, onNavigate }: { current: PageId | null; onNavigate?: () => void }) {
   const { viewer } = useConsole()
+  const attention = useWalletAttention()
   const items = visibleNav(viewer)
   const groups = [...new Set(items.map((item) => item.group))]
   return (
@@ -64,6 +79,10 @@ function Nav({ current, onNavigate }: { current: PageId | null; onNavigate?: () 
                 onClick={(event) => { linkHandler(item.id)(event); onNavigate?.() }}>
                 <IconFor size={16} />
                 <span>{item.label}</span>
+                {(() => {
+                  const reason = navAttention(item.id, attention)
+                  return reason && <span className="gc-attention gc-nav__attention" role="img" aria-label={reason} title={reason} />
+                })()}
               </a>
             )
           })}

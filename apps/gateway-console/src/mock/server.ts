@@ -54,6 +54,20 @@ function currentOperator(workspace: Workspace, viewer: Member): string | null {
   return scenario ? scenarioOperator(scenario, workspace, viewer, db.members) : operators[workspace.id] ?? null
 }
 
+/** `?deposit=demo`: once a deposit dialog opens, play received → sweeping → credited over ~12 s. */
+let depositDemoStartedAt: number | null = null
+function mockDepositWatch() {
+  const idle = { mode: 'background' as const, status: 'idle', lastTxHash: null, event: null }
+  if (new URLSearchParams(window.location.search).get('deposit') !== 'demo' || depositDemoStartedAt === null) return idle
+  const elapsed = Date.now() - depositDemoStartedAt
+  const at = Date.now()
+  if (elapsed < 4_000) return { ...idle, mode: 'active' as const, status: 'watching' }
+  if (elapsed < 8_000) return { mode: 'active' as const, status: 'received', lastTxHash: null, event: { seq: 1, phase: 'received' as const, amount: '25.000000', txHash: null, error: null, at } }
+  if (elapsed < 12_000) return { mode: 'active' as const, status: 'sweeping', lastTxHash: null, event: { seq: 2, phase: 'sweeping' as const, amount: '25.000000', txHash: null, error: null, at } }
+  const txHash = `0x${'ab'.repeat(32)}`
+  return { mode: 'active' as const, status: 'credited', lastTxHash: txHash, event: { seq: 3, phase: 'credited' as const, amount: '24.950000', txHash, error: null, at } }
+}
+
 function operatorState(workspaceId: string) {
   const { member, workspace } = requireWorkspace(workspaceId)
   return mockOperatorState({ operator: currentOperator(workspace, member), workspace, viewer: member, members: db.members, checkedAt: Date.now() })
@@ -718,16 +732,34 @@ const routes: Array<[string, string, Handler]> = [
 
   ['GET', '/workspaces/:id/wallet', ({ params }) => {
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
-    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available: ws.isDefault ? '231.540000' : '0.120000', reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: { mode: 'background', status: 'idle', lastTxHash: null } }
+    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available: ws.isDefault ? '231.540000' : '0.120000', reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
   }],
   ['POST', '/workspaces/:id/wallet/card-link', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return { url: 'https://example.com/mock-card-checkout' } }],
-  ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return { mode: body.mode, status: body.mode === 'active' ? 'watching' : 'idle', lastTxHash: null } }],
+  ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],
   ['POST', '/workspaces/:id/wallet/operator-auth', ({ params, body }) => operatorAuth(params, body)],
   ['GET', '/workspaces/:id/wallet/operator', ({ params }) => operatorState(params['id']!)],
+  ['GET', '/wallet/operators', () => {
+    const member = currentMember()
+    return db.workspaces.filter((ws) => workspaceRole(member, ws.id)).map((ws) => {
+      const state = operatorState(ws.id)
+      return { workspaceId: ws.id, operator: state.operator, relation: state.relation, canAuthorize: state.canAuthorize }
+    })
+  }],
   ['POST', '/workspaces/:id/wallet/operator/sync', ({ params }) => operatorState(params['id']!)],
-  ['GET', '/workspaces/:id/channels', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return db.channels[params['id']!] ?? [] }],
-  ['POST', '/workspaces/:id/channels/close', ({ params, body }) => { requireOrgAdmin(); const list = db.channels[params['id']!] ?? []; const ch = list.find((c) => c.peerId === body.peerId); if (ch) { ch.status = 'closing'; ch.canCooperativeClose = false } return { ok: true } }],
-  ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '41.25', claimedAnts: '120.5', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], operator: currentOperator(workspace, member) } }],
+  ['GET', '/workspaces/:id/channels', ({ params, query }) => {
+    requireWorkspace(params['id']!, 'admin')
+    const list = db.channels[params['id']!] ?? []
+    return query.get('all') === '1' ? list : list.filter((c) => ['active', 'open', 'closing', 'withdrawable'].includes(c.status))
+  }],
+  ['POST', '/workspaces/:id/channels/close', ({ params, body }) => {
+    requireOrgAdmin()
+    const list = db.channels[params['id']!] ?? []
+    const ch = list.find((c) => c.peerId === body.peerId)
+    if (ch?.sellerName === 'Fake Seller Beta') throw new MockError(502, 'buyer_error', `A channel close request is already in flight for ${String(body.peerId).slice(0, 12)}...`)
+    if (ch) { ch.status = 'settled'; ch.canCooperativeClose = false; ch.settled = ch.spent; ch.reserved = '0.000000' }
+    return { ok: true }
+  }],
+  ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],
   ['GET', '/chain', () => db.chain],
 
   ['GET', '/peers', () => db.peers],

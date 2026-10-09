@@ -39,6 +39,8 @@ function fixture(chain: { operator: string | null; nonce: bigint }, extra: Parti
   const store = {
     getWorkspace: (id: string) => (id === 'ws_team' ? { id, buyerIdentity: 'team-a', walletAddress: TEAM_WALLET.address } : null),
     getMember: (id: string) => MEMBERS[id] ?? null,
+    listWorkspaces: () => [{ id: 'ws_team', buyerIdentity: 'team-a' }, { id: 'ws_other', buyerIdentity: 'other' }],
+    memberWorkspaceRoles: (memberId: string) => new Map(memberId === 'm_sam' ? [['ws_team', 'member']] : []),
     getKey: () => null,
     getAdminToken: () => null,
     recordAudit: (entry: { action: string; details?: Record<string, unknown> }) => { audits.push(entry) },
@@ -191,4 +193,18 @@ test('operator-auth keeps the 24 h rule for a newly added wallet', async () => {
   await rejectsWith(call(f.router, 'POST', '/workspaces/ws_team/wallet/operator-auth', owner, { operator: STRANGER }), 403, 'operator_not_yours')
   await rejectsWith(call(f.router, 'POST', '/workspaces/ws_team/wallet/operator-auth', ali, { operator: ALI_WALLET }), 403, 'forbidden')
   assert.equal(f.reads.nonce, 0)
+})
+
+test('GET /wallet/operators summarizes every workspace the caller can open, null where unreadable', async () => {
+  const { router } = fixture({ operator: null, nonce: 0n }, {
+    walletAddress: async (name) => { if (name === 'other') throw new Error('no key'); return TEAM_WALLET.address },
+  })
+  assert.deepEqual(await call(router, 'GET', '/wallet/operators', owner), [
+    { workspaceId: 'ws_team', operator: null, relation: 'none', canAuthorize: true },
+    { workspaceId: 'ws_other', operator: null, relation: null, canAuthorize: false },
+  ])
+  // A plain member sees only the workspaces they belong to, and cannot authorize.
+  assert.deepEqual(await call(router, 'GET', '/wallet/operators', sam), [
+    { workspaceId: 'ws_team', operator: null, relation: 'none', canAuthorize: false },
+  ])
 })

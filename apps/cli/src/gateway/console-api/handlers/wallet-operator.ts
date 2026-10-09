@@ -19,9 +19,9 @@ import {
   type TypedDataSigner,
   type WalletOwner,
 } from '../../services/operator.js'
-import { audit, isOrgAdmin, type requireWorkspaceAccess } from '../access.js'
+import { activeMember, audit, isOrgAdmin, visibleWorkspaceIds, type requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
-import type { OperatorAuthorization, OperatorState } from '../operator-types.js'
+import type { OperatorAuthorization, OperatorState, WorkspaceOperatorSummary } from '../operator-types.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
 import { record } from './wallet-mapping.js'
 
@@ -105,6 +105,25 @@ export function registerOperatorRoutes(router: ConsoleRouter, deps: ConsoleDeps,
     const ws = workspace(request)
     const buyer = await buyerAddress(ws)
     return describe(request, buyer, await readOperator(buyer, request.query.get('fresh') === '1'))
+  })
+
+  // Every workspace the caller can open, from the same one-minute cache as
+  // the panel: a workspace without an authorized wallet gets a marker in the
+  // switcher, the nav and the Workspaces list. One unreadable wallet or chain
+  // read leaves that row's relation null instead of failing the list.
+  router.add('GET', '/wallet/operators', async (request): Promise<WorkspaceOperatorSummary[]> => {
+    activeMember(deps.store, request.principal)
+    const visible = visibleWorkspaceIds(deps.store, request.principal)
+    const workspaces = deps.store.listWorkspaces().filter((entry) => !visible || visible.has(entry.id))
+    return Promise.all(workspaces.map(async (entry): Promise<WorkspaceOperatorSummary> => {
+      try {
+        const buyer = await buyerAddress({ buyerIdentity: entry.buyerIdentity || DEFAULT_BUYER_IDENTITY })
+        const state = describe(request, buyer, await readOperator(buyer, false))
+        return { workspaceId: entry.id, operator: state.operator, relation: state.relation, canAuthorize: state.canAuthorize }
+      } catch {
+        return { workspaceId: entry.id, operator: null, relation: null, canAuthorize: false }
+      }
+    }))
   })
 
   // After the browser confirms a setOperator / transferOperator transaction it

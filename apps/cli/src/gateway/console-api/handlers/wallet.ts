@@ -6,6 +6,7 @@
 import { resolveAntsChain, type AntsChainConfig, type RewardsView } from '@antseed/ants'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import type { AbstractSigner } from 'ethers'
+import { createHash } from 'node:crypto'
 import { loadBuyerSigningIdentity } from '../../../buyer-identities/store.js'
 import { ChainReadCache } from '../../../proxy/chain-read-cache.js'
 import { memberWalletCredentials, sessionSignIn } from '../../auth/db.js'
@@ -19,10 +20,14 @@ import type { WorkspaceRecord } from '../../store.js'
 import type { Channel, ChainInfo, DepositWatch, Rewards, Wallet } from '../types.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
-import { chainInfo, mapBalances, mapChannels, mapDepositWatch, mapRewards, record } from './wallet-mapping.js'
-import { createRewardsReader, REWARDS_TTL_MS } from './wallet-chain.js'
+import { applyChannelChainState, chainInfo, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
+import { createRewardsReader, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
 
+/** Channel states are re-read from the chain at most this often for the same set of channels. */
+const CHANNELS_TTL_MS = 30_000
+/** Rows the buyer still counts as open; the chain may say otherwise. */
+const OPEN_CHANNEL_STATUSES = new Set(['active', 'open', 'closing', 'withdrawable'])
 /** After a failed rewards read, the chain is not asked again for this long (the last value is served, marked stale). */
 const REWARDS_ERROR_RETRY_MS = 30_000
 /** One rewards reader per process: one ANTS context and provider per chain. */
@@ -46,7 +51,10 @@ export interface WalletRouteOverrides {
   /** The running buyer's identity → address; defaults to `deps.buyerAddresses`. */
   buyerAddresses?: BuyerAddressBook
   resolveChain?: () => Promise<AntsChainConfig>
-  readRewards?: (chain: AntsChainConfig, address: string) => Promise<RewardsView>
+  /** Buyer rewards, with the legacy epochs a claim may name (`legacyEpochs`, empty when unknown). */
+  readRewards?: (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs?: number[] }>
+  /** On-chain records of these channels (AntseedChannels); ids that could not be read are left out. */
+  readChannelStates?: (chain: AntsChainConfig, channelIds: string[]) => Promise<Map<string, ChannelChainState>>
   payBaseUrl?: () => string
   /** The buyer's current AntseedDeposits operator nonce (live read). */
   operatorNonce?: (chain: AntsChainConfig, buyer: string) => Promise<bigint>
@@ -91,10 +99,11 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   const walletAddress = overrides.walletAddress ?? (async (name: string) => (await resolveIdentityAddress(deps.dataDir, addressBook, name)).address)
   const resolveChain = overrides.resolveChain ?? (() => resolveAntsChain(deps.configPath))
   const readRewards = overrides.readRewards ?? sharedRewardsReader
+  const readChannelStates = overrides.readChannelStates ?? readChannelStatesOnChain
   const payBaseUrl = overrides.payBaseUrl ?? (() => antseedPayBaseUrl())
   const signInOf = overrides.sessionSignIn ?? ((sessionId: string) => sessionSignIn(deps.store.database, sessionId))
   const memberWallets = overrides.memberWallets ?? ((memberId: string) => memberWalletCredentials(deps.store.database, memberId))
-  // One cache for the chain reads this router makes itself: rewards (`rewards:<address>`) and the operator (`operator:<address>`).
+  // One cache for the chain reads this router makes itself: rewards (`rewards:<address>`), the operator (`operator:<address>`) and channel states (`channels:<ids hash>`).
   const chainCache = new ChainReadCache({ now: deps.now, errorRetryMs: REWARDS_ERROR_RETRY_MS })
 
   const workspace = (request: ConsoleRequest, minRole: 'member' | 'admin' = 'member'): WorkspaceWallet => {
@@ -132,7 +141,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   const depositStatus = async (ws: WorkspaceWallet, address: string | null): Promise<DepositWatch> => {
     // The identity param is ignored by buyers that expose only the default watcher.
     const body = await optionalBuyerJson(buyer, withIdentity('/_antseed/deposits/status', ws.buyerIdentity))
-    return body ? mapDepositWatch(body, address) : { mode: 'off', status: 'buyer-unreachable', lastTxHash: null }
+    return body ? mapDepositWatch(body, address) : { mode: 'off', status: 'buyer-unreachable', lastTxHash: null, event: null }
   }
 
   router.add('GET', '/workspaces/:id/wallet', async (request): Promise<Wallet> => {
@@ -199,7 +208,24 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
   router.add('GET', '/workspaces/:id/channels', async (request): Promise<Channel[]> => {
     const ws = workspace(request)
     const all = request.query.get('all') === '1'
-    return mapChannels(await buyerJson(buyer, withIdentity(`/_antseed/channels${all ? '?all=1' : ''}`, ws.buyerIdentity)))
+    const channels = mapChannels(await buyerJson(buyer, withIdentity(`/_antseed/channels${all ? '?all=1' : ''}`, ws.buyerIdentity)))
+    // The buyer's store can call a channel active long after a seller settled
+    // it, and reports its configured maximum as the reserve; the chain decides both.
+    const ids = channels.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status)).map((channel) => channel.channelId).sort()
+    let states = new Map<string, ChannelChainState>()
+    // After a close request or withdrawal the browser asks for a re-read rather than wait out the cache.
+    if (request.query.get('fresh') === '1') chainCache.invalidate('channels')
+    if (ids.length > 0) {
+      try {
+        states = (await chainCache.read(`channels:${createHash('sha256').update(ids.join(',')).digest('hex')}`, { ttlMs: CHANNELS_TTL_MS },
+          async () => readChannelStates(await resolveChain(), ids))).value
+      } catch {
+        // Unreadable chain: show what the buyer knows rather than nothing.
+      }
+    }
+    const nowSeconds = Math.floor(deps.now() / 1000)
+    const reconciled = channels.map((channel) => applyChannelChainState(channel, states.get(channel.channelId), nowSeconds))
+    return all ? reconciled : reconciled.filter((channel) => OPEN_CHANNEL_STATUSES.has(channel.status))
   })
 
   router.add('POST', '/workspaces/:id/channels/close', async (request): Promise<{ ok: true }> => {
@@ -216,6 +242,7 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     if (result['status'] === 'rejected') {
       throw new ConsoleError(409, 'close_rejected', `The seller declined to close the channel (${rejectionReason(result)}).`)
     }
+    chainCache.invalidate('channels')
     audit(deps, request, 'channel.close', { kind: 'workspace', id: request.params['id'] ?? null, label: null }, { buyerIdentity: ws.buyerIdentity, peerId: peerId.trim() })
     return { ok: true }
   })

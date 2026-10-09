@@ -11,6 +11,7 @@ import { formatUsd, shortId, usdcToNumber } from '../lib/format'
 import { DEPOSITS_OPERATOR_ABI } from './operator-abi'
 import { ConnectedWallet, ConnectWalletButton as Connect } from './ConnectWallet'
 import { WalletProvider } from './provider'
+import { OperatorGateAlert } from './OperatorGateAlert'
 import { TxFeedback } from './TxFeedback'
 import { useTxRunner } from './useTx'
 
@@ -24,6 +25,8 @@ interface Props {
   wallet: Wallet
   chain: ChainInfo
   onDone: (hash: string | null) => void
+  /** Open "Authorize a wallet" (withdraw needs one). */
+  onAuthorize?: () => void
 }
 
 function parseAmount(amount: string): bigint {
@@ -90,7 +93,7 @@ function Deposit({ wallet, chain, onDone }: Props) {
  * call it and the USDC goes to that wallet. Gated on the operator the
  * gateway reads from the chain, not on the cached balance read.
  */
-function Withdraw({ workspaceId, wallet, chain, onDone }: Props) {
+function Withdraw({ workspaceId, wallet, chain, onDone, onAuthorize }: Props) {
   const { address } = useAccount()
   const config = useConfig()
   const runner = useTxRunner(chain.chainId)
@@ -101,14 +104,7 @@ function Withdraw({ workspaceId, wallet, chain, onDone }: Props) {
   const deposits = contractAddress(chain, 'deposits')
   if (!deposits) return <Alert tone="warning">The gateway did not report the deposits contract address.</Alert>
   const gate = operatorGate(operator.data, address, 'withdraw')
-  if (!gate.ok) {
-    return (
-      <div className="gc-stack">
-        <Alert tone={gate.operator ? 'warning' : 'info'} title={gate.operator ? 'Use the authorized wallet' : 'No authorized wallet'}>{gate.reason}</Alert>
-        {gate.operator && !address && <Connect label={`Connect ${shortId(gate.operator)}`} />}
-      </div>
-    )
-  }
+  if (!gate.ok) return <OperatorGateAlert gate={gate} state={operator.data} connected={address} onAuthorize={onAuthorize} />
   const units = parseAmount(amount)
   const available = usdcToNumber(wallet.available)
   let validation: string | null = null

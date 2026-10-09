@@ -37,7 +37,8 @@ export default function Rewards() {
             <StaleHint stale={loaded.stale} />
             <div className="gc-grid gc-grid--3">
               <StatTile label="Ready to claim" value={formatAnts(data.pendingAnts)} />
-              <StatTile label="Claimed so far" value={formatAnts(data.claimedAnts)} />
+              <StatTile label="From the legacy program" value={formatAnts(data.legacy?.pendingAnts ?? '0')}
+                sub={data.legacy ? 'Claimed together with the rest' : undefined} />
               <StatTile label="Authorized wallet" value={isSetAddress(data.operator) ? <Mono title={data.operator}>{shortId(data.operator)}</Mono> : 'Not set'} />
             </div>
             <Panel>
@@ -67,7 +68,7 @@ export default function Rewards() {
                 )}
               </ChainGate>
             </Modal>
-            <Panel flush title="By epoch">
+            <Panel flush title="Current program by epoch" description="Rewards accrue at each epoch boundary from this workspace's paid usage.">
               <DataTable label="Reward epochs" rows={[...data.epochs].sort((a, b) => b.epoch - a.epoch)} rowKey={(row) => String(row.epoch)}
                 empty={<EmptyState icon={<Icon.rewards size={18} />} title="No rewards yet" body="Rewards accrue per epoch as this workspace's keys are used." />}
                 columns={[

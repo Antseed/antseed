@@ -5,8 +5,10 @@
  * read here: they come from the buyer's cached `GET /_antseed/balances`.
  */
 import { AntsContext, rewards, type AntsChainConfig, type RewardsView } from '@antseed/ants'
-import { ZeroAddress } from 'ethers'
+import { multicallRead } from '@antseed/node/payments'
+import { Interface, ZeroAddress } from 'ethers'
 import { sharedChainProvider, type ChainRpcProvider } from '../../../proxy/chain-rpc.js'
+import type { ChannelChainState } from './wallet-mapping.js'
 
 /** Rewards move once per epoch; five minutes keeps a page refresh from re-reading them. */
 export const REWARDS_TTL_MS = 5 * 60_000
@@ -38,7 +40,7 @@ class SharedAntsContext extends AntsContext {
  * than per request; reads run one at a time because the context carries the
  * buyer address.
  */
-export function createRewardsReader(): (chain: AntsChainConfig, address: string) => Promise<RewardsView> {
+export function createRewardsReader(): (chain: AntsChainConfig, address: string) => Promise<RewardsView & { legacyEpochs: number[] }> {
   const contexts = new Map<string, SharedAntsContext>()
   let queue: Promise<unknown> = Promise.resolve()
   return (chain, address) => {
@@ -49,11 +51,35 @@ export function createRewardsReader(): (chain: AntsChainConfig, address: string)
       contexts.set(key, context)
     }
     const ctx = context
-    const run = queue.then(() => {
+    const run = queue.then(async () => {
       ctx.buyerAddress = address
-      return rewards(ctx)
+      const view = await rewards(ctx)
+      // The epochs a legacy buyer claim may name (finalized, before the current program took over).
+      const legacyEpochs = BigInt(view.legacy.buyer || '0') > 0n ? (await ctx.claimableEpochs()).legacy : []
+      return { ...view, legacyEpochs }
     })
     queue = run.catch(() => {})
     return run
   }
+}
+
+const CHANNELS_READ_IFACE = new Interface([
+  'function channels(bytes32 channelId) view returns (address buyer, address seller, uint128 deposit, uint128 settled, bytes32 metadataHash, uint256 deadline, uint256 settledAt, uint256 closeRequestedAt, uint8 status)',
+])
+
+/** On-chain records for `channelIds` in one Multicall3 read; ids it could not read are left out. */
+export async function readChannelStates(chain: AntsChainConfig, channelIds: string[]): Promise<Map<string, ChannelChainState>> {
+  const states = new Map<string, ChannelChainState>()
+  if (!chain.channelsContractAddress || channelIds.length === 0) return states
+  const results = await multicallRead(gatewayChainProvider(chain), channelIds.map((channelId) => ({
+    target: chain.channelsContractAddress!,
+    iface: CHANNELS_READ_IFACE,
+    method: 'channels',
+    args: [channelId],
+  })))
+  results.forEach((result, index) => {
+    if (!result) return
+    states.set(channelIds[index]!, { deposit: result[2] as bigint, settled: result[3] as bigint, closeRequestedAt: result[7] as bigint, status: Number(result[8]) })
+  })
+  return states
 }

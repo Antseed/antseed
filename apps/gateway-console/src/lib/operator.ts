@@ -5,12 +5,12 @@
  */
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { api } from '../api'
-import type { OperatorAuthorization, OperatorRelation, OperatorState } from '../api/types'
+import type { OperatorAuthorization, OperatorRelation, OperatorState, WorkspaceOperatorSummary } from '../api/types'
 import { isSetAddress, sameAddress } from './chain'
 import { formatDateTime, shortId } from './format'
 import { qk } from './queries'
 
-export type { OperatorAuthorization, OperatorRelation, OperatorState }
+export type { OperatorAuthorization, OperatorRelation, OperatorState, WorkspaceOperatorSummary }
 
 export const operatorKey = (workspaceId: string) => ['wallet-operator', workspaceId] as const
 
@@ -27,11 +27,22 @@ export function useOperator(workspaceId: string, enabled = true) {
   return useQuery({ queryKey: operatorKey(workspaceId), queryFn: () => operatorApi.get(workspaceId), staleTime: 30_000, enabled })
 }
 
+/** Authorized-wallet status of every workspace the viewer can open, for markers (the gateway caches each read for a minute). */
+export function useWorkspaceOperators(enabled = true) {
+  return useQuery({ queryKey: qk.operators, queryFn: () => api.wallet.operators(), staleTime: 60_000, enabled })
+}
+
+/** True when the summary says the workspace has no authorized wallet (unknown reads are not flagged). */
+export function lacksOperator(summary: Pick<WorkspaceOperatorSummary, 'relation'> | null | undefined): boolean {
+  return summary?.relation === 'none'
+}
+
 /** After the authorized wallet changes (or may have): store the re-read state and refresh what depends on it. */
 export function useOperatorRefresh(workspaceId: string) {
   const queryClient = useQueryClient()
   const apply = (state: OperatorState) => {
     queryClient.setQueryData(operatorKey(workspaceId), state)
+    void queryClient.invalidateQueries({ queryKey: qk.operators })
     void queryClient.invalidateQueries({ queryKey: qk.wallet(workspaceId) })
     void queryClient.invalidateQueries({ queryKey: qk.rewards(workspaceId) })
   }
@@ -209,6 +220,9 @@ const REVERT_COPY: Record<string, { message: string; refresh: boolean }> = {
   RewardRecipientUnavailable: { message: 'No authorized wallet is set, so rewards cannot be claimed yet.', refresh: true },
   InsufficientBalance: { message: 'Not enough available balance; funds reserved in open channels cannot be withdrawn.', refresh: true },
   InvalidAddress: { message: 'The contract rejected the address.', refresh: false },
+  ChannelNotActive: { message: 'This channel is already settled or closed; nothing is left to do. The list now shows it.', refresh: true },
+  CloseAlreadyRequested: { message: 'A close was already requested for this channel. The list now shows when the reserve can be withdrawn.', refresh: true },
+  CloseNotReady: { message: 'The 15-minute grace period has not ended yet. Withdraw once the countdown reaches zero.', refresh: true },
 }
 
 /** The custom error name in a viem/wagmi error chain, e.g. "OperatorAlreadySet". */

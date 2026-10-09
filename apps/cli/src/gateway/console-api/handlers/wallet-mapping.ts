@@ -2,7 +2,7 @@
 import type { AntsChainConfig, RewardsView } from '@antseed/ants'
 import { formatAntsExact } from '@antseed/ants'
 import { getChainConfig } from '@antseed/node'
-import type { Channel, ChainInfo, DepositWatch, Rewards, Usdc, Wallet } from '../types.js'
+import { CHANNEL_CLOSE_GRACE_MS, type Channel, type ChainInfo, type DepositWatch, type Rewards, type Usdc, type Wallet } from '../types.js'
 
 const USDC_DECIMALS = 6
 const ADDRESS_RE = /^0x[0-9a-fA-F]{40}$/
@@ -73,17 +73,33 @@ export function mapDepositWatch(body: unknown, walletAddress: string | null): De
   const status = raw['status'] && typeof raw['status'] === 'object' ? record(raw['status']) : null
   if (raw['watcher'] !== true || !status) {
     const reason = text(raw['reason'])
-    return { mode: 'off', status: reason ?? 'unavailable', lastTxHash: null }
+    return { mode: 'off', status: reason ?? 'unavailable', lastTxHash: null, event: null }
   }
   const watched = text(status['address'])
   if (!walletAddress || !watched || watched.toLowerCase() !== walletAddress.toLowerCase()) {
-    return { mode: 'off', status: 'not-watched', lastTxHash: null }
+    return { mode: 'off', status: 'not-watched', lastTxHash: null, event: null }
   }
   const mode = status['mode'] === 'active' ? 'active' : status['mode'] === 'background' || status['mode'] === 'idle' ? 'background' : 'off'
   const lastEvent = status['lastEvent'] ? record(status['lastEvent']) : null
   const phase = lastEvent ? text(lastEvent['phase']) : null
   const label = status['sweepInFlight'] === true ? 'sweeping' : phase ?? (mode === 'off' ? 'stopped' : 'watching')
-  return { mode, status: label, lastTxHash: lastEvent ? text(lastEvent['txHash']) : null }
+  return { mode, status: label, lastTxHash: lastEvent ? text(lastEvent['txHash']) : null, event: lastEvent ? mapDepositEvent(lastEvent) : null }
+}
+
+const DEPOSIT_PHASES = new Set(['received', 'sweeping', 'credited', 'deferred', 'error'])
+
+function mapDepositEvent(raw: Record<string, unknown>): DepositWatch['event'] {
+  const phase = text(raw['phase'])
+  if (!phase || !DEPOSIT_PHASES.has(phase)) return null
+  const amount = text(raw['amountBaseUnits'])
+  return {
+    seq: count(raw['seq']) ?? 0,
+    phase: phase as NonNullable<DepositWatch['event']>['phase'],
+    amount: amount === null ? null : baseUnitsToUsdc(amount),
+    txHash: text(raw['txHash']),
+    error: text(raw['error']),
+    at: count(raw['at']) ?? 0,
+  }
 }
 
 /** One row of `GET /_antseed/channels` → `Channel`; null for a row without an id. */
@@ -104,6 +120,41 @@ export function mapChannel(value: unknown): Channel | null {
     spent: baseUnitsToUsdc(spent),
     openedAt: count(raw['reservedAt']),
     canCooperativeClose: raw['cooperativeCloseSupported'] === true && (status === 'active' || status === 'open'),
+    closeRequestedAt: null,
+    settled: null,
+  }
+}
+
+/** A channel's on-chain record (AntseedChannels `channels(id)`); status 0 = no record, 1 active, 2 settled, 3 timed out. */
+export interface ChannelChainState {
+  status: number
+  deposit: bigint
+  settled: bigint
+  closeRequestedAt: bigint
+}
+
+
+/**
+ * The buyer's channel store can lag the chain (a seller-side settle or close
+ * is not always observed), and its `reserveCeiling` falls back to the
+ * configured per-channel maximum for a channel it has not touched since it
+ * started. Where the chain answered, its status and locked deposit win.
+ * Status 0 (no record yet, e.g. a reserve still landing) keeps the local row.
+ */
+export function applyChannelChainState(channel: Channel, state: ChannelChainState | undefined, nowSeconds: number): Channel {
+  if (!state || state.status === 0) return channel
+  let status = channel.status
+  if (state.status === 2) status = 'settled'
+  else if (state.status === 3) status = 'timedout'
+  else if (state.closeRequestedAt > 0n) status = BigInt(nowSeconds) * 1000n < state.closeRequestedAt * 1000n + BigInt(CHANNEL_CLOSE_GRACE_MS) ? 'closing' : 'withdrawable'
+  const open = state.status === 1
+  return {
+    ...channel,
+    status,
+    reserved: open ? baseUnitsToUsdc(state.deposit) : '0.000000',
+    canCooperativeClose: channel.canCooperativeClose && open && state.closeRequestedAt === 0n,
+    closeRequestedAt: open && state.closeRequestedAt > 0n ? Number(state.closeRequestedAt) * 1000 : null,
+    settled: baseUnitsToUsdc(state.settled),
   }
 }
 
@@ -112,15 +163,20 @@ export function mapChannels(body: unknown): Channel[] {
   return Array.isArray(rows) ? rows.map(mapChannel).filter((row): row is Channel => row !== null) : []
 }
 
-/** Buyer-side rewards only, like the desktop's VPR summary: usage rewards plus legacy buyer emissions. */
-export function mapRewards(view: RewardsView, address: string): Rewards {
-  const pending = BigInt(view.buyerUsage.total || '0') + BigInt(view.legacy.buyer || '0')
+/** Buyer-side rewards only, like the desktop's VPR summary: usage rewards plus legacy buyer emissions, each claimable on its own. */
+export function mapRewards(view: RewardsView & { legacyEpochs?: number[] }, address: string): Rewards {
+  const legacyBuyer = BigInt(view.legacy.buyer || '0')
+  const pending = BigInt(view.buyerUsage.total || '0') + legacyBuyer
+  const legacyEpochs = view.legacyEpochs ?? []
   return {
     address,
     pendingAnts: formatAntsExact(pending),
     // Claimed amounts are not readable per epoch (a claimed epoch reads as 0 pending).
     claimedAnts: '0',
     epochs: view.buyerUsage.epochs.map((row) => ({ epoch: row.epoch, pendingAnts: formatAntsExact(row.amount || '0'), claimed: row.claimed === true })),
+    legacy: legacyBuyer > 0n && view.legacy.contract && legacyEpochs.length > 0
+      ? { pendingAnts: formatAntsExact(legacyBuyer), contract: view.legacy.contract, epochs: legacyEpochs }
+      : null,
     operator: view.buyerUsage.operator,
   }
 }

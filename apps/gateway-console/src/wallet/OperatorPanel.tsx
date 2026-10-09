@@ -13,7 +13,8 @@ const OperatorActions = lazy(() => import('./OperatorActions'))
 
 const BADGE_TONE = { info: 'neutral', success: 'success', warning: 'warning', danger: 'danger' } as const
 
-type Action = 'authorize' | 'manage'
+export type OperatorAction = 'authorize' | 'manage'
+type Action = OperatorAction
 
 const ACTION_TITLE: Record<Action, string> = { authorize: 'Authorize a wallet', manage: 'Transfer or remove the authorized wallet' }
 
@@ -22,12 +23,19 @@ const ACTION_TITLE: Record<Action, string> = { authorize: 'Authorize a wallet', 
  * rewards, how that wallet relates to you, and what you can do about it.
  * A compact summary; every action opens in a dialog.
  */
-export function OperatorPanel({ workspaceId }: { workspaceId: string }) {
+export function OperatorPanel({ workspaceId, action, onActionChange }: {
+  workspaceId: string
+  /** Controlled dialog, so other parts of the page (a withdraw or close gate) can open "Authorize a wallet". */
+  action?: OperatorAction | null
+  onActionChange?: (action: OperatorAction | null) => void
+}) {
   const operator = useOperator(workspaceId)
   const chain = useChain()
   const toast = useToast()
   const { apply, refresh } = useOperatorRefresh(workspaceId)
-  const [open, setOpen] = useState<Action | null>(null)
+  const [ownOpen, setOwnOpen] = useState<Action | null>(null)
+  const open = action !== undefined ? action : ownOpen
+  const setOpen = (next: Action | null) => (onActionChange ? onActionChange(next) : setOwnOpen(next))
   const [linking, setLinking] = useState(false)
   const [refreshing, setRefreshing] = useState(false)
   const [refreshError, setRefreshError] = useState<unknown>(null)

@@ -13,7 +13,7 @@
 import type { RoutingPolicy } from '../../routing-policy/policy.js'
 
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
-export type { OperatorRelation, OperatorState, OperatorAuthorization } from './operator-types.js'
+export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
 
 export const CONSOLE_BASE_PATH = '/console'
 export const CONSOLE_API_PATH = '/console/api'
@@ -357,7 +357,7 @@ export interface AuditEntry {
 // POST /workspaces/:id/wallet/card-link       { amountUsd, provider: 'crossmint' | 'stripe' } → { url }
 // POST /workspaces/:id/wallet/watch           { mode: 'active' | 'background' } → DepositWatch
 // POST /workspaces/:id/wallet/operator-auth  { operator } → OperatorAuth  (org owners only, fresh sign-in, operator must be one of the caller's wallet credentials)
-// GET  /workspaces/:id/channels?all=1         → Channel[]
+// GET  /workspaces/:id/channels?all=1&fresh=1 → Channel[]  (fresh: re-read the chain now)
 // POST /workspaces/:id/channels/close         { peerId } → { ok: true }
 // GET  /workspaces/:id/rewards                → Rewards
 // GET  /chain                                 → ChainInfo  (for wallet-signed actions in the browser)
@@ -393,6 +393,12 @@ export interface DepositWatch {
   mode: 'active' | 'background' | 'off'
   status: string
   lastTxHash: string | null
+  /**
+   * The watcher's latest event, for a live status line: received → sweeping →
+   * credited (or deferred / error). `seq` grows with every event, so a client
+   * can tell a new one from the last it showed. Null before the first event.
+   */
+  event: { seq: number; phase: 'received' | 'sweeping' | 'credited' | 'deferred' | 'error'; amount: Usdc | null; txHash: string | null; error: string | null; at: number } | null
 }
 
 export interface Channel {
@@ -404,13 +410,33 @@ export interface Channel {
   spent: Usdc
   openedAt: number | null
   canCooperativeClose: boolean
+  /**
+   * When the authorized wallet requested an on-chain close (ms), or null. The
+   * unused reserve can be withdrawn `CHANNEL_CLOSE_GRACE_MS` later (status
+   * 'closing', then 'withdrawable').
+   */
+  closeRequestedAt: number | null
+  /** Already settled to the seller on chain; null when the chain was not read. `spent - settled` is authorized but not yet charged. */
+  settled: Usdc | null
 }
+
+/** AntseedChannels' grace period between an on-chain close request and the withdrawal. */
+export const CHANNEL_CLOSE_GRACE_MS = 15 * 60_000
 
 export interface Rewards {
   address: string
+  /** Everything claimable: the current program's epochs plus legacy emissions. */
   pendingAnts: string
+  /** Not readable per epoch (a claimed epoch reads as 0 pending); always '0'. */
   claimedAnts: string
+  /** The current (usage rewards) program, claimed per epoch with claimBuyerReward. */
   epochs: Array<{ epoch: number; pendingAnts: string; claimed: boolean }>
+  /**
+   * Buyer emissions from the legacy program, claimed in one
+   * claimBuyerEmissions(buyer, epochs) call on `contract` (epochs already
+   * claimed or empty are skipped on chain). Null when there is none.
+   */
+  legacy: { pendingAnts: string; contract: string; epochs: number[] } | null
   /** Claiming needs the operator wallet connected in the browser. */
   operator: string | null
   /** Last known values: the chain RPC is unreachable or rate limiting right now. */

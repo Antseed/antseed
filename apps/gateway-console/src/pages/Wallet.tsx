@@ -1,214 +1,215 @@
 import { lazy, Suspense, useEffect, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
-import QRCode from 'qrcode'
-import { Alert, Button, DataTable, LoadingRows, Modal, Skeleton, TextField, useToast } from '@antseed/ui'
-import { buildUsdcPaymentUri } from '@antseed/wallet-config'
-import { api } from '../api'
-import type { Channel, ChainInfo, Wallet as WalletInfo } from '../api/types'
+import { Alert, Button, DataTable, LoadingRows, Modal, useToast } from '@antseed/ui'
+import { api, errorMessage } from '../api'
+import type { Channel, Wallet as WalletInfo } from '../api/types'
 import { useConsole } from '../app/context'
 import { ChainGate } from '../components/ChainGate'
 import { Icon } from '../components/icons'
 import {
-  Badge, ConfirmDialog, CopyButton, EmptyState, ErrorAlert, Figure, Mono, PageHeader, Panel, QueryView, SelectField, StaleHint, Switch, TabPanel, Tabs,
+  Badge, CopyButton, EmptyState, Figure, Mono, PageHeader, Panel, QueryView, StaleHint, Switch,
 } from '../components/ui'
-import { contractAddress, explorerTxUrl, isSetAddress } from '../lib/chain'
-import { useDepositWatchHeartbeat } from '../lib/deposit-watch'
-import { formatDateTime, formatUsd, shortId } from '../lib/format'
+import { isSetAddress } from '../lib/chain'
+import { formatDateTime, formatUsd, shortId, usdcToNumber } from '../lib/format'
+import { useOpenChannels } from '../lib/attention'
 import { useConsoleMutation } from '../lib/mutations'
 import { isOrgAdmin } from '../lib/nav'
-import { useVisiblePolling } from '../lib/chain-polling'
 import { qk, useChain, useWallet } from '../lib/queries'
 import { useOperator } from '../lib/operator'
-import { OperatorPanel } from '../wallet/OperatorPanel'
+import {
+  channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, isEntireBalanceLocked, isOpenChannel, pendingSpend, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
+} from '../lib/channels'
+import { AddFunds } from '../wallet/AddFunds'
+import { OperatorPanel, type OperatorAction } from '../wallet/OperatorPanel'
 
 const WalletFunding = lazy(() => import('../wallet/WalletFunding'))
+const ChannelClose = lazy(() => import('../wallet/ChannelClose'))
 
-const PRESETS = ['20', '50', '100']
+type CloseDialog = { channel: Channel; mode: 'cooperative' | 'request' | 'withdraw' }
 
-function CardCheckout({ workspaceId }: { workspaceId: string }) {
-  const [amount, setAmount] = useState('50')
-  const [provider, setProvider] = useState<'crossmint' | 'stripe'>('crossmint')
-  const [error, setError] = useState<unknown>(null)
-  const [busy, setBusy] = useState(false)
-  const value = Number(amount)
-  const valid = Number.isFinite(value) && value >= 1
-
-  async function open() {
-    // Open the tab synchronously so the popup blocker treats it as a click, cut its link back
-    // to this page before anything loads in it (no reverse tabnabbing), then point it at the checkout.
-    const tab = window.open('about:blank', '_blank')
-    if (tab) tab.opener = null
-    setBusy(true)
-    setError(null)
-    try {
-      const { url } = await api.wallet.cardLink(workspaceId, value, provider)
-      if (!/^https:\/\//.test(url)) throw new Error('The gateway returned an invalid checkout link.')
-      if (tab) {
-        tab.location.replace(url)
-      } else {
-        window.location.href = url
-      }
-    } catch (cause) {
-      tab?.close()
-      setError(cause)
-    } finally {
-      setBusy(false)
-    }
-  }
-
-  return (
-    <div className="gc-stack">
-      <p className="gc-muted">Pay by card. Funds arrive as USDC credits in this workspace.</p>
-      <div className="gc-inline gc-inline--wrap">
-        {PRESETS.map((preset) => (
-          <Button key={preset} variant={amount === preset ? 'primary' : 'outline'} size="sm" onClick={() => setAmount(preset)}>${preset}</Button>
-        ))}
-        <TextField aria-label="Amount in USD" inputMode="decimal" value={amount} onChange={(event) => setAmount(event.target.value)} className="gc-amount" />
-      </div>
-      <SelectField label="Checkout provider" value={provider} onChange={(next) => setProvider(next as 'crossmint' | 'stripe')}
-        options={[{ value: 'crossmint', label: 'Crossmint' }, { value: 'stripe', label: 'Stripe' }]}
-        hint="Card checkout is not available in every region." />
-      {error ? <ErrorAlert error={error} title="Could not start checkout" /> : null}
-      <Button disabled={!valid || busy} onClick={() => void open()} trailingIcon={<Icon.external size={14} />}>
-        {busy ? 'Opening…' : `Pay ${valid ? formatUsd(value) : ''} by card`}
-      </Button>
-      <p className="gc-fineprint">Checkout opens in a new tab. This page updates when the funds arrive.</p>
-    </div>
-  )
-}
-
-function SendUsdc({ wallet, chain }: { wallet: WalletInfo; chain: ChainInfo | undefined }) {
-  const [amount, setAmount] = useState('')
-  const [qr, setQr] = useState<string | null>(null)
-  const usdc = contractAddress(chain, 'usdc')
-  const uri = usdc && chain ? buildUsdcPaymentUri({ usdcAddress: usdc, chainId: chain.chainId, address: wallet.address }, amount) : null
+/** Re-renders every `ms` while `active`, for countdowns. */
+function useNow(active: boolean, ms = 15_000): number {
+  const [now, setNow] = useState(() => Date.now())
   useEffect(() => {
-    let cancelled = false
-    if (!uri) { setQr(null); return }
-    void QRCode.toDataURL(uri, { margin: 1, width: 220, errorCorrectionLevel: 'M' }).then((url) => { if (!cancelled) setQr(url) })
-    return () => { cancelled = true }
-  }, [uri])
-  return (
-    <div className="gc-send">
-      <div className="gc-send__qr">
-        {qr ? <img src={qr} width={220} height={220} alt="QR code for a USDC payment to this workspace's wallet" /> : <Skeleton width={220} height={220} />}
-      </div>
-      <div className="gc-stack">
-        <p className="gc-muted">Send USDC on {chain?.name ?? 'Base'} from an exchange or any wallet. Scan with a mobile wallet or copy the address.</p>
-        <div className="gc-address">
-          <Mono>{wallet.address}</Mono>
-          <CopyButton value={wallet.address} label="Copy address" />
-        </div>
-        <TextField label="Amount for the QR code (optional)" inputMode="decimal" placeholder="Any amount" value={amount} onChange={(event) => setAmount(event.target.value)} />
-        <Alert tone="warning">Only send USDC on {chain?.name ?? 'Base'}. Other tokens or networks are lost.</Alert>
-        <p className="gc-fineprint">USDC that lands in the wallet is moved into your credits automatically.</p>
-      </div>
-    </div>
-  )
+    if (!active) return
+    setNow(Date.now())
+    const timer = setInterval(() => setNow(Date.now()), ms)
+    return () => clearInterval(timer)
+  }, [active, ms])
+  return now
 }
 
 /**
- * Re-reads the balance every 30 s while the Add funds dialog is open and the
- * tab visible (chain-backed: the gateway serves it from a cache that a
- * public RPC has to refill). A credited deposit shows up through the
- * deposit watcher's status in the same response.
+ * Close a channel the way the desktop does: ask the seller first (instant,
+ * no transaction); when that fails, or the seller cannot, the authorized
+ * wallet requests an on-chain close, then withdraws the unused reserve once
+ * the 15-minute grace period ends.
  */
-function useBalancePolling(workspaceId: string) {
-  useVisiblePolling(qk.wallet(workspaceId))
-}
-
-type FundTab = 'card' | 'send' | 'wallet'
-
-/** The Add funds dialog body: mounted only while the dialog is open, so the deposit watcher runs fast only then. */
-function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; chain: ChainInfo | undefined; workspaceId: string }) {
-  const [tab, setTab] = useState<FundTab>('card')
+function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: string; canCooperate: boolean; onAuthorize: () => void }) {
+  const [all, setAll] = useState(false)
+  const [dialog, setDialog] = useState<CloseDialog | null>(null)
+  // Channels whose cooperative close failed in this session: their row offers the on-chain close.
+  const [failed, setFailed] = useState<ReadonlySet<string>>(() => new Set())
   const queryClient = useQueryClient()
   const toast = useToast()
-  useDepositWatchHeartbeat(workspaceId)
-  useBalancePolling(workspaceId)
-  const lastDepositUrl = wallet.deposit.lastTxHash ? explorerTxUrl(chain, wallet.deposit.lastTxHash) : null
-  return (
-      <div className="gc-stack">
-        <Tabs id="gc-fund" label="Ways to add funds" value={tab} onChange={setTab} tabs={[{ id: 'card', label: 'Card' }, { id: 'send', label: 'Send USDC' }, { id: 'wallet', label: 'Pay from a wallet' }]} />
-        <TabPanel tabsId="gc-fund" tab={tab}>
-        {tab === 'card' && <CardCheckout workspaceId={workspaceId} />}
-        {tab === 'send' && <SendUsdc wallet={wallet} chain={chain} />}
-        {tab === 'wallet' && (
-          <ChainGate chain={chain}>
-            {(info) => (
-              <Suspense fallback={<LoadingRows rows={2} />}>
-                <WalletFunding action="deposit" workspaceId={workspaceId} wallet={wallet} chain={info} onDone={() => {
-                  toast('Deposit confirmed')
-                  void queryClient.invalidateQueries({ queryKey: qk.wallet(workspaceId) })
-                }} />
-              </Suspense>
-            )}
-          </ChainGate>
-        )}
-        </TabPanel>
-        <div className="gc-watch">
-          <span className="gc-pulse" aria-hidden="true" /> Watching for deposits: {wallet.deposit.status || 'waiting'}
-          {lastDepositUrl && (
-            <> · <a className="gc-link" href={lastDepositUrl} target="_blank" rel="noopener noreferrer">last deposit</a></>
-          )}
-        </div>
-      </div>
-  )
-}
-
-function Channels({ workspaceId, canClose }: { workspaceId: string; canClose: boolean }) {
-  const [all, setAll] = useState(false)
-  const [closing, setClosing] = useState<Channel | null>(null)
+  const chain = useChain()
   const channels = useQuery({ queryKey: qk.channels(workspaceId, all), queryFn: () => api.wallet.channels(workspaceId, all) })
+  const rows = channels.data ?? []
+  const closing = rows.some((channel) => channel.status === 'closing')
+  const now = useNow(closing)
+
+  /** Re-read from the chain now (the gateway otherwise caches channel states for 30 s). */
+  const reload = async () => {
+    const fresh = await api.wallet.channels(workspaceId, all, true)
+    queryClient.setQueryData(qk.channels(workspaceId, all), fresh)
+    void queryClient.invalidateQueries({ queryKey: ['channels', workspaceId] })
+    void queryClient.invalidateQueries({ queryKey: qk.wallet(workspaceId) })
+  }
+
+  // A countdown reaching zero turns the row into "ready to withdraw": re-read once it does.
+  const nextReady = rows.map(withdrawableAt).filter((at): at is number => at !== null && at > now).sort((a, b) => a - b)[0]
+  useEffect(() => {
+    if (nextReady === undefined) return
+    const timer = setTimeout(() => void reload().catch(() => undefined), Math.max(1_000, nextReady - Date.now() + 5_000))
+    return () => clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [nextReady])
+
   const close = useConsoleMutation({
     mutationFn: (channel: Channel) => api.wallet.closeChannel(workspaceId, channel.peerId),
-    onSuccess: () => setClosing(null),
+    onSuccess: () => {
+      setDialog(null)
+      toast('Channel closed by the seller')
+    },
+    onError: (_error, channel) => setFailed((prev) => new Set(prev).add(channel.channelId)),
     invalidate: [['channels', workspaceId], qk.wallet(workspaceId)],
   })
+
+  const open = (channel: Channel, cooperativeFailed = failed.has(channel.channelId)) => {
+    close.reset()
+    const action = channelAction(channel, cooperativeFailed || !canCooperate)
+    if (action === 'cooperative') setDialog({ channel, mode: 'cooperative' })
+    else if (action === 'on-chain') setDialog({ channel, mode: 'request' })
+    else if (action === 'withdraw') setDialog({ channel, mode: 'withdraw' })
+  }
+
+  const ready = withdrawableSummary(rows)
+  const seller = (channel: Channel) => channel.sellerName ?? shortId(channel.peerId)
   return (
+    <section id="gc-channels" className="gc-anchor">
     <Panel flush title="Payment channels" description="Funds reserved with sellers. Closing a channel returns what was not spent."
       actions={<Switch checked={all} onChange={setAll} label="Include closed" />}>
+      {ready.count > 0 && (
+        <Alert tone="warning" title={`${ready.count} channel${ready.count === 1 ? '' : 's'} ready to withdraw`}
+          action={<Button size="sm" onClick={() => open(rows.find((channel) => channel.status === 'withdrawable')!)}>Withdraw</Button>}>
+          About {formatUsd(ready.amount)} of unused reserve can return to the balance. The authorized wallet signs the withdrawal.
+        </Alert>
+      )}
       <QueryView query={channels}>
-        {(rows) => (
-          <DataTable<Channel> label="Payment channels" rows={rows} rowKey={(channel) => channel.channelId}
-            rowLabel={(channel) => `channel with ${channel.sellerName ?? shortId(channel.peerId)}`}
-            actions={(channel) => [canClose && channel.canCooperativeClose && { label: 'Close channel', onSelect: () => setClosing(channel) }]}
-            empty={<EmptyState icon={<Icon.wallet size={18} />} title="No open channels" body="A channel opens the first time a seller serves this workspace." />}
+        {(list) => (
+          <DataTable<Channel> label="Payment channels" rows={list} rowKey={(channel) => channel.channelId}
+            rowLabel={(channel) => `channel with ${seller(channel)}`}
+            actions={(channel) => {
+              const action = channelAction(channel, failed.has(channel.channelId) || !canCooperate)
+              return [
+                action === 'cooperative' && { label: 'Close channel', onSelect: () => open(channel) },
+                (action === 'cooperative' || action === 'on-chain') && { label: 'Close on chain', onSelect: () => open(channel, true) },
+                action === 'withdraw' && { label: 'Withdraw reserve', onSelect: () => open(channel) },
+              ]
+            }}
+            empty={<EmptyState icon={<Icon.wallet size={18} />} title={all ? 'No channels yet' : 'No open channels'} body="A channel opens the first time a seller serves this workspace." />}
             columns={[
               { key: 'seller', header: 'Seller', render: (channel) => channel.sellerName ?? <Mono title={channel.peerId}>{shortId(channel.peerId)}</Mono> },
-              { key: 'status', header: 'Status', render: (channel) => <Badge tone={channel.status === 'active' || channel.status === 'open' ? 'success' : 'neutral'}>{channel.status}</Badge> },
+              { key: 'status', header: 'Status', render: (channel) => <Badge tone={channelStatusTone(channel)}>{channelStatusLabel(channel, now)}</Badge> },
               { key: 'reserved', header: 'Reserved', align: 'right', render: (channel) => formatUsd(channel.reserved) },
               { key: 'spent', header: 'Spent', align: 'right', render: (channel) => formatUsd(channel.spent) },
+              { key: 'returns', header: 'Returns on close', align: 'right', secondary: true, optional: true, render: (channel) => (isOpenChannel(channel) ? formatUsd(unspent(channel)) : '—') },
               { key: 'opened', header: 'Opened', secondary: true, render: (channel) => formatDateTime(channel.openedAt) },
             ]} />
         )}
       </QueryView>
-      <ConfirmDialog isOpen={closing !== null} busy={close.isPending} error={close.error} onClose={() => { setClosing(null); close.reset() }}
-        onConfirm={() => closing && close.mutate(closing)} title="Close this channel?" confirmLabel="Close channel" tone="primary"
-        body="The seller settles what was spent and the rest returns to your available balance. A new channel opens if this seller is used again." />
+      {!canCooperate && rows.some((channel) => channel.canCooperativeClose) && (
+        <p className="gc-fineprint gc-panel-note">Asking a seller to close needs an organization admin; you can still close on chain with the authorized wallet.</p>
+      )}
+
+      <Modal isOpen={dialog?.mode === 'cooperative'} onClose={() => { setDialog(null); close.reset() }} size="md" title="Close this channel?"
+        subtitle={dialog ? `With ${seller(dialog.channel)}. About ${formatUsd(unspent(dialog.channel))} returns to the balance.` : undefined}
+        footer={dialog && (
+          <div className="gc-actions">
+            <Button variant="ghost" onClick={() => { setDialog(null); close.reset() }}>Cancel</Button>
+            {close.error ? (
+              <>
+                <Button variant="outline" disabled={close.isPending} onClick={() => close.mutate(dialog.channel)}>Try again</Button>
+                <Button onClick={() => { close.reset(); setDialog({ channel: dialog.channel, mode: 'request' }) }}>Close on chain instead</Button>
+              </>
+            ) : (
+              <Button disabled={close.isPending} onClick={() => close.mutate(dialog.channel)}>{close.isPending ? 'Asking the seller…' : 'Close channel'}</Button>
+            )}
+          </div>
+        )}>
+        <div className="gc-stack">
+          <p className="gc-muted">The seller settles what was spent and the rest returns to your available balance at once. A new channel opens if this seller is used again.</p>
+          {close.isPending && <p className="gc-fineprint">Waiting for the seller (up to a minute)…</p>}
+          {close.error ? (
+            <Alert tone="danger" title="The seller did not close it">{cooperativeCloseError(errorMessage(close.error))}</Alert>
+          ) : null}
+        </div>
+      </Modal>
+
+      <Modal isOpen={dialog?.mode === 'request' || dialog?.mode === 'withdraw'} onClose={() => setDialog(null)} size="md"
+        title={dialog?.mode === 'withdraw' ? 'Withdraw the unused reserve' : 'Close on chain'}
+        subtitle={dialog ? `Channel with ${seller(dialog.channel)}. Does not need the seller.` : undefined}>
+        {dialog && dialog.mode !== 'cooperative' && (
+          <ChainGate chain={chain.data} error={chain.error}>
+            {(info) => (
+              <Suspense fallback={<LoadingRows rows={2} />}>
+                <ChannelClose workspaceId={workspaceId} channel={dialog.channel} chain={info} step={dialog.mode as 'request' | 'withdraw'}
+                  onAuthorize={() => { setDialog(null); onAuthorize() }}
+                  onDone={(step) => {
+                    void reload().catch(() => undefined)
+                    if (step === 'request') toast('Close requested. Withdraw in 15 minutes.')
+                    else { toast('Reserve returned to the balance'); setDialog(null) }
+                  }} />
+              </Suspense>
+            )}
+          </ChainGate>
+        )}
+      </Modal>
     </Panel>
+    </section>
   )
 }
 
-function BalancePanel({ wallet, onWithdraw }: { wallet: WalletInfo; onWithdraw: () => void }) {
+function BalancePanel({ wallet, workspaceId, onWithdraw }: { wallet: WalletInfo; workspaceId: string; onWithdraw: () => void }) {
+  const channels = useOpenChannels(workspaceId)
+  const pending = channels.data ? pendingSpend(channels.data) : null
+  const showChannels = () => document.getElementById('gc-channels')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
   return (
     <Panel title="Balance" actions={<Button size="sm" variant="outline" onClick={onWithdraw}>Withdraw</Button>}>
+      {isEntireBalanceLocked(wallet) && (
+        <Alert tone="warning" title="The whole balance is reserved in channels" action={<Button size="sm" variant="outline" onClick={showChannels}>Manage channels</Button>}>
+          Nothing is available for new sellers or withdrawals. Close channels you no longer use to return their unused reserve, or add funds.
+        </Alert>
+      )}
       <div className="gc-grid gc-grid--4 gc-figures">
         <Figure label="Available" value={formatUsd(wallet.available)} strong />
         <Figure label="Reserved in channels" value={formatUsd(wallet.reserved)} />
-        <Figure label="In wallet, not deposited" value={formatUsd(wallet.walletUsdc)} />
+        <Figure label="Authorized, not yet charged" value={pending === null ? '…' : formatUsd(pending)} />
         <Figure label="Credit limit" value={wallet.creditLimit === null ? 'None' : formatUsd(wallet.creditLimit)} />
       </div>
+      {usdcToNumber(wallet.walletUsdc) > 0 && (
+        <p className="gc-fineprint gc-wallet-meta">{formatUsd(wallet.walletUsdc)} in the wallet, not deposited yet. {walletUsdcMessage(wallet)}</p>
+      )}
       <p className="gc-fineprint gc-wallet-meta">
         Workspace wallet <Mono title={wallet.address}>{shortId(wallet.address)}</Mono> <CopyButton iconOnly value={wallet.address} label="Copy address" />
-        <span aria-hidden="true">·</span> Withdrawals go to the authorized wallet below.
+        <span aria-hidden="true">·</span> Authorized spend is charged from channel reserves when sellers settle. Withdrawals go to the authorized wallet below.
       </p>
     </Panel>
   )
 }
 
 /** Withdrawals are signed by, and paid to, the authorized wallet; the dialog says so and gates on it. */
-function WithdrawModal({ wallet, workspaceId, isOpen, onClose }: { wallet: WalletInfo; workspaceId: string; isOpen: boolean; onClose: () => void }) {
+function WithdrawModal({ wallet, workspaceId, isOpen, onClose, onAuthorize }: { wallet: WalletInfo; workspaceId: string; isOpen: boolean; onClose: () => void; onAuthorize: () => void }) {
   const queryClient = useQueryClient()
   const toast = useToast()
   const chain = useChain()
@@ -221,7 +222,7 @@ function WithdrawModal({ wallet, workspaceId, isOpen, onClose }: { wallet: Walle
       <ChainGate chain={chain.data} error={chain.error}>
         {(info) => (
           <Suspense fallback={<LoadingRows rows={2} />}>
-            <WalletFunding action="withdraw" workspaceId={workspaceId} wallet={wallet} chain={info} onDone={() => {
+            <WalletFunding action="withdraw" workspaceId={workspaceId} wallet={wallet} chain={info} onAuthorize={() => { onClose(); onAuthorize() }} onDone={() => {
               toast('Withdrawal confirmed')
               void queryClient.invalidateQueries({ queryKey: qk.wallet(workspaceId) })
             }} />
@@ -237,6 +238,7 @@ export default function Wallet() {
   const wallet = useWallet(workspace.id)
   const chain = useChain()
   const [dialog, setDialog] = useState<'fund' | 'withdraw' | null>(null)
+  const [operatorAction, setOperatorAction] = useState<OperatorAction | null>(null)
 
   return (
     <div className="gc-page">
@@ -246,16 +248,16 @@ export default function Wallet() {
         {(data) => (
           <>
             <StaleHint stale={data.stale} />
-            <BalancePanel wallet={data} onWithdraw={() => setDialog('withdraw')} />
-            <OperatorPanel workspaceId={workspace.id} />
-            <Modal isOpen={dialog === 'fund'} onClose={() => setDialog(null)} size="lg" title="Add funds" subtitle={`Credits for ${workspace.name}. ${formatUsd(data.available)} available now.`}>
+            <BalancePanel wallet={data} workspaceId={workspace.id} onWithdraw={() => setDialog('withdraw')} />
+            <OperatorPanel workspaceId={workspace.id} action={operatorAction} onActionChange={setOperatorAction} />
+            <Modal isOpen={dialog === 'fund'} onClose={() => setDialog(null)} size="md" title="Add funds" subtitle={`Credits that pay for ${workspace.name}'s requests.`}>
               <AddFunds wallet={data} chain={chain.data} workspaceId={workspace.id} />
             </Modal>
-            <WithdrawModal wallet={data} workspaceId={workspace.id} isOpen={dialog === 'withdraw'} onClose={() => setDialog(null)} />
+            <WithdrawModal wallet={data} workspaceId={workspace.id} isOpen={dialog === 'withdraw'} onClose={() => setDialog(null)} onAuthorize={() => setOperatorAction('authorize')} />
           </>
         )}
       </QueryView>
-      <Channels workspaceId={workspace.id} canClose={isOrgAdmin(viewer)} />
+      <Channels workspaceId={workspace.id} canCooperate={isOrgAdmin(viewer)} onAuthorize={() => setOperatorAction('authorize')} />
     </div>
   )
 }

@@ -1,6 +1,7 @@
 import { useMemo, useState } from 'react'
 import { useQueries, useQuery, type UseQueryResult } from '@tanstack/react-query'
 import { Alert, ShareBars } from '@antseed/ui'
+import { useWalletAttention } from '../lib/attention'
 import { api } from '../api'
 import type { GatewayStatus, LimitPeriod, SpendLimits, UsageReport, Wallet } from '../api/types'
 import { useConsole, useScopeFilter } from '../app/context'
@@ -101,6 +102,7 @@ export default function Overview() {
     enabled: admin,
   })
 
+  const attention = useWalletAttention()
   const limits: SpendLimits | null = detail.data?.limits ?? null
   const month = spend[2]?.data
   const spentIn = (index: number): number | null => {
@@ -120,6 +122,18 @@ export default function Overview() {
           {funds.days === null
             ? `Only ${formatUsd(funds.available)} is available.`
             : `${formatUsd(funds.available)} available lasts about ${formatRunway(funds.days)} at last week's pace (${formatUsd(funds.dailySpend)} a day).`}
+        </Alert>
+      )}
+      {attention.currentMissingOperator && (
+        <Alert tone="warning" title="No authorized wallet" action={<PageLink to="wallet">{attention.canAuthorize ? 'Authorize a wallet' : 'View wallet'}</PageLink>}>
+          {attention.canAuthorize
+            ? `Nobody can withdraw ${workspace.name}'s funds or claim its ANTS rewards until you authorize one of your wallets. Requests keep working.`
+            : `Nobody can withdraw ${workspace.name}'s funds or claim its ANTS rewards until the organization owner authorizes a wallet. Requests keep working.`}
+        </Alert>
+      )}
+      {attention.withdrawable.count > 0 && (
+        <Alert tone="warning" title={`${attention.withdrawable.count} channel${attention.withdrawable.count === 1 ? '' : 's'} ready to withdraw`} action={<PageLink to="wallet">Withdraw</PageLink>}>
+          About {formatUsd(attention.withdrawable.amount)} of unused reserve can return to the balance.
         </Alert>
       )}
       {warnings.map((warning) => (
