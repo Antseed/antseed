@@ -435,6 +435,14 @@ export function validateConfig(config: AntseedConfig): string[] {
     }
   }
 
+  const restrictedCountries = config.seller.restrictedCountries;
+  if (
+    restrictedCountries !== undefined &&
+    (!Array.isArray(restrictedCountries) || !restrictedCountries.every((code) => /^[A-Z]{2}$/.test(String(code))))
+  ) {
+    errors.push('seller.restrictedCountries must be an array of 2-letter uppercase ISO country codes');
+  }
+
   if (config.seller.freeUsage !== undefined) {
     const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
     if (recordBatchSize !== undefined && (!Number.isSafeInteger(recordBatchSize) || recordBatchSize < 1)) {

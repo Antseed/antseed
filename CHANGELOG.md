@@ -34,6 +34,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/buyer-core`: video creates no longer fail with `one_off_channel_required` right after the buyer opens the video's payment channel. The buyer retried as soon as its own RPC showed the reserve on-chain, before the seller had registered the channel; it now waits up to 15 seconds for the seller's acknowledgement and uses the on-chain reserve only if the acknowledgement never arrives.
 - Gateway installer: `--port` values with leading zeros (such as `08`) are read as decimal instead of failing with a misleading error, and `--help` notes that `--host` is ignored behind `--domain` or a Cloudflare tunnel.
 
+- Sellers refuse inbound connections from IP addresses in Cuba, Iran, North Korea, Syria and Russia by default, looked up locally with the bundled `geoip-country` database. Set `seller.restrictedCountries` to your own ISO country codes, or `[]` to turn it off. `@antseed/node` adds the `acceptInboundAddress` option that this uses.
 - Sellers: a listener now accepts up to 64 connections from one IP address, up from 10, so a buyer paying as several identities can reach the same seller with each of them.
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 
@@ -42,6 +43,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Website: the Terms of Service page now carries the Antseed Terms of Use Agreement (last updated October 9, 2026), replacing the May 15, 2026 Protocol Terms. Desktop: the Help screen's Privacy Policy link now opens its data-sharing section (6.2).
 - Website: refresh the Antseed Gateway blog header and social-preview image, mention agents in the introduction, and clarify the buyer's role and wallets assigned to shared keys.
 - Node, CLI, desktop: seller trust score adds a 5-point bonus for sellers that offer at least one free model ($0 input and output, and $0 cached input when priced), on top of the existing weights and capped at 100. A free model only adds to an already-scored seller. `antseed network peer` and the desktop trust tooltip show the new part.
 - Desktop AI VPN: video models (`venice-video`, `fal-video`) now appear in the Explore and Models lists with a "Video" tag, a "Video" type filter, and their advertised per-second or per-video price. Video models stay out of the chat model pickers, connected apps and Telegram. On a video model's page, "Use in chat" is disabled, and its tooltip explains how to make a video instead: start a chat with a text model and ask it to generate one with that model.

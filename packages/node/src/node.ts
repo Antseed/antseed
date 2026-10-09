@@ -255,6 +255,8 @@ export interface NodeConfig {
   capabilities?: string[];
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy peers fall back to plaintext). */
   requireSecureTransport?: boolean;
+  /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -1803,6 +1805,7 @@ export class AntseedNode extends EventEmitter {
     // Create ConnectionManager and start listening
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
+      ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
     });
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {

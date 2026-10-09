@@ -188,6 +188,11 @@ export interface SellerCLIConfig {
   gasCheck?: SellerGasCheckCLIConfig;
   /** Optional persistent per-address request limit for zero-priced services. */
   freeTier?: SellerFreeTierCLIConfig;
+  /**
+   * ISO country codes whose IPs are refused on connect (best effort: VPNs get
+   * through). Default: CU, IR, KP, SY, RU. Set `[]` to opt out.
+   */
+  restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
 }

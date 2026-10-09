@@ -119,7 +119,9 @@
           runtimeNodeModules = [
             "better-sqlite3"
             "bindings"
+            "countries-list"
             "file-uri-to-path"
+            "geoip-country"
             "keytar"
             "koffi"
             "node-datachannel"
@@ -147,7 +149,7 @@
               # pnpm-lock.yaml change (the store no longer matches). After
               # touching the lockfile, regenerate it with:
               #   ./scripts/update-nix-hash.sh
-              hash = "sha256-IXAtIATmukFFW1wLPjLU6YgiFSXbXlJg3TPKH7deAxY=";
+              hash = "sha256-YRwWbfRoU6gDpamUGVmZAf4skx0RZ0/dONgjw0aSUTc=";
             };
 
             pnpmWorkspaces = [ "@antseed/cli..." ];
