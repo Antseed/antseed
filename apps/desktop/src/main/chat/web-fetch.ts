@@ -1,5 +1,5 @@
 import { app, BrowserWindow } from 'electron';
-import { type Static, Type } from '@sinclair/typebox';
+import { type Static, Type } from 'typebox';
 import type { ToolDefinition } from '@mariozechner/pi-coding-agent';
 
 const WEB_FETCH_MAX_CHARS_DEFAULT = 20_000;

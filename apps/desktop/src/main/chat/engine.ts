@@ -279,6 +279,8 @@ export function registerPiChatHandlers({
     }
 
     try {
+      run.onAbort?.();
+      run.session.abortCompaction();
       await run.session.abort();
     } catch {
       // Ignore abort races.

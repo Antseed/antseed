@@ -20,6 +20,7 @@ import {
 import type { AssistantMessage, AssistantMessageEvent, Message } from '@mariozechner/pi-ai';
 import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.js';
 import { webFetchTool } from './web-fetch.js';
+import { OverflowRecoveryTracker } from './overflow-recovery.js';
 import {
   createChatImagePathTool,
   createShowMediaTool,
@@ -497,7 +498,25 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
     };
 
+    const overflowRecovery = new OverflowRecoveryTracker(
+      proxyModel.contextWindow,
+      settingsManager.getCompactionSettings().enabled,
+    );
+
+    // Session events may be queued behind async extension hooks. Detect the
+    // overflow on the agent immediately so prompt() cannot overtake the wait.
+    const unsubscribeAgent = session.agent.subscribe((event) => {
+      if (event.type === 'message_end') overflowRecovery.observe(event);
+    });
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
+      const overflowTransition = overflowRecovery.observe(event, session.isRetrying);
+      if (overflowTransition === 'retry_scheduled') automaticRetryAttempted = true;
+      if (overflowTransition === 'retry_started') {
+        // Only clear the previous error once Pi actually starts the retry.
+        terminalStreamError = null;
+        terminalStreamFailure = null;
+      }
+
       if (event.type === 'turn_start') {
         sendToRenderer('chat:ai-stream-start', { conversationId, turn: turnIndex });
         turnIndex += 1;
@@ -722,6 +741,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             return;
           }
 
+          if (overflowRecovery.pending) automaticRetrySucceeded = true;
           const proxyMeta = turnMetaQueue.shift();
           const parsedMeta = parseAssistantMetaFromSessionEvent(message, proxyMeta);
           const peerId = normalizePeerId(parsedMeta.peerId);
@@ -780,7 +800,15 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
     });
 
-    const run: ActiveRun = { conversationId, session, unsubscribe };
+    const run: ActiveRun = {
+      conversationId,
+      session,
+      unsubscribe: () => {
+        unsubscribeAgent();
+        unsubscribe();
+      },
+      onAbort: () => overflowRecovery.cancel(),
+    };
     activeRunsByConversation.set(conversationId, run);
 
     if (recordChatRequestStarted) {
@@ -813,6 +841,15 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     try {
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
       await session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined });
+      // prompt() resolves before Pi's overflow compact-and-retry runs; keep the
+      // session alive until that recovery has finished.
+      await overflowRecovery.waitUntilSettled();
+      if (overflowRecovery.failureMessage !== null) {
+        terminalStreamError = overflowRecovery.failureMessage;
+        terminalStreamFailure = classifyChatStreamFailure({
+          message: terminalStreamError, stopReason: 'error',
+        });
+      }
 
       if (paymentRequiredFailure !== null) {
         const paymentFailure = paymentRequiredFailure as ChatStreamStopReason;

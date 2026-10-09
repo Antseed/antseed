@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
 import { open, readFile, stat } from 'node:fs/promises';
 import path from 'node:path';
-import { type Static, Type } from '@sinclair/typebox';
+import { type Static, Type } from 'typebox';
 import type { ToolDefinition } from '@mariozechner/pi-coding-agent';
 import { resolveAttachmentPath, saveAttachment } from './attachments/store.js';
 import { WORKSPACE_APPS_DIR } from '../paths.js';

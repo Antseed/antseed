@@ -1,4 +1,4 @@
-import { type Static, Type } from '@sinclair/typebox';
+import { type Static, Type } from 'typebox';
 import { spawn } from 'node:child_process';
 import { existsSync } from 'node:fs';
 import { createConnection } from 'node:net';

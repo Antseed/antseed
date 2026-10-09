@@ -58,4 +58,6 @@ export type ActiveRun = {
   conversationId: string;
   session: AgentSession;
   unsubscribe: () => void;
+  /** Called before the session is aborted, e.g. to stop waiting on recovery. */
+  onAbort?: () => void;
 };
