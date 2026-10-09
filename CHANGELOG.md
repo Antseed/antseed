@@ -21,6 +21,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Website: use public antseed.com documentation links in the gateway blog so links copied from a local preview still work for readers.
+
 - Skills: `antseed-videos` handles more seller behavior. It never sends `audio: true` (many models make sound by default and some fail the job when `audio` is set) and sends `audio: false` only for a silent video, as `generate_audio` on fal. It sends the frame's aspect ratio except to Seedance, and keeps sellers that list no aspect ratios. The model list can show text-to-video models (`frames=no`). Frames over 1 MB that cannot be converted to JPEG stop the create instead of being sent unchanged. The wait loop keeps waiting through `429 video_download_busy`, stops when a seller reports `completed` but sends no MP4, prints the HTTP status, job id and `peer_message`, skips an already-saved MP4, and exits non-zero on failure. The skill adds a fal schema check for frame field names (Kling V3 and Wan 3.0 need `start_image_url`), says to rename a failed job file before an approved retry, and documents more create and wait errors.
 - Skills: `antseed-images` also decodes images returned as `images[0]`, which some sellers use and which previously saved an empty file, and warns when no image is decoded.
 - CLI buyer: switching a chat's model while one of its requests is still in flight is no longer reverted. When that older request finished, the buyer re-pinned the chat to the route that served it, so the next turn went back to the old model.

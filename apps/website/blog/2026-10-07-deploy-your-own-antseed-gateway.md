@@ -29,7 +29,7 @@ curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | s
 
 When it finishes, it prints your base URL, such as `https://llm.example.com/v1`, the first API key, and the wallet address to fund for paid models. Point the DNS record at the server first; the installer gets a TLS certificate for the domain automatically.
 
-No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](/docs/guides/gateway-server) covers the options.
+No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](https://antseed.com/docs/guides/gateway-server/) covers the options.
 
 ## A key for everyone you share with
 
@@ -41,7 +41,7 @@ antseed gateway key create --label "Alice" --monthly-limit 20
 
 The secret is printed once. Only a hash of it is stored.
 
-Every key works with the routes described in [Using the API](/docs/guides/using-the-api), sent as `Authorization: Bearer <key>`. All keys run through a single `antseed buyer start`, so you don't need a separate buyer for each person.
+Every key works with the routes described in [Using the API](https://antseed.com/docs/guides/using-the-api/), sent as `Authorization: Bearer <key>`. All keys run through a single `antseed buyer start`, so you don't need a separate buyer for each person.
 
 You can list your keys, see requests, tokens and spend for each one, change limits, and revoke a key at any time. Changes apply immediately, even while the gateway is running.
 
@@ -112,10 +112,10 @@ antseed gateway start                  # http://127.0.0.1:8379/v1
 antseed gateway start --host 0.0.0.0   # serve other machines on your network
 ```
 
-To reach people outside your network from your own machine, use a [public HTTPS tunnel](/docs/guides/public-tunnels). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
+To reach people outside your network from your own machine, use a [public HTTPS tunnel](https://antseed.com/docs/guides/public-tunnels/). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
 
 ## Get started
 
-Deploy a gateway on a server with the [installer](/docs/guides/gateway-server), or run one locally with the [Antseed CLI](/docs/install). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
+Deploy a gateway on a server with the [installer](https://antseed.com/docs/guides/gateway-server/), or run one locally with the [Antseed CLI](https://antseed.com/docs/install/). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
 
-The [Shared Gateway API Keys guide](/docs/guides/gateway-api-keys) covers limits, identities, top-ups, and where the gateway stores its data.
+The [Shared Gateway API Keys guide](https://antseed.com/docs/guides/gateway-api-keys/) covers limits, identities, top-ups, and where the gateway stores its data.
