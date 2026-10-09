@@ -243,7 +243,7 @@ export default function Wallet() {
   return (
     <div className="gc-page">
       <PageHeader title="Wallet & Funding" description={`Credits that pay for ${workspace.name}'s requests.`}
-        actions={<Button leadingIcon={<Icon.plus size={14} />} onClick={() => setDialog('fund')}>Add funds</Button>} />
+        actions={<Button variant="brand" leadingIcon={<Icon.plus size={14} />} onClick={() => setDialog('fund')}>Add funds</Button>} />
       <QueryView query={wallet} rows={2}>
         {(data) => (
           <>

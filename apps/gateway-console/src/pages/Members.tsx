@@ -338,7 +338,7 @@ export default function Members() {
   return (
     <div className="gc-page">
       <PageHeader title="Members" description="Who can use this gateway, their budgets and routing."
-        actions={<Button leadingIcon={<Icon.plus size={14} />} onClick={() => setInviting(true)}>Invite member</Button>} />
+        actions={<Button variant="brand" leadingIcon={<Icon.plus size={14} />} onClick={() => setInviting(true)}>Invite member</Button>} />
 
       <Panel flush title={`${workspace.name} workspace`} actions={orgAdmin && addable.length > 0 ? (
         <div className="gc-inline">

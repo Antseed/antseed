@@ -1,7 +1,10 @@
 import type { AnchorHTMLAttributes, ButtonHTMLAttributes, ReactNode } from "react";
 
-/** `link` renders as inline text (underlined), for quiet actions inside a sentence. */
-export type ButtonVariant = "primary" | "outline" | "ghost" | "danger" | "link";
+/**
+ * `link` renders as inline text (underlined), for quiet actions inside a sentence.
+ * `brand` is the Antseed green pill (the website's download button): at most one per screen, for its main action.
+ */
+export type ButtonVariant = "primary" | "brand" | "outline" | "ghost" | "danger" | "link";
 export type ButtonSize = "sm" | "md";
 
 export interface ButtonProps extends ButtonHTMLAttributes<HTMLButtonElement> {

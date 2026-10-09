@@ -238,7 +238,7 @@ export default function Keys() {
   return (
     <div className="gc-page">
       <PageHeader title="API keys" description={`Keys for the ${workspace.name} workspace. Each key spends from this workspace's wallet.`}
-        actions={<Button leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>Create key</Button>} />
+        actions={<Button variant="brand" leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>Create key</Button>} />
       <div className="gc-toolbar">
         <TextField size="sm" type="search" aria-label="Search keys" placeholder="Search name, hint or owner" value={search} onChange={(event) => setSearch(event.target.value)} />
         <Switch checked={showRevoked} onChange={setShowRevoked} label="Show revoked" />

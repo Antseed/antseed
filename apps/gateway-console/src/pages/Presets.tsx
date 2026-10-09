@@ -81,7 +81,7 @@ export default function Presets() {
   return (
     <div className="gc-page">
       <PageHeader title="Presets" description={<>A saved model, prompt, parameters and routing. Use one by sending <code>"model": "@preset/&lt;slug&gt;"</code>.</>}
-        actions={canEdit && <Button leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>New preset</Button>} />
+        actions={canEdit && <Button variant="brand" leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>New preset</Button>} />
       <Panel flush>
         <QueryView query={presets}>
           {(rows) => (

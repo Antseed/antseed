@@ -40,6 +40,9 @@ body {
   --as-shadow-modal: 0 3.125rem 7.5rem -1.875rem rgba(10, 14, 22, 0.55), 0 1.25rem 3.75rem -1.25rem rgba(10, 14, 22, 0.35);
   /* Status, focus and data-visualisation tokens (page blocks, tables, charts). */
   --as-success: var(--success, #15803d);
+  /* Antseed brand green (the website's --as-green / --as-primary-6). */
+  --as-brand: var(--brand, #10b981);
+  --as-brand-hover: var(--brand-hover, #0d9467);
   --as-success-dim: var(--success-dim, rgba(22, 163, 74, 0.09));
   --as-success-border: var(--success-border, rgba(22, 163, 74, 0.28));
   --as-focus: var(--focus, #3b82f6);
@@ -104,6 +107,17 @@ body {
 
   &:hover:not(:disabled) { filter: brightness(1.06); }
   &:active:not(:disabled) { filter: brightness(0.96); }
+}
+
+.as-button--brand {
+  border-radius: 999px;
+  background: var(--as-brand);
+  color: #ffffff;
+  font-weight: 600;
+
+  &:hover:not(:disabled) { background: var(--as-brand-hover); }
+  &:active:not(:disabled) { transform: scale(0.98); }
+  &:disabled { opacity: 0.6; }
 }
 
 .as-button--outline {

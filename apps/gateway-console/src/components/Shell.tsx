@@ -8,6 +8,7 @@ import { ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
 import { useWalletAttention } from '../lib/attention'
 import { AccountModal } from './AccountModal'
+import { AntDots } from './AntDots'
 import { ExposureBanner } from './ExposureBanner'
 import { Icon } from './icons'
 
@@ -192,7 +193,7 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
           </div>
         </header>
         <div className="gc-body">
-          <aside className="gc-rail"><Nav current={current} /></aside>
+          <aside className="gc-rail"><Nav current={current} /><AntDots /></aside>
           <main id="gc-main" className="gc-main" tabIndex={-1}>
             {migrating ? <Suspense fallback={<LoadingRows rows={6} />}><MigratePage /></Suspense> : <><ExposureBanner />{children}</>}
           </main>

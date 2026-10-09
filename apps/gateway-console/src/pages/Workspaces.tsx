@@ -87,7 +87,7 @@ export default function Workspaces() {
   return (
     <div className="gc-page">
       <PageHeader title="Workspaces" description="Each workspace has its own wallet, budgets, routing policy, members and keys."
-        actions={orgAdmin && <Button leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>New workspace</Button>} />
+        actions={orgAdmin && <Button variant="brand" leadingIcon={<Icon.plus size={14} />} onClick={() => setEditing('new')}>New workspace</Button>} />
       <Panel flush>
         <QueryView query={workspaces}>
           {(rows) => (
