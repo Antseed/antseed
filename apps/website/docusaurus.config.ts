@@ -1,7 +1,7 @@
-import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
 
@@ -309,8 +309,8 @@ const config: Config = {
       ],
     },
     prism: {
-      theme: prismThemes.nightOwl,
-      darkTheme: prismThemes.nightOwl,
+      theme: prismTheme,
+      darkTheme: prismTheme,
       additionalLanguages: ['bash', 'json', 'typescript'],
     },
   } satisfies Preset.ThemeConfig,

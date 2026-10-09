@@ -1,0 +1,80 @@
+/* Code block card — header strip (label + copy) over the code body.
+   Colors come from the --as-code-* tokens in custom.css. */
+
+.block {
+  margin-bottom: var(--ifm-leading);
+}
+
+.header {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  min-height: 40px;
+  padding: 0 8px 0 16px;
+  background: var(--as-code-title-bg);
+  border-bottom: 1px solid var(--as-line-on-void);
+}
+
+.label {
+  display: inline-flex;
+  align-items: center;
+  gap: 8px;
+  min-width: 0;
+  font-family: var(--as-font-app);
+  font-size: 12px;
+  font-weight: 500;
+  color: var(--as-primary-2);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+
+.label svg {
+  flex: none;
+  color: var(--as-primary-4);
+}
+
+.language {
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  color: rgba(220, 247, 238, 0.45);
+}
+
+.copyButton {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  margin-left: auto;
+  height: 28px;
+  padding: 0 10px;
+  font-family: var(--as-font-app);
+  font-size: 12px;
+  font-weight: 500;
+  color: rgba(220, 247, 238, 0.7);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 8px;
+  cursor: pointer;
+  transition: color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+.copyButton:hover {
+  color: var(--as-code-text);
+  background: rgba(255, 255, 255, 0.06);
+  border-color: var(--as-line-on-void);
+}
+
+.copyButton:focus-visible {
+  outline: 2px solid var(--as-green);
+  outline-offset: 1px;
+}
+
+.copyButtonCopied,
+.copyButtonCopied:hover {
+  color: var(--as-primary-3);
+}
+
+.content {
+  position: relative;
+  direction: ltr;
+}
