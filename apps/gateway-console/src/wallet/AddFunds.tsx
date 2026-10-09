@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Alert, Button, LoadingRows, useToast } from '@antseed/ui'
+import { Alert, Button, LoadingRows, Modal, useToast } from '@antseed/ui'
 import { buildUsdcPaymentUri } from '@antseed/wallet-config'
 import { api, errorMessage } from '../api'
 import type { ChainInfo, DepositWatch, Wallet as WalletInfo } from '../api/types'
@@ -113,15 +113,14 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   // The status line follows the watcher: every 4 s while USDC is on its way, every 8 s otherwise (visible tab only; the gateway answers from caches).
   const inFlight = wallet.deposit.event !== null && wallet.deposit.event.seq > baseline.current && (wallet.deposit.event.phase === 'received' || wallet.deposit.event.phase === 'sweeping')
   useVisiblePolling(qk.wallet(workspaceId), inFlight ? 4_000 : 8_000)
-  // The checkout tab, closed once its USDC is credited (the desktop closes its checkout popup the same way).
-  const checkoutTab = useRef<Window | null>(null)
+  // The embedded checkout, closed once its USDC is credited (the desktop closes its checkout popup the same way).
+  const [checkout, setCheckout] = useState<{ url: string; provider: CardProvider } | null>(null)
   const event = wallet.deposit.event
   const credited = event && event.seq > baseline.current && event.phase === 'credited' ? event : null
   useEffect(() => {
     if (!credited) return
     toast(`${credited.amount ? formatUsd(credited.amount) : 'Your deposit'} added to the balance`)
-    try { checkoutTab.current?.close() } catch { /* the tab may already be gone */ }
-    checkoutTab.current = null
+    setCheckout(null)
     void queryClient.invalidateQueries({ queryKey: ['channels', workspaceId] })
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [credited?.seq])
@@ -135,22 +134,16 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   const line = statusLine(wallet.deposit, baseline.current)
   const creditedUrl = credited?.txHash ? explorerTxUrl(chain, credited.txHash) : null
 
+  /** Signs the funding link on the gateway and opens the pay page in the checkout dialog. */
   async function openCard(provider: CardProvider) {
     if (!amountOk) { setNotice('Enter an amount of at least $1.'); return }
-    const tab = openBlankTab()
     setOpening(provider)
     setNotice(null)
     try {
       const { url } = await api.wallet.cardLink(workspaceId, value, provider)
       if (!/^https:\/\//.test(url)) throw new Error('The gateway returned an invalid checkout link.')
-      if (tab) {
-        tab.location.replace(url)
-        checkoutTab.current = tab
-      } else {
-        window.location.href = url
-      }
+      setCheckout({ url, provider })
     } catch (cause) {
-      tab?.close()
       setNotice(errorMessage(cause))
     } finally {
       setOpening(null)
@@ -213,8 +206,24 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
     )
   }
 
+  const checkoutDialog = (
+    <Modal isOpen={checkout !== null} onClose={() => setCheckout(null)} size="md" title="Secure checkout"
+      bodyClassName="gc-checkout"
+      subtitle={checkout && (
+        <>{checkout.provider === 'stripe' ? 'Card checkout by Stripe (US only).' : 'Card checkout by Crossmint.'} Closes by itself once the funds arrive.{' '}
+          <a className="gc-link" href={checkout.url} target="_blank" rel="noopener noreferrer" onClick={() => setCheckout(null)}>Open in a new tab</a></>
+      )}>
+      {checkout && (
+        <iframe className="gc-checkout__frame" src={checkout.url} title="Antseed Pay checkout"
+          // Card wallets (Apple Pay, Google Pay) inside the page's own Crossmint/Stripe frames need the Payment Request API delegated.
+          allow="payment *; clipboard-write" />
+      )}
+    </Modal>
+  )
+
   return (
     <div className="gc-fund">
+      {checkoutDialog}
       {summary}
       <AmountPicker amount={amount} setAmount={setAmount} firstDeposit={firstDeposit} />
       <button type="button" className="gc-method gc-method--primary" disabled={opening !== null} onClick={() => void openCard('crossmint')}>
@@ -246,7 +255,7 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
         <span><Icon.lock size={12} /> Encrypted &amp; secure · Non-custodial escrow on {chain?.name ?? 'Base'}</span>
         <span><Icon.check size={12} /> Pay per request · No subscriptions, no lock-in</span>
       </div>
-      <p className="gc-fineprint gc-fund-fine">Checkout opens in a new tab and closes itself once the funds arrive. Card checkout is not available in every region.</p>
+      <p className="gc-fineprint gc-fund-fine">Card checkout opens here and closes itself once the funds arrive. It is not available in every region.</p>
     </div>
   )
 }

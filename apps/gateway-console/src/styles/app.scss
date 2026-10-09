@@ -472,6 +472,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-fund-pay__warn { padding: 0.375rem 0.625rem; border-radius: 0.5rem; background: var(--as-bg-muted); color: var(--as-text-secondary); font-size: 0.6875rem; line-height: 1rem;
   strong { color: var(--as-text-primary); }
 }
+/* The pay page in a dialog, sized like the desktop's checkout window (420 px wide, up to 800 px tall) so its one-column card form fits without inner scrolling. */
+.gc-checkout { padding: 0; overflow: hidden; }
+.gc-checkout__frame { display: block; width: 100%; height: min(50rem, calc(100dvh - 11rem)); min-height: 30rem; border: 0; background: #fff; }
 .gc-qr { display: block; width: 11rem; height: 11rem; padding: 0.5rem; border: 1px solid var(--as-border); border-radius: 0.75rem; background: var(--as-bg-surface); color: var(--as-text-primary); }
 .gc-qr__badge { fill: var(--as-bg-surface); }
 .gc-qr--placeholder { background: var(--as-bg-muted); }

@@ -734,7 +734,7 @@ const routes: Array<[string, string, Handler]> = [
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
     return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available: ws.isDefault ? '231.540000' : '0.120000', reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
   }],
-  ['POST', '/workspaces/:id/wallet/card-link', ({ params }) => { requireWorkspace(params['id']!, 'admin'); return { url: 'https://example.com/mock-card-checkout' } }],
+  ['POST', '/workspaces/:id/wallet/card-link', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return { url: `https://antseed-pay.com/?address=${fakeAddress(1)}&currency=USD&amount=${body?.amountUsd ?? 10}&integration=${body?.provider === 'stripe' ? 'stripe' : 'crossmint'}` } }],
   ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],
   ['POST', '/workspaces/:id/wallet/operator-auth', ({ params, body }) => operatorAuth(params, body)],
   ['GET', '/workspaces/:id/wallet/operator', ({ params }) => operatorState(params['id']!)],
