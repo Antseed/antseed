@@ -93,6 +93,11 @@ type MetadataProvider = () => object | null;
 export interface ConnectionManagerOptions {
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy interop). */
   requireSecureTransport?: boolean;
+  /**
+   * Called with each inbound socket's remote address before anything is read
+   * from it; returning false closes the socket. Default: accept every address.
+   */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
 }
 type InitialWireMessage =
   | {
@@ -441,6 +446,7 @@ export class ConnectionManager extends EventEmitter {
   private _transportMode: TransportMode;
   private _metadataProvider: MetadataProvider | null = null;
   private _requireSecureTransport: boolean;
+  private _acceptInboundAddress: ((remoteAddress: string) => boolean) | null;
   private _ipConnectionCounts = new Map<string, number>();
   private readonly _introReplayGuard = new NonceReplayGuard();
   private static _knownEndpoints = new Map<PeerId, PeerEndpoint>();
@@ -451,6 +457,7 @@ export class ConnectionManager extends EventEmitter {
     this._iceConfig = iceConfig ?? getDefaultIceConfig();
     this._transportMode = ConnectionManager._detectTransportMode();
     this._requireSecureTransport = options?.requireSecureTransport ?? false;
+    this._acceptInboundAddress = options?.acceptInboundAddress ?? null;
   }
 
   static async init(iceConfig?: IceConfig, options?: ConnectionManagerOptions): Promise<ConnectionManager> {
@@ -523,6 +530,10 @@ export class ConnectionManager extends EventEmitter {
 
     this._server = net.createServer((socket) => {
       const ip = socket.remoteAddress ?? 'unknown';
+      if (this._acceptInboundAddress && socket.remoteAddress && !this._acceptInboundAddress(socket.remoteAddress)) {
+        socket.destroy();
+        return;
+      }
       const current = this._ipConnectionCounts.get(ip) ?? 0;
       if (current >= MAX_INBOUND_CONNECTIONS_PER_IP) {
         socket.destroy();

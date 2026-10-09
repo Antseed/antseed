@@ -334,6 +334,17 @@ antseed config seller set freeTier.windowMs 86400000
 
 Omit `windowMs` to use the 24-hour default. Remove `seller.freeTier` to restore unlimited zero-priced service access.
 
+## Restricted Countries
+
+By default a seller refuses inbound connections from IP addresses in Cuba, Iran, North Korea and Syria. The country is looked up locally in the bundled [`geoip-country`](https://www.npmjs.com/package/geoip-country) database, so no buyer address leaves the seller. The check is best effort: buyers behind a VPN or proxy are seen at that server's address.
+
+Set your own list of ISO country codes, or `[]` to turn the check off:
+
+```bash
+antseed config seller set restrictedCountries '["CU","IR","KP","SY"]'
+antseed config seller set restrictedCountries '[]'
+```
+
 ## Free-Usage Transactions
 
 Free requests are still recorded on-chain so buyers earn usage credit, and the seller pays the gas for those transactions. A buyer opens a free-usage channel (one `open` transaction), the seller writes accumulated usage to it (`record` transactions), and the channel is closed when the buyer asks or its deadline passes. Buyers on node 0.2.126 or newer open channels with a 1-hour deadline; older clients use 15 minutes.

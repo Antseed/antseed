@@ -2,9 +2,11 @@ import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
 import { writeFile, unlink } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
+import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
   ModelHealthChecker,
@@ -651,6 +653,17 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       if (gasCheckEnabled) {
         console.log(chalk.dim(`  gas checks: every ${Math.round(gasCheckIntervalMs / 1000)}s, pause advertising below ${formatEther(minGasBalanceWei)} ETH`))
       }
+      const restrictedCountries = new Set(effectiveSellerConfig.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES)
+      let acceptInboundAddress: ((remoteAddress: string) => boolean) | undefined
+      if (restrictedCountries.size > 0) {
+        try {
+          const geoip = createRequire(import.meta.url)('geoip-country') as typeof import('geoip-country')
+          acceptInboundAddress = (ip) => !restrictedCountries.has(geoip.lookup(ip)?.country ?? '')
+          console.log(chalk.dim(`  restricted countries: ${[...restrictedCountries].join(', ')}`))
+        } catch (err) {
+          console.log(chalk.yellow(`  restricted countries: off, geoip-country failed to load (${(err as Error).message})`))
+        }
+      }
       const maxUploadBodyBytes = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_UPLOAD_BODY_BYTES'])
         ?? effectiveSellerConfig.maxUploadBodyBytes
       if (maxUploadBodyBytes !== undefined) {
@@ -722,6 +735,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(effectiveSellerConfig.freeTier ? { freeTier: effectiveSellerConfig.freeTier } : {}),
         ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
+        ...(acceptInboundAddress ? { acceptInboundAddress } : {}),
         payments: {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,

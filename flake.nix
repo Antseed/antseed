@@ -119,7 +119,9 @@
           runtimeNodeModules = [
             "better-sqlite3"
             "bindings"
+            "countries-list"
             "file-uri-to-path"
+            "geoip-country"
             "keytar"
             "koffi"
             "node-datachannel"

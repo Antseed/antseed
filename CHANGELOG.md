@@ -34,6 +34,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - `@antseed/buyer-core`: video creates no longer fail with `one_off_channel_required` right after the buyer opens the video's payment channel. The buyer retried as soon as its own RPC showed the reserve on-chain, before the seller had registered the channel; it now waits up to 15 seconds for the seller's acknowledgement and uses the on-chain reserve only if the acknowledgement never arrives.
 - Gateway installer: `--port` values with leading zeros (such as `08`) are read as decimal instead of failing with a misleading error, and `--help` notes that `--host` is ignored behind `--domain` or a Cloudflare tunnel.
 
+- Sellers refuse inbound connections from IP addresses in Cuba, Iran, North Korea and Syria by default, looked up locally with the bundled `geoip-country` database. Set `seller.restrictedCountries` to your own ISO country codes, or `[]` to turn it off. `@antseed/node` adds the `acceptInboundAddress` option that this uses.
 - Sellers: a listener now accepts up to 64 connections from one IP address, up from 10, so a buyer paying as several identities can reach the same seller with each of them.
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 
