@@ -63,6 +63,6 @@ After "go", queue the video once, save the job file, wait, and save the MP4 ([re
 - **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered, so a failed or rejected create costs nothing, but a repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
 - Status checks and downloads use the saved job id and never create jobs.
 - Send only values the seller advertises. Do not send `audio` unless the user asks for a specific setting and the seller advertises `audio: true`.
-- Use the bare model id when every seller supports the chosen options. Otherwise pin the cheapest compatible seller for the create only, as `<peerId>@<model>`.
+- Always send the create to the chosen seller, as `<peerId>@<model>` (the cheapest compatible seller from the price step).
 - After a failed create, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first.
 - Never print base64 media, signed URLs, authorization headers, private keys, or full API responses. Keep the buyer proxy on loopback.

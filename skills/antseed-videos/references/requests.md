@@ -46,7 +46,7 @@ jq --argjson dur "$duration" --arg res "${resolution:-}" '
   | map(select(.priceUsd <= 5)) | sort_by(.priceUsd)' "$model_file"
 ```
 
-Pick the first entry. If every seller of the model is in the list, send the bare `model`; otherwise send `"<peerId>@<model>"` so the create goes to that seller. An empty list means no seller supports the options: choose an advertised duration or a lower resolution.
+Pick the first entry and send `"<peerId>@<model>"` so the create goes to that seller. A bare model id applies the buyer's trust filter and can fail with `model_not_found` even when the model is listed. An empty list means no seller supports the options: choose an advertised duration or a lower resolution.
 
 ## Frames as data URLs
 
@@ -125,7 +125,7 @@ fi
 
 **`fal-video`**: the body is the fal model's own input plus `model`. Most take `duration` as a plain string such as `"10"`; image fields are model-specific (`image_url`, `start_image_url`, `end_image_url`), so check the model's fal page when unsure. Use `/fal/v1/video/queue`, read the id from `.request_id`, and write the job file with `protocol: "fal-video"`.
 
-Set `route_model` to the bare id or `<peerId>@<model>` from [Price](#price). Write the prompt to `prompt.txt` first. `audio` is sent only when the user asked for a specific setting: add `+ {audio: true}` (or `false`).
+Set `route_model` to `<peerId>@<model>` from [Price](#price). Write the prompt to `prompt.txt` first. `audio` is sent only when the user asked for a specific setting: add `+ {audio: true}` (or `false`).
 
 A missing job id means the create failed and nothing started. Show the error to the user and fix the field `peer_message` names. Do not create again without asking.
 
