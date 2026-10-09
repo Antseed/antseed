@@ -7,7 +7,6 @@ declare module "bittorrent-dht" {
 
   class DHT extends EventEmitter {
     constructor(options?: DHTOptions);
-    addNode(node: { host: string; port: number }): void;
     listen(port: number, callback?: () => void): void;
     announce(infoHash: Buffer, port: number, callback?: (err?: Error) => void): void;
     lookup(infoHash: Buffer, callback?: () => void): void;

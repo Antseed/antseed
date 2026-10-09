@@ -4,7 +4,7 @@ import { EventEmitter } from "node:events";
 import { lookup as lookupHost } from "node:dns/promises";
 import type { LookupAddress } from "node:dns";
 import { isIP } from "node:net";
-import { debugLog, debugWarn } from "../utils/debug.js";
+import { debugWarn } from "../utils/debug.js";
 import type { PeerId } from "../types/peer.js";
 import { OFFICIAL_BOOTSTRAP_NODES, toBootstrapConfig } from "./bootstrap.js";
 
@@ -21,7 +21,7 @@ export interface DHTNodeConfig {
   operationTimeoutMs: number;
   /** Allow private/loopback IPs in lookup results. Default: false. Set true for local testing. */
   allowPrivateIPs?: boolean;
-  /** Injectable DNS lookup; bootstrap always requests all IPv4 answers for the UDP4 socket. */
+  /** Injectable bootstrap DNS lookup. Always called with IPv4 and all answers requested. */
   lookup?: (host: string, options: { family: 4; all: true }) => Promise<LookupAddress[]>;
 }
 
@@ -133,155 +133,85 @@ export function capabilityTopic(capability: string, name?: string): string {
   return name ? base + ":" + normalizeTopicSegment(name) : base;
 }
 
-const BOOTSTRAP_RETRY_INTERVAL_MS = 20_000;
-const BOOTSTRAP_RETRY_MAX_INTERVAL_MS = 60_000;
-
 export class DHTNode {
   private readonly config: DHTNodeConfig;
   private dht: DHT | null = null;
-  private bootstrapRetryTimer: ReturnType<typeof setTimeout> | null = null;
-  private generation = 0;
-  private bootstrapAbortController: AbortController | null = null;
-  private cancelStart: (() => void) | null = null;
   public readonly events: EventEmitter = new EventEmitter();
 
   constructor(config: DHTNodeConfig) {
     this.config = config;
   }
 
-  private async resolveBootstrap(signal: AbortSignal): Promise<DHTPeerEndpoint[]> {
+  private async resolveBootstrap(): Promise<string[]> {
     const lookup: NonNullable<DHTNodeConfig["lookup"]> = this.config.lookup ?? lookupHost;
     const resolved = await Promise.all(this.config.bootstrapNodes.map(async ({ host, port }) => {
       const family = isIP(host);
-      if (family === 4) return [{ host, port }];
+      if (family === 4) return [`${host}:${port}`];
       if (family === 6) return [];
-      if (signal.aborted) return [];
-      let timeout: ReturnType<typeof setTimeout> | undefined;
-      let onAbort = (): void => {};
       try {
-        // Bound DNS as well as DHT startup: a stuck OS resolver must not hold
-        // up startup or prevent subsequent isolation retries indefinitely.
-        const deadline = new Promise<never>((_resolve, reject) => {
-          timeout = setTimeout(() => reject(new Error("Bootstrap DNS lookup timeout")), this.config.operationTimeoutMs);
-          onAbort = () => reject(new Error("Bootstrap DNS lookup cancelled"));
-          signal.addEventListener("abort", onAbort, { once: true });
-        });
-        // k-rpc-socket uses UDP4 but its hostname lookup accepts DNS64's
-        // synthesized IPv6 answers. Resolve here so it only sees IPv4 literals.
-        const answers = await Promise.race([lookup(host, { family: 4, all: true }), deadline]);
+        // k-rpc-socket uses UDP4, but its hostname lookup can return DNS64 IPv6.
+        const answers = await lookup(host, { family: 4, all: true });
         return answers
-          .filter((answer) => answer.family === 4 && isIP(answer.address) === 4)
-          .map((answer) => ({ host: answer.address, port }));
+          .filter(({ address }) => isIP(address) === 4)
+          .map(({ address }) => `${address}:${port}`);
       } catch (err) {
         debugWarn(`[DHTNode] Failed to resolve bootstrap ${host}: ${String(err)}`);
         return [];
-      } finally {
-        clearTimeout(timeout);
-        signal.removeEventListener("abort", onAbort);
       }
     }));
-    const unique = new Map<string, DHTPeerEndpoint>();
-    for (const node of resolved.flat()) {
-      unique.set(`${node.host}:${node.port}`, node);
-    }
-    return [...unique.values()];
-  }
-
-  private scheduleBootstrapRetry(dht: DHT, generation: number, delay: number): void {
-    if (this.dht !== dht || this.generation !== generation) return;
-    this.bootstrapRetryTimer = setTimeout(() => {
-      this.bootstrapRetryTimer = null;
-      void this.retryBootstrap(dht, generation, delay);
-    }, delay);
-    this.bootstrapRetryTimer.unref();
-  }
-
-  private async retryBootstrap(dht: DHT, generation: number, delay: number): Promise<void> {
-    if (this.dht !== dht || this.generation !== generation) return;
-    try {
-      if (this.getNodeCount() === 0) {
-        debugLog(`[DHTNode] Routing table empty; retrying IPv4 bootstrap after ${delay}ms`);
-        const bootstrap = await this.resolveBootstrap(this.bootstrapAbortController!.signal);
-        // stop() or a successful reply may happen while DNS is in flight.
-        if (this.dht !== dht || this.generation !== generation) return;
-        if (this.getNodeCount() === 0) {
-          for (const node of bootstrap) dht.addNode(node);
-        }
-      }
-    } catch (err) {
-      debugWarn(`[DHTNode] Bootstrap retry failed: ${String(err)}`);
-    } finally {
-      // Keep a lightweight health check while connected, without resolving DNS
-      // or sending pings. Reset backoff so an emptied table recovers promptly.
-      const nextDelay = this.getNodeCount() > 0
-        ? BOOTSTRAP_RETRY_INTERVAL_MS
-        : Math.min(delay * 2, BOOTSTRAP_RETRY_MAX_INTERVAL_MS);
-      this.scheduleBootstrapRetry(dht, generation, nextDelay);
-    }
+    return [...new Set(resolved.flat())];
   }
 
   async start(): Promise<void> {
-    const startedAt = Date.now();
-    const generation = ++this.generation;
-    const controller = new AbortController();
-    this.bootstrapAbortController = controller;
-    const bootstrap = await this.resolveBootstrap(controller.signal);
-    if (this.generation !== generation) throw new Error("DHT start cancelled");
+    const bootstrap = await this.resolveBootstrap();
     return new Promise<void>((resolve, reject) => {
-      const dht = new DHT({
-        bootstrap: bootstrap.map((node) => `${node.host}:${node.port}`),
+      this.dht = new DHT({
+        bootstrap,
       });
-      this.dht = dht;
 
       const timeout = setTimeout(() => {
         // Resolve even on timeout — the DHT may still work with partial bootstrap.
         // This prevents hanging when public bootstrap nodes are unreachable.
-        ready();
-      }, Math.max(0, this.config.operationTimeoutMs - (Date.now() - startedAt)));
+        cleanup();
+        this.events.emit("ready");
+        resolve();
+      }, this.config.operationTimeoutMs);
 
       let settled = false;
       const cleanup = (): void => {
         if (settled) return;
         settled = true;
         clearTimeout(timeout);
-        this.cancelStart = null;
-      };
-      this.cancelStart = () => {
-        cleanup();
-        reject(new Error("DHT start cancelled"));
-      };
-      const ready = (): void => {
-        if (settled) return;
-        cleanup();
-        this.events.emit("ready");
-        resolve();
       };
 
-      // Register before listen: ready may fire as soon as the socket binds.
-      // It signals bootstrap completion, not necessarily a nonempty table.
-      dht.once("ready", ready);
-      dht.on("error", (err: Error) => {
+      this.dht.listen(this.config.port, () => {
+        // Socket is bound; now wait for DHT bootstrap to complete.
+        // The 'ready' event fires when the routing table has been populated.
+        this.dht!.on("ready", () => {
+          cleanup();
+          this.events.emit("ready");
+          resolve();
+        });
+      });
+
+      this.dht.on("error", (err: Error) => {
         cleanup();
         reject(err);
-      });
-      dht.listen(this.config.port, () => {
-        this.scheduleBootstrapRetry(dht, generation, BOOTSTRAP_RETRY_INTERVAL_MS);
       });
     });
   }
 
   async stop(): Promise<void> {
-    ++this.generation;
-    this.cancelStart?.();
-    this.bootstrapAbortController?.abort();
-    this.bootstrapAbortController = null;
-    if (this.bootstrapRetryTimer) {
-      clearTimeout(this.bootstrapRetryTimer);
-      this.bootstrapRetryTimer = null;
-    }
-    const dht = this.dht;
-    this.dht = null;
-    if (dht) await new Promise<void>((resolve) => dht.destroy(resolve));
+    return new Promise<void>((resolve) => {
+      if (!this.dht) {
+        resolve();
+        return;
+      }
+      this.dht.destroy(() => {
+        this.dht = null;
+        resolve();
+      });
+    });
   }
 
   async announce(infoHash: Buffer, port: number): Promise<void> {

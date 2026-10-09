@@ -22,7 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
-- Node, desktop and CLI: fixed DHT bootstrap on DNS64/NAT64 networks (including some ISPs and mobile carriers), where synthesized IPv6 DNS answers could leave buyers unable to join and showing "Network unreachable". Bootstrap now explicitly resolves IPv4 addresses and retries while the routing table is empty. This requires working IPv4 UDP connectivity; it does not add IPv6-only transport support.
+- Node, desktop and CLI: fixed DHT bootstrap on DNS64/NAT64 networks (including some ISPs and mobile carriers), where synthesized IPv6 DNS answers could leave buyers unable to join and showing "Network unreachable". Bootstrap now explicitly resolves IPv4 addresses. This requires working IPv4 UDP connectivity; it does not add IPv6-only transport support.
 
 - ANTS dashboard: Stake rewards and Claim no longer fail with "Position N is not owned by this wallet" when the indexer still lists a position NFT that was transferred to another wallet; such positions are skipped (`@antseed/node` `previewPoolRewards` now treats `includeIds` as hints). Restaking an explicitly selected position the wallet does not own still fails.
 - ANTS dashboard: the position menu disables Enable max lock and Move allocation when the action cannot take effect (for example, an expired lock) and shows why, instead of opening a form that cannot be submitted. The expired-lock message now says to withdraw and stake again.
