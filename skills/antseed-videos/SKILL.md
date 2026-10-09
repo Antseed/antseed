@@ -1,158 +1,68 @@
 ---
 name: antseed-videos
-description: Generate videos from text prompts or images through the user's local Antseed buyer proxy. Use when the user asks to create, generate, or make a video or animation with Antseed, with or without a specific video model.
+description: Directs video creation through the user's local Antseed buyer proxy in three approved stages — idea and model, prompts plus first and last frames, then settings and price — with prompts tuned to the chosen model and frames made with a strong image model. Uses plain curl and jq. Use when the user asks Antseed to create, generate, animate, or make a video, or supplies start or end images for one.
 ---
 
 # Antseed Videos
 
-Generate a video through the user's local Antseed buyer proxy using network-wide model discovery and automatic peer routing. Video jobs are asynchronous: queue the job, poll until the finished MP4 arrives, then save it.
+Act as the user's video director. Do not rush to generate: shape the idea, pick a strong model, make and approve the frames, and only then pay for the video. A short request such as "make a surf video with ants" starts Stage 1, not a render.
 
 ## Prerequisites
 
-- Antseed Desktop or `antseed buyer start` must be running.
-- The buyer must have enough deposited USDC for the video's price. The buyer pays once, when the finished MP4 is delivered, and refuses videos priced above $5.00.
-- The default buyer endpoint is `http://127.0.0.1:8377`. Use a different port only when the user provides one.
+- Antseed Desktop or `antseed buyer start` is running. Buyer URL: `$ANTSEED_PROXY_URL` when set, otherwise `http://127.0.0.1:8377`.
+- The buyer has deposited USDC. Deposits can be funded by card where available, an exchange withdrawal, or another wallet. The buyer refuses any single video above $5.00.
+- `curl` and `jq`. Frames are made with the `antseed-images` skill.
 
-## Parameters
+The exact commands are in [references/requests.md](references/requests.md). Model choices and prompt styles are in [references/prompting.md](references/prompting.md).
 
-- `model` — video model id or alias; optional only when the user has not chosen a model yet
-- `prompt` — the user's video description
-- `duration` — length in seconds; required (see below)
-- `resolution` — required when the model advertises more than one
-- `aspect_ratio` — required when the model advertises aspect ratios (see below)
-- `image` — optional path or HTTPS URL of a starting frame, for image-to-video models
-- `output` — optional destination path; default `generated-video.mp4`
-- `proxy_url` — optional buyer URL; default `http://127.0.0.1:8377`
+## The three stages
 
-## Discover the Video Model
+End every stage with a question and wait for the answer. Never start the next stage, and never spend money, before the user approves the current one. Skip a step only when the user already answered it in this chat. If the user says "you decide", fill in your recommendations, but still show the frames and still ask before the paid video.
 
-Always fetch the current video catalog before generating:
+### Stage 1 — Idea and model
 
-```bash
-proxy_url="${proxy_url:-http://127.0.0.1:8377}"
-curl --fail-with-body \
-  -H 'authorization: Bearer antseed-desktop' \
-  "$proxy_url/v1/models?type=videos"
-```
+1. Fetch the video catalog (`/v1/models?type=videos`).
+2. Give a short, honest take on the idea: what will work on screen, what is missing, and one or two ways to make it stronger. Offer an improved one-paragraph version of the idea.
+3. Recommend one video model that takes a first frame (and a last frame when possible) and say why, following [references/prompting.md](references/prompting.md#choosing-models). List three to five alternatives from the catalog, one line each, using only what the catalog shows.
+4. Ask: "Does this version of the idea work for you? Shall I use **<model>**, or another one from the list?"
 
-The endpoint is answered locally and returns network-wide video models. If `model` was provided, match it case-insensitively against each entry's `id` and `aliases`, then use the matched entry's bare `id`. Several fal models share short aliases such as `text-to-video`, so prefer an exact `id` match and ask the user when an alias matches more than one model. If no model was provided, pick an obvious match for the request (text-to-video when there is no image, image-to-video when there is one) or ask the user when the choice is material.
+### Stage 2 — Prompts and frames
 
-Then fetch the selected model's offers:
+This stage has two approvals, because frames cost money.
 
-```bash
-curl --fail-with-body \
-  -H 'authorization: Bearer antseed-desktop' \
-  "$proxy_url/v1/models/$(jq -rn --arg id "$model" '$id|@uri')"
-```
+**2a. Prompts (free).**
 
-Each entry in `peers` has:
+1. Fetch the chosen model's offers (`/v1/models/<id>`) to see its frame inputs, durations, resolutions, and aspect ratios.
+2. Write the video prompt in the style the chosen model responds to best ([references/prompting.md](references/prompting.md)).
+3. Write the first-frame prompt, and a last-frame prompt when the model takes `last_frame`. Both share one style phrase so the look stays consistent.
+4. Propose the aspect ratio. The frames decide the video's shape, so it is fixed here.
+5. Recommend a strong image model for the frames from the image catalog (`/v1/models?type=images`), with its price per image. Never pick a weak or unknown image model on your own.
+6. Paste the video prompt and every frame prompt in full. Ask: "Change anything? Shall I make the frames with **<image model>** at <ratio> for about $<cost>?"
 
-- `protocol` — `venice-video` or `fal-video`; it decides the request format below
-- `capabilities.video` — `durationsSeconds`, `resolutions`, `aspectRatios`, `inputs` (`first_frame`, `last_frame`, `reference_image`, …), `requiredInputs`, and `audio`. A missing field means unknown, not unsupported.
-- `unitBillingModels.<protocol>.components` — the price
+**2b. Frames (paid).**
 
-Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. A bare model id lets the buyer proxy apply its Price + Trust preferences and fail over between eligible sellers.
+1. Generate each frame with the `antseed-images` skill and the approved image model. Check the saved frame's shape; if it does not match the agreed ratio, tell the user and either redo it or use the frame's ratio.
+2. Show each saved frame (in Antseed Desktop, call `show_media`).
+3. Ask: "Is the first frame right, or should I redo it? And the last frame?" Redo a frame, with an adjusted prompt if needed, until the user approves.
 
-## Choose Options and Check the Price
+If the user uploads frames, skip making them: get their paths (in Antseed Desktop, `get_chat_image_path`), show them, and confirm which is first and which is last. Use a text-to-video model (catalog with `frames=no`) only when the user asks to skip frames; say that the look may drift.
 
-- **Duration**: always send one. Pick a value from `durationsSeconds`; use the user's value when it is listed, otherwise the closest listed value, and tell the user. Never send `auto`: per-second pricing needs an explicit duration, and the buyer rejects the request without one.
-- **Resolution**: when `resolutions` is advertised, send one of them exactly as written (case matters, for example `768P`). Sellers price by resolution, and a request that matches no price component is refused. Default to the lowest resolution unless the user asked for more.
-- **Aspect ratio**: when `aspectRatios` is advertised, always send one; some upstreams reject the request without it. Use the user's value when it is listed, otherwise `16:9` when listed, otherwise the first listed value.
-- **Image input**: for a model whose `requiredInputs` contains `first_frame`, an image is required; for a text-only model (`inputs: []`), do not send one.
+### Stage 3 — Recap, settings, and go
 
-Compute the price before queueing. Add every component whose `match` is absent or equals the request's values (`resolution`, `model`):
+1. Recap in one message: the first frame, the last frame, and the final video prompt in full.
+2. Ask for duration and resolution, showing only the values the model advertises. Recommend the highest resolution that keeps the price reasonable. Confirm the aspect ratio from Stage 2.
+3. Compute the price for each compatible seller ([references/requests.md](references/requests.md#price)).
+4. Ask: "<model>, <duration> s, <resolution>, <ratio>: $<price>. Go?"
 
-- `video_generations`: `priceUsd` once per video
-- `video_seconds`: `priceUsd` × duration in seconds
+### Generate
 
-If offers differ in price, quote the cheapest. If the price is above $5.00, pick a shorter duration or lower resolution, because the buyer refuses it. Tell the user the price and get confirmation before queueing anything above $1.00 unless they already set a budget.
+After "go", queue the video once, save the job file, wait, and save the MP4 ([references/requests.md](references/requests.md)). Show the finished video (in Antseed Desktop, call `show_media`) and report the path, model, duration, resolution, and price.
 
-## Queue the Job
+## Rules
 
-Build the body with `jq`; do not interpolate an unescaped prompt into JSON.
-
-**`venice-video`** — duration as a string with an `s` suffix:
-
-```bash
-queue_file="$(mktemp)"
-curl --fail-with-body "$proxy_url/api/v1/video/queue" \
-  -H 'content-type: application/json' \
-  -H 'authorization: Bearer antseed-desktop' \
-  --data-binary "$(jq -n \
-    --arg model "$model" --arg prompt "$prompt" \
-    --arg duration "${duration}s" --arg resolution "$resolution" \
-    --arg aspect_ratio "$aspect_ratio" \
-    '{model: $model, prompt: $prompt, duration: $duration}
-     + (if $resolution != "" then {resolution: $resolution} else {} end)
-     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)')" \
-  --output "$queue_file"
-job_id="$(jq -r '.queue_id // empty' "$queue_file")"
-```
-
-For image-to-video, add `image_url` (a public HTTPS URL, or a `data:` URL built from a local file).
-
-**`fal-video`** — the body is the fal model's own input plus `model`. Send `duration` in the form that model's fal input schema uses (many take a string such as `"5"`, some an integer); add `resolution` and `aspect_ratio` when advertised. Image fields are model-specific (`image_url`, `start_image_url`, `end_image_url`); check the model's fal API page when unsure.
-
-```bash
-curl --fail-with-body "$proxy_url/fal/v1/video/queue" \
-  -H 'content-type: application/json' \
-  -H 'authorization: Bearer antseed-desktop' \
-  --data-binary "$(jq -n \
-    --arg model "$model" --arg prompt "$prompt" --arg duration "$duration" \
-    --arg resolution "$resolution" --arg aspect_ratio "$aspect_ratio" \
-    '{model: $model, prompt: $prompt, duration: $duration}
-     + (if $resolution != "" then {resolution: $resolution} else {} end)
-     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)')" \
-  --output "$queue_file"
-job_id="$(jq -r '.request_id // empty' "$queue_file")"
-```
-
-A missing job id means the queue failed: read the error from the response (see Errors) instead of retrying blindly. Queue each video once. Re-sending the create starts and pays for a second video.
-
-## Poll and Save
-
-Poll the retrieve endpoint with the same `model` and the job id. The buyer routes it back to the seller that accepted the job. While the job runs, the response is JSON; when it finishes, the response is `video/mp4`. Polling and downloading are free.
-
-```bash
-output="${output:-generated-video.mp4}"
-case "$protocol" in
-  venice-video) retrieve_path=/api/v1/video/retrieve; id_field=queue_id ;;
-  fal-video)    retrieve_path=/fal/v1/video/retrieve; id_field=request_id ;;
-esac
-body="$(jq -n --arg model "$model" --arg id "$job_id" --arg f "$id_field" '{model: $model} + {($f): $id}')"
-part="$(mktemp)"
-for _ in $(seq 1 120); do
-  type="$(curl -s "$proxy_url$retrieve_path" \
-    -H 'content-type: application/json' \
-    -H 'authorization: Bearer antseed-desktop' \
-    --data-binary "$body" \
-    -o "$part" -w '%{content_type}')"
-  case "$type" in
-    video/mp4*) mv "$part" "$output"; break ;;
-  esac
-  status="$(jq -r '.status // empty' "$part" 2>/dev/null)"
-  case "$status" in FAILED|ERROR|CANCELLED) break ;; esac
-  sleep 10
-done
-```
-
-Stop on `FAILED`, `ERROR`, or `CANCELLED`: the job ended and is not charged. Videos commonly take 1 to 10 minutes. If the loop ends without a video, report the last status and the job id so the user can retry the retrieve later; do not queue a new job.
-
-## Safety and Output Rules
-
-- Never print or paste video bytes, base64 image data, download URLs, authorization headers, private keys, or full API responses into chat or logs.
-- Do not expose the local buyer proxy beyond loopback.
-- Generate one video per request unless the user explicitly asks for more, and state the total price first.
-- Do not guess optional parameters; send only values the model advertises or the user supplies.
-- After saving, tell the user the file path, model id, duration, resolution, and price. Show the video when the agent environment supports it.
-
-## Errors
-
-- HTTP `402` with `insufficient_deposits` or a credits message: the buyer needs more deposited USDC.
-- HTTP `402` with `one_off_channel_required`: the buyer opened the video's payment channel but retried before the seller registered it. Buyers before `@antseed/cli@0.1.171` hit this; update the buyer. Each failed attempt leaves a funded channel that `antseed buyer channels request-close <channelId>` releases.
-- Price above $5.00 or "above the configured limit": choose a shorter duration or lower resolution.
-- "Explicit video duration is required" or "No billing component matched": send a listed `duration`, and a listed `resolution` when the model advertises any.
-- HTTP `400` with `antseed_fault: "peer"` on queue: the upstream rejected the options. Check that `duration`, `resolution` and `aspect_ratio` are all advertised values, and that a required image input is present. A rejected queue is not charged.
-- `model_not_found` ("No policy-allowed peer currently serves model"): refresh `/v1/models?type=videos`, resolve the id again, and retry once after a few seconds; routing can briefly exclude a seller right after a failed request.
-- HTTP `502`: no policy-allowed serving peer accepted the job.
-- Connection refused: start Antseed Desktop or `antseed buyer start`.
+- **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered, so a failed or rejected create costs nothing, but a repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
+- Status checks and downloads use the saved job id and never create jobs.
+- Send only values the seller advertises. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
+- Always send the create to the chosen seller, as `<peerId>@<model>` (the cheapest compatible seller from the price step).
+- After a failed create or job, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first. Before an approved retry, rename `<name>.job.json` to `<name>.failed.job.json`.
+- Never print base64 media, signed URLs, authorization headers, private keys, or full API responses. Keep the buyer proxy on loopback.

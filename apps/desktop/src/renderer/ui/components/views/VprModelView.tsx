@@ -44,6 +44,22 @@ function priceRange(min: number | null, max: number | null): string {
   return formatUsdShort(min);
 }
 
+/** Video price tile: per-second when advertised, else per video. */
+function videoPriceTile(entry: {
+  minVideoUsdPerSecond: number | null;
+  maxVideoUsdPerSecond: number | null;
+  minVideoUsdPerVideo: number | null;
+  maxVideoUsdPerVideo: number | null;
+}): { label: string; value: string } {
+  if (entry.minVideoUsdPerSecond !== null) {
+    return { label: 'Price · /sec', value: priceRange(entry.minVideoUsdPerSecond, entry.maxVideoUsdPerSecond) };
+  }
+  if (entry.minVideoUsdPerVideo !== null) {
+    return { label: 'Price · /video', value: priceRange(entry.minVideoUsdPerVideo, entry.maxVideoUsdPerVideo) };
+  }
+  return { label: 'Price', value: '-' };
+}
+
 function priceTile(entry: { minInputUsdPerMillion: number | null; maxInputUsdPerMillion: number | null }): string {
   const min = entry.minInputUsdPerMillion;
   const max = entry.maxInputUsdPerMillion;
@@ -114,11 +130,22 @@ export function VprModelView({ onSelectView }: Props) {
 
   const favorite = favorites.has(favoriteModelKey(model.provider, model.serviceId));
   const imageOnly = entry.kind === 'image';
-  const priceValue = !displayEntry ? '-' : imageOnly
-    ? priceRange(displayEntry.minImageUsdPerImage, displayEntry.maxImageUsdPerImage)
-    : priceTile(displayEntry);
+  const videoOnly = entry.kind === 'video';
+  const videoPrice = videoOnly && displayEntry ? videoPriceTile(displayEntry) : null;
+  const priceValue = !displayEntry ? '-' : videoPrice
+    ? videoPrice.value
+    : imageOnly
+      ? priceRange(displayEntry.minImageUsdPerImage, displayEntry.maxImageUsdPerImage)
+      : priceTile(displayEntry);
+  const priceLabel = videoOnly
+    ? (videoPrice?.label ?? 'Price')
+    : imageOnly
+      ? 'Price · /image'
+      : priceValue === 'Free' || priceValue === '-' ? 'Price' : 'Price · /m tok';
   const modelTags = modelTagsFor(entry.serviceId);
-  const displayedModelTags = imageOnly ? ['Image generation', ...modelTags] : modelTags;
+  const displayedModelTags = imageOnly
+    ? ['Image generation', ...modelTags]
+    : videoOnly ? ['Video generation', ...modelTags] : modelTags;
 
   const viewedModel = model;
   /** Make the browsed text model (and its previewed pin) the active route. */
@@ -177,6 +204,23 @@ export function VprModelView({ onSelectView }: Props) {
               >
                 <HugeiconsIcon icon={StarIcon} size={20} strokeWidth={1.8} />
               </button>
+              {videoOnly ? (
+                <InfoTooltip
+                  content={(
+                    <span>
+                      Video models can't be selected in chat yet. To make a video, start a chat with a text model
+                      and ask it to make one. It will guide you through the model, frames, settings, and price.
+                    </span>
+                  )}
+                >
+                  {/* Disabled buttons fire no hover events — the wrapper is the trigger. */}
+                  <span className={styles.useDisabledTrigger} tabIndex={0} aria-label="Use in chat (unavailable for video models)">
+                    <button type="button" className={styles.use} disabled>
+                      Use in chat
+                    </button>
+                  </span>
+                </InfoTooltip>
+              ) : (
               <button
                 type="button"
                 className={styles.use}
@@ -192,8 +236,9 @@ export function VprModelView({ onSelectView }: Props) {
               >
                 {imageOnly ? 'Use in chat' : 'Use'}
               </button>
+              )}
             </div>
-            {imageOnly ? (
+            {videoOnly ? null : imageOnly ? (
               <button
                 type="button"
                 className={styles.startChat}
@@ -229,9 +274,7 @@ export function VprModelView({ onSelectView }: Props) {
         )}
         <VprStatRow>
           <VprStatTile
-            label={imageOnly
-              ? 'Price · /image'
-              : priceValue === 'Free' || priceValue === '-' ? 'Price' : 'Price · /m tok'}
+            label={priceLabel}
             value={priceValue}
             tone={priceValue === '-' ? undefined : 'success'}
             outlined

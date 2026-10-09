@@ -31,7 +31,7 @@ const RECOMMENDED_MODEL_LINEUP: ReadonlyArray<{ pattern: RegExp; exact: string }
 ];
 
 export function isFreeCatalogEntry(entry: VprModelCatalogEntry): boolean {
-  if (entry.kind === 'image') return false;
+  if (entry.kind !== 'text') return false;
   const {
     minInputUsdPerMillion: input,
     minOutputUsdPerMillion: output,
@@ -78,7 +78,7 @@ export function selectRecommendedVprCatalog(catalog: VprModelCatalogEntry[]): Vp
     // Judged per route via hasEligibleFreeSeller, not via entry-minimum
     // prices: another seller's nonzero cached price must not hide a model
     // whose trusted seller genuinely offers it for free.
-    if (entry.kind !== 'image' && entry.hasEligibleFreeSeller) pick(entry);
+    if (entry.kind === 'text' && entry.hasEligibleFreeSeller) pick(entry);
   }
   return picked;
 }

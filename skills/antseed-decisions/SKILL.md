@@ -25,14 +25,14 @@ Ask several questions in one call; they are evaluated in parallel against the sa
 
 - Antseed Desktop or `antseed buyer start` must be running on CLI 0.1.161 or later.
 - The buyer must have enough deposited USDC for an eligible seller serving the model.
-- The default buyer endpoint is `http://127.0.0.1:8377`. Use a different port only when the user provides one.
+- Buyer endpoint: use `$ANTSEED_PROXY_URL` when it is set (Antseed Desktop and `pnpm sandbox` set it to the active buyer proxy); otherwise `http://127.0.0.1:8377`. Never hard-code a port in commands; always go through `$proxy_url`.
 
 ## Parameters
 
 - `model` — decision model id or alias; optional when the user has not chosen one
 - `state` — the content to evaluate: a string, or a JSON object or array for structured data such as a chat log or a record
 - `questions` — a JSON object keyed by question id; each entry is one of the three primitives below
-- `proxy_url` — optional buyer URL; default `http://127.0.0.1:8377`
+- `proxy_url` — optional buyer URL; default `$ANTSEED_PROXY_URL`, then `http://127.0.0.1:8377`
 
 ### Question primitives
 
@@ -47,7 +47,7 @@ Every question has `type` and `instructions`. Write instructions as a plain ques
 Always fetch the current decision catalog before sending:
 
 ```bash
-proxy_url="${proxy_url:-http://127.0.0.1:8377}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 curl --fail-with-body \
   -H 'authorization: Bearer antseed-desktop' \
   "$proxy_url/v1/models?type=decisions"
@@ -62,7 +62,7 @@ Do not construct `<peer_id>@<service_id>` and do not send `x-antseed-pin-peer`. 
 Send the request to `<proxy_url>/v1/systemone`. Build the JSON with `jq` or another encoder; do not interpolate unescaped user content into JSON.
 
 ```bash
-proxy_url="${proxy_url:-http://127.0.0.1:8377}"
+proxy_url="${proxy_url:-${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}}"
 response_file="$(mktemp)"
 trap 'rm -f "$response_file"' EXIT
 
@@ -122,7 +122,7 @@ Read `answers[<id>]` by the question id you sent. Treat `probabilities` and `con
 The official TypeSafe Python and JavaScript clients work unchanged against the buyer proxy. Point them at it and the proxy handles discovery, routing, and payment:
 
 ```bash
-export TYPESAFE_BASE_URL=http://127.0.0.1:8377
+export TYPESAFE_BASE_URL="${ANTSEED_PROXY_URL:-http://127.0.0.1:8377}"
 export TYPESAFE_API_KEY=antseed-desktop
 ```
 
