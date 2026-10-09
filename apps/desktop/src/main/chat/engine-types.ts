@@ -53,11 +53,12 @@ export type ChatStreamErrorPayload = {
   stopReason: ChatStreamStopReason;
 };
 
-/** A streaming run currently in flight for one conversation. */
+/**
+ * A streaming run currently in flight for one conversation. `session` is the
+ * conversation's long-lived cached session; clearing the run never disposes it.
+ */
 export type ActiveRun = {
   conversationId: string;
   session: AgentSession;
   unsubscribe: () => void;
-  /** Called before the session is aborted, e.g. to stop waiting on recovery. */
-  onAbort?: () => void;
 };

@@ -898,6 +898,12 @@ app.on('before-quit', (event) => {
   // downstream of anything that can block.
   restoreOsSystemProxySync();
 
+  try {
+    piChatEngine.dispose();
+  } catch {
+    // Chat session teardown must never block quitting.
+  }
+
   // Briefly flush the final close event and clear the local crash marker before
   // exit, otherwise delivery is lost or the next launch reports a false crash.
   const telemetryShutdown = recordTelemetryCleanShutdown();

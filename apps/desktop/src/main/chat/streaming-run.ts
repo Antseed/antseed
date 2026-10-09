@@ -9,7 +9,7 @@
  */
 import { randomUUID } from 'node:crypto';
 import { existsSync } from 'node:fs';
-import type { AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
+import type { AgentSession, AgentSessionEvent, ExtensionAPI } from '@mariozechner/pi-coding-agent';
 import {
   AuthStorage,
   createAgentSession,
@@ -20,7 +20,6 @@ import {
 import type { AssistantMessage, AssistantMessageEvent, Message } from '@mariozechner/pi-ai';
 import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.js';
 import { webFetchTool } from './web-fetch.js';
-import { OverflowRecoveryTracker } from './overflow-recovery.js';
 import {
   createChatImagePathTool,
   createShowMediaTool,
@@ -57,6 +56,12 @@ import { getCurrentChatWorkspaceDir } from './workspace.js';
 import { PROXY_PROVIDER_ID } from './provider-hint.js';
 import { normalizePeerId, normalizeServiceId } from './normalize.js';
 import { asErrorMessage } from '../utils.js';
+import {
+  ChatSessionCache,
+  TurnSettleWaiter,
+  waitForPiSessionIdle,
+  type SessionFingerprint,
+} from './session-cache.js';
 import type { ChatServiceCatalogEntry, ChatServiceProtocol } from './service-catalog.js';
 import {
   convertAssistantMessageForUi,
@@ -107,6 +112,7 @@ import type { ActiveRun, ChatStreamErrorPayload } from './engine-types.js';
 export type StreamingRunContext = {
   store: PiConversationStore;
   activeRunsByConversation: Map<string, ActiveRun>;
+  sessionCache: ChatSessionCache;
   cachedPaymentRequired: Map<string, Record<string, unknown>>;
   preferredPeerByConversationId: Map<string, string>;
   configPath: string;
@@ -148,6 +154,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
   const {
     store,
     activeRunsByConversation,
+    sessionCache,
     cachedPaymentRequired,
     preferredPeerByConversationId,
     configPath,
@@ -170,6 +177,20 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     recordChatRequestStarted,
     recordChatRequestFinished,
   } = ctx;
+
+  // Serializes session acquisition per conversation so concurrent sends never
+  // build two sessions over the same live SessionManager.
+  const conversationLocks = new Map<string, Promise<unknown>>();
+  const withConversationLock = async <T>(conversationId: string, task: () => Promise<T>): Promise<T> => {
+    const previous = conversationLocks.get(conversationId) ?? Promise.resolve();
+    const current = previous.catch(() => {}).then(task);
+    conversationLocks.set(conversationId, current);
+    try {
+      return await current;
+    } finally {
+      if (conversationLocks.get(conversationId) === current) conversationLocks.delete(conversationId);
+    }
+  };
 
   const runStreamingPrompt = async (
     conversationId: string,
@@ -322,9 +343,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       conversationId,
     );
 
-    const authStorage = AuthStorage.inMemory();
-    authStorage.setRuntimeApiKey(PROXY_PROVIDER_ID, PROXY_RUNTIME_API_KEY);
-    const modelRegistry = ModelRegistry.inMemory(authStorage);
+    const skillPaths = resolveBundledChatSkillPaths();
 
     // Pass the system prompt via resourceLoader so it is applied on every turn.
     // (agent-session rebuilds _baseSystemPrompt from the loader each turn, so a
@@ -341,94 +360,149 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         + `Using current workspace instead: ${chatWorkspaceDir}`,
       );
     }
-    const settingsManager = SettingsManager.create(chatWorkspaceDir, CHAT_AGENT_DIR);
-    const toolApprovalExtension = (pi: ExtensionAPI) => {
-      pi.on('tool_call', async (event) => {
-        if (!requiresToolApproval(permissionMode, event.toolName)) {
-          return undefined;
-        }
-        const input = event.input && typeof event.input === 'object'
-          ? event.input as Record<string, unknown>
-          : {};
-        const description = describeToolApproval(event.toolName, input, preferredPeerId);
-        if (isToolPermissionAutoAllowed(description.permissionKey)) {
-          return undefined;
-        }
-        if (await isToolAllowedForPeer(preferredPeerId, description.permissionKey)) {
-          return undefined;
-        }
-
-        const peerName = preferredPeerId
-          ? getServiceCatalogEntries().find((entry) => entry.peerId === preferredPeerId)?.peerLabel ?? null
-          : null;
-        const decision = await requestToolApproval({
-          id: randomUUID(),
-          conversationId,
-          toolCallId: event.toolCallId,
-          toolName: event.toolName,
-          input,
-          workspacePath: chatWorkspaceDir,
-          peerId: preferredPeerId,
-          peerName,
-          ...description,
-        });
-
-        if (decision === 'always_allow_peer') {
-          try {
-            await allowToolForPeer(preferredPeerId, description.permissionKey);
-          } catch (error) {
-            appendSystemLog(`Failed to save peer-scoped tool approval rule: ${asErrorMessage(error)}`);
-          }
-          return undefined;
-        }
-        if (decision === 'allow_once') {
-          return undefined;
-        }
-        return {
-          block: true,
-          reason: 'Tool execution was denied by the user.',
-        };
-      });
+    const fingerprint: SessionFingerprint = {
+      serviceId,
+      peerId: preferredPeerId,
+      routeMode,
+      protocol,
+      supportsMultimodal,
+      proxyPort,
+      permissionMode,
+      workspaceDir: chatWorkspaceDir,
+      userSystemPrompt: userSystemPrompt ?? '',
+      skillPaths,
     };
 
-    const resourceLoader = new DefaultResourceLoader({
-      cwd: chatWorkspaceDir,
-      agentDir: CHAT_AGENT_DIR,
-      settingsManager,
-      additionalSkillPaths: resolveBundledChatSkillPaths(),
-      extensionFactories: [toolApprovalExtension],
-      systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
-    });
-    await resourceLoader.reload();
+    const buildConversationSession = async (): Promise<AgentSession> => {
+      const authStorage = AuthStorage.inMemory();
+      authStorage.setRuntimeApiKey(PROXY_PROVIDER_ID, PROXY_RUNTIME_API_KEY);
+      const modelRegistry = ModelRegistry.inMemory(authStorage);
 
-    const { session } = await createAgentSession({
-      cwd: chatWorkspaceDir,
-      agentDir: CHAT_AGENT_DIR,
-      sessionManager,
-      authStorage,
-      modelRegistry,
-      model: proxyModel,
-      customTools: [
-        webFetchTool,
-        createBrowserPreviewTool(sendToRenderer),
-        createStartDevServerTool(sendToRenderer),
-        createShowMediaTool(conversationId, chatWorkspaceDir),
-        createChatImagePathTool(conversationId),
-      ],
-      resourceLoader,
-    });
+      const settingsManager = SettingsManager.create(chatWorkspaceDir, CHAT_AGENT_DIR);
+      const toolApprovalExtension = (pi: ExtensionAPI) => {
+        pi.on('tool_call', async (event) => {
+          if (!requiresToolApproval(permissionMode, event.toolName)) {
+            return undefined;
+          }
+          const input = event.input && typeof event.input === 'object'
+            ? event.input as Record<string, unknown>
+            : {};
+          const description = describeToolApproval(event.toolName, input, preferredPeerId);
+          if (isToolPermissionAutoAllowed(description.permissionKey)) {
+            return undefined;
+          }
+          if (await isToolAllowedForPeer(preferredPeerId, description.permissionKey)) {
+            return undefined;
+          }
 
-    // Activate all tools. Pi defaults to only [read, bash, edit, write] —
-    // without this, other tools are missing from the API tool list, causing
-    // the model to emit raw XML tool calls instead of structured tool_use.
-    session.setActiveToolsByName([
-      'read', 'bash', 'edit', 'write', 'grep', 'find', 'ls',
-      'web_fetch', 'open_browser_preview', 'start_dev_server',
-      SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME,
-    ]);
+          const peerName = preferredPeerId
+            ? getServiceCatalogEntries().find((entry) => entry.peerId === preferredPeerId)?.peerLabel ?? null
+            : null;
+          const decision = await requestToolApproval({
+            id: randomUUID(),
+            conversationId,
+            toolCallId: event.toolCallId,
+            toolName: event.toolName,
+            input,
+            workspacePath: chatWorkspaceDir,
+            peerId: preferredPeerId,
+            peerName,
+            ...description,
+          });
 
-    await session.setModel(proxyModel);
-    session.agent.sessionId = conversationId;
+          if (decision === 'always_allow_peer') {
+            try {
+              await allowToolForPeer(preferredPeerId, description.permissionKey);
+            } catch (error) {
+              appendSystemLog(`Failed to save peer-scoped tool approval rule: ${asErrorMessage(error)}`);
+            }
+            return undefined;
+          }
+          if (decision === 'allow_once') {
+            return undefined;
+          }
+          return {
+            block: true,
+            reason: 'Tool execution was denied by the user.',
+          };
+        });
+      };
+
+      const resourceLoader = new DefaultResourceLoader({
+        cwd: chatWorkspaceDir,
+        agentDir: CHAT_AGENT_DIR,
+        settingsManager,
+        additionalSkillPaths: skillPaths,
+        extensionFactories: [toolApprovalExtension],
+        systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
+      });
+      await resourceLoader.reload();
+
+      const { session: newSession } = await createAgentSession({
+        cwd: chatWorkspaceDir,
+        agentDir: CHAT_AGENT_DIR,
+        sessionManager,
+        authStorage,
+        modelRegistry,
+        model: proxyModel,
+        customTools: [
+          webFetchTool,
+          createBrowserPreviewTool(sendToRenderer),
+          createStartDevServerTool(sendToRenderer),
+          createShowMediaTool(conversationId, chatWorkspaceDir),
+          createChatImagePathTool(conversationId),
+        ],
+        resourceLoader,
+      });
+
+      // Activate all tools. Pi defaults to only [read, bash, edit, write] —
+      // without this, other tools are missing from the API tool list, causing
+      // the model to emit raw XML tool calls instead of structured tool_use.
+      newSession.setActiveToolsByName([
+        'read', 'bash', 'edit', 'write', 'grep', 'find', 'ls',
+        'web_fetch', 'open_browser_preview', 'start_dev_server',
+        SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME,
+      ]);
+
+      await newSession.setModel(proxyModel);
+      newSession.agent.sessionId = conversationId;
+      return newSession;
+    };
+
+    // Long-lived session: reuse the cached AgentSession while everything
+    // baked in at creation (the fingerprint) is unchanged; otherwise dispose
+    // and rebuild, exactly as the per-message construction used to.
+    const acquireSession = async (): Promise<AgentSession> => {
+      // A send that raced past the early abort check above must not share
+      // the session with a still-running turn: the later send wins, as before.
+      const racingRun = activeRunsByConversation.get(conversationId);
+      if (racingRun) await abortAndClearActiveRun(racingRun);
+      const cached = sessionCache.getReusable(conversationId, fingerprint);
+      if (cached?.pendingDrain) await cached.pendingDrain;
+      // Let background work from the previous turn (e.g. threshold
+      // compaction) finish before the next prompt, as Pi interactive mode does.
+      if (cached && await waitForPiSessionIdle(cached.session)) {
+        // Re-read settings, skills and context files and rebuild the system
+        // prompt (incl. date) per send, as the per-message sessions did.
+        await cached.session.resourceLoader.reload();
+        cached.session.setActiveToolsByName(cached.session.getActiveToolNames());
+        // Same per-send model write as the per-message sessions made, so the
+        // session file keeps the same model_change entries.
+        await cached.session.setModel(proxyModel);
+        return cached.session;
+      }
+      const stale = sessionCache.peek(conversationId)?.session;
+      if (stale) {
+        stale.abortCompaction();
+        await stale.abort().catch(() => {});
+      }
+      sessionCache.disposeConversation(conversationId);
+      const created = await buildConversationSession();
+      sessionCache.set(conversationId, created, fingerprint);
+      store.attachLiveSessionManager(conversationId, created.sessionManager);
+      return created;
+    };
+    const session = await withConversationLock(conversationId, acquireSession);
 
     const firstUserMessageText = getMessageText(session.messages.find((message) => message.role === 'user')) || trimmedMessage;
     const shouldGenerateConversationTitle = shouldGenerateConversationTitleForSession(
@@ -498,20 +572,26 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
     };
 
-    const overflowRecovery = new OverflowRecoveryTracker(
-      proxyModel.contextWindow,
-      settingsManager.getCompactionSettings().enabled,
+    // Created before prompt() so it sees every event of this turn; it keeps
+    // the turn open through Pi's post-prompt() overflow recovery / retries.
+    let run: ActiveRun | null = null;
+    const turnSettle = new TurnSettleWaiter(
+      session,
+      () => run !== null && activeRunsByConversation.get(conversationId) !== run,
     );
-
-    // Session events may be queued behind async extension hooks. Detect the
-    // overflow on the agent immediately so prompt() cannot overtake the wait.
-    const unsubscribeAgent = session.agent.subscribe((event) => {
-      if (event.type === 'message_end') overflowRecovery.observe(event);
-    });
+    let overflowContinuationScheduled = false;
+    let overflowRetryRunning = false;
     const unsubscribe = session.subscribe((event: AgentSessionEvent) => {
-      const overflowTransition = overflowRecovery.observe(event, session.isRetrying);
-      if (overflowTransition === 'retry_scheduled') automaticRetryAttempted = true;
-      if (overflowTransition === 'retry_started') {
+      if (event.type === 'compaction_end' && event.reason === 'overflow' && event.willRetry) {
+        automaticRetryAttempted = true;
+        overflowContinuationScheduled = true;
+      }
+      if (event.type === 'agent_start' && (overflowContinuationScheduled || overflowRetryRunning)) {
+        // Once overflow recovery has started, every run Pi starts for this
+        // turn (the continuation and any auto-retry after it) supersedes the
+        // previous error.
+        overflowContinuationScheduled = false;
+        overflowRetryRunning = true;
         // Only clear the previous error once Pi actually starts the retry.
         terminalStreamError = null;
         terminalStreamFailure = null;
@@ -741,7 +821,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             return;
           }
 
-          if (overflowRecovery.pending) automaticRetrySucceeded = true;
+          if (overflowRetryRunning) automaticRetrySucceeded = true;
           const proxyMeta = turnMetaQueue.shift();
           const parsedMeta = parseAssistantMetaFromSessionEvent(message, proxyMeta);
           const peerId = normalizePeerId(parsedMeta.peerId);
@@ -800,14 +880,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       }
     });
 
-    const run: ActiveRun = {
+    run = {
       conversationId,
       session,
-      unsubscribe: () => {
-        unsubscribeAgent();
-        unsubscribe();
-      },
-      onAbort: () => overflowRecovery.cancel(),
+      unsubscribe,
     };
     activeRunsByConversation.set(conversationId, run);
 
@@ -841,11 +917,12 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     try {
       const promptText = [trimmedMessage, attachmentPromptText].filter((part) => part.length > 0).join('\n\n');
       await session.prompt(promptText || ' ', { images: effectiveAttachmentImages.length > 0 ? effectiveAttachmentImages : undefined });
-      // prompt() resolves before Pi's overflow compact-and-retry runs; keep the
-      // session alive until that recovery has finished.
-      await overflowRecovery.waitUntilSettled();
-      if (overflowRecovery.failureMessage !== null) {
-        terminalStreamError = overflowRecovery.failureMessage;
+      // prompt() resolves before Pi's overflow compact-and-retry runs; keep
+      // this turn's subscription until Pi is idle so recovery events still
+      // reach the renderer. The session itself outlives the turn.
+      await turnSettle.waitUntilSettled();
+      if (turnSettle.failureMessage !== null) {
+        terminalStreamError = turnSettle.failureMessage;
         terminalStreamFailure = classifyChatStreamFailure({
           message: terminalStreamError, stopReason: 'error',
         });
@@ -1009,6 +1086,9 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         return { ok: false, error: message, stopReason: reason };
       }
     } finally {
+      turnSettle.dispose();
+      sessionCache.setPendingDrain(conversationId, turnSettle.drained);
+      sessionCache.touch(conversationId);
       clearActiveRun(run);
       store.markPersistedIfAvailable(conversationId);
     }
