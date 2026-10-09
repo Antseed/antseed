@@ -2,6 +2,8 @@
 title: Terms of Service
 description: Antseed Terms of Use Agreement
 slug: /terms-of-service
+last_update:
+  date: 2026-10-09
 ---
 
 # Antseed Terms of Use Agreement
