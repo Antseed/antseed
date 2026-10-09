@@ -992,6 +992,107 @@ aside.theme-doc-sidebar-container {
   border-bottom-color: var(--ifm-hr-border-color);
 }
 
+/* Command / flag reference tables (docs/cli) — wrap a markdown table in
+   <div className="command-table"> to get this layout. */
+.markdown .command-table table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--as-line);
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: var(--as-font-ui);
+  font-size: 14px;
+  margin-bottom: 24px;
+}
+
+.markdown .command-table th,
+.markdown .command-table td {
+  border: 0;
+  border-bottom: 1px solid var(--ifm-table-border-color);
+  padding: 10px 16px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown .command-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown .command-table th {
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--as-text-3);
+  background: var(--as-card) !important;
+  border-bottom: 1px solid var(--as-line);
+}
+
+.markdown .command-table th:first-child,
+.markdown .command-table td:first-child {
+  width: 48%;
+}
+
+.markdown .command-table tr:hover td {
+  background: var(--as-surface-tint);
+}
+
+.markdown .command-table td {
+  color: var(--as-text-2);
+  line-height: 1.55;
+}
+
+/* The command itself: plain mono, no chip — it already owns the column */
+.markdown .command-table td:first-child code {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--as-heading);
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.markdown .command-table td + td code {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .markdown .command-table table,
+  .markdown .command-table tbody,
+  .markdown .command-table tr,
+  .markdown .command-table td {
+    display: block;
+    width: auto !important;
+  }
+  .markdown .command-table thead {
+    display: none;
+  }
+  .markdown .command-table tr {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--ifm-table-border-color);
+  }
+  .markdown .command-table tr:last-child {
+    border-bottom: 0;
+  }
+  .markdown .command-table td {
+    padding: 0;
+    border: 0;
+  }
+  .markdown .command-table td + td {
+    margin-top: 4px;
+  }
+  .markdown .command-table td + td code {
+    white-space: normal;
+  }
+}
+
 /* =============================================
    Standalone markdown pages (Terms of Service, …)
    — same reading voice as the docs.
