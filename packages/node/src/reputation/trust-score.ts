@@ -4,11 +4,11 @@ import { IDENTITY_GITHUB_MAX_POINTS as IDENTITY_MAX_POINTS, scoreIdentityHistory
 /**
  * Buyer-side trust score, 0-100: a weighted sum of independent parts.
  *
- *   trust = washFlagged ? 0 : history + usage + power + identity + freeModels
+ *   trust = washFlagged ? 0 : min(100, history + usage + power + identity + freeModels)
  *
  * Each part is a 0-1 value times its weight from `TRUST_WEIGHTS`:
  *
- * - history (45):  settled service history from `AntseedChannels`, combining
+ * - history (50):  settled service history from `AntseedChannels`, combining
  *                  channel count and USDC volume on bounded log curves.
  * - usage (20):    the seller pool's share of all pools' recognized-usage points
  *                  in the last complete weekly epoch (`AntseedUsageAccounting`).
@@ -19,8 +19,9 @@ import { IDENTITY_GITHUB_MAX_POINTS as IDENTITY_MAX_POINTS, scoreIdentityHistory
  *                  with this seller earns this week.
  * - identity (20): public history of a verified identity (GitHub portfolio or
  *                  domain registration age, see `identity-history.ts`).
- * - freeModels (5): the seller offers at least one model at $0 input and
- *                  output (and cached input, when it prices one).
+ * - freeModels (+5): a bonus on top of the weighted parts when the seller
+ *                  offers at least one model at $0 input and output (and
+ *                  cached input, when it prices one); the total caps at 100.
  * - wash:          a seller flagged by `AntseedWashTradingRegistry` scores 0.
  *
  * Shares are unitless and self-normalizing, mapped through `shareCurve`, a log
@@ -32,7 +33,10 @@ import { IDENTITY_GITHUB_MAX_POINTS as IDENTITY_MAX_POINTS, scoreIdentityHistory
  */
 
 /** Maximum contribution of each part; the weights sum to 100. */
-export const TRUST_WEIGHTS = { history: 45, usage: 20, power: 10, identity: 20, freeModels: 5 } as const;
+export const TRUST_WEIGHTS = { history: 50, usage: 20, power: 10, identity: 20 } as const;
+
+/** Bonus for offering a free model, added on top of the weights; the total caps at 100. */
+export const TRUST_FREE_MODELS_BONUS = 5;
 
 /** Settled sessions needed to saturate the channel-count half of service history. */
 export const TRUST_HISTORY_CHANNEL_TARGET = 100;
@@ -46,7 +50,7 @@ export const SHARE_CURVE_RANGE = 1_000;
 export interface TrustBreakdown {
   /** Final trust score, 0-100. */
   score: number;
-  /** Settled service history, weighted 0-45; `null` when channel stats are unavailable. */
+  /** Settled service history, weighted 0-50; `null` when channel stats are unavailable. */
   history: { score: number; channelCount: number; totalVolumeUsdcMicros: number } | null;
   /** Last epoch's usage-points share, weighted 0-20; `null` when usage accounting data is unavailable. */
   usage: { score: number; shareBps: number; epoch: number } | null;
@@ -54,7 +58,7 @@ export interface TrustBreakdown {
   power: { score: number; shareBps: number; epoch: number } | null;
   /** Verified-identity part, weighted 0-20; `null` when no verified identity has usable history. */
   identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
-  /** Free-model part, 0 or 5; `null` when the seller announces no free model. */
+  /** Free-model bonus, +5; `null` when the seller announces no free model. */
   freeModels: { score: number; service: string } | null;
   /** Wash-trading registry verdict; `null` when the registry is unavailable. */
   washFlagged: boolean | null;
@@ -134,7 +138,7 @@ export function computeTrustScore(peer: PeerInfo, nowMs = Date.now()): TrustBrea
     : null;
 
   const freeService = firstFreeService(peer);
-  const freeModels = freeService !== null ? { score: TRUST_WEIGHTS.freeModels, service: freeService } : null;
+  const freeModels = freeService !== null ? { score: TRUST_FREE_MODELS_BONUS, service: freeService } : null;
 
   const washFlagged = typeof peer.onChainWashFlagged === 'boolean' ? peer.onChainWashFlagged : null;
 

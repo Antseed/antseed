@@ -14,19 +14,19 @@ Buyers score sellers locally from data they can check themselves: settled servic
 Every buyer computes one number per seller, 0-100, as a weighted sum of independent parts:
 
 ```
-trust = washFlagged ? 0 : history + usage + power + identity + freeModels
+trust = washFlagged ? 0 : min(100, history + usage + power + identity + freeModels)
 ```
 
 | Part | Weight | On-chain source | What it means |
 |---|---|---|---|
-| `history` | 45 | `AntseedChannels.getAgentStats` lifetime settled channel count and volume | Demonstrated service history. Channel count and settled USDC volume each use a bounded log curve, saturating at 100 settled sessions and 100 USDC, then contribute equally to this part. |
+| `history` | 50 | `AntseedChannels.getAgentStats` lifetime settled channel count and volume | Demonstrated service history. Channel count and settled USDC volume each use a bounded log curve, saturating at 100 settled sessions and 100 USDC, then contribute equally to this part. |
 | `usage` | 20 | `AntseedUsageAccounting.sellerPointsByEpoch / totalPoolPointsByEpoch` for the last complete weekly epoch | The seller pool's share of all pools' recognized-usage points: what it actually delivered last week relative to the network. Points only accrue for sellers with a pool and have already passed the on-chain [reward policies](./reward-policies.md), so a proven wash trader's share is already zero. |
 | `power` | 10 | `AntseedSellerPools.poolWeightAtEpoch / totalPowerWeightAtEpoch` for the current epoch (lock-weighted ANTS) | The pool's share of all pools' staking power this week, which is what decides what a buyer's spend with this seller earns. |
 | `identity` | 20 | None (buyer-local lookups of verified GitHub accounts and domains, see below) | Public history of an identity the seller has proven it owns, so an established operator earns credit before it has a pool record. |
-| `freeModels` | 5 | None (the seller's signed pricing metadata) | The seller offers at least one model at $0 input and output (and $0 cached input, when it prices cached input). It only adds to a seller that is already scored: a free model alone does not make an unknown seller trusted. |
+| `freeModels` | +5 bonus | None (the seller's signed pricing metadata) | Added on top of the weighted parts, with the total capped at 100, when the seller offers at least one model at $0 input and output (and $0 cached input, when it prices cached input). It only adds to a seller that is already scored: a free model alone does not make an unknown seller trusted. |
 | `washFlagged` | true/false | `AntseedWashTradingRegistry.isProvenWashTrader` | A proven wash trader scores 0 whatever the other parts say. |
 
-Each part is a 0-1 value times its weight. History averages `log10(1 + channelCount) / log10(101)` and `log10(1 + settledVolumeUsdc) / log10(101)`, with each term capped at 1. Both network shares are unitless and go through the same log curve, `log10(1 + 999 · share) / 3`: a 100% share maps to 1, 10% to 0.67, and 1% to 0.35, so shares self-normalize as the network grows or as more ANTS is staked. Identity maps its points (GitHub up to 70, domain up to 12, below) onto 0-1 over 70. Free models is all or nothing: 5 points or 0. The weights sum to 100 and live in one table (`TRUST_WEIGHTS`); a future model-verification part will take its weight from there.
+Each part is a 0-1 value times its weight. History averages `log10(1 + channelCount) / log10(101)` and `log10(1 + settledVolumeUsdc) / log10(101)`, with each term capped at 1. Both network shares are unitless and go through the same log curve, `log10(1 + 999 · share) / 3`: a 100% share maps to 1, 10% to 0.67, and 1% to 0.35, so shares self-normalize as the network grows or as more ANTS is staked. Identity maps its points (GitHub up to 70, domain up to 12, below) onto 0-1 over 70. The free-model bonus is all or nothing: 5 points or 0, outside the weights. The weights sum to 100 and live in one table (`TRUST_WEIGHTS`); a future model-verification part will take its weight from there.
 
 The history part only needs the channels and seller-registry contracts already required for paid routing. The other on-chain parts need the recognized-usage stack: `sellerPoolsAddress`, `usageAccountingAddress`, and `washTradingRegistryAddress` in the [chain config](/docs/config), filled automatically for `base-mainnet`. On chains without the recognized-usage stack, service history and identity can still score a peer; in the first epoch after activation there is no previous-epoch usage share yet. Buyers read every on-chain input for a discovery pass in two Multicall3 round trips (chunked at 80 calls each) and refresh a seller at most every 120 seconds.
 
