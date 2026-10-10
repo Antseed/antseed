@@ -983,6 +983,31 @@ test('conversation routing keeps the actual peer as a soft preference and fails 
   assert.equal(JSON.parse(route.body).conversation.lastModel, `${rankedFirst.peerId}@Kimi K3`)
 })
 
+test('BuyerProxy does not forward the Expect header to the seller', async () => {
+  const peer = makePeer('c', ['openai'])
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'kimi-k3': ['openai-chat-completions'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let forwardedHeaders: Record<string, string> | undefined
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+    forwardedHeaders = request.headers
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{}'),
+    }
+  }
+
+  await invokeProxy(proxy, makeProxyRequest({
+    headers: { expect: '100-continue' },
+    body: { model: 'kimi-k3', messages: [{ role: 'user', content: 'hello' }] },
+  }))
+  assert.ok(forwardedHeaders)
+  assert.equal(forwardedHeaders['expect'], undefined)
+})
+
 test('model-only request applies a cached-input pricing reputation penalty', async () => {
   const priced = makePeer('a', ['openai'])
   priced.reputationScore = 75
