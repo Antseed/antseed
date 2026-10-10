@@ -2323,6 +2323,9 @@ export class BuyerProxy {
     }
     // Remove host header (points to localhost, not the seller)
     delete headers['host']
+    // Node already answered curl's `Expect: 100-continue` for large bodies;
+    // forwarded, it makes the seller's fetch fail.
+    delete headers['expect']
     // Internal marker from the system proxy: the body's model was assigned
     // by the proxy's route rewrite, not chosen by the tool. Stripped here so
     // it never reaches a seller.
