@@ -45,13 +45,9 @@ export type AttachmentStorageCallback = (
   buffer: Buffer,
 ) => Promise<string> | string;
 
-/** Shrinks an image before it is sent to the model; the stored original is kept. */
-export type ImageDownscaler = (image: ImageContent) => ImageContent;
-
 export interface PrepareChatAttachmentsOptions {
   limits?: AttachmentPreparationLimits;
   storage?: AttachmentStorageCallback;
-  downscaleImage?: ImageDownscaler;
 }
 
 export interface AttachmentPreparationLimits {
@@ -428,7 +424,6 @@ export async function prepareChatAttachments(
     : limitsOrOptions;
   const limits = options.limits ?? DEFAULT_ATTACHMENT_LIMITS;
   const storage = options.storage;
-  const downscaleImage = options.downscaleImage;
 
   const prepared: PreparedChatAttachment[] = [];
   let totalRawBytes = 0;
@@ -481,13 +476,9 @@ export async function prepareChatAttachments(
     }
 
     const remainingChars = Math.max(0, limits.maxExtractedCharsPerMessage - totalExtractedChars);
-    const { attachment, consumedChars } = await prepareOneAttachment(rawMeta, buffer, limits, remainingChars, attachmentId);
-    totalExtractedChars += consumedChars;
-    if (attachment.image && downscaleImage) {
-      prepared.push({ ...attachment, image: downscaleImage(attachment.image) });
-    } else {
-      prepared.push(attachment);
-    }
+    const result = await prepareOneAttachment(rawMeta, buffer, limits, remainingChars, attachmentId);
+    totalExtractedChars += result.consumedChars;
+    prepared.push(result.attachment);
   }
 
   return prepared;

@@ -19,7 +19,6 @@ import {
   saveAttachment,
   sweepOrphanAttachments,
 } from './attachments/store.js';
-import { downscaleChatImage } from './attachments/downscale-image.js';
 import {
   CHAT_WORKSPACE_DIR,
   getWorkspaceGitStatus,
@@ -869,10 +868,7 @@ export function registerPiChatHandlers({
         : undefined;
       return {
         ok: true,
-        data: await prepareChatAttachments(attachments, {
-          ...(storage ? { storage } : {}),
-          downscaleImage: downscaleChatImage,
-        }),
+        data: await prepareChatAttachments(attachments, { ...(storage ? { storage } : {}) }),
       };
     } catch (error) {
       return { ok: false, error: asErrorMessage(error) };
