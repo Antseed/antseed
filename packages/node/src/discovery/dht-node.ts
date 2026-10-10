@@ -159,7 +159,11 @@ export class DHTNode {
         return [];
       }
     }));
-    return [...new Set(resolved.flat())];
+    const bootstrap = [...new Set(resolved.flat())];
+    if (bootstrap.length === 0 && this.config.bootstrapNodes.length > 0) {
+      debugWarn(`[DHTNode] No IPv4 bootstrap addresses resolved from ${this.config.bootstrapNodes.length} configured node(s)`);
+    }
+    return bootstrap;
   }
 
   async start(): Promise<void> {
