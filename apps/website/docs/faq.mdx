@@ -168,7 +168,7 @@ export const faqLd = {
       name: 'Does my tool or agent need an API key?',
       acceptedAnswer: {
         '@type': 'Answer',
-        text: 'No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like antseed. The antseed claude, codex, and opencode wrappers set this for you. Only a public endpoint you publish from the Agents view uses a real, generated key.',
+        text: 'No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like antseed. antseed apps connect sets this for you. Only a public endpoint you publish from the Agents view uses a real, generated key.',
       },
     },
     {
@@ -356,11 +356,11 @@ No caps and no daily, weekly, or monthly quota. You pay per request from your cr
 
 ### Do I need the AI VPN desktop app, or is the CLI enough?
 
-The CLI is enough. `npm install -g @antseed/cli`, then `antseed buyer start` runs your local endpoint and `antseed buyer deposit` funds it with USDC, on any machine. `antseed claude`, `antseed codex`, and `antseed opencode` launch those tools through it. The AI VPN desktop app adds a model picker, an Apps view that launches installed tools, card and Apple Pay top-ups, and the Agents view for publishing an authenticated public endpoint. See the [install guide](/docs/install).
+The CLI is enough. `npm install -g @antseed/cli`, then `antseed buyer start` runs your local endpoint and `antseed buyer deposit` funds it with USDC, on any machine. `antseed apps connect <app>` points tools like Claude Code, Codex, and OpenCode at it. The AI VPN desktop app adds a model picker, an Apps view that launches installed tools, card and Apple Pay top-ups, and the Agents view for publishing an authenticated public endpoint. See the [install guide](/docs/install).
 
 ### Does my tool or agent need an API key?
 
-No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like `antseed`. The `antseed claude`, `codex`, and `opencode` wrappers set this for you. Only a public endpoint you publish from the AI VPN's Agents view uses a real, generated key.
+No account and no real key. The local endpoint does not validate one, but most tools want a non-empty value, so use a placeholder like `antseed`. `antseed apps connect` sets this for you. Only a public endpoint you publish from the AI VPN's Agents view uses a real, generated key.
 
 ### How does Antseed choose the provider for each request?
 

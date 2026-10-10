@@ -270,6 +270,16 @@ export function isLoopbackPeer(peer: PeerInfo): boolean {
  */
 export const ROUTED_MODEL_ALIAS = 'antseed'
 
+/**
+ * A routed-model target is either a bare `<service>` (automatic peer
+ * selection) or an explicit `<peerId>@<service>` pin. The `antseed` alias
+ * itself can never be a target — it would recurse.
+ */
+export function isValidRoutedModelTarget(value: string): boolean {
+  if (value === ROUTED_MODEL_ALIAS) return false
+  return !value.includes('@') || parsePeerPinnedService(value) !== null
+}
+
 export function substituteRoutedModelAlias(
   body: Uint8Array,
   headers: Record<string, string>,

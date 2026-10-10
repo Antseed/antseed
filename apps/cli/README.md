@@ -47,12 +47,12 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
 | `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
-| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
+| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `antseed buyer connection set --model`); connect warns when none is set. Claude Desktop is connected from the desktop app only |
 | `antseed apps disconnect <app>` | Remove only what AntSeed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
 | **Session** | |
-| `antseed buyer connection get` | Show current session state (pinned service, peer) |
-| `antseed buyer connection set` | Update service/peer overrides on a running proxy |
-| `antseed buyer connection clear` | Clear service/peer overrides |
+| `antseed buyer connection get` | Show current session state (pinned peer, default route) |
+| `antseed buyer connection set [--peer <peerId>] [--model <model>]` | Update the peer pin or the default route (`<service>` or `<peerId>@<service>`, used by connected apps) on a running proxy |
+| `antseed buyer connection clear` | Clear the peer pin and default route |
 | **Management** | |
 | `antseed seller status` | Show seller status |
 | `antseed buyer status` | Show buyer status |
@@ -368,14 +368,17 @@ restarting:
 # Pin all requests to a specific peer (bypasses router for peer selection)
 antseed buyer connection set --peer <40-char-hex-peer-id>
 
+# Set the default route: the model connected apps get when they request "antseed"
+antseed buyer connection set --model <service>   # or <peerId>@<service>
+
 # Check current session state
 antseed buyer connection get
 
-# Clear the session pin
+# Clear the peer pin and default route
 antseed buyer connection clear
 ```
 
-Session peer pins are stored in `~/.antseed/buyer.state.json`, survive proxy restarts, and are picked up by the running proxy immediately via file-watching. The desktop app reads and writes the same file to expose explicit peer selection in its UI.
+Session peer pins and the default route are stored in `~/.antseed/buyer.state.json`, survive proxy restarts, and are picked up by the running proxy immediately via file-watching. The desktop app reads and writes the same file to expose explicit peer selection in its UI.
 
 For tools that can only set a model name, use `<peerId>@<model>` as the model. The proxy strips the peer prefix before provider matching and forwards only `<model>` to the seller. If both this model prefix and `x-antseed-pin-peer` are sent, the header selects the peer and the model prefix is still stripped.
 

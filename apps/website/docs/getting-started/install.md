@@ -52,8 +52,9 @@ antseed buyer start
 # Proxy listening on http://localhost:8377
 ```
 
-Point any OpenAI- or Anthropic-compatible tool at it, or launch one through
-the wrappers: `antseed claude`, `antseed codex`, `antseed opencode`.
+Point any OpenAI- or Anthropic-compatible tool at it, or connect a supported
+app with `antseed apps connect <app>` (`antseed apps` lists them) and choose
+its model with `antseed buyer connection set --model <model>`.
 Free models need nothing else; for paid models run `antseed buyer deposit`.
 Full walkthrough: [Using the API](/docs/guides/using-the-api).
 

@@ -57,6 +57,7 @@ import {
   substituteRoutedModelAlias,
   overrideRoutedModelInBody,
   ROUTED_MODEL_ALIAS,
+  isValidRoutedModelTarget,
   SYSTEM_PROXY_SOURCE_HEADER,
   SYSTEM_ROUTED_MODEL_HEADER,
   BUYER_IDENTITY_HEADER,
@@ -206,16 +207,6 @@ async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<boole
     }, delayMs)
     signal.addEventListener('abort', onAbort, { once: true })
   })
-}
-
-/**
- * A routed-model target is either a bare `<service>` (automatic peer
- * selection) or an explicit `<peerId>@<service>` pin. The `antseed` alias
- * itself can never be a target — it would recurse.
- */
-function isValidRoutedModelTarget(value: string): boolean {
-  if (value === ROUTED_MODEL_ALIAS) return false
-  return !value.includes('@') || parsePeerPinnedService(value) !== null
 }
 
 /** Returns `request` with its body's model field rewritten to `serviceId`, or unchanged if nothing rewrote. */
