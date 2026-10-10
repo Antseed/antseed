@@ -22,6 +22,8 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Node, desktop and CLI: fixed DHT bootstrap on DNS64/NAT64 networks (including some ISPs and mobile carriers), where synthesized IPv6 DNS answers could leave buyers unable to join and showing "Network unreachable". Bootstrap now explicitly resolves IPv4 addresses. This requires working IPv4 UDP connectivity; it does not add IPv6-only transport support.
+- Buyer payments: video receipts now count the delivered video. The signed SpendingAuth metadata counted `video_generations` only when the seller priced a `video_generations` component, so sellers that price video per second (`video_seconds` only) settled with 0 videos and N seconds. The buyer now fills both video counters from the video it actually received, with no change to prices or billing checks. Receipts already settled are unchanged, and the counter is only correct once buyers run this `@antseed/buyer-core` release.
 - ANTS dashboard: Stake rewards and Claim no longer fail with "Position N is not owned by this wallet" when the indexer still lists a position NFT that was transferred to another wallet; such positions are skipped (`@antseed/node` `previewPoolRewards` now treats `includeIds` as hints). Restaking an explicitly selected position the wallet does not own still fails.
 - ANTS dashboard: the position menu disables Enable max lock and Move allocation when the action cannot take effect (for example, an expired lock) and shows why, instead of opening a form that cannot be submitted. The expired-lock message now says to withdraw and stake again.
 
@@ -40,6 +42,7 @@ This project uses selective package publishing. Each release entry lists the pub
 - Website: use the updated “The open market for AI inference” artwork for Open Graph and Twitter link previews, with a new asset URL to avoid stale image caches.
 
 - Sellers: a deferred free-usage record whose channel deadline has already passed is dropped after the failed flush instead of being retried every second indefinitely, which kept issuing reverting RPC calls for as long as the buyer stayed connected.
+- `@antseed/provider-claude-oauth`: sellers no longer replace the buyer's system prompt with the Claude Code identity line. The plugin now puts the identity first and keeps the request's own `system` (string or block array) after it, so Desktop app instructions, the skill list (including `antseed-images` and `antseed-videos`), and custom system prompts reach the model again. The identity is not added twice when the request already starts with it. Subscription OAuth plugins remain for testing and development only.
 - Development/testing OAuth: optionally persist Claude credentials with `CLAUDE_AUTH_FILE`, retain rotated tokens across restarts, and back off failed refresh attempts without logging upstream credential responses. With model health checks enabled, OAuth refresh failures during CLI provider initialization no longer terminate multi-provider development sessions; affected services stay hidden until a successful probe. Configuration errors remain fatal. Subscription OAuth plugins remain for testing and development only.
 
 ### Changed
