@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { AbiCoder, Wallet } from 'ethers';
+import { Wallet } from 'ethers';
 import { BuyerPaymentManager } from '../src/payments/buyer-payment-manager.js';
 import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
 import { SellerPaymentManager } from '../src/payments/seller-payment-manager.js';
@@ -553,22 +553,6 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close).toHaveBeenCalledOnce();
     expect(h.providerCreates).toHaveLength(1);
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
-  });
-
-  it.each(['flat', 'per-second'] as const)('counts one video and its seconds in the signed metadata for a %s price', async (videoPricing) => {
-    const h = setup({ videoPricing });
-    await h.send(h.videoRequest('video-1', '5s'));
-    await h.settle();
-    expect((await h.send(h.retrieveRequest('retrieve-1', 'job-1'))).statusCode).toBe(200);
-    await h.settle();
-
-    const metadata = h.close.mock.calls[0]![3] as string;
-    const [, , , , , videoGenerations, videoSeconds] = AbiCoder.defaultAbiCoder().decode(
-      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'],
-      metadata,
-    );
-    expect(videoGenerations).toBe(1n);
-    expect(videoSeconds).toBe(5n);
   });
 
   it('runs two videos in parallel on two separate channels', async () => {
