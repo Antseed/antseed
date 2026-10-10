@@ -22,6 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Skills: `antseed-videos` now sends the create request with `-H 'Expect:'`, because curl's automatic `Expect: 100-continue` on bodies over 1 MiB made every seller return 502 "fetch failed". Frames are sent as the original files; they are re-encoded as JPEG only after a create is rejected for size.
 - Skills: `antseed-videos` checks a frame's shape with a new `frame_size` helper and shows frames by path outside Antseed Desktop, instead of opening them with a file-reading tool. `antseed-videos` and `antseed-images` now tell the agent not to open frames, reference images, or generated images unless the user asks. In Claude Code and other agents, each opened image stayed in the chat and was resent on every turn, so a few frame rounds could push requests past the upstream size limit (`413`) and make compaction fail.
 - CLI buyer: a `413` from a seller's upstream provider (JSON or an HTML error page) now returns a JSON `request_too_large` error with the request size and the likely cause, instead of the raw upstream body.
 - Node, desktop and CLI: fixed DHT bootstrap on DNS64/NAT64 networks (including some ISPs and mobile carriers), where synthesized IPv6 DNS answers could leave buyers unable to join and showing "Network unreachable". Bootstrap now explicitly resolves IPv4 addresses. This requires working IPv4 UDP connectivity; it does not add IPv6-only transport support.

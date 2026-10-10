@@ -89,7 +89,7 @@ frame_size() {
 
 ## Frames as data URLs
 
-Local files must be sent inline. Frames over 1 MB are re-encoded as JPEG first, because a large upload can make the seller fail with "fetch failed". When no converter is found (`sips`, ImageMagick, `ffmpeg`, or `python3` with Pillow), `shrink_frame` fails instead of sending the large file: tell the user and ask whether to install one, use a smaller frame, or send it as is. Write the data URL to a file, because a large frame does not fit on a command line.
+Local files must be sent inline. Send the original frames, without re-encoding or resizing. Only if the create is rejected for size (HTTP 413, `request_too_large`, or another body-size error), tell the user, rebuild the data URLs with `shrink_frame` (frames over 1 MB re-encoded as JPEG), and create again. When no converter is found (`sips`, ImageMagick, `ffmpeg`, or `python3` with Pillow), `shrink_frame` fails: tell the user and ask whether to install one or use a smaller frame. Write the data URL to a file, because a large frame does not fit on a command line.
 
 ```bash
 frame_mime() {
@@ -123,8 +123,8 @@ to_data_url() {
   case "$mime" in image/png|image/jpeg|image/webp) ;; *) echo "unsupported frame: $1" >&2; return 1 ;; esac
   { printf 'data:%s;base64,' "$mime"; base64 < "$1" | tr -d '\n'; } > "$2"
 }
-first_url="$(mktemp)"; frame="$(shrink_frame first-frame.png)" && to_data_url "$frame" "$first_url"
-if [ -e last-frame.png ]; then last_url="$(mktemp)"; frame="$(shrink_frame last-frame.png)" && to_data_url "$frame" "$last_url"; fi
+first_url="$(mktemp)"; to_data_url first-frame.png "$first_url"
+if [ -e last-frame.png ]; then last_url="$(mktemp)"; to_data_url last-frame.png "$last_url"; fi
 ```
 
 Send only the frame inputs the seller advertises.
@@ -162,7 +162,7 @@ else
     + (if $resolution != "" then {resolution: $resolution} else {} end)
     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)
     + (if $audio != "" then {($audio_field): ($audio == "true")} else {} end)' > "$body"
-  code="$(curl -sS "$proxy_url$queue_path" -H "$auth" -H 'content-type: application/json' \
+  code="$(curl -sS "$proxy_url$queue_path" -H "$auth" -H 'content-type: application/json' -H 'Expect:' \
     --data-binary @"$body" -o "$resp" -w '%{http_code}' || true)"
   job_id="$(jq -r --arg f "$id_field" '.[$f] // empty' "$resp" 2>/dev/null)"
   if [ -n "$job_id" ]; then
@@ -178,7 +178,7 @@ else
 fi
 ```
 
-A missing job id means the create failed and nothing started. Show the error to the user and fix the field `peer_message` names. Do not create again without asking.
+A missing job id means the create failed and nothing started. Show the error to the user and fix the field `peer_message` names. Do not create again without asking. If it was rejected for size, use the `shrink_frame` fallback in [Frames as data URLs](#frames-as-data-urls). The `-H 'Expect:'` stops curl from sending `Expect: 100-continue` on bodies over 1 MiB, which makes sellers fail with "fetch failed".
 
 ## Wait and save
 
