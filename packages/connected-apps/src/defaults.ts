@@ -219,6 +219,30 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
   {
+    name: 'prime-agent',
+    displayName: 'Prime Agent',
+    kind: 'config-patch',
+    method: 'Config patch',
+    toolSlugs: ['prime-agent'],
+    domains: [],
+    pathPrefixes: [],
+    configPatch: {
+      // Prime Agent reads pi's models.json/settings.json schema from
+      // ~/.prime/agent on every platform. Its session engine does not pass
+      // the session id to the transport (no prompt_cache_key), so the buyer
+      // proxy keys chats from the originator header plus a synthetic
+      // first-turn key.
+      format: 'pi',
+      configPath: '~/.prime/agent/models.json',
+      settingsPath: '~/.prime/agent/settings.json',
+      providerKey: 'antseed',
+      baseURL: 'http://localhost:{buyerPort}/v1',
+      api: 'openai-responses',
+      originator: 'prime-agent',
+      installProbe: 'prime-agent',
+    },
+  },
+  {
     name: 'crush',
     displayName: 'Crush',
     kind: 'config-patch',

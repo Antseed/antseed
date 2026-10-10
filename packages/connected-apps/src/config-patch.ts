@@ -85,7 +85,7 @@ export type PiConfigPatchDef = {
   readonly baseURL: string;
   readonly api: 'openai-completions' | 'openai-responses' | 'anthropic-messages';
   readonly originator?: string;
-  readonly installProbe?: 'pi';
+  readonly installProbe?: 'pi' | 'prime-agent';
 };
 
 export type CrushConfigPatchDef = {
@@ -256,6 +256,7 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
   if (format === 'pi') {
     const api = raw['api'];
     const originator = readString(raw, 'originator');
+    const installProbe = raw['installProbe'];
     return {
       format: 'pi',
       configPath,
@@ -264,7 +265,7 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
       baseURL,
       api: api === 'openai-responses' || api === 'anthropic-messages' ? api : 'openai-completions',
       ...(originator ? { originator } : {}),
-      ...(raw['installProbe'] === 'pi' ? { installProbe: 'pi' as const } : {}),
+      ...(installProbe === 'pi' || installProbe === 'prime-agent' ? { installProbe } : {}),
     };
   }
   if (format === 'crush') {
@@ -1121,12 +1122,12 @@ function removeCodexProviderFromFile(filePath: string, patch: CodexConfigPatchDe
 function applyPiConfigPatch(patch: PiConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   const native = { configPath: expandTilde(patch.configPath), settingsPath: expandTilde(patch.settingsPath) };
-  if (patch.installProbe !== 'pi') {
+  if (!patch.installProbe) {
     applyPiProviderToFiles(native.configPath, native.settingsPath, patch, baseURL);
     return;
   }
   applyWithInstallProbe({
-    tool: 'pi',
+    tool: patch.installProbe,
     native,
     posix: { configPath: patch.configPath, settingsPath: patch.settingsPath },
     baseURL,
@@ -1167,8 +1168,8 @@ function applyPiProviderToFiles(modelsPath: string, settingsPath: string, patch:
 
 function removePiConfigPatch(patch: PiConfigPatchDef, wslTargetsFile?: string): boolean {
   let changed = removePiProviderFromFiles(expandTilde(patch.configPath), expandTilde(patch.settingsPath), patch);
-  if (patch.installProbe === 'pi') {
-    changed = removeWslInstalls('pi', wslTargetsFile, (target) =>
+  if (patch.installProbe) {
+    changed = removeWslInstalls(patch.installProbe, wslTargetsFile, (target) =>
       removePiProviderFromFiles(target.configPath, target.settingsPath ?? '', patch)) || changed;
   }
   return changed;
