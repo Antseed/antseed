@@ -71,6 +71,22 @@ Pick the first entry and send `"<peerId>@<model>"` so the create goes to that se
 
 An empty list means no seller supports the options. Choose an advertised duration or a lower resolution.
 
+## Frame shape
+
+Prints a frame's `<width>x<height>` without loading the image into the chat.
+
+```bash
+frame_size() {
+  if command -v sips >/dev/null 2>&1; then
+    sips -g pixelWidth -g pixelHeight "$1" 2>/dev/null | awk '/pixelWidth/ {w=$2} /pixelHeight/ {h=$2} END {if (w) print w "x" h}'
+  elif command -v magick >/dev/null 2>&1; then magick identify -format '%wx%h\n' "$1"
+  elif command -v ffprobe >/dev/null 2>&1; then ffprobe -v error -select_streams v:0 -show_entries stream=width,height -of csv=s=x:p=0 "$1"
+  elif command -v python3 >/dev/null 2>&1; then python3 -c 'import sys; from PIL import Image; w, h = Image.open(sys.argv[1]).size; print(f"{w}x{h}")' "$1"
+  else file "$1"
+  fi
+}
+```
+
 ## Frames as data URLs
 
 Local files must be sent inline. Frames over 1 MB are re-encoded as JPEG first, because a large upload can make the seller fail with "fetch failed". When no converter is found (`sips`, ImageMagick, `ffmpeg`, or `python3` with Pillow), `shrink_frame` fails instead of sending the large file: tell the user and ask whether to install one, use a smaller frame, or send it as is. Write the data URL to a file, because a large frame does not fit on a command line.

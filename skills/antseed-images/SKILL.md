@@ -68,6 +68,7 @@ If the response contains `data[0].url` instead, download it immediately to the o
 - Never print or paste image base64, generated-image URLs, authorization headers, private keys, or full API responses into chat or logs.
 - Do not expose the local buyer proxy beyond loopback.
 - Do not treat image bytes as text tokens.
+- Report the saved image's path; do not open it with a file-reading tool to check it unless the user asks. Every image read stays in the chat and is resent on each turn.
 - Request one image unless the user explicitly asks for more and the selected service supports it.
 - Do not guess optional parameters such as `size`, `quality`, or `style`; seller capabilities differ. Send them only when the user supplies a supported value.
 - Image generation may take several minutes. Wait for completion unless the user cancels.
