@@ -93,6 +93,11 @@ type MetadataProvider = () => object | null;
 export interface ConnectionManagerOptions {
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy interop). */
   requireSecureTransport?: boolean;
+  /**
+   * Called with each inbound socket's remote address; returning false answers
+   * the peer with INBOUND_REFUSED_MESSAGE and closes. Default: accept every address.
+   */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
 }
 type InitialWireMessage =
   | {
@@ -127,6 +132,7 @@ const LINE_SEPARATOR = "\n";
 const INITIAL_LINE_TIMEOUT_MS = 10_000;
 const MAX_INITIAL_LINE_BYTES = 8 * 1024;
 const TCP_KEEPALIVE_INITIAL_DELAY_MS = 10_000;
+export const INBOUND_REFUSED_MESSAGE = "This seller does not accept connections from your location.";
 const LOCAL_CONNECTION_CAPABILITIES = [
   CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
   CONNECTION_CAPABILITY_COOPERATIVE_CLOSE_V1,
@@ -148,6 +154,7 @@ export class PeerConnection extends EventEmitter {
   private _remoteCapabilities = new Set<string>();
   private _crypto: TransportCrypto | null = null;
   private _remoteAddress: string | null = null;
+  private _failureReason: Error | null = null;
 
   constructor(config: ConnectionConfig) {
     super();
@@ -158,6 +165,11 @@ export class PeerConnection extends EventEmitter {
 
   get state(): ConnectionState {
     return this._state;
+  }
+
+  /** The error passed to the first fail(), if any. */
+  get failureReason(): Error | null {
+    return this._failureReason;
   }
 
   /**
@@ -276,6 +288,7 @@ export class PeerConnection extends EventEmitter {
   }
 
   fail(err: Error): void {
+    this._failureReason ??= err;
     if (this._state !== ConnectionState.Failed && this._state !== ConnectionState.Closed) {
       this.setState(ConnectionState.Failed);
     }
@@ -410,6 +423,13 @@ export class PeerConnection extends EventEmitter {
   }
 }
 
+/** A `{ type: "refused", reason }` line from a seller, as an Error carrying its reason. */
+function refusalOf(message: unknown): Error | null {
+  const { type, reason } = (message ?? {}) as { type?: unknown; reason?: unknown };
+  if (type !== "refused") return null;
+  return new Error(typeof reason === "string" ? reason.slice(0, 256) : "Connection refused by peer");
+}
+
 function normalizeCapabilities(value: unknown): string[] {
   if (!Array.isArray(value)) return [];
   const capabilities: string[] = [];
@@ -441,6 +461,7 @@ export class ConnectionManager extends EventEmitter {
   private _transportMode: TransportMode;
   private _metadataProvider: MetadataProvider | null = null;
   private _requireSecureTransport: boolean;
+  private _acceptInboundAddress: ((remoteAddress: string) => boolean) | null;
   private _ipConnectionCounts = new Map<string, number>();
   private readonly _introReplayGuard = new NonceReplayGuard();
   private static _knownEndpoints = new Map<PeerId, PeerEndpoint>();
@@ -451,6 +472,7 @@ export class ConnectionManager extends EventEmitter {
     this._iceConfig = iceConfig ?? getDefaultIceConfig();
     this._transportMode = ConnectionManager._detectTransportMode();
     this._requireSecureTransport = options?.requireSecureTransport ?? false;
+    this._acceptInboundAddress = options?.acceptInboundAddress ?? null;
   }
 
   static async init(iceConfig?: IceConfig, options?: ConnectionManagerOptions): Promise<ConnectionManager> {
@@ -523,6 +545,7 @@ export class ConnectionManager extends EventEmitter {
 
     this._server = net.createServer((socket) => {
       const ip = socket.remoteAddress ?? 'unknown';
+      const refused = Boolean(this._acceptInboundAddress && socket.remoteAddress && !this._acceptInboundAddress(socket.remoteAddress));
       const current = this._ipConnectionCounts.get(ip) ?? 0;
       if (current >= MAX_INBOUND_CONNECTIONS_PER_IP) {
         socket.destroy();
@@ -540,7 +563,7 @@ export class ConnectionManager extends EventEmitter {
           this._ipConnectionCounts.set(ip, count - 1);
         }
       });
-      this._handleInboundSocket(socket);
+      this._handleInboundSocket(socket, refused);
     });
 
     this._server.maxConnections = 256;
@@ -776,6 +799,12 @@ export class ConnectionManager extends EventEmitter {
           socket.destroy();
           return;
         }
+        const refusal = refusalOf(ack);
+        if (refusal) {
+          conn.fail(refusal);
+          socket.destroy();
+          return;
+        }
 
         const verified = verifyTcpEncAck({
           ack,
@@ -853,7 +882,7 @@ export class ConnectionManager extends EventEmitter {
     socket.on("data", onData);
   }
 
-  private _handleInboundSocket(socket: Socket): void {
+  private _handleInboundSocket(socket: Socket, refused = false): void {
     let buffer = Buffer.alloc(0);
     const timeout = setTimeout(() => {
       socket.destroy();
@@ -885,7 +914,12 @@ export class ConnectionManager extends EventEmitter {
 
       // Detect HTTP requests (metadata endpoint served on signaling port)
       if (line.startsWith("GET ") || line.startsWith("HEAD ")) {
-        this._serveHttpMetadata(socket, line);
+        this._serveHttpMetadata(socket, line, refused);
+        return;
+      }
+
+      if (refused) {
+        socket.end(JSON.stringify({ type: "refused", reason: INBOUND_REFUSED_MESSAGE }) + LINE_SEPARATOR);
         return;
       }
 
@@ -960,7 +994,7 @@ export class ConnectionManager extends EventEmitter {
     });
   }
 
-  private _serveHttpMetadata(socket: Socket, requestLine: string): void {
+  private _serveHttpMetadata(socket: Socket, requestLine: string, refused: boolean): void {
     const MAX_HEADER_SIZE = 8 * 1024; // 8KB
     let headerBytes = 0;
     const headerTimeout = setTimeout(() => {
@@ -986,7 +1020,10 @@ export class ConnectionManager extends EventEmitter {
     let statusLine: string;
     let body: string;
 
-    if (url !== "/metadata") {
+    if (refused) {
+      statusLine = "403 Forbidden";
+      body = JSON.stringify({ error: INBOUND_REFUSED_MESSAGE });
+    } else if (url !== "/metadata") {
       statusLine = "404 Not Found";
       body = JSON.stringify({ error: "not found" });
     } else if (!this._metadataProvider) {
@@ -1269,6 +1306,11 @@ export class ConnectionManager extends EventEmitter {
 
         try {
           const parsed = JSON.parse(line) as SignalingMessage;
+          const refusal = refusalOf(parsed);
+          if (refusal) {
+            onError(refusal);
+            return;
+          }
           onMessage(parsed);
         } catch (err) {
           onError(err instanceof Error ? err : new Error(String(err)));

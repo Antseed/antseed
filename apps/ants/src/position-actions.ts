@@ -25,6 +25,6 @@ export function positionActionProblem(position: ActionPosition, action: Position
   if (action === 'disable-max-lock') return locked ? null : 'This position is not scheduled for max lock.';
   if (locked) return action === 'enable-max-lock' ? 'This position is already scheduled for max lock.' : 'Disable maximum lock before this action.';
   if (action === 'enable-max-lock' && effectiveEpoch < position.stakeStartEpoch) return `Max lock can be enabled when the next epoch reaches activation epoch ${position.stakeStartEpoch}.`;
-  if (position.stakeEndEpoch === 0 || effectiveEpoch >= position.stakeEndEpoch) return 'The position must have a remaining lock when this action takes effect.';
+  if (position.stakeEndEpoch === 0 || effectiveEpoch >= position.stakeEndEpoch) return 'The position has no remaining lock when this action takes effect. Withdraw it, then stake again to start a new lock.';
   return null;
 }

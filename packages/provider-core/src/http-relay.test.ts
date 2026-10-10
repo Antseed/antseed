@@ -256,6 +256,7 @@ describe('HttpRelay', () => {
       headers: {
         'content-type': 'application/json',
         'connection': 'keep-alive',
+        'expect': '100-continue',
         'x-antseed-provider': 'anthropic',
         'x-antseed-service': 'claude-sonnet-4-20250514',
         'host': 'localhost:3000',
@@ -266,6 +267,7 @@ describe('HttpRelay', () => {
     const [, opts] = fetchMock.mock.calls[0] as [string, RequestInit];
     const sentHeaders = opts.headers as Record<string, string>;
     expect(sentHeaders['connection']).toBeUndefined();
+    expect(sentHeaders['expect']).toBeUndefined();
     expect(sentHeaders['x-antseed-provider']).toBeUndefined();
     expect(sentHeaders['x-antseed-service']).toBeUndefined();
     expect(sentHeaders['host']).toBeUndefined();

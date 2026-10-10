@@ -1,5 +1,5 @@
 import { shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
-import { extractRequestBodyFields, parseJsonObject } from '@antseed/api-adapter'
+import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
@@ -42,6 +42,7 @@ export function parsePeerPinnedService(value: string): { peerId: string; service
 }
 
 export function extractRequestedService(request: SerializedHttpRequest): string | null {
+  if (nativeVideoRoute(request)) return requestService(request) ?? null
   const contentType = getHeader(request.headers, 'content-type').toLowerCase()
   if (!contentType.includes('application/json') && !contentType.startsWith('multipart/form-data')) {
     return null

@@ -8,6 +8,7 @@ import { stripRelayRequestHeaders, stripRelayResponseHeaders } from './http-head
 export const DEFAULT_HTTP_TIMEOUT_MS = 5 * 60_000;
 
 export interface RelayConfig {
+  redirect?: 'error' | 'follow' | 'manual';
   baseUrl: string;
   authHeaderName: string;
   authHeaderValue: string;
@@ -330,6 +331,7 @@ export class HttpRelay {
         const timeout = setTimeout(() => controller.abort(), timeoutMs);
         try {
           return await fetch(url, {
+            redirect: this._config.redirect,
             method: swappedRequest.method,
             headers,
             body: swappedRequest.method !== 'GET' && swappedRequest.method !== 'HEAD'

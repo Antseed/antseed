@@ -1,4 +1,4 @@
-import { mkdtempSync, rmSync, readFileSync } from 'node:fs';
+import { mkdtempSync, rmSync, readFileSync, readdirSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import { describe, expect, it } from 'vitest';
@@ -75,6 +75,43 @@ describe('VerificationSampler', () => {
       expect(new TextDecoder().decode(storedRequest.body)).toBe(new TextDecoder().decode(request.body));
       expect(storedResponse.statusCode).toBe(response.statusCode);
       expect(new TextDecoder().decode(storedResponse.body)).toBe(new TextDecoder().decode(response.body));
+    } finally {
+      rmSync(tempDir, { recursive: true, force: true });
+    }
+  });
+
+  it('skips streamed responses whose bytes were not retained for evidence', async () => {
+    const tempDir = mkdtempSync(join(tmpdir(), 'verification-samples-stream-test-'));
+    try {
+      const seller = identityFromPrivateKeyHex('11'.repeat(32));
+      const buyer = identityFromPrivateKeyHex('22'.repeat(32));
+      const request = makeRequest();
+      const response = makeResponse();
+      const responseAuth = createResponseAuthPayload({
+        request,
+        response,
+        buyerPeerId: buyer.peerId,
+        sellerPeerId: seller.peerId,
+        advertisedService: 'sample-model',
+        provider: 'test-provider',
+        responseStartedAt: 100,
+        responseCompletedAt: 200,
+      }, seller.wallet);
+      const sampler = new VerificationSampler(tempDir, { sampleRate: 1 });
+      const sample = await sampler.maybeStoreResponseAuthSample({
+        request,
+        response: {
+          ...response,
+          body: new Uint8Array(),
+          streamedBody: { byteLength: response.body.length, responseHash: responseAuth.responseHash },
+        },
+        responseAuth,
+        verified: true,
+        verificationError: null,
+      });
+
+      expect(sample).toBeNull();
+      expect(readdirSync(tempDir)).toEqual([]);
     } finally {
       rmSync(tempDir, { recursive: true, force: true });
     }

@@ -75,6 +75,8 @@ export function normalizeRequestUsageDelta(
     outputTokens: 0n,
     requests: 0n,
     outputImages: 0n,
+    videoGenerations: 0n,
+    videoSeconds: 0n,
   };
 }
 
@@ -89,6 +91,8 @@ export function advanceUsageMetadata(
     cumulativeOutputTokens: prev.cumulativeOutputTokens + delta.outputTokens,
     cumulativeRequestCount: prev.cumulativeRequestCount + delta.requests,
     cumulativeOutputImages: (prev.cumulativeOutputImages ?? 0n) + delta.outputImages,
+    cumulativeVideoGenerations: (prev.cumulativeVideoGenerations ?? 0n) + (delta.videoGenerations ?? 0n),
+    cumulativeVideoSeconds: (prev.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
     services: prev.services ?? [],
   };
   return withServiceMetadata(totals, service, delta);

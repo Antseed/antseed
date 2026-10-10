@@ -16,6 +16,7 @@ import type {
   SerializedHttpResponse,
 } from "./types/http.js";
 import { MeteringStorage } from "./metering/storage.js";
+import { ResourceOwnershipStore } from "./resources/resource-ownership-store.js";
 import { ReceiptGenerator } from "./metering/receipt-generator.js";
 import {
   SellerSessionTracker,
@@ -141,7 +142,7 @@ export type BuyerChannelSummary = {
   peerId: string;
   seller: string;
   buyer: string;
-  /** Latest in-memory ReserveAuth ceiling. Null when it is not available. */
+  /** Live session reserve or persisted confirmed one-off reserve. Null when unavailable. */
   reserveCeiling: string | null;
   /** Latest cumulative SpendingAuth amount persisted in the channel store. */
   cumulativeSigned: string;
@@ -214,6 +215,8 @@ export interface NodePaymentsConfig {
   maxPerRequestUsdc?: string;
   /** Maximum total USDC the buyer will reserve in a single SpendingAuth (base units). Default: "10000000" ($10.00). */
   maxReserveAmountUsdc?: string;
+  /** Maximum USDC the buyer pays for one video generation (base units). Default: "5000000" ($5.00). */
+  maxVideoRequestUsdc?: string;
   /** Disable per-service buyer attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
@@ -252,6 +255,8 @@ export interface NodeConfig {
   capabilities?: string[];
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy peers fall back to plaintext). */
   requireSecureTransport?: boolean;
+  /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -375,6 +380,7 @@ export class AntseedNode extends EventEmitter {
   private _keepalives = new Map<PeerId, KeepaliveManager>();
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
+  private _resourceOwnership: ResourceOwnershipStore | null = null;
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -711,6 +717,15 @@ export class AntseedNode extends EventEmitter {
         // ignore close errors
       }
       this._metering = null;
+    }
+
+    if (this._resourceOwnership) {
+      try {
+        this._resourceOwnership.close();
+      } catch {
+        // ignore close errors
+      }
+      this._resourceOwnership = null;
     }
 
     if (this._verificationStorage) {
@@ -1312,16 +1327,19 @@ export class AntseedNode extends EventEmitter {
    * Combines the persistent ChannelStore (session metadata + cumulative signed
    * amount) with the in-memory reserve ceiling tracked by BuyerPaymentManager.
    *
-   * The ReserveAuth ceiling lives only in the payment manager. When it is not
-   * available, return null rather than substituting the unrelated cumulative
-   * SpendingAuth amount stored in authMax.
+   * One-off channels use their own persisted confirmed reserve, never the
+   * seller's session reserve. Unavailable reserves are null rather than the
+   * unrelated cumulative SpendingAuth amount stored in authMax.
    */
   getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getActiveChannelsByBuyer(CHANNEL_ROLE.BUYER, buyerAddress);
+    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE);
     return stored.map((c) => {
-      const liveReserve = paymentManager?.getReserveCeiling(c.peerId);
+      const liveReserve = c.channelKind === CHANNEL_KIND.ONE_OFF
+        ? BigInt(c.confirmedReserveAmount ?? '0')
+        : paymentManager?.getReserveCeiling(c.peerId);
       return {
         channelId: c.sessionId,
         peerId: c.peerId,
@@ -1347,10 +1365,12 @@ export class AntseedNode extends EventEmitter {
   getAllBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
     const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getAllChannelsByBuyer('buyer', buyerAddress);
+    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress);
     return stored.map((c) => {
       const liveReserve = c.status === CHANNEL_STATUS.ACTIVE
-        ? paymentManager?.getReserveCeiling(c.peerId)
+        ? c.channelKind === CHANNEL_KIND.ONE_OFF
+          ? BigInt(c.confirmedReserveAmount ?? '0')
+          : paymentManager?.getReserveCeiling(c.peerId)
         : null;
       return {
         channelId: c.sessionId,
@@ -1423,6 +1443,9 @@ export class AntseedNode extends EventEmitter {
       inputTokens: s.inputTokens,
       cachedInputTokens: s.cachedInputTokens,
       outputTokens: s.outputTokens,
+      outputImages: s.outputImages,
+      videoGenerations: s.videoGenerations,
+      videoSeconds: s.videoSeconds,
       requestCount: s.requestCount,
     }));
     return {
@@ -1485,6 +1508,7 @@ export class AntseedNode extends EventEmitter {
       defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
       maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
       maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
+      maxVideoRequestUsdc: BigInt(payments.maxVideoRequestUsdc ?? "5000000"),  // $5.00 default per video
       disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
       dataDir: paymentsDir,
     };
@@ -1729,6 +1753,11 @@ export class AntseedNode extends EventEmitter {
     } catch (err) {
       debugWarn(`[Node] Metering storage unavailable: ${err instanceof Error ? err.message : err}`);
     }
+    try {
+      this._resourceOwnership = new ResourceOwnershipStore(join(dataDir, "metering.db"));
+    } catch (err) {
+      debugWarn(`[Node] Resource ownership storage unavailable; video services will be refused: ${err instanceof Error ? err.message : err}`);
+    }
 
     if (this._metering) {
       this._receiptGenerator = new ReceiptGenerator({
@@ -1776,6 +1805,7 @@ export class AntseedNode extends EventEmitter {
     // Create ConnectionManager and start listening
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
+      ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
     });
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {
@@ -1885,6 +1915,7 @@ export class AntseedNode extends EventEmitter {
       channelsClient: this._channelsClient,
       announcer: this._announcer,
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
+      resourceOwnershipStore: this._resourceOwnership,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),

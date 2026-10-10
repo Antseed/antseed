@@ -23,9 +23,10 @@ import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/mode
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
-export type NetworkModelType = 'text' | 'image' | 'decision'
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
 
 export type NetworkModelPeerOffer = {
+  unitBillingModels?: NetworkServiceOffer['unitBillingModels']
   advertisedVerifierIds?: string[]
   peerId: string
   displayName?: string
@@ -182,6 +183,7 @@ export function parseModelTypeFilter(raw: string | null): ModelTypeFilter {
   const value = raw?.trim().toLowerCase() ?? ''
   if (value === '') return 'all'
   if (value === 'image' || value === 'images') return 'image'
+  if (value === 'video' || value === 'videos') return 'video'
   if (value === 'text') return 'text'
   if (value === 'decision' || value === 'decisions') return 'decision'
   return 'invalid'
@@ -266,6 +268,7 @@ export function buildNetworkModels(
       protocol: offer.protocol,
       protocols: offer.protocols,
       type: offer.type,
+      ...(offer.unitBillingModels ? { unitBillingModels: offer.unitBillingModels } : {}),
       ...(offer.capabilities ? { capabilities: offer.capabilities } : {}),
       ...(offer.categories ? { categories: offer.categories } : {}),
       reputationScore: normalizedReputationByPeerId.get(offer.peerId) ?? null,

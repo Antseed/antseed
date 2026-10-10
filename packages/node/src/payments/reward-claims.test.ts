@@ -167,3 +167,12 @@ test('pool claims stop when indexing confirms without advancing the cursor', asy
   assert.deepEqual(confirmed, ['index-confirmed']);
   assert.deepEqual(writes, []);
 });
+
+test('indexer hints for positions transferred to another wallet are skipped, not fatal', async () => {
+  const { pools, rewards } = poolFixture();
+  pools.positionsBatch = async () => [position, { ...position, id: 2, owner: 'recipient' }];
+  const preview = await previewPoolRewards(pools, rewards, 'seller', undefined, { includeIds: [2] });
+  assert.deepEqual(preview.map((entry) => entry.id), [1]);
+  pools.position = async () => ({ ...position, owner: 'recipient' });
+  await assert.rejects(previewPoolRewards(pools, rewards, 'seller', 1), /not owned by this wallet/);
+});

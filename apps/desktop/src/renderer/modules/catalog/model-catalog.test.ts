@@ -125,6 +125,10 @@ function discoverRow(overrides: Partial<DiscoverRow> = {}): DiscoverRow {
     cachedInputUsdPerMillion: null,
     minImageUsdPerImage: null,
     maxImageUsdPerImage: null,
+    minVideoUsdPerSecond: null,
+    maxVideoUsdPerSecond: null,
+    minVideoUsdPerVideo: null,
+    maxVideoUsdPerVideo: null,
     lifetimeSessions: 0,
     lifetimeRequests: 0,
     lifetimeInputTokens: 0,
@@ -652,4 +656,59 @@ test('sortFreeModelsByPriority leads with priority-slot models, keeps availabili
     // order at the tail.
     ['deepseek-v4-flash', 'minimax-m2.7', 'random-free-model'],
   );
+});
+
+test('catalog lists native video services as video models with per-second and per-video prices', () => {
+  const catalog = projectRowsToVprModelCatalog([
+    discoverRow({ serviceId: 'gpt-test' }),
+    discoverRow({
+      peerId: 'venice-video-peer',
+      provider: 'venice',
+      serviceId: 'wan-2.5',
+      protocol: 'venice-video',
+      inputUsdPerMillion: null,
+      outputUsdPerMillion: null,
+      capabilities: { video: { durationsSeconds: [5, 10], resolutions: ['720p'] } },
+      minVideoUsdPerSecond: 0.1,
+      maxVideoUsdPerSecond: 0.2,
+    }),
+    discoverRow({
+      peerId: 'fal-video-peer',
+      provider: 'fal',
+      serviceId: 'wan-2.5',
+      protocol: 'fal-video',
+      inputUsdPerMillion: null,
+      outputUsdPerMillion: null,
+      minVideoUsdPerVideo: 0.5,
+      maxVideoUsdPerVideo: 0.5,
+    }),
+  ]);
+  const video = catalog.find((entry) => entry.serviceId === 'wan-2.5');
+
+  assert.equal(video?.kind, 'video');
+  assert.deepEqual(video?.protocols, ['fal-video', 'venice-video']);
+  assert.equal(video?.peerCount, 2);
+  assert.equal(video?.minVideoUsdPerSecond, 0.1);
+  assert.equal(video?.maxVideoUsdPerSecond, 0.2);
+  assert.equal(video?.minVideoUsdPerVideo, 0.5);
+  assert.equal(video?.hasEligibleFreeSeller, false);
+  assert.equal(findCatalogEntry(catalog, 'openai', 'gpt-test')?.kind, 'text');
+  assert.deepEqual(filterVprCatalog(catalog, { kinds: ['video'] }).map((entry) => entry.serviceId), ['wan-2.5']);
+});
+
+test('selectDefaultVprModel never falls back to a video model', () => {
+  const catalog = projectRowsToVprModelCatalog([
+    discoverRow({
+      serviceId: 'free-video',
+      protocol: 'venice-video',
+      inputUsdPerMillion: null,
+      outputUsdPerMillion: null,
+      minVideoUsdPerSecond: 0,
+      maxVideoUsdPerSecond: 0,
+    }),
+  ]);
+  assert.equal(catalog[0]?.kind, 'video');
+  assert.equal(selectDefaultVprModel(catalog, {
+    provider: 'openai', serviceId: 'free-video', label: 'free-video', categories: [],
+  }), null);
 });

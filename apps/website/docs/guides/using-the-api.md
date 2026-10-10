@@ -125,7 +125,11 @@ The proxy accepts these API formats. Use whichever matches your tool:
 | `/v1/responses` | OpenAI Responses API | Codex |
 | `/v1/images/generations` | OpenAI Images generation | OpenAI-compatible image clients |
 | `/v1/images/edits` | OpenAI Images edits | OpenAI-compatible multipart image clients |
-| `/v1/models` | OpenAI model list | network-wide, answered locally; `?type=images` filters (free) |
+| `/api/v1/video/queue` | Venice video queue | Venice-compatible video clients |
+| `/api/v1/video/retrieve` | Venice video status and MP4 download | Venice-compatible video clients |
+| `/fal/v1/video/queue` | fal video queue | fal model input with the endpoint ID as `model` |
+| `/fal/v1/video/retrieve` | fal video status and MP4 download | fal video jobs |
+| `/v1/models` | OpenAI model list | network-wide, answered locally; `?type=images` and `?type=videos` filter (free) |
 | `/v1/messages/count_tokens` | Anthropic token counting | answered locally, never routed or billed |
 
 The `model` field in your request determines which service to route to, and optionally which peer (`<peerId>@<model>`).
@@ -163,6 +167,55 @@ Image edits are multipart requests, but their `model` field follows the same rou
 Sellers that support edits must advertise both `text` and `image` in the service's input modalities, with `image` in its outputs. This is an end-to-end capability claim for that exact configured service: the provider adapter, upstream endpoint, and upstream model must all accept image edits. A service advertising `inputs: ["text"]` is generation-only, so buyers must not route `/v1/images/edits` to it. Do not add image input merely because the upstream vendor supports editing through a different endpoint or separate model. Venice-backed services are generation-only through the current generic OpenAI-compatible adapter; native Venice edit translation is tracked separately.
 
 In Desktop image chats, follow-up prompts use `/v1/images/edits` only when the selected seller advertises image input. With a generation-only seller, Desktop keeps the selected seller and requests a new image using the conversation's image-prompt history as cumulative instructions.
+
+### Videos
+
+Video services use the [Venice video API](https://docs.venice.ai/api-reference/endpoint/video/queue) format (`venice-video`).
+
+```bash
+# Find video models
+curl -s 'http://localhost:8377/v1/models?type=videos' | jq '.data[].id'
+
+# Queue a job; the response includes a queue_id
+curl http://localhost:8377/api/v1/video/queue \
+  -H 'content-type: application/json' \
+  -d '{"model": "<video-model>", "prompt": "A tiny ant carrying a seed", "duration": "5s"}'
+
+# Poll until the response is video/mp4 instead of a JSON status
+curl http://localhost:8377/api/v1/video/retrieve \
+  -H 'content-type: application/json' \
+  -d '{"model": "<video-model>", "queue_id": "<queue_id>"}' -o result.out
+```
+
+Retrieve requests always go back to the seller that accepted the job. For image-to-video, add Venice media fields such as `image_url` (a public URL or `data:` URL) and pick a model that supports them.
+
+Sellers of [fal.ai](https://fal.ai/models) models (`fal-video`) use the fal endpoint ID as the model and take that model's fal input fields:
+
+```bash
+# Queue a job; the response includes a request_id
+curl http://localhost:8377/fal/v1/video/queue \
+  -H 'content-type: application/json' \
+  -d '{"model": "fal-ai/kling-video/v2.1/standard/text-to-video", "prompt": "A tiny ant carrying a seed", "duration": "5"}'
+
+# Poll: IN_QUEUE / IN_PROGRESS JSON until the response is video/mp4
+curl http://localhost:8377/fal/v1/video/retrieve \
+  -H 'content-type: application/json' \
+  -d '{"model": "fal-ai/kling-video/v2.1/standard/text-to-video", "request_id": "<request_id>"}' -o result.out
+```
+
+**Payment**
+
+- You pay the seller's price once, when the finished MP4 is delivered. Repeat downloads are free.
+- Videos above $5.00 are refused.
+- Each video uses its own payment channel. For videos above $1, $0.65 is settled up front and counts toward the price; it is the most you lose if the video is never delivered.
+
+If a seller disappears, release the unspent reserve:
+
+```bash
+antseed buyer channels request-close <channelId>
+# after the 15-minute grace period
+antseed buyer channels withdraw <channelId>
+```
 
 ## Claude Code
 
@@ -383,6 +436,7 @@ If you're using Pi, Codex or another agent, these skills can walk you through th
 - [`antseed/antseed-pi`](https://github.com/AntSeed/pi-antseed) — Use the Antseed local buyer proxy as a model provider in pi.
 - [`@skills/join-buyer`](https://github.com/AntSeed/antseed/tree/main/skills/join-buyer) — step-by-step buyer setup for Claude Code agents
 - [`@skills/antseed-images`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-images) — discover image models from `/v1/models?type=images` and generate through automatic model-only peer routing
+- [`@skills/antseed-videos`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-videos) — guide a video from idea to finished MP4 in three approved stages: model choice, prompts and first/last frames, then settings and price, with Venice or fal sellers
 - [`@skills/antseed-decisions`](https://github.com/AntSeed/antseed/tree/main/skills/antseed-decisions) — discover decision models from `/v1/models?type=decisions` and ask typed `choice`, `score`, and `noul` questions through `/v1/systemone`
 - [`@skills/openclaw-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed) — connect OpenClaw to Antseed as a buyer
 - [`@skills/hermes-antseed`](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) — connect Hermes Agent through the local AI VPN or its authenticated public endpoint

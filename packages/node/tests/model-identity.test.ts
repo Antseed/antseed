@@ -40,6 +40,10 @@ describe('model identity', () => {
     expect(preferredModelDisplayName('custom-model', 'Custom Research Model')).toBe('Custom Research Model');
   });
 
+  it('names multi-segment endpoint ids from every segment after the vendor', () => {
+    expect(preferredModelDisplayName('bytedance/seedance-2.5/text-to-video')).toBe('Seedance 2.5 Text To Video');
+  });
+
   it('keeps display naming separate from routing identity', () => {
     expect(canonicalModelKey('gpt-56-sol')).toBe('gpt56sol');
     expect(sameCanonicalModel('gpt-56-sol', 'gpt-5.6-sol')).toBe(true);
