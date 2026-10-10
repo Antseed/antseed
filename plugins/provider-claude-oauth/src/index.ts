@@ -1,4 +1,11 @@
-import type { AntseedProviderPlugin, ConfigField, ServiceApiProtocol } from '@antseed/node';
+import type {
+  AntseedProviderPlugin,
+  ConfigField,
+  ProviderStreamCallbacks,
+  SerializedHttpRequest,
+  SerializedHttpResponse,
+  ServiceApiProtocol,
+} from '@antseed/node';
 import { BaseProvider, OAuthTokenProvider, StaticTokenProvider, parseServiceAliasMap, parseNonNegativeNumber, parseServicePricingJson, parseServiceCapabilitiesJson } from '@antseed/provider-core';
 
 import { CredentialStore } from './credential-store.js';
@@ -8,6 +15,61 @@ const CLAUDE_CODE_VERSION = '2.1.75';
 const CLAUDE_CODE_OAUTH_CLIENT_ID = '9d1c250a-e61b-44d9-88ed-5944d1962f5e';
 const CLAUDE_CODE_OAUTH_TOKEN_ENDPOINT = 'https://platform.claude.com/v1/oauth/token';
 const CLAUDE_CODE_IDENTITY_PROMPT = "You are Claude Code, Anthropic's official CLI for Claude.";
+
+const CLAUDE_CODE_IDENTITY_BLOCK = { type: 'text', text: CLAUDE_CODE_IDENTITY_PROMPT };
+
+function isIdentityBlock(block: unknown): boolean {
+  const candidate = block as { type?: unknown; text?: unknown } | null | undefined;
+  return candidate?.type === 'text'
+    && typeof candidate.text === 'string'
+    && candidate.text.trim() === CLAUDE_CODE_IDENTITY_PROMPT;
+}
+
+/**
+ * Anthropic requires the Claude Code identity as the first system block for
+ * Claude OAuth tokens. Put it first while keeping the buyer's own system
+ * prompt (string or block array) after it.
+ */
+function withClaudeCodeIdentity(system: unknown): unknown {
+  if (system === undefined || system === null) return [CLAUDE_CODE_IDENTITY_BLOCK];
+  if (typeof system === 'string') {
+    const trimmed = system.trim();
+    if (trimmed.length === 0 || trimmed === CLAUDE_CODE_IDENTITY_PROMPT) return [CLAUDE_CODE_IDENTITY_BLOCK];
+    return [CLAUDE_CODE_IDENTITY_BLOCK, { type: 'text', text: system }];
+  }
+  if (Array.isArray(system)) {
+    return isIdentityBlock(system[0]) ? system : [CLAUDE_CODE_IDENTITY_BLOCK, ...system];
+  }
+  return system;
+}
+
+function addClaudeCodeIdentity(req: SerializedHttpRequest): SerializedHttpRequest {
+  if (req.path.toLowerCase().startsWith('/v1/images/')) return req;
+  let body: unknown;
+  try {
+    body = JSON.parse(new TextDecoder().decode(req.body));
+  } catch {
+    return req;
+  }
+  if (!body || typeof body !== 'object' || Array.isArray(body)) return req;
+  const fields = body as Record<string, unknown>;
+  const system = withClaudeCodeIdentity(fields.system);
+  if (system === fields.system) return req;
+  return { ...req, body: new TextEncoder().encode(JSON.stringify({ ...fields, system })) };
+}
+
+class ClaudeOAuthProvider extends BaseProvider {
+  override handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
+    return super.handleRequest(addClaudeCodeIdentity(req));
+  }
+
+  override handleRequestStream(
+    req: SerializedHttpRequest,
+    callbacks: ProviderStreamCallbacks,
+  ): Promise<SerializedHttpResponse> {
+    return super.handleRequestStream(addClaudeCodeIdentity(req), callbacks);
+  }
+}
 
 const configSchema: ConfigField[] = [
   { key: 'CLAUDE_ACCESS_TOKEN', label: 'Access Token', type: 'secret', required: false, description: 'Claude OAuth access token; required unless a credential file already exists' },
@@ -87,7 +149,7 @@ const plugin: AntseedProviderPlugin = {
     const serviceCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const throttleMinTime = parseInt(config['ANTSEED_THROTTLE_MIN_TIME_MS'] ?? '0', 10);
 
-    return new BaseProvider({
+    return new ClaudeOAuthProvider({
       name: 'claude-oauth',
       services: allowedServices,
       pricing: {
@@ -116,14 +178,6 @@ const plugin: AntseedProviderPlugin = {
         maxConcurrency,
         allowedServices,
         serviceRewriteMap,
-        injectJsonFields: {
-          system: [
-            {
-              type: 'text',
-              text: CLAUDE_CODE_IDENTITY_PROMPT,
-            },
-          ],
-        },
         retryOn401: true,
         retryOn5xx: 2,
         retryBaseDelayMs: 1000,
