@@ -49,6 +49,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Changed
 
+- Desktop: upgrade Pi (`@mariozechner/pi-ai`, `@mariozechner/pi-coding-agent`) from 0.64 to 0.73.1 and move tool schemas to TypeBox 1.x (`typebox`). When a request overflows the model context (for example `413 request_too_large`), the chat now waits for Pi to compact the conversation and retry instead of closing the session early, so the recovered answer is shown instead of an error. Stop also cancels an in-progress compaction.
 - Website: the Terms of Service page now carries the Antseed Terms of Use Agreement (last updated October 9, 2026), replacing the May 15, 2026 Protocol Terms. Desktop: the Help screen's Privacy Policy link now opens its data-sharing section (6.2).
 - Website: refresh the Antseed Gateway blog header and social-preview image, mention agents in the introduction, and clarify the buyer's role and wallets assigned to shared keys.
 - Node, CLI, desktop: seller trust score adds a 5-point bonus for sellers that offer at least one free model ($0 input and output, and $0 cached input when priced), on top of the existing weights and capped at 100. A free model only adds to an already-scored seller. `antseed network peer` and the desktop trust tooltip show the new part.
