@@ -99,6 +99,9 @@ importers:
       '@antseed/api-adapter':
         specifier: workspace:*
         version: link:../../packages/api-adapter
+      '@antseed/connected-apps':
+        specifier: workspace:*
+        version: link:../../packages/connected-apps
       '@antseed/node':
         specifier: workspace:*
         version: link:../../packages/node
@@ -169,6 +172,9 @@ importers:
       '@antseed/antseed-verifier':
         specifier: workspace:*
         version: link:../../packages/antseed-verifier
+      '@antseed/connected-apps':
+        specifier: workspace:*
+        version: link:../../packages/connected-apps
       '@antseed/node':
         specifier: workspace:*
         version: link:../../packages/node
@@ -620,6 +626,22 @@ importers:
       vitest:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.27.0)(sass@1.97.3)(terser@5.46.0)
+
+  packages/connected-apps:
+    dependencies:
+      '@antseed/protocol':
+        specifier: workspace:*
+        version: link:../protocol
+      yaml:
+        specifier: ^2.8.2
+        version: 2.8.2
+    devDependencies:
+      '@types/node':
+        specifier: ^20.11.0
+        version: 20.19.33
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
 
   packages/node:
     dependencies:

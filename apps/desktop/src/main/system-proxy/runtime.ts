@@ -29,7 +29,7 @@ import { applyWindowView, getMainWindow } from '../ui/window.js';
 import { updateDesktopTray } from '../ui/tray.js';
 import path from 'node:path';
 import { ensureClaudeDesktopGateway, stopClaudeDesktopGateway } from '../connected-apps/claude-desktop-gateway.js';
-import { applyConfigPatch, removeConfigPatch } from './config-patch.js';
+import { applyConfigPatch, removeConfigPatch } from '@antseed/connected-apps/config-patch';
 import {
   DEFAULT_SYSTEM_PROXY_PORT,
   SYSTEM_PROXY_PROFILES,
@@ -53,7 +53,7 @@ import {
   systemProxyStatePath,
   systemProxyWslTargetsPath,
 } from './paths.js';
-import { clearWslTargetsForTool, isWslTool, readWslTargets } from './wsl.js';
+import { clearWslTargetsForTool, isWslTool, readWslTargets } from '@antseed/connected-apps/wsl';
 import { stopWslRelays, syncWslRelays } from './wsl-relay.js';
 
 /** What this module needs from the app around it — injected once at startup. */

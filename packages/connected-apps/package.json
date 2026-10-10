@@ -1,0 +1,51 @@
+{
+  "name": "@antseed/connected-apps",
+  "version": "0.1.0",
+  "description": "Connect local AI tools (Codex, Claude Code, OpenCode, Droid, pi, Zed, …) to the AntSeed buyer proxy by patching their own config files. Shared by the AntSeed CLI and desktop app",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "import": "./dist/index.js",
+      "types": "./dist/index.d.ts"
+    },
+    "./config-patch": {
+      "import": "./dist/config-patch.js",
+      "types": "./dist/config-patch.d.ts"
+    },
+    "./defaults": {
+      "import": "./dist/defaults.js",
+      "types": "./dist/defaults.d.ts"
+    },
+    "./wsl": {
+      "import": "./dist/wsl.js",
+      "types": "./dist/wsl.d.ts"
+    },
+    "./status": {
+      "import": "./dist/status.js",
+      "types": "./dist/status.d.ts"
+    },
+    "./state": {
+      "import": "./dist/state.js",
+      "types": "./dist/state.d.ts"
+    }
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "test": "node ../../scripts/remove-paths.mjs test-dist && tsc -p tsconfig.test.json && node --test test-dist/*.test.js",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@antseed/protocol": "workspace:*",
+    "yaml": "^2.8.2"
+  },
+  "devDependencies": {
+    "@types/node": "^20.11.0",
+    "typescript": "^5.5.0"
+  }
+}

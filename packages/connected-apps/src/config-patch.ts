@@ -1,4 +1,4 @@
-import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
+import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -154,7 +154,7 @@ export type T3CodeConfigPatchDef = {
  * directory (`Claude-3p`) whose applied entry in `configLibrary/` names an
  * Anthropic-Messages-compatible gateway to send all inference to. The patch
  * writes that profile pointing at the desktop's local Claude gateway (see
- * connected-apps/claude-desktop-gateway.ts), which serves the model catalog
+ * apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts), which serves the model catalog
  * in Anthropic's native shape and forwards requests to the buyer proxy. The
  * 1p and 3p profiles are separate directories, so the user's normal Claude
  * login and state are untouched.
@@ -186,7 +186,7 @@ export type ConfigPatchDef =
 
 /**
  * Loopback port of the desktop's Claude Desktop gateway. Lives here (not in
- * claude-desktop-gateway.ts) so this electron-free module stays the single
+ * the desktop's claude-desktop-gateway.ts) so this electron-free module stays the single
  * import direction: the gateway imports from config-patch, never the reverse.
  */
 export const CLAUDE_GATEWAY_DEFAULT_PORT = Number(process.env['ANTSEED_CLAUDE_GATEWAY_PORT']) || 8380;
@@ -504,6 +504,16 @@ export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPor
   if (!isBuyerProxyRoutablePeerId(peerId)) {
     throw new Error('Config-based routing requires a 40-character hex peer ID. Select a chain-backed peer before enabling this tool.');
   }
+  writeConfigPatch(patch, buyerPort, wslTargetsFile);
+}
+
+/**
+ * The config write behind applyConfigPatch, without the selected-peer guard.
+ * The patched config only carries the ROUTED_MODEL_ALIAS, so no peer is
+ * written either way; callers that do not own a route selection (the CLI's
+ * `antseed apps connect`) use this and leave route choice to the buyer.
+ */
+export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
   if (patch.format === 'codex') {
     applyCodexConfigPatch(patch, buyerPort, wslTargetsFile);
     return;
@@ -1977,4 +1987,105 @@ function removeClaudeDesktopTarget(target: ClaudeDesktopPatchTarget): boolean {
     changed = true;
   }
   return changed;
+}
+
+// --- Read-only inspection (used by `antseed apps status`) ---
+//
+// Mirrors the ownership checks the remove paths use, without writing
+// anything: "connected" means the config currently carries the entry
+// AntSeed would remove on disconnect.
+
+/** Absolute (tilde-expanded) native config paths a patch touches. */
+export function configPatchPaths(patch: ConfigPatchDef): string[] {
+  if (patch.format === 'claude-desktop') {
+    return claudeDesktopPatchTargets(patch).map((target) => target.configPath);
+  }
+  if (patch.format === 'pi') return [expandTilde(patch.configPath), expandTilde(patch.settingsPath)];
+  return [expandTilde(patch.configPath)];
+}
+
+function patchInstallProbe(patch: ConfigPatchDef): WslTool | undefined {
+  const probe = (patch as { installProbe?: unknown }).installProbe;
+  return typeof probe === 'string' && probe in WSL_TOOL_PROBES ? probe as WslTool : undefined;
+}
+
+/**
+ * Whether the tool looks present on this machine. Install-probed profiles use
+ * the same native signals connect uses (config dir, home install locations,
+ * binary on PATH) plus WSL targets recorded by an earlier connect — WSL
+ * discovery itself is skipped because it would cold-start distros. Other
+ * profiles count as installed when their config directory exists.
+ */
+export function isConfigPatchInstalled(patch: ConfigPatchDef, wslTargetsFile?: string): boolean {
+  const probe = patchInstallProbe(patch);
+  if (probe) {
+    if (nativeToolInstalled(probe, expandTilde(patch.configPath))) return true;
+    return wslTargetsFile ? readWslTargetsForTool(wslTargetsFile, probe).length > 0 : false;
+  }
+  return configPatchPaths(patch).some((filePath) => existsSync(path.dirname(filePath)));
+}
+
+/** Whether the tool's config currently carries AntSeed's managed entry. */
+export function isConfigPatchConnected(patch: ConfigPatchDef, wslTargetsFile?: string): boolean {
+  const probe = patchInstallProbe(patch);
+  if (probe && wslTargetsFile && readWslTargetsForTool(wslTargetsFile, probe).length > 0) return true;
+  try {
+    return nativeConfigPatchConnected(patch);
+  } catch {
+    // An unparseable config cannot be carrying a working AntSeed entry.
+    return false;
+  }
+}
+
+function nativeConfigPatchConnected(patch: ConfigPatchDef): boolean {
+  if (patch.format === 'claude-desktop') {
+    return claudeDesktopPatchTargets(patch).some((target) => {
+      const paths = claudeDesktopPatchPaths(target);
+      const meta = tryReadConfigPatchFile(paths.meta);
+      const profile = tryReadConfigPatchFile(paths.profile);
+      const gatewayUrl = typeof profile?.['inferenceGatewayBaseUrl'] === 'string'
+        ? profile['inferenceGatewayBaseUrl']
+        : undefined;
+      return meta?.['appliedId'] === CLAUDE_DESKTOP_PROFILE_ID
+        || (profile?.['inferenceProvider'] === 'gateway' && isLoopbackHost(gatewayUrl));
+    });
+  }
+  const filePath = expandTilde(patch.configPath);
+  if (patch.format === 'droid') return existsSync(droidPatchStatePath(filePath));
+  if (patch.format === 'claude-code') return existsSync(claudeCodePatchStatePath(filePath));
+  if (patch.format === 'codex') {
+    if (!existsSync(filePath)) return false;
+    const lines = readFileSync(filePath, 'utf8').split('\n');
+    return lines.some((line) => isCodexProviderTableHeader(line, patch.providerKey))
+      || readTomlTopLevelString(lines, 'model_provider') === patch.providerKey;
+  }
+  if (patch.format === 'goose') {
+    if (!existsSync(filePath)) return false;
+    const lines = readFileSync(filePath, 'utf8').split('\n');
+    return readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === patch.providerKey
+      && readYamlTopLevelString(lines, 'GOOSE_MODEL') === ROUTED_MODEL_ALIAS;
+  }
+  if (patch.format === 'hermes') {
+    if (!existsSync(filePath)) return false;
+    const providerApi = readHermesConfigDocument(filePath).getIn(['providers', patch.providerKey, 'api']);
+    return typeof providerApi === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+\/v1\/?$/.test(providerApi);
+  }
+  const config = tryReadConfigPatchFile(filePath);
+  if (!config) return false;
+  if (patch.format === 'pi' || patch.format === 'crush') {
+    return patch.providerKey in asObject(config['providers']);
+  }
+  if (patch.format === 'zed') {
+    return patch.providerName in asObject(asObject(config['language_models'])['openai_compatible']);
+  }
+  if (patch.format === 't3code') {
+    const instance = asObject(asObject(config['providerInstances'])[patch.providerKey]);
+    const environment = instance['environment'];
+    return Array.isArray(environment) && environment.some((variable) => {
+      const entry = asObject(variable);
+      return entry['name'] === 'ANTHROPIC_BASE_URL'
+        && isLoopbackHost(typeof entry['value'] === 'string' ? entry['value'] : undefined);
+    });
+  }
+  return patch.providerKey in asObject(config['provider']);
 }

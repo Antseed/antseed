@@ -19,7 +19,7 @@ Decide which public `@antseed/*` packages need a release, bump their versions, a
 For every public package, list commits touching it since its version was last bumped:
 
 ```bash
-for p in packages/protocol packages/api-adapter packages/buyer-core packages/node \
+for p in packages/protocol packages/connected-apps packages/api-adapter packages/buyer-core packages/node \
          packages/provider-core packages/router-core packages/ant-agent \
          packages/web-sdk plugins/* apps/cli apps/payments apps/network-stats \
          apps/ants apps/relay; do
@@ -39,7 +39,7 @@ pnpm resolves `workspace:*` **regular dependencies** to exact versions at publis
 2. Add every public dependent that declares one of them as a regular `workspace:` dependency, recursively.
 3. Peer dependencies with ranges (e.g. provider-core/router-core/ant-agent declare `@antseed/node >=0.1.0`) do NOT cascade.
 
-Known chains: cli + payments + ants pin node; node pins protocol/buyer-core/api-adapter; web-sdk pins buyer-core/protocol; all provider plugins pin provider-core; router-local pins router-core; cli also pins ants, payments, api-adapter, ant-agent, provider-core.
+Known chains: cli + payments + ants pin node; node pins protocol/buyer-core/api-adapter; web-sdk pins buyer-core/protocol; all provider plugins pin provider-core; router-local pins router-core; cli also pins ants, payments, api-adapter, ant-agent, provider-core, connected-apps; connected-apps pins protocol.
 
 Don't compute this by hand and hope — step 4 validates it mechanically.
 

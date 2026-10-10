@@ -8,7 +8,7 @@
  * the `\\wsl.localhost\` UNC share, and works out which host the distro can
  * reach the Windows buyer proxy on: `localhost` under mirrored networking,
  * otherwise the distro's default-route gateway (the Windows host's vEthernet
- * address). NAT targets additionally need the relay in wsl-relay.ts, because
+ * address). NAT targets additionally need the relay in the desktop's system-proxy/wsl-relay.ts, because
  * the buyer proxy itself only binds 127.0.0.1.
  *
  * Electron-free on purpose (like config-patch.ts) so tests can drive it; the
