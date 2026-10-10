@@ -16,7 +16,6 @@ import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
-import { resolveDefaultAntseedBaseUrl } from '../wrapped-tools.js'
 
 /** Bump when a field of the --json output changes meaning or is removed. */
 export const APPS_JSON_SCHEMA_VERSION = 1
@@ -40,7 +39,7 @@ export type AppsActionReport = {
   displayName?: string
   /** connect only: buyer proxy port written into the config. */
   buyerPort?: number
-  /** disconnect only: false when the config carried nothing AntSeed added. */
+  /** disconnect only: false when the config carried nothing Antseed added. */
   changed?: boolean
   connected?: boolean
   configPath?: string
@@ -56,14 +55,31 @@ function unknownAppError(name: string, all: readonly ConnectedAppProfile[]): str
   return `Unknown app "${name}". Supported apps: ${all.map((profile) => profile.name).join(', ')}`
 }
 
-/** Buyer proxy port from buyer.state.json / config buyer.proxyPort, else 8377. */
-export async function resolveDefaultBuyerPort(ctx: AppsContext): Promise<number> {
+function readJsonObject(filePath: string): Record<string, unknown> {
   try {
-    const port = Number(new URL(await resolveDefaultAntseedBaseUrl(ctx.dataDir, ctx.configPath)).port)
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_BUYER_PORT
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
   } catch {
-    return DEFAULT_BUYER_PORT
+    return {}
   }
+}
+
+function readBuyerState(dataDir: string): Record<string, unknown> {
+  return readJsonObject(join(dataDir, 'buyer.state.json'))
+}
+
+function asPort(value: unknown): number | null {
+  const port = Number(value)
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null
+}
+
+/** Buyer proxy port from buyer.state.json / config buyer.proxyPort, else 8377. */
+export function resolveDefaultBuyerPort(ctx: AppsContext): number {
+  const buyerConfig = readJsonObject(ctx.configPath)['buyer']
+  const configuredPort = buyerConfig && typeof buyerConfig === 'object'
+    ? asPort((buyerConfig as Record<string, unknown>)['proxyPort'])
+    : null
+  return asPort(readBuyerState(ctx.dataDir)['port']) ?? configuredPort ?? DEFAULT_BUYER_PORT
 }
 
 export function getAppsStatus(ctx: AppsContext): AppsStatusReport {
@@ -80,20 +96,16 @@ export function getAppsStatus(ctx: AppsContext): AppsStatusReport {
  * route is set — the buyer then rejects alias requests with no_default_route.
  */
 export function readDefaultRoutedModel(dataDir: string): string | null {
-  try {
-    const state = JSON.parse(readFileSync(join(dataDir, 'buyer.state.json'), 'utf8')) as Record<string, unknown>
-    const model = typeof state['defaultRoutedModel'] === 'string' ? state['defaultRoutedModel'].trim() : ''
-    return model.length > 0 ? model : null
-  } catch {
-    return null
-  }
+  const model = readBuyerState(dataDir)['defaultRoutedModel']
+  return typeof model === 'string' && model.trim().length > 0 ? model.trim() : null
 }
 
-export function noDefaultRouteWarning(buyerPort: number): string {
-  return 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
-    + 'Pick a model in the AntSeed desktop app, or set one on the running buyer: '
-    + `curl -X POST http://localhost:${buyerPort}/_antseed/route -H 'content-type: application/json' -d '{"model":"<peerId>@<service>"}'`
-}
+export const NO_DEFAULT_ROUTE_WARNING = 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
+  + 'Pick a model in the Antseed desktop app, or run `antseed buyer connection set --model <service>` (or `<peerId>@<service>`).'
+
+export const CLAUDE_DESKTOP_CLI_ERROR = 'Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway, which only runs while the desktop app has it connected. '
+  + 'Connect it from the desktop app\'s Connected apps screen.'
+
 
 function ensureStateDir(ctx: AppsContext): string {
   const targets = wslTargetsPath(ctx.dataDir)
@@ -101,18 +113,24 @@ function ensureStateDir(ctx: AppsContext): string {
   return targets
 }
 
-export async function connectApp(ctx: AppsContext, name: string, buyerPort?: number): Promise<AppsActionReport> {
+export function connectApp(ctx: AppsContext, name: string, buyerPort?: number): AppsActionReport {
   const all = profiles()
   const profile = findConnectedAppProfile(name, all)
   if (!profile) {
     return { schemaVersion: APPS_JSON_SCHEMA_VERSION, ok: false, action: 'connect', app: name, error: unknownAppError(name, all) }
   }
-  const port = buyerPort ?? await resolveDefaultBuyerPort(ctx)
-  const warnings: string[] = []
-  if (!readDefaultRoutedModel(ctx.dataDir)) warnings.push(noDefaultRouteWarning(port))
   if (profile.configPatch.format === 'claude-desktop') {
-    warnings.push('Claude Desktop is routed through the AntSeed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
+    return {
+      schemaVersion: APPS_JSON_SCHEMA_VERSION,
+      ok: false,
+      action: 'connect',
+      app: profile.name,
+      displayName: profile.displayName,
+      error: CLAUDE_DESKTOP_CLI_ERROR,
+    }
   }
+  const port = buyerPort ?? resolveDefaultBuyerPort(ctx)
+  const warnings = readDefaultRoutedModel(ctx.dataDir) ? [] : [NO_DEFAULT_ROUTE_WARNING]
   try {
     writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
   } catch (err) {
@@ -208,13 +226,13 @@ function emit(report: AppsActionReport, json: boolean): void {
   }
   const label = report.displayName ?? report.app
   if (report.action === 'connect') {
-    console.log(chalk.green(`${label}: connected to the AntSeed buyer on port ${report.buyerPort}`))
+    console.log(chalk.green(`${label}: connected to the Antseed buyer on port ${report.buyerPort}`))
     console.log(chalk.dim(`Config: ${report.configPath}`))
     console.log(chalk.dim('The app uses the model "antseed", which the buyer resolves to its current default route. Restart the app if it is running.'))
   } else if (report.changed) {
-    console.log(chalk.green(`${label}: disconnected; AntSeed's settings were removed from ${report.configPath}`))
+    console.log(chalk.green(`${label}: disconnected; Antseed's settings were removed from ${report.configPath}`))
   } else {
-    console.log(chalk.dim(`${label}: nothing to disconnect (no AntSeed settings found)`))
+    console.log(chalk.dim(`${label}: nothing to disconnect (no Antseed settings found)`))
   }
   for (const warning of report.warnings ?? []) console.log(chalk.yellow(warning))
 }
@@ -222,7 +240,7 @@ function emit(report: AppsActionReport, json: boolean): void {
 export function registerAppsCommands(program: Command): void {
   const apps = program
     .command('apps')
-    .description('Connect local AI tools (Codex, Claude Code, OpenCode, …) to the AntSeed buyer by editing their config')
+    .description('Connect local AI tools (Codex, Claude Code, OpenCode, …) to the Antseed buyer by editing their config')
     .option('--json', 'print machine-readable JSON')
     .action((options: { json?: boolean }) => {
       runStatus(apps, options.json === true)
@@ -236,17 +254,17 @@ export function registerAppsCommands(program: Command): void {
     })
 
   apps.command('connect')
-    .description('Point an app\'s config at the AntSeed buyer proxy (backs up the original first)')
+    .description('Point an app\'s config at the Antseed buyer proxy (backs up the original first)')
     .argument('<app>', 'app name, as listed by `antseed apps`')
     .option('--port <buyerPort>', 'buyer proxy port (default: running buyer / buyer.proxyPort / 8377)', parseBuyerPort)
     .option('--json', 'print machine-readable JSON')
-    .action(async (app: string, options: { port?: number; json?: boolean }, command: Command) => {
+    .action((app: string, options: { port?: number; json?: boolean }, command: Command) => {
       const ctx = context(command)
-      emit(await connectApp(ctx, app, options.port), options.json === true || command.optsWithGlobals()['json'] === true)
+      emit(connectApp(ctx, app, options.port), options.json === true || command.optsWithGlobals()['json'] === true)
     })
 
   apps.command('disconnect')
-    .description('Remove only what AntSeed added to an app\'s config, restoring replaced values')
+    .description('Remove only what Antseed added to an app\'s config, restoring replaced values')
     .argument('<app>', 'app name, as listed by `antseed apps`')
     .option('--json', 'print machine-readable JSON')
     .action((app: string, options: { json?: boolean }, command: Command) => {

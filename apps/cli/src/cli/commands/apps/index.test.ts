@@ -226,3 +226,34 @@ test('apps connect warns when the buyer has no default route', async () => {
     await rm(ws.home, { recursive: true, force: true })
   }
 })
+
+test('apps connect refuses Claude Desktop, which needs the desktop app gateway', async () => {
+  const ws = await createWorkspace()
+  try {
+    const result = run(ws, ['apps', 'connect', 'claude-desktop', '--json'])
+    assert.equal(result.status, 1)
+    assert.match((JSON.parse(result.stdout) as ActionReport).error ?? '', /desktop app/)
+    assert.equal(existsSync(join(ws.dataDir, 'system-proxy', 'system-proxy.desktop.json')), false)
+  } finally {
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})
+
+test('buyer connection set --model sets the default route connected apps use', async () => {
+  const ws = await createWorkspace()
+  try {
+    const statePath = join(ws.dataDir, 'buyer.state.json')
+    await writeFile(statePath, JSON.stringify({ state: 'connected', pid: process.pid, port: 8499, pinnedPeerId: null }), 'utf8')
+    assert.equal(run(ws, ['buyer', 'connection', 'set', '--model', 'antseed']).status, 1)
+    assert.equal(run(ws, ['buyer', 'connection', 'set', '--model', 'kimi-k3']).status, 0)
+    assert.equal((JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>)['defaultRoutedModel'], 'kimi-k3')
+
+    await mkdir(join(ws.home, '.config', 'zed'), { recursive: true })
+    assert.equal(json<ActionReport>(ws, ['apps', 'connect', 'zed']).warnings, undefined)
+
+    assert.equal(run(ws, ['buyer', 'connection', 'clear']).status, 0)
+    assert.equal((JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>)['defaultRoutedModel'], null)
+  } finally {
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})

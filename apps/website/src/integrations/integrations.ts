@@ -156,10 +156,10 @@ export const integrations: Integration[] = [
     status: 'verified',
     seoTitle: 'Run Claude Code on any model, no subscription',
     headline: 'Run Claude Code on any model',
-    oneLiner: "Anthropic's official CLI agent - launch through Antseed with `antseed claude`.",
+    oneLiner: "Anthropic's official CLI agent - connect it to Antseed with `antseed apps connect claude-code`.",
     description: [
-      'Claude Code is the official CLI coding agent from Anthropic. It speaks the Anthropic Messages API natively, so it slots into Antseed through the `antseed claude` wrapper or by pointing `ANTHROPIC_BASE_URL` at your local proxy.',
-      '`antseed claude` resolves the active buyer proxy, sets the placeholder Anthropic API key for the child process, and forwards the rest of your Claude Code flags unchanged. Manual environment variables still work if you want to run `claude` directly.',
+      'Claude Code is the official CLI coding agent from Anthropic. It speaks the Anthropic Messages API natively, so it slots into Antseed through `antseed apps connect claude-code` or by pointing `ANTHROPIC_BASE_URL` at your local proxy.',
+      '`antseed apps connect claude-code` points `~/.claude/settings.json` at the active buyer proxy with a placeholder API key and the `antseed` model, which follows the buyer\'s default route. `antseed apps disconnect claude-code` restores the settings it changed. Manual environment variables still work if you want to run `claude` directly.',
       'No real Anthropic API key is needed - the Antseed proxy authenticates each request with your local identity (`ANTSEED_IDENTITY_HEX`) and settles payments on-chain. The `ANTHROPIC_API_KEY` value is required by the Anthropic SDK only as a non-empty placeholder.',
       'When Claude Code calls the Messages API, the proxy selects the highest-ranked eligible offer under the shared Price + Trust preferences. Stable session metadata gives the conversation soft affinity to the seller that actually served it, with failover when needed. Every model on the network (listed by <code>GET /v1/models</code>) is a valid <code>--model</code> value; prefix it with a peer id (<code>&lt;peerId&gt;@&lt;service-id&gt;</code>) only when you want to force a specific seller.',
     ],
@@ -175,9 +175,9 @@ export const integrations: Integration[] = [
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed claude --model kimi-k2.6',
+        snippet: 'antseed apps connect claude-code\nantseed buyer connection set --model kimi-k2.6',
         note:
-          'Recommended: the wrapper reads the active buyer proxy from `buyer.state.json` or config, sets `ANTHROPIC_BASE_URL` and `ANTHROPIC_API_KEY` for Claude Code, and forwards extra Claude args. Add `--antseed-base-url http://host:port` only when your proxy is somewhere else. To route to a specific peer, prefix the model with its peer id: `antseed claude --model <peerId>@kimi-k2.6`.',
+          'Recommended: connect writes the active buyer proxy port (from `buyer.state.json` or config; override with `--port`), `ANTHROPIC_API_KEY` and the `antseed` model into Claude Code\'s settings. `connection set --model` picks the model that alias routes to; to route to a specific peer, use `--model <peerId>@kimi-k2.6`.',
       },
       {
         kind: 'env',
@@ -185,12 +185,12 @@ export const integrations: Integration[] = [
           ANTHROPIC_BASE_URL: `http://localhost:${ANT_PORT}`,
           ANTHROPIC_API_KEY: 'antseed',
         },
-        note: 'Manual equivalent if you want to run `claude` directly instead of through `antseed claude`.',
+        note: 'Manual equivalent if you want to run `claude` with these variables instead of connecting it.',
       },
     ],
     modelHints: {
       suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'glm-5'],
-      note: "`antseed claude --model <model-id>` passes the value to Claude Code unchanged. Use a model id returned by `curl http://localhost:8377/v1/models`. You can also route to a specific peer per session with `--model <peerId>@<service-id>`.",
+      note: "Set the model with `antseed buyer connection set --model <model-id>`, or pass `claude --model <model-id>` for one session. Use a model id returned by `curl http://localhost:8377/v1/models`. Route to a specific peer with `<peerId>@<service-id>`.",
     },
     test: [
       {
@@ -205,15 +205,15 @@ export const integrations: Integration[] = [
           'Any id here works with `--model` - the proxy applies the shared Price + Trust ranking and keeps soft conversation affinity after the first successful route. To force a specific seller, use `--model <peerId>@<service-id>` or `antseed buyer connection set --peer <peerId>`.',
       },
       {
-        label: 'Start a Claude Code session through the wrapper',
-        command: 'antseed claude --model kimi-k2.6',
-        note: 'Manual equivalent after exporting the env vars above: `claude --model kimi-k2.6`. To pin a specific peer for the session: `antseed claude --model <peerId>@kimi-k2.6`.',
+        label: 'Start a Claude Code session',
+        command: 'claude',
+        note: 'Once connected, plain `claude` uses Antseed. To use another model for one session: `claude --model kimi-k2.6`, or `claude --model <peerId>@kimi-k2.6` to pin a specific peer.',
       },
     ],
     troubleshooting: [
       {
         problem: '"invalid x-api-key" or 401 from Anthropic SDK',
-        fix: '`antseed claude` sets `ANTHROPIC_API_KEY=antseed` for you. If you run `claude` directly, set the variable to any non-empty string; the proxy ignores the value.',
+        fix: '`antseed apps connect claude-code` sets `ANTHROPIC_API_KEY=antseed` for you. With the manual setup, set the variable to any non-empty string; the proxy ignores the value.',
       },
       {
         problem: 'Hangs forever on first message',
@@ -233,7 +233,7 @@ export const integrations: Integration[] = [
       { label: 'Antseed skill: join-buyer', href: 'https://github.com/AntSeed/antseed/tree/main/skills/join-buyer' },
     ],
     agentSummary:
-      'Prefer `antseed claude --model <model-id>`. It sets ANTHROPIC_BASE_URL and ANTHROPIC_API_KEY for Claude Code. Manual equivalent: set ANTHROPIC_BASE_URL=http://localhost:8377 and ANTHROPIC_API_KEY=antseed, then run `claude --model <model-id>`.',
+      'Prefer `antseed apps connect claude-code`, then `antseed buyer connection set --model <model-id>`. Connect sets ANTHROPIC_BASE_URL, ANTHROPIC_API_KEY and the `antseed` model in ~/.claude/settings.json. Manual equivalent: set ANTHROPIC_BASE_URL=http://localhost:8377 and ANTHROPIC_API_KEY=antseed, then run `claude --model <model-id>`.',
   },
   {
     slug: 'codex',
@@ -245,11 +245,11 @@ export const integrations: Integration[] = [
     status: 'verified',
     seoTitle: 'Run OpenAI Codex CLI on any model, pay per use',
     headline: 'Run OpenAI Codex CLI on any model',
-    oneLiner: "OpenAI's official CLI coding agent - use `antseed codex` for per-run proxy config.",
+    oneLiner: "OpenAI's official CLI coding agent - connect it to Antseed with `antseed apps connect codex`.",
     description: [
       "Codex is OpenAI's terminal coding agent. Recent versions ignore `OPENAI_BASE_URL` and instead read provider config from Codex settings.",
-      '`antseed codex` supplies that provider config for one run with Codex `-c` overrides, points it at the active buyer proxy, sets the placeholder API key, and leaves your real `CODEX_HOME` untouched.',
-      'If you prefer a persistent manual setup, create `~/.codex/antseed.config.toml` and launch Codex with `codex --profile antseed`; the wrapper is still the shortest path for one-off sessions.',
+      '`antseed apps connect codex` adds an Antseed provider to `~/.codex/config.toml`, pointed at the active buyer proxy with the `antseed` model, which follows the buyer\'s default route. `antseed apps disconnect codex` removes only what it added.',
+      'If you prefer to manage the config yourself, create `~/.codex/antseed.config.toml` and launch Codex with `codex --profile antseed`.',
     ],
     install: [
       { label: 'Install Codex globally', command: 'npm install -g @openai/codex' },
@@ -259,9 +259,9 @@ export const integrations: Integration[] = [
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed codex --model deepseek-v4-flash',
+        snippet: 'antseed apps connect codex\nantseed buyer connection set --model deepseek-v4-flash',
         note:
-          'Recommended: the wrapper resolves the proxy URL, injects an Antseed model provider with `wire_api = "responses"`, sets `ANTSEED_API_KEY=antseed`, and forwards extra Codex args. Put child flags after `--` when they look like wrapper flags. To route to a specific peer, prefix the model with its peer id: `antseed codex --model <peerId>@deepseek-v4-flash`.',
+          'Recommended: connect adds an Antseed model provider with `wire_api = "responses"` pointed at the buyer proxy. `connection set --model` picks the model the `antseed` alias routes to; to route to a specific peer, use `--model <peerId>@deepseek-v4-flash`.',
       },
       {
         kind: 'file',
@@ -283,12 +283,12 @@ wire_api = "responses"`,
       {
         kind: 'gui',
         instructions:
-          'No real OpenAI key is needed. The Antseed proxy authenticates with your local buyer identity; the wrapper and manual profile both point Codex at the local proxy instead of OpenAI.',
+          'No real OpenAI key is needed. The Antseed proxy authenticates with your local buyer identity; the connected config and the manual profile both point Codex at the local proxy instead of OpenAI.',
       },
     ],
     modelHints: {
       suggested: ['deepseek-v4-flash', 'kimi-k2.6', 'qwen3-coder-480b', 'minimax-m2.7'],
-      note: 'Pass a network model id to `antseed codex --model <model-id>`. For a manual profile, set top-level `model = "<model-id>"` in `~/.codex/antseed.config.toml` or override with `codex --profile antseed --model <model-id>`. Route to a specific peer by prefixing its advertised service id: `<peerId>@<service-id>`.',
+      note: 'Set the model with `antseed buyer connection set --model <model-id>`. For a manual profile, set top-level `model = "<model-id>"` in `~/.codex/antseed.config.toml` or override with `codex --profile antseed --model <model-id>`. Route to a specific peer by prefixing its advertised service id: `<peerId>@<service-id>`.',
     },
     test: [
       {
@@ -303,8 +303,8 @@ wire_api = "responses"`,
           'Whatever appears here is a valid value for top-level `model = ...` in `~/.codex/antseed.config.toml` (or for `codex --profile antseed --model <id>`).',
       },
       {
-        label: 'Run Codex through the wrapper',
-        command: 'antseed codex --model deepseek-v4-flash',
+        label: 'Run Codex',
+        command: 'codex',
         note: 'Manual profile equivalent: `codex --profile antseed --model deepseek-v4-flash`.',
       },
       {
@@ -320,7 +320,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     troubleshooting: [
       {
         problem: '`OPENAI_BASE_URL` / `OPENAI_API_KEY` are being ignored',
-        fix: 'Expected on recent Codex builds. Use `antseed codex --model <model-id>` so the wrapper injects the provider config for the current run, or use the manual `~/.codex/antseed.config.toml` profile above.',
+        fix: 'Expected on recent Codex builds. Use `antseed apps connect codex`, which writes the provider config, or the manual `~/.codex/antseed.config.toml` profile above.',
       },
       {
         problem: 'How can I tell if Codex is actually routing through Antseed?',
@@ -332,11 +332,11 @@ Deposits reserved:           0 USDC → 1 USDC`,
       },
       {
         problem: 'Hand-written Codex `-c` provider overrides behave inconsistently',
-        fix: 'Use `antseed codex --model <model-id>` so Antseed supplies the complete provider block (`base_url`, `wire_api`, and `model_provider`) for the current run. If managing config yourself, keep the full provider/profile in user-level `~/.codex/antseed.config.toml`.',
+        fix: 'Use `antseed apps connect codex` so Antseed writes the complete provider block (`base_url`, `wire_api`, and `model_provider`). If managing config yourself, keep the full provider/profile in user-level `~/.codex/antseed.config.toml`.',
       },
       {
         problem: 'Streaming stops after the first chunk with a manual profile',
-        fix: 'Use `antseed codex`, or set `wire_api = "responses"` in the manual `[model_providers.antseed]` block.',
+        fix: 'Use `antseed apps connect codex`, or set `wire_api = "responses"` in the manual `[model_providers.antseed]` block.',
       },
       {
         problem: '`unknown profile: antseed`',
@@ -352,7 +352,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       { label: 'Codex sample config', href: 'https://developers.openai.com/codex/config-sample' },
     ],
     agentSummary:
-      'Prefer `antseed codex --model <model-id>`. It injects the Antseed Codex provider for one run using base_url=http://localhost:8377/v1 and wire_api="responses". Manual alternative: create user-level ~/.codex/antseed.config.toml with top-level model/model_provider plus [model_providers.antseed], then run `codex --profile antseed`.',
+      'Prefer `antseed apps connect codex`, then `antseed buyer connection set --model <model-id>`. Connect adds the Antseed Codex provider to ~/.codex/config.toml using base_url=http://localhost:8377/v1 and wire_api="responses". Manual alternative: create user-level ~/.codex/antseed.config.toml with top-level model/model_provider plus [model_providers.antseed], then run `codex --profile antseed`.',
   },
   {
     slug: 'opencode',
@@ -364,10 +364,10 @@ Deposits reserved:           0 USDC → 1 USDC`,
     status: 'verified',
     seoTitle: 'Run OpenCode on any model, pay per request',
     headline: 'Run OpenCode on any model',
-    oneLiner: 'Open-source AI coding agent - launch through Antseed with `antseed opencode`.',
+    oneLiner: 'Open-source AI coding agent - connect it to Antseed with `antseed apps connect opencode`.',
     description: [
       'OpenCode is an MIT-licensed terminal coding agent built on the Vercel AI SDK. It supports 75+ providers out of the box and lets you register custom ones via <code>opencode.json</code>.',
-      '`antseed opencode` creates that custom provider config in a temporary <code>opencode.json</code>, points OpenCode at it for the child process, and deletes it when the session exits. Manual project or global config still works if you want OpenCode to remember Antseed outside the wrapper.',
+      '`antseed apps connect opencode` adds that custom provider to your global OpenCode config, with the <code>antseed</code> model, which follows the buyer\'s default route. <code>antseed apps disconnect opencode</code> removes it again. Manual project or global config still works if you want to list models yourself.',
       'Antseed plugs in as a <strong>custom provider</strong> using the <code>@ai-sdk/openai-compatible</code> adapter - the same one OpenCode recommends for any OpenAI-compatible endpoint (LM Studio, llama.cpp, Atomic Chat, etc.). No <code>ANTHROPIC_BASE_URL</code>: OpenCode reads provider config from JSON.',
       'Each model you want to use must be listed under <code>models</code>. The id has to match what the buyer proxy returns from <code>GET /v1/models</code> - the network-wide model list, aggregated across all sellers.',
     ],
@@ -382,9 +382,9 @@ Deposits reserved:           0 USDC → 1 USDC`,
       {
         kind: 'code',
         language: 'bash',
-        snippet: 'antseed opencode --model gpt-oss-120b',
+        snippet: 'antseed apps connect opencode\nantseed buyer connection set --model gpt-oss-120b',
         note:
-          'Recommended: the wrapper resolves the proxy URL, writes a temporary OpenCode config with one Antseed model, sets `OPENCODE_CONFIG` for the child process, and forwards extra OpenCode args.',
+          'Recommended: connect adds an Antseed provider pointed at the buyer proxy. `connection set --model` picks the model the `antseed` alias routes to; to route to a specific peer, use `--model <peerId>@gpt-oss-120b`.',
       },
       {
         kind: 'file',
@@ -414,7 +414,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
     modelHints: {
       suggested: ['kimi-k2.6', 'deepseek-v4-flash', 'minimax-m2.7', 'gpt-oss-120b'],
       note:
-        '`antseed opencode --model <model-id>` generates a temporary config for that one id. In manual config, use model ids returned by `curl http://localhost:8377/v1/models` as the keys under `models`. Route to a specific peer by prefixing its advertised service id: `<peerId>@<service-id>`.',
+        'With `antseed apps connect opencode`, set the model with `antseed buyer connection set --model <model-id>`. In manual config, use model ids returned by `curl http://localhost:8377/v1/models` as the keys under `models`. Route to a specific peer by prefixing its advertised service id: `<peerId>@<service-id>`.',
     },
     test: [
       {
@@ -428,16 +428,15 @@ Deposits reserved:           0 USDC → 1 USDC`,
         note: 'Add or remove entries under `models` in `opencode.json` so they match this list.',
       },
       {
-        label: 'Launch OpenCode through the wrapper',
-        command: 'antseed opencode --model gpt-oss-120b',
-        note:
-          'Extra OpenCode args are forwarded, so `antseed opencode --model gpt-oss-120b run` works too. Manual config equivalent: run `opencode`, then pick one of the Antseed entries from `/models`.',
+        label: 'Launch OpenCode',
+        command: 'opencode',
+        note: 'Pick the Antseed entry from `/models` if OpenCode does not select it.',
       },
     ],
     troubleshooting: [
       {
         problem: 'Antseed doesn\'t appear in `/connect` or `/models`',
-        fix: 'With `antseed opencode`, pass a catalog model id via `--model`; the wrapper supplies a temporary config. With manual config, make sure `opencode.json` is in your project root (or `~/.config/opencode/opencode.json`) and that the JSON is valid - a stray comma silently disables the whole provider.',
+        fix: 'Run `antseed apps status` to check that OpenCode is connected, and restart OpenCode after connecting. With manual config, make sure `opencode.json` is in your project root (or `~/.config/opencode/opencode.json`) and that the JSON is valid - a stray comma silently disables the whole provider.',
       },
       {
         problem: 'Model is listed but every call returns `model_not_found`',
@@ -453,7 +452,7 @@ Deposits reserved:           0 USDC → 1 USDC`,
       { label: 'OpenCode repo', href: 'https://github.com/sst/opencode' },
     ],
     agentSummary:
-      'Prefer `antseed opencode --model <model-id>`. It creates a temporary OpenCode provider config using npm="@ai-sdk/openai-compatible", baseURL="http://localhost:8377/v1", apiKey="antseed", and one model entry. Manual alternative: put the same provider in opencode.json and run `opencode`.',
+      'Prefer `antseed apps connect opencode`, then `antseed buyer connection set --model <model-id>`. Connect adds an OpenCode provider using npm="@ai-sdk/openai-compatible", baseURL="http://localhost:8377/v1", apiKey="antseed", and the `antseed` model. Manual alternative: put the same provider in opencode.json and run `opencode`.',
   },
   {
     slug: 'pi',

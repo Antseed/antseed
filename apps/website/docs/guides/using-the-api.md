@@ -221,14 +221,14 @@ antseed buyer channels withdraw <channelId>
 
 **Recommended:** connect Claude Code from the AI VPN's **Apps** view. Antseed updates `~/.claude/settings.json` so new and running Claude Code sessions use the `antseed` model alias, which follows the model selected in the AI VPN. Disconnecting restores the settings Antseed changed. While connected, plain `claude` requests go through Antseed instead of your Anthropic login.
 
-CLI alternative — the `antseed claude` wrapper resolves the running buyer proxy, sets `ANTHROPIC_BASE_URL` and a placeholder `ANTHROPIC_API_KEY` for the child process, and forwards the rest of your flags to Claude Code:
+CLI alternative — connect it with `antseed apps`, which makes the same settings change, and pick the model the `antseed` alias follows:
 
 ```bash
-antseed claude --model kimi-k2.6
-
-# Route to a specific peer for the session:
-antseed claude --model <peerId>@kimi-k2.6
+antseed apps connect claude-code
+antseed buyer connection set --model kimi-k2.6   # or <peerId>@kimi-k2.6
 ```
+
+`antseed apps disconnect claude-code` restores your settings.
 
 Manual equivalent:
 
@@ -238,7 +238,7 @@ export ANTHROPIC_API_KEY=antseed   # any non-empty placeholder
 claude --model kimi-k2.6           # or <peerId>@kimi-k2.6
 ```
 
-Use `--model antseed` with the wrapper or manual setup to follow the AI VPN selection instead of pinning a concrete model.
+Use `--model antseed` with the manual setup to follow the default route (the AI VPN selection, or `antseed buyer connection set --model`) instead of pinning a concrete model.
 
 Claude Code sends requests to `/v1/messages`. Bare model ids use automatic routing and conversation affinity; explicitly prefixed model ids remain hard-pinned. The proxy translates to the selected seller's native format when needed.
 
@@ -246,13 +246,11 @@ Claude Code sends requests to `/v1/messages`. Bare model ids use automatic routi
 
 **Recommended:** launch Codex from the AI VPN's **Apps** view, which supplies the provider config and routing for you.
 
-CLI alternative — recent Codex versions (0.40+) ignore `OPENAI_BASE_URL` and `OPENAI_API_KEY`, so use the wrapper for automatic per-run config:
+CLI alternative — recent Codex versions (0.40+) ignore `OPENAI_BASE_URL` and `OPENAI_API_KEY`, so connect it with `antseed apps`, which adds an Antseed provider to `~/.codex/config.toml`:
 
 ```bash
-antseed codex --model deepseek-v4-flash
-
-# Route to a specific peer:
-antseed codex --model <peerId>@deepseek-v4-flash
+antseed apps connect codex
+antseed buyer connection set --model deepseek-v4-flash   # or <peerId>@deepseek-v4-flash
 ```
 
 Or create `~/.codex/antseed.config.toml` and launch with `codex --profile antseed` for a persistent manual setup. See the [Codex integration page](/integrations/codex) for the tested profile file, routing-verification check, and known gotchas (project-local configs, `-c` flag pitfalls).
@@ -262,13 +260,11 @@ Or create `~/.codex/antseed.config.toml` and launch with `codex --profile antsee
 **Recommended:** launch OpenCode from the AI VPN's **Apps** view. CLI alternative:
 
 ```bash
-antseed opencode --model gpt-oss-120b
-
-# Route to a specific peer:
-antseed opencode --model <peerId>@gpt-oss-120b
+antseed apps connect opencode
+antseed buyer connection set --model gpt-oss-120b   # or <peerId>@gpt-oss-120b
 ```
 
-The wrapper writes a temporary OpenCode provider config pointing at the proxy and removes it when the session ends. See the [OpenCode integration page](/integrations/opencode) for manual config.
+This adds an Antseed provider to your OpenCode config; `antseed apps disconnect opencode` removes it. See the [OpenCode integration page](/integrations/opencode) for manual config.
 
 ## curl
 
