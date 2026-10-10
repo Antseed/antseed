@@ -72,6 +72,8 @@ test('connected-app tool names resolve their marks', () => {
   assert.equal(resolveBrandKey('codex', 'Codex'), 'codex');
   assert.equal(resolveBrandKey('pi', 'pi'), 'pi');
   assert.equal(resolveBrandKey('gooeypi', 'GooeyPi'), 'pi');
+  assert.equal(resolveBrandKey('prime-agent', 'Prime Agent'), 'prime-agent');
+  assert.equal(resolveBrandKey('prime-intellect', 'INTELLECT-3'), 'generic');
   assert.equal(resolveBrandKey('hermes', 'Hermes Agent'), 'hermes');
   assert.equal(resolveBrandKey('hermes-agent'), 'hermes');
   assert.equal(resolveBrandKey('cursor', 'Cursor'), 'cursor');

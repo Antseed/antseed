@@ -76,6 +76,10 @@ const ORIGINAL_CONFIGS: Record<string, { path: string; content: string }[]> = {
     { path: '~/.pi/agent/models.json', content: '{\n  "providers": {}\n}\n' },
     { path: '~/.pi/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
   ],
+  'prime-agent': [
+    { path: '~/.prime/agent/models.json', content: '{\n  "providers": {}\n}\n' },
+    { path: '~/.prime/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
+  ],
   crush: [{ path: '~/.config/crush/crush.json', content: '{\n  "options": {},\n  "providers": {}\n}\n' }],
   goose: [{ path: '~/.config/goose/config.yaml', content: 'GOOSE_TEMPERATURE: 0.5\n' }],
   zed: [{ path: '~/.config/zed/settings.json', content: '{\n  "ui_font_size": 16\n}\n' }],

@@ -7,6 +7,7 @@ describe('displayToolName', () => {
     expect(displayToolName('droid')).toBe('Droid');
     expect(displayToolName('opencode')).toBe('OpenCode');
     expect(displayToolName('pi')).toBe('pi');
+    expect(displayToolName('prime-agent')).toBe('Prime Agent');
   });
 
   it('collapses every codex originator variant to Codex', () => {
