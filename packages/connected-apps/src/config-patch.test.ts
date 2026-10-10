@@ -12,6 +12,8 @@ import {
   CLAUDE_GATEWAY_DEFAULT_PORT,
   applyConfigPatch,
   claudeDesktopPatchTargets,
+  isConfigPatchConnected,
+  isConfigPatchInstalled,
   parseJsoncObject,
   readConfigPatch,
   removeConfigPatch,
@@ -21,6 +23,7 @@ import {
   type ConfigPatchDef,
   type DroidConfigPatchDef,
   type OpencodeConfigPatchDef,
+  type PiConfigPatchDef,
 } from './config-patch.js';
 import { DEFAULT_APP_PROFILES } from './defaults.js';
 
@@ -557,6 +560,131 @@ test('removeConfigPatch (pi) keeps a default selection it does not own', async (
     const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
     assert.equal(settings['defaultProvider'], 'anthropic');
     assert.equal(settings['defaultModel'], 'claude');
+  });
+});
+
+function makePrimeAgentPatch(modelsPath: string, settingsPath: string): ConfigPatchDef {
+  return {
+    format: 'pi',
+    configPath: modelsPath,
+    settingsPath,
+    providerKey: 'antseed',
+    baseURL: 'http://127.0.0.1:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
+  };
+}
+
+test('readConfigPatch keeps the prime-agent install probe on pi-format patches', () => {
+  const parsed = readConfigPatch({
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
+  }, 'prime-agent');
+  assert.equal(parsed?.format, 'pi');
+  assert.equal((parsed as { installProbe?: string }).installProbe, 'prime-agent');
+  const unknownProbe = readConfigPatch({
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    installProbe: 'not-a-tool',
+  }, 'custom');
+  assert.equal((unknownProbe as { installProbe?: string }).installProbe, undefined);
+});
+
+test('applyConfigPatch (prime-agent) connects alongside existing providers and disconnects cleanly', { skip: process.platform === 'win32' }, async () => {
+  // Skipped on Windows: the install probe would invoke real WSL discovery.
+  await withTempConfig(async (dir) => {
+    const modelsPath = path.join(dir, 'models.json');
+    const settingsPath = path.join(dir, 'settings.json');
+    await writeFile(modelsPath, JSON.stringify({
+      providers: { 'prime-inference': { baseUrl: 'https://api.pinference.ai/api/v1', apiKey: 'PRIME_API_KEY', api: 'openai-completions' } },
+    }), 'utf8');
+    await writeFile(settingsPath, JSON.stringify({ defaultProvider: 'prime-inference', defaultModel: 'qwen', theme: 'dark' }), 'utf8');
+    const patch = makePrimeAgentPatch(modelsPath, settingsPath);
+
+    applyConfigPatch(patch, PEER_ID, 9456);
+
+    const models = JSON.parse(await readFile(modelsPath, 'utf8')) as {
+      providers: Record<string, { baseUrl?: string; api?: string; apiKey?: string; headers?: Record<string, string> }>;
+    };
+    assert.ok(models.providers['prime-inference']);
+    assert.equal(models.providers.antseed?.baseUrl, 'http://127.0.0.1:9456/v1');
+    assert.equal(models.providers.antseed?.api, 'openai-responses');
+    assert.equal(models.providers.antseed?.apiKey, 'antseed');
+    assert.deepEqual(models.providers.antseed?.headers, { originator: 'prime-agent' });
+    let settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(settings['defaultProvider'], 'antseed');
+    assert.equal(settings['defaultModel'], 'antseed');
+    assert.equal(settings['theme'], 'dark');
+    assert.equal(isConfigPatchConnected(patch), true);
+    assert.equal(isConfigPatchInstalled(patch), true);
+
+    assert.equal(removeConfigPatch(patch), true);
+
+    const after = JSON.parse(await readFile(modelsPath, 'utf8')) as { providers: Record<string, unknown> };
+    assert.equal(after.providers['antseed'], undefined);
+    assert.ok(after.providers['prime-inference']);
+    settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
+    assert.equal(settings['defaultProvider'], undefined);
+    assert.equal(settings['defaultModel'], undefined);
+    assert.equal(settings['theme'], 'dark');
+    assert.equal(isConfigPatchConnected(patch), false);
+  });
+});
+
+test('applyConfigPatch (prime-agent) refuses to connect when Prime Agent is not installed', { skip: process.platform === 'win32' }, async () => {
+  await withTempConfig(async (dir) => {
+    const missingDir = path.join(dir, 'missing', 'agent');
+    const patch = makePrimeAgentPatch(path.join(missingDir, 'models.json'), path.join(missingDir, 'settings.json'));
+    const originalHome = process.env['HOME'];
+    const originalPath = process.env['PATH'];
+    process.env['HOME'] = dir;
+    process.env['PATH'] = '';
+    try {
+      assert.throws(() => applyConfigPatch(patch, PEER_ID, 9456), /prime-agent was not found/);
+      assert.equal(existsSync(missingDir), false);
+      assert.equal(isConfigPatchInstalled(patch), false);
+    } finally {
+      process.env['HOME'] = originalHome;
+      process.env['PATH'] = originalPath;
+    }
+  });
+});
+
+test('removeConfigPatch (prime-agent) unpatches recorded WSL targets under its own tool key', async () => {
+  await withTempConfig(async (dir) => {
+    const nativeModels = path.join(dir, 'native-models.json');
+    const nativeSettings = path.join(dir, 'native-settings.json');
+    const wslModels = path.join(dir, 'wsl-models.json');
+    const wslSettings = path.join(dir, 'wsl-settings.json');
+    const wslTargetsFile = path.join(dir, 'targets.json');
+    applyConfigPatch(
+      { ...(makePrimeAgentPatch(wslModels, wslSettings) as PiConfigPatchDef), baseURL: 'http://172.29.32.1:{buyerPort}/v1', installProbe: undefined },
+      PEER_ID,
+      9456,
+    );
+    const piTarget = { tool: 'pi', distro: 'Ubuntu', configPath: path.join(dir, 'pi-models.json'), settingsPath: path.join(dir, 'pi-settings.json'), host: '172.29.32.1', needsRelay: true };
+    await writeFile(wslTargetsFile, JSON.stringify([
+      { tool: 'prime-agent', distro: 'Ubuntu', configPath: wslModels, settingsPath: wslSettings, host: '172.29.32.1', needsRelay: true },
+      piTarget,
+    ]), 'utf8');
+
+    assert.equal(removeConfigPatch(makePrimeAgentPatch(nativeModels, nativeSettings), wslTargetsFile), true);
+
+    const models = JSON.parse(await readFile(wslModels, 'utf8')) as { providers: Record<string, unknown> };
+    assert.equal(models.providers['antseed'], undefined);
+    const settings = JSON.parse(await readFile(wslSettings, 'utf8')) as Record<string, unknown>;
+    assert.equal(settings['defaultProvider'], undefined);
+    assert.deepEqual(JSON.parse(await readFile(wslTargetsFile, 'utf8')), [piTarget]);
   });
 });
 

@@ -10,7 +10,7 @@ function names(profiles: readonly unknown[]): string[] {
   return profiles.map((profile) => (profile as Record<string, unknown>)['name'] as string);
 }
 
-const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed'];
+const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed'];
 
 test('default app profiles are config-patch entries with unique names', () => {
   assert.deepEqual(names(DEFAULT_APP_PROFILES), DEFAULT_NAMES);
@@ -73,6 +73,23 @@ test('GooeyPi patches the shared Pi config without requiring pi on PATH', () => 
   });
 });
 
+test('Prime Agent patches its own pi-format config under ~/.prime/agent', () => {
+  const profile = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 'prime-agent');
+  assert.ok(profile);
+  assert.equal(profile['displayName'], 'Prime Agent');
+  assert.deepEqual(profile['toolSlugs'], ['prime-agent']);
+  assert.deepEqual(profile['configPatch'], {
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
+  });
+});
+
 test('Hermes opens the installed Hermes desktop application by default', () => {
   const profile = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 'hermes');
   assert.ok(profile);
@@ -119,6 +136,6 @@ test('mergeWithDefaultAppProfiles lets external profiles override same-name defa
     { name: 'opencode', displayName: 'OpenCode (private override)' },
   ];
   const merged = mergeWithDefaultAppProfiles(external);
-  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed']);
+  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed']);
   assert.equal((merged[1] as Record<string, unknown>)['displayName'], 'OpenCode (private override)');
 });

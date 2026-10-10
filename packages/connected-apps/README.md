@@ -6,7 +6,7 @@ app's Connected apps screen.
 
 | Module | Contents |
 |---|---|
-| `config-patch` | `applyConfigPatch` / `writeConfigPatch` / `removeConfigPatch` for every format (opencode, codex, droid, pi, crush, goose, hermes, zed, claude-code, t3code, claude-desktop), plus read-only `isConfigPatchInstalled` / `isConfigPatchConnected` |
+| `config-patch` | `applyConfigPatch` / `writeConfigPatch` / `removeConfigPatch` for every format (opencode, codex, droid, pi — also used by GooeyPi and Prime Agent — crush, goose, hermes, zed, claude-code, t3code, claude-desktop), plus read-only `isConfigPatchInstalled` / `isConfigPatchConnected` |
 | `defaults` | `DEFAULT_APP_PROFILES`, the built-in app catalog, and `mergeWithDefaultAppProfiles` |
 | `wsl` | WSL discovery and the applied-WSL-targets memory used on Windows |
 | `status` | Typed catalog (`loadConnectedAppProfiles`) and per-app status snapshots |

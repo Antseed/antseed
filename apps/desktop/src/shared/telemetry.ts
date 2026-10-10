@@ -46,6 +46,7 @@ export const TELEMETRY_APP_NAMES = [
   't3code',
   'pi',
   'gooeypi',
+  'prime-agent',
   'crush',
   'goose',
   'zed',

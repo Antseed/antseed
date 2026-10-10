@@ -162,6 +162,33 @@ test('identified clients without a session id get a stable synthetic conversatio
   assert.equal(later?.sessionKey, first?.sessionKey)
 })
 
+test('Prime Agent responses requests key on the originator plus a synthetic first-turn key', () => {
+  // Prime Agent's session engine sends no prompt_cache_key; the connected-app
+  // config adds `originator: prime-agent` to its custom provider headers.
+  const firstRequest = {
+    model: 'antseed',
+    input: [
+      { role: 'developer', content: 'You are Prime Agent.' },
+      { role: 'user', content: [{ type: 'input_text', text: 'Profile the data loader.' }] },
+    ],
+    stream: true,
+    store: false,
+  }
+  const laterRequest = {
+    ...firstRequest,
+    input: [
+      ...firstRequest.input,
+      { type: 'message', role: 'assistant', content: [{ type: 'output_text', text: 'Looking now.' }] },
+      { role: 'user', content: [{ type: 'input_text', text: 'Now the cache.' }] },
+    ],
+  }
+  const first = extractConversationIdentity({ originator: 'prime-agent' }, firstRequest)
+  const later = extractConversationIdentity({ originator: 'prime-agent' }, laterRequest)
+  assert.equal(first?.tool, 'prime-agent')
+  assert.match(first?.sessionKey ?? '', /^synthetic-[0-9a-f]{32}$/)
+  assert.equal(later?.sessionKey, first?.sessionKey)
+})
+
 test('cursor synthetic conversation keys use the prompt after the environment preamble', () => {
   const headers = {
     'user-agent': 'Cursor/1.0',

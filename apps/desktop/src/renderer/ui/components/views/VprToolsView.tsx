@@ -54,6 +54,10 @@ const BUILT_IN_APP_INFO: Readonly<Record<string, { description: string; websiteU
     description: 'A graphical desktop experience powered by the Pi coding-agent ecosystem.',
     websiteUrl: 'https://pi.dev/',
   },
+  'prime-agent': {
+    description: 'Prime Intellect’s open-source coding and research agent for long-running work.',
+    websiteUrl: 'https://github.com/PrimeIntellect-ai/prime-agent',
+  },
   crush: {
     description: 'A terminal-based AI coding agent from Charm.',
     websiteUrl: 'https://github.com/charmbracelet/crush',

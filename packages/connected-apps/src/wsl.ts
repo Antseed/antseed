@@ -31,6 +31,7 @@ export const WSL_TOOL_PROBES = {
   crush: { binary: 'crush', signals: ['.config/crush', '.local/share/crush', '.local/bin/crush'] },
   goose: { binary: 'goose', signals: ['.config/goose', '.local/bin/goose'] },
   pi: { binary: 'pi', signals: ['.pi', '.local/bin/pi'] },
+  'prime-agent': { binary: 'prime-agent', signals: ['.prime/agent', '.local/bin/prime-agent'] },
 } as const;
 
 export type WslTool = keyof typeof WSL_TOOL_PROBES;
@@ -45,7 +46,7 @@ export type WslConfigTarget = {
   readonly distro: string;
   /** UNC path of the tool's config file inside the distro. */
   readonly configPath: string;
-  /** UNC path of the tool's secondary settings file (pi only). */
+  /** UNC path of the tool's secondary settings file (pi-format tools only). */
   readonly settingsPath?: string;
   /** Host on which the distro reaches the Windows-side buyer proxy. */
   readonly host: string;
