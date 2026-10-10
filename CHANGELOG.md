@@ -22,6 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Buyers now count every delivered video and its length in the signed channel metadata, whatever the seller prices. Before, a per-second price recorded 0 videos and a per-generation price recorded 0 seconds. Works with sellers on any version, since only the buyer computes these counters.
 - ANTS dashboard: Stake rewards and Claim no longer fail with "Position N is not owned by this wallet" when the indexer still lists a position NFT that was transferred to another wallet; such positions are skipped (`@antseed/node` `previewPoolRewards` now treats `includeIds` as hints). Restaking an explicitly selected position the wallet does not own still fails.
 - ANTS dashboard: the position menu disables Enable max lock and Move allocation when the action cannot take effect (for example, an expired lock) and shows why, instead of opening a form that cannot be submitted. The expired-lock message now says to withdraw and stake again.
 

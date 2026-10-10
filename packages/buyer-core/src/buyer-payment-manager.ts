@@ -74,6 +74,21 @@ function countVideoSeconds(usage: UnitBillingUsage | undefined): bigint {
   return BigInt(Math.max(0, Math.floor(usage?.units.video_seconds ?? 0)));
 }
 
+/**
+ * Usage for the signed video counters: the seller's billed units, plus video
+ * units it doesn't price that the buyer saw delivered. A per-second price
+ * reports no generation and a per-generation price no seconds, but the
+ * counters always count the video and its length.
+ */
+function videoAttributionUsage(billed: UnitBillingUsage, observed: UnitBillingUsage | undefined): UnitBillingUsage {
+  return {
+    units: {
+      video_generations: billed.units.video_generations ?? observed?.units.video_generations,
+      video_seconds: billed.units.video_seconds ?? observed?.units.video_seconds,
+    },
+  };
+}
+
 function validateUnitNormalizedCost(
   model: UnitBillingModelV1,
   context: UnitBillingContext,
@@ -1664,8 +1679,9 @@ export class BuyerPaymentManager {
           );
           const acceptedUnitUsage = unitUsageFromReport(payload.billingUsage);
           acceptedOutputImages = countOutputImages(acceptedUnitUsage);
-          acceptedVideoGenerations = countVideoGenerations(acceptedUnitUsage);
-          acceptedVideoSeconds = countVideoSeconds(acceptedUnitUsage);
+          const videoUsage = videoAttributionUsage(acceptedUnitUsage, observedUnitUsage);
+          acceptedVideoGenerations = countVideoGenerations(videoUsage);
+          acceptedVideoSeconds = countVideoSeconds(videoUsage);
         }
 
         const buyerEstimate = tokenEstimate + acceptedUnitCost;
@@ -2110,7 +2126,7 @@ export class BuyerPaymentManager {
     try {
       const observed = billing.observedUnitUsage ?? await this._waitForObservedUnitUsage(requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
       validateUnitBillingUsage(billing.unitModel, billing.context, payload.billingUsage, state.price, this._costTolerance, observed);
-      usage = unitUsageFromReport(payload.billingUsage);
+      usage = videoAttributionUsage(unitUsageFromReport(payload.billingUsage), observed);
     } catch (err) {
       debugWarn(`[BuyerPayment] One-off NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
       return;
