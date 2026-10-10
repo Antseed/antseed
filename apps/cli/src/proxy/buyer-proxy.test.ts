@@ -386,6 +386,28 @@ test('BuyerProxy accepts a custom background refresh interval', () => {
   assert.equal((proxy as any)._bgRefreshIntervalMs, 15_000)
 })
 
+test('BuyerProxy rewrites upstream 413 responses into a clear request size error', () => {
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: '/tmp/antseed-test',
+    node: { router: null } as any,
+  })
+  const upstream = {
+    requestId: 'req-413',
+    statusCode: 413,
+    headers: { 'content-type': 'text/html' },
+    body: Buffer.from('<html><title>413 Request Entity Too Large</title></html>'),
+  }
+
+  const rewritten = (proxy as any)._withFriendlyUploadLimitError(upstream, 37 * 1024 * 1024, 'opus-5.5')
+  const { error } = JSON.parse(Buffer.from(rewritten.body).toString('utf-8'))
+
+  assert.equal(rewritten.headers['content-type'], 'application/json')
+  assert.equal(error.code, 'request_too_large')
+  assert.match(error.message, /Request body for opus-5\.5 is 37 MiB/)
+  assert.match(error.message, /Images and large attachments/)
+})
+
 test('BuyerProxy reloads model routing preferences from config', async (t) => {
   const dataDir = await mkdtemp(join(tmpdir(), 'antseed-routing-config-'))
   const configPath = join(dataDir, 'config.json')

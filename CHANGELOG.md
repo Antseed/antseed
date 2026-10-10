@@ -22,6 +22,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI buyer: a `413` from a seller's upstream provider (JSON or an HTML error page) now returns a JSON `request_too_large` error with the request size and the likely cause, instead of the raw upstream body.
 - Node, desktop and CLI: fixed DHT bootstrap on DNS64/NAT64 networks (including some ISPs and mobile carriers), where synthesized IPv6 DNS answers could leave buyers unable to join and showing "Network unreachable". Bootstrap now explicitly resolves IPv4 addresses. This requires working IPv4 UDP connectivity; it does not add IPv6-only transport support.
 - Buyer payments: video receipts now count the delivered video. The signed SpendingAuth metadata counted `video_generations` only when the seller priced a `video_generations` component, so sellers that price video per second (`video_seconds` only) settled with 0 videos and N seconds. The buyer now fills both video counters from the video it actually received, with no change to prices or billing checks. Receipts already settled are unchanged, and the counter is only correct once buyers run this `@antseed/buyer-core` release.
 - ANTS dashboard: Stake rewards and Claim no longer fail with "Position N is not owned by this wallet" when the indexer still lists a position NFT that was transferred to another wallet; such positions are skipped (`@antseed/node` `previewPoolRewards` now treats `includeIds` as hints). Restaking an explicitly selected position the wallet does not own still fails.
