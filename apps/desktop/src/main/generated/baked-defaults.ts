@@ -21,3 +21,11 @@ export const BAKED_COMPARABLE_PRICES_URL: string | null = null;
  */
 export const BAKED_POSTHOG_HOST: string | null = null;
 export const BAKED_POSTHOG_PROJECT_API_KEY: string | null = null;
+
+/**
+ * Download-proxy origin the desktop app reports install-attribution
+ * milestones to (see telemetry/attribution.ts). Overridden by
+ * ATTRIBUTION_ENDPOINT at runtime; null (dev and source builds) disables
+ * attribution reporting entirely.
+ */
+export const BAKED_ATTRIBUTION_ENDPOINT: string | null = null;

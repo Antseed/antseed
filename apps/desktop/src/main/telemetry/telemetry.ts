@@ -14,7 +14,7 @@
  * - Routine captures are fire-and-forget; clean shutdown uses a bounded flush.
  * - First-open and first-chat events fire exactly once per installation.
  */
-import { randomBytes } from 'node:crypto';
+import { randomBytes, randomUUID } from 'node:crypto';
 import {
   TELEMETRY_SCHEMA_VERSION,
   countBucket,
@@ -27,6 +27,13 @@ import {
   type TelemetryEventProperties,
 } from './events.js';
 import { sanitizeTelemetryProperties } from './sanitize.js';
+import {
+  ATTRIBUTION_ENDPOINT_ENV,
+  createAttributionReporter,
+  readInstallToken,
+  type ActivationKind,
+  type AttributionMilestone,
+} from './attribution.js';
 import { createPostHogTransport, type PostHogTransport } from './posthog.js';
 import {
   loadTelemetryStateResult,
@@ -34,6 +41,7 @@ import {
   type TelemetryState,
 } from './state.js';
 import {
+  BAKED_ATTRIBUTION_ENDPOINT,
   BAKED_POSTHOG_HOST,
   BAKED_POSTHOG_PROJECT_API_KEY,
 } from '../generated/baked-defaults.js';
@@ -177,6 +185,10 @@ export type CreateTelemetryServiceOptions = {
   transport?: PostHogTransport;
   heartbeatIntervalMs?: number | null;
   shutdownFlushTimeoutMs?: number;
+  /** Path of the running executable; locates the installer stamp on Windows. */
+  execPath?: string;
+  /** Test seam for milestone reports to the download proxy. */
+  attributionFetch?: typeof fetch;
 };
 
 export async function createTelemetryService(
@@ -245,6 +257,54 @@ export async function createTelemetryService(
     && !state.telemetryDisabled
     && normalizeDistinctId(options.getDistinctId()) !== null
   );
+
+  // Install attribution (attribution.ts): reads the installer stamp once, then
+  // reports milestones to the download proxy under the same kill switches and
+  // opt-out as PostHog telemetry. Unlike PostHog it does not need the wallet
+  // identity — its id is a random per-install UUID. Off entirely when no
+  // endpoint is configured (dev and source builds).
+  const attributionEndpoint = configValue(env, ATTRIBUTION_ENDPOINT_ENV, BAKED_ATTRIBUTION_ENDPOINT);
+  const attributionAvailable = available && isValidHttpsUrl(attributionEndpoint);
+  if (attributionAvailable) {
+    if (!state.attributionInstallId) state.attributionInstallId = randomUUID();
+    if (!state.attributionToken && options.execPath) {
+      state.attributionToken = await readInstallToken({
+        platform: options.platform,
+        execPath: options.execPath,
+        env,
+      });
+    }
+  }
+  const attribution = createAttributionReporter({
+    endpoint: attributionEndpoint,
+    isEnabled: () => attributionAvailable && !state.telemetryDisabled,
+    context: () => context,
+    getToken: () => state.attributionToken,
+    getInstallId: () => state.attributionInstallId ?? '',
+    hasSent: (name) => state.attributionSent.includes(name),
+    // In-memory only; each caller persists through its own save() so no
+    // write outlives the method that produced it.
+    markSent: (name) => {
+      state.attributionSent = [...state.attributionSent, name];
+    },
+    fetchImpl: options.attributionFetch,
+  });
+  const milestone = (
+    name: AttributionMilestone,
+    params: Record<string, string | number | boolean> = {},
+    once = true,
+  ): void => {
+    void attribution.report(name, params, { once });
+  };
+  /** First real use of the app; `kind` says what it was. Once per install. */
+  const activated = (kind: ActivationKind): void => milestone('app_activated', { kind });
+  /** True when the onboarded milestone was just marked (caller persists). */
+  const maybeOnboarded = (): boolean => {
+    if (!state.hasCompletedSetup || !hasEmittedDhtStarted) return false;
+    if (state.attributionSent.includes('app_onboarded')) return false;
+    milestone('app_onboarded');
+    return true;
+  };
 
   const capture = <K extends TelemetryEventName>(
     event: K,
@@ -400,6 +460,7 @@ export async function createTelemetryService(
         state.firstOpenedAtMs = nowMs;
         state.firstOpenDate = new Date(nowMs).toISOString().slice(0, 10);
         track('app_first_opened', { first_open_date: state.firstOpenDate }, nowMs);
+        milestone('app_first_opened'); // persisted by the save() below
       }
 
       state.sessionActive = true;
@@ -424,6 +485,7 @@ export async function createTelemetryService(
         duration_bucket: durationBucket(durationSinceSessionStart(nowMs)),
         routing_node_count_bucket: countBucket(routingNodeCount),
       }, nowMs);
+      if (maybeOnboarded()) await save();
     },
 
     async recordPeersDiscovered(peerCount, serviceCount, nowMs = now()) {
@@ -445,6 +507,18 @@ export async function createTelemetryService(
 
     async recordUserAction(input, nowMs = now()) {
       enqueueUserAction(input, nowMs);
+      const sentBefore = state.attributionSent.length;
+      if (input.action === 'app_connect') {
+        milestone('tool_connected', input.app ? { app: input.app } : {});
+        activated('tool_connected');
+      } else if (input.action === 'route_mode_change') {
+        activated('routing');
+      } else if (input.action === 'api_config_copy') {
+        activated('api_config');
+      } else if (input.action === 'plugin_install') {
+        activated('plugin');
+      }
+      if (state.attributionSent.length !== sentBefore) await save();
     },
 
     async recordSetupStarted(nowMs = now()) {
@@ -461,6 +535,7 @@ export async function createTelemetryService(
       track('setup_completed', {
         duration_bucket: durationBucket(startedAt !== null ? Math.max(0, nowMs - startedAt) : 0),
       }, nowMs);
+      maybeOnboarded();
       await save();
     },
 
@@ -480,6 +555,12 @@ export async function createTelemetryService(
         is_first_deposit: isFirstDeposit,
         days_since_first_open: daysSinceFirstOpenBucket(daysSinceFirstOpen(nowMs)),
       }, nowMs);
+      milestone('deposit_completed', {
+        amount_bucket: bucket,
+        is_first_deposit: isFirstDeposit,
+        days_since_first_open: daysSinceFirstOpenBucket(daysSinceFirstOpen(nowMs)),
+      }, false);
+      activated('deposit');
       await save();
     },
 
@@ -506,6 +587,11 @@ export async function createTelemetryService(
           service_category: input.serviceCategory,
           has_attachments: input.hasAttachments,
         }, nowMs);
+        milestone('first_chat_started', {
+          service_category: input.serviceCategory,
+          days_since_first_open: daysSinceFirstOpenBucket(daysSinceFirstOpen(nowMs)),
+        });
+        activated('first_chat');
         await save();
       } finally {
         firstChatClaimed = false;
