@@ -2110,7 +2110,7 @@ export class BuyerPaymentManager {
     try {
       const observed = billing.observedUnitUsage ?? await this._waitForObservedUnitUsage(requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
       validateUnitBillingUsage(billing.unitModel, billing.context, payload.billingUsage, state.price, this._costTolerance, observed);
-      usage = unitUsageFromReport(payload.billingUsage);
+      usage = observed ?? unitUsageFromReport(payload.billingUsage);
     } catch (err) {
       debugWarn(`[BuyerPayment] One-off NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
       return;
