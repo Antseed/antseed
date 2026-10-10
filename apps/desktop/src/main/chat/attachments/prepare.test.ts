@@ -267,3 +267,24 @@ test("per-file size gate validates decoded buffer, not renderer-reported size", 
   assert.match(prepared[0]?.error ?? "", /exceeds/);
 });
 
+
+test('downscaleImage replaces only the image sent to the model', async () => {
+  const stored: Buffer[] = [];
+  const prepared = await prepareChatAttachments(
+    [
+      rawAttachment('doc.txt', 'text/plain', 'hello'),
+      rawAttachment('pixel.png', 'image/png', Buffer.from([0x89, 0x50, 0x4e, 0x47])),
+    ],
+    {
+      storage: (_raw, buffer) => {
+        stored.push(buffer);
+        return `att-${stored.length}`;
+      },
+      downscaleImage: (image) => ({ ...image, data: 'c21hbGw=' }),
+    },
+  );
+
+  assert.equal(prepared[0]?.image, undefined);
+  assert.equal(prepared[1]?.image?.data, 'c21hbGw=');
+  assert.equal(stored[1]?.byteLength, 4);
+});

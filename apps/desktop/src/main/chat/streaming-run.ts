@@ -20,6 +20,7 @@ import {
 import type { AssistantMessage, AssistantMessageEvent, Message } from '@mariozechner/pi-ai';
 import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.js';
 import { webFetchTool } from './web-fetch.js';
+import { imageHistoryExtension } from './image-history.js';
 import {
   createChatImagePathTool,
   createShowMediaTool,
@@ -395,7 +396,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       agentDir: CHAT_AGENT_DIR,
       settingsManager,
       additionalSkillPaths: resolveBundledChatSkillPaths(),
-      extensionFactories: [toolApprovalExtension],
+      extensionFactories: [toolApprovalExtension, imageHistoryExtension],
       systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
     });
     await resourceLoader.reload();
