@@ -16,6 +16,16 @@ import type { Identity, SweepReceiptPayload, SweepRequestPayload } from '@antsee
 
 export type DepositWatchPhase = 'deferred' | 'received' | 'sweeping' | 'credited' | 'error'
 
+/**
+ * Why a sweep is waiting instead of running.
+ * below-minimum — the wallet can't cover the relay fee plus the contract's
+ *   first-deposit floor (or, once funded, more than the fee). More USDC must
+ *   arrive before anything moves.
+ * credit-limit — the deposits balance is at the buyer's credit limit; the
+ *   wallet tops up automatically as spending frees headroom.
+ */
+export type DepositDeferReason = 'below-minimum' | 'credit-limit'
+
 export interface DepositWatchEvent {
   /** Monotonic per-watcher counter so pollers can forward each event exactly once. */
   seq: number
@@ -23,6 +33,10 @@ export interface DepositWatchEvent {
   amountBaseUnits?: string
   txHash?: string
   error?: string
+  /** Set on 'deferred' events. */
+  reason?: DepositDeferReason
+  /** below-minimum only: the wallet balance a sweep needs (fee included). */
+  minRequiredBaseUnits?: string
   at: number
 }
 
@@ -49,6 +63,8 @@ export interface DepositWatcherDepositsReader {
   getUSDCBalance(address: string): Promise<bigint>
   getBuyerBalance(address: string): Promise<{ available: bigint; reserved: bigint }>
   getBuyerCreditLimit(address: string): Promise<bigint>
+  /** The contract's first-deposit floor; the constant fallback covers readers without it. */
+  getMinBuyerDeposit?(): Promise<bigint>
 }
 
 /** The relay surface the watcher needs; DepositRelayClient satisfies it. */
@@ -93,7 +109,8 @@ const SWEEP_POLL_INTERVAL_MS = 1_000
 // After a failed/incomplete sweep the funds stay in the wallet; retry on the
 // watcher tick once this cooldown passes instead of hammering the network.
 const SWEEP_RETRY_COOLDOWN_MS = 60_000
-// AntseedDeposits enforces a 1 USDC minimum first deposit (net of the fee).
+// AntseedDeposits enforces a minimum first deposit (net of the fee). Read
+// from the contract; this is the fallback when the read fails.
 const MIN_FIRST_DEPOSIT_BASE_UNITS = 1_000_000n
 // Minimum top-up when the sweep is clamped by the credit-limit headroom.
 // Without a floor, a wallet holding more than the remaining headroom would
@@ -116,6 +133,7 @@ export class DepositWatcher {
   private _lastEvent: DepositWatchEvent | null = null
   private _seq = 0
   private _stopped = false
+  private _minFirstDeposit: bigint | null = null
 
   constructor(deps: DepositWatcherDeps) {
     this._deps = deps
@@ -231,31 +249,40 @@ export class DepositWatcher {
   private async _sweepOnce(): Promise<void> {
     const { depositsClient, relayClient, address, wallet } = this._deps
 
-    const [usdcBalance, deposits, creditLimit, fee] = await Promise.all([
+    const [usdcBalance, deposits, creditLimit, fee, minFirstDeposit] = await Promise.all([
       depositsClient.getUSDCBalance(address),
       depositsClient.getBuyerBalance(address),
       depositsClient.getBuyerCreditLimit(address),
       relayClient.fee(),
+      this._readMinFirstDeposit(),
     ])
 
     const depositsBalance = deposits.available + deposits.reserved
-    // Below the sweepable minimum (fee, plus the contract's 1 USDC first-
-    // deposit floor) — keep waiting; more USDC may still be on the way.
-    const minRequired = depositsBalance === 0n ? MIN_FIRST_DEPOSIT_BASE_UNITS + fee : fee + 1n
-    if (usdcBalance < minRequired) return
+    // Below the sweepable minimum (fee, plus the contract's first-deposit
+    // floor) — keep waiting; more USDC may still be on the way. Say so, so
+    // the UI can ask for the shortfall instead of spinning on "preparing".
+    const minRequired = depositsBalance === 0n ? minFirstDeposit + fee : fee + 1n
+    if (usdcBalance < minRequired) {
+      this._emitDeferred({
+        reason: 'below-minimum',
+        amountBaseUnits: usdcBalance.toString(),
+        minRequiredBaseUnits: minRequired.toString(),
+      })
+      return
+    }
 
     // Deposits caps the credited balance at the buyer's credit limit; a net
     // amount past it would revert the whole sweep, so clamp and leave the
     // rest in the wallet for a later sweep.
     const headroom = creditLimit > depositsBalance ? creditLimit - depositsBalance : 0n
     if (headroom === 0n) {
-      this._emit({ phase: 'deferred' })
+      this._emitDeferred({ reason: 'credit-limit' })
       return
     }
     // Headroom-clamped top-up: wait until at least MIN_TOPUP_BASE_UNITS of
     // headroom is free instead of sweeping fee-heavy slivers repeatedly.
     if (usdcBalance - fee > headroom && headroom < MIN_TOPUP_BASE_UNITS) {
-      this._emit({ phase: 'deferred' })
+      this._emitDeferred({ reason: 'credit-limit' })
       return
     }
     let amount = usdcBalance
@@ -334,6 +361,30 @@ export class DepositWatcher {
         if (!txHash || this._stopped) return
         this._emit({ phase: 'credited', amountBaseUnits: result.credited.toString(), txHash })
       })
+    }
+  }
+
+  /** Emit a deferral once — the 60s retry would otherwise repeat it forever. */
+  private _emitDeferred(event: Omit<DepositWatchEvent, 'seq' | 'at' | 'phase'>): void {
+    const last = this._lastEvent
+    if (
+      last?.phase === 'deferred'
+      && last.reason === event.reason
+      && last.amountBaseUnits === event.amountBaseUnits
+      && last.minRequiredBaseUnits === event.minRequiredBaseUnits
+    ) return
+    this._emit({ phase: 'deferred', ...event })
+  }
+
+  private async _readMinFirstDeposit(): Promise<bigint> {
+    if (this._minFirstDeposit !== null) return this._minFirstDeposit
+    const reader = this._deps.depositsClient.getMinBuyerDeposit
+    if (!reader) return MIN_FIRST_DEPOSIT_BASE_UNITS
+    try {
+      this._minFirstDeposit = await reader.call(this._deps.depositsClient)
+      return this._minFirstDeposit
+    } catch {
+      return MIN_FIRST_DEPOSIT_BASE_UNITS // transient — re-read next sweep
     }
   }
 

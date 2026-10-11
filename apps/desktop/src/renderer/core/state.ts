@@ -386,6 +386,10 @@ export type RendererUiState = {
   /** Spendable deposits plus wallet USDC. Used by balance headlines. */
   creditsTotalOwnedUsdc: string;
   creditsCreditLimitUsdc: string;
+  /** Contract floor for the first deposit (net of the relay fee). */
+  creditsMinFirstDepositUsdc: string;
+  /** Relay fee taken from each wallet sweep into credits. */
+  creditsDepositFeeUsdc: string;
   creditsEvmAddress: string | null;
   creditsOperatorAddress: string | null;
   creditsBuyerUsage: DesktopBuyerUsageTotals | null;
@@ -573,6 +577,8 @@ export function createInitialUiState(): RendererUiState {
     creditsWalletUsdc: '0',
     creditsTotalOwnedUsdc: '0',
     creditsCreditLimitUsdc: '0',
+    creditsMinFirstDepositUsdc: '1',
+    creditsDepositFeeUsdc: '0.05',
     creditsEvmAddress: null,
     creditsOperatorAddress: null,
     creditsBuyerUsage: null,

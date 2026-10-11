@@ -145,6 +145,7 @@ test('deposit watcher defers when the deposits balance is at its credit limit', 
 
   assert.equal(dispatched.length, 0)
   assert.deepEqual(events.map((e) => e.phase), ['received', 'deferred'])
+  assert.equal(events.find((e) => e.phase === 'deferred')!.reason, 'credit-limit')
 })
 
 test('deposit watcher waits below the 1 USDC first-deposit floor', async (t) => {
@@ -159,12 +160,37 @@ test('deposit watcher waits below the 1 USDC first-deposit floor', async (t) => 
   t.after(async () => { watcher.stop(); await cleanup() })
 
   watcher.promote()
-  await waitFor(() => events.some((e) => e.phase === 'received'))
-  // Give the sweep attempt a moment to (not) dispatch.
-  await new Promise((resolve) => setTimeout(resolve, 100))
+  await waitFor(() => events.some((e) => e.phase === 'deferred'))
 
   assert.equal(dispatched.length, 0)
-  assert.deepEqual(events.map((e) => e.phase), ['received'])
+  assert.deepEqual(events.map((e) => e.phase), ['received', 'deferred'])
+  const deferred = events.find((e) => e.phase === 'deferred')!
+  assert.equal(deferred.reason, 'below-minimum')
+  assert.equal(deferred.amountBaseUnits, '500000')
+  // First deposit needs the 1 USDC floor plus the relay fee.
+  assert.equal(deferred.minRequiredBaseUnits, (1_000_000n + FEE).toString())
+})
+
+test('deposit watcher reads the first-deposit floor from the contract and reports it once', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 1_000_000n, // exactly $1.00 — short of a $2 floor + fee
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, events, dispatched, cleanup } = await makeWatcher(chain, {
+    depositsClient: { ...makeDepositsReader(chain), getMinBuyerDeposit: async () => 2_000_000n },
+  })
+  t.after(async () => { watcher.stop(); await cleanup() })
+
+  await watcher.sweepNow()
+  await watcher.sweepNow() // the 60s retry must not repeat an unchanged deferral
+
+  assert.equal(dispatched.length, 0)
+  const deferred = events.filter((e) => e.phase === 'deferred')
+  assert.equal(deferred.length, 1)
+  assert.equal(deferred[0]!.minRequiredBaseUnits, (2_000_000n + FEE).toString())
 })
 
 test('deposit watcher fails fast when no relayer accepts, and reports the error', async (t) => {

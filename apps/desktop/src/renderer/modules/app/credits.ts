@@ -57,6 +57,9 @@ export function initCreditsModule({
           uiState.creditsSpendableUsdc !== result.data.spendableUsdc ||
           uiState.creditsWalletUsdc !== result.data.walletUsdc ||
           uiState.creditsTotalOwnedUsdc !== result.data.totalOwnedUsdc ||
+          uiState.creditsCreditLimitUsdc !== result.data.creditLimitUsdc ||
+          (result.data.minFirstDepositUsdc != null && uiState.creditsMinFirstDepositUsdc !== result.data.minFirstDepositUsdc) ||
+          (result.data.depositFeeUsdc != null && uiState.creditsDepositFeeUsdc !== result.data.depositFeeUsdc) ||
           uiState.creditsEvmAddress !== result.data.evmAddress ||
           uiState.creditsOperatorAddress !== (result.data.operatorAddress ?? null);
 
@@ -68,6 +71,8 @@ export function initCreditsModule({
         uiState.creditsWalletUsdc = result.data.walletUsdc;
         uiState.creditsTotalOwnedUsdc = result.data.totalOwnedUsdc;
         uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
+        if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
+        if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
         uiState.creditsEvmAddress = result.data.evmAddress;
         uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
 

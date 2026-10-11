@@ -133,6 +133,20 @@
   background: rgba(var(--danger-rgb), 0.2);
 }
 
+.warning .icon,
+.warning .title {
+  color: var(--accent-orange, #d98b2b);
+}
+
+.warning .action {
+  background: rgba(217, 139, 43, 0.14);
+  color: var(--accent-orange, #d98b2b);
+}
+
+.warning .action:hover {
+  background: rgba(217, 139, 43, 0.22);
+}
+
 .dismiss {
   flex: 0 0 auto;
   display: inline-flex;

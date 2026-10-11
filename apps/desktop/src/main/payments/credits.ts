@@ -10,6 +10,7 @@
 import {
   ANTSTokenClient,
   ChannelsClient,
+  DepositRelayClient,
   DepositsClient,
   EmissionsClient,
   formatUsdc,
@@ -46,6 +47,10 @@ export type CreditsInfo = {
   /** spendableUsdc + walletUsdc — the complete balance the buyer owns. */
   totalOwnedUsdc: string;
   creditLimitUsdc: string;
+  /** Contract floor for a buyer's first deposit, net of the relay fee. */
+  minFirstDepositUsdc: string;
+  /** Fixed fee the deposit relayer takes from each wallet sweep. */
+  depositFeeUsdc: string;
 };
 
 const EMPTY_CREDITS: Omit<CreditsInfo, 'evmAddress'> = {
@@ -58,7 +63,17 @@ const EMPTY_CREDITS: Omit<CreditsInfo, 'evmAddress'> = {
   walletUsdc: '0',
   totalOwnedUsdc: '0',
   creditLimitUsdc: '0',
+  minFirstDepositUsdc: '1',
+  depositFeeUsdc: '0.05',
 };
+
+// Deposit rules: MIN_BUYER_DEPOSIT on AntseedDeposits and FEE on the deposit
+// relay. They almost never change, so read once per chain config; these
+// mainnet values only stand in until the first read succeeds.
+const DEFAULT_MIN_FIRST_DEPOSIT = 1_000_000n;
+const DEFAULT_DEPOSIT_FEE = 50_000n;
+type DepositRules = { minFirstDeposit: bigint; fee: bigint };
+let cachedDepositRules: DepositRules | null = null;
 
 // Use shared formatUsdc from @antseed/node
 const formatUsdc6 = formatUsdc;
@@ -75,6 +90,7 @@ type CreditsComponentCache = {
   balance: CreditsBalanceComponents;
   creditLimit: bigint;
   operatorAddress: string | null;
+  depositRules: DepositRules | null;
 };
 
 let cachedCreditsComponents: CreditsComponentCache | null = null;
@@ -162,6 +178,7 @@ function componentCacheFor(evmAddress: string): CreditsComponentCache {
     balance: EMPTY_BALANCE_COMPONENTS,
     creditLimit: 0n,
     operatorAddress: null,
+    depositRules: cachedDepositRules,
   };
   return cachedCreditsComponents;
 }
@@ -179,7 +196,31 @@ function creditsInfoFromCache(cache: CreditsComponentCache): CreditsInfo {
     walletUsdc: formatUsdc6(totals.wallet),
     totalOwnedUsdc: formatUsdc6(totals.totalOwned),
     creditLimitUsdc: formatUsdc6(cache.creditLimit),
+    minFirstDepositUsdc: formatUsdc6(cache.depositRules?.minFirstDeposit ?? DEFAULT_MIN_FIRST_DEPOSIT),
+    depositFeeUsdc: formatUsdc6(cache.depositRules?.fee ?? DEFAULT_DEPOSIT_FEE),
   };
+}
+
+async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient): Promise<DepositRules | null> {
+  if (cachedDepositRules) return cachedDepositRules;
+  try {
+    const relay = cc.depositRelayAddress
+      ? await withSharedProvider(new DepositRelayClient({
+        rpcUrl: cc.rpcUrl,
+        ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
+        contractAddress: cc.depositRelayAddress,
+        evmChainId: cc.chainId,
+      }), { rpcUrl: cc.rpcUrl, fallbackRpcUrls: cc.fallbackRpcUrls, chainId: cc.chainId })
+      : null;
+    const [minFirstDeposit, fee] = await Promise.all([
+      depositsClient.getMinBuyerDeposit(),
+      relay ? relay.fee() : Promise.resolve(DEFAULT_DEPOSIT_FEE),
+    ]);
+    cachedDepositRules = { minFirstDeposit, fee };
+    return cachedDepositRules;
+  } catch {
+    return null; // keep the defaults; retried on the next poll
+  }
 }
 
 export async function refreshCreditsInfo(): Promise<CreditsInfo> {
@@ -207,12 +248,13 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
 
   const depositsClient = await getDepositsClient(cc);
 
-  const [balanceResult, creditLimitResult, operatorResult, pendingResult, walletResult] = await Promise.allSettled([
+  const [balanceResult, creditLimitResult, operatorResult, pendingResult, walletResult, rulesResult] = await Promise.allSettled([
     depositsClient.getBuyerBalance(evmAddress),
     depositsClient.getBuyerCreditLimit(evmAddress),
     depositsClient.getOperator(evmAddress),
     getPendingSpendUsdc(),
     depositsClient.getUSDCBalance(evmAddress),
+    readDepositRules(cc, depositsClient),
   ]);
 
   const balanceUpdates: Partial<CreditsBalanceComponents> = {};
@@ -234,6 +276,7 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
   cache.balance = updateCreditsBalanceComponents(cache.balance, balanceUpdates);
 
   if (creditLimitResult.status === 'fulfilled') cache.creditLimit = creditLimitResult.value;
+  if (rulesResult.status === 'fulfilled' && rulesResult.value) cache.depositRules = rulesResult.value;
   if (operatorResult.status === 'fulfilled') {
     const address = operatorResult.value;
     cache.operatorAddress = address && address !== '0x0000000000000000000000000000000000000000'
@@ -266,6 +309,7 @@ export function invalidateChainClients(): void {
   cachedAntsTokenClient = null;
   cachedChannelsClient = null;
   cachedCreditsComponents = null;
+  cachedDepositRules = null;
   creditsRpcFailCount = 0;
 }
 

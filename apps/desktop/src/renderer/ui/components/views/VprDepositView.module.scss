@@ -280,6 +280,10 @@
   line-height: 14px;
 }
 
+.amountHintWarn {
+  color: var(--accent-orange, #d98b2b);
+}
+
 .amountRow {
   display: flex;
   align-items: stretch;
@@ -436,6 +440,11 @@
 
 .watchStatus_error {
   color: var(--accent-red, #d64545);
+}
+
+.watchStatus_warn {
+  color: var(--accent-orange, #d98b2b);
+  font-weight: 600;
 }
 
 /* Live dot: solid core plus an expanding halo ring (pseudo-element inherits

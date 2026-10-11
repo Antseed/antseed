@@ -40,3 +40,21 @@
   width: 100%;
   margin-top: 8px;
 }
+
+.split {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 2px 0;
+  color: var(--text-secondary);
+  font-size: 12px;
+  line-height: 16px;
+}
+
+.split strong {
+  color: var(--text-primary);
+  font-weight: 600;
+}
+
+.splitSep {
+  margin: 0 6px;
+}

@@ -642,6 +642,8 @@ describe('BuyerPaymentNegotiator', () => {
       expect(body.reason).toBeUndefined();
       expect(body.minBudgetPerRequest).toBe('10000');
       expect(body.suggestedAmount).toBe('100000');
+      // What the session would lock, so the UI can name the exact shortfall.
+      expect(body.requiredReserve).toBe('100000');
       expect(body.peerId).toBe(peer.peerId);
       // Should be the buyer-authored, user-friendly body — not the raw seller 402
       // fields that would leak internal catch-up/accounting state.

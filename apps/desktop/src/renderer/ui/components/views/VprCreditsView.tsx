@@ -6,6 +6,8 @@ import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
 import { formatCompactTokens, VprCard, VprPage, VprStatRow, VprStatTile } from '../vpr/VprKit';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
 import styles from './VprCreditsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -31,6 +33,7 @@ export function VprCreditsView({ onSelectView }: Props) {
   // Local to the button: background pollers (floating pill, payment events)
   // also refresh the summary, and mirroring their in-flight state here made
   // the button flip to "Refreshing..." constantly while traffic flowed.
+  const funding = useFundingStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [exportKeyOpen, setExportKeyOpen] = useState(false);
   const [importKeyOpen, setImportKeyOpen] = useState(false);
@@ -81,6 +84,12 @@ export function VprCreditsView({ onSelectView }: Props) {
                 </button>
               </div>
             )}
+          />
+
+          <FundingStatusNotice
+            status={funding}
+            onAddFunds={() => onSelectView?.('deposit')}
+            onManageSessions={() => onSelectView?.('activity')}
           />
 
           <div className={styles.secureNote}>

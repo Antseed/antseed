@@ -20,7 +20,7 @@ interface Props {
   priority?: 'default' | 'overlay';
   role?: 'alert' | 'status';
   title?: ReactNode;
-  tone?: 'danger' | 'success';
+  tone?: 'danger' | 'success' | 'warning';
 }
 
 export function BottomNotice({
