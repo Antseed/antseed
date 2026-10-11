@@ -85,6 +85,11 @@ export function usdcToBaseUnits(value: string | null | undefined): bigint {
   return whole * 1_000_000n + fraction;
 }
 
+/** How much more is needed to reach `need` from `have` (never negative). */
+export function shortfallBaseUnits(need: bigint, have: bigint): bigint {
+  return need > have ? need - have : 0n;
+}
+
 /**
  * Base units → "$1.05". Balances round to the nearest cent; amounts the user
  * must send round up, so a shortfall is never understated.
@@ -120,7 +125,8 @@ export function openFundingSessions(channels: FundingInputs['channels']): Fundin
       unusedBaseUnits: channelRecoverableBaseUnits(channel),
     });
   }
-  return sessions.sort((a, b) => (b.heldBaseUnits > a.heldBaseUnits ? 1 : b.heldBaseUnits < a.heldBaseUnits ? -1 : 0));
+  // Largest hold first. Amounts are USDC base units, well inside Number range.
+  return sessions.sort((a, b) => Number(b.heldBaseUnits - a.heldBaseUnits));
 }
 
 function heldWithText(sessions: FundingSession[]): string {
@@ -172,7 +178,7 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
       );
     }
     if (wallet < firstDepositNeeds) {
-      const shortfall = firstDepositNeeds - wallet;
+      const shortfall = shortfallBaseUnits(firstDepositNeeds, wallet);
       return status(
         'wallet-below-minimum',
         'warning',

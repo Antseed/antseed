@@ -8,11 +8,11 @@ import {
   walletBalanceMessage,
   type BalanceBreakdownValues,
 } from './balance-breakdown';
-import { formatUsd, SESSION_RESERVE_BASE_UNITS } from './funding-status';
+import { formatUsd, SESSION_RESERVE_BASE_UNITS, type FundingStatusKind } from './funding-status';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './BalanceBreakdown.module.scss';
 
-const WALLET_FUNDING_KINDS = new Set(['wallet-below-minimum', 'depositing', 'wallet-at-limit', 'wallet-dust']);
+const WALLET_FUNDING_KINDS = new Set<FundingStatusKind>(['wallet-below-minimum', 'depositing', 'wallet-at-limit', 'wallet-dust']);
 
 export function BalanceWarning({ values }: { values: BalanceBreakdownValues }): JSX.Element | null {
   if (!isEntireBalanceLocked(values)) return null;

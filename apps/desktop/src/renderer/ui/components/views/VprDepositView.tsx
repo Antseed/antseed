@@ -17,7 +17,7 @@ import { VprCard, VprPage } from '../vpr/VprKit';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
-import { formatUsd, usdcToBaseUnits } from './funding-status';
+import { formatUsd, shortfallBaseUnits, usdcToBaseUnits } from './funding-status';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -467,19 +467,16 @@ export function VprDepositView({ onSelectView }: Props) {
     if (watchError) return { tone: 'error' as const, text: watchError };
     // Too little in the wallet to deposit: the sweep waits silently, so ask
     // for the exact shortfall instead of spinning on "preparing".
+    const receivedShort = (have: bigint, short: bigint) => ({
+      tone: 'idle' as const,
+      text: `Received ${formatUsd(have)} · send ${formatUsd(short, 'up')} more to finish`,
+    });
     if (watchStatus?.phase === 'deferred' && watchStatus.reason === 'below-minimum' && watchStatus.minRequiredBaseUnits) {
       const have = BigInt(watchStatus.amountBaseUnits ?? '0');
-      const need = BigInt(watchStatus.minRequiredBaseUnits);
-      return {
-        tone: 'idle' as const,
-        text: `Received ${formatUsd(have)} · send ${formatUsd(need > have ? need - have : 0n, 'up')} more to finish`,
-      };
+      return receivedShort(have, shortfallBaseUnits(BigInt(watchStatus.minRequiredBaseUnits), have));
     }
     if (funding.kind === 'wallet-below-minimum' && (!watchStatus || watchStatus.phase === 'received' || watchStatus.phase === 'deferred')) {
-      return {
-        tone: 'idle' as const,
-        text: `Received ${formatUsd(usdcToBaseUnits(snap.wallet))} · send ${formatUsd(funding.sendMoreBaseUnits ?? 0n, 'up')} more to finish`,
-      };
+      return receivedShort(usdcToBaseUnits(snap.wallet), funding.sendMoreBaseUnits ?? 0n);
     }
     if (!watchStatus) return { tone: 'idle' as const, text: 'Waiting for USDC on Base…' };
     switch (watchStatus.phase) {
@@ -529,15 +526,13 @@ export function VprDepositView({ onSelectView }: Props) {
   // already sits in the wallet). Later top-ups only need to beat the fee.
   const amountBaseUnits = usdcToBaseUnits(amount);
   const walletBaseUnits = usdcToBaseUnits(snap.wallet);
-  const amountNeeded = isFirstDeposit
-    ? (firstDepositNeeds > walletBaseUnits ? firstDepositNeeds - walletBaseUnits : 0n)
-    : feeBaseUnits + 1n;
+  const amountNeeded = isFirstDeposit ? shortfallBaseUnits(firstDepositNeeds, walletBaseUnits) : feeBaseUnits + 1n;
   const amountBelowMinimum = amount !== '' && amountBaseUnits < amountNeeded;
-  const amountHint = isFirstDeposit
-    ? walletBaseUnits > 0n
-      ? `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`
-      : `1 credit = 1 USDC · first deposit ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`
-    : `1 credit = 1 USDC · ${formatUsd(feeBaseUnits)} network fee per deposit`;
+  const amountHint = (() => {
+    if (!isFirstDeposit) return `1 credit = 1 USDC · ${formatUsd(feeBaseUnits)} network fee per deposit`;
+    if (walletBaseUnits > 0n) return `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`;
+    return `1 credit = 1 USDC · first deposit ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`;
+  })();
 
   const amountForm = (
     <VprCard className={styles.amountCard}>

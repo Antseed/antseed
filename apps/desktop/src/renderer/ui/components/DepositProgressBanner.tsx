@@ -6,7 +6,7 @@ import { useUiSelector } from '../hooks/useUiSelector';
 import { useActions } from '../hooks/useActions';
 import type { DepositWatchStatus } from '../../types/bridge';
 import { BottomNotice } from './BottomNotice';
-import { formatUsd } from './views/funding-status';
+import { formatUsd, shortfallBaseUnits } from './views/funding-status';
 import styles from './DepositProgressBanner.module.scss';
 
 const CREDITED_AUTO_HIDE_MS = 10_000;
@@ -72,11 +72,20 @@ export function DepositProgressBanner({ onAddFunds, onDepositView = false }: {
   const { phase } = status;
   const amount = baseUnitsToUsd(status.amountBaseUnits);
   const belowMinimum = phase === 'deferred' && status.minRequiredBaseUnits != null;
-  const have = BigInt(status.amountBaseUnits ?? '0');
   const need = BigInt(status.minRequiredBaseUnits ?? '0');
+  const short = shortfallBaseUnits(need, BigInt(status.amountBaseUnits ?? '0'));
+
+  let tone: 'danger' | 'success' | 'neutral' = 'success';
+  if (phase === 'error') tone = 'danger';
+  else if (belowMinimum) tone = 'neutral';
+
+  let body: string | undefined;
+  if (belowMinimum) body = `A first deposit is at least ${formatUsd(need)}, including the network fee. Your USDC is safe meanwhile.`;
+  else if (phase === 'received') body = 'Preparing the deposit…';
+  else if (phase === 'error') body = status.error;
 
   const title = belowMinimum
-    ? `Received $${amount} · send ${formatUsd(need > have ? need - have : 0n, 'up')} more to finish your deposit`
+    ? `Received $${amount} · send ${formatUsd(short, 'up')} more to finish your deposit`
     : phase === 'received'
     ? `Received $${amount}`
     : phase === 'sweeping'
@@ -102,9 +111,7 @@ export function DepositProgressBanner({ onAddFunds, onDepositView = false }: {
         ),
         onClick: () => void window.antseedDesktop?.openExternalUrl?.(explorerTxUrl(status.txHash!)),
       }] : []}
-      body={belowMinimum
-        ? `A first deposit is at least ${formatUsd(need)}, including the network fee. Your USDC is safe meanwhile.`
-        : phase === 'received' ? 'Preparing the deposit…' : phase === 'error' ? status.error : undefined}
+      body={body}
       dismissLabel="Dismiss deposit status"
       icon={phase === 'credited' ? (
         <HugeiconsIcon icon={Tick02Icon} size={18} strokeWidth={2.5} />
@@ -120,7 +127,7 @@ export function DepositProgressBanner({ onAddFunds, onDepositView = false }: {
       priority="overlay"
       role={phase === 'error' ? 'alert' : 'status'}
       title={title}
-      tone={phase === 'error' ? 'danger' : belowMinimum ? 'neutral' : 'success'}
+      tone={tone}
     />,
     document.body,
   );

@@ -378,10 +378,10 @@ export class DepositWatcher {
 
   private async _readMinFirstDeposit(): Promise<bigint> {
     if (this._minFirstDeposit !== null) return this._minFirstDeposit
-    const reader = this._deps.depositsClient.getMinBuyerDeposit
-    if (!reader) return MIN_FIRST_DEPOSIT_BASE_UNITS
+    const { depositsClient } = this._deps
+    if (!depositsClient.getMinBuyerDeposit) return MIN_FIRST_DEPOSIT_BASE_UNITS
     try {
-      this._minFirstDeposit = await reader.call(this._deps.depositsClient)
+      this._minFirstDeposit = await depositsClient.getMinBuyerDeposit()
       return this._minFirstDeposit
     } catch {
       return MIN_FIRST_DEPOSIT_BASE_UNITS // transient — re-read next sweep
