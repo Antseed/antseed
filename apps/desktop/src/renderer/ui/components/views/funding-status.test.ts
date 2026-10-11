@@ -38,7 +38,7 @@ test('an empty account explains the first-deposit minimum including the fee', ()
   const status = deriveFundingStatus(base);
   assert.equal(status.kind, 'empty');
   assert.equal(status.sendMoreBaseUnits, 1_050_000n);
-  assert.match(status.body, /\$1\.05/);
+  assert.match(status.title, /\$1\.05/);
 });
 
 test('$0.50 in the wallet asks for exactly $0.55 more', () => {
@@ -46,14 +46,14 @@ test('$0.50 in the wallet asks for exactly $0.55 more', () => {
   assert.equal(status.kind, 'wallet-below-minimum');
   assert.equal(status.tone, 'warning');
   assert.equal(status.sendMoreBaseUnits, 550_000n);
-  assert.match(status.body, /Send \$0\.55 more/);
+  assert.match(status.title, /Send \$0\.55 more/);
 });
 
 test('exactly $1.00 in the wallet is $0.05 short of the first deposit', () => {
   const status = deriveFundingStatus({ ...base, wallet: '1' });
   assert.equal(status.kind, 'wallet-below-minimum');
   assert.equal(status.sendMoreBaseUnits, 50_000n);
-  assert.match(status.body, /\$1\.00 minimum \+ \$0\.05 network fee/);
+  assert.match(status.body, /\$1\.05 \(\$1\.00 \+ \$0\.05 network fee\)/);
 });
 
 test('$1.05 in the wallet clears the minimum and reads as depositing', () => {
@@ -84,7 +84,7 @@ test('a $1.00 deposit fully held by one session names the seller and the way out
 test('partial availability below one session block is still blocked', () => {
   const status = deriveFundingStatus({ ...base, available: '0.5', reserved: '1' });
   assert.equal(status.kind, 'all-reserved');
-  assert.match(status.title, /Only \$0\.50 available/);
+  assert.match(status.title, /\$0\.50 free/);
   assert.equal(status.sendMoreBaseUnits, 550_000n);
 });
 
@@ -126,5 +126,5 @@ test('closed or zero-held channels are not listed as sessions', () => {
     ],
   });
   assert.equal(status.sessions.length, 0);
-  assert.match(status.title, /your open sessions/);
+  assert.match(status.title, /open sessions/);
 });

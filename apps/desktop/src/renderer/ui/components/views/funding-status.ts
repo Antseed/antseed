@@ -124,8 +124,8 @@ export function openFundingSessions(channels: FundingInputs['channels']): Fundin
 }
 
 function heldWithText(sessions: FundingSession[]): string {
-  if (sessions.length === 0) return 'your open sessions';
-  if (sessions.length === 1) return `your session with ${sessions[0]!.sellerName}`;
+  if (sessions.length === 0) return 'open sessions';
+  if (sessions.length === 1) return sessions[0]!.sellerName;
   return `${sessions.length} open sessions`;
 }
 
@@ -150,14 +150,23 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
     actions: FundingAction[] = [],
   ): FundingStatus => ({ kind, tone, title, body, sendMoreBaseUnits, actions, sessions });
 
+  // Copy: the title is the one line most surfaces show; the body is the
+  // calm "why", kept to a sentence or two for details and tooltips.
+  const depositing = (): FundingStatus => status(
+    'depositing',
+    'info',
+    `Adding ${formatUsd(wallet - fee)} to your credits…`,
+    `Your ${formatUsd(wallet)} is on its way into your credits (less the ${feeText} network fee).`,
+  );
+
   // ── Nothing in credits yet: everything hinges on the first sweep. ──
   if (deposited === 0n) {
     if (wallet === 0n) {
       return status(
         'empty',
         'info',
-        'Add credits to start',
-        `Your first deposit needs at least ${formatUsd(firstDepositNeeds)}: the ${formatUsd(minFirst)} minimum plus a ${feeText} network fee.`,
+        `First deposit: ${formatUsd(firstDepositNeeds)} minimum`,
+        `That's ${formatUsd(minFirst)} of credits plus a ${feeText} network fee.`,
         firstDepositNeeds,
         ['add-funds'],
       );
@@ -167,19 +176,14 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
       return status(
         'wallet-below-minimum',
         'warning',
-        `${formatUsd(wallet)} received — not enough to deposit yet`,
-        `A first deposit needs ${formatUsd(firstDepositNeeds)} (${formatUsd(minFirst)} minimum + ${feeText} network fee). `
-          + `Send ${formatUsd(shortfall, 'up')} more USDC on Base to the same address and it's added automatically. Your USDC is safe meanwhile.`,
+        `Send ${formatUsd(shortfall, 'up')} more to finish your first deposit`,
+        `You've sent ${formatUsd(wallet)}. A first deposit is at least ${formatUsd(firstDepositNeeds)} (${formatUsd(minFirst)} + ${feeText} network fee). `
+          + 'Your USDC is safe in your deposit wallet until then.',
         shortfall,
         ['add-funds'],
       );
     }
-    return status(
-      'depositing',
-      'info',
-      `Adding ${formatUsd(wallet - fee)} to your credits`,
-      `${formatUsd(wallet)} arrived in your deposit wallet. It moves into your credits automatically, minus the ${feeText} network fee.`,
-    );
+    return depositing();
   }
 
   // ── Credits exist; a top-up may be waiting in the wallet. ──
@@ -190,14 +194,7 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
 
   if (available < SESSION_RESERVE_BASE_UNITS) {
     // Money already on its way covers it — say so instead of asking for more.
-    if (walletSweepable && available + (wallet - fee) >= SESSION_RESERVE_BASE_UNITS) {
-      return status(
-        'depositing',
-        'info',
-        `Adding ${formatUsd(wallet - fee)} to your credits`,
-        `${formatUsd(wallet)} arrived in your deposit wallet. It moves into your credits automatically, minus the ${feeText} network fee.`,
-      );
-    }
+    if (walletSweepable && available + (wallet - fee) >= SESSION_RESERVE_BASE_UNITS) return depositing();
     const blockText = formatUsd(SESSION_RESERVE_BASE_UNITS);
     const shortfall = SESSION_RESERVE_BASE_UNITS - available - (walletSweepable ? wallet - fee : 0n);
     const sendMore = shortfall + fee;
@@ -206,11 +203,9 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
         'all-reserved',
         'warning',
         available === 0n
-          ? `All your credits are held for ${heldWithText(sessions)}`
-          : `Only ${formatUsd(available)} available — the rest is held for ${heldWithText(sessions)}`,
-        `Held credits are still yours: that session keeps working, and what it doesn't use comes back when it closes. `
-          + `A new session, or the next ${blockText} block of this one, needs ${blockText} available. `
-          + `Add ${formatUsd(sendMore, 'up')}+ (incl. ${feeText} fee) or close a session you're done with.`,
+          ? `Your credits are in use by ${heldWithText(sessions)}`
+          : `${formatUsd(available)} free · the rest is in use by ${heldWithText(sessions)}`,
+        `Each session sets aside ${blockText} at a time. To start another, add funds or end a session you're done with; anything unused comes back to you.`,
         sendMore,
         ['add-funds', 'manage-sessions'],
       );
@@ -218,9 +213,8 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
     return status(
       'low-available',
       'warning',
-      `${formatUsd(available)} left — below what a session needs`,
-      `Each seller session sets aside ${blockText} at a time, so ${formatUsd(available)} can't start one. `
-        + `Add ${formatUsd(sendMore, 'up')}+ (incl. ${feeText} fee). Your remaining credits stay yours.`,
+      `${formatUsd(available)} left · a session needs ${blockText}`,
+      `Each session sets aside ${blockText} at a time. Your remaining credits stay yours.`,
       sendMore,
       ['add-funds'],
     );
@@ -230,24 +224,17 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
     return status(
       'wallet-at-limit',
       'info',
-      `${formatUsd(wallet)} waiting in your deposit wallet`,
-      'Your credits are at the account limit. This USDC tops them up automatically as you spend.',
+      `${formatUsd(wallet)} waiting to top up your credits`,
+      "You're at your credit limit; this tops you up automatically as you spend.",
     );
   }
-  if (walletSweepable) {
-    return status(
-      'depositing',
-      'info',
-      `Adding ${formatUsd(wallet - fee)} to your credits`,
-      `${formatUsd(wallet)} arrived in your deposit wallet. It moves into your credits automatically, minus the ${feeText} network fee.`,
-    );
-  }
+  if (walletSweepable) return depositing();
   if (wallet > 0n) {
     return status(
       'wallet-dust',
       'info',
-      `${formatUsd(wallet)} in your deposit wallet`,
-      `That's less than the ${feeText} network fee, so it can't be added on its own. It's included automatically with your next deposit.`,
+      `${formatUsd(wallet)} waiting in your deposit wallet`,
+      `It's less than the ${feeText} network fee, so it's added with your next deposit.`,
     );
   }
   return status('ready', 'ok', 'Ready to use', '');

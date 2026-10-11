@@ -46,6 +46,6 @@ it('flags the balance when the deposit wallet is short of the first-deposit mini
   state.creditsTotalOwnedUsdc = '1';
   initStore(state);
   const markup = renderToStaticMarkup(<VprHeaderActions credits="1" />);
-  expect(markup).toContain('not enough to deposit yet');
+  expect(markup).toContain('Send $0.05 more');
   expect(markup).toContain('$1.00');
 });

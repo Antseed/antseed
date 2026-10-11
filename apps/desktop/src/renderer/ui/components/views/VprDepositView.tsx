@@ -17,7 +17,7 @@ import { VprCard, VprPage } from '../vpr/VprKit';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
 import { FundingStatusNotice } from './FundingStatusNotice';
-import { formatUsd, SESSION_RESERVE_BASE_UNITS, usdcToBaseUnits } from './funding-status';
+import { formatUsd, usdcToBaseUnits } from './funding-status';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -471,15 +471,14 @@ export function VprDepositView({ onSelectView }: Props) {
       const have = BigInt(watchStatus.amountBaseUnits ?? '0');
       const need = BigInt(watchStatus.minRequiredBaseUnits);
       return {
-        tone: 'warn' as const,
-        text: `Received ${formatUsd(have)} — send ${formatUsd(need > have ? need - have : 0n, 'up')} more to reach the ${formatUsd(need)} minimum`,
+        tone: 'idle' as const,
+        text: `Received ${formatUsd(have)} · send ${formatUsd(need > have ? need - have : 0n, 'up')} more to finish`,
       };
     }
     if (funding.kind === 'wallet-below-minimum' && (!watchStatus || watchStatus.phase === 'received' || watchStatus.phase === 'deferred')) {
-      const have = usdcToBaseUnits(snap.wallet);
       return {
-        tone: 'warn' as const,
-        text: `Received ${formatUsd(have)} — send ${formatUsd(funding.sendMoreBaseUnits ?? 0n, 'up')} more to reach the ${formatUsd(firstDepositNeeds)} minimum`,
+        tone: 'idle' as const,
+        text: `Received ${formatUsd(usdcToBaseUnits(snap.wallet))} · send ${formatUsd(funding.sendMoreBaseUnits ?? 0n, 'up')} more to finish`,
       };
     }
     if (!watchStatus) return { tone: 'idle' as const, text: 'Waiting for USDC on Base…' };
@@ -510,7 +509,7 @@ export function VprDepositView({ onSelectView }: Props) {
     : statusLine.tone === 'error'
       ? 'var(--accent-red, #d64545)'
       : '#f59e0b';
-  const staticDot = statusLine.tone === 'error' || statusLine.tone === 'warn';
+  const staticDot = statusLine.tone === 'error';
   const watchStatusRow = (
     <div className={`${styles.watchStatus} ${styles[`watchStatus_${statusLine.tone}`] ?? ''}`} role="status">
       {statusLine.tone === 'done' ? (
@@ -536,9 +535,9 @@ export function VprDepositView({ onSelectView }: Props) {
   const amountBelowMinimum = amount !== '' && amountBaseUnits < amountNeeded;
   const amountHint = isFirstDeposit
     ? walletBaseUnits > 0n
-      ? `You've sent ${formatUsd(walletBaseUnits)} · send at least ${formatUsd(amountNeeded, 'up')} more to reach the ${formatUsd(firstDepositNeeds)} first-deposit minimum`
-      : `First deposit: at least ${formatUsd(firstDepositNeeds)} (${formatUsd(usdcToBaseUnits(snap.minFirstDeposit))} minimum + ${formatUsd(feeBaseUnits)} network fee) · each seller session sets aside ${formatUsd(SESSION_RESERVE_BASE_UNITS)} at a time`
-    : `1 credit = 1 USDC · ${formatUsd(feeBaseUnits)} network fee per deposit · each seller session sets aside ${formatUsd(SESSION_RESERVE_BASE_UNITS)} at a time`;
+      ? `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`
+      : `1 credit = 1 USDC · first deposit ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`
+    : `1 credit = 1 USDC · ${formatUsd(feeBaseUnits)} network fee per deposit`;
 
   const amountForm = (
     <VprCard className={styles.amountCard}>
@@ -576,8 +575,10 @@ export function VprDepositView({ onSelectView }: Props) {
       return (
         <VprPage title="Add credits" backFallback="credits">
         <div className={styles.stack}>
-          <BalanceSummaryCard values={balanceValues} />
-          <FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />
+          <BalanceSummaryCard
+            values={balanceValues}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />}
+          />
 
           <div className={styles.primaryMethods}>
             {/* Primary path — always the antseed-pay Crossmint card checkout,

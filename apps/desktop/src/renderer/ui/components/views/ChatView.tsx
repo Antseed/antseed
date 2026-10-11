@@ -1426,7 +1426,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {attachmentWarning && <div className={styles.chatWarning}>{attachmentWarning}</div>}
             {dismissedFundingKey !== fundingKey ? (
               <FundingStatusNotice
-                className={styles.chatFundingNotice}
+                variant="strip"
                 status={funding}
                 includeInfo={false}
                 onAddFunds={() => onSelectView?.('deposit')}

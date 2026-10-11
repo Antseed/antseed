@@ -75,6 +75,12 @@ export function VprCreditsView({ onSelectView }: Props) {
         <div className={styles.balanceGroup}>
           <BalanceSummaryCard
             values={balanceValues}
+            notice={(
+              <FundingStatusNotice
+                status={funding}
+                onManageSessions={() => onSelectView?.('activity')}
+              />
+            )}
             actions={(
               <div className={styles.payButtons}>
                 <button type="button" onClick={() => onSelectView?.('deposit')}>
@@ -84,12 +90,6 @@ export function VprCreditsView({ onSelectView }: Props) {
                 </button>
               </div>
             )}
-          />
-
-          <FundingStatusNotice
-            status={funding}
-            onAddFunds={() => onSelectView?.('deposit')}
-            onManageSessions={() => onSelectView?.('activity')}
           />
 
           <div className={styles.secureNote}>

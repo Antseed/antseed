@@ -49,15 +49,13 @@ export function SessionApprovalCard({
   const reason = (() => {
     switch (funding.kind) {
       case 'wallet-below-minimum':
-      case 'empty':
-        return funding.body;
       case 'depositing':
-        return `${funding.title} — retry in a moment once it lands.`;
+        return `${funding.title}.`;
       case 'all-reserved':
-        return `${funding.title}. You can add funds, or close a session you're done with to release what it hasn't spent.`;
+        return `${funding.title}. Add funds, or end a session you're done with.`;
       default: {
         const shortfall = required > available ? required - available : 0n;
-        return `Add at least ${formatUsd(shortfall + usdcToBaseUnits(credits.fee), 'up')} (includes the ${formatUsd(usdcToBaseUnits(credits.fee))} network fee) to continue.`;
+        return `Add ${formatUsd(shortfall + usdcToBaseUnits(credits.fee), 'up')} or more to continue (includes the network fee).`;
       }
     }
   })();
@@ -71,8 +69,7 @@ export function SessionApprovalCard({
           ? <>Payment setup failed even though your available deposit balance covers <strong>${amount} USDC</strong> for <strong>{displayName}</strong>. Retry the chat, or manage credits if the problem persists.</>
           : (
             <>
-              Starting a session with <strong>{displayName}</strong> sets aside <strong>${amount}</strong> from your
-              available credits, and you have <strong>{formatUsd(available)}</strong> available.
+              <strong>{displayName}</strong> needs <strong>${amount}</strong> set aside to start a session; you have {formatUsd(available)} free.
               <span className={styles.approvalReason}>{reason}</span>
             </>
           )

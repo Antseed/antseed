@@ -28,7 +28,11 @@ function explorerTxUrl(txHash: string): string {
  * minutes later is still swept; this banner is how that progress stays
  * visible from any view.
  */
-export function DepositProgressBanner({ onAddFunds }: { onAddFunds?: () => void } = {}) {
+export function DepositProgressBanner({ onAddFunds, onDepositView = false }: {
+  onAddFunds?: () => void;
+  /** The deposit view's own status line already says it; don't repeat. */
+  onDepositView?: boolean;
+} = {}) {
   const networkAlert = useUiSelector((state) => state.networkAlert);
   const actions = useActions();
   const [status, setStatus] = useState<DepositWatchStatus | null>(null);
@@ -63,6 +67,7 @@ export function DepositProgressBanner({ onAddFunds }: { onAddFunds?: () => void 
 
   // The network alert owns the slot.
   if (networkAlert !== 'none' || !status) return null;
+  if (onDepositView && status.phase === 'deferred') return null;
 
   const { phase } = status;
   const amount = baseUnitsToUsd(status.amountBaseUnits);
@@ -71,7 +76,7 @@ export function DepositProgressBanner({ onAddFunds }: { onAddFunds?: () => void 
   const need = BigInt(status.minRequiredBaseUnits ?? '0');
 
   const title = belowMinimum
-    ? `Received $${amount} — send ${formatUsd(need > have ? need - have : 0n, 'up')} more`
+    ? `Received $${amount} · send ${formatUsd(need > have ? need - have : 0n, 'up')} more to finish your deposit`
     : phase === 'received'
     ? `Received $${amount}`
     : phase === 'sweeping'
@@ -86,7 +91,7 @@ export function DepositProgressBanner({ onAddFunds }: { onAddFunds?: () => void 
   return createPortal(
     <BottomNotice
       actions={belowMinimum && onAddFunds ? [{
-        label: 'Add credits',
+        label: 'Add funds',
         onClick: onAddFunds,
       }] : phase === 'credited' && status.txHash ? [{
         label: (
@@ -98,12 +103,12 @@ export function DepositProgressBanner({ onAddFunds }: { onAddFunds?: () => void 
         onClick: () => void window.antseedDesktop?.openExternalUrl?.(explorerTxUrl(status.txHash!)),
       }] : []}
       body={belowMinimum
-        ? `A deposit needs at least ${formatUsd(need)} in the wallet (minimum plus network fee). Send the rest as USDC on Base to the same address; your USDC is safe meanwhile.`
+        ? `A first deposit is at least ${formatUsd(need)}, including the network fee. Your USDC is safe meanwhile.`
         : phase === 'received' ? 'Preparing the deposit…' : phase === 'error' ? status.error : undefined}
       dismissLabel="Dismiss deposit status"
       icon={phase === 'credited' ? (
         <HugeiconsIcon icon={Tick02Icon} size={18} strokeWidth={2.5} />
-      ) : phase === 'error' || belowMinimum ? (
+      ) : phase === 'error' ? (
         <HugeiconsIcon icon={Alert02Icon} size={18} strokeWidth={1.8} />
       ) : (
         <span
@@ -113,9 +118,9 @@ export function DepositProgressBanner({ onAddFunds }: { onAddFunds?: () => void 
       )}
       onDismiss={() => setStatus(null)}
       priority="overlay"
-      role={phase === 'error' || belowMinimum ? 'alert' : 'status'}
+      role={phase === 'error' ? 'alert' : 'status'}
       title={title}
-      tone={phase === 'error' ? 'danger' : belowMinimum ? 'warning' : 'success'}
+      tone={phase === 'error' ? 'danger' : belowMinimum ? 'neutral' : 'success'}
     />,
     document.body,
   );

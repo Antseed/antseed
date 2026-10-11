@@ -6,9 +6,11 @@ import { BalanceInfoPopover, BalanceWarning } from './BalanceBreakdown';
 import { hasPositiveAmount, type BalanceBreakdownValues } from './balance-breakdown';
 import styles from './BalanceSummaryCard.module.scss';
 
-export function BalanceSummaryCard({ values, actions }: {
+export function BalanceSummaryCard({ values, actions, notice }: {
   values: BalanceBreakdownValues;
   actions?: ReactNode;
+  /** Footer line explaining a funding blocker (FundingStatusNotice). */
+  notice?: ReactNode;
 }): JSX.Element {
   const nav = useContext(VprNavContext);
   // The headline is everything the buyer owns; when part of it can't start a
@@ -28,7 +30,7 @@ export function BalanceSummaryCard({ values, actions }: {
       </span>
       <span className={styles.valueRow}>
         <span className={styles.value}>${formatCredits(values.totalOwned)}</span>
-        <BalanceWarning values={values} />
+        {notice ? null : <BalanceWarning values={values} />}
       </span>
       {split ? (
         <span className={styles.split}>
@@ -40,6 +42,7 @@ export function BalanceSummaryCard({ values, actions }: {
           ))}
         </span>
       ) : null}
+      {notice}
       {actions ? <div className={styles.actions}>{actions}</div> : null}
     </VprCard>
   );
