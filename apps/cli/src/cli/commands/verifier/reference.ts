@@ -101,6 +101,7 @@ export function registerVerifierReferenceCommand(verifier: Command): void {
             model,
             reference: built.reference,
             cost: built.cost,
+            answeredContrastModelsByProbeId: built.answeredContrastModelsByProbeId,
           })
           await built.finalize()
           const result: ReferenceBuildResult = {

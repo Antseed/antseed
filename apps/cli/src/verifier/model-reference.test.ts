@@ -625,7 +625,7 @@ test('reference build adaptively isolates and caches a refused self-test probe',
   }
 })
 
-test('no-text length responses isolate a contrast without identical retries', async () => {
+test('no-text length responses retry the batch with fresh requests before isolating a contrast', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-length-contrast-'))
   let lengthAttempts = 0
   const fetchFn: typeof fetch = async (_url, init) => {
@@ -650,7 +650,45 @@ test('no-text length responses isolate a contrast without identical retries', as
       }),
       /made no progress/,
     )
-    assert.equal(lengthAttempts, 1)
+    assert.equal(lengthAttempts, 3)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an intermittent no-text contrast batch is retried and later batches are still asked', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-flaky-contrast-'))
+  const logs: string[] = []
+  const contrastPrompts = new Map<string, number>()
+  let emptyReplies = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      const seen = contrastPrompts.get(prompt) ?? 0
+      contrastPrompts.set(prompt, seen + 1)
+      if (contrastPrompts.size % 2 === 0 && seen < 3) {
+        emptyReplies += 1
+        return Response.json({
+          choices: [{ message: { content: null }, finish_reason: 'length', native_finish_reason: 'length' }],
+          usage: { prompt_tokens: 100, completion_tokens: 1600 },
+        })
+      }
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.ok(emptyReplies > 0)
+    assert.equal(logs.some((message) => message.includes('contrast model contrast-test unavailable')), false)
+    const answered = built.answeredContrastModelsByProbeId!
+    assert.equal(built.reference.probes.every((probe) => answered.get(probe.id)?.includes('contrast-test')), true)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

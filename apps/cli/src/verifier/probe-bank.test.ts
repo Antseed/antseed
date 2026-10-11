@@ -336,6 +336,49 @@ test('bank selections grow until every contrast model would be flagged DIFF', as
   }
 })
 
+test('bank readiness counts a contrast only on probes it answered', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-answered-'))
+  try {
+    const value = reference(100)
+    // contrast-b answered only the first 10 probes and missed 5 of them.
+    const answeredByB = new Set(value.probes.slice(0, 10).map((probe) => probe.id))
+    value.contrasts.push({
+      model: 'contrast-b',
+      distinguishingProbeIds: value.probes.slice(0, 5).map((probe) => probe.id),
+    })
+    value.referenceId = computeReferenceId(value)
+    const withoutAnswered = join(directory, 'without')
+    await appendReference(withoutAnswered, value)
+    const unknown = await inspectModelProbeBankPower({
+      banksDir: withoutAnswered, model: 'model-a', config: { referenceMaximumProbeCount: 100 },
+    })
+    assert.equal(unknown.selectedProbeCount, null)
+
+    const withAnswered = join(directory, 'with')
+    await appendModelReferenceToBank({
+      banksDir: withAnswered,
+      model: 'model-a',
+      reference: value,
+      cost: referenceCost,
+      answeredContrastModelsByProbeId: new Map(value.probes.map((probe) => [
+        probe.id,
+        answeredByB.has(probe.id) ? ['contrast-a', 'contrast-b'] : ['contrast-a'],
+      ])),
+    })
+    const bank = JSON.parse(await readFile(join(withAnswered, 'model-a', 'bank.json'), 'utf8')) as {
+      probes: Array<{ probe: { id: string }; answeredContrastModels?: string[] }>
+    }
+    assert.deepEqual(bank.probes[0]!.answeredContrastModels, ['contrast-a', 'contrast-b'])
+    assert.deepEqual(bank.probes[50]!.answeredContrastModels, ['contrast-a'])
+    const known = await inspectModelProbeBankPower({
+      banksDir: withAnswered, model: 'model-a', config: { referenceMaximumProbeCount: 100 },
+    })
+    assert.equal(known.selectedProbeCount, 100)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('probe banks reject incompatible enrollment algorithms', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-enrollment-'))
   try {

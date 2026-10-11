@@ -29,6 +29,11 @@ interface BankProbeV1 {
   probe: KbfProbe
   selfTest: ReferenceProbeSelfTestV1
   distinguishingContrastModels: string[]
+  /**
+   * Contrast models that returned a parseable answer for this probe. Absent on
+   * banks built before it was recorded; every contrast then counts as answered.
+   */
+  answeredContrastModels?: string[]
 }
 
 export interface ProbeBankV1 {
@@ -131,6 +136,7 @@ export async function appendModelReferenceToBank(input: {
   model: string
   reference: KbfReferenceV1
   cost: ReferenceBuildCostV1
+  answeredContrastModelsByProbeId?: ReadonlyMap<string, readonly string[]>
 }): Promise<{
   path: string
   addedProbeCount: number
@@ -145,7 +151,12 @@ export async function appendModelReferenceToBank(input: {
       minimumStatisticalPower: Number.EPSILON,
     })
     const existing = await readJsonIfExists<ProbeBankV1>(path)
-    const incoming = bankFromReference(input.model, validatedReference, input.cost)
+    const incoming = bankFromReference(
+      input.model,
+      validatedReference,
+      input.cost,
+      input.answeredContrastModelsByProbeId,
+    )
     if (!existing) {
       await writeJsonAtomic(path, incoming)
       return {
@@ -180,6 +191,14 @@ export async function appendModelReferenceToBank(input: {
         ...previous.distinguishingContrastModels,
         ...entry.distinguishingContrastModels,
       ])].sort()
+      if (previous.answeredContrastModels && entry.answeredContrastModels) {
+        previous.answeredContrastModels = [...new Set([
+          ...previous.answeredContrastModels,
+          ...entry.answeredContrastModels,
+        ])].sort()
+      } else {
+        delete previous.answeredContrastModels
+      }
     }
     bank.contrastModels = [...incoming.contrastModels].sort()
     if (!bank.sourceReferenceIds.includes(validatedReference.referenceId)) {
@@ -658,7 +677,12 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
   return null
 }
 
-function bankFromReference(model: string, reference: KbfReferenceV1, cost: ReferenceBuildCostV1): ProbeBankV1 {
+function bankFromReference(
+  model: string,
+  reference: KbfReferenceV1,
+  cost: ReferenceBuildCostV1,
+  answeredContrastModelsByProbeId?: ReadonlyMap<string, readonly string[]>,
+): ProbeBankV1 {
   const assumptions = {
     alpha: reference.statisticalPowerEvidence.alpha,
     clopperPearsonConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
@@ -694,6 +718,12 @@ function bankFromReference(model: string, reference: KbfReferenceV1, cost: Refer
       probe,
       selfTest: outcomes.get(probe.id)!,
       distinguishingContrastModels: (contrastByProbe.get(probe.id) ?? []).sort(),
+      ...(answeredContrastModelsByProbeId ? {
+        answeredContrastModels: [...new Set([
+          ...(answeredContrastModelsByProbeId.get(probe.id) ?? []),
+          ...(contrastByProbe.get(probe.id) ?? []),
+        ])].sort(),
+      } : {}),
     })),
     sourceReferenceIds: [reference.referenceId],
     referenceCosts: [{
@@ -827,6 +857,7 @@ function selectPoweredReference(
     const contrastDetection = computeContrastDetection({
       probeIds: selected.map((entry) => entry.probe.id),
       contrasts,
+      answeredProbeIds: answeredContrastProbeIds(bank.contrastModels, selected),
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
       alpha: bank.statisticalAssumptions.alpha,
@@ -841,6 +872,18 @@ function selectPoweredReference(
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })
   }
   return null
+}
+
+function answeredContrastProbeIds(
+  contrastModels: readonly string[],
+  selected: readonly BankProbeV1[],
+): Map<string, Set<string>> | undefined {
+  if (!selected.every((entry) => Array.isArray(entry.answeredContrastModels))) return undefined
+  const answered = new Map(contrastModels.map((model) => [model, new Set<string>()]))
+  for (const entry of selected) {
+    for (const model of entry.answeredContrastModels!) answered.get(model)?.add(entry.probe.id)
+  }
+  return answered
 }
 
 function cryptoShuffle<T>(values: readonly T[]): T[] {

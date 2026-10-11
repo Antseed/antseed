@@ -101,6 +101,15 @@ describe('KBF prompt variants', () => {
     );
   });
 
+  it('never shows a bare placeholder index models copy literally', () => {
+    for (const id of KBF_PROMPT_VARIANT_IDS) {
+      const rules = buildKbfPrompt(PROBES.slice(0, 1), 0, id).split('\n')[1]!;
+      expect(rules).not.toMatch(/(?:^|\s)(?:N[.)]|QN:)\s/);
+    }
+    expect(buildKbfPrompt(PROBES.slice(0, 1), 0, 'v2')).toContain('1. <number>, 2. <number>, and so on');
+    expect(buildKbfPrompt(PROBES.slice(0, 1), 0, 'v4')).toContain('Q1: <number>, Q2: <number>, and so on');
+  });
+
   it('rejects unknown variants and hashes the whole set', () => {
     expect(() => buildKbfPrompt(PROBES.slice(0, 1), 0, 'v999')).toThrow(/unknown KBF prompt variant/);
     expect(kbfPromptVariantsHash()).toMatch(/^sha256:[0-9a-f]{64}$/);
