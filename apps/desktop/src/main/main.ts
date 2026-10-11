@@ -17,6 +17,7 @@ import {
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
 import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desktop-gateway.js';
+import { setConnectedAppModelSource } from './system-proxy/runtime.js';
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
 import { ensureSecureIdentity, getSecureIdentity, hasStoredIdentity, secureIdentityEnv } from './identity.js';
@@ -402,14 +403,15 @@ const piChatEngine = registerPiChatHandlers({
   },
 });
 
-// The Claude Desktop gateway advertises the same curated picker rows the
-// in-app dropdown (and Telegram bridge) offer, behind Claude's model ids.
-setClaudeDesktopGatewayModelSource(() => (
+// Connected apps share the curated in-app (and Telegram) picker rows.
+const connectedAppModelSource = () => (
   (piChatEngine.getModelPicker()?.models ?? []).map((model) => ({
     label: model.label,
     model: model.serviceId,
   }))
-));
+);
+setClaudeDesktopGatewayModelSource(connectedAppModelSource);
+setConnectedAppModelSource(connectedAppModelSource);
 
 // ── Telegram bridge ──
 const telegramBridge = createTelegramBridge({

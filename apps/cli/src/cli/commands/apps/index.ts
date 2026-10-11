@@ -11,6 +11,7 @@ import {
   writeConfigPatch,
   type ConnectedAppProfile,
   type ConnectedAppStatus,
+  type ConnectedAppModel,
 } from '@antseed/connected-apps'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -101,6 +102,27 @@ function ensureStateDir(ctx: AppsContext): string {
   return targets
 }
 
+export async function fetchConnectedAppModels(buyerPort: number): Promise<ConnectedAppModel[]> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${buyerPort}/v1/models?type=text`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(1500),
+    })
+    if (!response.ok) return []
+    const body = await response.json() as { data?: unknown }
+    if (!Array.isArray(body.data)) return []
+    return body.data.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const id = (entry as Record<string, unknown>)['id']
+      const name = (entry as Record<string, unknown>)['name']
+      if (typeof id !== 'string' || id.trim().length === 0) return []
+      return [{ model: id, label: typeof name === 'string' && name.trim() ? name : id }]
+    })
+  } catch {
+    return []
+  }
+}
+
 export async function connectApp(ctx: AppsContext, name: string, buyerPort?: number): Promise<AppsActionReport> {
   const all = profiles()
   const profile = findConnectedAppProfile(name, all)
@@ -114,7 +136,8 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
     warnings.push('Claude Desktop is routed through the AntSeed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
   }
   try {
-    writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
+    const models = ['codex', 'droid', 'pi'].includes(profile.configPatch.format ?? '') ? await fetchConnectedAppModels(port) : []
+    writeConfigPatch(profile.configPatch, port, { wslTargetsFile: ensureStateDir(ctx), models })
   } catch (err) {
     return {
       schemaVersion: APPS_JSON_SCHEMA_VERSION,

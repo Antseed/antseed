@@ -3083,6 +3083,14 @@ test('parsePeerPinnedService ignores non-peer model paths', () => {
   assert.equal(parsePeerPinnedService(`@${validPeerId}`), null)
 })
 
+test('parsePeerPinnedService preserves catalog service slashes and version suffixes', () => {
+  assert.deepEqual(parsePeerPinnedService(`antseed/openai/${validPeerId}@org/model@version`), {
+    peerId: validPeerId,
+    service: 'org/model@version',
+  })
+  assert.equal(parsePeerPinnedService('antseed/openai/not-a-peer@org/model'), null)
+})
+
 test('rewritePeerPinnedServiceInBody strips model peer prefix and sets service', () => {
   const body = makeJsonBody({ model: `${validPeerId}@gpt-4o`, messages: [] })
   const result = rewritePeerPinnedServiceInBody(body, jsonHeaders)
@@ -3339,6 +3347,105 @@ test('per-chat pin overrides the default routed model for the antseed alias', as
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+for (const pinStyle of ['none', 'bare', 'namespaced']) {
+  test(`Codex concrete picker model bypasses global and chat routes (peer pin: ${pinStyle})`, async () => {
+    const { proxy, dir } = await makeConversationProxy()
+    try {
+      const peer = makePeer('c', ['openai'])
+      peer.providerServiceApiProtocols = { openai: { services: { 'network/model': ['openai-responses'] } } }
+      const other = { ...peer, peerId: 'd'.repeat(40) }
+      ;(proxy as any)._getPeers = async () => [other, peer]
+      ;(proxy as any)._defaultRoutedModel = 'global-model'
+      const store = (proxy as any)._conversations
+      store.touch({ tool: 'codex-exec', sessionKey: 'picker' })
+      store.setPinnedModel('codex-exec:picker', 'chat-model', 'user')
+      let sentModel = ''
+      let sentPeer = ''
+      ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+        sentModel = parseJsonBody(request.body)['model'] as string
+        sentPeer = _peer.peerId
+        return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+      }
+      const response = await invokeProxy(proxy, makeProxyRequest({
+        path: '/v1/responses',
+        headers: { originator: 'codex_exec', 'session-id': 'picker' },
+        body: { model: pinStyle === 'none' ? 'network/model' : `${pinStyle === 'namespaced' ? 'antseed/openai/' : ''}${peer.peerId}@network/model`, input: 'hello' },
+      }))
+      assert.equal(response.statusCode, 200, response.body)
+      assert.equal(sentModel, 'network/model')
+      if (pinStyle !== 'none') assert.equal(sentPeer, peer.peerId)
+      assert.equal((proxy as any)._defaultRoutedModel, 'global-model')
+      assert.equal(store.get('codex-exec:picker')?.pinnedModel, 'chat-model', 'picker choices must not replace the desktop chat pin')
+      await store.flush()
+    } finally {
+      await (proxy as any)._stateWriteChain
+      await (proxy as any)._conversations.flush()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+}
+
+test('Codex Auto returns to the current global route after a concrete picker choice', async () => {
+  const { proxy, dir } = await makeConversationProxy()
+  try {
+    const peer = makePeer('c', ['openai'])
+    const services = ['network/model', 'global-one', 'global-two']
+    peer.providerServiceApiProtocols = { openai: { services: Object.fromEntries(services.map((model) => [model, ['openai-responses']])) } }
+    ;(proxy as any)._getPeers = async () => [peer]
+    const sent: string[] = []
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+      sent.push(parseJsonBody(request.body)['model'] as string)
+      return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+    }
+    for (const [model, global] of [[`antseed/openai/${peer.peerId}@network/model`, 'global-one'], ['antseed', 'global-one'], ['antseed', 'global-two']]) {
+      ;(proxy as any)._defaultRoutedModel = `${peer.peerId}@${global}`
+      const response = await invokeProxy(proxy, makeProxyRequest({
+        path: '/v1/responses',
+        headers: { originator: 'codex_exec', 'session-id': 'picker-auto' },
+        body: { model, input: 'hello' },
+      }))
+      assert.equal(response.statusCode, 200, response.body)
+    }
+    assert.deepEqual(sent, services)
+    await (proxy as any)._conversations.flush()
+  } finally {
+    await (proxy as any)._stateWriteChain
+    await (proxy as any)._conversations.flush()
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+for (const originator of ['codex_exec', 'droid', 'pi', 'gooeypi', 'prime-agent']) {
+  test(`${originator} picker switches models mid-chat and Auto returns to the global route`, async () => {
+    const { proxy, dir } = await makeConversationProxy()
+    try {
+      const peer = makePeer('c', ['openai'])
+      const services = ['global-model', 'model-a', 'model-b']
+      peer.providerServiceApiProtocols = { openai: { services: Object.fromEntries(services.map((model) => [model, ['openai-responses']])) } }
+      ;(proxy as any)._getPeers = async () => [peer]
+      ;(proxy as any)._defaultRoutedModel = 'global-model'
+      const sent: string[] = []
+      ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+        sent.push(parseJsonBody(request.body)['model'] as string)
+        return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+      }
+      for (const model of ['antseed', 'model-a', `${peer.peerId}@model-b`, 'antseed']) {
+        const response = await invokeProxy(proxy, makeProxyRequest({
+          path: '/v1/responses',
+          headers: { originator, 'session-id': 'mid-chat' },
+          body: { model, input: 'hello' },
+        }))
+        assert.equal(response.statusCode, 200, response.body)
+      }
+      assert.deepEqual(sent, ['global-model', 'model-a', 'model-b', 'global-model'])
+    } finally {
+      await (proxy as any)._stateWriteChain
+      await (proxy as any)._conversations.flush()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+}
 
 test('chat pin overrides a system-proxy-routed model on intercepted requests', async () => {
   const { proxy, dir } = await makeConversationProxy()

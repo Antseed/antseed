@@ -33,7 +33,9 @@ export function parsePeerPinnedService(value: string): { peerId: string; service
     return null
   }
 
-  const peerId = normalizePeerId(value.slice(0, separatorIndex))
+  // Codex catalog slugs can include the connected provider's namespace.
+  const peerPrefix = value.slice(0, separatorIndex).replace(/^antseed\/openai\//, '')
+  const peerId = normalizePeerId(peerPrefix)
   const service = value.slice(separatorIndex + 1).trim()
   if (!peerId || service.length === 0) {
     return null

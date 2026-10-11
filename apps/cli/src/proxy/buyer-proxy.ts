@@ -786,6 +786,14 @@ export async function mergeJsonStateFile(stateDir: string, stateFile: string, pa
   }
 }
 
+/** Connected apps whose own model picker lists the AntSeed catalog. */
+const MODEL_PICKER_APPS = ['codex', 'droid', 'pi', 'gooeypi', 'prime-agent']
+
+/** Tool slugs carry client variants, e.g. Codex reports `codex-exec`. */
+function toolMatchesApp(tool: string, app: string): boolean {
+  return tool === app || tool.startsWith(`${app}-`)
+}
+
 function sendUnknownBuyerIdentity(res: ServerResponse): void {
   res.writeHead(404, { 'content-type': 'application/json' })
   res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
@@ -2420,9 +2428,11 @@ export class BuyerProxy {
     const storedAutoRoute = storedConversation?.peerSource === 'auto' && storedConversation.pinnedModel
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
+    const requestTool = conversationIdentity?.tool ?? ''
+    const appPicker = MODEL_PICKER_APPS.some((app) => toolMatchesApp(requestTool, app))
     const chatPinnedModel = storedConversation?.peerSource === 'user'
       ? storedConversation.pinnedModel
-      : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
+      : appPicker ? null : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
     const preferredPeerHeader = normalizePeerId(serializedReq.headers['x-antseed-prefer-peer'] ?? '')
     const preferredConversationPeerId = preferredPeerHeader ?? storedAutoRoute?.peerId ?? null
     const effectiveRoutedModel = chatPinnedModel ?? this._defaultRoutedModel
@@ -2503,7 +2513,10 @@ export class BuyerProxy {
           || (aliasResult.substituted && parsePeerPinnedService(effectiveRoutedModel ?? ''))
           || (chatPinOverrideApplied && parsePeerPinnedService(chatPinnedModel ?? ''))
         )
-        if (explicitConversationPin) {
+        // An in-app picker choice (including Auto resolved to a pinned peer)
+        // applies to this request. Keep desktop chat pins explicit and let
+        // subsequent Auto requests follow the current global route.
+        if (explicitConversationPin && !appPicker) {
           this._conversations.setPinnedModel(tracked.id, resolvedModel, 'user')
         }
         trackedConversationId = tracked.id
