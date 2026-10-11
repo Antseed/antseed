@@ -36,6 +36,7 @@ import {
   isReferenceProbeCountAllowed,
   resolveReferenceSizingPolicy,
 } from './reference-sizing.js'
+import { probeBankCompatibilityHash } from './probe-bank.js'
 import { safeServiceSlug } from './slug.js'
 import { resolveVerifierModelConfig, type ResolvedVerifierModelConfig } from './model-config.js'
 import type { VerifierModelCatalog, VerifierReasoningEffort } from './openrouter-catalog.js'
@@ -48,6 +49,7 @@ import { writeJsonAtomic } from './atomic-files.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
 
+const REFERENCE_BUILDER_VERSION = '6'
 const CANDIDATE_COUNT = 300
 const CANDIDATE_BATCH_SIZE = 20
 const DEFAULT_MAX_REQUESTS_PER_BUILD = 2_000
@@ -64,6 +66,8 @@ const MINIMUM_SUPPORTED_REASONING_STRATEGY = 'reasoning-effort-minimum-supported
 const DISABLED_REASONING_STRATEGY = 'reasoning-effort-none' as const
 const BARE_REASONING_STRATEGY = 'bare' as const
 const DISABLED_REASONING_REQUEST_OVERRIDES = { reasoning_effort: 'none' } as const
+const CONTRAST_EMPTY_BATCH_RETRIES = 2
+const CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES = 3
 const TERMINAL_EMPTY_FINISH_REASONS = new Set(['content_filter', 'length', 'refusal'])
 const REASONING_EFFORT_ASCENDING: readonly VerifierReasoningEffort[] = [
   'minimal',
@@ -248,10 +252,20 @@ export async function buildModelReference(input: {
   fetchFn?: typeof fetch
   log?: (message: string) => void
   requestLimiter?: ReferenceRequestLimiter
+  initialReference?: KbfReferenceV1
+  /**
+   * Probes already certified stable for this model by an earlier enrollment
+   * with the same enrollment prompt, temperatures and stability rule. They skip
+   * candidate generation and stability passes only; contrast checks and
+   * self-tests are measured again by this build.
+   */
+  seedProbes?: { probes: readonly KbfProbe[]; source: Record<string, unknown> }
 }): Promise<{
   reference: KbfReferenceV1
   path: string
   cost: ReferenceBuildCostV1
+  /** Contrast models that returned a parseable answer, by selected probe id. */
+  answeredContrastModelsByProbeId?: Map<string, string[]>
   finalize: () => Promise<void>
 }> {
   const endpoint = input.config?.referenceEndpoint
@@ -282,6 +296,49 @@ export async function buildModelReference(input: {
     : DISABLED_REASONING_STRATEGY
   const timeoutMs = input.config?.probeRequestTimeoutMs ?? 120_000
   const sizing = resolveReferenceSizingPolicy(input.config)
+  const queryProfile = createReferenceQueryProfile({
+    upstreamModel: targetRoute.model,
+    maxTokensPerRequest: MAX_TOKENS,
+    requestTimeoutMs: timeoutMs,
+  })
+  // Endpoint quirks stay out of the query profile: they apply only to requests
+  // sent to the reference endpoint, never to target audits.
+  const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
+    reasoningStrategy: targetReasoningStrategy,
+    requestOverrides: targetRequestOverrides,
+    requestOmissions: targetRoute.requestOmissions,
+  }
+  const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
+  assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
+  const initial = input.initialReference && validateKbfReferenceV1(input.initialReference, {
+    minimumStatisticalPower: Number.EPSILON,
+  })
+  if (initial) {
+    const expected = {
+      ...initial,
+      referenceModel: input.model,
+      serviceAliases: [input.model, ...(modelConfig.serviceAliases ?? [])],
+      queryProfile,
+      minimumMismatchDelta: REFERENCE_MINIMUM_MISMATCH_DELTA,
+      generator: {
+        name: 'antseed-simple-reference-builder', version: REFERENCE_BUILDER_VERSION, verifierKind: 'kbf',
+        params: { enrollmentBatchingVersion: 2, enrollmentStabilityVersion: 2, referenceEndpointRequest },
+      },
+      provenance: { sourceId: targetRoute.type === 'antseed'
+        ? `${endpoint.sourceId}:antseed:${targetRoute.peerId}:${targetRoute.model}` : endpoint.sourceId, trust: endpoint.trust },
+    }
+    if (probeBankCompatibilityHash(input.model, initial) !== probeBankCompatibilityHash(input.model, expected)
+      || initial.generator.params.selfTestRuns !== selfTestRuns
+      || initial.statisticalPowerEvidence.alpha !== REFERENCE_POWER_ALPHA
+      || initial.statisticalPowerEvidence.clopperPearsonConfidence !== REFERENCE_POWER_CONFIDENCE
+      || canonicalHashBytes32(initial.contrasts.map((entry) => normalized(entry.model)).sort())
+        !== canonicalHashBytes32(modelConfig.contrastModels.map(normalized).sort())
+      || canonicalHashBytes32((initial.generator.params.referenceProvider as { pinned?: unknown } | undefined)?.pinned ?? null)
+        !== canonicalHashBytes32(targetRoute.providerRouting
+          ? { order: targetRoute.providerRouting.order, allowFallbacks: false } : null)) {
+      throw new Error('existing bank enrollment is incompatible with this build; do not mix measurements')
+    }
+  }
   const checkpointPath = join(input.referencesDir, '.checkpoints', `${safeServiceSlug(input.model)}.json`)
   const compatibilityHash = canonicalHashBytes32({
     version: 3,
@@ -310,6 +367,11 @@ export async function buildModelReference(input: {
     timeoutMs,
     reasoningStrategy: targetReasoningStrategy,
     routesByModel: [...routesByModel.entries()],
+    ...(initial ? { initialReferenceId: initial.referenceId } : {}),
+    ...(input.seedProbes ? {
+      seedProbeIds: canonicalHashBytes32(input.seedProbes.probes.map((probe) => probe.id)),
+      seedSource: input.seedProbes.source,
+    } : {}),
   })
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
   const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
@@ -330,10 +392,50 @@ export async function buildModelReference(input: {
       ?? resolveReferenceRequestRoute({ endpoint, model, apiKey, catalog: input.catalog ?? null }),
     log: input.log,
   })
-  let collected: CollectedReferenceProbes | undefined
-  const selfTestRuns = input.config?.referenceSelfTestRuns ?? KBF_DEFAULT_SELF_TEST_RUNS
-  assertPositiveInteger(selfTestRuns, 'referenceSelfTestRuns')
-  const selfOutcomes: ReferenceProbeSelfTestV1[] = []
+  const excludedDomains = new Set<string>(modelConfig.excludedDomains ?? [])
+  const retained = initial?.probes.filter((probe) => !excludedDomains.has(probe.domain)) ?? []
+  const selfById = new Map(initial?.selfTest.outcomes.map((outcome) => [outcome.probeId, outcome]) ?? [])
+  let collected: CollectedReferenceProbes | undefined = initial ? {
+    probes: [...retained],
+    candidateCount: initial.probes.length,
+    distinguishingProbeIdsByModel: new Map(initial.contrasts.map((entry) => [entry.model, [...entry.distinguishingProbeIds]])),
+    answeredContrastModelsByProbeId: new Map(retained.map((probe) => [probe.id, [...modelConfig.contrastModels]])),
+    generatedProbeIds: new Set(initial.probes.map((probe) => probe.id)),
+    reserveProbes: [],
+    generationRound: Math.max(0, ...initial.probes.map((probe) => Number(probe.generationRound) || 0)),
+  } : undefined
+  const selfOutcomes: ReferenceProbeSelfTestV1[] = retained.map((probe) => {
+    const outcome = selfById.get(probe.id)
+    if (!outcome) throw new Error(`existing bank enrollment lacks a self-test for probe ${probe.id}`)
+    return outcome
+  })
+  if (initial) input.log?.(`reusing ${retained.length} enrolled probes and self-test outcomes; checking every contrast before audit`)
+  let seededProbeCount = 0
+  if (input.seedProbes) {
+    if (initial) throw new Error('seed probes cannot be combined with an existing bank enrollment')
+    const seeds = input.seedProbes.probes
+      .filter((probe) => !excludedDomains.has(probe.domain))
+      .map(({ contrast: _contrast, ...probe }) => probe as KbfProbe)
+    input.log?.(`seeding ${seeds.length} previously certified stable probes; re-checking contrasts`)
+    const { outcomes, answered } = await queryContrastOutcomes(seeds, modelConfig.contrastModels, query, input.log)
+    const reserveProbes = seeds.flatMap((probe) => {
+      const distinguishingModels = outcomes.get(probe.id) ?? []
+      return modelConfig.contrastModels.length === 0 || distinguishingModels.length > 0
+        ? [{ ...probe, ...(distinguishingModels.length > 0 ? { contrast: { distinguishingModels } } : {}) }]
+        : []
+    })
+    seededProbeCount = reserveProbes.length
+    input.log?.(`${reserveProbes.length}/${seeds.length} seeded probes distinguish at least one current contrast`)
+    collected = {
+      probes: [],
+      candidateCount: seeds.length,
+      distinguishingProbeIdsByModel: new Map(modelConfig.contrastModels.map((model) => [model, [] as string[]])),
+      answeredContrastModelsByProbeId: answered,
+      generatedProbeIds: new Set(seeds.map((probe) => probe.id)),
+      reserveProbes,
+      generationRound: Math.max(0, ...seeds.map((probe) => Number(probe.generationRound) || 0)),
+    }
+  }
   let selected: {
     probes: KbfProbe[]
     selfTest: ReturnType<typeof aggregateKbfSelfTestOutcomes>
@@ -356,6 +458,7 @@ export async function buildModelReference(input: {
         query,
         log: input.log,
         initial: collected,
+        preferredContrastModels: undetectedContrasts,
       })
       const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
@@ -411,7 +514,7 @@ export async function buildModelReference(input: {
       }
     }
   } catch (error) {
-    if (asError(error).message.includes('reference generation made no progress')) await checkpoint.remove()
+    if (!initial && asError(error).message.includes('reference generation made no progress')) await checkpoint.remove()
     throw error
   }
   if (!collected || !selected) {
@@ -432,24 +535,12 @@ export async function buildModelReference(input: {
     await checkpoint.remove()
     throw new Error(`self-test error rate ${selfTest.errorRate.toFixed(3)} exceeds 0.35`)
   }
-  const queryProfile = createReferenceQueryProfile({
-    upstreamModel: targetRoute.model,
-    maxTokensPerRequest: MAX_TOKENS,
-    requestTimeoutMs: timeoutMs,
-  })
   const servedTargetProviders = query.servedProviders?.(modelConfig.upstreamModel) ?? []
   if (!targetRoute.providerRouting && servedTargetProviders.length > 1) {
     input.log?.(
       `warning: reference provider for ${modelConfig.upstreamModel} changed during the build `
       + `(${servedTargetProviders.join(', ')}); pin referenceProvider.order for a reproducible reference`,
     )
-  }
-  // Endpoint quirks stay out of the query profile: they apply only to requests
-  // sent to the reference endpoint, never to target audits.
-  const referenceEndpointRequest: ReferenceEndpointRequestV1 = {
-    reasoningStrategy: targetReasoningStrategy,
-    requestOverrides: targetRequestOverrides,
-    requestOmissions: targetRoute.requestOmissions,
   }
   const reference: KbfReferenceV1 = {
     version: KBF_REFERENCE_VERSION,
@@ -463,7 +554,7 @@ export async function buildModelReference(input: {
     source: 'generated',
     generator: {
       name: 'antseed-simple-reference-builder',
-      version: '6',
+      version: REFERENCE_BUILDER_VERSION,
       verifierKind: 'kbf',
       params: {
         sourceId: endpoint.sourceId,
@@ -483,6 +574,10 @@ export async function buildModelReference(input: {
         enrollmentEvidenceVersion: 1,
         selfTestRuns,
         referenceEndpointRequest,
+        ...(initial ? { enrollmentSeedReferenceId: initial.referenceId, reusedProbeCount: retained.length } : {}),
+        ...(input.seedProbes ? {
+          seededStableProbes: { ...input.seedProbes.source, offeredProbeCount: input.seedProbes.probes.length, acceptedProbeCount: seededProbeCount },
+        } : {}),
         ...(targetRoute.type === 'direct' ? {
           referenceProvider: {
             pinned: targetRoute.providerRouting
@@ -527,7 +622,11 @@ export async function buildModelReference(input: {
   const path = referencePath(input.referencesDir, input.model)
   await writeJsonAtomic(path, validated)
   const cost = query.costSummary?.() ?? summarizeReferenceCosts([])
-  return { reference: validated, path, cost, finalize: () => checkpoint.remove() }
+  const answeredContrastModelsByProbeId = new Map(validated.probes.map((probe) => [
+    probe.id,
+    [...(collected.answeredContrastModelsByProbeId?.get(probe.id) ?? modelConfig.contrastModels)],
+  ]))
+  return { reference: validated, path, cost, answeredContrastModelsByProbeId, finalize: () => checkpoint.remove() }
 }
 
 function referenceContrasts(
@@ -564,6 +663,7 @@ export async function collectReferenceProbes(input: {
   maxNoProgressRounds?: number
   log?: (message: string) => void
   initial?: CollectedReferenceProbes
+  preferredContrastModels?: readonly string[]
   shuffle?: <T>(values: readonly T[]) => T[]
 }): Promise<CollectedReferenceProbes> {
   assertPositiveInteger(input.targetCount, 'targetCount')
@@ -587,6 +687,11 @@ export async function collectReferenceProbes(input: {
       ?.distinguishingModels ?? []
     for (const model of distinguishingModels) state.distinguishingProbeIdsByModel.get(model)?.push(probe.id)
   }
+  const priority = (probe: KbfProbe): number => {
+    const models = (probe.contrast as { distinguishingModels?: string[] } | undefined)?.distinguishingModels ?? []
+    return input.preferredContrastModels?.filter((model) => models.includes(model)).length ?? 0
+  }
+  state.reserveProbes.sort((left, right) => priority(right) - priority(left))
   while (state.probes.length < input.targetCount && state.reserveProbes.length > 0) promote(state.reserveProbes.shift()!)
   let noProgressRounds = 0
 
@@ -626,6 +731,7 @@ export async function collectReferenceProbes(input: {
         ...(distinguishingModels.length > 0 ? { contrast: { distinguishingModels } } : {}),
       }
     })
+    prepared.sort((left, right) => priority(right) - priority(left))
     const selected = prepared.slice(0, input.targetCount - state.probes.length)
     for (const probe of selected) promote(probe)
     state.reserveProbes.push(...prepared.slice(selected.length))
@@ -740,14 +846,46 @@ async function queryDomainGroupedProbeAnswers(
     }
   }
   if (options.allowIncomplete) {
+    let answeredBatches = 0
+    let consecutiveEmptyBatches = 0
     for (const batch of batches) {
-      try {
-        await queryBatch(batch)
-      } catch (error) {
-        if (!isRecoverableContrastError(error)) throw error
-        log?.(`contrast model ${model} unavailable; skipping remaining probe answers: ${asError(error).message}`)
+      let lastError: unknown = null
+      for (let attempt = 0; attempt <= CONTRAST_EMPTY_BATCH_RETRIES; attempt += 1) {
+        try {
+          const domainAnswers = await queryProbeAnswers(
+            model,
+            batch.probes,
+            temperature,
+            attempt === 0 ? cacheDomain : `${cacheDomain}:empty-retry-${attempt}`,
+            query,
+            { recoverTerminalEmptyBatches: false, stabilityDomain: batch.probes[0]?.domain, log },
+          )
+          for (const [groupIndex, originalIndex] of batch.indexes.entries()) {
+            answers[originalIndex] = domainAnswers[groupIndex] ?? null
+          }
+          lastError = null
+          break
+        } catch (error) {
+          if (!isRecoverableContrastError(error)) throw error
+          lastError = error
+          if (!isTerminalEmptyReferenceError(error)) break
+        }
+      }
+      if (lastError === null) {
+        answeredBatches += 1
+        consecutiveEmptyBatches = 0
+        continue
+      }
+      consecutiveEmptyBatches += 1
+      if (!isTerminalEmptyReferenceError(lastError) || answeredBatches === 0
+        || consecutiveEmptyBatches >= CONTRAST_MAX_CONSECUTIVE_EMPTY_BATCHES) {
+        log?.(`contrast model ${model} unavailable; skipping remaining probe answers: ${asError(lastError).message}`)
         break
       }
+      log?.(
+        `contrast model ${model} returned no text for a ${batch.probes.length}-probe batch after `
+        + `${CONTRAST_EMPTY_BATCH_RETRIES + 1} attempts; continuing with the next batch`,
+      )
     }
   } else {
     await allSettledOrThrow(batches.map(queryBatch))

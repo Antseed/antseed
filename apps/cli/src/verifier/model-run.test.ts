@@ -3,15 +3,28 @@ import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
+import { Wallet } from 'ethers'
 import {
   KBF_PROMPT_VARIANT_IDS,
   computeBinomialPower,
+  computeReferenceId,
   createReferenceQueryProfile,
   getKbfPromptVariant,
+  validateKbfReferenceV1,
   type KbfReferenceV1,
 } from '@antseed/fingerprints'
-import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1, type PeerId, type PeerInfo } from '@antseed/node'
+import {
+  CONNECTION_CAPABILITY_RESPONSE_AUTH_V1,
+  createResponseAuthPayload,
+  encodeHttpRequest,
+  encodeHttpResponse,
+  verifyResponseAuth,
+  type PeerId,
+  type PeerInfo,
+  type StoredResponseAuth,
+} from '@antseed/node'
 import { ConcurrencyLimiter } from './audit-concurrency.js'
+import { writeJsonAtomic } from './atomic-files.js'
 import {
   classifyVerificationTarget,
   classifyVerificationTargetServices,
@@ -23,7 +36,9 @@ import {
   type ModelVerificationSkip,
 } from './model-run.js'
 import type { ProxyAuditEvidenceV1, ProxyAuditSkipEvidenceV1 } from './proxy-evidence.js'
-import type { ResponseAuthReader } from './response-auth-reader.js'
+import { createResponseAuthReader, type ResponseAuthReader } from './response-auth-reader.js'
+import { referenceFixture } from './audit-report-fixtures.test-support.js'
+import { verifyExchangeResponseAuth } from './report-verification.js'
 
 function peer(overrides: Partial<PeerInfo> = {}): PeerInfo {
   return {
@@ -106,7 +121,7 @@ async function runTarget(
   answerMode: 'valid' | 'out-of-range' | 'all-wrong' | 'partial-malformed' | 'malformed'
     | 'malformed-first-batch' | 'empty-responses' | 'content-filter' | 'sse' | 'transport-failure' | 'hanging'
     | 'rate-limited' | 'semantic-unavailable' | 'blank-length'
-    | 'persistent-blank-length' = 'valid',
+    | 'persistent-blank-length' | 'checkpoint-abort' = 'valid',
   transientFailures = 0,
   authMode: 'verified' | 'missing' | 'unverified' | 'wrong-request' | 'wrong-seller' | 'wrong-service' = 'verified',
   includeCost = true,
@@ -114,9 +129,15 @@ async function runTarget(
   resume?: ModelVerificationResumeInput,
   checkpointIdentity?: { runId: string; epoch: string; model: string },
   targetReference: KbfReferenceV1 = reference(count),
+  persistence: {
+    writeCheckpoint?: typeof writeJsonAtomic
+    onFailure?: (directory: string, requestCount: number, abortedRequests: number) => Promise<void>
+    proxyFailure?: Response | Error
+  } = {},
 ) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-target-'))
   let requestCount = 0
+  let abortedRequests = 0
   let failureCount = 0
   let changedAnswer = false
   let returnedBlankLength = false
@@ -129,6 +150,8 @@ async function runTarget(
       ? new TextDecoder().decode(init.body)
       : String(init?.body ?? '')
     requests.push({ headers: init?.headers ?? {}, body: requestBody })
+    if (persistence.proxyFailure instanceof Error) throw persistence.proxyFailure
+    if (persistence.proxyFailure) return persistence.proxyFailure.clone()
     const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
     if (answerMode === 'hanging') {
       return await new Promise<Response>((_resolve, reject) => {
@@ -145,6 +168,16 @@ async function runTarget(
     const body = JSON.parse(requestBody) as { messages: Array<{ content: string }> }
     const prompt = body.messages.at(-1)?.content ?? ''
     const firstProbe = Number(prompt.match(/test probe (\d+) value is ___/)?.[1] ?? 0)
+    if (answerMode === 'checkpoint-abort' && firstProbe === 21) {
+      return await new Promise<Response>((_resolve, reject) => {
+        const abort = () => {
+          abortedRequests += 1
+          reject(new DOMException('aborted', 'AbortError'))
+        }
+        if (init?.signal?.aborted) abort()
+        else init?.signal?.addEventListener('abort', abort, { once: true })
+      })
+    }
     if (answerMode === 'rate-limited' && firstProbe === 11) {
       return new Response('max concurrency reached', { status: 429 })
     }
@@ -284,6 +317,7 @@ async function runTarget(
         batchLimiter: new ConcurrencyLimiter(2),
         fetchFn,
         sleepFn: async () => undefined,
+        ...persistence,
       },
       target: peer(),
       service: 'GPT-5.6-SOL',
@@ -296,8 +330,180 @@ async function runTarget(
     const evidence = JSON.parse(await readFile(result.evidencePath, 'utf8')) as ProxyAuditEvidenceV1
     const checkpoints = await readModelAuditCheckpoints(directory)
     return { result, evidence, checkpoints, requestCount, requests, finalBatchStartedAfterSlow }
+  } catch (error) {
+    await persistence.onFailure?.(directory, requestCount, abortedRequests)
+    throw error
   } finally {
     await rm(directory, { recursive: true, force: true })
+  }
+}
+
+test('transient audit checkpoint failure retries storage only and retains concurrent completions', async () => {
+  let writes = 0
+  const run = await runTarget(40, 'valid', 0, 'verified', true, 10_000, undefined, {
+    runId: 'checkpoint-test', epoch: '2026-10-06', model: 'gpt-5.6-sol',
+  }, reference(40), {
+    writeCheckpoint: async (path, value) => {
+      writes += 1
+      if (writes === 2) throw new Error('temporary checkpoint failure')
+      await writeJsonAtomic(path, value)
+    },
+  })
+  assert.equal(writes, 5)
+  assert.equal(run.requestCount, 4)
+  assert.equal(run.result.status, 'SAME')
+  assert.deepEqual(run.checkpoints[0]?.checkpoint.exchanges.map((exchange) => exchange.batchIndex), [0, 1, 2, 3])
+})
+
+test('runtime accepts a cryptographically verified enrolled routed alias without redundant requests', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-runtime-alias-'))
+  const seller = new Wallet(`0x${'12'.repeat(32)}`)
+  const buyer = new Wallet(`0x${'34'.repeat(32)}`)
+  const target = peer({ peerId: seller.address.slice(2).toLowerCase() as PeerId })
+  const enrolled = referenceFixture('claude-opus-5.5', 40)
+  enrolled.serviceAliases.push('claude-opus-5-5')
+  enrolled.referenceId = computeReferenceId(enrolled)
+  const reference = validateKbfReferenceV1(enrolled, { minimumStatisticalPower: 1e-9 })
+  const records = new Map<string, StoredResponseAuth>()
+  let requestCount = 0
+  const reader = createResponseAuthReader({
+    getResponseAuth: (requestId) => records.get(requestId) ?? null,
+    getRequestCost: () => null,
+  })
+  try {
+    const result = await verifyModelTarget({
+      target,
+      service: 'CLAUDE-OPUS-5.5',
+      reference,
+      context: {
+        proxy: { baseUrl: 'http://127.0.0.1:8377', statePath: join(directory, 'buyer.json'), pid: 1, peers: [target] },
+        evidenceDir: directory,
+        requestTimeoutMs: 1_000,
+        auditTimeoutMs: 10_000,
+        responseAuthReader: reader,
+        batchConcurrency: 2,
+        batchConcurrencyPromotionLatencyMs: 30_000,
+        batchLimiter: new ConcurrencyLimiter(2),
+        sleepFn: async () => undefined,
+        fetchFn: async (_url, init) => {
+          requestCount += 1
+          const requestId = new Headers(init?.headers).get('x-antseed-request-id')!
+          const body = JSON.parse(Buffer.from(init!.body as Uint8Array).toString()) as { model: string; messages: Array<{ content: string }> }
+          const content = [...body.messages.at(-1)!.content.matchAll(/test value (\d+) is ___/g)]
+            .map((match, index) => `(${index + 1}) ${match[1]}`).join('\n')
+          body.model = 'claude-opus-5-5'
+          const headers = { 'content-type': 'application/json' }
+          const request = { requestId, method: 'POST', path: '/v1/chat/completions', headers, body: Buffer.from(JSON.stringify(body)) }
+          const response = { requestId, statusCode: 200, headers, body: Buffer.from(JSON.stringify({ choices: [{ message: { content } }] })) }
+          const expected = { request, response, sellerPeerId: target.peerId, buyerPeerId: buyer.address, advertisedService: body.model }
+          const payload = createResponseAuthPayload({ ...expected, provider: 'test', responseStartedAt: 1, responseCompletedAt: 2 }, seller)
+          assert.equal(verifyResponseAuth(payload, expected).valid, true)
+          records.set(requestId, {
+            ...payload, receivedAt: 3, verified: true, verificationError: null,
+            requestPreimage: encodeHttpRequest(request), responsePreimage: encodeHttpResponse(response),
+          })
+          return new Response(response.body, { headers: { ...headers, 'x-antseed-request-id': requestId } })
+        },
+      },
+    })
+    assert.equal(result.status, 'SAME')
+    assert.equal(requestCount, 4)
+    const evidence = JSON.parse(await readFile(result.evidencePath!, 'utf8')) as ProxyAuditEvidenceV1
+    for (const exchange of evidence.exchanges) {
+      assert.equal(exchange.attemptCount, 1)
+      assert.equal(exchange.responseAuth.record?.advertisedService, 'claude-opus-5-5')
+      assert.ok(verifyExchangeResponseAuth(exchange, evidence, buyer.address, reference.serviceAliases).length > 0)
+    }
+  } finally {
+    reader.close()
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('persistent audit checkpoint failure stops concurrent work and preserves the durable checkpoint', async () => {
+  let writes = 0
+  let observedFailure = false
+  const cause = new Error('disk full')
+  await assert.rejects(runTarget(100, 'valid', 0, 'verified', true, 10_000, undefined, {
+    runId: 'checkpoint-test', epoch: '2026-10-06', model: 'gpt-5.6-sol',
+  }, reference(100), {
+    writeCheckpoint: async (path, value) => {
+      writes += 1
+      if (writes > 1) throw cause
+      await writeJsonAtomic(path, value)
+    },
+    onFailure: async (directory, requestCount) => {
+      observedFailure = true
+      assert.equal(requestCount, 3)
+      const checkpoints = await readModelAuditCheckpoints(directory)
+      assert.equal(checkpoints.length, 1)
+      assert.deepEqual(checkpoints[0]?.checkpoint.exchanges.map((exchange) => exchange.batchIndex), [0])
+    },
+  }), (error: unknown) => {
+    assert.ok(error instanceof Error)
+    assert.match(error.message, /audit stopped.*checkpoint.*last durable checkpoint/i)
+    assert.equal(error.cause, cause)
+    return true
+  })
+  assert.equal(observedFailure, true)
+  assert.equal(writes, 3)
+})
+
+test('persistent checkpoint failure aborts an in-flight request without a paid retry', async () => {
+  let writes = 0
+  let observedAbort = false
+  const startedAt = Date.now()
+  await assert.rejects(runTarget(100, 'checkpoint-abort', 0, 'verified', true, 10_000, undefined, {
+    runId: 'checkpoint-abort', epoch: '2026-10-06', model: 'gpt-5.6-sol',
+  }, reference(100), {
+    writeCheckpoint: async (path, value) => {
+      writes += 1
+      if (writes > 1) throw new Error('disk full')
+      await writeJsonAtomic(path, value)
+    },
+    onFailure: async (directory, requestCount, abortedRequests) => {
+      assert.equal(requestCount, 3)
+      assert.equal(abortedRequests, 1)
+      assert.equal((await readModelAuditCheckpoints(directory))[0]?.checkpoint.exchanges.length, 1)
+      observedAbort = true
+    },
+  }), /audit stopped.*checkpoint/)
+  assert.equal(writes, 3)
+  assert.equal(observedAbort, true)
+  assert.ok(Date.now() - startedAt < 2_000)
+})
+
+for (const [name, failure, code, retryable, requestCount] of [
+  ['429', Response.json({ error: { message: 'unsupported Chat feature for Claude Messages: n' } }, { status: 429 }), 'rate_limited', true, 5],
+  ['500', Response.json({ error: { message: 'unsupported Chat feature for Claude Messages: reasoning' } }, { status: 500 }), 'transport_error', true, 5],
+  ['network', new TypeError('fetch failed'), 'transport_error', true, 5],
+  ['unrelated 422', Response.json({ error: { message: 'unsupported account feature: n' } }, { status: 422 }), 'transport_error', false, 4],
+  ['unobserved parameter', Response.json({ error: { message: 'unsupported Chat feature for Claude Messages: custom' } }, { status: 400 }), 'transport_error', false, 4],
+] as const) {
+  test(`${name} remains outside the observed unsupported-parameter classification`, async () => {
+    const run = await runTarget(40, 'valid', 0, 'verified', true, 10_000, undefined, undefined, reference(40), {
+      proxyFailure: failure,
+    })
+    assert.equal(run.result.status, 'UNDETERMINED')
+    assert.equal(run.requestCount, requestCount)
+    assert.equal(run.evidence.exchanges[0]?.outcomeReason?.code, code)
+    assert.equal(run.evidence.exchanges[0]?.outcomeReason?.retryable, retryable)
+  })
+}
+
+for (const status of [400, 422]) {
+  for (const parameter of ['n', 'reasoning']) {
+    test(`unsupported Claude Messages ${parameter} HTTP ${status} skips after one request`, async () => {
+      const message = `unsupported Chat feature for Claude Messages: ${parameter}`
+      const run = await runSkippedTarget(Response.json({ error: { message } }, { status }))
+      assert.equal(run.requestCount, 1)
+      assert.equal(run.result.code, 'request_profile_incompatible')
+      assert.equal(run.result.outcomeReason?.retryable, false)
+      assert.equal(run.result.outcomeReason?.nextAction, 'inspect verifier evidence')
+      assert.equal(run.evidence.exchange.attemptCount, 1)
+      assert.equal(run.evidence.exchange.outcomeReason?.summary, message)
+      assert.ok(run.evidence.exchange.matches.every((match) => match === null))
+    })
   }
 }
 

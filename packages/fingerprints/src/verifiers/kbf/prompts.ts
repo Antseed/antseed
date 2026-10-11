@@ -84,7 +84,10 @@ export const KBF_PROMPT_VARIANT_IDS: readonly string[] = Object.freeze(
 
 /** Content hash over the full variant set; pinned by reference query profiles. */
 export function kbfPromptVariantsHash(): string {
-  return canonicalHash(KBF_PROMPT_VARIANTS);
+  return canonicalHash(KBF_PROMPT_VARIANTS.map((variant) => ({
+    ...variant,
+    rules: formatRules(variant.lineFormat),
+  })));
 }
 
 export function getKbfPromptVariant(variantId: string = KBF_DEFAULT_PROMPT_VARIANT_ID): KbfPromptVariant {
@@ -102,8 +105,18 @@ function formatLineLabel(format: KbfLineFormat, index: number | 'N'): string {
   }
 }
 
+/**
+ * Only the parenthesized `(N)` placeholder reads unambiguously as an index.
+ * Bare `N.` / `N)` / `QN:` are copied literally by many models, so those
+ * formats show concrete numbered examples instead.
+ */
+function formatExample(format: KbfLineFormat): string {
+  if (format === 'paren') return `${formatLineLabel(format, 'N')} <number>`;
+  return `${formatLineLabel(format, 1)} <number>, ${formatLineLabel(format, 2)} <number>, and so on`;
+}
+
 function formatRules(format: KbfLineFormat): string {
-  return `RULES: Output ONLY in ${formatLineLabel(format, 'N')} <number> format, one per line. ` +
+  return `RULES: Output ONLY in ${formatExample(format)} format, one per line. ` +
     'Give a single plain number per line, no words, no ranges. ' +
     'If unsure, output your best single numeric estimate.';
 }

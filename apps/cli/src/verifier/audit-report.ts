@@ -31,6 +31,7 @@ import {
   type ProxyAuditEvidenceV1,
 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
+import { matchesEnrolledService } from './response-auth-reader.js'
 import { safeServiceSlug } from './slug.js'
 import { asError, normalized } from './utils.js'
 
@@ -270,6 +271,7 @@ export function exchangeAdvertisedPricing(exchange: ProxyAuditEvidenceExchangeV1
 export function evaluatePriceCheck(
   evidence: ProxyAuditEvidenceV1,
   lookup: (requestId: string) => RecordedRequestCostV1 | null,
+  serviceAliases: readonly string[] = [],
 ): PriceCheckV1 {
   const requests: PriceCheckRequestV1[] = []
   const seen = new Set<string>()
@@ -298,12 +300,22 @@ export function evaluatePriceCheck(
         }
         continue
       }
+      if (cost.requestId !== requestId) {
+        requests.push(failedRequest(exchange.batchIndex, requestId, cost, pricing, 'request cost belongs to another request'))
+        continue
+      }
       if (normalizedPeer(cost.sellerPeerId) !== normalizedPeer(evidence.target.peerId)) {
         requests.push(failedRequest(exchange.batchIndex, requestId, cost, pricing, 'request cost belongs to another seller'))
         continue
       }
-      if (cost.service && normalized(cost.service) !== normalized(evidence.target.service)) {
+      if (cost.service && !matchesEnrolledService(evidence.target.service, cost.service, serviceAliases)) {
         requests.push(failedRequest(exchange.batchIndex, requestId, cost, pricing, 'request cost belongs to another service'))
+        continue
+      }
+      const responseAuth = exchange.responseAuth.record
+      if (responseAuth?.requestId === requestId && responseAuth.channelId
+        && normalized(cost.channelId) !== normalized(responseAuth.channelId)) {
+        requests.push(failedRequest(exchange.batchIndex, requestId, cost, pricing, 'request cost belongs to another channel'))
         continue
       }
       inferenceCost += nonNegativeBigInt(cost.authorizedCostUsdc)
@@ -485,16 +497,19 @@ export async function prepareAgentAuditReports(input: {
       const referenceId = evidence.reference.referenceId
       const referencePath = join(evidenceDirectory, 'references', `${referenceIdBytes32(referenceId).slice(2)}.json`)
       let exportedPath: string | null = null
+      let serviceAliases: readonly string[] = []
       const located = await findEpochProbeReference(input.banksDir, referenceId)
       if (located) {
         const reference = validateKbfReferenceV1(located, { minimumStatisticalPower: sizing.minimumStatisticalPower })
+        if (reference.referenceId !== referenceId) throw new Error('referenceId mismatch')
+        serviceAliases = reference.serviceAliases
         if (!references.some((existing) => existing.path === referencePath)) references.push({ path: referencePath, reference })
         exportedPath = portableRelative(evidenceDirectory, referencePath)
       }
       const priceCheck = evaluatePriceCheck(evidence, (requestId) => {
         const stored = input.requestCostLookup.getRequestCost(requestId)
         return stored ? recordedRequestCost(stored) : null
-      })
+      }, serviceAliases)
       services.push({
         model,
         service: result.service,

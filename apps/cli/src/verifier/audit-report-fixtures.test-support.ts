@@ -50,6 +50,7 @@ export interface FixtureAudit {
   seller: Wallet
   model: string
   service: string
+  routedService?: string
   verdict: 'SAME' | 'DIFF'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
@@ -57,6 +58,7 @@ export interface FixtureAudit {
   costMultiplier?: number
   /** Omit the buyer request cost record. */
   omitCost?: boolean
+  costOverrides?: Partial<StoredRequestCost>
   reference?: KbfReferenceV1
 }
 
@@ -306,14 +308,16 @@ function signedExchanges(input: FixtureAudit & {
       choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],
       usage: { prompt_tokens: 100, completion_tokens: 20 },
     }))
-    const request = { requestId, method: 'POST', path: '/v1/chat/completions', headers, body }
+    const signedBody = buildKbfProbeRequestBody(input.routedService ?? input.service, input.reference.queryProfile, probes, promptVariantId)
+    const request = { requestId, method: 'POST', path: '/v1/chat/completions', headers, body: signedBody }
     const response = { requestId, statusCode: 200, headers, body: responseBody }
     const payload = createResponseAuthPayload({
       request,
       response,
       buyerPeerId: input.auditor.address,
       sellerPeerId: peerId,
-      advertisedService: input.service,
+      advertisedService: input.routedService ?? input.service,
+      channelId: `0x${'cc'.repeat(32)}`,
       provider: 'openai',
       responseStartedAt: 1_000,
       responseCompletedAt: 2_000,
@@ -331,19 +335,20 @@ function signedExchanges(input: FixtureAudit & {
       estimatedCostUsd: 0.00014,
       tokenSource: 'usage',
       provider: 'openai',
-      service: input.service,
+      service: input.routedService ?? input.service,
     }
     if (!input.omitCost) {
       input.requestCosts.set(requestId, {
         requestId,
         sellerPeerId: peerId,
-        service: input.service,
+        service: input.routedService ?? input.service,
         channelId: `0x${'cc'.repeat(32)}`,
         authorizedCostUsdc: BigInt(Math.round(140 * (input.costMultiplier ?? 1))),
         inputTokens: 100n,
         outputTokens: 20n,
         source: 'need-auth',
         recordedAt: 3_000,
+        ...input.costOverrides,
       })
     }
     const url = 'http://127.0.0.1:8377/v1/chat/completions'

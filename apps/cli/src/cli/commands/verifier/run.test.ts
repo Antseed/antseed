@@ -13,6 +13,7 @@ import {
 } from '../../../verifier/proxy-evidence.js'
 import { registerVerifierCommands } from './index.js'
 import {
+  enrollmentRequestBudget,
   filterCompatibleResumeCandidates,
   filterResumeCandidatesByPeer,
   loadResumeCandidates,
@@ -59,9 +60,19 @@ test('verifier run accepts one model or all configured models', () => {
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--allow-probe-reuse', '--peer', '--resume-run'],
+    ['--all', '--allow-probe-reuse', '--peer', '--resume-run', '--enroll-if-needed', '--max-enrollment-requests'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
+})
+
+test('pre-audit enrollment is opt-in, explicitly bounded, and separate from repair runs', () => {
+  assert.equal(enrollmentRequestBudget({}), null)
+  assert.equal(enrollmentRequestBudget({ enrollIfNeeded: true, maxEnrollmentRequests: '250' }), 250)
+  for (const maxEnrollmentRequests of [undefined, '0', '-1', '2.5', 'Infinity', 'no']) {
+    assert.throws(() => enrollmentRequestBudget({ enrollIfNeeded: true, maxEnrollmentRequests }), /positive integer/)
+  }
+  assert.throws(() => enrollmentRequestBudget({ maxEnrollmentRequests: '10' }), /requires --enroll-if-needed/)
+  assert.throws(() => enrollmentRequestBudget({ enrollIfNeeded: true, resumeRun: 'run', maxEnrollmentRequests: '10' }), /cannot be combined/)
 })
 
 test('verifier peer selector normalizes supported peer ids', () => {

@@ -21,8 +21,95 @@ import {
   resolveReferenceRequestOverrides,
 } from './model-reference.js'
 import type { VerifierModelCatalog } from './openrouter-catalog.js'
+import { appendModelReferenceToBank, inspectModelProbeBankPower, loadBankEnrollmentReference } from './probe-bank.js'
 
 const MODEL = 'gpt-test'
+
+test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
+  const probes = reference(100).probes.slice(0, 2)
+  const initial = {
+    probes: [], candidateCount: 2,
+    distinguishingProbeIdsByModel: new Map([['easy', [] as string[]], ['hard', [] as string[]]]),
+    generatedProbeIds: new Set(probes.map((probe) => probe.id)),
+    reserveProbes: probes.map((probe, index) => ({ ...probe, contrast: { distinguishingModels: [index ? 'hard' : 'easy'] } })),
+    generationRound: 1,
+  }
+  const collected = await collectReferenceProbes({
+    model: MODEL, contrastModels: ['easy', 'hard'], preferredContrastModels: ['hard'], targetCount: 1, initial,
+    query: async () => { throw new Error('reserve probes must not be queried again') },
+  })
+  assert.equal(collected.probes[0]!.id, probes[1]!.id)
+  assert.deepEqual(collected.distinguishingProbeIdsByModel.get('hard'), [probes[1]!.id])
+})
+
+test('bank top-up reuses enrolled measurements, grows against the failed contrast, and resumes without repeating calls', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-top-up-'))
+  const policy = config()
+  policy.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
+  policy.referenceEndpoint!.contrastModelBank!['contrast-other'] = {
+    upstreamModel: 'contrast-other', pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 }, capabilityRank: 2,
+  }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: policy, fetchFn })
+    await built.finalize()
+    const seed = structuredClone(built.reference)
+    seed.contrasts[0]!.distinguishingProbeIds = [seed.probes[0]!.id]
+    delete seed.contrastDetection
+    seed.referenceId = computeReferenceId(seed)
+    const banksDir = join(directory, 'banks')
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: seed, cost: built.cost })
+    assert.equal((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount, null)
+    const initialReference = await loadBankEnrollmentReference(banksDir, MODEL)
+    assert.ok(initialReference)
+    const original = JSON.stringify(initialReference)
+    const prompts: string[] = []
+    const topUpFetch: typeof fetch = async (url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      prompts.push(body.messages.at(-1)?.content ?? '')
+      return fetchFn(url, init)
+    }
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, initialReference,
+      config: { ...policy, referenceMaxRequestsPerBuild: 1 }, fetchFn: topUpFetch,
+    }), /request budget exhausted/)
+    assert.equal(prompts.length, 1)
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'bounded'), initialReference,
+      config: { ...policy, referenceMaximumProbeCount: seed.probes.length },
+      fetchFn: async () => { throw new Error('must not query beyond the configured probe maximum') },
+    }), /reference remains underpowered/)
+    const expanded = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: policy, initialReference, fetchFn: topUpFetch,
+    })
+    assert.ok(expanded.reference.probes.length > seed.probes.length)
+    assert.ok(expanded.reference.contrastDetection!.every((entry) => entry.detected))
+    assert.deepEqual(expanded.reference.selfTest.outcomes.slice(0, seed.probes.length), seed.selfTest.outcomes)
+    assert.equal(JSON.stringify(initialReference), original)
+    assert.equal(prompts.filter((prompt) => prompt === prompts[0]).length, 1)
+    assert.equal(prompts.some((prompt) => initialReference.probes.some((probe) => prompt.includes(probe.template))), false)
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: expanded.reference, cost: expanded.cost })
+    assert.ok((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount)
+    await expanded.finalize()
+    const changedContrast = structuredClone(policy)
+    changedContrast.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test']
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
+      fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
+    }), /incompatible/)
+    const incompatible = config()
+    incompatible.referenceEndpoint!.models[MODEL]!.upstreamModel = 'other-model'
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: incompatible, initialReference,
+      fetchFn: async () => { throw new Error('must not make paid requests') },
+    }), /incompatible/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
 
 function config(overrides: Partial<VerifierCLIConfig> = {}): VerifierCLIConfig {
   return {
@@ -538,7 +625,7 @@ test('reference build adaptively isolates and caches a refused self-test probe',
   }
 })
 
-test('no-text length responses isolate a contrast without identical retries', async () => {
+test('no-text length responses retry the batch with fresh requests before isolating a contrast', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-length-contrast-'))
   let lengthAttempts = 0
   const fetchFn: typeof fetch = async (_url, init) => {
@@ -563,7 +650,45 @@ test('no-text length responses isolate a contrast without identical retries', as
       }),
       /made no progress/,
     )
-    assert.equal(lengthAttempts, 1)
+    assert.equal(lengthAttempts, 3)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an intermittent no-text contrast batch is retried and later batches are still asked', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-flaky-contrast-'))
+  const logs: string[] = []
+  const contrastPrompts = new Map<string, number>()
+  let emptyReplies = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      const seen = contrastPrompts.get(prompt) ?? 0
+      contrastPrompts.set(prompt, seen + 1)
+      if (contrastPrompts.size % 2 === 0 && seen < 3) {
+        emptyReplies += 1
+        return Response.json({
+          choices: [{ message: { content: null }, finish_reason: 'length', native_finish_reason: 'length' }],
+          usage: { prompt_tokens: 100, completion_tokens: 1600 },
+        })
+      }
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.ok(emptyReplies > 0)
+    assert.equal(logs.some((message) => message.includes('contrast model contrast-test unavailable')), false)
+    const answered = built.answeredContrastModelsByProbeId!
+    assert.equal(built.reference.probes.every((probe) => answered.get(probe.id)?.includes('contrast-test')), true)
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

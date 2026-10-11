@@ -61,6 +61,7 @@ import {
   type ProxyAuditEvidenceV1,
 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
+import { matchesEnrolledService } from './response-auth-reader.js'
 import { asError, normalized } from './utils.js'
 
 export type ReportCheckName =
@@ -251,14 +252,34 @@ export async function verifyAuditReportFile(input: {
     return verified
   }
 
+  const sizing = resolveReferenceSizingPolicy(input.config)
+  const references = new Map<string, KbfReferenceV1>()
+  const referenceFor = async (claim: AgentServiceEvidenceV1): Promise<KbfReferenceV1> => {
+    const cached = references.get(claim.serviceHash)
+    if (cached) return cached
+    const reference = await loadReference({
+      referenceId: claim.referenceId,
+      evidenceDirectory: dirname(resolveReportEvidencePath(input.path, file)),
+      claim,
+      banksDir: input.banksDir,
+      minimumStatisticalPower: sizing.minimumStatisticalPower,
+      fetchFn: input.fetchFn,
+    })
+    references.set(claim.serviceHash, reference)
+    return reference
+  }
   const signedResponses = new Map<string, Map<number, Uint8Array>>()
-  await run('responseAuth', () => {
+  await run('responseAuth', async () => {
     let verifiedCount = 0
     for (const { claim, audit } of services) {
       const bodies = new Map<number, Uint8Array>()
       for (const exchange of audit.exchanges) {
         if (exchange.responseAuth.status !== 'verified') continue
-        bodies.set(exchange.batchIndex, verifyExchangeResponseAuth(exchange, audit, file.auditor))
+        const serviceAliases = exchange.responseAuth.record
+          && normalized(exchange.responseAuth.record.advertisedService) !== normalized(audit.target.service)
+          ? (await referenceFor(claim)).serviceAliases
+          : []
+        bodies.set(exchange.batchIndex, verifyExchangeResponseAuth(exchange, audit, file.auditor, serviceAliases))
         verifiedCount += 1
       }
       signedResponses.set(claim.serviceHash, bodies)
@@ -266,30 +287,26 @@ export async function verifyAuditReportFile(input: {
     return `${verifiedCount} seller signature(s) recovered`
   })
 
-  const sizing = resolveReferenceSizingPolicy(input.config)
   await run('kbf', async () => {
     if (!verified.checks.responseAuth?.ok) throw new CheckFailure('requires verified seller ResponseAuth')
     for (const { claim, audit } of services) {
-      const reference = await loadReference({
-        referenceId: claim.referenceId,
-        evidenceDirectory: dirname(resolveReportEvidencePath(input.path, file)),
-        claim,
-        banksDir: input.banksDir,
-        minimumStatisticalPower: sizing.minimumStatisticalPower,
-        fetchFn: input.fetchFn,
-      })
+      const reference = await referenceFor(claim)
       recomputeKbfVerdict(claim, audit, reference, signedResponses.get(claim.serviceHash) ?? new Map())
     }
     return `${services.length} verdict(s) recomputed`
   })
 
-  await run('price', () => {
+  await run('price', async () => {
     for (const { claim, audit } of services) {
       const recorded = new Map<string, RecordedRequestCostV1>()
       for (const request of claim.priceCheck.requests) {
         if (request.cost) recorded.set(request.requestId, request.cost)
       }
-      const recomputed = evaluatePriceCheck(audit, (requestId) => recorded.get(requestId) ?? null)
+      const serviceAliases = [...recorded.values()].some((cost) => cost.service
+        && normalized(cost.service) !== normalized(audit.target.service))
+        ? (await referenceFor(claim)).serviceAliases
+        : []
+      const recomputed = evaluatePriceCheck(audit, (requestId) => recorded.get(requestId) ?? null, serviceAliases)
       if (canonicalJsonStringify(recomputed) !== canonicalJsonStringify(claim.priceCheck)) {
         throw new CheckFailure(`${claim.service}: price check does not recompute`)
       }
@@ -310,11 +327,15 @@ export function verifyExchangeResponseAuth(
   exchange: ProxyAuditEvidenceExchangeV1,
   audit: ProxyAuditEvidenceV1,
   auditor: string,
+  serviceAliases: readonly string[] = [],
 ): Uint8Array {
   const label = `${audit.target.service} batch ${exchange.batchIndex}`
   const record = exchange.responseAuth.record
   const preimages = exchange.responseAuth.signedPreimages
   if (!record || !preimages) throw new CheckFailure(`${label}: verified exchange lacks signed preimages`)
+  if (!matchesEnrolledService(audit.target.service, record.advertisedService, serviceAliases)) {
+    throw new CheckFailure(`${label}: ResponseAuth advertised service is not the requested service or an enrolled alias`)
+  }
   const requestBytes = Buffer.from(preimages.requestBase64, 'base64')
   const responseBytes = Buffer.from(preimages.responseBase64, 'base64')
   if (keccak256(requestBytes) !== record.requestHash || record.requestHash !== preimages.requestHash) {
@@ -344,7 +365,7 @@ export function verifyExchangeResponseAuth(
     response,
     buyerPeerId: record.buyerPeerId,
     sellerPeerId: audit.target.peerId,
-    advertisedService: audit.target.service,
+    advertisedService: record.advertisedService,
   })
   if (!verification.valid) throw new CheckFailure(`${label}: ResponseAuth ${verification.reason ?? 'is invalid'}`)
   if (normalizedPeer(record.buyerPeerId) !== normalizedPeer(auditor)) {
