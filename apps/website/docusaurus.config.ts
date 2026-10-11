@@ -2,6 +2,7 @@ import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import inviteRoutePlugin from './plugins/invite-route';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
 
@@ -88,7 +89,7 @@ const config: Config = {
           changefreq: 'weekly',
           priority: 0.5,
           filename: 'sitemap.xml',
-          ignorePatterns: ['/tags/**', '/blog/tags/**', '/blog/archive', '/blog/authors'],
+          ignorePatterns: ['/tags/**', '/blog/tags/**', '/blog/archive', '/blog/authors', '/invite/**'],
         },
         theme: {
           customCss: './src/css/custom.css',
@@ -124,6 +125,7 @@ const config: Config = {
     ],
     statsProxyPlugin,
     integrationsPagesPlugin,
+    inviteRoutePlugin,
   ],
 
   // General Sans — the design's display/body face (Geist stays for app-chrome/mono).

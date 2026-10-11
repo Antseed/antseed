@@ -126,6 +126,22 @@ These are not a promise that every bucket is fully paid to users. Reward
 eligibility, pool power, and utilization determine the allocation. Unallocated
 reward budgets follow the [burn and reserve rule](#unallocated-emissions-and-burns).
 
+### Referral and client buckets
+
+Two further reward controllers split their own epoch buckets by attributed
+usage, read from `AntseedAttributionUsage`:
+
+- **Referrals** (`AntseedReferrals`): a referred buyer's recognized usage after
+  its invite binds is credited to its inviter and, for 12 epochs, to the buyer
+  too, so the two split that buyer's share. See the
+  [referrals guide](../guides/referrals.md).
+- **Clients** (`AntseedClientRewards`): usage is credited to the ERC-8004 agent
+  of the client software that produced it, and paid to that agent's owner.
+
+Each controller pays nothing until governance registers it as an emissions-gate
+minter with its own share; this page does not list those shares. The design is
+in AIP-6 ([proposal](https://github.com/Antseed/AIPs/pull/12)).
+
 ### Stake and usage targets
 
 The dynamic shares tie reward allocation to two measures: ANTS committed to

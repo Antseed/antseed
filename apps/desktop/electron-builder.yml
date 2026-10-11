@@ -55,6 +55,12 @@ files:
 extraMetadata:
   main: dist/main/main.js
 
+# antseed://invite/<invite> links from antseed.com/invite pages (src/main/deep-links.ts).
+protocols:
+  - name: Antseed invite
+    schemes:
+      - antseed
+
 asar: true
 asarUnpack:
   - "node_modules/**/*.node"

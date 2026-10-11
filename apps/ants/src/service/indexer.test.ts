@@ -220,3 +220,32 @@ it('preserves missing yield inputs and incomplete network snapshots for RPC fall
   expect(data.pools[0]?.historicalYield).toBeNull();
   expect(data.pools[1]?.historicalYield).toEqual({ power: '0', reward: '0', settled: true });
 });
+
+describe('AntscanIndexer referrals', () => {
+  it('parses a referrer\'s invites whether Antscan reports a used count or the used indices', async () => {
+    const indexer = new AntscanIndexer('https://scan', fakeFetch({
+      '/api/referrals/0xaaa': { available: true, currentEpoch: 30, referredCount: '2', payable: '5', claimableEpochs: [27], invites: { epoch: 30, quota: 5, used: [0, 3] }, buyers: [] },
+      '/api/referrals/0xddd': { available: true, referredCount: 1, payable: '0', claimableEpochs: [], invites: { epoch: 30, quota: 7, activityPoints: '45000000', used: 1, usedIndexes: [4] }, buyers: [] },
+      '/api/referrals/0xbbb': { available: true, referredCount: 0, payable: '0', claimableEpochs: [], invites: { epoch: '30', quota: '3', used: '1' }, buyers: [] },
+      '/api/referrals/0xccc': { available: true, referredCount: 0, payable: '0', claimableEpochs: [], buyers: [] },
+    }));
+    expect(await indexer.referrer('0xAAA')).toMatchObject({ currentEpoch: 30, referredCount: 2, invites: { epoch: 30, quota: 5, used: 2, usedIndices: [0, 3] } });
+    expect((await indexer.referrer('0xbbb')).invites).toEqual({ epoch: 30, quota: 3, used: 1, usedIndices: [] });
+    expect((await indexer.referrer('0xddd')).invites).toEqual({ epoch: 30, quota: 7, used: 1, usedIndices: [4] });
+    expect(await indexer.referrer('0xccc')).toMatchObject({ currentEpoch: null, invites: null });
+  });
+
+  it('parses a buyer\'s binding and referee bonus, and zeroes the bonus while unbound', async () => {
+    const indexer = new AntscanIndexer('https://scan', fakeFetch({
+      '/api/referrals/buyer/0xaaa': { available: true, referrer: '0x1111111111111111111111111111111111111111', boundEpoch: 20, refereeWindowEnd: 32, refereePayable: '700', refereeClaimableEpochs: [20, 21], currentEpoch: 23 },
+      '/api/referrals/buyer/0xbbb': { available: true, referrer: null, boundEpoch: null, refereePayable: '9', refereeClaimableEpochs: [1] },
+    }));
+    expect(await indexer.referralBinding('0xAAA')).toEqual({
+      available: true, referrer: '0x1111111111111111111111111111111111111111', boundEpoch: 20,
+      refereeWindowEnd: 32, refereePayable: '700', refereeClaimableEpochs: [20, 21], currentEpoch: 23,
+    });
+    expect(await indexer.referralBinding('0xbbb')).toEqual({
+      available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: null,
+    });
+  });
+});

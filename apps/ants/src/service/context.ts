@@ -4,6 +4,7 @@ import { createIndexer, type Indexer } from './indexer.js';
 import { invalidateNetwork } from './network.js';
 import {
   ANTSTokenClient,
+  ClientRewardsClient,
   DepositsClient,
   EmissionsClient,
   EmissionsGateClient,
@@ -11,6 +12,7 @@ import {
   PointsPolicyRegistryClient,
   PositionInitClient,
   RegistryClient,
+  ReferralsClient,
   SellerPoolsClient,
   SellerPoolsRewardsClient,
   SellerRegistryClient,
@@ -50,6 +52,10 @@ export interface AntsChainConfig {
   legacyEmissionsEscrowAddress?: string;
   washTradingRegistryAddress?: string;
   pointsPolicyRegistryAddress?: string;
+  referralsAddress?: string;
+  clientRewardsAddress?: string;
+  /** First-party client ERC-8004 agent ids (the builders card preselects the ones this wallet owns). */
+  clientAgentIds?: { cli?: number; desktop?: number };
   recognizedUsage?: { status: 'deployed' | 'active'; effectiveEpoch: number; deploymentBlock?: number };
   /** Explorer REST base (Antscan) for seller profiles; optional. */
   explorerApiUrl?: string;
@@ -257,6 +263,12 @@ export class AntsContext {
   usageRewards(): UsageRewardsClient | null {
     return this.optional('usageRewards', this.chain.usageRewardsAddress, (address) => new UsageRewardsClient(this.base(address)));
   }
+  referrals(): ReferralsClient | null {
+    return this.optional('referrals', this.chain.referralsAddress, (address) => new ReferralsClient(this.base(address)));
+  }
+  clientRewards(): ClientRewardsClient | null {
+    return this.optional('clientRewards', this.chain.clientRewardsAddress, (address) => new ClientRewardsClient(this.base(address)));
+  }
   positionInit(): PositionInitClient | null {
     return this.optional('positionInit', this.chain.positionInitAddress, (address) => new PositionInitClient(this.base(address)));
   }
@@ -289,6 +301,8 @@ export class AntsContext {
       ['sellerRegistry', this.chain.sellerRegistryAddress],
       ['usageAccounting', this.chain.usageAccountingAddress],
       ['usageRewards', this.chain.usageRewardsAddress],
+      ['referrals', this.chain.referralsAddress],
+      ['clientRewards', this.chain.clientRewardsAddress],
       ['positionInit', this.chain.positionInitAddress],
       ['pointsPolicyRegistry', this.chain.pointsPolicyRegistryAddress],
       ['washTradingRegistry', this.chain.washTradingRegistryAddress],

@@ -247,6 +247,37 @@ test('loadConfig defaults and preserves buyer metadata v2 service opt-out settin
   );
 });
 
+test('loadConfig carries buyer.clientAgentId through the merge and drops invalid ids', async () => {
+  await withTempConfig(
+    JSON.stringify({ buyer: { clientAgentId: 77 } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.buyer.clientAgentId, 77);
+    }
+  );
+  await withTempConfig(
+    JSON.stringify({ buyer: { clientAgentId: '12' } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.buyer.clientAgentId, 12);
+    }
+  );
+  await withTempConfig(
+    JSON.stringify({ buyer: { clientAgentId: -3 } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.buyer.clientAgentId, undefined);
+    }
+  );
+  await withTempConfig(
+    JSON.stringify({ buyer: { proxyPort: 9123 } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.equal(config.buyer.clientAgentId, undefined);
+    }
+  );
+});
+
 test('loadConfig defaults buyer autoSweep on and preserves an explicit false', async () => {
   await withTempConfig(
     JSON.stringify({

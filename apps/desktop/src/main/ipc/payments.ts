@@ -1,5 +1,6 @@
 import { readBuyerRewardsSummary } from '../staking/buyer-rewards.js';
 import { CREDITS_FRESH_MS, REWARDS_ERROR_FRESH_MS, REWARDS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
+import { friendlyNetworkError } from '../utils.js';
 import { resolveStakingChain } from '../staking/configuration.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -420,7 +421,7 @@ export function registerPaymentsIpc(): void {
     } catch (err) {
       return {
         ok: true,
-        data: { ...EMPTY_REWARDS_SUMMARY, error: err instanceof Error ? err.message : String(err) },
+        data: { ...EMPTY_REWARDS_SUMMARY, error: friendlyNetworkError(err) },
         error: null,
       };
     }

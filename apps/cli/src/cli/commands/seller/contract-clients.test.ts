@@ -11,6 +11,12 @@ test('CLI local defaults use the registry nonce rather than the token nonce and 
   assert.equal(requireCryptoConfig({ ...base, payments: { ...base.payments, crypto: { ...base.payments!.crypto!, registryContractAddress: address } } }).registryContractAddress, address);
 });
 
+test('builders program address reaches the ANTS dashboard chain config', () => {
+  const base = { payments: { crypto: { chainId: 'base-local' } } } as AntseedConfig;
+  assert.equal(requireCryptoConfig(base).clientRewardsAddress, undefined);
+  assert.equal(requireCryptoConfig({ ...base, payments: { ...base.payments, crypto: { ...base.payments!.crypto!, clientRewardsAddress: address } } }).clientRewardsAddress, address);
+});
+
 test('legacy factories use V2 and USDC staking with the active mainnet ledger', () => {
   const config = { payments: { crypto: { chainId: 'base-mainnet', rpcUrl: 'http://127.0.0.1:1' } } } as AntseedConfig;
   const chain = requireCryptoConfig(config);

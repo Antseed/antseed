@@ -70,6 +70,8 @@
   font-size: 13px;
   font-weight: 600;
   line-height: 18px;
+  white-space: nowrap; /* "Claim ↗" must not break before the arrow */
+  flex-shrink: 0;
   cursor: pointer;
   transition: border-color 0.12s ease, box-shadow 0.12s ease;
 }
@@ -103,6 +105,43 @@
   color: var(--text-secondary);
   font-size: 12px;
   line-height: 16px;
+}
+
+/* Invites table: BalanceBreakdown rows plus a header and dividers. Rules
+   overriding BalanceBreakdown's are nested under .invites so they win on
+   specificity, not on stylesheet order. */
+.invites {
+  margin-top: 4px;
+}
+
+.invites .inviteHeader {
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.02em;
+}
+
+.invites .inviteHeader > span:last-child {
+  color: var(--text-secondary);
+  font-weight: 600;
+}
+
+.invites .inviteRow {
+  align-items: center;
+  padding-top: 8px;
+  border-top: 1px solid var(--border);
+}
+
+.inviteWallet {
+  display: grid;
+  gap: 2px;
+  min-width: 0;
+}
+
+.inviteMeta {
+  color: var(--text-secondary);
+  font-size: 11px;
+  line-height: 15px;
 }
 
 .errorNote {

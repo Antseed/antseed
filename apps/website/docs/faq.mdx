@@ -221,6 +221,14 @@ export const faqLd = {
     },
     {
       '@type': 'Question',
+      name: 'How do Antseed invites and referrals work?',
+      acceptedAnswer: {
+        '@type': 'Answer',
+        text: 'Referrals are invite-only. A wallet with at least 1 USDC of buying or selling in the previous week gets 3 single-use invites, plus one per 10 USDC, up to 20 a week. Each invite is a link that works once, for a new wallet only, and expires 4 weeks after the week it was created. Redeem it from the link, in the desktop app, or with antseed referral redeem; it binds with your first paid or free request. For 12 weeks you and your inviter split your referral share 50/50, then the inviter keeps earning alone. Self-invites are rejected, including from a wallet that shares your authorized wallet.',
+      },
+    },
+    {
+      '@type': 'Question',
       name: 'What happens when LLMs become so good that anyone can do anything?',
       acceptedAnswer: {
         '@type': 'Answer',
@@ -409,6 +417,21 @@ No. Paying for service does not guarantee ANTS rewards. Missing pool power or a
 wash-trading flag can exclude usage from rewards. If you stake ANTS, withdrawing
 before the lock ends also incurs a principal penalty. See
 [reward eligibility and staking terms](/docs/recognized-usage).
+
+### How do invites and referrals work?
+
+Referrals are invite-only and two-sided. A wallet earns invites from its
+activity: at least 1 USDC of buying or selling in the previous week gives 3
+single-use invites, plus one per 10 USDC, up to 20 a week. Each invite is a
+link (`https://antseed.com/invite/<invite>`) that works once, only for a new
+wallet, and expires 4 weeks after the week it was created.
+
+Redeem one from the link, in the AI VPN's invite field (Rewards, Preferences
+or onboarding), or with `antseed referral redeem <invite>`. It binds with your
+first paid or free request. For the next 12 weeks you and your inviter split
+your referral share of ANTS 50/50; after that the inviter keeps earning alone.
+Self-invites are rejected, including from a wallet that shares your authorized
+wallet. See the [referrals guide](/docs/guides/referrals).
 
 ---
 
