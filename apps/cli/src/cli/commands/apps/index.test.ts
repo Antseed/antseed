@@ -227,13 +227,25 @@ test('apps connect warns when the buyer has no default route', async () => {
   }
 })
 
-test('apps connect refuses Claude Desktop, which needs the desktop app gateway', async () => {
+test('apps connect points Claude Desktop at the buyer route and disconnect restores it', async () => {
   const ws = await createWorkspace()
   try {
-    const result = run(ws, ['apps', 'connect', 'claude-desktop', '--json'])
-    assert.equal(result.status, 1)
-    assert.match((JSON.parse(result.stdout) as ActionReport).error ?? '', /desktop app/)
-    assert.equal(existsSync(join(ws.dataDir, 'system-proxy', 'system-proxy.desktop.json')), false)
+    const normalConfig = join(ws.home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
+    const original = '{\n  "mcpServers": {}\n}\n'
+    await mkdir(dirname(normalConfig), { recursive: true })
+    await writeFile(normalConfig, original, 'utf8')
+
+    const connected = json<ActionReport>(ws, ['apps', 'connect', 'claude-desktop', '--port', '9123'])
+    assert.equal(connected.ok, true, connected.error)
+    assert.equal(connected.connected, true)
+    const profilePath = join(ws.home, 'Library', 'Application Support', 'Claude-3p', 'configLibrary', '00000000-0000-4000-8000-0000a4753eed.json')
+    const profile = JSON.parse(await readFile(profilePath, 'utf8')) as Record<string, unknown>
+    assert.equal(profile['inferenceGatewayBaseUrl'], 'http://127.0.0.1:9123/claude-desktop')
+
+    const disconnected = json<ActionReport>(ws, ['apps', 'disconnect', 'claude-desktop'])
+    assert.equal(disconnected.changed, true)
+    assert.equal(disconnected.connected, false)
+    assert.equal((JSON.parse(await readFile(normalConfig, 'utf8')) as Record<string, unknown>)['deploymentMode'], '1p')
   } finally {
     await rm(ws.home, { recursive: true, force: true })
   }

@@ -103,8 +103,6 @@ export function readDefaultRoutedModel(dataDir: string): string | null {
 export const NO_DEFAULT_ROUTE_WARNING = 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
   + 'Pick a model in the Antseed desktop app, or run `antseed buyer connection set --model <service>` (or `<peerId>@<service>`).'
 
-export const CLAUDE_DESKTOP_CLI_ERROR = 'Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway, which only runs while the desktop app has it connected. '
-  + 'Connect it from the desktop app\'s Connected apps screen.'
 
 
 function ensureStateDir(ctx: AppsContext): string {
@@ -118,16 +116,6 @@ export function connectApp(ctx: AppsContext, name: string, buyerPort?: number): 
   const profile = findConnectedAppProfile(name, all)
   if (!profile) {
     return { schemaVersion: APPS_JSON_SCHEMA_VERSION, ok: false, action: 'connect', app: name, error: unknownAppError(name, all) }
-  }
-  if (profile.configPatch.format === 'claude-desktop') {
-    return {
-      schemaVersion: APPS_JSON_SCHEMA_VERSION,
-      ok: false,
-      action: 'connect',
-      app: profile.name,
-      displayName: profile.displayName,
-      error: CLAUDE_DESKTOP_CLI_ERROR,
-    }
   }
   const port = buyerPort ?? resolveDefaultBuyerPort(ctx)
   const warnings = readDefaultRoutedModel(ctx.dataDir) ? [] : [NO_DEFAULT_ROUTE_WARNING]

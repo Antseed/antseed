@@ -153,9 +153,9 @@ export type T3CodeConfigPatchDef = {
  * config says `deploymentMode: "3p"` it boots against a separate profile
  * directory (`Claude-3p`) whose applied entry in `configLibrary/` names an
  * Anthropic-Messages-compatible gateway to send all inference to. The patch
- * writes that profile pointing at the desktop's local Claude gateway (see
- * apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts), which serves the model catalog
- * in Anthropic's native shape and forwards requests to the buyer proxy. The
+ * writes that profile pointing at the buyer proxy's `/claude-desktop` route
+ * (see apps/cli/src/proxy/claude-desktop-route.ts), which serves the model
+ * catalog in Anthropic's native shape and routes the messages. The
  * 1p and 3p profiles are separate directories, so the user's normal Claude
  * login and state are untouched.
  */
@@ -167,7 +167,7 @@ export type ClaudeDesktopConfigPatchDef = {
   readonly configPath: string;
   /** Claude's third-party profile root (the `Claude-3p` directory). */
   readonly thirdPartyDir: string;
-  /** Gateway base URL carrying the `{claudeGatewayPort}` placeholder. */
+  /** Gateway base URL carrying the `{buyerPort}` placeholder. */
   readonly baseURL: string;
 };
 
@@ -184,12 +184,6 @@ export type ConfigPatchDef =
   | T3CodeConfigPatchDef
   | ClaudeDesktopConfigPatchDef;
 
-/**
- * Loopback port of the desktop's Claude Desktop gateway. Lives here (not in
- * the desktop's claude-desktop-gateway.ts) so this electron-free module stays the single
- * import direction: the gateway imports from config-patch, never the reverse.
- */
-export const CLAUDE_GATEWAY_DEFAULT_PORT = Number(process.env['ANTSEED_CLAUDE_GATEWAY_PORT']) || 8380;
 /** Fixed id of the managed third-party profile entry in Claude's configLibrary. */
 export const CLAUDE_DESKTOP_PROFILE_ID = '00000000-0000-4000-8000-0000a4753eed';
 const CLAUDE_DESKTOP_PROFILE_NAME = 'Antseed';
@@ -551,7 +545,7 @@ export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, wslTa
     return;
   }
   if (patch.format === 'claude-desktop') {
-    applyClaudeDesktopConfigPatch(patch);
+    applyClaudeDesktopConfigPatch(patch, buyerPort);
     return;
   }
   applyOpencodeConfigPatch(patch, buyerPort, wslTargetsFile);
@@ -1856,7 +1850,7 @@ function isOwnClaudeDesktopMetaEntry(entry: unknown): boolean {
     && (entry as JsonObject)['id'] === CLAUDE_DESKTOP_PROFILE_ID;
 }
 
-function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void {
+function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef, buyerPort: number): void {
   const targets = claudeDesktopPatchTargets(patch);
   const target = targets.find((candidate) => existsSync(path.dirname(candidate.configPath)));
   if (!target) {
@@ -1867,7 +1861,7 @@ function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void
     );
   }
   const normalConfigPath = target.configPath;
-  const gatewayBaseUrl = patch.baseURL.replace('{claudeGatewayPort}', String(CLAUDE_GATEWAY_DEFAULT_PORT));
+  const gatewayBaseUrl = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   const paths = claudeDesktopPatchPaths(target);
 
   // Claude reads deploymentMode from the normal profile at startup and, when
@@ -1916,6 +1910,11 @@ function applyClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): void
   writeJsonFile(paths.meta, meta);
 }
 
+/** The buyer's `/claude-desktop` route, or the desktop's former gateway root on loopback. */
+function isClaudeDesktopGatewayUrl(value: string | undefined): boolean {
+  return !!value && /^https?:\/\/(localhost|127\.0\.0\.1):\d+(\/claude-desktop)?\/?$/.test(value);
+}
+
 function removeClaudeDesktopConfigPatch(patch: ClaudeDesktopConfigPatchDef): boolean {
   // Every candidate root is checked: the install this patch configured may
   // not be the first candidate anymore (e.g. an MSIX Claude installed since).
@@ -1936,7 +1935,7 @@ function removeClaudeDesktopTarget(target: ClaudeDesktopPatchTarget): boolean {
   const gatewayUrl = profile && typeof profile['inferenceGatewayBaseUrl'] === 'string'
     ? profile['inferenceGatewayBaseUrl']
     : undefined;
-  const ownsProfileFile = profile?.['inferenceProvider'] === 'gateway' && isLoopbackHost(gatewayUrl);
+  const ownsProfileFile = profile?.['inferenceProvider'] === 'gateway' && isClaudeDesktopGatewayUrl(gatewayUrl);
   const ownsSetup = ownsProfileFile
     || meta?.['appliedId'] === CLAUDE_DESKTOP_PROFILE_ID
     || claudeDesktopMetaEntries(meta ?? {}).some(isOwnClaudeDesktopMetaEntry);
@@ -2047,7 +2046,7 @@ function nativeConfigPatchConnected(patch: ConfigPatchDef): boolean {
         ? profile['inferenceGatewayBaseUrl']
         : undefined;
       return meta?.['appliedId'] === CLAUDE_DESKTOP_PROFILE_ID
-        || (profile?.['inferenceProvider'] === 'gateway' && isLoopbackHost(gatewayUrl));
+        || (profile?.['inferenceProvider'] === 'gateway' && isClaudeDesktopGatewayUrl(gatewayUrl));
     });
   }
   const filePath = expandTilde(patch.configPath);
