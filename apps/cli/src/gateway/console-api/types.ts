@@ -498,6 +498,8 @@ export interface Referee {
   /** Bonus ANTS payable now; paid to the workspace's authorized wallet. */
   payableAnts: string
   claimableEpochs: number[]
+  /** False once the wallet is no longer new to Antseed, so no invite can bind it; null when unknown. */
+  canRedeem: boolean | null
 }
 
 export interface Referrals {

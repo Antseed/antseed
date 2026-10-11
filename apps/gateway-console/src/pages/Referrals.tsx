@@ -19,9 +19,22 @@ const ReferralClaim = lazy(() => import('../wallet/ReferralClaim'))
 
 const NO_QUOTA = 'Invites unlock after at least 1 USDC of usage in the previous week.'
 
-function formatPoints(value: string): string {
-  const n = Number(value)
-  return Number.isFinite(n) ? n.toLocaleString('en-US') : value
+/**
+ * Each buyer's share of the wallet's referral points, as a percentage.
+ * On-chain points are fixed-point weights with no unit of their own, so the
+ * share is what tells buyers apart.
+ */
+function pointShares(buyers: ReadonlyArray<{ buyer: string; points: string }>): Map<string, string> {
+  const total = buyers.reduce((sum, row) => sum + toBigInt(row.points), 0n)
+  return new Map(buyers.map((row) => {
+    if (total === 0n) return [row.buyer, '—']
+    const basisPoints = Number((toBigInt(row.points) * 10_000n) / total)
+    return [row.buyer, `${(basisPoints / 100).toLocaleString('en-US', { maximumFractionDigits: 2 })}%`]
+  }))
+}
+
+function toBigInt(value: string): bigint {
+  try { return BigInt(value) } catch { return 0n }
 }
 
 export default function Referrals() {
@@ -102,16 +115,8 @@ export default function Referrals() {
               </div>
             </Panel>
 
-            <Panel flush title="Referred buyers" description="Points are the buyers' weighted usage; they earn ANTS once their epoch becomes claimable.">
-              <DataTable label="Referred buyers" rows={data.buyers} rowKey={(row) => row.buyer}
-                empty={<EmptyState icon={<Icon.referrals size={18} />} title="No referred buyers yet" body="Buyers appear here once their first request binds your invite." />}
-                columns={[
-                  { key: 'buyer', header: 'Buyer', render: (row) => <Mono title={row.buyer}>{shortId(row.buyer)}</Mono> },
-                  { key: 'since', header: 'Since epoch', secondary: true, optional: true, render: (row) => row.boundEpoch ?? '—' },
-                  { key: 'points', header: 'Points', align: 'right', render: (row) => formatPoints(row.points) },
-                  { key: 'pending', header: 'Pending', align: 'right', secondary: true, render: (row) => row.pendingPoints === '0' ? '—' : `${formatPoints(row.pendingPoints)} pts` },
-                  { key: 'ants', header: 'Earned', align: 'right', render: (row) => formatAnts(row.ants) },
-                ]} />
+            <Panel flush title="Referred buyers" description="Share is each buyer's part of your referral points, from their weighted usage. ANTS are earned once an epoch becomes claimable.">
+              <ReferredBuyers buyers={data.buyers} />
             </Panel>
 
             <RefereePanel data={data} authorized={authorized} onClaim={(referee) => setClaim({
@@ -124,8 +129,8 @@ export default function Referrals() {
               subtitle={created ? `Works until epoch ${created.expiresEpoch}. ${created.left} of ${created.quota} invites left this week.` : undefined}>
               {created && (
                 <div className="gc-stack">
-                  <div className="gc-summary-row">
-                    <Mono title={created.link}>{created.link}</Mono>
+                  <div className="gc-address">
+                    <Mono>{created.link}</Mono>
                     <CopyButton value={created.link} label="Copy link" />
                   </div>
                   <p className="gc-fineprint">The buyer opens the link, or pastes the code into Antseed (Desktop, <code>antseed referral redeem</code>, or a gateway console).</p>
@@ -155,6 +160,21 @@ export default function Referrals() {
         )}
       </QueryView>
     </div>
+  )
+}
+
+function ReferredBuyers({ buyers }: { buyers: ReferralsView['buyers'] }) {
+  const shares = pointShares(buyers)
+  return (
+    <DataTable label="Referred buyers" rows={buyers} rowKey={(row) => row.buyer}
+      empty={<EmptyState icon={<Icon.referrals size={18} />} title="No referred buyers yet" body="Buyers appear here once their first request binds your invite." />}
+      columns={[
+        { key: 'buyer', header: 'Buyer', render: (row) => <Mono title={row.buyer}>{shortId(row.buyer)}</Mono> },
+        { key: 'since', header: 'Since epoch', secondary: true, optional: true, render: (row) => row.boundEpoch ?? '—' },
+        { key: 'share', header: 'Share', align: 'right', render: (row) => shares.get(row.buyer) ?? '—' },
+        { key: 'pending', header: 'This epoch', align: 'right', secondary: true, render: (row) => row.pendingPoints === '0' ? '—' : <Badge>Earning</Badge> },
+        { key: 'ants', header: 'Earned', align: 'right', render: (row) => formatAnts(row.ants) },
+      ]} />
   )
 }
 
@@ -213,6 +233,9 @@ function RefereePanel({ data, authorized, onClaim }: { data: ReferralsView; auth
       </Panel>
     )
   }
+
+  // Only a wallet new to Antseed can be invited.
+  if (referee.canRedeem === false) return null
 
   return (
     <Panel title="Have an invite?" description="A wallet new to Antseed can redeem one invite and earn a bonus on its usage for 12 weeks.">

@@ -237,15 +237,15 @@ describe('AntscanIndexer referrals', () => {
 
   it('parses a buyer\'s binding and referee bonus, and zeroes the bonus while unbound', async () => {
     const indexer = new AntscanIndexer('https://scan', fakeFetch({
-      '/api/referrals/buyer/0xaaa': { available: true, referrer: '0x1111111111111111111111111111111111111111', boundEpoch: 20, refereeWindowEnd: 32, refereePayable: '700', refereeClaimableEpochs: [20, 21], currentEpoch: 23 },
-      '/api/referrals/buyer/0xbbb': { available: true, referrer: null, boundEpoch: null, refereePayable: '9', refereeClaimableEpochs: [1] },
+      '/api/referrals/buyer/0xaaa': { available: true, referrer: '0x1111111111111111111111111111111111111111', boundEpoch: 20, refereeWindowEnd: 32, refereePayable: '700', refereeClaimableEpochs: [20, 21], currentEpoch: 23, canBind: false },
+      '/api/referrals/buyer/0xbbb': { available: true, referrer: null, boundEpoch: null, refereePayable: '9', refereeClaimableEpochs: [1], canBind: 'yes' },
     }));
     expect(await indexer.referralBinding('0xAAA')).toEqual({
       available: true, referrer: '0x1111111111111111111111111111111111111111', boundEpoch: 20,
-      refereeWindowEnd: 32, refereePayable: '700', refereeClaimableEpochs: [20, 21], currentEpoch: 23,
+      refereeWindowEnd: 32, refereePayable: '700', refereeClaimableEpochs: [20, 21], currentEpoch: 23, canBind: false,
     });
     expect(await indexer.referralBinding('0xbbb')).toEqual({
-      available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: null,
+      available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: null, canBind: null,
     });
   });
 });

@@ -433,6 +433,8 @@ export interface RefereeView {
   /** ANTS payable now (base units), paid to the buyer's operator. */
   payable: string;
   claimableEpochs: number[];
+  /** Whether an invite could still bind this buyer (new buyers only); null when unknown. */
+  canBind?: boolean | null;
 }
 
 export interface ReferredBuyerView {

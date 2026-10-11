@@ -18,7 +18,7 @@ import { silentReporter, type StepReporter } from './steps.js';
 
 const HIDDEN_REFERRAL: ReferralView = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
 const HIDDEN_REFEREE: RefereeView = {
-  available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [],
+  available: false, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [], canBind: null,
 };
 
 /**
@@ -171,6 +171,7 @@ function refereeView(binding: IndexedReferralBinding | null): RefereeView {
     weeksLeft: windowEnd !== null && currentEpoch !== null ? Math.max(0, windowEnd - currentEpoch + 1) : null,
     payable: binding.refereePayable,
     claimableEpochs: binding.refereeClaimableEpochs,
+    canBind: binding.canBind,
   };
 }
 

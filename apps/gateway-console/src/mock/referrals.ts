@@ -19,8 +19,8 @@ function state(workspaceId: string): MockReferralState {
     found = {
       issued: 1,
       referee: bound
-        ? { state: 'bound', referrer: fakeAddress(201), pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: 10, windowEnd: 22, weeksLeft: 8, payableAnts: '6.4', claimableEpochs: [12, 13] }
-        : { state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [] },
+        ? { state: 'bound', referrer: fakeAddress(201), pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: 10, windowEnd: 22, weeksLeft: 8, payableAnts: '6.4', claimableEpochs: [12, 13], canRedeem: false }
+        : { state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: true },
     }
     states.set(workspaceId, found)
   }

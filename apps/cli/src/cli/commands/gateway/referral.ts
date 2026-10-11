@@ -54,8 +54,10 @@ function printReferrals(record: WorkspaceRecord, view: Referrals): void {
     ? `Invites this epoch (${invites.epoch}): ${invites.left} of ${invites.quota} left`
     : 'Invites this epoch: unknown')
   console.log(`Referred buyers: ${view.referredCount}  ·  payable ${view.payableAnts} ANTS${view.claimableEpochs.length ? ` (epochs ${view.claimableEpochs.join(', ')})` : ''}`)
+  const total = view.buyers.reduce((sum, buyer) => sum + BigInt(buyer.points || '0'), 0n)
   for (const buyer of view.buyers) {
-    console.log(chalk.dim(`  ${buyer.buyer}  ${buyer.points} pts  ${buyer.ants} ANTS${buyer.pendingPoints !== '0' ? `  (+${buyer.pendingPoints} pts pending)` : ''}`))
+    const share = total > 0n ? `${Number((BigInt(buyer.points || '0') * 10_000n) / total) / 100}% of points` : 'no points yet'
+    console.log(chalk.dim(`  ${buyer.buyer}  ${share}  ${buyer.ants} ANTS${buyer.pendingPoints !== '0' ? '  (earning this epoch)' : ''}`))
   }
   const referee = view.referee
   if (referee.state === 'bound') {

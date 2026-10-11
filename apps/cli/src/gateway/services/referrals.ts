@@ -18,6 +18,7 @@ import {
   referral,
   referredBuyers,
   refereeBonus,
+  type AntsChainConfig,
   type AntsContext,
 } from '@antseed/ants'
 import { checkInvite, clearReferralInvite, DEFAULT_BUYER_IDENTITY, inviteExpiryEpoch, decodeInvite, readReferralState, saveReferralInvite } from '@antseed/node'
@@ -38,7 +39,7 @@ export function referralStateDir(dataDir: string, buyerIdentity: string): string
 
 const HIDDEN_REFEREE: Referee = {
   state: 'none', referrer: null, pendingInvite: null, inviteExpiresEpoch: null,
-  boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [],
+  boundEpoch: null, windowEnd: null, weeksLeft: null, payableAnts: '0', claimableEpochs: [], canRedeem: null,
 }
 
 function ants(baseUnits: string): string {
@@ -69,6 +70,7 @@ async function readReferee(ctx: AntsContext, stateDir: string): Promise<Referee>
     weeksLeft: bonus.weeksLeft,
     payableAnts: ants(bonus.payable),
     claimableEpochs: bonus.claimableEpochs,
+    canRedeem: bound ? false : bonus.canBind ?? null,
   }
 }
 
@@ -153,9 +155,14 @@ export function effectiveClientAgent(
 }
 
 /** The gateway's client agent and what the builders program owes it (Antscan; the owner over RPC). */
-export async function readBuilders(ctx: AntsContext, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
+/** The configured and effective client agent, without the rewards read (which needs the explorer). */
+export async function readBuilderSettings(chain: AntsChainConfig, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
   const agentId = await configuredClientAgentId(configPath)
-  const effective = effectiveClientAgent(agentId, ctx.chain.clientAgentIds, env)
+  return { available: false, agentId, effective: effectiveClientAgent(agentId, chain.clientAgentIds, env), agent: null }
+}
+
+export async function readBuilders(ctx: AntsContext, configPath: string, env: NodeJS.ProcessEnv = process.env): Promise<Builders> {
+  const { agentId, effective } = await readBuilderSettings(ctx.chain, configPath, env)
   if (!effective.agentId) return { available: false, agentId, effective, agent: null }
   const view = await readBuilderAgents(ctx, [effective.agentId])
   const found = view.agents.find((agent) => agent.agentId === effective.agentId)

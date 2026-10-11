@@ -26,6 +26,7 @@ const DOMAIN = { chainId: 31337, referralsAddress: CHAIN.referralsAddress! }
 
 let preview: InvitePreview = { referrer: INVITER.address, failure: null }
 const registered = new Set([1, 7])
+let explorerDown = false
 
 /** A context whose indexer, referrals client and identity registry are in-memory fakes. */
 function fakeContext(chain: AntsChainConfig, address: string, signer?: AbstractSigner): AntsContext {
@@ -42,12 +43,15 @@ function fakeContext(chain: AntsChainConfig, address: string, signer?: AbstractS
         buyers: [{ buyer: REFERRED, boundEpoch: 12, points: '9000', ants: '1000000000000000000', pendingPoints: '0' }],
       }),
       referralBinding: async () => ({
-        available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: 20,
+        available: true, referrer: null, boundEpoch: null, refereeWindowEnd: null, refereePayable: '0', refereeClaimableEpochs: [], currentEpoch: 20, canBind: true,
       }),
-      builders: async (ids: number[]) => ({
-        available: true,
-        agents: ids.map((agentId) => ({ agentId, points: '10', pendingPoints: '0', claimed: '0', payable: '4000000000000000000', claimableEpochs: [18] })),
-      }),
+      builders: async (ids: number[]) => {
+        if (explorerDown) throw new Error('Explorer unreachable: fetch failed')
+        return {
+          available: true,
+          agents: ids.map((agentId) => ({ agentId, points: '10', pendingPoints: '0', claimed: '0', payable: '4000000000000000000', claimableEpochs: [18] })),
+        }
+      },
     }),
     referrals: () => ({
       currentEpoch: async () => 20,
@@ -117,6 +121,7 @@ test('workspace admins read referrals with ANTS in display units; plain members 
   assert.deepEqual(view.invites, { epoch: 20, quota: 3, used: 0, left: 3 })
   assert.equal(view.buyers[0]!.ants, '1')
   assert.equal(view.referee.state, 'none')
+  assert.equal(view.referee.canRedeem, true)
   await rejects(call(router, 'GET', `/workspaces/${team.id}/referrals`, memberPrincipal(store, plainMember.id)), 403, 'forbidden')
 })
 
@@ -179,4 +184,19 @@ test('builders: org admins see the effective agent, set their own (restarting th
   assert.equal(cleared.agentId, null)
   assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).buyer.clientAgentId, undefined)
   assert.equal(restarts.length, 2)
+})
+
+test('builders: saving an agent succeeds while the explorer is down, with its rewards unknown', async () => {
+  const principal = memberPrincipal(store, orgAdmin.id)
+  explorerDown = true
+  try {
+    const saved = await call(router, 'PUT', '/builders', principal, { agentId: 7 }) as Builders
+    assert.deepEqual(saved.effective, { agentId: 7, source: 'config' })
+    assert.equal(saved.available, false)
+    assert.equal(saved.agent, null)
+    assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).buyer.clientAgentId, 7)
+    await rejects(call(router, 'GET', '/builders', principal), 502, 'builders_unavailable')
+  } finally {
+    explorerDown = false
+  }
 })

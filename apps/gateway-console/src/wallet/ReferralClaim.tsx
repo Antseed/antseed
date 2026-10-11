@@ -5,7 +5,7 @@ import type { ChainInfo } from '../api/types'
 import { contractAddress } from '../lib/chain'
 import { shortId } from '../lib/format'
 import { CLIENT_REWARDS_CLAIM_ABI, REFERRALS_CLAIM_ABI } from './operator-abi'
-import { ConnectedWallet } from './ConnectWallet'
+import { ConnectedWallet, ConnectWalletButton } from './ConnectWallet'
 import { WalletProvider } from './provider'
 import { TxFeedback } from './TxFeedback'
 import { useTxRunner, type TxStep } from './useTx'
@@ -72,12 +72,14 @@ function Claim({ target, chain, recipient, onDone }: Props) {
         Any connected wallet can send this and pays the gas.{recipient ? <> The ANTS go to {shortId(recipient)}.</> : null}
       </p>
       <TxFeedback chain={chain} runner={runner} done="Rewards claimed." />
-      <Button disabled={!address || runner.running || transactions === 0} onClick={async () => {
-        const hash = await runner.run(planned)
-        if (hash) onDone()
-      }}>
-        {runner.running ? 'Claiming…' : transactions === 1 ? 'Claim' : `Claim (${transactions} transactions)`}
-      </Button>
+      {address ? (
+        <Button disabled={runner.running || transactions === 0} onClick={async () => {
+          const hash = await runner.run(planned)
+          if (hash) onDone()
+        }}>
+          {runner.running ? 'Claiming…' : transactions === 1 ? 'Claim' : `Claim (${transactions} transactions)`}
+        </Button>
+      ) : <ConnectWalletButton />}
       {transactions > 1 && <p className="gc-fineprint">The builders contract claims one epoch per transaction.</p>}
     </div>
   )

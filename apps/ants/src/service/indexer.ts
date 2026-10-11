@@ -163,6 +163,8 @@ export interface IndexedReferralBinding {
   refereeClaimableEpochs: number[];
   /** Antscan's wall-clock epoch, when reported. */
   currentEpoch: number | null;
+  /** Whether an invite could still bind this buyer (new buyers only); null when not reported. */
+  canBind: boolean | null;
 }
 /** Builder rewards for one client agent (`/api/builders`). */
 export interface IndexedBuilderAgent { agentId: number; points: string; pendingPoints: string; claimed: string; payable: string; claimableEpochs: number[]; }
@@ -496,6 +498,7 @@ export class AntscanIndexer implements Indexer {
       refereePayable: referrer ? amount(raw['refereePayable']) : '0',
       refereeClaimableEpochs: referrer ? epochList(raw['refereeClaimableEpochs']) : [],
       currentEpoch: countOrNull(raw['currentEpoch']),
+      canBind: typeof raw['canBind'] === 'boolean' ? raw['canBind'] : null,
     };
   }
 

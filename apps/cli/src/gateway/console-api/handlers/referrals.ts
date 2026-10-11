@@ -13,6 +13,7 @@ import {
   clearWorkspaceInvite,
   createWorkspaceInvite,
   readBuilders,
+  readBuilderSettings,
   readReferrals,
   redeemWorkspaceInvite,
   referralStateDir,
@@ -145,9 +146,10 @@ export function registerReferralRoutes(router: ConsoleRouter, deps: ConsoleDeps,
 
   router.add('PUT', '/builders', async (request): Promise<Builders> => {
     requireOrgAdmin(request.principal, deps.store)
-    const ctx = context(await resolveChain(), ZeroAddress)
-    const { restartRequired } = await setBuilderAgent(deps, requestActor(deps, request), request.body, ctx, buyer)
-    const view = await builders(true)
+    const chain = await resolveChain()
+    const { restartRequired } = await setBuilderAgent(deps, requestActor(deps, request), request.body, context(chain, ZeroAddress), buyer)
+    // The agent is saved by now: an unreachable explorer only leaves its rewards unknown.
+    const view = await builders(true).catch(() => readBuilderSettings(chain, deps.configPath, overrides.env))
     return restartRequired ? { ...view, restartRequired: true } : view
   })
 }
