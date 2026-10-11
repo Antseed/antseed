@@ -97,6 +97,10 @@ test('desktop Auto replaces a stale coding-only selection with an unrestricted r
     maxCachedInputUsdPerMillion: null,
     minImageUsdPerImage: null,
     maxImageUsdPerImage: null,
+    minVideoUsdPerSecond: null,
+    maxVideoUsdPerSecond: null,
+    minVideoUsdPerVideo: null,
+    maxVideoUsdPerVideo: null,
     expectedSavingsPct: null,
     bestPeerId: 'full-peer',
   }];

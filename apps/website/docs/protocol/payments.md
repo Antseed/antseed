@@ -119,6 +119,19 @@ totalCostUSDC = (tokenCostUSD + unitCostUSD) * 1_000_000
 
 The buyer independently recomputes token and unit costs before signing the next cumulative SpendingAuth. A positive delivered unit count with no matching component is never silently priced at zero; payment authorization is refused.
 
+### Video Payments {#video-payments}
+
+Video services publish a versioned `video_generations` or `video_seconds` billing model per service for the `venice-video` or `fal-video` protocol. The request context captures `model` and `resolution` for matching. The price is fixed when the job is created and charged once, when the finished video is delivered:
+
+```text title="video cost calculation"
+unitCostUSD   = matchedComponent.priceUsd * (unit == video_seconds ? requestedDurationSeconds : 1)
+totalCostUSDC = unitCostUSD * 1_000_000
+```
+
+`video_seconds` requires an explicit requested duration, and a request with no matching component is refused.
+
+Each paid video gets its own one-off channel, bound to the create's `requestId`. Above `FIRST_SIGN_CAP`, the channel opens at the cap and `topUp()` raises it to the price after settling `ceil(cap × TOP_UP_SETTLED_THRESHOLD_BPS / 10000)`, which counts toward the price. See the [native video spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/spec/10-native-video.md).
+
 ## Wallet
 
 Each node's identity is a secp256k1 private key. The EVM address derived from this key serves as both the PeerId on the network and the on-chain wallet address. Set it via `ANTSEED_IDENTITY_HEX` env var (recommended for production) rather than the plaintext `identity.key` file.

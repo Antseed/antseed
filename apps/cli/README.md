@@ -46,6 +46,9 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed buyer set-authorized-wallet [--self]` | Authorize an external wallet in the browser, or authorize the buyer wallet itself |
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
+| `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
+| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
+| `antseed apps disconnect <app>` | Remove only what AntSeed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
 | **Session** | |
 | `antseed buyer connection get` | Show current session state (pinned service, peer) |
 | `antseed buyer connection set` | Update service/peer overrides on a running proxy |
@@ -142,6 +145,13 @@ antseed config seller set freeTier.windowMs 86400000
 ```
 
 This allows each authenticated buyer address 100 requests, and each remote IP 300 requests, across all fully zero-priced services in a sliding 24-hour window. A request is served only while every configured limit still has headroom. Reconnects and seller restarts do not reset the counters. Exhausted buyers receive HTTP 429 with `free_tier_exhausted` and a `limitedBy` field (`address` or `ip`); paid services are unaffected. The address limit alone can be bypassed by creating another identity; the IP limit (IPv6 grouped by /64) closes that gap at the cost of sharing the allowance between users behind one NAT, so set it higher than the per-address limit.
+
+Free requests are recorded on-chain and the seller pays the gas. The seller writes accumulated usage after `freeUsage.recordBatchSize` requests (default 16) or `freeUsage.recordFlushIntervalMs` milliseconds (default 900000, always before the channel deadline), whichever comes first. Raise either to send fewer transactions per active buyer:
+
+```bash
+antseed config seller set freeUsage.recordBatchSize 64
+antseed config seller set freeUsage.recordFlushIntervalMs 3600000
+```
 
 **Routers** select peers and proxy requests (consumer mode):
 
@@ -287,6 +297,10 @@ antseed config seller set maxUploadBodyBytes 134217728
 antseed config seller set freeTier.maxRequestsPerAddress 100
 antseed config seller set freeTier.maxRequestsPerIp 300
 antseed config seller set freeTier.windowMs 86400000
+
+# Batch on-chain free-usage records: every N requests or every N ms, whichever first
+antseed config seller set freeUsage.recordBatchSize 64
+antseed config seller set freeUsage.recordFlushIntervalMs 3600000
 
 # Buyer max pricing, DHT peer refresh cadence, and metadata fetch timeout
 antseed config buyer set maxPricing.defaults.inputUsdPerMillion 25
@@ -665,6 +679,10 @@ The service limits actual checks to eight and cached entries to 512, evicting
 settled entries rather than pending checks. Timer-based garbage collection is
 disabled; the entry bound and buyer lifecycle own cleanup instead. There is no
 disk persistence and no per-inference-response proof in this cache.
+
+## Native video services
+
+Use `@antseed/provider-venice-video` or `@antseed/provider-fal-video` (fal.ai models) to sell native video services. Buyers can discover them with `GET /v1/models?type=videos` and send native provider requests to the buyer proxy. See [native video integration](../../docs/protocol/spec/10-native-video.md).
 
 ## Links
 

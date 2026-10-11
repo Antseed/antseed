@@ -40,11 +40,13 @@ export function initCreditsModule({
   let lastPaymentSummaryRefreshAt = 0;
   let paymentSummaryRefreshInFlight = false;
 
-  async function refreshCredits(): Promise<void> {
+  async function refreshCredits(fresh = true): Promise<void> {
     if (!bridge?.creditsGetInfo) return;
 
     try {
-      const result = await bridge.creditsGetInfo();
+      // While a payment card waits for funds, read the chain directly so the
+      // auto-retry fires as soon as the deposit lands.
+      const result = await bridge.creditsGetInfo(fresh || uiState.chatPaymentApprovalVisible ? { fresh: true } : undefined);
       if (result.ok && result.data) {
         // Only notify if values actually changed
         const changed =
@@ -127,7 +129,7 @@ export function initCreditsModule({
       const [usage, spendHistory, channels, rewards] = await Promise.all([
         bridge?.paymentsGetBuyerUsage?.().catch(() => null) ?? Promise.resolve(null),
         bridge?.paymentsGetBuyerSpendHistory?.().catch(() => null) ?? Promise.resolve(null),
-        bridge?.paymentsGetChannels?.().catch(() => null) ?? Promise.resolve(null),
+        bridge?.paymentsGetChannels?.(force ? { fresh: true } : undefined).catch(() => null) ?? Promise.resolve(null),
         bridge?.paymentsGetRewardsSummary?.().catch(() => null) ?? Promise.resolve(null),
       ]);
 
@@ -172,13 +174,13 @@ export function initCreditsModule({
   }
 
   function onWindowFocus(): void {
-    void refreshCredits();
+    void refreshCredits(false);
   }
 
   function startPeriodicRefresh(): void {
     if (refreshTimer) return;
     void refreshCredits();
-    refreshTimer = setInterval(() => void refreshCredits(), CREDITS_REFRESH_INTERVAL_MS);
+    refreshTimer = setInterval(() => void refreshCredits(false), CREDITS_REFRESH_INTERVAL_MS);
     window.addEventListener('focus', onWindowFocus);
   }
 

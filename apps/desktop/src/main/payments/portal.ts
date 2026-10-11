@@ -15,6 +15,7 @@ import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ensureSecureIdentity, secureIdentityEnv } from '../identity.js';
 import { getMainWindow } from '../ui/window.js';
+import { invalidateCreditsCache } from './credits.js';
 import { asRecord, asString } from '../utils.js';
 
 export let paymentsServer: Awaited<ReturnType<typeof createPaymentsServer>> | null = null;
@@ -46,6 +47,7 @@ export async function startPaymentsPortal(): Promise<void> {
         // The payment landed in the browser — pull the app back up and let
         // the renderer refresh balances/channels/rewards immediately.
         focusMainWindow();
+        invalidateCreditsCache();
         getMainWindow()?.webContents.send('payments:completed');
       },
     });

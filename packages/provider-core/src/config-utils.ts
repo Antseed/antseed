@@ -164,6 +164,7 @@ export function parseServiceCapabilitiesJson(raw: string | undefined, key = 'ANT
     if (caps.supportedParameters !== undefined) {
       normalized.supportedParameters = caps.supportedParameters as ServiceCapabilities['supportedParameters'];
     }
+    if (caps.video !== undefined) normalized.video = caps.video as ServiceCapabilities['video'];
     // Same validator the announce path uses, so anything accepted here is
     // guaranteed to announce instead of failing silently at announce time.
     const fieldErrors = validateServiceCapabilityFields(normalized);

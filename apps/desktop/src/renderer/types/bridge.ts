@@ -411,7 +411,7 @@ export type DesktopBridge = {
   downloadUpdate?: () => Promise<InstallUpdateResult>;
   getUpdateStatus?: () => Promise<UpdateStatus | null>;
   setDebugLogs?: (enabled: boolean) => Promise<{ ok: true }>;
-  creditsGetInfo?: () => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string } | null; error: string | null }>;
+  creditsGetInfo?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string } | null; error: string | null }>;
   /** Prompts a native save dialog and writes the signer private key to the chosen file. */
   identityExportKey?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string | null }>;
   /** Replaces the signer private key (the current one is backed up on disk first). */
@@ -448,7 +448,7 @@ export type DesktopBridge = {
   paymentsCloseCheckoutWindows?: () => Promise<{ ok: boolean }>;
   paymentsGetBuyerUsage?: () => Promise<{ ok: boolean; data: DesktopBuyerUsageTotals | null; error: string | null; lastActivityAt?: number | null }>;
   paymentsGetBuyerSpendHistory?: () => Promise<{ ok: boolean; data: DesktopBuyerSpendHistory | null; error: string | null }>;
-  paymentsGetChannels?: () => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
+  paymentsGetChannels?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: DesktopPaymentChannelSummary[]; error: string | null }>;
   paymentsRequestCooperativeClose?: (opts: { peerId: string }) => Promise<{
     ok: boolean;
     result: CooperativeCloseResult | null;

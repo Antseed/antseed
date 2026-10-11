@@ -24,7 +24,9 @@ import { getSecureIdentity } from '../identity.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { asRecord, asString } from '../utils.js';
-import { getPendingSpendUsdc } from './buyer-channels.js';
+import { getPendingSpendUsdc, resetSellerFacadeClients } from './buyer-channels.js';
+import { resetSharedChain, withSharedProvider } from './shared-chain.js';
+import { clearChainReads, invalidateChainReads } from './read-cache.js';
 
 export type CreditsInfo = {
   evmAddress: string | null;
@@ -79,7 +81,7 @@ let cachedCreditsComponents: CreditsComponentCache | null = null;
 
 // Cached crypto config — invalidated on config update. Uses protocol defaults
 // from resolveChainConfig with optional user overrides from config.json.
-let cachedCryptoConfig: {
+type CryptoConfig = {
   rpcUrl: string;
   fallbackRpcUrls?: string[];
   depositsAddress: string;
@@ -93,15 +95,19 @@ let cachedCryptoConfig: {
   recognizedUsageEffectiveEpoch?: number;
   antsTokenAddress?: string;
   depositRelayAddress?: string;
-} | null = null;
+};
+let cachedCryptoConfig: CryptoConfig | null = null;
 
 // Cached on-chain clients for the rewards summary — invalidated together with
 // cachedCryptoConfig on config updates.
 let cachedEmissionsClient: EmissionsClient | null = null;
 let cachedAntsTokenClient: ANTSTokenClient | null = null;
 let cachedChannelsClient: ChannelsClient | null = null;
+// One deposits client for the credits poll and the deposit watcher, reading
+// through the shared chain provider.
+let cachedDepositsClient: Promise<DepositsClient> | null = null;
 
-export async function loadCachedCryptoConfig(): Promise<typeof cachedCryptoConfig> {
+export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
   if (cachedCryptoConfig) return cachedCryptoConfig;
   let overrides: Record<string, unknown> = {};
   try {
@@ -199,7 +205,7 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
     creditsRpcFailCount = 0;
   }
 
-  const depositsClient = new DepositsClient({ rpcUrl: cc.rpcUrl, ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}), contractAddress: cc.depositsAddress, usdcAddress: cc.usdcAddress, ...(cc.chainId ? { evmChainId: cc.chainId } : {}) });
+  const depositsClient = await getDepositsClient(cc);
 
   const [balanceResult, creditLimitResult, operatorResult, pendingResult, walletResult] = await Promise.allSettled([
     depositsClient.getBuyerBalance(evmAddress),
@@ -242,6 +248,7 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
 /** Drop the cached balance — call when the signing identity changes. */
 export function invalidateCreditsCache(): void {
   cachedCreditsComponents = null;
+  invalidateChainReads();
 }
 
 /**
@@ -250,12 +257,30 @@ export function invalidateCreditsCache(): void {
  * instead of serving answers from the old chain.
  */
 export function invalidateChainClients(): void {
+  resetSharedChain();
+  resetSellerFacadeClients();
+  clearChainReads();
   cachedCryptoConfig = null;
+  cachedDepositsClient = null;
   cachedEmissionsClient = null;
   cachedAntsTokenClient = null;
   cachedChannelsClient = null;
   cachedCreditsComponents = null;
   creditsRpcFailCount = 0;
+}
+
+/** The cached deposits client for `cc`, reading through the shared chain provider. */
+export function getDepositsClient(cc: CryptoConfig): Promise<DepositsClient> {
+  if (cachedDepositsClient) return cachedDepositsClient;
+  const client = new DepositsClient({
+    rpcUrl: cc.rpcUrl,
+    ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
+    contractAddress: cc.depositsAddress,
+    usdcAddress: cc.usdcAddress,
+    ...(cc.chainId ? { evmChainId: cc.chainId } : {}),
+  });
+  cachedDepositsClient = withSharedProvider(client, { rpcUrl: cc.rpcUrl, fallbackRpcUrls: cc.fallbackRpcUrls, chainId: cc.chainId });
+  return cachedDepositsClient;
 }
 
 export function getCachedChannelsClient(): ChannelsClient | null {

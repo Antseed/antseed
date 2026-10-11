@@ -1,7 +1,10 @@
+import { nativeVideoDelivered, nativeVideoRoute, requestService } from '@antseed/api-adapter';
 import {
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
   ANTSEED_STREAMING_RESPONSE_HEADER,
   ANTSEED_SPENDING_AUTH_HEADER,
+  VIDEO_DOWNLOAD_STREAM_HEADER,
+  VIDEO_DOWNLOAD_STREAM_VERSION,
   type SerializedHttpRequest,
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
@@ -18,7 +21,7 @@ import type { VerificationMux } from './verification-mux.js';
 import type { ResponseAuthSink } from './interfaces.js';
 import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
-import { verifyResponseAuth } from './response-auth.js';
+import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
 import { findRoutingService, isModelRoutingPath } from '@antseed/protocol/model-routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
@@ -41,7 +44,7 @@ export interface RequestStreamCallbacks {
     response: SerializedHttpResponse,
     metadata: RequestStreamResponseMetadata,
   ) => void;
-  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void;
+  onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
 export interface RequestExecutionOptions {
@@ -133,9 +136,11 @@ export class BuyerRequestHandler {
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
-    const isFreeService = requestedService
+    const videoRoute = nativeVideoRoute(req);
+    if (videoRoute && !billingRoute?.unitModel) throw new Error('Video requests require advertised unit pricing');
+    const isFreeService = videoRoute?.action === 'retrieve' || (requestedService
       ? (billingRoute ? isBillingRouteFree(billingRoute) : isPeerServiceFree(peer, requestedService))
-      : false;
+      : false);
     if (negotiator && requestedService) {
       if (isFreeService) {
         negotiator.trackFreeUsageRequestService(req.requestId, requestedService);
@@ -168,6 +173,14 @@ export class BuyerRequestHandler {
       }
     }
 
+    // A retrieve is free to send, but delivering the finished video triggers
+    // the job's charge. Bind it to the accepted job so that charge is checked
+    // against the job's own price and signed only after delivery.
+    const videoJobId = videoRoute?.action === 'retrieve' ? videoRoute.resourceId : undefined;
+    const trackedVideoRetrieve = Boolean(
+      videoRoute && videoJobId && this._deps.negotiator?.bpm?.trackVideoRetrieve(peer.peerId, videoRoute.protocol, videoJobId, req.requestId),
+    );
+
     let startTime = Date.now();
 
     const executeRequest = (): Promise<SerializedHttpResponse> => new Promise<SerializedHttpResponse>((resolve, reject) => {
@@ -183,6 +196,8 @@ export class BuyerRequestHandler {
       let streamStartResponse: SerializedHttpResponse | null = null;
       let forwardStreamToCallbacks = false;
       const streamChunks: Uint8Array[] = [];
+      const isDownload = videoRoute?.action === 'retrieve' && req.headers[VIDEO_DOWNLOAD_STREAM_HEADER] === VIDEO_DOWNLOAD_STREAM_VERSION;
+      let downloadHash: ReturnType<typeof createStreamingResponseHash> | undefined;
       let activeTimeout: ReturnType<typeof setTimeout> | null = null;
       let activeTimeoutMs = streamInitialResponseTimeoutMs;
       const abortSignal = options?.signal;
@@ -283,7 +298,21 @@ export class BuyerRequestHandler {
         req,
         (response: SerializedHttpResponse, metadata) => {
           if (settled) return;
+          if (isDownload && streamStarted && !metadata.streamingStart) {
+            fail(new Error('Video download interrupted'));
+            return;
+          }
           if (metadata.streamingStart) {
+            if (isDownload) {
+              try {
+                if (streamStarted || !callbacks?.onResponseChunk || response.statusCode !== 200 || response.body.length || response.headers[VIDEO_DOWNLOAD_STREAM_HEADER] !== VIDEO_DOWNLOAD_STREAM_VERSION || response.headers['content-type'] !== 'video/mp4') throw new Error('Invalid video stream');
+                downloadHash = createStreamingResponseHash(stripPeerControlledResponseHeaders(response));
+              } catch (error) {
+                mux.cancelProxyRequest(req.requestId);
+                fail(error as Error);
+                return;
+              }
+            }
             streamStarted = true;
             streamStartedAtMs = Date.now();
             streamBufferedBytes = 0;
@@ -305,9 +334,23 @@ export class BuyerRequestHandler {
           );
           finish(response);
         },
-        (chunk) => {
+        async (chunk) => {
           if (settled) return;
           if (!streamStarted) return;
+
+          if (downloadHash) {
+            try {
+              // Downloads have no total duration limit; the idle timeout below ends stalled transfers.
+              resetTimeout(streamIdleTimeoutMs);
+              downloadHash.update(chunk.data);
+              await callbacks!.onResponseChunk!(chunk);
+              if (chunk.done) finish({ ...streamStartResponse!, body: new Uint8Array(0), streamedBody: downloadHash.finish() });
+            } catch (error) {
+              mux.cancelProxyRequest(req.requestId);
+              fail(error as Error);
+            }
+            return;
+          }
 
           resetTimeout(streamIdleTimeoutMs);
 
@@ -375,7 +418,14 @@ export class BuyerRequestHandler {
       return buyerPaymentsInactiveResponse(response, peer.peerId);
     }
 
-    if (response.statusCode === 402 && negotiator && !externalSpendingAuth) {
+    // Provider video APIs may use HTTP 402 for their own errors; only start
+    // AntSeed payment negotiation when the response is our payment contract.
+    if (
+      response.statusCode === 402
+      && negotiator
+      && !externalSpendingAuth
+      && (!videoRoute || isPaymentRequired402(response))
+    ) {
       const result = await negotiator.handle402(response, peer, conn, req);
       if (result.action === 'return') {
         return adaptPeerResponse(result.response);
@@ -392,9 +442,20 @@ export class BuyerRequestHandler {
     if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
+    if (
+      trackedVideoRetrieve && videoRoute && videoJobId
+      && nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId))
+    ) {
+      this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
+    }
 
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
     return adaptPeerResponse(response);
+  }
+
+  private _requestedVideoDuration(requestId: string): number | undefined {
+    const facts = this._deps.negotiator?.bpm?.getRequestBilling(requestId)?.requestFacts;
+    return facts?.kind === 'video' ? facts.video.duration : undefined;
   }
 
   private _prepareDirectFreeUsageOpen(peer: BuyerPeerView, conn: BuyerConnection): void {
@@ -429,10 +490,15 @@ export class BuyerRequestHandler {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
       return;
     }
-
+    // Snapshot the headers: callers add headers to the returned response
+    // (e.g. x-antseed-seller-peer), which would otherwise change what the
+    // late-arriving ResponseAuth is verified against.
+    response = { ...response, headers: { ...response.headers } };
     const storage = this._deps.verificationStorage;
     const advertisedService = requestedService ?? 'unknown';
-    const expectedChannelId = this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId ?? null;
+    const expectedChannelId = this._deps.negotiator?.bpm?.getResponseAuthChannelId(peer.peerId, request.requestId)
+      ?? this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId
+      ?? null;
     const responseAuthPromise = verificationMux.waitForResponseAuth(
       request.requestId,
       this._config.responseAuthTimeoutMs ?? DEFAULT_RESPONSE_AUTH_GRACE_MS,
@@ -481,6 +547,7 @@ export class BuyerRequestHandler {
 /** The requested service: the peer's single routing service on IRP paths, else `service`/`model` from a JSON or multipart body. */
 function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
   if (isModelRoutingPath(request.path)) return findRoutingService(peer.providerServiceApiProtocols)?.serviceId;
+  if (nativeVideoRoute(request)) return requestService(request);
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;
   if (typeof service === 'string' && service.length > 0) return service;

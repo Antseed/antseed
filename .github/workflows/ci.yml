@@ -81,6 +81,18 @@ jobs:
         run: node e2e/scripts/full-payment-flow.mjs
         timeout-minutes: 15
 
+  installer-lint:
+    name: Lint installer script
+    runs-on: ubuntu-latest
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: shellcheck install-gateway.sh
+        run: |
+          bash -n apps/website/static/install-gateway.sh
+          shellcheck apps/website/static/install-gateway.sh
+
   typecheck:
     name: Typecheck
     runs-on: ubuntu-latest

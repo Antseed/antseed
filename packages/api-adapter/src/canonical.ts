@@ -66,6 +66,7 @@ export interface CanonicalLlmRequest {
   instructions?: string;
   input: CanonicalInputItem[];
   maxOutputTokens?: number;
+  reasoningEffort?: string;
   temperature?: number;
   topP?: number;
   stop?: string | string[];
@@ -182,6 +183,7 @@ export function renderCanonicalRequestToOpenAIChatBody(
     ...(request.stream ? { stream_options: { include_usage: true } } : {}),
   };
   if (typeof request.maxOutputTokens === 'number') body.max_tokens = request.maxOutputTokens;
+  if (request.reasoningEffort !== undefined) body.reasoning_effort = request.reasoningEffort;
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
@@ -242,6 +244,7 @@ export function renderCanonicalRequestToOpenAIResponsesBody(
     stream: request.stream,
   };
   if (typeof request.maxOutputTokens === 'number') body.max_output_tokens = request.maxOutputTokens;
+  if (request.reasoningEffort !== undefined) body.reasoning = { effort: request.reasoningEffort };
   if (typeof request.temperature === 'number') body.temperature = request.temperature;
   if (typeof request.topP === 'number') body.top_p = request.topP;
   if (request.stop !== undefined) body.stop = request.stop;
@@ -479,6 +482,9 @@ export function normalizeOpenAIChatRequestBody(body: Record<string, unknown>): C
   }
 
   if (typeof body.max_tokens === 'number') request.maxOutputTokens = body.max_tokens;
+  if (typeof body.reasoning_effort === 'string' && body.reasoning_effort.length > 0) {
+    request.reasoningEffort = body.reasoning_effort;
+  }
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];
@@ -571,6 +577,12 @@ export function normalizeOpenAIResponsesRequestBody(body: Record<string, unknown
   }
 
   if (typeof body.max_output_tokens === 'number') request.maxOutputTokens = body.max_output_tokens;
+  if (body.reasoning && typeof body.reasoning === 'object' && !Array.isArray(body.reasoning)) {
+    const effort = (body.reasoning as Record<string, unknown>).effort;
+    if (typeof effort === 'string' && effort.length > 0) {
+      request.reasoningEffort = effort;
+    }
+  }
   if (typeof body.temperature === 'number') request.temperature = body.temperature;
   if (typeof body.top_p === 'number') request.topP = body.top_p;
   if (typeof body.stop === 'string' || Array.isArray(body.stop)) request.stop = body.stop as string | string[];

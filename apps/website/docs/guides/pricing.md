@@ -136,22 +136,32 @@ Token pricing does not describe image-generation cost. Image sellers may announc
 
 The final charge is based on delivered image outputs, not merely the requested `n`. Buyers recompute the charge from the signed billing model and observed response. A positive output count that matches no component is rejected rather than treated as free.
 
-## Routing service pricing
+## Video unit pricing
 
-Routing services announce a `model-routing` unit billing model that charges one `completed_requests` unit for each well-formed ranking:
+Video sellers announce `serviceUnitBillingModels` for the `venice-video` protocol, priced per delivered video (`video_generations`) or per requested second (`video_seconds`):
 
 ```json
 {
-  "serviceApiProtocols": { "alpha-route": ["model-routing"] },
+  "serviceApiProtocols": {
+    "wan-2.5-preview-text-to-video": ["venice-video"]
+  },
   "serviceUnitBillingModels": {
-    "alpha-route": {
-      "model-routing": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
+    "wan-2.5-preview-text-to-video": {
+      "venice-video": {
+        "version": 1,
+        "components": [
+          { "unit": "video_seconds", "priceUsd": 0.05, "match": { "resolution": "720p" } },
+          { "unit": "video_seconds", "priceUsd": 0.1, "match": { "resolution": "1080p" } }
+        ]
+      }
     }
   }
 }
 ```
 
-The ranking price is separate from the token price of the seller that serves the request. Errors and malformed rankings count as zero units. See [Model Routing](../protocol/model-routing.md).
+A 5-second 1080p request costs `5 × $0.10 = $0.50`. Components may match `model` or `resolution`. `video_seconds` requires an explicit `duration`; requests with an automatic duration need `video_generations` pricing.
+
+The price is computed when the job is created and charged once, when the finished MP4 is delivered. Failed or undelivered jobs are not charged the price, and repeat downloads are free. Buyers recompute the price from the signed billing model and refuse videos above $5.00. A request that matches no component is rejected rather than treated as free.
 
 ## Example response (truncated)
 
@@ -239,3 +249,21 @@ If a user asks for Antseed prices:
 - [Install](../getting-started/install.md) — get the CLI for live pricing.
 - [Using the API](./using-the-api.md) — how to actually call Antseed and route requests through it.
 - [Payments](../protocol/payments.md) — how the announced prices are settled on-chain.
+
+## Routing service pricing
+
+Routing services announce a `model-routing` unit billing model that charges one `completed_requests` unit for each well-formed ranking:
+
+```json
+{
+  "serviceApiProtocols": { "alpha-route": ["model-routing"] },
+  "serviceUnitBillingModels": {
+    "alpha-route": {
+      "model-routing": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
+    }
+  }
+}
+```
+
+The ranking price is separate from the token price of the seller that serves the request. Errors and malformed rankings count as zero units. See [Model Routing](../protocol/model-routing.md).
+

@@ -1,4 +1,4 @@
-import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
+import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { execFileSync } from 'node:child_process';
 import { copyFileSync, existsSync, mkdirSync, readdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs';
 import { homedir } from 'node:os';
@@ -36,6 +36,7 @@ const DROID_ROUTED_MODEL_ID = 'custom:Antseed-Auto-0';
  *  - `goose`: flat env-style YAML keys (goose's config.yaml)
  *  - `hermes`: nested YAML provider + model selection (Hermes' config.yaml)
  *  - `zed`: JSONC settings with `language_models.openai_compatible` (Zed's settings.json)
+ *  - `claude-code`: JSON `env` and `model` keys (Claude Code's user settings.json)
  */
 export type OpencodeConfigPatchDef = {
   readonly format?: 'opencode';
@@ -131,6 +132,14 @@ export type ZedConfigPatchDef = {
   readonly baseURL: string;
 };
 
+export type ClaudeCodeConfigPatchDef = {
+  readonly format: 'claude-code';
+  readonly configPath: string;
+  readonly providerKey: string;
+  readonly baseURL: string;
+  readonly installProbe?: 'claude';
+};
+
 export type T3CodeConfigPatchDef = {
   readonly format: 't3code';
   readonly configPath: string;
@@ -145,7 +154,7 @@ export type T3CodeConfigPatchDef = {
  * directory (`Claude-3p`) whose applied entry in `configLibrary/` names an
  * Anthropic-Messages-compatible gateway to send all inference to. The patch
  * writes that profile pointing at the desktop's local Claude gateway (see
- * connected-apps/claude-desktop-gateway.ts), which serves the model catalog
+ * apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts), which serves the model catalog
  * in Anthropic's native shape and forwards requests to the buyer proxy. The
  * 1p and 3p profiles are separate directories, so the user's normal Claude
  * login and state are untouched.
@@ -171,12 +180,13 @@ export type ConfigPatchDef =
   | GooseConfigPatchDef
   | HermesConfigPatchDef
   | ZedConfigPatchDef
+  | ClaudeCodeConfigPatchDef
   | T3CodeConfigPatchDef
   | ClaudeDesktopConfigPatchDef;
 
 /**
  * Loopback port of the desktop's Claude Desktop gateway. Lives here (not in
- * claude-desktop-gateway.ts) so this electron-free module stays the single
+ * the desktop's claude-desktop-gateway.ts) so this electron-free module stays the single
  * import direction: the gateway imports from config-patch, never the reverse.
  */
 export const CLAUDE_GATEWAY_DEFAULT_PORT = Number(process.env['ANTSEED_CLAUDE_GATEWAY_PORT']) || 8380;
@@ -295,6 +305,15 @@ export function readConfigPatch(value: unknown, profileName: string): ConfigPatc
       providerKey,
       providerName: readRequiredString(raw, 'providerName', profileName),
       baseURL,
+    };
+  }
+  if (format === 'claude-code') {
+    return {
+      format: 'claude-code',
+      configPath,
+      providerKey,
+      baseURL,
+      ...(raw['installProbe'] === 'claude' ? { installProbe: 'claude' as const } : {}),
     };
   }
   if (format === 't3code') {
@@ -485,6 +504,16 @@ export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPor
   if (!isBuyerProxyRoutablePeerId(peerId)) {
     throw new Error('Config-based routing requires a 40-character hex peer ID. Select a chain-backed peer before enabling this tool.');
   }
+  writeConfigPatch(patch, buyerPort, wslTargetsFile);
+}
+
+/**
+ * The config write behind applyConfigPatch, without the selected-peer guard.
+ * The patched config only carries the ROUTED_MODEL_ALIAS, so no peer is
+ * written either way; callers that do not own a route selection (the CLI's
+ * `antseed apps connect`) use this and leave route choice to the buyer.
+ */
+export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
   if (patch.format === 'codex') {
     applyCodexConfigPatch(patch, buyerPort, wslTargetsFile);
     return;
@@ -511,6 +540,10 @@ export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPor
   }
   if (patch.format === 'zed') {
     applyZedConfigPatch(patch, buyerPort);
+    return;
+  }
+  if (patch.format === 'claude-code') {
+    applyClaudeCodeConfigPatch(patch, buyerPort, wslTargetsFile);
     return;
   }
   if (patch.format === 't3code') {
@@ -681,6 +714,9 @@ export function removeConfigPatch(patch: ConfigPatchDef, wslTargetsFile?: string
   }
   if (patch.format === 'zed') {
     return removeZedConfigPatch(patch);
+  }
+  if (patch.format === 'claude-code') {
+    return removeClaudeCodeConfigPatch(patch, wslTargetsFile);
   }
   if (patch.format === 't3code') {
     return removeT3CodeConfigPatch(patch);
@@ -1486,6 +1522,205 @@ function removeZedConfigPatch(patch: ZedConfigPatchDef): boolean {
   return true;
 }
 
+// --- Claude Code CLI (`~/.claude/settings.json`) ---
+//
+// Claude Code reads gateway settings from its user settings `env` block. The
+// sidecar records only the env/model values Antseed replaces so disconnect
+// restores the user's prior state without rolling back unrelated settings.
+
+const CLAUDE_CODE_SOURCE = 'claude-code';
+const CLAUDE_CODE_SOURCE_HEADER = `x-antseed-system-proxy-source: ${CLAUDE_CODE_SOURCE}`;
+const CLAUDE_CODE_MANAGED_ENV_KEYS = [
+  'ANTHROPIC_BASE_URL',
+  'ANTHROPIC_AUTH_TOKEN',
+  'ANTHROPIC_API_KEY',
+  'ANTHROPIC_CUSTOM_HEADERS',
+] as const;
+
+type ClaudeCodeManagedEnvKey = typeof CLAUDE_CODE_MANAGED_ENV_KEYS[number];
+
+type ClaudeCodeSavedValue = {
+  readonly present: boolean;
+  readonly value?: unknown;
+};
+
+type ClaudeCodePatchState = {
+  readonly version: 1;
+  readonly configExisted: boolean;
+  readonly envPresent: boolean;
+  readonly env: Readonly<Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>>;
+  readonly model: ClaudeCodeSavedValue;
+};
+
+function claudeCodePatchStatePath(filePath: string): string {
+  return `${filePath}.antseed.state.json`;
+}
+
+function savedValue(source: JsonObject, key: string): ClaudeCodeSavedValue {
+  return Object.prototype.hasOwnProperty.call(source, key)
+    ? { present: true, value: source[key] }
+    : { present: false };
+}
+
+function readSavedValue(raw: unknown, statePath: string, key: string): ClaudeCodeSavedValue {
+  if (!raw || typeof raw !== 'object' || Array.isArray(raw) || typeof (raw as JsonObject)['present'] !== 'boolean') {
+    throw new Error(`Invalid Antseed Claude Code restore value ${key} at ${statePath}`);
+  }
+  const value = raw as JsonObject;
+  return value['present'] ? { present: true, value: value['value'] } : { present: false };
+}
+
+function readClaudeCodePatchState(filePath: string): ClaudeCodePatchState | null {
+  const statePath = claudeCodePatchStatePath(filePath);
+  const state = tryReadConfigPatchFile(statePath);
+  if (!state) return null;
+  const env = state['env'];
+  if (state['version'] !== 1
+    || typeof state['configExisted'] !== 'boolean'
+    || typeof state['envPresent'] !== 'boolean'
+    || !env || typeof env !== 'object' || Array.isArray(env)) {
+    throw new Error(`Invalid Antseed Claude Code restore state at ${statePath}`);
+  }
+  const savedEnv = Object.fromEntries(CLAUDE_CODE_MANAGED_ENV_KEYS.map((key) => [
+    key,
+    readSavedValue((env as JsonObject)[key], statePath, key),
+  ])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>;
+  return {
+    version: 1,
+    configExisted: state['configExisted'],
+    envPresent: state['envPresent'],
+    env: savedEnv,
+    model: readSavedValue(state['model'], statePath, 'model'),
+  };
+}
+
+function writeClaudeCodePatchState(filePath: string, state: ClaudeCodePatchState): void {
+  writeJsonFile(claudeCodePatchStatePath(filePath), state as unknown as JsonObject);
+}
+
+function deleteClaudeCodePatchState(filePath: string): void {
+  try {
+    unlinkSync(claudeCodePatchStatePath(filePath));
+  } catch (err) {
+    if ((err as NodeJS.ErrnoException).code !== 'ENOENT') throw err;
+  }
+}
+
+function claudeCodeEnv(config: JsonObject, filePath: string): JsonObject | undefined {
+  const env = config['env'];
+  if (env === undefined) return undefined;
+  if (!env || typeof env !== 'object' || Array.isArray(env)) {
+    throw new Error(`Claude Code env at ${filePath} must be an object`);
+  }
+  return env as JsonObject;
+}
+
+function applyClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+  const filePath = expandTilde(patch.configPath);
+  const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
+  if (patch.installProbe !== 'claude') {
+    applyClaudeCodeSettingsToFile(filePath, patch, baseURL);
+    return;
+  }
+  applyWithInstallProbe({
+    tool: 'claude',
+    native: { configPath: filePath },
+    posix: { configPath: patch.configPath },
+    baseURL,
+    wslTargetsFile,
+    write: (paths, url) => applyClaudeCodeSettingsToFile(paths.configPath, patch, url),
+  });
+}
+
+function applyClaudeCodeSettingsToFile(filePath: string, patch: ClaudeCodeConfigPatchDef, baseURL: string): void {
+  const configExisted = existsSync(filePath);
+  backupConfigFile(filePath);
+  const config = readConfigPatchFile(filePath);
+  const existingEnv = claudeCodeEnv(config, filePath);
+  if (!readClaudeCodePatchState(filePath)) {
+    const envSource = existingEnv ?? {};
+    writeClaudeCodePatchState(filePath, {
+      version: 1,
+      configExisted,
+      envPresent: existingEnv !== undefined,
+      env: Object.fromEntries(CLAUDE_CODE_MANAGED_ENV_KEYS.map((key) => [key, savedValue(envSource, key)])) as Record<ClaudeCodeManagedEnvKey, ClaudeCodeSavedValue>,
+      model: savedValue(config, 'model'),
+    });
+  }
+
+  const env = existingEnv ?? {};
+  env['ANTHROPIC_BASE_URL'] = baseURL;
+  env['ANTHROPIC_AUTH_TOKEN'] = patch.providerKey;
+  env['ANTHROPIC_API_KEY'] = '';
+  env['ANTHROPIC_CUSTOM_HEADERS'] = CLAUDE_CODE_SOURCE_HEADER;
+  config['env'] = env;
+  config['model'] = ROUTED_MODEL_ALIAS;
+  writeJsonFile(filePath, config);
+}
+
+function removeClaudeCodeConfigPatch(patch: ClaudeCodeConfigPatchDef, wslTargetsFile?: string): boolean {
+  let changed = removeClaudeCodeSettingsFromFile(expandTilde(patch.configPath), patch);
+  if (patch.installProbe === 'claude') {
+    changed = removeWslInstalls('claude', wslTargetsFile, (target) => (
+      removeClaudeCodeSettingsFromFile(target.configPath, patch, [target.host])
+    )) || changed;
+  }
+  return changed;
+}
+
+function restoreSavedValue(target: JsonObject, key: string, saved: ClaudeCodeSavedValue): void {
+  if (saved.present) target[key] = saved.value;
+  else delete target[key];
+}
+
+function removeClaudeCodeSettingsFromFile(
+  filePath: string,
+  patch: ClaudeCodeConfigPatchDef,
+  extraHosts: readonly string[] = [],
+): boolean {
+  const state = readClaudeCodePatchState(filePath);
+  if (!state) return false;
+  const config = tryReadConfigPatchFile(filePath);
+  if (!config) {
+    deleteClaudeCodePatchState(filePath);
+    return true;
+  }
+  backupConfigFile(filePath);
+
+  let changed = false;
+  const env = claudeCodeEnv(config, filePath);
+  if (env) {
+    const managedValues: Record<ClaudeCodeManagedEnvKey, unknown> = {
+      ANTHROPIC_BASE_URL: undefined,
+      ANTHROPIC_AUTH_TOKEN: patch.providerKey,
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_CUSTOM_HEADERS: CLAUDE_CODE_SOURCE_HEADER,
+    };
+    for (const key of CLAUDE_CODE_MANAGED_ENV_KEYS) {
+      const value = env[key];
+      const managed = key === 'ANTHROPIC_BASE_URL'
+        ? typeof value === 'string' && isLoopbackHost(value, extraHosts)
+        : value === managedValues[key];
+      if (!managed) continue;
+      restoreSavedValue(env, key, state.env[key]);
+      changed = true;
+    }
+    if (!state.envPresent && Object.keys(env).length === 0) delete config['env'];
+  }
+  if (config['model'] === ROUTED_MODEL_ALIAS) {
+    restoreSavedValue(config, 'model', state.model);
+    changed = true;
+  }
+
+  if (!state.configExisted && Object.keys(config).length === 0) {
+    unlinkSync(filePath);
+  } else if (changed) {
+    writeJsonFile(filePath, config);
+  }
+  deleteClaudeCodePatchState(filePath);
+  return changed;
+}
+
 function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
@@ -1498,6 +1733,7 @@ function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number):
     environment: [
       { name: 'ANTHROPIC_BASE_URL', value: patch.baseURL.replace('{buyerPort}', String(buyerPort)), sensitive: false },
       { name: 'ANTHROPIC_API_KEY', value: 'antseed', sensitive: false },
+      { name: 'ANTHROPIC_CUSTOM_HEADERS', value: 'x-antseed-system-proxy-source: t3code', sensitive: false },
       { name: 'HTTP_PROXY', value: '', sensitive: false },
       { name: 'HTTPS_PROXY', value: '', sensitive: false },
       { name: 'http_proxy', value: '', sensitive: false },
@@ -1751,4 +1987,105 @@ function removeClaudeDesktopTarget(target: ClaudeDesktopPatchTarget): boolean {
     changed = true;
   }
   return changed;
+}
+
+// --- Read-only inspection (used by `antseed apps status`) ---
+//
+// Mirrors the ownership checks the remove paths use, without writing
+// anything: "connected" means the config currently carries the entry
+// AntSeed would remove on disconnect.
+
+/** Absolute (tilde-expanded) native config paths a patch touches. */
+export function configPatchPaths(patch: ConfigPatchDef): string[] {
+  if (patch.format === 'claude-desktop') {
+    return claudeDesktopPatchTargets(patch).map((target) => target.configPath);
+  }
+  if (patch.format === 'pi') return [expandTilde(patch.configPath), expandTilde(patch.settingsPath)];
+  return [expandTilde(patch.configPath)];
+}
+
+function patchInstallProbe(patch: ConfigPatchDef): WslTool | undefined {
+  const probe = (patch as { installProbe?: unknown }).installProbe;
+  return typeof probe === 'string' && probe in WSL_TOOL_PROBES ? probe as WslTool : undefined;
+}
+
+/**
+ * Whether the tool looks present on this machine. Install-probed profiles use
+ * the same native signals connect uses (config dir, home install locations,
+ * binary on PATH) plus WSL targets recorded by an earlier connect — WSL
+ * discovery itself is skipped because it would cold-start distros. Other
+ * profiles count as installed when their config directory exists.
+ */
+export function isConfigPatchInstalled(patch: ConfigPatchDef, wslTargetsFile?: string): boolean {
+  const probe = patchInstallProbe(patch);
+  if (probe) {
+    if (nativeToolInstalled(probe, expandTilde(patch.configPath))) return true;
+    return wslTargetsFile ? readWslTargetsForTool(wslTargetsFile, probe).length > 0 : false;
+  }
+  return configPatchPaths(patch).some((filePath) => existsSync(path.dirname(filePath)));
+}
+
+/** Whether the tool's config currently carries AntSeed's managed entry. */
+export function isConfigPatchConnected(patch: ConfigPatchDef, wslTargetsFile?: string): boolean {
+  const probe = patchInstallProbe(patch);
+  if (probe && wslTargetsFile && readWslTargetsForTool(wslTargetsFile, probe).length > 0) return true;
+  try {
+    return nativeConfigPatchConnected(patch);
+  } catch {
+    // An unparseable config cannot be carrying a working AntSeed entry.
+    return false;
+  }
+}
+
+function nativeConfigPatchConnected(patch: ConfigPatchDef): boolean {
+  if (patch.format === 'claude-desktop') {
+    return claudeDesktopPatchTargets(patch).some((target) => {
+      const paths = claudeDesktopPatchPaths(target);
+      const meta = tryReadConfigPatchFile(paths.meta);
+      const profile = tryReadConfigPatchFile(paths.profile);
+      const gatewayUrl = typeof profile?.['inferenceGatewayBaseUrl'] === 'string'
+        ? profile['inferenceGatewayBaseUrl']
+        : undefined;
+      return meta?.['appliedId'] === CLAUDE_DESKTOP_PROFILE_ID
+        || (profile?.['inferenceProvider'] === 'gateway' && isLoopbackHost(gatewayUrl));
+    });
+  }
+  const filePath = expandTilde(patch.configPath);
+  if (patch.format === 'droid') return existsSync(droidPatchStatePath(filePath));
+  if (patch.format === 'claude-code') return existsSync(claudeCodePatchStatePath(filePath));
+  if (patch.format === 'codex') {
+    if (!existsSync(filePath)) return false;
+    const lines = readFileSync(filePath, 'utf8').split('\n');
+    return lines.some((line) => isCodexProviderTableHeader(line, patch.providerKey))
+      || readTomlTopLevelString(lines, 'model_provider') === patch.providerKey;
+  }
+  if (patch.format === 'goose') {
+    if (!existsSync(filePath)) return false;
+    const lines = readFileSync(filePath, 'utf8').split('\n');
+    return readYamlTopLevelString(lines, 'GOOSE_PROVIDER') === patch.providerKey
+      && readYamlTopLevelString(lines, 'GOOSE_MODEL') === ROUTED_MODEL_ALIAS;
+  }
+  if (patch.format === 'hermes') {
+    if (!existsSync(filePath)) return false;
+    const providerApi = readHermesConfigDocument(filePath).getIn(['providers', patch.providerKey, 'api']);
+    return typeof providerApi === 'string' && /^https?:\/\/(localhost|127\.0\.0\.1):\d+\/v1\/?$/.test(providerApi);
+  }
+  const config = tryReadConfigPatchFile(filePath);
+  if (!config) return false;
+  if (patch.format === 'pi' || patch.format === 'crush') {
+    return patch.providerKey in asObject(config['providers']);
+  }
+  if (patch.format === 'zed') {
+    return patch.providerName in asObject(asObject(config['language_models'])['openai_compatible']);
+  }
+  if (patch.format === 't3code') {
+    const instance = asObject(asObject(config['providerInstances'])[patch.providerKey]);
+    const environment = instance['environment'];
+    return Array.isArray(environment) && environment.some((variable) => {
+      const entry = asObject(variable);
+      return entry['name'] === 'ANTHROPIC_BASE_URL'
+        && isLoopbackHost(typeof entry['value'] === 'string' ? entry['value'] : undefined);
+    });
+  }
+  return patch.providerKey in asObject(config['provider']);
 }

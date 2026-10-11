@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
+import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +22,7 @@ import {
   type DroidConfigPatchDef,
   type OpencodeConfigPatchDef,
 } from './config-patch.js';
-import { DEFAULT_APP_PROFILES } from '../connected-apps/defaults.js';
+import { DEFAULT_APP_PROFILES } from './defaults.js';
 
 const PEER_ID = '0123456789abcdef0123456789abcdef01234567';
 
@@ -33,6 +33,15 @@ function makePatch(configPath: string): ConfigPatchDef {
     npm: '@antseed/tool-provider',
     providerName: 'Antseed',
     baseURL: 'http://127.0.0.1:{buyerPort}/v1',
+  };
+}
+
+function makeClaudeCodePatch(configPath: string): ConfigPatchDef {
+  return {
+    format: 'claude-code',
+    configPath,
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}',
   };
 }
 
@@ -670,6 +679,80 @@ test('removeConfigPatch (goose) keeps a provider selection it does not own', asy
   });
 });
 
+// --- Claude Code ---
+
+test('Claude Code patch routes through the AI VPN alias and restores managed settings', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    await writeFile(configPath, JSON.stringify({
+      model: 'sonnet',
+      env: {
+        DISABLE_AUTO_COMPACT: '1',
+        ANTHROPIC_API_KEY: 'user-key',
+      },
+      hooks: { Stop: [] },
+    }), 'utf8');
+
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 9456);
+
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.equal(config['model'], 'antseed');
+    assert.deepEqual(config['hooks'], { Stop: [] });
+    assert.deepEqual(config['env'], {
+      DISABLE_AUTO_COMPACT: '1',
+      ANTHROPIC_API_KEY: '',
+      ANTHROPIC_BASE_URL: 'http://localhost:9456',
+      ANTHROPIC_AUTH_TOKEN: 'antseed',
+      ANTHROPIC_CUSTOM_HEADERS: 'x-antseed-system-proxy-source: claude-code',
+    });
+    assert.ok(existsSync(`${configPath}.antseed.bak`));
+    assert.ok(existsSync(`${configPath}.antseed.state.json`));
+
+    applyConfigPatch(patch, PEER_ID, 8377);
+    assert.equal(removeConfigPatch(patch), true);
+    const restored = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, unknown>;
+    assert.deepEqual(restored, {
+      model: 'sonnet',
+      env: {
+        DISABLE_AUTO_COMPACT: '1',
+        ANTHROPIC_API_KEY: 'user-key',
+      },
+      hooks: { Stop: [] },
+    });
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+    assert.equal(removeConfigPatch(patch), false);
+  });
+});
+
+test('Claude Code patch removal keeps user edits to managed keys', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    const config = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    config['model'] = 'opus';
+    config['env']['ANTHROPIC_BASE_URL'] = 'https://gateway.example.test';
+    await writeFile(configPath, JSON.stringify(config), 'utf8');
+
+    assert.equal(removeConfigPatch(patch), true);
+    const cleaned = JSON.parse(await readFile(configPath, 'utf8')) as Record<string, any>;
+    assert.equal(cleaned['model'], 'opus');
+    assert.deepEqual(cleaned['env'], { ANTHROPIC_BASE_URL: 'https://gateway.example.test' });
+  });
+});
+
+test('Claude Code patch removes a settings file it created', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'settings.json');
+    const patch = makeClaudeCodePatch(configPath);
+    applyConfigPatch(patch, PEER_ID, 8377);
+    assert.equal(removeConfigPatch(patch), true);
+    assert.equal(existsSync(configPath), false);
+    assert.equal(existsSync(`${configPath}.antseed.state.json`), false);
+  });
+});
+
 // --- T3 Code ---
 
 test('T3 Code patch adds Antseed Claude provider and preserves existing settings', async () => {
@@ -693,6 +776,7 @@ test('T3 Code patch adds Antseed Claude provider and preserves existing settings
       environment: [
         { name: 'ANTHROPIC_BASE_URL', value: 'http://localhost:9456', sensitive: false },
         { name: 'ANTHROPIC_API_KEY', value: 'antseed', sensitive: false },
+        { name: 'ANTHROPIC_CUSTOM_HEADERS', value: 'x-antseed-system-proxy-source: t3code', sensitive: false },
         { name: 'HTTP_PROXY', value: '', sensitive: false },
         { name: 'HTTPS_PROXY', value: '', sensitive: false },
         { name: 'http_proxy', value: '', sensitive: false },

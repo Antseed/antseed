@@ -719,6 +719,16 @@ test('loadConfig rejects invalid seller gasCheck minBalanceEth', async () => {
   );
 });
 
+test('loadConfig preserves seller freeUsage setting', async () => {
+  await withTempConfig(
+    JSON.stringify({ seller: { freeUsage: { recordBatchSize: 64, recordFlushIntervalMs: 900_000 } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.freeUsage, { recordBatchSize: 64, recordFlushIntervalMs: 900_000 });
+    }
+  );
+});
+
 test('loadConfig preserves seller freeTier setting', async () => {
   await withTempConfig(
     JSON.stringify({
@@ -744,6 +754,29 @@ test('loadConfig rejects invalid seller freeTier limits', async () => {
       JSON.stringify({ seller: { freeTier } }),
       async (configPath) => {
         await assert.rejects(async () => loadConfig(configPath), /seller\.freeTier/);
+      }
+    );
+  }
+});
+
+test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
+  for (const restrictedCountries of [['IR', 'RU'], []]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { restrictedCountries } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.deepEqual(config.seller.restrictedCountries, restrictedCountries);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller restrictedCountries', async () => {
+  for (const restrictedCountries of ['IR', ['ir'], ['IRN'], [1]]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { restrictedCountries } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.restrictedCountries/);
       }
     );
   }

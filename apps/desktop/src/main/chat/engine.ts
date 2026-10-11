@@ -51,7 +51,7 @@ import {
   type ChatServiceProtocol,
 } from './service-catalog.js';
 import { enrichDomainVerificationLinks } from '../connected-apps/domain-site-metadata.js';
-import { resolveChainConfig } from '@antseed/node';
+import { isNativeVideoProtocol, resolveChainConfig } from '@antseed/node';
 import { collectPeerVerificationLinks } from '@antseed/node/discovery';
 import { augmentChatToolPath } from './tool-env.js';
 import type { AiConversation } from './conversation-types.js';
@@ -411,7 +411,9 @@ export function registerPiChatHandlers({
     const buyerMaxPricing = await loadBuyerMaxPricingDefaults(configPath);
     const eligibleEntries = entries.filter((entry) => isCatalogEntryAllowedByBuyerMax(entry, buyerMaxPricing));
     lastBuyerEligibleServiceCatalogEntries = eligibleEntries;
-    return eligibleEntries;
+    // Telegram picks chat models from this list; native video services
+    // cannot run through the chat pipeline.
+    return eligibleEntries.filter((entry) => !isNativeVideoProtocol(entry.protocol));
   };
 
   // Curated model-picker snapshot pushed by the renderer — see
@@ -433,7 +435,7 @@ export function registerPiChatHandlers({
     const refreshed = await refreshServiceCatalogFromNetwork();
     const match = refreshed.find((entry) => (
       entry.id.trim().toLowerCase() === normalizedServiceId
-      && entry.protocol !== 'openai-images'
+      && isChatServiceProtocol(entry.protocol)
     ));
     return match && isChatServiceProtocol(match.protocol)
       ? match.protocol

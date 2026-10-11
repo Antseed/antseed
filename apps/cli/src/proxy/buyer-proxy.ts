@@ -1,3 +1,7 @@
+import { nativeVideoRoute } from '@antseed/api-adapter'
+import { ResourceRoutes } from './resource-routes.js'
+import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy.js'
+import { downloadVideo } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
 import { buildRoutingServices } from './routing-services.js'
@@ -18,6 +22,7 @@ import {
   normalizedModelReputationScore,
   peerSupportsCooperativeClose,
   isRoutingSelection,
+  DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
   sanitizePeerDisplayName,
   type AntseedNode,
@@ -59,8 +64,10 @@ import {
   ROUTED_MODEL_ALIAS,
   SYSTEM_PROXY_SOURCE_HEADER,
   SYSTEM_ROUTED_MODEL_HEADER,
+  BUYER_IDENTITY_HEADER,
   normalizePeerId,
 } from './request-utils.js'
+import { BuyerIdentityLoader } from '../buyer-identities/loader.js'
 import {
   buildNetworkModels,
   effectiveModelReputationScore,
@@ -97,6 +104,7 @@ import {
 import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
 import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, RoutingModelsCache } from './router-execution.js'
 import { recordRouterUsage } from './routing-usage.js'
+import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
 import type { DepositWatcher } from './deposit-watcher.js'
 import {
   recordPeerFailureEntry,
@@ -170,6 +178,8 @@ export interface BuyerProxyConfig {
   now?: () => number
   /** Verifier-SDK policy: which verifier the buyer commits to + whether it is required. */
   verifier?: VerifierPolicy
+  /** Loads stored buyer identities on demand; defaults to one reading `dataDir`. */
+  buyerIdentities?: BuyerIdentityLoader
 }
 
 // 401/403 are included: sellers relay upstream auth failures (revoked or
@@ -496,6 +506,15 @@ export function sanitizePeerBuyerFaultMarker(response: SerializedHttpResponse): 
     : response
 }
 
+function buyerFaultStatusCode(faultCode: string | null): number {
+  switch (faultCode) {
+    case 'invalid-request': return 400
+    case 'buyer-budget-too-low': return 422
+    case 'buyer-reserve-topup-timeout': return 504
+    default: return 503
+  }
+}
+
 /**
  * Inject the buyer-known peerId into a 402 payment_required JSON body.
  * The seller doesn't include its own peerId (and shouldn't — self-reported
@@ -818,6 +837,11 @@ export async function mergeJsonStateFile(stateDir: string, stateFile: string, pa
   }
 }
 
+function sendUnknownBuyerIdentity(res: ServerResponse): void {
+  res.writeHead(404, { 'content-type': 'application/json' })
+  res.end(JSON.stringify({ ok: false, error: 'Unknown buyer identity' }))
+}
+
 export class BuyerProxy {
   private readonly _server: Server
   private readonly _node: AntseedNode
@@ -848,6 +872,7 @@ export class BuyerProxy {
    */
   private _lastModelActivityAt = 0
   private readonly _verifier?: VerifierPolicy
+  private readonly _buyerIdentities: BuyerIdentityLoader
   private readonly _teeVerification: TeeVerification
   private readonly _teeControl: TeeControl
   private _stateWatchDebounce: ReturnType<typeof setTimeout> | null = null
@@ -855,6 +880,7 @@ export class BuyerProxy {
   private _routingPreferences: ModelRoutingPreferences | null
 
   private _stateWriteChain: Promise<void> = Promise.resolve()
+  private readonly _resourceRoutes = new ResourceRoutes()
 
   private _cachedPeers: PeerInfo[] = []
   private _cacheLastUpdatedAtMs = 0
@@ -897,11 +923,14 @@ export class BuyerProxy {
    * deltas (buyer- and seller-initiated auth both advance the cumulative).
    */
   private readonly _requestConversations = new Map<string, { convId: string; counted: boolean; purpose?: 'routing' }>()
+  /** Signed spend for requests a local gateway tagged, polled over the control plane. */
+  private readonly _spendAttribution = new SpendAttributionFeed()
 
   constructor(config: BuyerProxyConfig) {
     this._node = config.node
     this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
+    this._buyerIdentities = config.buyerIdentities ?? new BuyerIdentityLoader(config.node, config.dataDir)
     this._teeVerification = new TeeVerification(config.verifier)
     this._teeControl = new TeeControl(this._teeVerification.sessionId)
     this._port = config.port
@@ -944,11 +973,12 @@ export class BuyerProxy {
     }
 
     const spendEventNode = this._node as AntseedNode & {
-      on?: (event: 'payment:spend', listener: (event: BuyerSpendEvent) => void) => unknown
+      on?: (event: 'payment:spend', listener: (event: BuyerSpendEvent & { buyerIdentity?: string }) => void) => unknown
     }
     if (typeof spendEventNode.on === 'function') {
-      spendEventNode.on('payment:spend', (event: BuyerSpendEvent) => {
+      spendEventNode.on('payment:spend', (event: BuyerSpendEvent & { buyerIdentity?: string }) => {
         this._attributeSpend(event)
+        this._spendAttribution.record(event)
       })
     }
 
@@ -981,6 +1011,26 @@ export class BuyerProxy {
       !routing && !entry.counted,
     )
     if (!routing) entry.counted = true
+  }
+
+  /**
+   * Identity named by a request: null for the default, the name when it is
+   * (or can be) loaded, undefined when no stored identity has that name.
+   */
+  private async _resolveBuyerIdentity(header: string | undefined): Promise<string | null | undefined> {
+    const name = header?.trim().toLowerCase() ?? ''
+    if (!name || name === DEFAULT_BUYER_IDENTITY) return null
+    const loaded = await this._buyerIdentities.ensure(name).catch((err: unknown) => {
+      log(`Buyer identity "${name}" failed to load: ${err instanceof Error ? err.message : String(err)}`)
+      return false
+    })
+    return loaded ? name : undefined
+  }
+
+  /** `?identity=` on control-plane reads; undefined when it names no stored identity. */
+  private async _controlPlaneIdentity(path: string): Promise<string | null | undefined> {
+    const param = new URL(path, 'http://localhost').searchParams.get('identity')
+    return this._resolveBuyerIdentity(param ?? undefined)
   }
 
   /**
@@ -1025,6 +1075,10 @@ export class BuyerProxy {
     // startup route from the warm cache without blocking on DHT discovery.
     // The background refresh still runs to pick up fresh peers and IP changes.
     await this._hydratePeersFromStateFile()
+    try {
+      const state = JSON.parse(await readFile(this._stateFile, 'utf8'))
+      this._resourceRoutes.hydrate(state.resourceRoutes)
+    } catch {}
     // Adopt persisted session overrides (peer pin, default routed model) so
     // they survive daemon restart. A --peer CLI flag beats the persisted pin
     // at startup; runtime `connection set` writes still take over via the
@@ -1115,7 +1169,10 @@ export class BuyerProxy {
     await this._writeStateFile('stopped')
     await this._conversations.flush()
     return new Promise((resolve) => {
-      this._server.close(() => resolve())
+      this._server.close(() => {
+        this._spendAttribution.close()
+        resolve()
+      })
     })
   }
 
@@ -1240,6 +1297,12 @@ export class BuyerProxy {
       }
     }).catch(() => {})
     return this._stateWriteChain
+  }
+
+  private async _persistResourceRoutes(): Promise<void> {
+    const write = this._stateWriteChain.then(() => mergeJsonStateFile(this._stateDir, this._stateFile, { resourceRoutes: this._resourceRoutes.snapshot() }))
+    this._stateWriteChain = write.catch(() => {})
+    return write
   }
 
   private async _writeStateFile(state: 'connected' | 'stopped'): Promise<void> {
@@ -2037,11 +2100,20 @@ export class BuyerProxy {
       return
     }
 
+    if (path.startsWith('/_antseed/buyer-identities') && method === 'GET') {
+      await this._buyerIdentities.loadAll()
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, identities: this._node.buyerIdentities() }))
+      return
+    }
+
     if (path.startsWith('/_antseed/channels') && method === 'GET') {
       const all = /[?&]all=1/.test(path)
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
       const channels = all
-        ? this._node.getAllBuyerChannels()
-        : this._node.getActiveBuyerChannels()
+        ? this._node.getAllBuyerChannels(identity ?? undefined)
+        : this._node.getActiveBuyerChannels(identity ?? undefined)
       const peers = await this._getPeers()
       const peersById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
       const channelsWithCapabilities = channels.map((channel) => {
@@ -2057,17 +2129,30 @@ export class BuyerProxy {
       return
     }
 
+    // Unauthenticated like every /_antseed route: it relies on the buyer
+    // listening on 127.0.0.1 only, since it exposes per-seller spend and tags.
+    if (path.startsWith('/_antseed/attributed-spend') && method === 'GET') {
+      const after = Number(new URL(path, 'http://localhost').searchParams.get('after') ?? '0')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, ...this._spendAttribution.page(Number.isFinite(after) ? after : 0) }))
+      return
+    }
+
     if (path.startsWith('/_antseed/buyer-usage') && method === 'GET') {
-      const totals = this._node.getBuyerUsageTotals()
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
+      const totals = this._node.getBuyerUsageTotals(identity ?? undefined)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, totals, lastActivityAt: this._lastModelActivityAt || null }))
       return
     }
 
-    const meteringMatch = path.match(/^\/_antseed\/metering\/(.+)$/)
+    const meteringMatch = path.match(/^\/_antseed\/metering\/([^?]+)/)
     if (meteringMatch && method === 'GET') {
       const sellerPeerId = decodeURIComponent(meteringMatch[1]!)
-      const stats = this._node.getMeteringStatsByPeer(sellerPeerId)
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
+      const stats = this._node.getMeteringStatsByPeer(sellerPeerId, identity ?? undefined)
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify(stats))
       return
@@ -2122,10 +2207,12 @@ export class BuyerProxy {
       }
       let peerId: string
       let includeAuth = true
+      let identityParam: string | undefined
       try {
         const body = JSON.parse(Buffer.concat(chunks).toString())
         peerId = String(body.peerId ?? '')
         if (body.includeAuth === false) includeAuth = false
+        if (typeof body.identity === 'string') identityParam = body.identity
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
@@ -2137,7 +2224,9 @@ export class BuyerProxy {
         return
       }
       try {
-        const result = await this._node.requestChannelClose(peerId, { includeAuth })
+        const identity = await this._resolveBuyerIdentity(identityParam)
+        if (identity === undefined) throw new Error('Unknown buyer identity')
+        const result = await this._node.requestChannelClose(peerId, { includeAuth, ...(identity ? { buyerIdentity: identity } : {}) })
         log(
           `Cooperative close of ${result.channelId.slice(0, 18)}... with ${peerId.slice(0, 12)}...: ` +
           `${result.status}${result.code ? ` (${result.code})` : ''}`,
@@ -2271,7 +2360,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", or "decisions".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", or "videos".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -2298,7 +2387,8 @@ export class BuyerProxy {
 
     // Only proxy known API paths — reject everything else with 404
     const normalizedPath = path.split('?')[0]?.trim().toLowerCase() ?? '/'
-    const isKnownApiPath =
+    const nativeVideo = nativeVideoRoute({ method, path })
+    const isKnownApiPath = nativeVideo !== null ||
       normalizedPath.startsWith('/v1/messages') ||
       normalizedPath.startsWith('/v1/chat/completions') ||
       normalizedPath.startsWith('/v1/responses') ||
@@ -2350,11 +2440,35 @@ export class BuyerProxy {
     }
     // Remove host header (points to localhost, not the seller)
     delete headers['host']
+    // Node already answered curl's `Expect: 100-continue` for large bodies;
+    // forwarded, it makes the seller's fetch fail.
+    delete headers['expect']
     // Internal marker from the system proxy: the body's model was assigned
     // by the proxy's route rewrite, not chosen by the tool. Stripped here so
     // it never reaches a seller.
     const systemRoutedModel = headers[SYSTEM_ROUTED_MODEL_HEADER] === '1'
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
+    // Internal marker from the API-key gateway: report this request's signed
+    // spend under the gateway's tag. Stripped so it never reaches a seller.
+    const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
+    delete headers[SPEND_ATTRIBUTION_HEADER]
+    // The paying identity rides on the internal headers through routing, like
+    // a peer pin, and is stripped when the request is built for the seller.
+    const buyerIdentity = await this._resolveBuyerIdentity(headers[BUYER_IDENTITY_HEADER])
+    if (buyerIdentity === undefined) {
+      res.writeHead(400, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({
+        error: {
+          type: 'invalid_request_error',
+          code: 'unknown_buyer_identity',
+          message: `${BUYER_IDENTITY_HEADER} names no stored buyer identity. Create one with \`antseed buyer identity create <name>\`.`,
+          param: BUYER_IDENTITY_HEADER,
+        },
+      }))
+      return
+    }
+    if (buyerIdentity) headers[BUYER_IDENTITY_HEADER] = buyerIdentity
+    else delete headers[BUYER_IDENTITY_HEADER]
 
     let serializedReq: SerializedHttpRequest = {
       requestId: randomUUID(),
@@ -2363,6 +2477,7 @@ export class BuyerProxy {
       headers,
       body: new Uint8Array(body),
     }
+    if (spendAttributionTag) this._spendAttribution.track(serializedReq.requestId, spendAttributionTag)
     const requiredParameters = parseRequiredParametersHeader(
       serializedReq.headers[REQUIRED_PARAMETERS_HEADER],
     )
@@ -2377,6 +2492,17 @@ export class BuyerProxy {
         },
       }))
       return
+    }
+
+    if (nativeVideo) {
+      // Re-classify with the body: some APIs (Venice) carry the job ID in it.
+      const prepared = prepareVideoRequest(nativeVideoRoute(serializedReq) ?? nativeVideo, serializedReq.headers, this._resourceRoutes)
+      if ('error' in prepared) {
+        res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json' })
+        res.end(JSON.stringify(prepared.error.body))
+        return
+      }
+      serializedReq = { ...serializedReq, headers: prepared.headers }
     }
 
     // Snapshot the session overrides before any await so a concurrent
@@ -2629,7 +2755,6 @@ export class BuyerProxy {
         this._trackRequestConversation(serializedReq.requestId, tracked.id)
       }
     }
-
     return { request: serializedReq, conversationId: trackedConversationId }
   }
 
@@ -2651,6 +2776,12 @@ export class BuyerProxy {
     request: SerializedHttpRequest,
     trackedConversationId: string | null,
   ): Promise<PeerDispatchResult> {
+    // A chat switched while this request is in flight must keep the new route.
+    const conversationPinAtRouting = trackedConversationId
+      ? this._conversations.get(trackedConversationId)?.pinnedModel ?? null
+      : null
+
+    const nativeVideo = nativeVideoRoute(request)
     let serializedReq = request
     const { requiredParameters, signal, effectivePinnedPeer,
       preferredConversationPeerId, routingConversationKey } = context
@@ -2871,10 +3002,14 @@ export class BuyerProxy {
               this._conversations.recordRoutedModel(
                 trackedConversationId,
                 `${selected.peer.peerId}@${selected.serviceId}`,
+                conversationPinAtRouting,
               )
             }
             return result
           }
+          // Never retry a video on another seller: a create may already have
+          // started (and been charged), and follow-ups only exist on one seller.
+          if (nativeVideo) return result
           lastRetry = result
           if (isBuyerFault(result)) return result
           const retrySamePeer = result.statusCode === 429
@@ -3082,6 +3217,7 @@ export class BuyerProxy {
       this._conversations.recordRoutedModel(
         trackedConversationId,
         `${selectedPeer.peerId}@${pinnedServiceId}`,
+        conversationPinAtRouting,
       )
     }
     // A pinned peer is never retried against another peer; the caller reports any failure.
@@ -3119,18 +3255,32 @@ export class BuyerProxy {
     headers: Record<string, string>,
     requestBytes: number,
     requestedService: string | null,
-  ): string | null {
+  ): { code: string; message: string } | null {
     if (statusCode !== 413) return null
-    const bodyText = Buffer.from(body).toString('utf-8').trim()
-    if (!/upload body exceeds per-request limit/i.test(bodyText)) return null
-
-    const maxBytes = this._parseMaxUploadBodyBytes(headers)
     const requestSize = this._formatBytes(requestBytes)
-    const maxSize = maxBytes != null ? this._formatBytes(maxBytes) : 'the seller upload limit'
     const service = requestedService ? ` for ${requestedService}` : ''
-    return `Request body${service} is ${requestSize}, but the selected seller allows ${maxSize} per request. `
-      + 'This commonly happens when Codex sends a large repository context to /v1/responses. '
-      + 'Reduce Codex context, exclude large/generated files, or pick a seller with a higher seller.maxUploadBodyBytes limit.'
+    const bodyText = Buffer.from(body).toString('utf-8').trim()
+
+    if (/upload body exceeds per-request limit/i.test(bodyText)) {
+      const maxBytes = this._parseMaxUploadBodyBytes(headers)
+      const maxSize = maxBytes != null ? this._formatBytes(maxBytes) : 'the seller upload limit'
+      return {
+        code: 'upload_body_too_large',
+        message: `Request body${service} is ${requestSize}, but the selected seller allows ${maxSize} per request. `
+          + 'This commonly happens when Codex sends a large repository context to /v1/responses. '
+          + 'Reduce Codex context, exclude large/generated files, or pick a seller with a higher seller.maxUploadBodyBytes limit.',
+      }
+    }
+
+    // Upstream providers and the proxies in front of them answer oversized
+    // bodies with their own 413 (JSON or an HTML page). Clients resend the
+    // whole history each turn, so images and attachments add up.
+    return {
+      code: 'request_too_large',
+      message: `Request body${service} is ${requestSize}, more than the seller's upstream provider accepts. `
+        + 'Images and large attachments in the conversation history are the usual cause, because they are resent on every turn. '
+        + 'Start a new conversation or remove large attachments.',
+    }
   }
 
   private _withFriendlyUploadLimitError(
@@ -3138,22 +3288,22 @@ export class BuyerProxy {
     requestBytes: number,
     requestedService: string | null,
   ): SerializedHttpResponse {
-    const message = this._formatUploadLimitError(
+    const error = this._formatUploadLimitError(
       response.statusCode,
       response.body,
       response.headers,
       requestBytes,
       requestedService,
     )
-    if (!message) return response
+    if (!error) return response
     return {
       ...response,
       headers: { ...response.headers, 'content-type': 'application/json' },
       body: Buffer.from(JSON.stringify({
         error: {
-          type: 'upload_body_too_large',
-          code: 'upload_body_too_large',
-          message,
+          type: error.code,
+          code: error.code,
+          message: error.message,
           requestBytes,
           sellerMaxUploadBodyBytes: this._parseMaxUploadBodyBytes(response.headers),
         },
@@ -3217,6 +3367,7 @@ export class BuyerProxy {
     const {
       'x-antseed-pin-peer': _pinPeer,
       'x-antseed-prefer-peer': _preferPeer,
+      [BUYER_IDENTITY_HEADER]: buyerIdentity,
       [REQUIRED_PARAMETERS_HEADER]: _requiredParameters,
       'x-vpr-session-id': _vprSession,
       // Legacy desktop builds (pre AntStation → VPR rename) still send this.
@@ -3293,7 +3444,13 @@ export class BuyerProxy {
     this._markModelActivity()
 
     // Forward through P2P
-    const wantsStreaming = clientWantsStreaming
+    const videoRoute = nativeVideoRoute(requestForPeer)
+    // Video responses are JSON job objects or a streamed MP4, never SSE.
+    const wantsStreaming = clientWantsStreaming && !videoRoute
+    if (videoRoute?.action === 'retrieve') {
+      await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, { signal, pinned: true }), requestSignal)
+      return { done: true }
+    }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned })
@@ -3336,7 +3493,7 @@ export class BuyerProxy {
               }
             }
           },
-        }, { signal: requestSignal, pinned })
+        }, { signal: requestSignal, pinned, ...(buyerIdentity ? { buyerIdentity } : {}) })
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
@@ -3425,6 +3582,7 @@ export class BuyerProxy {
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: requestSignal,
           pinned,
+          ...(buyerIdentity ? { buyerIdentity } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
@@ -3432,6 +3590,17 @@ export class BuyerProxy {
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
 
+        // Only the seller that accepted a video job knows its ID. Remember and
+        // persist job ID -> seller so later retrieve requests (even
+        // after a proxy restart) are pinned back to that seller.
+        if (videoRoute && recordVideoAcceptance(
+          videoRoute,
+          upstreamResponse,
+          { peerId: selectedPeer.peerId, provider: selectedRoutePlan.provider, service: requestedService },
+          this._resourceRoutes,
+        )) {
+          await this._persistResourceRoutes().catch(error => console.error('[proxy] Accepted video route was not persisted:', error))
+        }
         let response = adaptBuyerFaultErrorResponse(upstreamResponse, requestProtocol)
         response = adaptPeerResponse(response)
         if (
@@ -3555,7 +3724,7 @@ export class BuyerProxy {
       if (fault === 'buyer') {
         const buyerResponse = adaptBuyerFaultErrorResponse({
           requestId: requestForPeer.requestId,
-          statusCode: 503,
+          statusCode: buyerFaultStatusCode(faultCode),
           headers: {
             'content-type': 'application/json',
             [ANTSEED_FAULT_ATTRIBUTION_HEADER]: 'buyer',

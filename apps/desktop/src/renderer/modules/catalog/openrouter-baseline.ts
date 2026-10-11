@@ -35,7 +35,7 @@ function retailSavingsPct(
   baselineInput: number | null,
   baselineOutput: number | null,
 ): number | null {
-  if (entry.kind === 'image') return null;
+  if (entry.kind !== 'text') return null;
   const prices = [
     [entry.minInputUsdPerMillion, baselineInput],
     [entry.minOutputUsdPerMillion, baselineOutput],
