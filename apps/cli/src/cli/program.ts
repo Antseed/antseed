@@ -14,6 +14,7 @@ import { registerSystemProxyCommands } from './commands/system-proxy/index.js';
 import { registerTunnelCommands } from './commands/tunnel/index.js';
 import { registerGatewayCommands } from './commands/gateway/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
+import { registerReferralCommands } from './commands/referral.js';
 
 import pkg from '../../package.json' with { type: 'json' };
 
@@ -44,6 +45,7 @@ export function createProgram(): Command {
   registerTunnelCommands(program);
   registerGatewayCommands(program);
   registerAntsCommands(program);
+  registerReferralCommands(program);
 
   return program;
 }

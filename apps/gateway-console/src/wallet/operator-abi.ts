@@ -44,3 +44,21 @@ export const LEGACY_EMISSIONS_BUYER_ABI = parseAbi([
   'error NotAuthorized()',
   'error EpochNotFinalized()',
 ])
+
+/** AntseedReferrals' permissionless claims: the referrer's share goes to its operator (or itself), the referee's to its operator. */
+export const REFERRALS_CLAIM_ABI = parseAbi([
+  'function claimEpochs(address referrer, uint256[] epochs)',
+  'function claimRefereeEpochs(address buyer, uint256[] epochs)',
+  'error RewardRecipientUnavailable()',
+  'error EpochNotClaimable()',
+  'error AlreadyClaimed()',
+  'error NothingToClaim()',
+])
+
+/** AntseedClientRewards' per-epoch claim; anyone may send it and the agent's owner is paid. */
+export const CLIENT_REWARDS_CLAIM_ABI = parseAbi([
+  'function claim(uint256 clientAgentId, uint256 epoch)',
+  'error EpochNotClaimable()',
+  'error AlreadyClaimed()',
+  'error NothingToClaim()',
+])

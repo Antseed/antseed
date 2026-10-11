@@ -9,6 +9,8 @@ const CONTRACT_ALIASES = {
   deposits: ['deposits', 'AntseedDeposits', 'antseedDeposits'],
   usageRewards: ['usageRewards', 'AntseedUsageRewards', 'UsageRewards'],
   channels: ['channels', 'AntseedChannels', 'antseedChannels'],
+  referrals: ['referrals', 'AntseedReferrals', 'antseedReferrals'],
+  clientRewards: ['clientRewards', 'AntseedClientRewards', 'antseedClientRewards'],
 } as const
 
 export type ContractName = keyof typeof CONTRACT_ALIASES

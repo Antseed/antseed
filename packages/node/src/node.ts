@@ -1600,16 +1600,21 @@ export class AntseedNode extends EventEmitter {
 
     const payments = this._config.payments;
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
+    // An identity is its own buyer: it shares the node's client id but never
+    // the node's invite. Its own invite arrives via setBuyerAttribution().
+    const clientId = payments?.attribution?.clientId;
+    const attribution = clientId ? { clientId } : undefined;
     const context = await BuyerIdentityContext.create({
       name,
       identity,
-      paymentConfig: this._buyerPaymentConfig(join(dataDir, "payments")),
+      paymentConfig: this._buyerPaymentConfig(join(dataDir, "payments"), attribution),
       freeUsage: this._freeUsageClient && payments?.freeUsageAddress
         ? {
           chainId: payments.chainId ?? 8453,
           freeUsageContractAddress: payments.freeUsageAddress,
           defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
           disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+          ...(attribution ? { attribution } : {}),
         }
         : null,
       requestHandler: {
@@ -2504,8 +2509,16 @@ export class AntseedNode extends EventEmitter {
    * Update the client / invite attribution appended to every buyer-signed
    * settlement metadata blob (see NodePaymentsConfig.attribution). Takes
    * effect on the next signed auth; nothing on-chain is touched here.
+   * `buyerIdentity` targets one loaded identity instead of the node's own
+   * wallet (each identity redeems its own invite).
    */
-  setBuyerAttribution(attribution: UsageAttribution | undefined): void {
+  setBuyerAttribution(attribution: UsageAttribution | undefined, buyerIdentity?: string): void {
+    if (buyerIdentity && buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
+      const context = this._buyerIdentities.get(buyerIdentity);
+      context?.paymentManager?.setAttribution(attribution);
+      context?.freeUsageManager?.setAttribution(attribution);
+      return;
+    }
     this._buyerPaymentManager?.setAttribution(attribution);
     this._buyerFreeUsageManager?.setAttribution(attribution);
   }

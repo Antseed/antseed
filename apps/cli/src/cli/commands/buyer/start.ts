@@ -7,11 +7,11 @@ import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, getInstance, peerRelaysSweeps, readReferralState, referralStateMtimeMs, resolveChainConfig, syncReferralState } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, getInstance, peerRelaysSweeps, readReferralState, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { referralLookup as buyerReferralLookup, resolveBuyerAttribution } from '../../referral-state.js'
+import { BuyerAttributionSync, referralLookup as buyerReferralLookup, resolveBuyerAttribution } from '../../referral-state.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -22,6 +22,7 @@ import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer
 import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
+import { buyerIdentityDir } from '../../../buyer-identities/store.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
 import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
@@ -440,33 +441,20 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         process.exit(1)
       }
 
-      // Keep the signed attribution in step with referral.json (`antseed
-      // referral redeem` or Desktop writes it, possibly after the daemon
-      // started) and drop the invite once Antscan shows it bound. The file's
-      // mtime short-circuits the poll only while no invite is carried: binding
-      // happens on-chain without touching the file, and every settlement that
-      // still carries a bound invite costs the seller a reverting bindReferral
-      // call inside AntseedStatsV2.
+      // Each wallet's signed attribution follows its referral.json; extra
+      // buyer identities join below as they load.
+      const attributionSync = paymentsConfig?.enabled
+        ? new BuyerAttributionSync({
+            ...attributionOptions,
+            lookup: referralLookup,
+            apply: (attribution, identity) => node.setBuyerAttribution(attribution, identity),
+            log: (message) => console.log(chalk.dim(message)),
+          })
+        : null
       let attributionTimer: NodeJS.Timeout | null = null
-      if (paymentsConfig?.enabled) {
-        const buyerAddress = node.identity!.wallet.address
-        let lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-        let carrying = !!initialAttribution.invite
-        const refreshAttribution = async (force: boolean) => {
-          if (!force && !carrying && (await referralStateMtimeMs(globalOpts.dataDir)) === lastMtime) return
-          const referralState = await syncReferralState(globalOpts.dataDir, buyerAddress, referralLookup)
-          lastMtime = await referralStateMtimeMs(globalOpts.dataDir)
-          const attribution = resolveBuyerAttribution({ referralState, ...attributionOptions })
-          if (attribution.invite && (force || !carrying)) {
-            console.log(chalk.dim(`Referral: carrying the invite from ${referralState?.referrer?.slice(0, 10) ?? 'your inviter'}… until a settlement binds it on-chain.`))
-          } else if (!attribution.invite && carrying && referralState?.state === 'bound') {
-            console.log(chalk.dim('Referral: invite is bound on-chain; no longer carried in signed metadata.'))
-          }
-          carrying = !!attribution.invite
-          node.setBuyerAttribution(attribution)
-        }
-        void refreshAttribution(true).catch(() => {})
-        attributionTimer = setInterval(() => { void refreshAttribution(false).catch(() => {}) }, 60_000)
+      if (attributionSync) {
+        void attributionSync.track(undefined, globalOpts.dataDir, node.identity!.wallet.address).catch(() => {})
+        attributionTimer = setInterval(() => { void attributionSync.refreshAll() }, 60_000)
         attributionTimer.unref()
       }
 
@@ -531,6 +519,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const identityWatchers: DepositWatcher[] = []
       const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
         console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
+        void attributionSync?.track(name, buyerIdentityDir(globalOpts.dataDir, name), identity.wallet.address).catch(() => {})
         if (!createDepositWatcher) return
         // Every identity (workspace wallet) gets its own watcher so the gateway
         // can read and promote it via /_antseed/deposits/*?identity=<name>.

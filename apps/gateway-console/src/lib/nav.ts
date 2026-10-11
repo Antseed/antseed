@@ -2,7 +2,7 @@ import type { MeResponse, OrgRole, WorkspaceRole } from '../api/types'
 
 export type PageId =
   | 'overview' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
-  | 'rewards' | 'network' | 'routing' | 'presets' | 'audit' | 'settings'
+  | 'rewards' | 'referrals' | 'builders' | 'network' | 'routing' | 'presets' | 'audit' | 'settings'
 
 export interface Viewer {
   orgRole: OrgRole
@@ -28,10 +28,12 @@ export const NAV_ITEMS: Array<{ id: PageId; label: string; group: string; access
   { id: 'presets', label: 'Presets', group: 'Workspace', access: 'member' },
   { id: 'wallet', label: 'Wallet & Funding', group: 'Money', access: 'workspaceAdmin' },
   { id: 'rewards', label: 'Rewards', group: 'Money', access: 'workspaceAdmin' },
+  { id: 'referrals', label: 'Referrals', group: 'Money', access: 'workspaceAdmin' },
   { id: 'network', label: 'Network', group: 'Routing', access: 'member' },
   { id: 'routing', label: 'Routing', group: 'Routing', access: 'workspaceAdmin' },
   { id: 'members', label: 'Members', group: 'Organization', access: 'workspaceAdmin' },
   { id: 'workspaces', label: 'Workspaces', group: 'Organization', access: 'workspaceAdmin' },
+  { id: 'builders', label: 'Builders program', group: 'Organization', access: 'orgAdmin' },
   { id: 'audit', label: 'Audit log', group: 'Organization', access: 'orgAdmin' },
   { id: 'settings', label: 'Settings', group: 'Organization', access: 'orgAdmin' },
 ]

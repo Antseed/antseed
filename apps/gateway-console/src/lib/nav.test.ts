@@ -6,7 +6,7 @@ const ids = (orgRole: 'owner' | 'admin' | 'member', workspaceRole: 'admin' | 'me
 
 describe('role-based navigation', () => {
   it('shows everything to owners and org admins', () => {
-    const all = ['overview', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'network', 'routing', 'members', 'workspaces', 'audit', 'settings']
+    const all = ['overview', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'referrals', 'network', 'routing', 'members', 'workspaces', 'builders', 'audit', 'settings']
     expect(ids('owner', null)).toEqual(all)
     expect(ids('admin', 'member')).toEqual(all)
   })
@@ -15,7 +15,9 @@ describe('role-based navigation', () => {
     expect(nav).toContain('members')
     expect(nav).toContain('wallet')
     expect(nav).toContain('routing')
+    expect(nav).toContain('referrals')
     expect(nav).not.toContain('settings')
+    expect(nav).not.toContain('builders')
   })
   it('limits plain members to their own usage, keys, presets and the network', () => {
     expect(ids('member', 'member')).toEqual(['overview', 'activity', 'logs', 'keys', 'presets', 'network'])
