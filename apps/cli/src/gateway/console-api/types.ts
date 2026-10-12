@@ -451,6 +451,91 @@ export interface ChainInfo {
   contracts: Record<string, string>
 }
 
+// ── Chat ────────────────────────────────────────────────────────────────
+
+// Members (their "Web chat" key pays) and API-key sessions (`antseed chat`; that key pays):
+// GET    /chat/models?workspace=<id>  → ChatModel[]
+// POST   /chat  { id, messages, model, peerId?, workspaceId? } → AI SDK UI message stream (SSE)
+//   id names the conversation; the stored conversation plus the last message is what the model sees.
+//   peerId pins the seller (sent to the buyer as `peerId@model`); without it the buyer routes.
+//   Each assistant message's metadata is a ChatMessageMetadata: the model and the peer(s) that answered.
+// GET    /chat/threads?workspace=<id> → ChatThread[]  (the caller's, newest first)
+// GET    /chat/threads/:id            → ChatThreadDetail
+// DELETE /chat/threads/:id            → 204
+export interface ChatThread {
+  id: string
+  title: string
+  model: string | null
+  /** The peer the conversation was pinned to, or null. */
+  peerId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ChatThreadDetail extends ChatThread {
+  /** AI SDK UIMessages; assistant messages carry ChatMessageMetadata. */
+  messages: unknown[]
+}
+
+export interface ChatModelPeer {
+  peerId: string
+  name: string | null
+  toolUse: boolean
+  reasoning: boolean
+  /** Takes images as input. */
+  vision: boolean
+  /** Advertises the TEE verifier (attested hardware). */
+  tee: boolean
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  /** Null when the peer advertises no cached-input price (cached tokens then cost the input price). */
+  cachedInputUsdPerMillion: number | null
+  reputation: number | null
+}
+
+export interface ChatMessageMetadata {
+  model: string
+  /** The peer the user pinned, or null for automatic routing. */
+  pinnedPeerId: string | null
+  /** The peer(s) that served the answer, one per model call (tool rounds can reach different peers when not pinned). */
+  peers: Array<{ peerId: string; name: string | null }>
+  /** Tokens over every model call of the answer so far. */
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number }
+  /**
+   * Estimated cost in USD: each call's tokens at the serving peer's advertised
+   * prices. Null when a serving peer's price is unknown. The signed amount is
+   * in the request log once the buyer reports it.
+   */
+  costUsd?: number | null
+}
+
+// GET    /chat/context?workspace=<id> → ChatContext  (the key that pays for the caller's chat)
+export interface ChatContext {
+  /** The caller's "Web chat" key in the workspace (or, for a key session, that key), with its limits and usage. */
+  key: ApiKey
+  workspaceName: string
+}
+
+export interface ChatModel {
+  id: string
+  name: string
+  /** At least one offer supports tool calls (the agent's web and file tools). */
+  toolUse: boolean
+  reasoning: boolean
+  /** At least one offer takes images as input. */
+  vision: boolean
+  /** At least one offer is free (no input or output price). */
+  free: boolean
+  /** At least one offer advertises the TEE verifier. */
+  tee: boolean
+  offers: number
+  /** Cheapest offer's prices, USD per million tokens; null when not advertised. */
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  /** The sellers offering it, best reputation first. */
+  peers: ChatModelPeer[]
+}
+
 // ── Network & routing ───────────────────────────────────────────────────
 
 // GET  /peers                     → Peer[]
@@ -491,15 +576,26 @@ export interface Peer {
 }
 
 /**
- * Limits from the buyer's own config that apply to every request whatever
- * its policy. The buyer's routing preferences (trust minimum, allow/block
- * lists, preferFree, soft price cap) are not among them: a gateway policy
- * replaces those. `maxPricing` is null when the config cannot be read.
+ * The buyer's own config, the top level of every routing policy chain.
+ * Hard limits (`minPeerReputation`, `requireVerifier`, `maxPricing`) apply
+ * to every request, pinned ones included. `routingPreferences` (trust
+ * minimum, allow and block lists, free-first) apply to automatic routing:
+ * gateway levels narrow them like any other level and can never loosen
+ * them. `maxPricing` is null when the config cannot be read;
+ * `routingPreferences` is null when neither the buyer nor the config says.
  */
 export interface BuyerLimits {
   minPeerReputation: number
   requireVerifier: boolean
   maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null } | null
+  routingPreferences: BuyerRoutingPreferences | null
+}
+
+export interface BuyerRoutingPreferences {
+  minTrustScore: number
+  allowedPeerIds: string[]
+  blockedPeerIds: string[]
+  preferFreePeers: boolean
 }
 
 export interface RoutePreview {
@@ -508,8 +604,8 @@ export interface RoutePreview {
   policy: RoutingPolicy
   /**
    * Which levels contributed, top to bottom. The `buyer` entry holds the
-   * buyer's hard limits (`BuyerLimits` as a policy); they apply on top of
-   * `policy` and are not part of it.
+   * buyer's config (`BuyerLimits` as a policy); the buyer applies it on top
+   * of `policy`, which is the gateway levels only.
    */
   sources: Array<{ level: 'buyer' | 'gateway' | 'workspace-org' | 'workspace' | 'member' | 'key' | 'key-owner' | 'preset'; id: string | null; policy: RoutingPolicy | null }>
   modelAllowed: boolean
@@ -593,27 +689,83 @@ export interface GatewayExposure {
 
 export interface Settings {
   publicUrl: string | null
-  buyer: {
-    proxyPort: number
-    maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null }
-    minPeerReputation: number
-    requireVerifier: boolean
-  }
+  buyer: BuyerSettings
   observability: ObservabilitySettings
   auth: AuthConfig
   /**
-   * Set by `PATCH /settings/buyer` when the buyer could not restart itself
-   * (not supervised, or unreachable): the change is saved but applies only
-   * after the operator restarts it. `observability.otlpHeaders` values read
-   * "••••" for anyone but org-admin sessions; sending "••••" back keeps the
-   * stored value.
+   * Set by `PATCH /settings/buyer` when a change needs a buyer restart and
+   * the buyer could not restart itself (not supervised, or unreachable): the
+   * change is saved but applies only after the operator restarts it.
+   * `observability.otlpHeaders` values read "••••" for anyone but org-admin
+   * sessions; sending "••••" back keeps the stored value.
    */
   restartRequired?: boolean
 }
 
+/**
+ * Every buyer setting in the config file the buyer behind the gateway
+ * runs with. `routingPreferences` apply at once (the buyer reloads them);
+ * everything else needs a buyer restart, which `PATCH /settings/buyer`
+ * requests. `proxyPort` is read only: the gateway forwards to it.
+ */
+export interface BuyerSettings {
+  proxyPort: number
+  /** Hard price caps (defaults for every provider), USD per million tokens. */
+  maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null }
+  /** Minimum seller reputation, 0–100, for every request (pins included). */
+  minPeerReputation: number
+  /** Automatic routing preferences; the top level of every routing policy. */
+  routingPreferences: {
+    minTrustScore: number
+    /** Soft input-price limit: sellers above it rank lower, never excluded. */
+    maxInputUsdPerMillion: number
+    allowedPeerIds: string[]
+    blockedPeerIds: string[]
+    preferFreePeers: boolean
+  }
+  /** Seller verification by verifier SDKs (e.g. TEE attestation). */
+  verifier: { enabled: boolean; prefer: string[]; require: boolean }
+  /** Kept for older clients: `verifier.require`. */
+  requireVerifier: boolean
+  payments: {
+    /** Sweep USDC arriving in the buyer wallets into deposits automatically. */
+    autoSweep: boolean
+    /** Most USDC authorized for a single request. */
+    maxPerRequestUsdc: number
+    /** Most USDC reserved for one payment channel. */
+    maxReserveUsdc: number
+    /** Base RPC endpoint; null uses the chain default. Path and query (API keys) are masked unless revealed. */
+    rpcUrl: string | null
+    fallbackRpcUrls: string[]
+  }
+  network: {
+    peerRefreshIntervalMs: number
+    metadataFetchTimeoutMs: number
+    requestTimeoutMs: number
+    maxStreamDurationMs: number
+    /** Leave per-service attribution out of signed request metadata. */
+    disableMetadataV2Services: boolean
+  }
+  /** Response-auth evidence sampling. */
+  evidence: { sampleRate: number | null; maxSampleBytes: number | null }
+  /**
+   * Setting paths (e.g. "maxPricing.inputUsdPerMillion", "verifier") the
+   * running buyer takes from its environment or start flags instead: editing
+   * them here is saved but has no effect until that override is removed.
+   * Empty when the buyer is unreachable.
+   */
+  overrides: string[]
+}
+
+/** A partial `BuyerSettings`: only the fields sent change. Lists replace the saved list. */
 export interface BuyerSettingsInput {
   maxPricing?: { inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null }
   minPeerReputation?: number
+  routingPreferences?: Partial<BuyerSettings['routingPreferences']>
+  verifier?: Partial<BuyerSettings['verifier']>
+  payments?: Partial<BuyerSettings['payments']>
+  network?: Partial<BuyerSettings['network']>
+  evidence?: Partial<BuyerSettings['evidence']>
 }
 
 export interface ObservabilitySettings {

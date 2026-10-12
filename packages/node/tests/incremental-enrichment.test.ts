@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AntseedNode, ON_CHAIN_STATS_TTL_MS, type PeerInfo } from '../src/node.js';
+import { AntseedNode, ON_CHAIN_STATS_MISS_TTL_MS, ON_CHAIN_STATS_TTL_MS, type PeerInfo } from '../src/node.js';
 import { GITHUB_VERIFICATION_PROOF_TYPE } from '../src/discovery/github-verification.js';
 import * as publicJson from '../src/reputation/public-json.js';
 
@@ -104,6 +104,40 @@ describe('AntseedNode incremental discovery enrichment', () => {
     } finally {
       vi.useRealTimers();
     }
+  });
+
+  it('re-checks a peer without an agent id after the shorter miss TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      const node = new AntseedNode({ role: 'buyer' });
+      const read = vi.fn(async () => new Map());
+      (node as any)._trustSignalsClient = { read };
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      vi.advanceTimersByTime(ON_CHAIN_STATS_MISS_TTL_MS - 1_000);
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      expect(read).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(2_000);
+      read.mockImplementationOnce(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+      const registered = makePeer();
+      await (node as any)._enrichPeersWithOnChainStats([registered]);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(registered.onChainAgentId).toBe(123);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads a peer again at once when its seller contract changes', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+    (node as any)._trustSignalsClient = { read };
+    (node as any)._sellerAddressResolver = { resolveSellerAddress: async (peerId: string, metadata?: { sellerContract?: string }) => metadata?.sellerContract ?? `0x${peerId}` };
+    const withContract = (contract: string): PeerInfo => ({ ...makePeer(), metadata: { sellerContract: contract } as unknown as PeerInfo['metadata'] });
+    await (node as any)._enrichPeersWithOnChainStats([withContract('0x' + '1'.repeat(40))]);
+    await (node as any)._enrichPeersWithOnChainStats([withContract('0x' + '1'.repeat(40))]);
+    expect(read).toHaveBeenCalledTimes(1);
+    await (node as any)._enrichPeersWithOnChainStats([withContract('0x' + '2'.repeat(40))]);
+    expect(read).toHaveBeenCalledTimes(2);
   });
 
   it('merges partial discovery batches queued during a read into one batched read', async () => {

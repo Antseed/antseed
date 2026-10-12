@@ -71,6 +71,29 @@ test('a reverting call inside a batch fails alone, as a CALL_EXCEPTION', async (
   assert.equal(settled[2]!.status, 'fulfilled')
 })
 
+test('an aggregate refused with HTTP 413 falls back to one call each', async (t) => {
+  const word = (value: bigint) => '0x' + value.toString(16).padStart(64, '0')
+  let aggregates = 0
+  let singles = 0
+  const transport: RpcTransport = async (_url, body) => {
+    const request = JSON.parse(body) as { id: number; method: string; params: [{ to: string; data: string }] }
+    if (request.method === 'eth_getCode') return { status: 200, body: { jsonrpc: '2.0', id: request.id, result: '0x60' } }
+    if (request.params[0].to.toLowerCase() === MULTICALL3_ADDRESS.toLowerCase()) {
+      aggregates += 1
+      return { status: 413, body: null }
+    }
+    singles += 1
+    return { status: 200, body: { jsonrpc: '2.0', id: request.id, result: word(5n) } }
+  }
+  const provider = new ChainRpcProvider(['https://rpc.example.test'], 8453, { transport })
+  t.after(() => provider.destroy())
+  const usdc = new Contract(USDC, ERC20, provider)
+  const values = await Promise.all(addresses.slice(0, 3).map((address) => usdc.getFunction('balanceOf').staticCall(address)))
+  assert.deepEqual(values, [5n, 5n, 5n])
+  assert.equal(aggregates, 1)
+  assert.equal(singles, 3)
+})
+
 test('a rate-limited endpoint is skipped for a jittered, growing back-off; then the call fails fast without touching the network', async (t) => {
   const primary = await startFakeChainRpc()
   const fallback = await startFakeChainRpc()

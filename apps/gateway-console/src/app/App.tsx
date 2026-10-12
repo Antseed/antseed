@@ -13,6 +13,7 @@ import { ConsoleContext, pickWorkspace, rememberedWorkspace, rememberWorkspace, 
 
 const pages: Record<PageId, ComponentType> = {
   overview: lazy(() => import('../pages/Overview')),
+  chat: lazy(() => import('../pages/Chat')),
   activity: lazy(() => import('../pages/Activity')),
   logs: lazy(() => import('../pages/Logs')),
   keys: lazy(() => import('../pages/Keys')),

@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, Peer, PeerList, Preset,
+  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -221,6 +221,16 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       closeChannel: (workspaceId: string, peerId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
       chain: () => get<ChainInfo>('/chain'),
+    },
+    chat: {
+      /** Text models for the chat, tool-capable first, each with the peers offering it. */
+      models: (workspaceId: string) => get<ChatModel[]>('/chat/models', { workspace: workspaceId }),
+      /** The API key that pays for the caller's chat in the workspace, with its limits and usage. */
+      context: (workspaceId: string) => get<ChatContext>('/chat/context', { workspace: workspaceId }),
+      /** The caller's conversations in the workspace, newest first. */
+      threads: (workspaceId: string) => get<ChatThread[]>('/chat/threads', { workspace: workspaceId }),
+      thread: (workspaceId: string, threadId: string) => get<ChatThreadDetail>(`/chat/threads/${id(threadId)}`, { workspace: workspaceId }),
+      deleteThread: (workspaceId: string, threadId: string) => del(`/chat/threads/${id(threadId)}${buildQuery({ workspace: workspaceId })}`),
     },
     network: {
       peers: () => get<Peer[]>('/peers'),

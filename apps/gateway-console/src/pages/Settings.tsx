@@ -12,7 +12,8 @@ import {
 import { formatDate, formatRelative } from '../lib/format'
 import { clearMaskedValues, endpointOriginChanged, headersToText, maskedHeaderNames, textToHeaders } from '../lib/headers'
 import { useConsoleMutation } from '../lib/mutations'
-import { buyerSettingsErrors } from '../lib/settings'
+import { isOverridden } from '../lib/settings'
+import { BuyerSettingsEditor } from '../components/BuyerSettingsEditor'
 import { qk, useAdminTokens, useStatus } from '../lib/queries'
 
 type Tab = 'general' | 'buyer' | 'observability' | 'tokens' | 'auth'
@@ -37,56 +38,14 @@ function General() {
   )
 }
 
+/** Every buyer setting, in the routing policy editor's layout. */
 function BuyerSettings({ settings }: { settings: SettingsData }) {
-  const queryClient = useQueryClient()
-  const toast = useToast()
-  const pricing = settings.buyer.maxPricing
-  const [input, setInput] = useState(String(pricing.inputUsdPerMillion))
-  const [output, setOutput] = useState(String(pricing.outputUsdPerMillion))
-  const [cached, setCached] = useState(pricing.cachedInputUsdPerMillion === null ? '' : String(pricing.cachedInputUsdPerMillion))
-  const [reputation, setReputation] = useState(String(settings.buyer.minPeerReputation))
-  const [confirming, setConfirming] = useState(false)
-  const [restartNeeded, setRestartNeeded] = useState(false)
-  const errors = buyerSettingsErrors({ input, output, cached, reputation })
-  const valid = Object.keys(errors).length === 0
-  const save = useMutation({
-    mutationFn: () => {
-      if (!valid) throw new Error('Fix the highlighted fields first.')
-      return api.settings.updateBuyer({
-        maxPricing: { inputUsdPerMillion: Number(input), outputUsdPerMillion: Number(output), cachedInputUsdPerMillion: cached.trim() ? Number(cached) : null },
-        minPeerReputation: Number(reputation),
-      })
-    },
-    onSuccess: (data) => {
-      const { restartRequired, ...settings } = data
-      queryClient.setQueryData(qk.settings, settings)
-      setConfirming(false)
-      setRestartNeeded(restartRequired === true)
-      toast(restartRequired ? 'Buyer settings saved. Restart the buyer to apply them.' : 'Buyer settings saved. The buyer is restarting.')
-    },
-  })
+  const buyer = settings.buyer
   return (
-    <Panel title="Buyer" description="Process-wide limits for the buyer behind this gateway. Every routing policy works inside these.">
-      <div className="gc-stack">
-        <div className="gc-grid gc-grid--3">
-          <TextField label="Max input $/M tokens" inputMode="decimal" required value={input} error={errors.input} onChange={(event) => setInput(event.target.value)} />
-          <TextField label="Max output $/M tokens" inputMode="decimal" required value={output} error={errors.output} onChange={(event) => setOutput(event.target.value)} />
-          <TextField label="Max cached input $/M" inputMode="decimal" placeholder="Same as input" value={cached} error={errors.cached} onChange={(event) => setCached(event.target.value)} />
-        </div>
-        <div className="gc-grid gc-grid--3">
-          <TextField label="Minimum seller reputation" inputMode="numeric" required value={reputation} error={errors.reputation} onChange={(event) => setReputation(event.target.value)} hint="0 to 100" />
-        </div>
-        <p className="gc-fineprint">Proxy port {settings.buyer.proxyPort}. Require verifier: {settings.buyer.requireVerifier ? 'on' : 'off'} (set in the buyer config).</p>
-        {restartNeeded && (
-          <Alert tone="warning" title="Restart the buyer to apply">
-            The new limits are saved, but this buyer was not restarted automatically. Restart it (for example <code>systemctl restart antseed-buyer</code>, or stop and start <code>antseed buyer start</code>) to use them.
-          </Alert>
-        )}
-        <div className="gc-actions"><Button disabled={!valid} onClick={() => setConfirming(true)}>Save</Button></div>
-      </div>
-      <ConfirmDialog isOpen={confirming} busy={save.isPending} error={save.error} onClose={() => { setConfirming(false); save.reset() }}
-        onConfirm={() => save.mutate()} title="Restart the buyer?" confirmLabel="Save and restart" tone="primary"
-        body="Saving restarts the buyer. Requests in flight finish first; new requests wait a few seconds while it reconnects." />
+    <Panel title="Buyer" description={<>
+      The top of every routing policy: workspaces, members, keys and presets can only narrow it. Saved to the config file of the buyer on port {buyer.proxyPort}{isOverridden(buyer.overrides, 'proxyPort') ? ' (set by its start flags)' : ''}.
+    </>}>
+      <BuyerSettingsEditor buyer={buyer} />
     </Panel>
   )
 }

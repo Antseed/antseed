@@ -1,7 +1,7 @@
 import type { MeResponse, OrgRole, WorkspaceRole } from '../api/types'
 
 export type PageId =
-  | 'overview' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
+  | 'overview' | 'chat' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
   | 'rewards' | 'network' | 'routing' | 'presets' | 'audit' | 'settings'
 
 export interface Viewer {
@@ -22,6 +22,7 @@ type Access = 'member' | 'workspaceAdmin' | 'orgAdmin'
 
 export const NAV_ITEMS: Array<{ id: PageId; label: string; group: string; access: Access }> = [
   { id: 'overview', label: 'Overview', group: 'Workspace', access: 'member' },
+  { id: 'chat', label: 'Chat', group: 'Workspace', access: 'member' },
   { id: 'activity', label: 'Activity', group: 'Workspace', access: 'member' },
   { id: 'logs', label: 'Logs', group: 'Workspace', access: 'member' },
   { id: 'keys', label: 'Keys', group: 'Workspace', access: 'member' },

@@ -276,16 +276,15 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   position: sticky; top: var(--gc-topbar-h); align-self: start; display: flex; flex-direction: column;
   height: calc(100vh - var(--gc-topbar-h)); overflow-y: auto; padding: 1.5rem 0 1rem;
 }
-/* The homepage's dot ant, at the foot of the nav; the grid fades out upwards. */
 /* The homepage's dot ant behind the foot of the nav: pinned to the window's
-   bottom-left corner and as wide as the nav's right edge, so the grid has no
-   boxed margins; it fades to nothing upwards and towards the content. */
+   bottom, exactly under the nav column (its left and right edges), and fading
+   to nothing upwards and softly at both sides. */
 .gc-antdots {
-  position: fixed; left: 0; bottom: 0; z-index: 0; display: block; pointer-events: none;
-  width: calc(max(0px, (100vw - var(--gc-max)) / 2) + 1.5rem + var(--gc-rail-w) + 1.25rem); height: 15rem;
-  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent), linear-gradient(to left, transparent, #000 3rem);
+  position: fixed; bottom: 0; z-index: 0; display: block; pointer-events: none;
+  left: calc(max(0px, (100vw - var(--gc-max)) / 2) + 1.5rem); width: var(--gc-rail-w); height: 15rem;
+  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent), linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
   -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(to top, #000 30%, transparent), linear-gradient(to left, transparent, #000 3rem);
+  mask-image: linear-gradient(to top, #000 30%, transparent), linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
   mask-composite: intersect;
 }
 .gc-rail > .gc-nav { position: relative; z-index: 1; }
@@ -302,6 +301,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 /* Something about money needs attention (no authorized wallet, a reserve ready to withdraw). */
 .gc-attention { flex: 0 0 auto; width: 0.4375rem; height: 0.4375rem; border-radius: 999px; background: var(--as-warning); }
 .gc-nav__attention { margin-left: auto; }
+/* A setting the running buyer takes from elsewhere: amber dot + one line, no box. */
+.gc-override { display: inline-flex; align-items: center; gap: 0.375rem; color: var(--as-text-secondary); }
 .gc-nav__item--on {
   background: var(--as-bg-muted); color: var(--as-text-primary); font-weight: 550;
   svg { color: var(--as-text-primary); }
@@ -323,6 +324,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-inline--between { justify-content: space-between; }
 .gc-inline--wrap { flex-wrap: wrap; }
 .gc-actions { display: flex; justify-content: flex-end; gap: 0.5rem; flex-wrap: wrap; }
+.gc-actions__note { margin-right: auto; align-self: center; }
 .gc-actions--start { justify-content: flex-start; }
 .gc-actions--split { justify-content: space-between; align-items: center; }
 .gc-toolbar { display: flex; align-items: center; gap: 0.625rem 0.875rem; flex-wrap: wrap; > .as-field { min-width: 10rem; } > .as-field:has(input[type="search"]) { flex: 0 1 20rem; } }
@@ -402,6 +404,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-policy__advanced { display: flex; flex-direction: column; gap: 0.5rem; }
 .gc-policy__caps { display: flex; flex-wrap: wrap; gap: 0.75rem; }
 .gc-num { flex: 0 0 auto; width: 8.5rem; }
+.gc-num--wide { width: 12rem; }
 .gc-policy__section > .gc-slider { max-width: 22rem; }
 
 /* A policy as one line: chips on the left, Edit on the right. */
@@ -578,3 +581,31 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-connect-tabs { overflow-x: auto; scrollbar-width: none; flex-wrap: nowrap; .as-tabs__tab { white-space: nowrap; } }
 .gc-scroll-target { scroll-margin-top: calc(var(--gc-topbar-h) + 1rem); }
 .as-page-header__text h1 { overflow-wrap: anywhere; }
+
+/* Chat: the page fills the viewport below the top bar; the conversation scrolls, the prompt stays put. */
+.gc-chat-page { height: calc(100vh - var(--gc-topbar-h) - 4.5rem); min-height: 28rem; }
+.gc-chat-conversation { flex: 1 1 auto; min-height: 0; }
+
+/* First-run tour (driver.js): its popover on the console's surface, type and buttons; monochrome like the rest. */
+.driver-popover.gc-tour {
+  max-width: 22rem; padding: 1rem 1.125rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg);
+  background: var(--as-bg-surface); color: var(--as-text-primary); box-shadow: var(--as-shadow-modal); font-family: inherit;
+  .driver-popover-title { font: inherit; font-size: 0.9375rem; font-weight: 600; }
+  .driver-popover-description { margin-top: 0.375rem; color: var(--as-text-secondary); font: inherit; font-size: 0.8125rem; line-height: 1.5; }
+  .driver-popover-progress-text { color: var(--as-text-muted); font-size: 0.75rem; }
+  .driver-popover-footer { margin-top: 0.875rem; }
+  .driver-popover-navigation-btns { gap: 0.375rem; }
+  .driver-popover-footer button {
+    margin: 0; padding: 0.3125rem 0.75rem; border: 1px solid var(--as-border-strong); border-radius: var(--as-radius-md);
+    background: transparent; color: var(--as-text-primary); font: inherit; font-size: 0.8125rem; font-weight: 500; text-shadow: none;
+    &:hover, &:focus-visible { background: var(--as-bg-muted); }
+  }
+  .driver-popover-footer .driver-popover-next-btn { background: var(--as-text-primary); border-color: var(--as-text-primary); color: var(--as-bg-surface);
+    &:hover, &:focus-visible { background: var(--as-text-primary); opacity: 0.88; }
+  }
+  .driver-popover-close-btn { color: var(--as-text-muted); &:hover { color: var(--as-text-primary); } &:focus-visible { outline-offset: -2px; border-radius: var(--as-radius-md); } }
+  .driver-popover-arrow-side-left.driver-popover-arrow { border-left-color: var(--as-bg-surface); }
+  .driver-popover-arrow-side-right.driver-popover-arrow { border-right-color: var(--as-bg-surface); }
+  .driver-popover-arrow-side-top.driver-popover-arrow { border-top-color: var(--as-bg-surface); }
+  .driver-popover-arrow-side-bottom.driver-popover-arrow { border-bottom-color: var(--as-bg-surface); }
+}

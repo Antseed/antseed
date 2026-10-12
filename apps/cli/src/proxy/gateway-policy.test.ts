@@ -269,7 +269,7 @@ test('restart is refused with restart_unsupported when the buyer is not supervis
   assert.equal(((await res.json()) as any).error, 'restart_unsupported')
 })
 
-test('a config reload re-applies the env min-reputation override', async (t) => {
+test('a config reload keeps the startup min reputation, which the router plugin also enforces until restart', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-reload-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   const configPath = join(dir, 'config.json')
@@ -285,7 +285,7 @@ test('a config reload re-applies the env min-reputation override', async (t) => 
   assert.equal((h.proxy as any)._minPeerReputation, 65)
   delete process.env['ANTSEED_BUYER_MIN_REPUTATION']
   await (h.proxy as any)._reloadRoutingPreferences()
-  assert.equal((h.proxy as any)._minPeerReputation, 10)
+  assert.equal((h.proxy as any)._minPeerReputation, 65)
 })
 
 test('restart requires gateway auth, answers 202 and then runs the shutdown hook', async (t) => {
@@ -394,8 +394,10 @@ test('the buyer\'s own limits are judged once, by its router, not again by a gat
   assert.equal(h.dispatched[1]?.peerId, pricey.peerId)
 })
 
-// The gateway console is the authority for its keys: under a gateway policy
-// the buyer's routing preferences only rank, and never exclude.
+// The buyer's routing preferences are the top level of the policy chain for
+// automatic routing: a gateway policy narrows them and never loosens them.
+// Pins are judged by the gateway policy and the hard limits only, as without
+// a gateway.
 const prefs60 = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
 const trust58 = makePeer('d', { input: 1, output: 1, trust: 58 })
 
@@ -409,23 +411,25 @@ test('a pin through a gateway default with an unrelated model route ignores the 
   assert.equal((await chat(h, {}, `${trust58.peerId}@gpt-5`)).status, 200)
 })
 
-test('a workspace minTrustScore below the buyer preference is the one that applies', async (t) => {
-  const h = await startHarness(t, [trust58], { routingPreferences: { ...prefs60, blockedPeerIds: [trust58.peerId] } })
-  // Without a gateway policy the buyer's own preferences still exclude it, as on main.
-  const direct = await chat(h)
-  assert.notEqual(direct.status, 200)
-  assert.equal(h.dispatched.length, 0)
-
-  const res = await chat(h, withPolicy({ minTrustScore: 5 }))
-  assert.equal(res.status, 200)
-  assert.equal(h.dispatched[0]?.peerId, trust58.peerId)
+test('a gateway policy cannot loosen the buyer trust minimum or its block list', async (t) => {
+  const h = await startHarness(t, [trust58, cheap, pricey], { routingPreferences: { ...prefs60, blockedPeerIds: [pricey.peerId] } })
+  // A lower gateway minimum changes nothing: the buyer's 60 still holds, and so does its block list.
+  assert.equal((await chat(h, withPolicy({ minTrustScore: 5, sort: 'price' }))).status, 200)
+  assert.equal(h.dispatched[0]?.peerId, cheap.peerId)
 
   const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ minTrustScore: 5 }) })
-  const body = await preview.json() as { candidates: Array<{ peerId: string; eligible: boolean }> }
-  assert.equal(body.candidates[0]?.eligible, true)
+  const body = await preview.json() as { candidates: Array<{ peerId: string; eligible: boolean; reasons: string[] }>; buyer: RoutingPolicy }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(byId.get(trust58.peerId)?.reasons, ['buyer config: trust 58 below 60'])
+  assert.deepEqual(byId.get(pricey.peerId)?.reasons, ['buyer config: blocked'])
+  assert.equal(byId.get(cheap.peerId)?.eligible, true)
+  assert.deepEqual(body.buyer, { blockedPeerIds: [pricey.peerId.toLowerCase()], minTrustScore: 60 })
 
-  const stricter = await chat(h, withPolicy({ minTrustScore: 70 }))
-  assert.notEqual(stricter.status, 200)
+  // A stricter gateway minimum narrows further, reported at the gateway level.
+  const stricter = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ minTrustScore: 75 }) })
+  const stricterBody = await stricter.json() as { candidates: Array<{ peerId: string; reasons: string[] }> }
+  const cheapVerdict = stricterBody.candidates.find((candidate) => candidate.peerId === cheap.peerId)
+  assert.deepEqual(cheapVerdict?.reasons, ['trust 70 below 75'])
 })
 
 test('hard buyer limits still apply to pins under a gateway policy and are named in the reason', async (t) => {
@@ -438,7 +442,7 @@ test('hard buyer limits still apply to pins under a gateway policy and are named
   assert.equal((await chat(h, { ...withPolicy({ minTrustScore: 5 }), 'x-antseed-pin-peer': pricey.peerId })).status, 200)
 
   const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
-  assert.deepEqual(((await preview.json()) as any).buyer, { minReputation: 80 })
+  assert.deepEqual(((await preview.json()) as any).buyer, { minReputation: 80, minTrustScore: 60 })
 })
 
 test('router-enforced buyer limits are labelled in the preview', async (t) => {
@@ -454,9 +458,38 @@ test('router-enforced buyer limits are labelled in the preview', async (t) => {
   assert.deepEqual(byId.get(cheap.peerId)?.reasons, ['buyer config: reputation 30 below 40'])
 })
 
-test('under a gateway policy a cheap low-trust seller is ranked, not excluded', async (t) => {
-  const free = makePeer('e', { input: 0, output: 0, trust: 20 })
-  const h = await startHarness(t, [cheap, free], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+test('under a gateway policy the buyer trust minimum still excludes, and its free-first still ranks', async (t) => {
+  const lowTrustFree = makePeer('e', { input: 0, output: 0, trust: 20 })
+  const free = makePeer('f', { input: 0, output: 0, trust: 65 })
+  const h = await startHarness(t, [cheap, lowTrustFree], { routingPreferences: { ...prefs60, preferFreePeers: true } })
   await chat(h, withPolicy({ minTrustScore: 5 }))
-  assert.equal(h.dispatched[0]?.peerId, free.peerId)
+  assert.equal(h.dispatched[0]?.peerId, cheap.peerId)
+
+  const h2 = await startHarness(t, [cheap, free, lowTrustFree], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  await chat(h2, withPolicy({ sort: 'trust' }))
+  assert.equal(h2.dispatched[0]?.peerId, free.peerId)
+  // `preferFreePeers: false` means "not set" in a policy, so the buyer's
+  // free-first stays on; a gateway can turn it on, not off.
+  const h3 = await startHarness(t, [cheap, free, lowTrustFree], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  await chat(h3, withPolicy({ sort: 'trust', preferFreePeers: false }))
+  assert.equal(h3.dispatched[0]?.peerId, free.peerId)
+})
+
+test('the attributed-spend feed is readable only with the gateway control secret', async (t) => {
+  const h = await startHarness(t, [cheap])
+  assert.equal((await fetch(`${h.url}/_antseed/attributed-spend?after=0`)).status, 401)
+  assert.equal((await fetch(`${h.url}/_antseed/attributed-spend?after=0`, { headers: { [GATEWAY_CONTROL_HEADER]: 'wrong' } })).status, 401)
+  const res = await fetch(`${h.url}/_antseed/attributed-spend?after=0`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET } })
+  assert.equal(res.status, 200)
+  assert.equal(((await res.json()) as any).ok, true)
+})
+
+test('latency is measured per seller and model', async (t) => {
+  const h = await startHarness(t, [cheap])
+  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'gpt-5', 100)
+  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'GPT-5', 200)
+  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'big-model', 5000)
+  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), 130)
+  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'big-model'), 5000)
+  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'other'), null)
 })

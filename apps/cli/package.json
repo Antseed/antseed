@@ -24,6 +24,8 @@
     "test": "npm run build && node --test dist/config/*.test.js dist/cli/*.test.js dist/cli/commands/**/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/gateway/*.test.js dist/gateway/*/*.test.js dist/gateway/*/*/*.test.js dist/routing-policy/*.test.js dist/buyer-identities/*.test.js"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3",
+    "@ai-sdk/tui": "^1",
     "@antseed/ant-agent": "workspace:*",
     "@antseed/ants": "workspace:*",
     "@antseed/api-adapter": "workspace:*",
@@ -35,6 +37,7 @@
     "@peculiar/x509": "^2.0.0",
     "@simplewebauthn/server": "^13.1.0",
     "@tanstack/query-core": "5.97.0",
+    "ai": "^7",
     "better-sqlite3": "^12.6.2",
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
@@ -46,7 +49,8 @@
     "open": "^11.0.0",
     "ora": "^9.3.0",
     "qrcode": "^1.5.4",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "zod": "^4"
   },
   "devDependencies": {
     "@types/better-sqlite3": "^7.6.13",

@@ -120,7 +120,18 @@ export function seed() {
   const gatewayPolicy: RoutingPolicy = { blockedPeerIds: [fakePeerId(7)], minTrustScore: 40 }
   const settings: Settings = {
     publicUrl: 'https://gateway.example.com',
-    buyer: { proxyPort: 8377, maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null }, minPeerReputation: 0, requireVerifier: false },
+    buyer: {
+      proxyPort: 8377,
+      maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null },
+      minPeerReputation: 0,
+      routingPreferences: { minTrustScore: 60, maxInputUsdPerMillion: 25, allowedPeerIds: [], blockedPeerIds: [], preferFreePeers: false },
+      verifier: { enabled: true, prefer: [], require: false },
+      requireVerifier: false,
+      payments: { autoSweep: true, maxPerRequestUsdc: 0.3, maxReserveUsdc: 1, rpcUrl: 'https://base-mainnet.example.com/…', fallbackRpcUrls: [] },
+      network: { peerRefreshIntervalMs: 300_000, metadataFetchTimeoutMs: 2_000, requestTimeoutMs: 300_000, maxStreamDurationMs: 1_800_000, disableMetadataV2Services: false },
+      evidence: { sampleRate: null, maxSampleBytes: null },
+      overrides: ['network.metadataFetchTimeoutMs'],
+    },
     observability: { otlpEndpoint: null, otlpHeaders: {}, logContent: false, retentionDays: 30 },
     auth: { setupRequired: false, passkey: true, wallet: true, oidc: { label: 'Example SSO' }, cloudflareAccess: false, apiKeyLogin: true },
   }

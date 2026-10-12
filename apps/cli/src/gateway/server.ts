@@ -1,3 +1,4 @@
+import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
@@ -31,6 +32,13 @@ import {
   type X402Facilitator,
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError } from './store.js'
+
+/**
+ * The gateway's own components (the console chat agent) call `/v1` as a key
+ * by its id, without its secret: this header plus the control secret, from
+ * loopback only. Stripped from everything forwarded to the buyer.
+ */
+export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -303,8 +311,11 @@ export class GatewayServer {
   /** The request's active API key and who it is accounted to; answers 401 itself otherwise. */
   private _authenticate(req: http.IncomingMessage, res: http.ServerResponse, requestLine: string): { key: ApiKeyRecord; context: KeyContext } | null {
     const store = this._options.store
-    const secret = parseBearerToken(req.headers.authorization)
-    const key = secret ? store.findKeyBySecret(secret) : null
+    const internalKeyId = firstHeader(req.headers[GATEWAY_INTERNAL_KEY_HEADER])
+    const secret = internalKeyId ? null : parseBearerToken(req.headers.authorization)
+    const key = internalKeyId
+      ? (this._internalCaller(req) ? store.getKey(internalKeyId) : null)
+      : secret ? store.findKeyBySecret(secret) : null
     if (!key || key.status !== 'active') {
       this._log(`gateway rejected authentication: ${requestLine}`)
       if (key) sendUnauthorized(res, 'key_revoked', 'API key has been revoked')
@@ -322,6 +333,16 @@ export class GatewayServer {
       return null
     }
     return { key, context: { member, workspace: store.getWorkspace(key.workspaceId) } }
+  }
+
+  /** A request from the gateway process itself: loopback, carrying the control secret. */
+  private _internalCaller(req: http.IncomingMessage): boolean {
+    const expected = this._options.controlSecret
+    const sent = firstHeader(req.headers[GATEWAY_CONTROL_HEADER])
+    if (!expected || !sent || !isLoopback(req.socket.remoteAddress)) return false
+    const a = Buffer.from(sent)
+    const b = Buffer.from(expected)
+    return a.length === b.length && timingSafeEqual(a, b)
   }
 
   /** Whether the buyer reports spend, refreshing the feed once; answers 503 itself when it does not. */
@@ -810,7 +831,7 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     if (normalized === 'host' || isClientCredentialHeader(normalized)) continue
     // The key decides who pays, how spend is tagged and which sellers may serve, never the client.
     if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
-    if (normalized === ROUTING_POLICY_HEADER || normalized === GATEWAY_CONTROL_HEADER || normalized === END_USER_HEADER) continue
+    if (normalized === ROUTING_POLICY_HEADER || normalized === GATEWAY_CONTROL_HEADER || normalized === GATEWAY_INTERNAL_KEY_HEADER || normalized === END_USER_HEADER) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
     headers[name] = value
   }
@@ -837,6 +858,10 @@ function tunnelRequestSource(headers: http.IncomingHttpHeaders): string {
   const userAgent = firstHeader(headers['user-agent']).trim()
   const product = normalizeSource(userAgent.split(/[/\s]/, 1)[0] ?? '')
   return product.startsWith('cursor') ? 'cursor' : 'public-tunnel'
+}
+
+function isLoopback(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
 }
 
 function firstHeader(value: string | string[] | undefined): string {

@@ -9,6 +9,7 @@ import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.
 import { apiKeyDto, memberDto } from './console-api/serialize.js'
 import { createConsoleApi, type ConsoleRegistrar } from './console-api/server.js'
 import { registerRecoveryRoutes } from './console-recovery.js'
+import { chatRouteRegistrar } from './chat/routes.js'
 import { removeCredential, requireMemberRecord } from './services/members.js'
 import type { GatewayConsoleContext, GatewayConsoleHandle } from './runtime.js'
 import type { ApiKeyRecord, MemberRecord } from './store.js'
@@ -91,6 +92,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       presentKey: (key) => apiKeyDto(store, key as ApiKeyRecord),
     })
     deps.memberCredentials = (memberId) => auth.credentialsFor(memberId)
+    let gatewayPort = 0
     deps.authConfig = () => auth.authConfig()
     const api = createConsoleApi(deps, auth, [
       ...coreConsoleRegistrars,
@@ -98,11 +100,13 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       registerNetworkRoutes,
       registerCredentialRoutes(auth),
       registerRecoveryRoutes,
+      chatRouteRegistrar({ gatewayPort: () => gatewayPort, braveApiKey: (options.env ?? process.env)['ANTSEED_BRAVE_API_KEY']?.trim() || null }),
     ], options.distDir ? { distDir: options.distDir } : {})
 
     return {
       handle: (req, res) => api.handle(req, res),
       listening(port) {
+        gatewayPort = port
         auth.setGatewayPort(port)
         store.setSetting(CONSOLE_LOCATION_SETTING, { publicUrl: options.publicUrl, port, host: context.listenHost ?? '127.0.0.1' } satisfies ConsoleLocation)
       },

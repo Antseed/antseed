@@ -123,7 +123,9 @@ export class ChainRpcProvider extends JsonRpcProvider {
     this.batchWindowMs = options.batchWindowMs === undefined ? 5 : options.batchWindowMs
     this.maxBatchSize = options.maxBatchSize ?? 50
     this.backoffBaseMs = options.backoffBaseMs ?? 2_000
-    this.backoffMaxMs = options.backoffMaxMs ?? 5 * 60_000
+    // Capped at a minute: with a single endpoint, every read waits this out,
+    // and a sweep confirmation (two minutes) must outlive it.
+    this.backoffMaxMs = options.backoffMaxMs ?? 60_000
     this.multicallAddress = options.multicallAddress ?? MULTICALL3_ADDRESS
   }
 
@@ -214,13 +216,7 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   private async flush(batch: QueuedCall[]): Promise<void> {
     if (batch.length === 1 || !await this.multicallDeployed().catch(() => false)) {
-      await Promise.all(batch.map(async (call) => {
-        try {
-          call.resolve(await this.request(call.payload))
-        } catch (error) {
-          call.reject(error)
-        }
-      }))
+      await this.sendEach(batch)
       return
     }
     const data = MULTICALL.encodeFunctionData('aggregate3', [batch.map((call) => ({ target: call.tx.to, allowFailure: true, callData: call.tx.data }))])
@@ -228,7 +224,14 @@ export class ChainRpcProvider extends JsonRpcProvider {
     try {
       response = await this.transmit({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_call', params: [{ to: this.multicallAddress, data }, 'latest'] })
     } catch (error) {
-      for (const call of batch) call.reject(error)
+      // Every endpoint is backing off: the individual calls would fail the same way.
+      if (error instanceof RpcUnavailableError) {
+        for (const call of batch) call.reject(error)
+        return
+      }
+      // The endpoint refused the aggregate request itself (e.g. HTTP 400 or
+      // 413 on a large body): send one call each.
+      await this.sendEach(batch)
       return
     }
     const body = response as { result?: string; error?: unknown } | null
@@ -242,13 +245,7 @@ export class ChainRpcProvider extends JsonRpcProvider {
     }
     if (!decoded || decoded.length !== batch.length) {
       // The aggregate itself failed (gas cap, a node quirk): fall back to one call each.
-      await Promise.all(batch.map(async (call) => {
-        try {
-          call.resolve(await this.request(call.payload))
-        } catch (error) {
-          call.reject(error)
-        }
-      }))
+      await this.sendEach(batch)
       return
     }
     this.counters.batchedCalls += batch.length
@@ -258,6 +255,16 @@ export class ChainRpcProvider extends JsonRpcProvider {
         ? { id: call.payload.id, result: entry.returnData } as JsonRpcResult
         : { id: call.payload.id, error: { code: 3, message: 'execution reverted', data: entry.returnData } } as unknown as JsonRpcResult)
     })
+  }
+
+  private async sendEach(batch: QueuedCall[]): Promise<void> {
+    await Promise.all(batch.map(async (call) => {
+      try {
+        call.resolve(await this.request(call.payload))
+      } catch (error) {
+        call.reject(error)
+      }
+    }))
   }
 
   /** Multicall3 is probed once per process (its code is then cached like any other). */

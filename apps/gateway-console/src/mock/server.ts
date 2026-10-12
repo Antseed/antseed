@@ -20,6 +20,7 @@ import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, seed } from './data'
+import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
 type Handler = (ctx: { params: Record<string, string>; query: URLSearchParams; body: any }) => unknown
@@ -296,11 +297,21 @@ function usage(query: URLSearchParams) {
 }
 
 function buyerLimits(): BuyerLimits {
-  const { maxPricing, minPeerReputation, requireVerifier } = db.settings.buyer
-  return { maxPricing: { ...maxPricing }, minPeerReputation, requireVerifier }
+  const { maxPricing, minPeerReputation, verifier, routingPreferences } = db.settings.buyer
+  return {
+    maxPricing: { ...maxPricing },
+    minPeerReputation,
+    requireVerifier: verifier.enabled && verifier.require,
+    routingPreferences: {
+      minTrustScore: routingPreferences.minTrustScore,
+      allowedPeerIds: [...routingPreferences.allowedPeerIds],
+      blockedPeerIds: [...routingPreferences.blockedPeerIds],
+      preferFreePeers: routingPreferences.preferFreePeers,
+    },
+  }
 }
 
-/** The buyer's hard limits as the preview's `buyer` source (not combined into the gateway policy). */
+/** The buyer's config as the preview's `buyer` source (not combined into the gateway policy). */
 function buyerLimitsPolicy(): RoutingPolicy {
   const limits = buyerLimits()
   return {
@@ -308,6 +319,7 @@ function buyerLimitsPolicy(): RoutingPolicy {
     ...(limits.requireVerifier ? { requireVerified: true } : {}),
     maxInputUsdPerMillion: limits.maxPricing!.inputUsdPerMillion,
     maxOutputUsdPerMillion: limits.maxPricing!.outputUsdPerMillion,
+    ...(limits.routingPreferences!.minTrustScore > 0 ? { minTrustScore: limits.routingPreferences!.minTrustScore } : {}),
   }
 }
 
@@ -331,6 +343,21 @@ function preview(query: URLSearchParams): RoutePreview {
   const policy = combinePolicies(...sources.map((source) => source.level === 'buyer' || !source.policy ? null : expandLists(source.policy, db.peerLists)))
   const modelAllowed = !policy.allowedModels || policy.allowedModels.some((entry) => entry.toLowerCase() === model.toLowerCase())
   const allowed = policy.allowedPeerIds ? new Set(policy.allowedPeerIds) : null
+  // Chat models have their own fake sellers: judge them by the buyer's trust minimum, cheapest first.
+  const chatModel = mockChatModels().find((entry) => entry.id === model)
+  if (chatModel && !db.peers.some((peer) => peer.services.some((service) => service.service === model))) {
+    const minTrust = db.settings.buyer.routingPreferences.minTrustScore
+    const chatCandidates: RoutePreview['candidates'] = chatModel.peers.map((peer) => {
+      const eligible = (peer.reputation ?? 0) >= minTrust
+      return {
+        peerId: peer.peerId, displayName: peer.name, rank: null, eligible,
+        reasons: eligible ? [] : [`buyer config: trust ${Math.round(peer.reputation ?? 0)} below ${minTrust}`],
+        inputUsdPerMillion: peer.inputUsdPerMillion, outputUsdPerMillion: peer.outputUsdPerMillion, trustScore: peer.reputation,
+      }
+    })
+    chatCandidates.filter((c) => c.eligible).sort((a, b) => (a.inputUsdPerMillion ?? 0) - (b.inputUsdPerMillion ?? 0)).forEach((c, index) => { c.rank = index + 1 })
+    return { model, policy, sources, modelAllowed, candidates: chatCandidates }
+  }
   const candidates = db.peers.filter((peer) => peer.services.some((service) => service.service === model)).map((peer) => {
     const service = peer.services.find((entry) => entry.service === model)!
     const reasons: string[] = []
@@ -738,6 +765,15 @@ const routes: Array<[string, string, Handler]> = [
   ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],
   ['POST', '/workspaces/:id/wallet/operator-auth', ({ params, body }) => operatorAuth(params, body)],
   ['GET', '/workspaces/:id/wallet/operator', ({ params }) => operatorState(params['id']!)],
+  ['GET', '/chat/models', () => mockChatModels()],
+  ['GET', '/chat/context', ({ query }) => {
+    const workspace = findWorkspace(query.get('workspace') ?? 'ws_default')
+    const key = db.keys.find((k) => k.workspaceId === workspace.id && k.status === 'active') ?? db.keys[0]!
+    return { key: { ...key, label: 'Web chat' }, workspaceName: workspace.name }
+  }],
+  ['GET', '/chat/threads', () => mockChatThreads()],
+  ['GET', '/chat/threads/:id', ({ params }) => { const thread = mockChatThread(params['id']!); if (!thread) throw new MockError(404, 'not_found', 'Conversation not found'); return thread }],
+  ['DELETE', '/chat/threads/:id', ({ params }) => { mockDeleteChatThread(params['id']!); return undefined }],
   ['GET', '/wallet/operators', () => {
     const member = currentMember()
     return db.workspaces.filter((ws) => workspaceRole(member, ws.id)).map((ws) => {
@@ -792,9 +828,18 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/settings', () => { requireOrgAdmin(); return maskedSettings() }],
   ['PATCH', '/settings/buyer', ({ body }) => {
     requireOrgAdmin()
-    Object.assign(db.settings.buyer.maxPricing, body.maxPricing ?? {})
-    if (body.minPeerReputation !== undefined) db.settings.buyer.minPeerReputation = body.minPeerReputation
+    const buyer = db.settings.buyer
+    Object.assign(buyer.maxPricing, body.maxPricing ?? {})
+    if (body.minPeerReputation !== undefined) buyer.minPeerReputation = body.minPeerReputation
+    Object.assign(buyer.routingPreferences, body.routingPreferences ?? {})
+    Object.assign(buyer.verifier, body.verifier ?? {})
+    Object.assign(buyer.payments, body.payments ?? {})
+    Object.assign(buyer.network, body.network ?? {})
+    Object.assign(buyer.evidence, body.evidence ?? {})
+    buyer.requireVerifier = buyer.verifier.enabled && buyer.verifier.require
     audit('settings.buyer.update')
+    const routingOnly = Object.keys(body).every((key) => key === 'routingPreferences')
+    if (routingOnly) return { ...db.settings }
     // The mock cannot restart anything, like a buyer started by hand without a supervisor.
     return { ...db.settings, restartRequired: true }
   }],
@@ -851,6 +896,7 @@ export function installMockApi(): void {
     await new Promise((resolve) => setTimeout(resolve, 150 + Math.random() * 200))
     if (method !== 'GET' && new Headers(init?.headers).get('x-antseed-console') !== '1') return json(403, { error: { code: 'csrf', message: 'Missing CSRF header.' } })
     if (method !== 'GET' && keySession() && !path.startsWith('/auth/')) return json(403, { error: { code: 'forbidden', message: 'API-key sessions are read-only' } })
+    if (method === 'POST' && path === '/chat') return mockChatStream(init?.body ? JSON.parse(String(init.body)) : {})
     const route = match(method, path)
     if (!route) return json(404, { error: { code: 'not_found', message: `Mock has no ${method} ${path}` } })
     try {

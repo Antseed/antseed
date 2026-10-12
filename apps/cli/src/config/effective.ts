@@ -167,6 +167,34 @@ export function resolveEffectiveBuyerConfig(input: ResolveEffectiveConfigInput):
   return buyer;
 }
 
+/**
+ * Buyer settings the running buyer took from the environment or `buyer
+ * start` flags instead of the config file, as setting paths (the gateway's
+ * `Settings.buyer` shape, e.g. "maxPricing.inputUsdPerMillion"). Editing
+ * these in the config file has no effect until the override is removed.
+ */
+export function buyerSettingOverrides(input: {
+  env?: NodeJS.ProcessEnv;
+  buyerOverrides?: BuyerRuntimeOverrides;
+  /** Any of `--no-verifier`, `--verifiers`, `--require-verifier` was given. */
+  verifierFlags?: boolean;
+}): string[] {
+  const env = input.env ?? process.env;
+  const overrides = input.buyerOverrides ?? {};
+  const paths = new Set<string>();
+  const set = (path: string, active: boolean): void => { if (active) paths.add(path); };
+  set('proxyPort', overrides.proxyPort !== undefined);
+  set('minPeerReputation', overrides.minPeerReputation !== undefined || env['ANTSEED_BUYER_MIN_REPUTATION'] !== undefined);
+  set('maxPricing.inputUsdPerMillion', overrides.maxInputUsdPerMillion !== undefined || env['ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION'] !== undefined);
+  set('maxPricing.outputUsdPerMillion', overrides.maxOutputUsdPerMillion !== undefined || env['ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION'] !== undefined);
+  set('network.metadataFetchTimeoutMs', overrides.metadataFetchTimeoutMs !== undefined || env['ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS'] !== undefined);
+  set('network.maxStreamDurationMs', env['ANTSEED_BUYER_MAX_STREAM_DURATION_MS'] !== undefined);
+  set('network.disableMetadataV2Services', overrides.disableMetadataV2Services !== undefined || env['ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES'] !== undefined);
+  set('payments.rpcUrl', Boolean(env['ANTSEED_BASE_RPC_URL']?.trim()));
+  set('verifier', input.verifierFlags === true);
+  return [...paths];
+}
+
 export function resolveEffectiveRoleConfig(input: ResolveEffectiveConfigInput): {
   seller: SellerCLIConfig;
   buyer: BuyerCLIConfig;

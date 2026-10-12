@@ -197,8 +197,9 @@ export function describePolicy(policy: RoutingPolicy | null | undefined): string
 }
 
 /**
- * The buyer's hard limits as short phrases, e.g. ["reputation ≥ 40",
- * "verified sellers only", "≤ $15.00/M in", "≤ $60.00/M out"]. Empty when none apply.
+ * The buyer's config as short phrases, e.g. ["reputation ≥ 40",
+ * "verified sellers only", "≤ $15.00/M in", "≤ $60.00/M out", "trust ≥ 60"].
+ * Empty when none apply.
  */
 export function describeBuyerLimits(limits: BuyerLimits): string[] {
   const parts: string[] = []
@@ -208,6 +209,13 @@ export function describeBuyerLimits(limits: BuyerLimits): string[] {
     parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.inputUsdPerMillion)}/M in`)
     parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.outputUsdPerMillion)}/M out`)
     if (limits.maxPricing.cachedInputUsdPerMillion !== null) parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.cachedInputUsdPerMillion)}/M cached`)
+  }
+  const prefs = limits.routingPreferences
+  if (prefs) {
+    if (prefs.minTrustScore > 0) parts.push(`trust ≥ ${prefs.minTrustScore}`)
+    if (prefs.allowedPeerIds.length > 0) parts.push(`only ${plural(prefs.allowedPeerIds.length, 'allowed seller')}`)
+    if (prefs.blockedPeerIds.length > 0) parts.push(plural(prefs.blockedPeerIds.length, 'blocked seller'))
+    if (prefs.preferFreePeers) parts.push('free first')
   }
   return parts
 }

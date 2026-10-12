@@ -10,7 +10,7 @@ import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, decodePolicyHeader } fro
 import { GatewayAccounting } from './accounting.js'
 import { OBSERVABILITY_SETTING } from './observability.js'
 import { GATEWAY_ROUTING_SETTING } from './policy-resolver.js'
-import { GatewayServer } from './server.js'
+import { GATEWAY_INTERNAL_KEY_HEADER, GatewayServer } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 
@@ -317,6 +317,29 @@ test('a failure after admission answers 500 and releases the hold', async () => 
     assert.equal(row!.status, 500)
     assert.equal(ctx.buyer.captured.length, 0)
     ctx.store.getSetting = getSetting
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('the gateway itself can call /v1 as a key by id with the control secret; nobody else can, and the header never reaches the buyer', async () => {
+  const ctx = await setup()
+  try {
+    const { key } = ctx.store.createKey({ label: 'chat', limits: NO_LIMITS, expiresAt: null })
+    const body = { model: 'm', messages: [] }
+    const asKey = { [GATEWAY_INTERNAL_KEY_HEADER]: key.id }
+    // A key id alone, or with a wrong secret, is not a key.
+    assert.equal((await ctx.send('', '/v1/chat/completions', body, asKey)).status, 401)
+    assert.equal((await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'nope' })).status, 401)
+    const ok = await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'control-secret' })
+    assert.equal(ok.status, 200)
+    const forwarded = ctx.buyer.captured.at(-1)!
+    assert.equal(forwarded.headers[GATEWAY_INTERNAL_KEY_HEADER], undefined)
+    // Accounted to that key like any request with it.
+    assert.equal(ctx.store.getKey(key.id)!.lastUsedAt !== null, true)
+    // A revoked key stops working this way too.
+    ctx.store.revokeKey(key.id)
+    assert.equal((await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'control-secret' })).status, 401)
   } finally {
     await ctx.close()
   }

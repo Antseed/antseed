@@ -7,8 +7,9 @@
  *
  * The gateway resolves the effective policy for each request and hands it to
  * the buyer in `ROUTING_POLICY_HEADER`, authenticated by
- * `GATEWAY_CONTROL_HEADER`. The buyer combines it with its own process-wide
- * routing config the same way, so a request can never escape the buyer's
+ * `GATEWAY_CONTROL_HEADER`. The buyer narrows it under its own config (hard
+ * limits, plus routing preferences for automatic routing; see
+ * `proxy/route-policy.ts`), so a request can never escape the buyer's
  * configuration either.
  */
 

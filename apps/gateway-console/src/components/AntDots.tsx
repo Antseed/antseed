@@ -5,9 +5,9 @@ import antIconUrl from '../assets/ant-icon.svg?url'
 /*
  * The homepage's dot-grid ant (apps/website/src/components/HomeHero.tsx,
  * HeroDotCanvas), small and calm for the bottom of the nav: a faint dot grid
- * from the window's left edge to the nav's, the ant rising from the bottom
- * edge in stronger dots, and a few of its dots twinkling Antseed green now
- * and then. The grid fades out upwards and to the right (see .gc-antdots). Static under reduced motion; paused
+ * as wide as the nav column, the ant rising from the bottom edge in stronger
+ * dots, and a few of its dots twinkling Antseed green now and then. The grid
+ * fades out upwards and at both sides (see .gc-antdots). Static under reduced motion; paused
  * while the tab is hidden.
  */
 

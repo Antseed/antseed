@@ -114,7 +114,7 @@ systemctl status antseed-gateway
 
 Back up `/var/lib/antseed/.antseed/identity.key` and `buyer-identities/`: each wallet can hold USDC credits. To keep identity keys in a secret manager instead, see [Keep keys out of the data dir](/docs/guides/gateway-api-keys#keep-keys-out-of-the-data-dir) and add the variables to `/etc/antseed/gateway.env` and a drop-in for `antseed-buyer` (`systemctl edit antseed-buyer`).
 
-To change buyer settings, such as price caps, use the console's **Settings** page, which restarts the buyer for you, or edit the config as the `antseed` user (`antseed config …`) and restart `antseed-buyer`.
+To change buyer settings (routing preferences, price caps, verification, payments limits, the RPC endpoint, timeouts), use the console's **Settings → Buyer** page or `antseed gateway settings set-buyer`, which restart the buyer for you when needed, or edit the config as the `antseed` user (`antseed config …`) and restart `antseed-buyer`.
 
 ### Chain RPC and rate limits
 

@@ -1,4 +1,4 @@
-import { useId, useMemo, useState } from 'react'
+import { useId, useMemo, useState, type ReactNode } from 'react'
 import { Alert, Button, ConfirmDialog, Disclosure, Segmented, SelectField, Switch, TextField } from '@antseed/ui'
 import type { Peer, PeerList, RoutingPolicy, RoutingSort } from '../api/types'
 import { modelsFromPeers } from '../lib/queries'
@@ -175,7 +175,14 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
   return <div className="gc-policy">{content}</div>
 }
 
-function Slider({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+/**
+ * A 0–100 score slider. Policies can clear it back to "Inherit"; the buyer's
+ * own settings always hold a value (`clearable={false}`), and `hint` goes
+ * under it.
+ */
+export function Slider({ label, value, onChange, clearable = true, hint }: {
+  label: string; value: string; onChange: (value: string) => void; clearable?: boolean; hint?: ReactNode
+}) {
   const labelId = useId()
   const enabled = value !== ''
   return (
@@ -187,8 +194,9 @@ function Slider({ label, value, onChange }: { label: string; value: string; onCh
       <div className="gc-inline">
         <input type="range" min={0} max={100} step={5} value={enabled ? Number(value) : 0} aria-labelledby={labelId}
           onChange={(event) => onChange(event.target.value)} />
-        {enabled && <Button variant="ghost" size="sm" onClick={() => onChange('')}>Clear</Button>}
+        {clearable && enabled && <Button variant="ghost" size="sm" onClick={() => onChange('')}>Clear</Button>}
       </div>
+      {hint && <span className="as-field__hint">{hint}</span>}
     </div>
   )
 }

@@ -134,11 +134,13 @@ import {
   narrowPolicy,
   normalizePeerId as normalizePolicyPeerId,
   policyAllowsModel,
+  policyModelKey,
   type RoutingPolicy,
 } from '../routing-policy/policy.js'
 import {
   buyerConfigReason,
   buyerHardPolicy,
+  buyerPreferencePolicy,
   orderByPolicy,
   pinnedPeerExclusionReasons,
   policyExclusionReasons,
@@ -214,6 +216,12 @@ export interface BuyerProxyConfig {
    * handler exits the process (code 75) once shutdown completes.
    */
   onRestartRequested?: () => void | Promise<void>
+  /**
+   * Settings this buyer took from the environment or `buyer start` flags
+   * rather than the config file (see `buyerSettingOverrides`), reported to
+   * the gateway so its settings page can say a config edit will not apply.
+   */
+  settingOverrides?: string[]
 }
 
 /** The DepositsClient reads `GET /_antseed/balances` needs. */
@@ -250,6 +258,7 @@ const CONTROL_SECRET_RECHECK_MS = 1_000
 /** Floor between forced re-reads on a secret mismatch, so a stream of bad secrets can't hammer the disk. */
 const CONTROL_SECRET_FORCED_RECHECK_MS = 100
 const LATENCY_EMA_ALPHA = 0.3
+const MAX_LATENCY_ENTRIES = 4096
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
 /** Exact USDC decimal string from base units, e.g. 1500000n -> "1.500000". */
@@ -289,7 +298,8 @@ type RequestPolicyResult =
   | { kind: 'auth_invalid' }
 
 function isLoopbackAddress(address: string | undefined): boolean {
-  if (address === undefined) return true
+  // A destroyed socket has no address: never treat it as local.
+  if (address === undefined) return false
   return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1' || address.startsWith('127.')
 }
 
@@ -1003,7 +1013,7 @@ export class BuyerProxy {
   /** Signed spend for requests a local gateway tagged, polled over the control plane. */
   private readonly _spendAttribution: SpendAttributionFeed
 
-  private _minPeerReputation: number | null
+  private readonly _minPeerReputation: number | null
   private readonly _buyerOverrides: BuyerRuntimeOverrides | undefined
   /** Gateway control secret, read lazily (the gateway may create it after the buyer starts). */
   private _controlSecret: string | null = null
@@ -1019,6 +1029,7 @@ export class BuyerProxy {
   private readonly _balanceReader: BuyerBalanceReader | null
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
+  private readonly _settingOverrides: string[]
   private _restartRequested = false
 
   constructor(config: BuyerProxyConfig) {
@@ -1026,6 +1037,7 @@ export class BuyerProxy {
     this._buyerOverrides = config.buyerOverrides
     this._balanceReader = config.balanceReader ?? null
     this._restartHandler = config.onRestartRequested ?? null
+    this._settingOverrides = [...(config.settingOverrides ?? [])]
     this._node = config.node
     this._verifier = config.verifier
     this._buyerIdentities = config.buyerIdentities ?? new BuyerIdentityLoader(config.node, config.dataDir)
@@ -1205,8 +1217,8 @@ export class BuyerProxy {
   }
 
   /**
-   * The buyer's hard limits (min reputation, required verifier). Its routing
-   * preferences are not among them: a gateway policy replaces those.
+   * The buyer's hard limits (min reputation, required verifier), which judge
+   * every request, pinned ones included.
    */
   private _buyerHardPolicy(): RoutingPolicy {
     return buyerHardPolicy({
@@ -1215,7 +1227,21 @@ export class BuyerProxy {
     })
   }
 
-  /** A gateway policy narrowed under the buyer's hard limits; null when the request carries none. */
+  /** `buyer.routingPreferences` as a policy level (empty without preferences). */
+  private _buyerPreferencePolicy(): RoutingPolicy {
+    return this._routingPreferences ? buyerPreferencePolicy(this._routingPreferences) : {}
+  }
+
+  /**
+   * The buyer's whole config as the top policy level for automatic routing:
+   * hard limits plus routing preferences. Reported to the gateway as the
+   * route preview's `buyer` level.
+   */
+  private _buyerPolicy(): RoutingPolicy {
+    return narrowPolicy(this._buyerHardPolicy(), this._buyerPreferencePolicy())
+  }
+
+  /** A gateway policy narrowed under the buyer's hard limits; null when the request carries none. Judges pins. */
   private _effectivePolicy(requestPolicy: RoutingPolicy | null): RoutingPolicy | null {
     if (!requestPolicy) return null
     return narrowPolicy(this._buyerHardPolicy(), requestPolicy)
@@ -1245,12 +1271,28 @@ export class BuyerProxy {
     }
   }
 
-  private _recordPeerLatency(peerId: string, latencyMs: number): void {
+  /** Latency is tracked per seller and model: one seller can serve a small model fast and a large one slowly. */
+  private _latencyKey(peerId: string, serviceId: string | null): string {
+    return `${peerId.toLowerCase()}|${serviceId ? policyModelKey(serviceId) : ''}`
+  }
+
+  private _peerLatency(peerId: string, serviceId: string | null): number | null {
+    return this._peerLatencyMs.get(this._latencyKey(peerId, serviceId)) ?? null
+  }
+
+  private _recordPeerLatency(peerId: string, serviceId: string | null, latencyMs: number): void {
     if (!Number.isFinite(latencyMs) || latencyMs < 0) return
-    const previous = this._peerLatencyMs.get(peerId)
-    this._peerLatencyMs.set(peerId, previous === undefined
+    const key = this._latencyKey(peerId, serviceId)
+    const previous = this._peerLatencyMs.get(key)
+    // Re-inserted so the map's order is least recently measured first.
+    this._peerLatencyMs.delete(key)
+    this._peerLatencyMs.set(key, previous === undefined
       ? latencyMs
       : previous + LATENCY_EMA_ALPHA * (latencyMs - previous))
+    if (this._peerLatencyMs.size > MAX_LATENCY_ENTRIES) {
+      const oldest = this._peerLatencyMs.keys().next().value
+      if (oldest !== undefined) this._peerLatencyMs.delete(oldest)
+    }
   }
 
   /**
@@ -1273,12 +1315,10 @@ export class BuyerProxy {
   }) {
     const { modelPeers, modelPlans, request, requestProtocol, requestedService, explicitProvider, requiredParameters } = input
     const policyRouter = this._node.router as BuyerPolicyRouter | null | undefined
-    const effectivePolicy = this._effectivePolicy(input.requestPolicy)
-    // Sellers are excluded by the gateway's policy alone: the buyer's hard
-    // limits are already enforced on this path by the router plugin's
-    // policy check, so they are not judged a second time with different
-    // inputs (e.g. raw instead of effective reputation).
-    const exclusionPolicy = input.requestPolicy
+    const requestPolicy = input.requestPolicy
+    // Under a gateway policy the buyer's config is the top level of the
+    // chain: the gateway narrows it, never replaces it.
+    const effectivePolicy = requestPolicy ? narrowPolicy(this._buyerPolicy(), requestPolicy) : null
     const verdicts = new Map<string, ModelRouteVerdict>()
     const routeCandidates = []
     for (const peer of modelPeers) {
@@ -1305,14 +1345,8 @@ export class BuyerProxy {
         verdict.reasons.push(buyerConfigReason(policyRouter?.explainPolicyRejection?.(requestForPolicy, peer) ?? 'outside buyer pricing/reputation limits'))
         continue
       }
-      if (exclusionPolicy) {
-        const reasons = policyExclusionReasons(exclusionPolicy, this._policyFacts(peer, offer))
-        if (reasons.length > 0) {
-          verdict.reasons.push(...reasons)
-          continue
-        }
-      }
       routeCandidates.push({
+        offer,
         peer,
         peerId: peer.peerId,
         serviceId: plan.serviceId,
@@ -1342,10 +1376,27 @@ export class BuyerProxy {
     })
     let candidates: typeof ranked
     const routingPreferences = this._routingPreferences
-    if (routingPreferences && input.requestPolicy) {
-      // Under a gateway policy the buyer's preferences only rank: the
-      // policy (already applied above) decides who is excluded.
-      candidates = rankModelRoutes(ranked, rankingPreferences(routingPreferences, input.requestPolicy), now)
+    if (requestPolicy && effectivePolicy) {
+      // Exclusions from the merged chain, reported per level: the gateway's
+      // policy on raw trust, the buyer's preferences on the effective trust
+      // its own automatic routing uses. (The buyer's hard limits were
+      // already applied by the router plugin above.) Excluded by the merged
+      // policy exactly when excluded by either level.
+      const buyerPreferences = this._buyerPreferencePolicy()
+      const allowed = ranked.filter((candidate) => {
+        const facts = this._policyFacts(candidate.peer, candidate.offer)
+        const reasons = policyExclusionReasons(requestPolicy, facts)
+        for (const reason of policyExclusionReasons(buyerPreferences, { ...facts, trustScore: modelRouteReputationScore(candidate) })) {
+          const labelled = buyerConfigReason(reason)
+          if (!reasons.includes(reason) && !reasons.includes(labelled)) reasons.push(labelled)
+        }
+        if (reasons.length === 0) return true
+        verdicts.get(candidate.peerId)?.reasons.push(...reasons)
+        return false
+      })
+      candidates = routingPreferences
+        ? rankModelRoutes(allowed, rankingPreferences(routingPreferences, effectivePolicy), now)
+        : this._readyFirst(allowed, verdicts, now)
     } else if (routingPreferences) {
       candidates = []
       for (const candidate of rankModelRoutes(ranked, routingPreferences, now)) {
@@ -1358,18 +1409,7 @@ export class BuyerProxy {
         }
       }
     } else {
-      ranked.sort((a, b) =>
-        (b.effectiveReputationScore ?? -1) - (a.effectiveReputationScore ?? -1)
-        || a.peer.peerId.localeCompare(b.peer.peerId))
-      const ready = ranked.filter((candidate) => !isCoolingDown(this._peerHealth.get(candidate.peer.peerId), now))
-      if (ready.length > 0) {
-        for (const candidate of ranked) {
-          if (!ready.includes(candidate)) verdicts.get(candidate.peerId)?.reasons.push('cooling down')
-        }
-        candidates = ready
-      } else {
-        candidates = ranked
-      }
+      candidates = this._readyFirst(ranked, verdicts, now)
     }
     const isCooling = (candidate: (typeof ranked)[number]): boolean => isModelRouteCoolingDown(candidate, now)
     let chainPosition: Map<string, number> | null = null
@@ -1378,7 +1418,7 @@ export class BuyerProxy {
         peerId: (candidate) => candidate.peerId,
         totalPrice: (candidate) => modelRouteTotalPrice(candidate),
         trustScore: (candidate) => (candidate.reputation >= 0 ? candidate.reputation : null),
-        latencyMs: (candidate) => this._peerLatencyMs.get(candidate.peerId) ?? null,
+        latencyMs: (candidate) => this._peerLatency(candidate.peerId, candidate.serviceId),
         coolingDown: isCooling,
       })
       for (const candidate of candidates) {
@@ -1410,10 +1450,30 @@ export class BuyerProxy {
       if (position !== undefined) verdict.reasons.push(`route chain #${position + 1}`)
       if (isCooling(candidate)) verdict.reasons.push('cooling down (tried last)')
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
-      const latency = this._peerLatencyMs.get(candidate.peerId)
-      if (latency !== undefined) verdict.reasons.push(`latency ~${Math.round(latency)}ms`)
+      const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
+      if (latency !== null) verdict.reasons.push(`latency ~${Math.round(latency)}ms`)
     })
     return { candidates, verdicts: [...verdicts.values()], effectivePolicy }
+  }
+
+  /**
+   * Without routing preferences: best effective reputation first, and only
+   * sellers not cooling down while any are ready.
+   */
+  private _readyFirst<T extends { peer: PeerInfo; peerId: string; effectiveReputationScore: number | null }>(
+    ranked: T[],
+    verdicts: Map<string, ModelRouteVerdict>,
+    now: number,
+  ): T[] {
+    ranked.sort((a, b) =>
+      (b.effectiveReputationScore ?? -1) - (a.effectiveReputationScore ?? -1)
+      || a.peer.peerId.localeCompare(b.peer.peerId))
+    const ready = ranked.filter((candidate) => !isCoolingDown(this._peerHealth.get(candidate.peer.peerId), now))
+    if (ready.length === 0) return ranked
+    for (const candidate of ranked) {
+      if (!ready.includes(candidate)) verdicts.get(candidate.peerId)?.reasons.push('cooling down')
+    }
+    return ready
   }
 
   /** `GET /_antseed/route-preview`: what routing would do for a model-only request, ineligible sellers included. */
@@ -1508,7 +1568,8 @@ export class BuyerProxy {
   ): Promise<boolean> {
     const url = new URL(path, 'http://localhost')
     const route = `${method} ${url.pathname}`
-    if (route !== 'GET /_antseed/route-preview' && route !== 'GET /_antseed/balances' && route !== 'POST /_antseed/restart') {
+    if (route !== 'GET /_antseed/route-preview' && route !== 'GET /_antseed/balances' && route !== 'POST /_antseed/restart'
+      && route !== 'GET /_antseed/setting-overrides') {
       return false
     }
     if (!isLoopbackAddress(req.socket?.remoteAddress) || !this._isGatewayAuthenticated(req.headers)) {
@@ -1519,6 +1580,9 @@ export class BuyerProxy {
       await this._handleRoutePreview(req, res, url)
     } else if (route === 'GET /_antseed/balances') {
       await this._handleBalances(res, url)
+    } else if (route === 'GET /_antseed/setting-overrides') {
+      // Routing preferences are reloaded from the config file, so they are never overridden.
+      sendJson(res, 200, { overrides: this._settingOverrides })
     } else {
       this._handleRestart(res)
     }
@@ -1543,9 +1607,10 @@ export class BuyerProxy {
       }
       if (Object.keys(meaningfulPolicy(policy)).length === 0) policy = null
     }
-    // `buyer`: the hard limits that apply under every gateway policy, so the
-    // console can show them (max pricing lives in the router plugin's config).
-    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerHardPolicy() })
+    // `buyer`: the top level of the chain (hard limits plus routing
+    // preferences), so the console can show it (max pricing lives in the
+    // router plugin's config).
+    sendJson(res, 200, { model, candidates: await this._routePreview(model, policy), buyer: this._buyerPolicy() })
   }
 
   /** `GET /_antseed/balances?identity=<name>`: on-chain balances of a buyer identity. */
@@ -1822,9 +1887,9 @@ export class BuyerProxy {
         allowedPeerIds: [...next.allowedPeerIds],
         blockedPeerIds: [...next.blockedPeerIds],
       }
-      if (this._minPeerReputation !== null && Number.isFinite(buyer.minPeerReputation)) {
-        this._minPeerReputation = buyer.minPeerReputation
-      }
+      // `minPeerReputation` (like max pricing) is not reloaded: the router
+      // plugin enforces it with the value it started with, so it applies on
+      // restart only, and the proxy keeps the same value to stay in step.
       log(
         `Routing preferences reloaded: minTrust=${next.minTrustScore} maxInput=${next.maxInputUsdPerMillion} `
         + `preferFree=${next.preferFreePeers} allow=${next.allowedPeerIds.length} block=${next.blockedPeerIds.length}`,
@@ -2661,15 +2726,17 @@ export class BuyerProxy {
       return
     }
 
-    // Readable unauthenticated like every /_antseed route: it relies on the
-    // buyer listening on 127.0.0.1 only, since it exposes per-seller spend and
-    // tags. Only a poll with the gateway control secret acknowledges events
-    // (lets them be pruned); unacknowledged ones are kept for 7 days.
+    // Gateway only: the feed holds up to 7 days of per-seller spend and tags,
+    // so reading it takes the control secret, and every read acknowledges
+    // the events before its cursor (lets them be pruned).
     if (path.startsWith('/_antseed/attributed-spend') && method === 'GET') {
+      if (!isLoopbackAddress(req.socket?.remoteAddress) || !this._isGatewayAuthenticated(req.headers)) {
+        sendJson(res, 401, { ok: false, error: 'gateway_auth_required' })
+        return
+      }
       const after = Number(new URL(path, 'http://localhost').searchParams.get('after') ?? '0')
-      const ack = isLoopbackAddress(req.socket?.remoteAddress) && this._isGatewayAuthenticated(req.headers)
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, ...this._spendAttribution.page(Number.isFinite(after) ? after : 0, { ack }) }))
+      res.end(JSON.stringify({ ok: true, ...this._spendAttribution.page(Number.isFinite(after) ? after : 0, { ack: true }) }))
       return
     }
 
@@ -3840,6 +3907,7 @@ export class BuyerProxy {
         ...(requestedService ? { 'x-antseed-service': requestedService } : {}),
       },
     }
+    const latencyServiceId = selectedRoutePlan.serviceId ?? requestedService
     if (selectedRoutePlan.serviceId) {
       requestForPeer = withRoutedModel(requestForPeer, selectedRoutePlan.serviceId)
     }
@@ -3920,7 +3988,7 @@ export class BuyerProxy {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
             streamed = true
-            if (startResponse.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, Date.now() - startTime)
+            if (startResponse.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyServiceId, Date.now() - startTime)
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startResponse)
               : startResponse
@@ -3970,7 +4038,7 @@ export class BuyerProxy {
         }
 
         const latencyMs = Date.now() - startTime
-        if (!streamed && responseForClient.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyMs)
+        if (!streamed && responseForClient.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyServiceId, latencyMs)
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
           const prefix = adaptResponse && !streamed ? 'Upstream adapted error detail' : 'Upstream error detail'
@@ -4072,7 +4140,7 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
-        if (response.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyMs)
+        if (response.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyServiceId, latencyMs)
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {

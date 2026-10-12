@@ -13,6 +13,7 @@ function Svg({ size = 16, children, ...rest }: IconProps & { children: React.Rea
 
 export const Icon = {
   overview: (p: IconProps) => <Svg {...p}><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></Svg>,
+  chat: (p: IconProps) => <Svg {...p}><path d="M4 5h16v11H9l-5 4z" /><path d="M8 9.5h8M8 12.5h5" /></Svg>,
   activity: (p: IconProps) => <Svg {...p}><path d="M3 12h4l3 8 4-16 3 8h4" /></Svg>,
   logs: (p: IconProps) => <Svg {...p}><path d="M8 6h13M8 12h13M8 18h13M3 6h.01M3 12h.01M3 18h.01" /></Svg>,
   keys: (p: IconProps) => <Svg {...p}><circle cx="8" cy="15" r="4" /><path d="m10.8 12.2 9.2-9.2M17 6l3 3M14 9l2 2" /></Svg>,
@@ -43,5 +44,6 @@ export const Icon = {
   download: (p: IconProps) => <Svg {...p}><path d="M12 4v11M7 10l5 5 5-5M4 20h16" /></Svg>,
   more: (p: IconProps) => <Svg {...p}><circle cx="5" cy="12" r="1" /><circle cx="12" cy="12" r="1" /><circle cx="19" cy="12" r="1" /></Svg>,
   shield: (p: IconProps) => <Svg {...p}><path d="M12 3 4 6v6c0 4.5 3.4 8.3 8 9 4.6-.7 8-4.5 8-9V6Z" /><path d="m9 12 2 2 4-4" /></Svg>,
+  compass: (p: IconProps) => <Svg {...p}><circle cx="12" cy="12" r="9" /><path d="m15.5 8.5-2 5-5 2 2-5z" /></Svg>,
   logout: (p: IconProps) => <Svg {...p}><path d="M15 4h4a1 1 0 0 1 1 1v14a1 1 0 0 1-1 1h-4M10 17l5-5-5-5M15 12H3" /></Svg>,
 }

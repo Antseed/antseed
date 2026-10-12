@@ -175,9 +175,8 @@ function WorkspaceLevel() {
 }
 
 /**
- * Hard limits from the buyer's own config (max pricing, min reputation, a
- * required verifier) that apply to every key whatever its policy. The
- * buyer's routing preferences are not shown: these policies replace them.
+ * The buyer's own config (max pricing, min reputation, a required verifier,
+ * routing preferences), the level every policy below narrows.
  */
 function BuyerLimitsLine() {
   const limits = useBuyerLimits()
@@ -185,7 +184,7 @@ function BuyerLimitsLine() {
   const parts = describeBuyerLimits(limits.data)
   return (
     <p className="gc-fineprint">
-      Buyer limits, applied to every key: {parts.length > 0 ? parts.join(' · ') : 'none'}.
+      Buyer config, which every policy here can only narrow: {parts.length > 0 ? parts.join(' · ') : 'none'}.
     </p>
   )
 }

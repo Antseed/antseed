@@ -22,7 +22,7 @@ import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
-import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
+import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
 
 interface LocalSeederInfo {
@@ -214,7 +214,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
     .option('--verifiers <ids>', "ordered, comma-separated verifier SDK ids to verify sellers with (default: the seller's advertised default if trusted)")
     .option('--require-verifier', 'refuse to route unless a verifier SDK verifies the seller (default: verify but route anyway)')
     .option('--no-verifier', 'disable seller verification entirely')
-    .action(async (options) => {
+    .action(async (options, command: Command) => {
       const globalOpts = getGlobalOptions(buyerCmd)
       const config = await loadConfig(globalOpts.config)
       const logFilter = typeof options.logFilter === 'string' ? options.logFilter.trim() : ''
@@ -448,12 +448,18 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       const proxyPort = effectiveBuyerConfig.proxyPort
       const proxySpinner = ora(`Starting local proxy on port ${proxyPort}...`).start()
       let verifierPolicy: VerifierPolicy | undefined
+      // `buyer.verifier` in the config, unless a verifier flag is given: the flags then decide alone.
+      const verifierFlags = command.getOptionValueSource('verifier') === 'cli'
+        || options.verifiers !== undefined || options.requireVerifier !== undefined
+      const configuredVerifier = effectiveBuyerConfig.verifier ?? {}
       try {
-        verifierPolicy = resolveVerifierPolicy({
-          verifier: options.verifier,
-          verifiers: options.verifiers,
-          requireVerifier: options.requireVerifier,
-        })
+        verifierPolicy = resolveVerifierPolicy(verifierFlags
+          ? { verifier: options.verifier, verifiers: options.verifiers, requireVerifier: options.requireVerifier }
+          : {
+              verifier: configuredVerifier.enabled,
+              ...(configuredVerifier.prefer?.length ? { verifiers: configuredVerifier.prefer.join(',') } : {}),
+              requireVerifier: configuredVerifier.require,
+            })
       } catch (err) {
         console.error(chalk.red((err as Error).message))
         process.exit(1)
@@ -507,6 +513,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
         buyerOverrides: runtimeOverrides,
+        settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
         ...(chainReader ? { balanceReader: chainReader } : {}),

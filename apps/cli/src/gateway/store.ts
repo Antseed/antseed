@@ -71,6 +71,54 @@ export interface WorkspaceRecord {
   createdAt: number
 }
 
+/** Whose chat history: a console member's, or an API key holder's (the CLI and key sessions). */
+export interface ChatThreadOwner {
+  kind: 'member' | 'key'
+  id: string
+  workspaceId: string
+}
+
+export interface ChatThreadSummary {
+  id: string
+  workspaceId: string
+  owner: { kind: 'member' | 'key'; id: string }
+  title: string
+  model: string | null
+  peerId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ChatThreadRecord extends ChatThreadSummary {
+  /** AI SDK UIMessages, as the web chat and `antseed chat` exchange them. */
+  messages: unknown[]
+}
+
+interface ChatThreadRow {
+  id: string
+  workspace_id: string
+  owner_kind: 'member' | 'key'
+  owner_id: string
+  title: string
+  model: string | null
+  peer_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+function chatThreadSummary(row: ChatThreadRow): ChatThreadSummary {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    owner: { kind: row.owner_kind, id: row.owner_id },
+    title: row.title,
+    model: row.model,
+    peerId: row.peer_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
 export interface MemberRecord {
   id: string
   label: string
@@ -1548,6 +1596,35 @@ export class GatewayStore {
       entries: page.map(toAudit),
       nextBefore: rows.length > limit ? String(page[page.length - 1]!['seq']) : null,
     }
+  }
+
+  // ── Chat history ────────────────────────────────────────────────────────
+
+  /** A member's or a key's conversations in a workspace, newest first (without their messages). */
+  listChatThreads(owner: ChatThreadOwner, limit = 200): ChatThreadSummary[] {
+    return (this._stmt(`
+      SELECT id, workspace_id, owner_kind, owner_id, title, model, peer_id, created_at, updated_at FROM chat_threads
+      WHERE owner_kind = ? AND owner_id = ? AND workspace_id = ? ORDER BY updated_at DESC LIMIT ?
+    `).all(owner.kind, owner.id, owner.workspaceId, limit) as ChatThreadRow[]).map(chatThreadSummary)
+  }
+
+  getChatThread(id: string): ChatThreadRecord | null {
+    const row = this._stmt('SELECT * FROM chat_threads WHERE id = ?').get(id) as (ChatThreadRow & { messages: string }) | undefined
+    return row ? { ...chatThreadSummary(row), messages: parseJson<unknown[]>(row.messages, []) } : null
+  }
+
+  /** Creates or replaces a conversation; the owner and creation time of an existing one never change. */
+  saveChatThread(input: { id: string; owner: ChatThreadOwner; title: string; model: string | null; peerId: string | null; messages: unknown[] }): void {
+    const now = this._now()
+    this._stmt(`
+      INSERT INTO chat_threads (id, workspace_id, owner_kind, owner_id, title, model, peer_id, messages, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET title = excluded.title, model = excluded.model, peer_id = excluded.peer_id, messages = excluded.messages, updated_at = excluded.updated_at
+    `).run(input.id, input.owner.workspaceId, input.owner.kind, input.owner.id, input.title, input.model, input.peerId, JSON.stringify(input.messages), now, now)
+  }
+
+  deleteChatThread(id: string): boolean {
+    return this._stmt('DELETE FROM chat_threads WHERE id = ?').run(id).changes > 0
   }
 
   // ── Settings ────────────────────────────────────────────────────────────

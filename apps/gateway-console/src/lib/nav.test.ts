@@ -6,7 +6,7 @@ const ids = (orgRole: 'owner' | 'admin' | 'member', workspaceRole: 'admin' | 'me
 
 describe('role-based navigation', () => {
   it('shows everything to owners and org admins', () => {
-    const all = ['overview', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'network', 'routing', 'members', 'workspaces', 'audit', 'settings']
+    const all = ['overview', 'chat', 'activity', 'logs', 'keys', 'presets', 'wallet', 'rewards', 'network', 'routing', 'members', 'workspaces', 'audit', 'settings']
     expect(ids('owner', null)).toEqual(all)
     expect(ids('admin', 'member')).toEqual(all)
   })
@@ -18,7 +18,7 @@ describe('role-based navigation', () => {
     expect(nav).not.toContain('settings')
   })
   it('limits plain members to their own usage, keys, presets and the network', () => {
-    expect(ids('member', 'member')).toEqual(['overview', 'activity', 'logs', 'keys', 'presets', 'network'])
+    expect(ids('member', 'member')).toEqual(['overview', 'chat', 'activity', 'logs', 'keys', 'presets', 'network'])
   })
   it('blocks direct navigation to hidden pages', () => {
     expect(canOpen('settings', { orgRole: 'member', workspaceRole: 'admin' })).toBe(false)

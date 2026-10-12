@@ -14,7 +14,7 @@ import { listAuditEntries } from './audit.js'
 import { CLI_ACTOR, PolicyProblemError, recordAudit, type ServiceContext } from './context.js'
 import { createKey, revokeKey, rotateKey, updateKey } from './keys.js'
 import { disableMember, inviteMember, removeCredential, updateMember, type CredentialStore } from './members.js'
-import { listNetworkPeers, previewRoute, readBuyerLimits } from './network.js'
+import { buyerLimitsPolicy, listNetworkPeers, previewRoute, readBuyerLimits } from './network.js'
 import { createPeerList, deletePeerList, updatePeerList } from './peer-lists.js'
 import { createPreset, findPreset, updatePreset } from './presets.js'
 import { gatewayDefaultPolicy, setGatewayDefaultPolicy } from './routing.js'
@@ -349,10 +349,71 @@ describe('settings', () => {
     const unsupervised = fakeBuyer({ 'POST /_antseed/restart': () => ({ status: 409, body: { error: 'restart_unsupported' } }) })
     assert.deepEqual(await updateBuyerSettings(settingsCtx, CLI_ACTOR, { minPeerReputation: 10 }, unsupervised), { changed: true, restartRequired: true })
     assert.deepEqual(await updateBuyerSettings(settingsCtx, CLI_ACTOR, {}, unsupervised), { changed: false, restartRequired: false })
-    await assert.rejects(updateBuyerSettings(settingsCtx, CLI_ACTOR, { minPeerReputation: 101 }, unsupervised), /between 0 and 100/)
+    await assert.rejects(updateBuyerSettings(settingsCtx, CLI_ACTOR, { minPeerReputation: 101 }, unsupervised), /from 0 to 100/)
 
     writeFileSync(configPath, '{ not json')
     await assert.rejects(patchConfigFile(configPath, () => {}), (e: ConsoleError) => e.code === 'config_unreadable')
+  })
+
+  test('every buyer setting: routing preferences apply without a restart, the rest restart, RPC URLs stay masked', async () => {
+    const configPath = join(dir, 'all-settings.json')
+    const rpc = 'https://base.example.test/v2/secret-key'
+    writeFileSync(configPath, `${JSON.stringify({ buyer: { proxyPort: 8377 }, payments: { crypto: { chainId: 'base-sepolia', rpcUrl: rpc } } }, null, 2)}\n`)
+    const settingsCtx = { ...ctx, configPath, publicUrl: null, buyerPort: 8377 }
+    const buyer = fakeBuyer({
+      'POST /_antseed/restart': () => ({ status: 202, body: { ok: true } }),
+      'GET /_antseed/setting-overrides': () => ({ body: { overrides: ['network.metadataFetchTimeoutMs'] } }),
+    })
+
+    // Routing preferences only: written, no restart.
+    const live = await updateBuyerSettings(settingsCtx, CLI_ACTOR, {
+      routingPreferences: { minTrustScore: 20, blockedPeerIds: [`0x${PEER_A.toUpperCase().replace(/^0X/, '')}`], preferFreePeers: true },
+    }, buyer)
+    assert.deepEqual(live, { changed: true, restartRequired: false })
+    assert.deepEqual(buyer.calls.filter((call) => call.startsWith('POST')), [])
+
+    // Everything else: written to its config key, then one restart.
+    const restarted = await updateBuyerSettings(settingsCtx, CLI_ACTOR, {
+      verifier: { enabled: true, require: true, prefer: ['antseed-verifier'] },
+      evidence: { sampleRate: 0.1, maxSampleBytes: null },
+      payments: { autoSweep: false, maxPerRequestUsdc: 0.5, maxReserveUsdc: 2, fallbackRpcUrls: ['https://fallback.example.test/key'] },
+      network: { peerRefreshIntervalMs: 60_000, requestTimeoutMs: 90_000, disableMetadataV2Services: true },
+    }, buyer)
+    assert.deepEqual(restarted, { changed: true, restartRequired: false })
+    assert.deepEqual(buyer.calls.filter((call) => call.startsWith('POST')), ['POST /_antseed/restart'])
+    const saved = JSON.parse(readFileSync(configPath, 'utf8')) as { buyer: Record<string, any>; payments: Record<string, any> }
+    assert.deepEqual(saved.buyer['routingPreferences'], { minTrustScore: 20, blockedPeerIds: [PEER_A.toLowerCase().replace(/^0x/, '')], preferFreePeers: true })
+    assert.deepEqual(saved.buyer['verifier'], { enabled: true, require: true, prefer: ['antseed-verifier'] })
+    assert.deepEqual(saved.buyer['verification'], { sampleRate: 0.1 })
+    assert.equal(saved.buyer['autoSweep'], false)
+    assert.equal(saved.buyer['peerRefreshIntervalMs'], 60_000)
+    assert.equal(saved.buyer['disableMetadataV2Services'], true)
+    assert.equal(saved.payments['maxPerRequestUsdc'], '500000')
+    assert.equal(saved.payments['maxReserveAmountUsdc'], '2000000')
+    assert.deepEqual(saved.payments['crypto'], { chainId: 'base-sepolia', rpcUrl: rpc, fallbackRpcUrls: ['https://fallback.example.test/key'] })
+
+    // Read back: masked RPC URLs, overrides from the running buyer.
+    const read = (await readSettings(settingsCtx, { buyer })).buyer
+    assert.equal(read.payments.rpcUrl, 'https://base.example.test/…')
+    assert.deepEqual(read.payments.fallbackRpcUrls, ['https://fallback.example.test/…'])
+    assert.equal(read.payments.maxPerRequestUsdc, 0.5)
+    assert.deepEqual(read.verifier, { enabled: true, prefer: ['antseed-verifier'], require: true })
+    assert.equal(read.requireVerifier, true)
+    assert.deepEqual(read.overrides, ['network.metadataFetchTimeoutMs'])
+    assert.equal((await readSettings(settingsCtx, { revealSecrets: true })).buyer.payments.rpcUrl, rpc)
+
+    // Sending the masked values back keeps the saved URLs and changes nothing.
+    const roundTrip = await updateBuyerSettings(settingsCtx, CLI_ACTOR, { payments: { rpcUrl: read.payments.rpcUrl, fallbackRpcUrls: read.payments.fallbackRpcUrls } }, buyer)
+    assert.deepEqual(roundTrip, { changed: false, restartRequired: false })
+    assert.equal(JSON.parse(readFileSync(configPath, 'utf8')).payments.crypto.rpcUrl, rpc)
+    assert.equal(JSON.stringify(lastAudit().details).includes('secret-key'), false)
+
+    // Rejected before anything is written: bad values, and combinations the buyer would refuse to load.
+    await assert.rejects(updateBuyerSettings(settingsCtx, CLI_ACTOR, { routingPreferences: { allowedPeerIds: ['nope'] } }, buyer), /40-character hex/)
+    await assert.rejects(updateBuyerSettings(settingsCtx, CLI_ACTOR, { network: { peerRefreshIntervalMs: 10 } }, buyer), /at least 1000/)
+    await assert.rejects(updateBuyerSettings(settingsCtx, CLI_ACTOR, { payments: { rpcUrl: 'ftp://x' } }, buyer), /http\(s\) URL/)
+    await assert.rejects(updateBuyerSettings(settingsCtx, CLI_ACTOR, { verifier: { enabled: false } }, buyer), /buyer\.verifier\.enabled cannot be false/)
+    assert.deepEqual(JSON.parse(readFileSync(configPath, 'utf8')).buyer.verifier, { enabled: true, require: true, prefer: ['antseed-verifier'] })
   })
 
   test('observability: destination changes need mayChangeDestination; headers are masked unless revealed', async () => {
@@ -387,19 +448,32 @@ describe('network', () => {
     assert.equal(buyer.calls.filter((call) => call.includes('route-preview')).length, 1)
   })
 
-  test('buyer limits: pricing from the config, reputation and verifier from the running buyer', async () => {
+  test('buyer config: pricing from the config, reputation, verifier and preferences from the running buyer', async () => {
     const configPath = join(dir, 'buyer-limits.json')
     writeFileSync(configPath, JSON.stringify({ buyer: {
       minPeerReputation: 25,
       maxPricing: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 9 } },
       routingPreferences: { minTrustScore: 60, preferFreePeers: true, maxInputUsdPerMillion: 25, allowedPeerIds: [], blockedPeerIds: [] },
     } }))
-    assert.deepEqual(await readBuyerLimits(configPath, null), {
-      minPeerReputation: 25, requireVerifier: false, maxPricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 9, cachedInputUsdPerMillion: null },
+    const fromConfig = await readBuyerLimits(configPath, null)
+    assert.deepEqual(fromConfig, {
+      minPeerReputation: 25,
+      requireVerifier: false,
+      maxPricing: { inputUsdPerMillion: 3, outputUsdPerMillion: 9, cachedInputUsdPerMillion: null },
+      routingPreferences: { minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [], preferFreePeers: true },
     })
-    const live = await readBuyerLimits(configPath, { minReputation: 40, requireVerified: true })
+    assert.deepEqual(buyerLimitsPolicy(fromConfig), {
+      minReputation: 25, maxInputUsdPerMillion: 3, maxOutputUsdPerMillion: 9, minTrustScore: 60, preferFreePeers: true,
+    })
+    const live = await readBuyerLimits(configPath, { minReputation: 40, requireVerified: true, minTrustScore: 50, blockedPeerIds: [PEER_A] })
     assert.equal(live.minPeerReputation, 40)
     assert.equal(live.requireVerifier, true)
-    assert.deepEqual(await readBuyerLimits(null, {}), { minPeerReputation: 0, requireVerifier: false, maxPricing: null })
+    assert.deepEqual(live.routingPreferences, { minTrustScore: 50, allowedPeerIds: [], blockedPeerIds: [PEER_A], preferFreePeers: false })
+    assert.deepEqual(await readBuyerLimits(null, {}), {
+      minPeerReputation: 0,
+      requireVerifier: false,
+      maxPricing: null,
+      routingPreferences: { minTrustScore: 0, allowedPeerIds: [], blockedPeerIds: [], preferFreePeers: false },
+    })
   })
 })

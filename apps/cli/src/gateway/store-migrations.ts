@@ -278,4 +278,20 @@ export const MIGRATIONS: readonly string[] = [
     used_at INTEGER
   );
   `,
+  // Console and CLI chat history: one row per conversation, its AI SDK UIMessages as JSON.
+  `
+  CREATE TABLE chat_threads (
+    id TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    owner_kind TEXT NOT NULL CHECK (owner_kind IN ('member', 'key')),
+    owner_id TEXT NOT NULL,
+    title TEXT NOT NULL,
+    model TEXT,
+    peer_id TEXT,
+    messages TEXT NOT NULL DEFAULT '[]',
+    created_at INTEGER NOT NULL,
+    updated_at INTEGER NOT NULL
+  );
+  CREATE INDEX chat_threads_owner ON chat_threads(owner_kind, owner_id, workspace_id, updated_at);
+  `,
 ]

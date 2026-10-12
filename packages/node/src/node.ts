@@ -133,7 +133,16 @@ function applyTrust(peer: PeerInfo): void {
 
 /** How long an on-chain trust read of a peer is reused before it is read again. */
 export const ON_CHAIN_STATS_TTL_MS = 10 * 60_000;
+/**
+ * How long "no agent id" is remembered: short, so a seller that registers
+ * shows up with its trust score within a couple of minutes.
+ */
+export const ON_CHAIN_STATS_MISS_TTL_MS = 2 * 60_000;
 const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
+
+function sellerContractOf(p: PeerInfo): string | null {
+  return p.metadata?.sellerContract?.toLowerCase().replace(/^0x/, '') ?? null;
+}
 
 /** Copy one batched trust read onto a peer. */
 function applyTrustSignals(p: PeerInfo, read: TrustSignals, fetchedAt: number): void {
@@ -466,7 +475,7 @@ export class AntseedNode extends EventEmitter {
    * than on the objects; peers read within ON_CHAIN_STATS_TTL_MS skip both
    * the seller-address resolution and the chain read.
    */
-  private _onChainStatsCache = new Map<PeerId, { signals: TrustSignals | null; fetchedAt: number }>();
+  private _onChainStatsCache = new Map<PeerId, { signals: TrustSignals | null; fetchedAt: number; sellerContract: string | null }>();
   /** Serializes non-blocking external claim verification for discovered peers. */
   private _externalVerificationChain: Promise<void> = Promise.resolve();
   private _identityHistoryCollector: IdentityHistoryCollector | undefined;
@@ -1136,7 +1145,9 @@ export class AntseedNode extends EventEmitter {
         continue;
       }
       const cached = this._onChainStatsCache.get(p.peerId);
-      if (cached && nowMs - cached.fetchedAt < ON_CHAIN_STATS_TTL_MS) {
+      // A changed seller contract resolves to another address: read again.
+      const cacheTtlMs = cached?.signals ? ON_CHAIN_STATS_TTL_MS : ON_CHAIN_STATS_MISS_TTL_MS;
+      if (cached && cached.sellerContract === sellerContractOf(p) && nowMs - cached.fetchedAt < cacheTtlMs) {
         if (cached.signals) {
           applyTrustSignals(p, cached.signals, cached.fetchedAt);
           peersWithCompleteStats.add(p);
@@ -1174,7 +1185,7 @@ export class AntseedNode extends EventEmitter {
       const read = signals.get(address);
       // A peer without an agent id (or a failed batch entry) keeps its
       // previous complete snapshot, or stays unenriched when newly discovered.
-      this._onChainStatsCache.set(p.peerId, { signals: read ?? null, fetchedAt });
+      this._onChainStatsCache.set(p.peerId, { signals: read ?? null, fetchedAt, sellerContract: sellerContractOf(p) });
       if (!read) continue;
       applyTrustSignals(p, read, fetchedAt);
       peersWithCompleteStats.add(p);

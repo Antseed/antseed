@@ -1,5 +1,6 @@
 import { defineConfig } from 'vite'
 import react from '@vitejs/plugin-react'
+import tailwindcss from '@tailwindcss/vite'
 import path from 'node:path'
 import { fileURLToPath } from 'node:url'
 
@@ -10,11 +11,12 @@ const gatewayUrl = process.env['ANTSEED_GATEWAY_URL'] || 'http://127.0.0.1:8379'
 // Vite server proxies /console/api to a running gateway. `VITE_MOCK=1 vite`
 // runs against an in-memory fake API instead (never part of a production build).
 export default defineConfig({
-  plugins: [react()],
+  // Tailwind serves only the chat page (src/chat, shadcn AI Elements); see src/chat/chat.css.
+  plugins: [react(), tailwindcss()],
   root: __dirname,
   base: '/console/',
   // @antseed/ui resolves React from the repo root; keep a single React copy.
-  resolve: { dedupe: ['react', 'react-dom'] },
+  resolve: { dedupe: ['react', 'react-dom'], alias: { '@': path.resolve(__dirname, 'src') } },
   build: {
     outDir: path.resolve(__dirname, 'dist'),
     emptyOutDir: true,

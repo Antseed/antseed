@@ -125,9 +125,13 @@ describe('helpers', () => {
 })
 
 describe('describeBuyerLimits', () => {
-  it('lists the hard buyer limits, or nothing', () => {
-    expect(describeBuyerLimits({ minPeerReputation: 40, requireVerifier: true, maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null } }))
-      .toEqual(['reputation ≥ 40', 'verified sellers only', '≤ $15.00/M in', '≤ $60.00/M out'])
-    expect(describeBuyerLimits({ minPeerReputation: 0, requireVerifier: false, maxPricing: null })).toEqual([])
+  it('lists the buyer config, or nothing', () => {
+    expect(describeBuyerLimits({
+      minPeerReputation: 40,
+      requireVerifier: true,
+      maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null },
+      routingPreferences: { minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [A], preferFreePeers: true },
+    })).toEqual(['reputation ≥ 40', 'verified sellers only', '≤ $15.00/M in', '≤ $60.00/M out', 'trust ≥ 60', '1 blocked seller', 'free first'])
+    expect(describeBuyerLimits({ minPeerReputation: 0, requireVerifier: false, maxPricing: null, routingPreferences: null })).toEqual([])
   })
 })

@@ -5,6 +5,7 @@ import { registerConfigCommand } from './commands/config/index.js';
 import { registerNetworkCommands } from './commands/network/index.js';
 import { registerIdentityCommands } from './commands/identity/index.js';
 import { registerAgentCommand } from './commands/agent.js';
+import { registerChatCommand } from './commands/chat.js';
 import { registerDevCommand } from './commands/dev.js';
 import { registerPaymentsCommand } from './commands/payments.js';
 import { registerDepositAlias } from './commands/buyer/deposit.js';
@@ -37,6 +38,7 @@ export function createProgram(): Command {
   registerIdentityCommands(program);
   registerDevCommand(program);
   registerAgentCommand(program);
+  registerChatCommand(program);
   registerPaymentsCommand(program);
   registerDepositAlias(program);
   registerMetricsCommand(program);

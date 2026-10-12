@@ -34,6 +34,8 @@ Console setup link (single use, valid for 1 hour):
 
 Open it, register a passkey or connect a wallet, and you are the organization's owner. The link works once and expires after one hour; running the command again replaces it. Once the console has an owner, the same command prints the console URL instead. The [server installer](/docs/guides/gateway-server) runs it for you and prints the link at the end of the install.
 
+The first time you (or any new member) open the console, a short tour points out where everything is: workspaces, funding, keys, the buyer settings every routing policy starts from, routing, the network, usage and chat. Replay it any time from the account menu with **Take the tour**.
+
 The gateway needs to know the address people use to reach it, for links, passkeys and single sign-on. Locally that is `http://localhost:<port>`. Behind HTTPS, pass it:
 
 ```bash
@@ -185,7 +187,7 @@ A routing policy says which sellers may serve a request and how the eligible one
 
 Policies can be set at several levels, applied in order:
 
-1. The buyer's hard limits (price caps and minimum reputation, in **Settings**, and a verifier the buyer was started to require with `--require-verifier`)
+1. The buyer's own config, under **Settings → Buyer**: its hard limits (price caps, minimum reputation and required verification) and its routing preferences (`buyer.routingPreferences`)
 2. The gateway default (**Routing**)
 3. The workspace's organization policy, set by organization admins
 4. The workspace's own policy, set by its workspace admins
@@ -197,7 +199,7 @@ A workspace therefore has two policies. Organization admins set the **organizati
 
 Each level can only narrow the ones above it: allow lists intersect, block lists add up, minimums take the higher value, caps the lower one, and "require verified" and "TEE sellers only" stay on once any level sets them. Ranking choices (sort, free-first, per-model routes) take the most specific level that sets them. A member can therefore never give their own key more than their workspace allows.
 
-The buyer's routing preferences (`buyer.routingPreferences`: minimum trust score, allowed and blocked sellers, free-first and the soft input-price limit, the same settings the desktop app uses for automatic routing) are not a level. They are the buyer's defaults for requests that arrive without a gateway policy. For requests through the gateway, the gateway's policies replace them: a workspace with a minimum trust of 5 admits sellers at trust 5 even if the buyer's preference is 60, and a pinned seller is refused only by a gateway policy or a hard limit. When no gateway level sets a sort order or free-first, the buyer's preferences still decide the order of eligible sellers, but never exclude one. The **Routing** page lists the hard limits that apply to every key, and the route preview shows them as the **Buyer** level; exclusions they cause read `buyer config: …`, for example `buyer config: reputation 30 below 40`.
+The buyer's routing preferences (`buyer.routingPreferences`: minimum trust score, allowed and blocked sellers and free-first, the same settings the desktop app uses for automatic routing) are part of that first level, so the gateway's policies narrow them like any other level: a seller the buyer blocks stays blocked, and a workspace minimum trust of 5 has no effect while the buyer's is 60 (lower the buyer's `minTrustScore` to admit newer sellers). They apply to automatic routing; a pinned seller is refused only by a gateway policy or a hard limit, as without a gateway. The buyer's soft input-price limit only ranks sellers, and its free-first is a default a gateway level can turn on but not off. The **Routing** page lists the buyer's config, and the route preview shows it as the **Buyer** level; exclusions it causes read `buyer config: …`, for example `buyer config: reputation 30 below 40` or `buyer config: trust 45 below 60`.
 
 The gateway enforces allowed models itself and hands the combined policy to the buyer with each request, authenticated by a secret only the gateway and buyer share (`<data-dir>/gateway/buyer-control.secret`). The buyer applies it to automatic routing and to pinned requests alike (`<peerId>@<model>` or the `x-antseed-pin-peer` header), so a client cannot get around it by pinning a seller.
 
@@ -308,7 +310,9 @@ Under **Settings → Observability** you can:
 
 ## Settings
 
-**Settings** also holds the buyer's price caps and minimum seller reputation. Saving them restarts the buyer to apply them: it exits with code 75 and its supervisor starts it again. The buyer only restarts itself when it knows a supervisor will bring it back: under systemd (as with the server installer), or when started with `ANTSEED_SUPERVISED=1` under another supervisor such as Docker with a restart policy, launchd or pm2. Otherwise the settings are saved and the console tells you to restart the buyer yourself.
+**Settings → Buyer** holds every setting in the buyer's config file, laid out like a routing policy: sellers (allow or block), quality and ranking (minimum trust and reputation sliders, free-first, the soft input-price limit) and a count of how many of the sellers the gateway sees still match, then price caps, verification (verify sellers, require verification, which verifiers, evidence sampling), payments (automatic deposit sweeping, the most USDC per request and per channel reserve, the Base RPC URL and fallbacks) and network timeouts. One Save writes them; it says whether the change applies at once or restarts the buyer, and asks before a restart. Only the fields you change are written; the rest of the file stays as you wrote it, and a change the buyer would refuse to load is rejected before anything is saved. RPC URLs usually carry an API key, so they show without their path to management tokens and in the audit log. A setting the running buyer takes from its environment or start flags instead (for example `ANTSEED_BASE_RPC_URL` or `--require-verifier`) is marked: the saved value applies once that override is removed.
+
+Routing preferences apply at once: the buyer reloads them from its config file. Saving any other section restarts the buyer to apply it: it exits with code 75 and its supervisor starts it again. The buyer only restarts itself when it knows a supervisor will bring it back: under systemd (as with the server installer), or when started with `ANTSEED_SUPERVISED=1` under another supervisor such as Docker with a restart policy, launchd or pm2. Otherwise the settings are saved and the console tells you to restart the buyer yourself.
 
 ## CLI reference
 
@@ -405,12 +409,12 @@ Every `policy set` command (and `routing set`, `preset create|update`) takes the
 | --- | --- |
 | `settings show` | `antseed gateway settings show` (`--reveal` shows OTLP header values) |
 | `settings set-observability` | `antseed gateway settings set-observability --otlp-endpoint https://otel.example.com/v1/traces --otlp-header "authorization=Bearer …" --retention-days 30` |
-| `settings set-buyer` | `antseed gateway settings set-buyer --max-input-price 3 --min-reputation 20` |
+| `settings set-buyer` | `antseed gateway settings set-buyer --max-input-price 3 --min-reputation 20 --min-trust 40 --block-peer <peerId> --require-verifier on --rpc-url https://…` |
 | `peers` | `antseed gateway peers --model qwen3-coder` |
 | `admin-token create` / `list` / `revoke` | `antseed gateway admin-token create --label reporting --scope read` |
 | `console-link` | `antseed gateway console-link` |
 
-`settings set-buyer` edits only the changed fields of your config file and asks the buyer to restart, as the console does.
+`settings set-buyer` edits only the changed fields of your config file, as the console does: routing preference flags (`--min-trust`, `--soft-max-input-price`, `--prefer-free`, `--allow-peer`, `--block-peer` and their `--unallow-peer`, `--unblock-peer`, `--clear-allowed`, `--clear-blocked`) apply at once; the others (`--max-*-price`, `--min-reputation`, `--verifier`, `--verifiers`, `--require-verifier`, `--evidence-sample-rate`, `--evidence-max-bytes`, `--auto-sweep`, `--max-per-request-usdc`, `--max-reserve-usdc`, `--rpc-url`, `--fallback-rpc-url`, `--peer-refresh-ms`, `--metadata-timeout-ms`, `--request-timeout-ms`, `--max-stream-ms`, `--per-service-metadata`) restart the buyer. `settings show` lists every setting and marks the ones the buyer's environment or flags override.
 
 Funding stays with the buyer commands. A workspace pays from its buyer identity (`antseed gateway workspace show` prints it and its address): send USDC on Base to that address, or show it as a QR code with `antseed --data-dir <data-dir>/buyer-identities/<identity> buyer deposit --no-watch` (the Default workspace uses your data dir itself). Card checkout is console-only. For the authorized wallet, `antseed gateway workspace operator show <workspace>` reads it from the chain and says whose it is; `operator authorize <workspace> <address>` signs the authorization for an address when none is set and prints the signature, the calldata and a `cast send` example to submit it from any wallet (or `--browser` opens the local wallet page for the workspace's wallet, like `antseed buyer set-authorized-wallet --identity <identity>`); `operator transfer <workspace> <address>|--clear` hands over the role when the workspace wallet authorizes itself, paying gas from that wallet. `authorize` and `transfer` print a warning and ask for confirmation unless you pass `--yes`, and are recorded in the audit log as `antseed CLI`.
 

@@ -228,6 +228,21 @@ export interface BuyerCLIConfig {
   autoSweep?: boolean;
   /** Buyer-side response-auth evidence sampling settings. */
   verification?: BuyerVerificationConfig;
+  /**
+   * Seller verification by verifier SDKs (e.g. TEE attestation). The
+   * `buyer start` flags `--no-verifier`, `--verifiers` and
+   * `--require-verifier` override it.
+   */
+  verifier?: BuyerVerifierConfig;
+}
+
+export interface BuyerVerifierConfig {
+  /** Verify sellers at all. Default: true. */
+  enabled?: boolean;
+  /** Ordered verifier SDK ids to verify with; empty uses the seller's trusted default. */
+  prefer?: string[];
+  /** Refuse to route to a seller no verifier verifies. Default: false. */
+  require?: boolean;
 }
 
 /**

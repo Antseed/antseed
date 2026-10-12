@@ -12,6 +12,8 @@
     "noUnusedLocals": true,
     "noUnusedParameters": true,
     "allowImportingTsExtensions": true,
+    "baseUrl": ".",
+    "paths": { "@/*": ["./src/*"] },
     "types": ["vite/client", "node"],
     "lib": ["ES2022", "DOM", "DOM.Iterable"]
   },
