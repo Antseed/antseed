@@ -54,7 +54,7 @@ export interface FinalUnitBillingResult {
   billingUsage: UnitBillingUsageReportV1;
 }
 
-interface CaptureUnitBillingArgs {
+export interface CaptureUnitBillingArgs {
   sellerPeerId: string;
   provider: string;
   service: string;
@@ -62,7 +62,7 @@ interface CaptureUnitBillingArgs {
   request: SerializedHttpRequest;
 }
 
-interface UnitBillingAdapter {
+export interface UnitBillingAdapter {
   name: string;
   units: readonly UnitBillingUnitV1[];
   protocols: readonly ServiceApiProtocol[];

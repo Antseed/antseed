@@ -105,7 +105,6 @@ describe('unit billing adapters', () => {
     expect(computeFinalUnitBilling(model, context, response(500, ranked), { kind: 'routing' }).costUsdc).toBe(0n);
   });
 
-
   it('routes image and Venice video billing through their adapters', () => {
     const image: UnitBillingModelV1 = { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] };
 

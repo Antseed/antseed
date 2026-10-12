@@ -54,7 +54,6 @@ This project uses selective package publishing. Each release entry lists the pub
 ### Changed
 
 - CLI routing: expose available routing services, per-ranking prices, and canonically matched supported models through `GET /_antseed/routing-services`. Reuse the ranking model-list cache, report expiry and discovery errors, and exclude sellers advertising multiple routing services.
-- Protocol: extend the shared billing unit list with `completed_requests`, `video_generations`, and `video_seconds`, preserving position-based metadata encoding, and route unit measurement through billing adapters. Completed-request and video billing fail closed until their adapters are implemented.
 - Desktop: Connected apps now uses the shared `@antseed/connected-apps` package for config patching instead of its own copy. Behaviour is unchanged: `.antseed.bak` backups, removing only what AntSeed added, `.antseed.state.json` sidecars, WSL support, source headers, and clean disconnects for configs patched by older desktop versions.
 - Website: the Terms of Service page now carries the Antseed Terms of Use Agreement (last updated October 9, 2026), replacing the May 15, 2026 Protocol Terms. Desktop: the Help screen's Privacy Policy link now opens its data-sharing section (6.2).
 - Website: refresh the Antseed Gateway blog header and social-preview image, mention agents in the introduction, and clarify the buyer's role and wallets assigned to shared keys.
