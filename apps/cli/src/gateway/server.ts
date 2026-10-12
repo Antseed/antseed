@@ -3,6 +3,7 @@ import type { AddressInfo } from 'node:net'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
+import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { newRequestTag, type GatewayAccounting } from './accounting.js'
 import { parseBearerToken } from './keys.js'
 import { hasSpendLimits, LIMIT_PERIODS, type LimitBreach } from './limits.js'
@@ -209,7 +210,9 @@ export class GatewayServer {
     const headers: http.OutgoingHttpHeaders = {}
     for (const [name, value] of Object.entries(req.headers)) {
       const normalized = name.toLowerCase()
-      if (normalized === 'host' || normalized === 'authorization' || normalized === 'cookie') continue
+      // The client's key authenticated it to this gateway; its other
+      // credentials are never needed downstream (see credential-headers.ts).
+      if (normalized === 'host' || isClientCredentialHeader(normalized)) continue
       // The key decides who pays and how spend is tagged, never the client.
       if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
       if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue

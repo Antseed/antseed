@@ -12,6 +12,7 @@ import type {
   SystemProxyResponseTransform,
   SystemProxySource,
 } from './types.js'
+import { CLIENT_CREDENTIAL_HEADERS } from '../proxy/credential-headers.js'
 
 const HOP_BY_HOP = new Set([
   'connection', 'keep-alive', 'proxy-authenticate', 'proxy-authorization',
@@ -19,8 +20,7 @@ const HOP_BY_HOP = new Set([
 ])
 
 const ROUTED_SENSITIVE_HEADERS = new Set([
-  'authorization',
-  'cookie',
+  ...CLIENT_CREDENTIAL_HEADERS,
   'x-csrf-token',
 ])
 
