@@ -6,6 +6,7 @@ import {
   activeProfilesFromRuntimeState,
   buildVprPeerOptions,
   buildVprProfileTraffic,
+  peerServiceIdForModel,
   resolveVprToolRoute,
   resolveVprToolRouteForPeerOptions,
 } from './tools.js';
@@ -150,4 +151,15 @@ test('resolveVprToolRouteForPeerOptions keeps a valid explicit tool model', () =
     ),
     { peerId: 'peer-2', model: 'claude-haiku' },
   );
+});
+
+test('peerServiceIdForModel returns the id the chosen peer advertises for the selected model', () => {
+  const routes = [
+    row({ peerId: 'peer-1', serviceId: 'claude-opus-5-5' }),
+    row({ peerId: 'peer-2', serviceId: 'opus-5.5-coding-only' }),
+    row({ peerId: 'peer-2', serviceId: 'opus-5.5' }),
+  ];
+  assert.equal(peerServiceIdForModel(routes, 'peer-2'), 'opus-5.5');
+  assert.equal(peerServiceIdForModel(routes, 'peer-1'), 'claude-opus-5-5');
+  assert.equal(peerServiceIdForModel(routes, 'peer-3'), null);
 });

@@ -123,6 +123,8 @@ export type PiChatEngine = {
    * the renderer's first push after launch.
    */
   getModelPicker(): ModelPickerSnapshot | null;
+  /** Whether the latest network catalog reports reasoning support for a service. */
+  serviceSupportsReasoning(serviceId: string): boolean;
   /** Rebinds a conversation's model/peer — same semantics as the chat UI's model dropdown. */
   selectPeer(request: ChatPeerSelectionRequest): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -1058,6 +1060,12 @@ export function registerPiChatHandlers({
     getProxyPort: () => resolveProxyPort(configPath),
     discoverServiceCatalog: discoverPolicyAllowedCatalog,
     getModelPicker: () => modelPickerSnapshot,
+    serviceSupportsReasoning: (serviceId) => {
+      const normalized = serviceId.trim().toLowerCase();
+      return lastServiceCatalogEntries.some((entry) => (
+        entry.id.trim().toLowerCase() === normalized && entry.capabilities?.reasoning === true
+      ));
+    },
     selectPeer: applyPeerSelection,
     setDefaultRoute: async (peerId, service, provider) => {
       const result = await setBuyerDefaultRoute(peerId, service);

@@ -10,6 +10,7 @@ import { useCachedResource } from '../../../modules/app/cached-resource';
 import {
   activeProfilesFromRuntimeState,
   buildVprPeerOptions,
+  peerServiceIdForModel,
   resolveVprToolRouteForPeerOptions,
 } from '../../../modules/routing/tools';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
@@ -180,7 +181,7 @@ export function VprToolsView() {
   const modelRoutes = useMemo(() => routesForSelectedModel(snap.discoverRows, snap.selection.model), [snap.discoverRows, snap.selection.model]);
   const bestRoute = useMemo(() => chooseBestVprRoute(modelRoutes, snap.preferences), [modelRoutes, snap.preferences]);
   const defaultPeerId = snap.selection.peerId || bestRoute?.peerId || peerOptions[0]?.peerId || '';
-  const defaultModel = snap.selection.model?.serviceId || peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services[0] || '';
+  const defaultModel = peerServiceIdForModel(modelRoutes, defaultPeerId) || snap.selection.model?.serviceId || peerOptions.find((peer) => peer.peerId === defaultPeerId)?.services[0] || '';
   const activeProfiles = useMemo(() => activeProfilesFromRuntimeState(proxyState), [proxyState]);
   const activeProfileNames = useMemo(() => activeProfiles ? [...activeProfiles] : [], [activeProfiles]);
   const setupProfiles = useMemo(() => {

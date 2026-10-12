@@ -409,3 +409,25 @@ test('a route change made while a request is in flight survives that request com
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('markRouting shows the in-flight seller without moving the chat pin', async () => {
+  const dir = await makeDir()
+  try {
+    const store = new ConversationStore(dir)
+    const pinned = 'a'.repeat(40) + '@gpt-5'
+    const id = store.touch({ tool: 'codex', sessionKey: 's1', lastModel: pinned }).id
+
+    const firstTry = 'b'.repeat(40) + '@claude-sonnet'
+    assert.equal(store.markRouting(id, firstTry)?.lastModel, firstTry)
+    assert.equal(store.get(id)?.pinnedModel, pinned)
+
+    const failover = 'c'.repeat(40) + '@claude-sonnet'
+    store.markRouting(id, failover)
+    assert.equal(store.get(id)?.lastModel, failover)
+    assert.equal(store.get(id)?.pinnedModel, pinned)
+    assert.equal(store.markRouting('codex:missing', failover), null)
+    await store.flush()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

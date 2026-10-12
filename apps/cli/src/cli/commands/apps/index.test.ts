@@ -284,14 +284,39 @@ const CATALOG_APPS: { name: string; dir: string; read: (ws: Workspace) => Promis
     dir: '~/.prime/agent',
     read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.prime', 'agent', 'models.json'), 'utf8')) as { providers: { antseed: { models: { id: string }[] } } }).providers.antseed.models.map((model) => model.id),
   },
+  {
+    name: 'opencode',
+    dir: '~/.config/opencode',
+    read: async (ws) => Object.keys((JSON.parse(await readFile(join(ws.home, '.config', 'opencode', 'opencode.jsonc'), 'utf8')) as { provider: { antseed: { models: Record<string, unknown> } } }).provider.antseed.models),
+  },
+  {
+    name: 'crush',
+    dir: '~/.config/crush',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.config', 'crush', 'crush.json'), 'utf8')) as { providers: { antseed: { models: { id: string }[] } } }).providers.antseed.models.map((model) => model.id),
+  },
+  {
+    name: 'zed',
+    dir: '~/.config/zed',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.config', 'zed', 'settings.json'), 'utf8')) as { language_models: { openai_compatible: { Antseed: { available_models: { name: string }[] } } } }).language_models.openai_compatible.Antseed.available_models.map((model) => model.name),
+  },
+  {
+    name: 'hermes',
+    dir: '~/.hermes',
+    read: async (ws) => [...(await readFile(join(ws.home, '.hermes', 'config.yaml'), 'utf8')).matchAll(/([\w.-]+):\s*\{?\s*context_length:/g)].map((match) => match[1]!),
+  },
+  {
+    name: 't3code',
+    dir: '~/.t3/userdata',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.t3', 'userdata', 'settings.json'), 'utf8')) as { providerInstances: { antseed: { config: { customModels: string[] } } } }).providerInstances.antseed.config.customModels,
+  },
 ]
 
-test('apps connect writes the buyer model catalog into Codex, Droid, Pi and Prime Agent pickers', async () => {
+test('apps connect writes the buyer model catalog into every in-app model picker', async () => {
   const requests: string[] = []
   const { server, port } = await startFakeBuyer((req, res) => {
     requests.push(req.url ?? '')
     res.setHeader('content-type', 'application/json')
-    res.end(JSON.stringify({ object: 'list', data: [{ id: 'model-a', name: 'Model A' }, { id: 'model-b' }] }))
+    res.end(JSON.stringify({ object: 'list', data: [{ id: 'model-a', name: 'Model A', peers: [{ capabilities: {} }, { capabilities: { reasoning: true } }] }, { id: 'model-b', peers: [{ capabilities: { reasoning: false } }] }] }))
   })
   const ws = await createWorkspace()
   try {
@@ -300,6 +325,10 @@ test('apps connect writes the buyer model catalog into Codex, Droid, Pi and Prim
       const connected = await runAsync(ws, ['apps', 'connect', app.name, '--port', String(port)])
       assert.equal(connected.ok, true, connected.error)
       assert.deepEqual(await app.read(ws), ['antseed', 'model-a', 'model-b'], app.name)
+      if (app.name === 'codex') {
+        const catalog = JSON.parse(await readFile(join(ws.home, '.codex', 'config.toml.antseed.models.json'), 'utf8')) as { models: { slug: string; supported_reasoning_levels: unknown[] }[] }
+        assert.deepEqual(catalog.models.map((model) => [model.slug, model.supported_reasoning_levels.length > 0]), [['antseed', true], ['model-a', true], ['model-b', false]])
+      }
       const disconnected = await runAsync(ws, ['apps', 'disconnect', app.name])
       assert.equal(disconnected.ok, true, disconnected.error)
       assert.equal(json<StatusReport>(ws, ['apps', 'status']).apps.find((entry) => entry.name === app.name)?.connected, false, app.name)

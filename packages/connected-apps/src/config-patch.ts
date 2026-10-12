@@ -27,6 +27,8 @@ export type ConnectedAppModel = {
   readonly label: string;
   /** Model sent to the buyer proxy when this entry is selected. */
   readonly model: string;
+  /** The network reports reasoning-effort support; pickers offer effort levels. */
+  readonly reasoning?: boolean;
 };
 
 export type ConfigPatchOptions = {
@@ -47,10 +49,29 @@ function connectedAppCatalog(models: readonly ConnectedAppModel[]): ConnectedApp
     const model = entry.model.trim();
     if (!model || seen.has(model)) continue;
     seen.add(model);
-    catalog.push({ label: entry.label.trim() || model, model });
+    catalog.push({ label: entry.label.trim() || model, model, ...(entry.reasoning ? { reasoning: true } : {}) });
   }
   return catalog;
 }
+/** Config formats whose patch writes the AntSeed model catalog into the app's own model picker. */
+const MODEL_LIST_FORMATS: ReadonlySet<string> = new Set(['opencode', 'codex', 'droid', 'pi', 'crush', 'zed', 'hermes', 't3code']);
+
+/** Whether connecting this format lists the AntSeed catalog in the app's model picker. */
+export function configPatchListsModels(format: string | undefined): boolean {
+  return MODEL_LIST_FORMATS.has(format ?? 'opencode');
+}
+
+/** Auto usually routes to a strong model; concrete rows follow the network's capability. */
+function catalogEntryReasons(entry: ConnectedAppModel): boolean {
+  return entry.model === ROUTED_MODEL_ALIAS || entry.reasoning === true;
+}
+
+/** Effort levels offered where an app lets the config name them. */
+const CONNECTED_APP_REASONING_LEVELS = ['low', 'medium', 'high', 'xhigh'];
+const CONNECTED_APP_DEFAULT_REASONING = 'medium';
+/** Droid offers off/low/medium/high for custom models; this only picks the starting level. */
+const DROID_DEFAULT_REASONING = 'high';
+
 // Droid requires the `custom:` namespace to resolve this through `customModels`;
 // an unprefixed value is treated as a Factory-managed model and triggers Factory authentication.
 const DROID_MODEL_ID_PREFIX = 'custom:Antseed-';
@@ -560,7 +581,7 @@ export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, optio
     return;
   }
   if (patch.format === 'crush') {
-    applyCrushConfigPatch(patch, buyerPort, wslTargetsFile);
+    applyCrushConfigPatch(patch, buyerPort, wslTargetsFile, models);
     return;
   }
   if (patch.format === 'goose') {
@@ -568,11 +589,11 @@ export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, optio
     return;
   }
   if (patch.format === 'hermes') {
-    applyHermesConfigPatch(patch, buyerPort);
+    applyHermesConfigPatch(patch, buyerPort, models);
     return;
   }
   if (patch.format === 'zed') {
-    applyZedConfigPatch(patch, buyerPort);
+    applyZedConfigPatch(patch, buyerPort, models);
     return;
   }
   if (patch.format === 'claude-code') {
@@ -580,14 +601,14 @@ export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, optio
     return;
   }
   if (patch.format === 't3code') {
-    applyT3CodeConfigPatch(patch, buyerPort);
+    applyT3CodeConfigPatch(patch, buyerPort, models);
     return;
   }
   if (patch.format === 'claude-desktop') {
     applyClaudeDesktopConfigPatch(patch);
     return;
   }
-  applyOpencodeConfigPatch(patch, buyerPort, wslTargetsFile);
+  applyOpencodeConfigPatch(patch, buyerPort, wslTargetsFile, models);
 }
 
 /** Replace the host of a base URL, leaving scheme, port, and path untouched.
@@ -679,11 +700,16 @@ function removeWslInstalls(
   return changed;
 }
 
-function applyOpencodeConfigPatch(patch: OpencodeConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyOpencodeConfigPatch(
+  patch: OpencodeConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'opencode') {
-    applyOpencodeProviderToFile(filePath, patch, baseURL);
+    applyOpencodeProviderToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -692,11 +718,16 @@ function applyOpencodeConfigPatch(patch: OpencodeConfigPatchDef, buyerPort: numb
     posix: { configPath: patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyOpencodeProviderToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyOpencodeProviderToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatchDef, baseURL: string): void {
+function applyOpencodeProviderToFile(
+  filePath: string,
+  patch: OpencodeConfigPatchDef,
+  baseURL: string,
+  models: readonly ConnectedAppModel[],
+): void {
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
 
@@ -710,14 +741,14 @@ function applyOpencodeProviderToFile(filePath: string, patch: OpencodeConfigPatc
       baseURL,
       apiKey: 'antseed',
     },
-    models: {
-      [ROUTED_MODEL_ALIAS]: {
-        name: ROUTED_MODEL_ALIAS_LABEL,
-        attachment: true,
-        modalities: { input: ['text', 'image'], output: ['text'] },
-        limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
-      },
-    },
+    models: Object.fromEntries(connectedAppCatalog(models).map((entry) => [entry.model, {
+      name: entry.label,
+      ...(entry.model === ROUTED_MODEL_ALIAS
+        ? { attachment: true, modalities: { input: ['text', 'image'], output: ['text'] } }
+        : {}),
+      ...(catalogEntryReasons(entry) ? { reasoning: true } : {}),
+      limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
+    }])),
   };
   config['provider'] = providers;
   config['model'] = `${patch.providerKey}/${ROUTED_MODEL_ALIAS}`;
@@ -953,13 +984,16 @@ function applyDroidModelToFile(
   const extraHeaders = patch.originator ? { originator: patch.originator } : {};
   config['customModels'] = [
     ...customModels.filter((model) => !isDroidModel(model, patch.providerKey) && !isManagedDroidModel(model)),
-    ...connectedAppCatalog(models).map(({ label, model }, index) => ({
-      model: model === ROUTED_MODEL_ALIAS ? patch.providerKey : model,
+    ...connectedAppCatalog(models).map((entry, index) => ({
+      model: entry.model === ROUTED_MODEL_ALIAS ? patch.providerKey : entry.model,
       id: index === 0 ? DROID_ROUTED_MODEL_ID : `${DROID_MODEL_ID_PREFIX}${index}`,
-      displayName: index === 0 ? patch.providerName : label,
+      displayName: index === 0 ? patch.providerName : entry.label,
       baseUrl: baseURL,
       provider: 'generic-chat-completion-api',
       maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      // Droid derives its effort list (off/low/medium/high plus this value)
+      // from the configured default; it has no per-model list field.
+      ...(catalogEntryReasons(entry) ? { reasoningEffort: DROID_DEFAULT_REASONING } : {}),
       ...(Object.keys(extraHeaders).length > 0 ? { extraHeaders } : {}),
     })),
   ];
@@ -1062,13 +1096,23 @@ export function codexCatalogPathForClient(catalogPath: string): string {
   return wsl ? wsl[1]!.replace(/\\/g, '/') : catalogPath;
 }
 
+const CODEX_REASONING_DESCRIPTIONS: Record<string, string> = {
+  low: 'Fast responses with lighter reasoning',
+  medium: 'Balances speed and reasoning depth for everyday tasks',
+  high: 'Greater reasoning depth for complex problems',
+  xhigh: 'Extra high reasoning depth for complex problems',
+};
+const CODEX_REASONING_LEVELS = CONNECTED_APP_REASONING_LEVELS.map((effort) => ({ effort, description: CODEX_REASONING_DESCRIPTIONS[effort] }));
+
 function writeCodexCatalog(catalogPath: string, curatedModels: readonly ConnectedAppModel[]): void {
-  writeJsonFile(catalogPath, { models: connectedAppCatalog(curatedModels).map(({ label, model }, priority) => ({
-    slug: model,
-    display_name: label,
+  writeJsonFile(catalogPath, { models: connectedAppCatalog(curatedModels).map((entry, priority) => ({
+    slug: entry.model,
+    display_name: entry.label,
     base_instructions: 'You are Codex, a coding agent working with the user in a shared workspace. Use the available tools to complete the user\'s task and follow the workspace instructions.',
-    description: model === ROUTED_MODEL_ALIAS ? 'Follow the model selected in the AI VPN.' : `Route to ${label} through the AI VPN.`,
-    supported_reasoning_levels: [],
+    description: entry.model === ROUTED_MODEL_ALIAS ? 'Follow the model selected in the AI VPN.' : `Route to ${entry.label} through the AI VPN.`,
+    ...(catalogEntryReasons(entry)
+      ? { default_reasoning_level: CONNECTED_APP_DEFAULT_REASONING, supported_reasoning_levels: CODEX_REASONING_LEVELS }
+      : { supported_reasoning_levels: [] }),
     shell_type: 'shell_command',
     visibility: 'list',
     supported_in_api: true,
@@ -1315,9 +1359,10 @@ function applyPiProviderToFiles(
     api: patch.api,
     apiKey: 'antseed',
     ...(patch.originator ? { headers: { originator: patch.originator } } : {}),
-    models: connectedAppCatalog(models).map(({ label, model }) => ({
-      id: model,
-      name: label,
+    models: connectedAppCatalog(models).map((entry) => ({
+      id: entry.model,
+      name: entry.label,
+      ...(catalogEntryReasons(entry) ? { reasoning: true } : {}),
       contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW,
       maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
     })),
@@ -1372,11 +1417,16 @@ function asObject(value: unknown): JsonObject {
 // `type: "openai-compat"`; the default model selection lives under
 // `models.large` / `models.small` as `{ provider, model }`.
 
-function applyCrushConfigPatch(patch: CrushConfigPatchDef, buyerPort: number, wslTargetsFile?: string): void {
+function applyCrushConfigPatch(
+  patch: CrushConfigPatchDef,
+  buyerPort: number,
+  wslTargetsFile: string | undefined,
+  models: readonly ConnectedAppModel[],
+): void {
   const filePath = expandTilde(patch.configPath);
   const baseURL = patch.baseURL.replace('{buyerPort}', String(buyerPort));
   if (patch.installProbe !== 'crush') {
-    applyCrushProviderToFile(filePath, patch, baseURL);
+    applyCrushProviderToFile(filePath, patch, baseURL, models);
     return;
   }
   applyWithInstallProbe({
@@ -1385,11 +1435,16 @@ function applyCrushConfigPatch(patch: CrushConfigPatchDef, buyerPort: number, ws
     posix: { configPath: patch.wslConfigPath ?? patch.configPath },
     baseURL,
     wslTargetsFile,
-    write: (paths, url) => applyCrushProviderToFile(paths.configPath, patch, url),
+    write: (paths, url) => applyCrushProviderToFile(paths.configPath, patch, url, models),
   });
 }
 
-function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, baseURL: string): void {
+function applyCrushProviderToFile(
+  filePath: string,
+  patch: CrushConfigPatchDef,
+  baseURL: string,
+  curatedModels: readonly ConnectedAppModel[],
+): void {
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providers = asObject(config['providers']);
@@ -1398,9 +1453,19 @@ function applyCrushProviderToFile(filePath: string, patch: CrushConfigPatchDef, 
     name: patch.providerName,
     base_url: baseURL,
     api_key: 'antseed',
-    models: [
-      { id: ROUTED_MODEL_ALIAS, name: ROUTED_MODEL_ALIAS_LABEL, context_window: ANTSEED_MODEL_CONTEXT_WINDOW, default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
-    ],
+    models: connectedAppCatalog(curatedModels).map((entry) => ({
+      id: entry.model,
+      name: entry.label,
+      context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+      default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      ...(catalogEntryReasons(entry)
+        ? {
+            can_reason: true,
+            reasoning_levels: CONNECTED_APP_REASONING_LEVELS,
+            default_reasoning_effort: CONNECTED_APP_DEFAULT_REASONING,
+          }
+        : {}),
+    })),
   };
   config['providers'] = providers;
   const models = asObject(config['models']);
@@ -1580,7 +1645,7 @@ function writeHermesConfigDocument(filePath: string, document: Document.Parsed):
   writeFileSync(filePath, document.toString(), 'utf8');
 }
 
-function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number): void {
+function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   const document = readHermesConfigDocument(filePath);
   backupConfigFile(filePath);
@@ -1592,11 +1657,9 @@ function applyHermesConfigPatch(patch: HermesConfigPatchDef, buyerPort: number):
       originator: 'hermes',
     },
     default_model: ROUTED_MODEL_ALIAS,
-    models: {
-      [ROUTED_MODEL_ALIAS]: {
-        context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
-      },
-    },
+    models: Object.fromEntries(connectedAppCatalog(models).map((entry) => [entry.model, {
+      context_length: ANTSEED_MODEL_CONTEXT_WINDOW,
+    }])),
   });
   document.setIn(['model', 'provider'], patch.providerKey);
   document.setIn(['model', 'default'], ROUTED_MODEL_ALIAS);
@@ -1634,7 +1697,7 @@ function removeHermesConfigPatch(patch: HermesConfigPatchDef): boolean {
 // Zed asks for the provider's API key once in its UI — any value satisfies
 // the keyless buyer proxy.
 
-function applyZedConfigPatch(patch: ZedConfigPatchDef, buyerPort: number): void {
+function applyZedConfigPatch(patch: ZedConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
@@ -1642,9 +1705,11 @@ function applyZedConfigPatch(patch: ZedConfigPatchDef, buyerPort: number): void 
   const compatible = asObject(languageModels['openai_compatible']);
   compatible[patch.providerName] = {
     api_url: patch.baseURL.replace('{buyerPort}', String(buyerPort)),
-    available_models: [
-      { name: ROUTED_MODEL_ALIAS, display_name: ROUTED_MODEL_ALIAS_LABEL, max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW },
-    ],
+    available_models: connectedAppCatalog(models).map((entry) => ({
+      name: entry.model,
+      display_name: entry.label,
+      max_tokens: ANTSEED_MODEL_CONTEXT_WINDOW,
+    })),
   };
   languageModels['openai_compatible'] = compatible;
   config['language_models'] = languageModels;
@@ -1888,12 +1953,12 @@ function removeClaudeCodeSettingsFromFile(
   return changed;
 }
 
-function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number): void {
+function applyT3CodeConfigPatch(patch: T3CodeConfigPatchDef, buyerPort: number, models: readonly ConnectedAppModel[]): void {
   const filePath = expandTilde(patch.configPath);
   backupConfigFile(filePath);
   const config = readConfigPatchFile(filePath);
   const providerInstances = asObject(config['providerInstances']);
-  const customModels = [ROUTED_MODEL_ALIAS];
+  const customModels = connectedAppCatalog(models).map((entry) => entry.model);
   providerInstances[patch.providerKey] = {
     driver: 'claudeAgent',
     displayName: patch.providerName,

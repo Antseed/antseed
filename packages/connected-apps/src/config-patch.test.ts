@@ -126,6 +126,7 @@ test('applyConfigPatch patches JSONC configs and writes a backup before normaliz
         name: 'Antseed Auto',
         attachment: true,
         modalities: { input: ['text', 'image'], output: ['text'] },
+        reasoning: true,
         limit: { context: ANTSEED_MODEL_CONTEXT_WINDOW, output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
       },
     });
@@ -253,6 +254,7 @@ test('applyConfigPatch (droid) adds and selects the routed model while preservin
       baseUrl: 'http://127.0.0.1:9456/v1',
       provider: 'generic-chat-completion-api',
       maxOutputTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      reasoningEffort: 'high',
       extraHeaders: {
         originator: 'droid',
       },
@@ -489,6 +491,28 @@ test('Codex catalog starts with Auto and refreshes curated slugs on reconnect', 
   });
 });
 
+test('Codex catalog offers reasoning levels only where the network reports support', async () => {
+  await withTempConfig(async (dir) => {
+    const configPath = path.join(dir, 'config.toml');
+    applyConfigPatch(makeCodexPatch(configPath), PEER_ID, 8377, { models: [
+      { label: 'Thinker', model: 'thinker', reasoning: true },
+      { label: 'Plain', model: 'plain' },
+    ] });
+    const catalog = JSON.parse(await readFile(`${configPath}.antseed.models.json`, 'utf8')) as {
+      models: { slug: string; default_reasoning_level?: string; supported_reasoning_levels: { effort: string }[] }[]
+    };
+    assert.deepEqual(catalog.models.map((model) => [
+      model.slug,
+      model.default_reasoning_level ?? null,
+      model.supported_reasoning_levels.map((level) => level.effort),
+    ]), [
+      ['antseed', 'medium', ['low', 'medium', 'high', 'xhigh']],
+      ['thinker', 'medium', ['low', 'medium', 'high', 'xhigh']],
+      ['plain', null, []],
+    ]);
+  });
+});
+
 test('Codex restores exact user assignments and provider table after picker changes and reconnects', async () => {
   await withTempConfig(async (dir) => {
     const configPath = path.join(dir, 'config.toml');
@@ -618,7 +642,7 @@ test('applyConfigPatch (pi) writes the provider into models.json and the default
     applyConfigPatch(makePiPatch(modelsPath, settingsPath), PEER_ID, 9456);
 
     const models = JSON.parse(await readFile(modelsPath, 'utf8')) as {
-      providers: Record<string, { baseUrl?: string; api?: string; apiKey?: string; headers?: Record<string, string>; models?: Array<{ id: string; name: string; contextWindow: number; maxTokens: number }> }>;
+      providers: Record<string, { baseUrl?: string; api?: string; apiKey?: string; headers?: Record<string, string>; models?: Array<{ id: string; name: string; reasoning?: boolean; contextWindow: number; maxTokens: number }> }>;
     };
     assert.ok(models.providers.ollama);
     assert.equal(models.providers.antseed?.baseUrl, 'http://127.0.0.1:9456/v1');
@@ -626,7 +650,7 @@ test('applyConfigPatch (pi) writes the provider into models.json and the default
     assert.equal(models.providers.antseed?.apiKey, 'antseed');
     assert.deepEqual(models.providers.antseed?.headers, { originator: 'pi' });
     assert.deepEqual(models.providers.antseed?.models, [
-      { id: 'antseed', name: 'Antseed Auto', contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW, maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
+      { id: 'antseed', name: 'Antseed Auto', reasoning: true, contextWindow: ANTSEED_MODEL_CONTEXT_WINDOW, maxTokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS },
     ]);
 
     const settings = JSON.parse(await readFile(settingsPath, 'utf8')) as Record<string, unknown>;
@@ -1476,4 +1500,62 @@ test('claudeDesktopPatchTargets: a missing Packages directory just skips the MSI
   const targets = claudeDesktopPatchTargets(patch, 'win32', { APPDATA: '/r', LOCALAPPDATA: '/l' }, () => []);
   assert.equal(targets.length, 4);
   assert.equal(targets[0]!.configPath, path.join('/r', 'Claude', 'claude_desktop_config.json'));
+});
+
+test('every model-list format gets the curated catalog with reasoning where supported', async () => {
+  await withTempConfig(async (dir) => {
+    const curated = [
+      { label: 'Thinker', model: 'thinker', reasoning: true },
+      { label: 'Plain', model: 'plain' },
+    ];
+    const ids = ['antseed', 'thinker', 'plain'];
+
+    const opencodePath = path.join(dir, 'opencode.json');
+    applyConfigPatch(makePatch(opencodePath), PEER_ID, 8377, { models: curated });
+    const opencode = JSON.parse(await readFile(opencodePath, 'utf8')).provider.antseed.models as Record<string, { name: string; reasoning?: boolean }>;
+    assert.deepEqual(Object.keys(opencode), ids);
+    assert.deepEqual(ids.map((id) => opencode[id]?.reasoning === true), [true, true, false]);
+    assert.equal(opencode['thinker']?.name, 'Thinker');
+
+    const crushPath = path.join(dir, 'crush.json');
+    applyConfigPatch(makeCrushPatch(crushPath), PEER_ID, 8377, { models: curated });
+    const crush = JSON.parse(await readFile(crushPath, 'utf8')).providers.antseed.models as Array<Record<string, unknown>>;
+    assert.deepEqual(crush.map((model) => model['id']), ids);
+    assert.deepEqual(crush[1], {
+      id: 'thinker',
+      name: 'Thinker',
+      context_window: ANTSEED_MODEL_CONTEXT_WINDOW,
+      default_max_tokens: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
+      can_reason: true,
+      reasoning_levels: ['low', 'medium', 'high', 'xhigh'],
+      default_reasoning_effort: 'medium',
+    });
+    assert.equal(crush[2]?.['can_reason'], undefined);
+
+    const zedPath = path.join(dir, 'zed.json');
+    applyConfigPatch(makeZedPatch(zedPath), PEER_ID, 8377, { models: curated });
+    const zed = JSON.parse(await readFile(zedPath, 'utf8')).language_models.openai_compatible.Antseed.available_models as Array<Record<string, unknown>>;
+    assert.deepEqual(zed.map((model) => [model['name'], model['display_name']]), [['antseed', 'Antseed Auto'], ['thinker', 'Thinker'], ['plain', 'Plain']]);
+
+    const hermesPath = path.join(dir, 'hermes.yaml');
+    applyConfigPatch({ format: 'hermes', configPath: hermesPath, providerKey: 'antseed', baseURL: 'http://localhost:{buyerPort}/v1' }, PEER_ID, 8377, { models: curated });
+    const hermes = parse(await readFile(hermesPath, 'utf8')) as Record<string, any>;
+    assert.deepEqual(Object.keys(hermes['providers']['antseed']['models']), ids);
+    assert.equal(hermes['providers']['antseed']['default_model'], 'antseed');
+
+    const t3Path = path.join(dir, 't3.json');
+    applyConfigPatch(makeT3CodePatch(t3Path), PEER_ID, 8377, { models: curated });
+    const t3 = JSON.parse(await readFile(t3Path, 'utf8')).providerInstances.antseed.config.customModels;
+    assert.deepEqual(t3, ids);
+
+    const droidPath = path.join(dir, 'droid.json');
+    applyConfigPatch(makeDroidPatch(droidPath), PEER_ID, 8377, { models: curated });
+    const droid = JSON.parse(await readFile(droidPath, 'utf8')).customModels as Array<Record<string, unknown>>;
+    assert.deepEqual(droid.map((model) => model['reasoningEffort']), ['high', 'high', undefined]);
+
+    const piModels = path.join(dir, 'pi-models.json');
+    applyConfigPatch(makePiPatch(piModels, path.join(dir, 'pi-settings.json')), PEER_ID, 8377, { models: curated });
+    const pi = JSON.parse(await readFile(piModels, 'utf8')).providers.antseed.models as Array<Record<string, unknown>>;
+    assert.deepEqual(pi.map((model) => model['reasoning'] === true), [true, true, false]);
+  });
 });

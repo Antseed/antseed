@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
-import { DEFAULT_APP_PROFILES, mergeWithDefaultAppProfiles, platformConfigPath } from './defaults.js';
+import { DEFAULT_APP_PROFILES, MODEL_PICKER_TOOL_SLUGS, mergeWithDefaultAppProfiles, platformConfigPath } from './defaults.js';
 
 function names(profiles: readonly unknown[]): string[] {
   return profiles.map((profile) => (profile as Record<string, unknown>)['name'] as string);
@@ -138,4 +138,10 @@ test('mergeWithDefaultAppProfiles lets external profiles override same-name defa
   const merged = mergeWithDefaultAppProfiles(external);
   assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed']);
   assert.equal((merged[1] as Record<string, unknown>)['displayName'], 'OpenCode (private override)');
+});
+
+test('model-picker tool slugs come from apps whose config lists the AntSeed catalog', () => {
+  assert.deepEqual([...MODEL_PICKER_TOOL_SLUGS].sort(), [
+    'codex', 'crush', 'droid', 'gooeypi', 'hermes', 'hermes-agent', 'opencode', 'pi', 'prime-agent', 't3code', 'zed',
+  ]);
 });

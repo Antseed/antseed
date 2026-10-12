@@ -408,6 +408,7 @@ const connectedAppModelSource = () => (
   (piChatEngine.getModelPicker()?.models ?? []).map((model) => ({
     label: model.label,
     model: model.serviceId,
+    reasoning: piChatEngine.serviceSupportsReasoning(model.serviceId),
   }))
 );
 setClaudeDesktopGatewayModelSource(connectedAppModelSource);

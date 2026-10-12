@@ -1,6 +1,7 @@
 import { InvalidArgumentError, type Command } from 'commander'
 import chalk from 'chalk'
 import {
+  configPatchListsModels,
   connectedAppStatus,
   findConnectedAppProfile,
   loadConnectedAppProfiles,
@@ -102,6 +103,17 @@ function ensureStateDir(ctx: AppsContext): string {
   return targets
 }
 
+/** A model reports reasoning when the model or any seller offering it announces support. */
+function reportsReasoning(entry: Record<string, unknown>): boolean {
+  const announces = (value: unknown) => Boolean(value && typeof value === 'object'
+    && (value as Record<string, unknown>)['reasoning'] === true)
+  if (announces(entry['capabilities'])) return true
+  const peers = entry['peers']
+  return Array.isArray(peers) && peers.some((peer) => (
+    Boolean(peer && typeof peer === 'object') && announces((peer as Record<string, unknown>)['capabilities'])
+  ))
+}
+
 export async function fetchConnectedAppModels(buyerPort: number): Promise<ConnectedAppModel[]> {
   try {
     const response = await fetch(`http://127.0.0.1:${buyerPort}/v1/models?type=text`, {
@@ -115,8 +127,9 @@ export async function fetchConnectedAppModels(buyerPort: number): Promise<Connec
       if (!entry || typeof entry !== 'object') return []
       const id = (entry as Record<string, unknown>)['id']
       const name = (entry as Record<string, unknown>)['name']
+      const reasoning = reportsReasoning(entry as Record<string, unknown>)
       if (typeof id !== 'string' || id.trim().length === 0) return []
-      return [{ model: id, label: typeof name === 'string' && name.trim() ? name : id }]
+      return [{ model: id, label: typeof name === 'string' && name.trim() ? name : id, ...(reasoning ? { reasoning } : {}) }]
     })
   } catch {
     return []
@@ -136,7 +149,7 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
     warnings.push('Claude Desktop is routed through the AntSeed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
   }
   try {
-    const models = ['codex', 'droid', 'pi'].includes(profile.configPatch.format ?? '') ? await fetchConnectedAppModels(port) : []
+    const models = configPatchListsModels(profile.configPatch.format) ? await fetchConnectedAppModels(port) : []
     writeConfigPatch(profile.configPatch, port, { wslTargetsFile: ensureStateDir(ctx), models })
   } catch (err) {
     return {

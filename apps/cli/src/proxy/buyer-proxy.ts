@@ -37,6 +37,7 @@ import {
   type SweepReceiptPayload,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
+import { MODEL_PICKER_TOOL_SLUGS } from '@antseed/connected-apps'
 import {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
@@ -785,9 +786,6 @@ export async function mergeJsonStateFile(stateDir: string, stateFile: string, pa
     throw err
   }
 }
-
-/** Connected apps whose own model picker lists the AntSeed catalog. */
-const MODEL_PICKER_APPS = ['codex', 'droid', 'pi', 'gooeypi', 'prime-agent']
 
 /** Tool slugs carry client variants, e.g. Codex reports `codex-exec`. */
 function toolMatchesApp(tool: string, app: string): boolean {
@@ -2429,7 +2427,9 @@ export class BuyerProxy {
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
     const requestTool = conversationIdentity?.tool ?? ''
-    const appPicker = MODEL_PICKER_APPS.some((app) => toolMatchesApp(requestTool, app))
+    // Apps listing our catalog send the model the user just picked in the app,
+    // so it beats the chat's auto pin; a desktop chat pin still wins.
+    const appPicker = MODEL_PICKER_TOOL_SLUGS.some((app) => toolMatchesApp(requestTool, app))
     const chatPinnedModel = storedConversation?.peerSource === 'user'
       ? storedConversation.pinnedModel
       : appPicker ? null : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
@@ -2755,6 +2755,9 @@ export class BuyerProxy {
             + `effective=${selected.effectiveReputationScore ?? 'unknown'} peer=${index + 1}/${candidates.length} `
             + `attempt=${peerAttempt + 1}/${MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER}`,
           )
+          if (trackedConversationId) {
+            this._conversations.markRouting(trackedConversationId, `${selected.peer.peerId}@${selected.serviceId}`)
+          }
           const result = await this._dispatchToPeer(
             res,
             selected.request,
@@ -2999,6 +3002,9 @@ export class BuyerProxy {
     }
 
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    if (trackedConversationId && pinnedServiceId) {
+      this._conversations.markRouting(trackedConversationId, `${selectedPeer.peerId}@${pinnedServiceId}`)
+    }
     const result = await this._dispatchToPeer(
       res,
       pinnedRequest,

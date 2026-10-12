@@ -1,5 +1,6 @@
 import { homedir } from 'node:os';
 import path from 'node:path';
+import { configPatchListsModels } from './config-patch.js';
 
 /**
  * Built-in "Connected apps" catalog for the AI VPN Connected apps screen.
@@ -309,6 +310,15 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
     },
   },
 ];
+
+/**
+ * Tool slugs of built-in apps whose own model picker lists the AntSeed
+ * catalog. The buyer trusts the model in their requests over a chat's auto
+ * pin, because the user picked it in the app.
+ */
+export const MODEL_PICKER_TOOL_SLUGS: readonly string[] = DEFAULT_APP_PROFILES
+  .filter((profile) => configPatchListsModels((profile['configPatch'] as Record<string, unknown> | undefined)?.['format'] as string | undefined))
+  .flatMap((profile) => profile['toolSlugs'] as string[]);
 
 /**
  * Combine the packaged/env profile list with the built-in defaults: external

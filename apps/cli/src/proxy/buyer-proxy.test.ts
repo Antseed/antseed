@@ -3416,7 +3416,7 @@ test('Codex Auto returns to the current global route after a concrete picker cho
   }
 })
 
-for (const originator of ['codex_exec', 'droid', 'pi', 'gooeypi', 'prime-agent']) {
+for (const originator of ['codex_exec', 'droid', 'pi', 'gooeypi', 'prime-agent', 'opencode', 'crush', 'zed', 'hermes-agent', 't3code']) {
   test(`${originator} picker switches models mid-chat and Auto returns to the global route`, async () => {
     const { proxy, dir } = await makeConversationProxy()
     try {
@@ -4230,5 +4230,47 @@ test('switching a chat route while a request is in flight is not reverted when t
     await store.flush()
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  }
+})
+
+test('an in-app model pick shows on the chat as soon as a seller is chosen', async () => {
+  const { proxy, dir } = await makeConversationProxy()
+  try {
+    const peer = makePeer('c', ['openai'])
+    peer.providerServiceApiProtocols = { openai: { services: { 'global-model': ['openai-responses'], 'picked-model': ['openai-responses'] } } }
+    ;(proxy as any)._getPeers = async () => [peer]
+    ;(proxy as any)._defaultRoutedModel = 'global-model'
+    const store = (proxy as any)._conversations
+    const send = (model: string) => invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/responses',
+      headers: { originator: 'codex_exec', 'session-id': 'live' },
+      body: { model, input: 'hello' },
+    }))
+
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => (
+      { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+    )
+    assert.equal((await send('antseed')).statusCode, 200)
+    assert.equal(store.get('codex-exec:live')?.lastModel, `${peer.peerId}@global-model`)
+
+    let release: (() => void) | null = null
+    let markDispatched: (() => void) | null = null
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve })
+    ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string }) => {
+      markDispatched?.()
+      await new Promise<void>((resolve) => { release = resolve })
+      return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+    }
+    const inFlight = send('picked-model')
+    await dispatched
+    assert.equal(store.get('codex-exec:live')?.lastModel, `${peer.peerId}@picked-model`, 'the switch must show before the answer finishes')
+    ;(release as (() => void) | null)?.()
+    assert.equal((await inFlight).statusCode, 200)
+    assert.equal(store.get('codex-exec:live')?.lastModel, `${peer.peerId}@picked-model`)
+    await store.flush()
+  } finally {
+    await (proxy as any)._stateWriteChain
+    await (proxy as any)._conversations.flush()
+    await rm(dir, { recursive: true, force: true })
   }
 })
