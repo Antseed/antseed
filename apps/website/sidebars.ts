@@ -5,7 +5,9 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Getting Started',
-      collapsible: false,
+      className: 'sidebar-icon sidebar-icon--start',
+      collapsible: true,
+      collapsed: false,
       items: [
         'getting-started/intro',
         'getting-started/install',
@@ -15,7 +17,9 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Guides',
-      collapsible: false,
+      className: 'sidebar-icon sidebar-icon--guides',
+      collapsible: true,
+      collapsed: true,
       items: [
         'guides/vpr',
         'guides/using-the-api',
@@ -36,7 +40,9 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Protocol',
-      collapsible: false,
+      className: 'sidebar-icon sidebar-icon--protocol',
+      collapsible: true,
+      collapsed: true,
       items: [
         'protocol/overview',
         'protocol/discovery',
@@ -53,7 +59,9 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Plugins',
-      collapsible: false,
+      className: 'sidebar-icon sidebar-icon--plugins',
+      collapsible: true,
+      collapsed: true,
       items: [
         'plugins/provider-plugin',
         'plugins/router-plugin',
@@ -63,7 +71,9 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'CLI Reference',
-      collapsible: false,
+      className: 'sidebar-icon sidebar-icon--cli',
+      collapsible: true,
+      collapsed: true,
       items: [
         'cli/commands',
         'cli/flags',
@@ -72,7 +82,9 @@ const sidebars: SidebarsConfig = {
     {
       type: 'category',
       label: 'Papers',
-      collapsible: false,
+      className: 'sidebar-icon sidebar-icon--papers',
+      collapsible: true,
+      collapsed: true,
       items: [
         'lightpaper',
       ],

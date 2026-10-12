@@ -8,13 +8,17 @@ hide_title: true
 
 # Global Flags
 
-```bash title="flags"
--c, --config <path>     Path to config file (default: ~/.antseed/config.json)
---data-dir <path>       Path to node identity/state directory (env: ANTSEED_DATA_DIR, default: ~/.antseed)
--v, --verbose            Enable verbose logging
---version                Show version
---help                   Show help
-```
+<div className="command-table">
+
+| Flag | Description |
+|---|---|
+| `-c, --config <path>` | Path to config file (default: `~/.antseed/config.json`) |
+| `--data-dir <path>` | Path to node identity/state directory (env: `ANTSEED_DATA_DIR`, default: `~/.antseed`) |
+| `-v, --verbose` | Enable verbose logging |
+| `--version` | Show version |
+| `--help` | Show help |
+
+</div>
 
 `--data-dir` controls buyer/seller identity and runtime state: `identity.key`, `buyer.state.json`, SQLite databases, and payment-channel files. Use a separate data directory for each independent buyer process. The environment-variable equivalent is `ANTSEED_DATA_DIR=<path>`; prefer the explicit flag in service manager commands.
 
@@ -22,9 +26,13 @@ hide_title: true
 
 `antseed buyer start` also supports runtime-only overrides for buyer discovery:
 
-```bash title="buyer start"
---metadata-fetch-timeout-ms <number>    Timeout for each peer metadata HTTP fetch during discovery
-```
+<div className="command-table">
+
+| Flag | Description |
+|---|---|
+| `--metadata-fetch-timeout-ms <number>` | Timeout for each peer metadata HTTP fetch during discovery |
+
+</div>
 
 The same value can be supplied with `ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS`. Precedence is: flag, environment variable, `buyer.metadataFetchTimeoutMs`, built-in default.
 
@@ -32,9 +40,13 @@ The same value can be supplied with `ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS`. P
 
 `antseed seller start` also supports runtime-only overrides for seller operations:
 
-```bash title="seller start"
---base-rpc-url <url>    Base JSON-RPC endpoint for seller on-chain operations
-```
+<div className="command-table">
+
+| Flag | Description |
+|---|---|
+| `--base-rpc-url <url>` | Base JSON-RPC endpoint for seller on-chain operations |
+
+</div>
 
 The same value can be supplied with `ANTSEED_BASE_RPC_URL`. Precedence is: flag, environment variable, `payments.crypto.rpcUrl`, built-in default.
 
@@ -52,14 +64,18 @@ They can also be entered in `antseed seller setup` or written directly under `se
 
 `antseed metrics serve` also supports:
 
-```bash title="metrics"
---role <buyer|seller|both|auto>
---host <host>
---port <port>
---path <path>
---instance <name>
---include-chain
-```
+<div className="command-table">
+
+| Flag | Description |
+|---|---|
+| `--role <buyer\|seller\|both\|auto>` | Metrics role (default: `auto`) |
+| `--host <host>` | Listen host (default: `127.0.0.1`) |
+| `--port <port>` | Listen port (default: `9108`) |
+| `--path <path>` | Metrics path (default: `/metrics`) |
+| `--instance <name>` | Instance label for Prometheus series |
+| `--include-chain` | Include chain balance metrics; may add RPC latency |
+
+</div>
 
 See [Metrics](/docs/guides/metrics) for details.
 
