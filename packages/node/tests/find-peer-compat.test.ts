@@ -1,6 +1,8 @@
 import { describe, expect, it, vi } from 'vitest';
 import { AntseedNode } from '../src/node.js';
+import { GITHUB_VERIFICATION_PROOF_TYPE } from '../src/discovery/github-verification.js';
 import { METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
+import * as publicJson from '../src/reputation/public-json.js';
 
 function buildMetadata(peerId: string, timestamp = Date.now()): PeerMetadata {
   return {
@@ -73,5 +75,30 @@ describe('AntseedNode.findPeer compatibility', () => {
 
     expect(peer?.peerId).toBe(targetId);
     expect((node as any)._peerLookup.findAll).not.toHaveBeenCalled();
+  });
+
+  it('awaits identity verification before returning an explicitly requested peer', async () => {
+    const targetId = 'a'.repeat(40);
+    const node = new AntseedNode({ role: 'buyer' });
+    const metadata = buildMetadata(targetId);
+    metadata.verifications = { github: [{ username: 'octocat' }] };
+    (node as any)._peerLookup = {
+      findByPeerId: vi.fn().mockResolvedValue([{ metadata, host: '34.10.10.10', port: 6882 }]),
+      findAll: vi.fn(),
+    };
+    (node as any)._identityHistoryCollector = { collect: vi.fn().mockResolvedValue({ version: 1, identities: [] }) };
+    const proofFetch = vi.spyOn(publicJson, 'fetchPublicProof').mockResolvedValue(new Response(JSON.stringify({
+      type: GITHUB_VERIFICATION_PROOF_TYPE,
+      peerId: targetId,
+      username: 'octocat',
+    }), { status: 200 }));
+    try {
+      const peer = await node.findPeer(targetId, { awaitExternalVerification: true });
+
+      expect(peer?.verificationResults?.verified).toBe(true);
+      expect(peer?.verificationResults?.github[0]?.username).toBe('octocat');
+    } finally {
+      proofFetch.mockRestore();
+    }
   });
 });

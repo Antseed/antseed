@@ -6,11 +6,10 @@ import {
 } from '../src/reputation/model-reputation.js';
 
 describe('model reputation', () => {
-  it('prefers normalized on-chain reputation over unbounded raw trust', () => {
-    expect(normalizedModelReputationScore({
-      onChainTrustScore: 10_000,
-      onChainReputationScore: 78.4,
-    })).toBe(78.4);
+  it('prefers the buyer trust score over the seller-reported score', () => {
+    expect(normalizedModelReputationScore({ reputationScore: 100, onChainReputationScore: 78.4 })).toBe(78.4);
+    expect(normalizedModelReputationScore({ reputationScore: 55 })).toBe(55);
+    expect(normalizedModelReputationScore({})).toBeNull();
   });
 
   it('penalizes missing cached-input pricing only when the model supports it', () => {

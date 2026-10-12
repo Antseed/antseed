@@ -186,8 +186,8 @@ export function FloatApp() {
     return models.find((model) => model.serviceId === recent)?.label ?? recent;
   }, [conversations, models]);
 
-  // The pill leads with the AntSeed identity — the badge is always the
-  // AntSeed mark; model branding stays inside the dropdown rows.
+  // The pill leads with the Antseed identity — the badge is always the
+  // Antseed mark; model branding stays inside the dropdown rows.
   const badgeIcon = <VprMark size={26} />;
 
   // The idle state used to read "Ready", which people took to mean the app was
@@ -199,7 +199,7 @@ export function FloatApp() {
       ? (recentModelLabel ?? 'Routing...')
       : 'Connected · idle';
   const statusHint = !runtimeOn
-    ? 'Routing is stopped — apps are not going through AntSeed. Open VPR to start it.'
+    ? 'Routing is stopped — apps are not going through Antseed. Open AI VPN to start it.'
     : data?.trafficActive
       ? 'Connected — a request is being routed right now.'
       : 'Connected and waiting. Nothing is being routed until an app sends a request.';
@@ -249,7 +249,7 @@ export function FloatApp() {
           click on the same pixels. */}
       <div
         className={styles.pillContent}
-        title="AntSeed"
+        title="Antseed"
       >
         <span className={styles.appBadge}>{badgeIcon}</span>
         <span className={styles.body}>
@@ -306,7 +306,7 @@ export function FloatApp() {
               {/* Routing stopped: no chat rows — they'd read as connected. */}
               {!runtimeOn ? (
                 <div className={styles.menuEmpty}>
-                  Not connected — routing is stopped. Open VPR to start it.
+                  Not connected — routing is stopped. Open AI VPN to start it.
                 </div>
               ) : null}
               {/* First-run guidance only — once any chat exists the list
@@ -370,7 +370,7 @@ export function FloatApp() {
             </div>
           ) : (chatTarget === 'default' || targetChat) ? (
             <div key={chatTarget} className={slideClass}>
-              {/* Same back-title chrome as the inner VPR pages, plus a
+              {/* Same back-title chrome as the inner AI VPN pages, plus a
                   right-side shortcut launching the chat's app. */}
               <div className={styles.menuBack}>
                 <VprBackTitle
@@ -431,16 +431,16 @@ export function FloatApp() {
               <HugeiconsIcon icon={ArrowRight01Icon} size={14} strokeWidth={2} className={styles.menuRowChevron} />
             </button>
           ) : null}
-          {/* Pinned footer: opens the main AntSeed window (VPR). */}
+          {/* Pinned footer: opens the main Antseed window (AI VPN). */}
           <button
             type="button"
             className={styles.menuFooter}
             onClick={() => bridge?.vprFloatAction?.('open-main')}
-            title="Open VPR"
+            title="Open AI VPN"
           >
             <span className={styles.menuFooterLabel}>
               <VprMark size={14} />
-              <span>Open VPR</span>
+              <span>Open AI VPN</span>
             </span>
             <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
           </button>

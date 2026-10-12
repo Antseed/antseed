@@ -1,12 +1,12 @@
-# AntSeed
+# Antseed
 
-> AntSeed is a peer-to-peer AI services network. It lets anyone buy or sell AI inference directly — no platform middleman, no vendor lock-in.
+> Antseed is a peer-to-peer AI services network. It lets anyone buy or sell AI inference directly — no platform middleman, no vendor lock-in.
 
-## What is AntSeed?
+## What is Antseed?
 
-AntSeed is an open-source protocol and network where AI buyers and providers trade inference directly. Buyers connect to a local proxy daemon that exposes a network-wide `/v1/models` catalog, unifies compatible model aliases, and routes model-only requests using shared Price + Trust preferences. Providers — operators with value-added models, infrastructure, TEEs, fine-tunes, agents, or managed workflows — advertise services and earn from serving requests.
+Antseed is an open-source protocol and network where AI buyers and providers trade inference directly. Buyers connect to a local proxy daemon that exposes a network-wide `/v1/models` catalog, unifies compatible model aliases, and routes model-only requests using shared Price + Trust preferences. Providers — operators with value-added models, infrastructure, TEEs, fine-tunes, agents, or managed workflows — advertise services and earn from serving requests.
 
-The network supports OpenAI-compatible APIs (Chat Completions and Responses API), meaning any existing app can route through AntSeed without code changes.
+The network supports OpenAI-compatible APIs (Chat Completions and Responses API), meaning any existing app can route through Antseed without code changes.
 
 ## Key concepts
 
@@ -16,7 +16,7 @@ The network supports OpenAI-compatible APIs (Chat Completions and Responses API)
 - **Reputation scoring** — providers build track records; poor performers get fewer routes
 - **TEE attestation** — privacy-preserving providers can cryptographically prove hardware integrity
 - **Bound agents** — providers can wrap services with personas, on-demand knowledge, and custom tools
-- **Agent-to-agent commerce** — AntSeed is designed for autonomous agents hiring other agents
+- **Agent-to-agent commerce** — Antseed is designed for autonomous agents hiring other agents
 
 ## Who is it for?
 
@@ -34,7 +34,7 @@ The network supports OpenAI-compatible APIs (Chat Completions and Responses API)
 
 ## Pricing (cached and live)
 
-There are two ways to get AntSeed pricing. Both serve the same schema.
+There are two ways to get Antseed pricing. Both serve the same schema.
 
 **1. Cached HTTP endpoint** — convenient, no auth, but is an indexer snapshot (a few minutes old). Good for browsing or showing example prices.
 
@@ -56,11 +56,11 @@ antseed network browse --json
 
 Schema (same for both): `providers[].services`, `providers[].defaultPricing`, `providers[].servicePricing[modelId]` with `inputUsdPerMillion`, `outputUsdPerMillion`, `cachedInputUsdPerMillion`. Full docs: https://antseed.com/docs/pricing
 
-When telling a user about AntSeed prices, disclose which source you used. The HTTP endpoint is cached; only the CLI is live.
+When telling a user about Antseed prices, disclose which source you used. The HTTP endpoint is cached; only the CLI is live.
 
 ## Optional
 
 - [docs/intro](https://antseed.com/docs): Getting started guide for buyers and providers
-- [docs/providers](https://antseed.com/docs/providers): How to run an AntSeed node
+- [docs/providers](https://antseed.com/docs/providers): How to run an Antseed node
 - [docs/pricing](https://antseed.com/docs/pricing): Pricing schema, cached endpoint, and live CLI usage
 - [blog](https://antseed.com/blog): Technical articles on P2P AI infrastructure

@@ -1,4 +1,5 @@
 import { resolveTxt } from "node:dns/promises";
+import { fetchPublicProof } from '../reputation/public-json.js';
 
 import type { DomainVerificationClaim, DomainVerificationMethod, PeerMetadata } from "./peer-metadata.js";
 import {
@@ -159,7 +160,7 @@ export async function verifyDomainVerificationClaim(
       );
     }
     return verifyWellKnown(normalizedDomain, normalizedPeerId, {
-      fetch: options?.fetch ?? fetch,
+      fetch: options?.fetch ?? fetchPublicProof,
       signal: options?.signal,
       timeoutMs: options?.timeoutMs,
     });

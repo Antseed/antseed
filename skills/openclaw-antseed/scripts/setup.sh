@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-# Setup AntSeed buyer proxy for OpenClaw
+# Setup Antseed buyer proxy for OpenClaw
 #
 # Usage:
 #   ./setup.sh --service moonshotai/kimi-k2.5 [--port 5005] [--bootstrap HOST:PORT] [--service-flag]
@@ -58,13 +58,13 @@ if [ -z "$SERVICE" ]; then
 fi
 
 if [ -z "$SERVICE_NAME" ]; then
-  SERVICE_NAME="$SERVICE via AntSeed"
+  SERVICE_NAME="$SERVICE via Antseed"
 fi
 
 BASE_URL="${ANTSEED_BASE_URL:-http://127.0.0.1:${PORT}/v1}"
 API_KEY="${ANTSEED_API_KEY:-antseed-p2p}"
 
-echo "==> Installing AntSeed CLI..."
+echo "==> Installing Antseed CLI..."
 if ! command -v antseed &>/dev/null; then
   npm install -g @antseed/cli
 fi
@@ -142,7 +142,7 @@ if [ "$INSTALL_SERVICE" = true ]; then
   ANTSEED_BIN=$(command -v antseed)
   sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<SERVICE
 [Unit]
-Description=AntSeed Buyer Proxy
+Description=Antseed Buyer Proxy
 After=network-online.target
 Wants=network-online.target
 

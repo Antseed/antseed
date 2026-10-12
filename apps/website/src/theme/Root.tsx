@@ -95,7 +95,7 @@ function useClickTracking() {
       };
 
       if (isDownloadUrl(absolute)) {
-        // On phones (including "Desktop site" mode) the VPR CTAs keep their
+        // On phones (including "Desktop site" mode) the AI VPN CTAs keep their
         // download href but reroute to /get-started on tap
         // (useMobileGetStarted, which runs after this capture listener) —
         // count those as funnel entries, not download conversions.

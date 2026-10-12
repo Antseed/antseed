@@ -13,7 +13,7 @@ export const MAX_INPUT_PRICE_SLIDER_USD = 3;
 export const INPUT_PRICE_SLIDER_STEP = 0.1;
 export const MAX_OUTPUT_PRICE_SLIDER_USD = 3;
 export const OUTPUT_PRICE_SLIDER_STEP = 0.1;
-export const MAX_STAKE_SLIDER_USDC = 1000;
+export const MAX_STAKE_SLIDER_ANTS = 1000;
 
 export const MAX_REPUTATION_SCORE_SLIDER = 100;
 export const REPUTATION_SCORE_SLIDER_STEP = 1;
@@ -42,7 +42,8 @@ export type DiscoverFilterInputs = {
   peerSet: Set<string>;
   maxInputPrice: number;
   maxOutputPrice: number;
-  minStakeUsdc: number;
+  /** Minimum ANTS staked in the seller pool. */
+  minStakeAnts: number;
   minReputationScore: number;
 };
 
@@ -98,10 +99,9 @@ export function matchesPeerFilter(row: DiscoverRow, set: Set<string>): boolean {
   return set.has(row.peerId);
 }
 
-export function matchesMinStake(row: DiscoverRow, minStakeUsdc: number): boolean {
-  if (minStakeUsdc <= 0) return true;
-  const stakeUsdc = Number(row.stakeUsdc) / 1_000_000;
-  return stakeUsdc >= minStakeUsdc;
+export function matchesMinStake(row: DiscoverRow, minStakeAnts: number): boolean {
+  if (minStakeAnts <= 0) return true;
+  return row.poolStakeAnts >= minStakeAnts;
 }
 
 /**
@@ -116,8 +116,9 @@ export function rowChannelCount(row: DiscoverRow): number {
 }
 
 export function rowReputationScore(row: DiscoverRow): number {
-  return typeof row.onChainReputationScore === 'number' && Number.isFinite(row.onChainReputationScore)
-    ? row.onChainReputationScore
+  const score = row.effectiveReputationScore ?? row.onChainReputationScore;
+  return typeof score === 'number' && Number.isFinite(score)
+    ? score
     : -1;
 }
 
@@ -135,7 +136,7 @@ export function applyFilters(rows: DiscoverRow[], inputs: DiscoverFilterInputs):
     && matchesMaxInputPrice(row, inputs.maxInputPrice)
     && matchesMaxOutputPrice(row, inputs.maxOutputPrice)
     && hasValidCachedInputPrice(row)
-    && matchesMinStake(row, inputs.minStakeUsdc)
+    && matchesMinStake(row, inputs.minStakeAnts)
     && matchesMinReputationScore(row, inputs.minReputationScore)
   );
 }
@@ -168,7 +169,7 @@ export function applySort(rows: DiscoverRow[], key: DiscoverSortKey, dir: 'asc' 
       case 'priceDesc':
         return priceOf(a) - priceOf(b);
       case 'stakeDesc':
-        return Number(BigInt(b.stakeUsdc) - BigInt(a.stakeUsdc));
+        return b.poolStakeAnts - a.poolStakeAnts;
       case 'reputationDesc': {
         const diff = rowReputationScore(b) - rowReputationScore(a);
         if (diff !== 0) return diff;

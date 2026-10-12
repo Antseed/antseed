@@ -39,6 +39,7 @@ cli-dist/
 # Deployments
 .deployments/
 prds/
+.m001-sandbox/
 
 # Napkin
 .napkin/

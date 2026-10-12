@@ -8,6 +8,8 @@ export interface TrustedPlugin {
 }
 
 export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
+  { name: 'venice-video', type: 'provider', description: 'Venice video API', package: '@antseed/provider-venice-video' },
+  { name: 'fal-video', type: 'provider', description: 'fal.ai video models (queue API)', package: '@antseed/provider-fal-video' },
   {
     name: 'anthropic',
     type: 'provider',
@@ -43,6 +45,12 @@ export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
     type: 'provider',
     description: 'Local LLM provider (Ollama, llama.cpp)',
     package: '@antseed/provider-local-llm',
+  },
+  {
+    name: 'typesafe',
+    type: 'provider',
+    description: 'TypeSafe System One decision-model provider (API key)',
+    package: '@antseed/provider-typesafe',
   },
 ]
 

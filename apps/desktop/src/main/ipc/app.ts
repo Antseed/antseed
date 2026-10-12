@@ -3,6 +3,8 @@
  * state, the signing identity, voice transcription, and price references.
  */
 import { ipcMain } from 'electron';
+import { stopPaymentsPortal } from '../payments/portal.js';
+import { stakingSessions } from '../staking/portal.js';
 import {
   getAppSetupStatus,
 } from '../app-context.js';
@@ -163,7 +165,11 @@ export function registerAppIpc(): void {
         return { ok: false, error: 'Private key must be a string' };
       }
       await ensureSecureIdentity();
-      const result = await importIdentityPrivateKeyHex(rawKey);
+      const result = await stakingSessions.reset(async () => {
+        const imported = await importIdentityPrivateKeyHex(rawKey);
+        if (imported.ok) await stopPaymentsPortal();
+        return imported;
+      });
       if (result.ok) {
         // Balances cached for the previous signer no longer apply.
         invalidateCreditsCache();

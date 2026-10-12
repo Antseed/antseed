@@ -1382,7 +1382,7 @@ function makeChatBridge(
   };
 }
 
-test('new chat created with VPR selected model uses the matching service and peer', async () => {
+test('new chat created with AI VPN selected model uses the matching service and peer', async () => {
   installDomTimers();
   const uiState = createInitialUiState();
   uiState.chatServiceOptions = [chatOption('model-a', 'peer-a'), chatOption('model-b', 'peer-b')];
@@ -1406,11 +1406,11 @@ test('new chat created with VPR selected model uses the matching service and pee
   });
 });
 
-test('explicit dropdown pick overrides the VPR auto-selected model for a new chat', async () => {
+test('explicit dropdown pick overrides the AI VPN auto-selected model for a new chat', async () => {
   installDomTimers();
   const uiState = createInitialUiState();
   uiState.chatServiceOptions = [chatOption('model-a', 'peer-a'), chatOption('model-b', 'peer-b')];
-  // Discover auto-populated the VPR selection with the top catalog entry.
+  // Discover auto-populated the AI VPN selection with the top catalog entry.
   uiState.vprRouteSelection = {
     model: { provider: 'openai', serviceId: 'model-a', label: 'model-a', categories: [] },
     mode: 'auto',
@@ -1420,7 +1420,7 @@ test('explicit dropdown pick overrides the VPR auto-selected model for a new cha
   const api = initChatModule({ bridge: makeChatBridge(sends), uiState, appendSystemLog: () => undefined });
 
   // The user explicitly picks model-b in the ChatView dropdown; the pick must
-  // win over the VPR default (previously it was silently overridden).
+  // win over the AI VPN default (previously it was silently overridden).
   api.handleServiceChange(`openai${SEP}model-b${SEP}peer-b`);
   api.sendMessage('explicit pick wins');
   await waitFor(() => sends.length === 1);
@@ -1432,7 +1432,7 @@ test('explicit dropdown pick overrides the VPR auto-selected model for a new cha
     provider: 'openai',
     peerId: 'peer-b',
   });
-  // The write-through keeps the VPR selection in sync with the pick.
+  // The write-through keeps the AI VPN selection in sync with the pick.
   assert.equal(uiState.vprRouteSelection.model?.serviceId, 'model-b');
   assert.equal(uiState.vprRouteSelection.peerId, 'peer-b');
   assert.equal(uiState.vprModelPins['modelb'], 'peer-b');
@@ -1475,7 +1475,7 @@ test('active legacy conversation keeps its model without treating its saved peer
   });
 });
 
-test('pinned VPR peer with missing option falls back to existing chat selected value', async () => {
+test('pinned AI VPN peer with missing option falls back to existing chat selected value', async () => {
   installDomTimers();
   const uiState = createInitialUiState();
   uiState.chatServiceOptions = [chatOption('model-a', 'peer-a'), chatOption('model-b', 'peer-b')];
@@ -2058,14 +2058,14 @@ function failoverRow(
     lifetimeLastSessionAt: null,
     onChainChannelCount: null,
     agentId: 1,
-    stakeUsdc: '0',
+    poolStakeAnts: 0,
     onChainActiveChannelCount: 0,
     onChainGhostCount: 0,
     onChainTotalVolumeUsdc: '0',
     onChainLastSettledAt: 0,
     effectiveReputationScore: 75,
     onChainReputationScore: null,
-    onChainTrustScore: null,
+    washFlagged: null,
     onChainSybilRisk: null,
     onChainSybilFlags: [],
     networkRequests: null,
@@ -2412,7 +2412,7 @@ test('a retryable failure on a pinned conversation is shown instead of retried',
 
   const message = [
     'Oops, pinned peer could not complete the request.',
-    'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+    'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
     'Original Response: {"message":"Insufficient balance","status":429}',
   ].join('\n');
   streamErrorHandlers[0]?.({

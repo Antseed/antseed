@@ -1,0 +1,263 @@
+.well {
+  background: var(--as-soil-0);
+  border-radius: 28px;
+  padding: 20px;
+}
+
+.panel {
+  background: #fff;
+  border-radius: 20px;
+  padding: clamp(18px, 2.4vw, 28px);
+  aspect-ratio: 520 / 340;
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 12px;
+  font-family: var(--as-font-app);
+}
+
+/* ---- rows ---- */
+.row {
+  display: flex;
+  align-items: center;
+  gap: 12px;
+  padding: 12px 16px;
+  border-radius: 999px;
+  border: 1px solid rgba(0, 30, 18, 0.1);
+  background: #fff;
+  min-height: 56px;
+}
+
+.plan {
+  color: var(--as-text-2);
+  transition: opacity 0.6s ease;
+}
+
+.capped .plan {
+  opacity: 0.7;
+}
+
+.live {
+  border: 1.5px solid var(--as-green);
+  box-shadow: 0 0 0 5px rgba(16, 185, 129, 0.16);
+  color: var(--as-heading);
+}
+
+.chip {
+  flex-shrink: 0;
+  width: 32px;
+  height: 32px;
+  border-radius: 9px;
+  background: rgba(0, 30, 18, 0.55);
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.chip i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: #fff;
+}
+
+.chipAnt {
+  background: rgba(16, 185, 129, 0.12);
+}
+
+.chipAnt img {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.name {
+  font-weight: 600;
+  font-size: clamp(15px, 1.4vw, 18px);
+  min-width: 5.2em;
+}
+
+/* plan usage bar */
+.bar {
+  flex: 1;
+  height: 8px;
+  border-radius: 999px;
+  background: rgba(0, 30, 18, 0.08);
+  overflow: hidden;
+}
+
+.fill {
+  display: block;
+  height: 100%;
+  width: 0;
+  border-radius: 999px;
+  background: rgba(0, 30, 18, 0.35);
+  animation: fillUp 5.2s cubic-bezier(0.3, 0, 0.7, 1) forwards;
+}
+
+@keyframes fillUp {
+  to { width: 100%; }
+}
+
+.capped .fill {
+  background: rgba(0, 30, 18, 0.28);
+}
+
+.reduced .fill {
+  animation: none;
+  width: 100%;
+}
+
+/* status labels (mono) */
+.status {
+  font-family: var(--as-font-data);
+  font-size: clamp(11px, 1.05vw, 13px);
+  letter-spacing: 0.06em;
+  white-space: nowrap;
+  min-width: 4.6em;
+  text-align: right;
+  position: relative;
+}
+
+.statusUsing,
+.statusLimit {
+  display: block;
+  transition: opacity 0.3s ease;
+}
+
+.statusLimit {
+  position: absolute;
+  inset: 0;
+  opacity: 0;
+  color: var(--as-heading);
+}
+
+.capped .statusUsing { opacity: 0; }
+.capped .statusLimit { opacity: 1; }
+
+.keep {
+  color: var(--as-green-deep);
+  font-weight: 500;
+}
+
+/* "resets in" line — appears once the plan is capped */
+.resetLine {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  margin: -4px 0 0 60px;
+  font-family: var(--as-font-data);
+  font-size: clamp(11px, 1.05vw, 12.5px);
+  color: var(--as-text-2);
+  max-height: 0;
+  opacity: 0;
+  overflow: hidden;
+  transition: max-height 0.5s ease, opacity 0.5s ease 0.15s;
+}
+
+.resetLine b {
+  color: var(--as-heading);
+  font-weight: 600;
+  font-variant-numeric: tabular-nums;
+}
+
+.capped .resetLine {
+  max-height: 24px;
+  opacity: 1;
+}
+
+/* streaming dots */
+.stream {
+  flex: 1;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 4px;
+}
+
+.stream i {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--as-green);
+  opacity: 0.25;
+  animation: streamDot 1.2s linear infinite;
+}
+
+.stream i:nth-child(1) { animation-delay: 0s; }
+.stream i:nth-child(2) { animation-delay: 0.15s; }
+.stream i:nth-child(3) { animation-delay: 0.3s; }
+.stream i:nth-child(4) { animation-delay: 0.45s; }
+.stream i:nth-child(5) { animation-delay: 0.6s; }
+.stream i:nth-child(6) { animation-delay: 0.75s; }
+.stream i:nth-child(7) { animation-delay: 0.9s; }
+.stream i:nth-child(8) { animation-delay: 1.05s; }
+
+@keyframes streamDot {
+  0%, 100% { opacity: 0.25; transform: scale(1); }
+  20% { opacity: 1; transform: scale(1.25); }
+}
+
+.reduced .stream i {
+  animation: none;
+  opacity: 0.8;
+}
+
+/* readouts */
+.readouts {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 8px;
+  margin-top: 4px;
+  padding-left: 4px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid rgba(0, 30, 18, 0.12);
+  font-family: var(--as-font-data);
+  font-size: clamp(11px, 1.05vw, 13px);
+  color: var(--as-text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pill b {
+  font-weight: 600;
+  color: var(--as-heading);
+}
+
+.pillCost {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: transparent;
+}
+
+.pillCost b {
+  color: var(--as-green-deep);
+  font-size: clamp(13px, 1.3vw, 16px);
+  font-weight: 700;
+}
+
+.pillCost s {
+  color: var(--as-text-2);
+}
+
+.pillSave {
+  color: var(--as-green-deep);
+  font-weight: 600;
+  border-color: rgba(16, 185, 129, 0.35);
+}
+
+/* Phones: the rows have a fixed-width name, a stream of dots and a nowrap
+   status label. Let the middle shrink so "KEEP GOING" stays inside the pill. */
+@media (max-width: 480px) {
+  .row { gap: 8px; padding: 10px 12px; }
+  .name { min-width: 0; font-size: 14px; }
+  .bar, .stream { min-width: 0; flex: 1 1 40px; overflow: hidden; }
+  .status { min-width: 0; font-size: 10px; letter-spacing: 0.04em; }
+}

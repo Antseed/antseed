@@ -118,7 +118,7 @@ export function CursorAppCard() {
         title="Cursor"
         subtitle={(
           <span className={styles.modalAppSubtitle}>
-            Connect Cursor through your authenticated AntSeed public endpoint.
+            Connect Cursor through your authenticated Antseed public endpoint.
             <button type="button" className={styles.settingWebsiteLink} onClick={() => void window.antseedDesktop?.openExternalUrl?.(CURSOR_WEBSITE)}>
               Website / download <HugeiconsIcon icon={ArrowUpRight01Icon} size={12} strokeWidth={2} />
             </button>
@@ -139,7 +139,7 @@ export function CursorAppCard() {
 
         <section className={styles.settingSection}>
           <div className={styles.settingHead}><span className={styles.settingTitle}>2. OpenAI API key</span></div>
-          <p className={styles.settingHint}>Enable Cursor’s OpenAI API key option and paste the AntSeed key. Cursor stores API keys in its own encrypted storage.</p>
+          <p className={styles.settingHint}>Enable Cursor’s OpenAI API key option and paste the Antseed key. Cursor stores API keys in its own encrypted storage.</p>
           <div className={styles.settingInputRow}>
             <input readOnly type={apiKeyVisible ? 'text' : 'password'} className={styles.settingInput} value={apiKeyVisible && apiKey ? apiKey : MASKED_API_KEY} />
             <button type="button" className={styles.configAction} onClick={() => { if (!apiKey) void loadApiKey(); setApiKeyVisible((visible) => !visible); }} aria-label={apiKeyVisible ? 'Hide Cursor API key' : 'Reveal Cursor API key'}>
@@ -153,7 +153,7 @@ export function CursorAppCard() {
 
         <section className={styles.settingSection}>
           <div className={styles.settingHead}><span className={styles.settingTitle}>3. Add the model (optional)</span></div>
-          <p className={styles.settingHint}>Optionally add <code>antseed</code> as a custom model to follow the model currently selected in the VPR.</p>
+          <p className={styles.settingHint}>Optionally add <code>antseed</code> as a custom model to follow the model currently selected in the AI VPN.</p>
           <div className={styles.settingInputRow}>
             <input readOnly className={styles.settingInput} value="antseed" />
             <button type="button" className={styles.configAction} onClick={() => copy('antseed', 'model')} aria-label="Copy Cursor model name">

@@ -160,7 +160,7 @@ export const webFetchTool: ToolDefinition = {
       redirect: 'follow',
       signal: fetchSignal,
       headers: {
-        'user-agent': app.userAgentFallback ?? 'Mozilla/5.0 VPR/web_fetch',
+        'user-agent': app.userAgentFallback ?? 'Mozilla/5.0 AI VPN/web_fetch',
         accept: 'text/html,application/json,text/plain,application/xml,text/xml,*/*;q=0.8',
       },
     });

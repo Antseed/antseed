@@ -6,7 +6,7 @@ import { canonicalModelKey } from './model-identity.js';
  *
  * The main process fetches the OpenRouter model catalog (see
  * `main/billing/openrouter-catalog.ts`); this module caches the resulting map in the
- * renderer and stamps matching `baseline*` prices onto VPR catalog entries so
+ * renderer and stamps matching `baseline*` prices onto AI VPN catalog entries so
  * the Home "Popular" list can strike through a retail baseline. Everything
  * degrades gracefully: no match / no cache → entries pass through unchanged.
  */
@@ -35,7 +35,7 @@ function retailSavingsPct(
   baselineInput: number | null,
   baselineOutput: number | null,
 ): number | null {
-  if (entry.kind === 'image') return null;
+  if (entry.kind !== 'text') return null;
   const prices = [
     [entry.minInputUsdPerMillion, baselineInput],
     [entry.minOutputUsdPerMillion, baselineOutput],

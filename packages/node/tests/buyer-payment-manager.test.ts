@@ -4,7 +4,7 @@ import { join } from 'node:path';
 import { tmpdir } from 'node:os';
 import { randomBytes } from 'node:crypto';
 import { AbiCoder, id, keccak256, Wallet } from 'ethers';
-import { BuyerPaymentManager, type BuyerPaymentConfig } from '../src/payments/buyer-payment-manager.js';
+import { BuyerPaymentManager, type BuyerPaymentConfig, type BuyerSpendEvent } from '../src/payments/buyer-payment-manager.js';
 import { ChannelStore, CHANNEL_ROLE, CHANNEL_STATUS, type StoredChannel } from '../src/payments/channel-store.js';
 import type { PaymentMux } from '../src/p2p/payment-mux.js';
 import type { Identity } from '../src/p2p/identity.js';
@@ -27,10 +27,19 @@ function fakePeerId(label: string): string {
   return hex;
 }
 
-function decodeMetadataTokens(metadata: string): { inputTokens: bigint; outputTokens: bigint; outputImages: bigint } {
+function decodeMetadataTokens(metadata: string): {
+  inputTokens: bigint;
+  outputTokens: bigint;
+  outputImages: bigint;
+  videoGenerations: bigint;
+  videoSeconds: bigint;
+} {
   const coder = AbiCoder.defaultAbiCoder();
-  const [, inputTokens, outputTokens, , outputImages] = coder.decode(['uint256', 'uint256', 'uint256', 'uint256', 'uint256'], metadata);
-  return { inputTokens, outputTokens, outputImages };
+  const [, inputTokens, outputTokens, , outputImages, videoGenerations, videoSeconds] = coder.decode(
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'],
+    metadata,
+  );
+  return { inputTokens, outputTokens, outputImages, videoGenerations, videoSeconds };
 }
 
 function decodeMetadataServices(metadata: string): Array<{
@@ -43,13 +52,15 @@ function decodeMetadataServices(metadata: string): Array<{
   cumulativeOutputImages: bigint;
 }> {
   const coder = AbiCoder.defaultAbiCoder();
-  const [, , , , , services] = coder.decode([
+  const [, , , , , , , services] = coder.decode([
     'uint256',
     'uint256',
     'uint256',
     'uint256',
     'uint256',
-    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]',
+    'uint256',
+    'uint256',
+    'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]',
   ], metadata);
   return [...services].map((service) => ({
     serviceId: service.serviceId as string,
@@ -162,8 +173,9 @@ describe('BuyerPaymentManager', () => {
     expect(sent.metadata).toBeTypeOf('string');
     expect(sent.metadata).not.toBe('');
     expect((sent.metadata as string).startsWith('0x')).toBe(true);
-    // v3 zero metadata: five head words + empty services array (offset + length) = 7 words.
-    expect((sent.metadata as string).length).toBe(2 + 7 * 64);
+    // v4 zero metadata: seven head words (version, input, output, requests,
+    // images, video generations, video seconds) + empty services array (offset + length) = 9 words.
+    expect((sent.metadata as string).length).toBe(2 + 9 * 64);
   });
 
   it('does not transmit ReserveAuth when durable persistence fails', async () => {
@@ -418,11 +430,10 @@ describe('BuyerPaymentManager', () => {
     expect(BigInt(p2.cumulativeAmount)).toBe(sellerClaim * 2n);
   });
 
-  it('signPerRequestAuth signals topUpNeeded when approaching reserve ceiling', async () => {
+  it('signPerRequestAuth signals topUpNeeded at the initial headroom threshold', async () => {
     const sellerPeerId = fakePeerId('seller-topup');
-    // Use a ceiling just above the expected cost so one request pushes past 80%.
-    // Cumulative starts at 0, so after one request cumulative = cost.
-    // Set ceiling = cost + 100 so cumulative ≈ ceiling, which exceeds 80% threshold.
+    // Use a ceiling just above the expected cost, leaving much less than the
+    // initial reserve's 35% headroom threshold after one request.
     const initialBudget = 9_000n;
     const ceiling = SAMPLE_ESTIMATE.cost + 100n; // tight ceiling
     store.close();
@@ -436,9 +447,6 @@ describe('BuyerPaymentManager', () => {
 
     await manager.authorizeSpending(sellerPeerId, mux, initialBudget, TEST_PRICING);
 
-    // threshold = ceiling * 80%. After request, cumulative = 0 + cost.
-    // ceiling is cost + 100, so cumulative = ceiling - 100.
-    // threshold = (ceiling) * 0.8. Since cumulative ≈ ceiling, it must exceed threshold.
     const { topUpNeeded, payload } = await manager.signPerRequestAuth(
       sellerPeerId,
       { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: SAMPLE_ESTIMATE.cost },
@@ -869,7 +877,7 @@ describe('BuyerPaymentManager', () => {
         attributes: { model: service },
         unitLimits: { output_images: 1 },
       },
-      requestFacts: { model: service, requestedImages: 1 },
+      requestFacts: { kind: 'image', image: { model: service, requestedImages: 1 } },
       unitModel,
     });
     mux.sentSpendingAuths.length = 0;
@@ -979,7 +987,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1040,7 +1048,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '256x256' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1092,7 +1100,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       tokenPricing: TEST_PRICING,
       unitModel: imageModel,
     });
@@ -1144,7 +1152,7 @@ describe('BuyerPaymentManager', () => {
         serviceApiProtocol: 'openai-images',
         attributes: { model: 'gpt-image-2', size: '1024x1024' },
       },
-      requestFacts: {},
+      requestFacts: { kind: 'image', image: {} },
       unitModel: {
         version: 1,
         components: [
@@ -1266,7 +1274,7 @@ describe('BuyerPaymentManager', () => {
     expect(mux.sentSpendingAuths.length).toBeGreaterThanOrEqual(1);
   });
 
-  it('handleNeedAuth proactively top-ups after crossing the 65% reserve threshold', async () => {
+  it('handleNeedAuth first top-up triggers with 35% of the initial reserve left', async () => {
     store.close();
     store = new ChannelStore(tempDir);
     manager = new BuyerPaymentManager(
@@ -1282,23 +1290,68 @@ describe('BuyerPaymentManager', () => {
 
     await manager.handleNeedAuth(sellerPeerId, {
       channelId,
-      requiredCumulativeAmount: '65000',
+      requiredCumulativeAmount: '64999',
       currentAcceptedCumulative: '0',
       deposit: '100000',
-      lastRequestCost: '65000',
-      inputTokens: '1000',
-      freshInputTokens: '1000',
-      outputTokens: '100',
-      cachedInputTokens: '0',
+      lastRequestCost: '64999',
     }, mux);
 
-    expect(mux.sentSpendingAuths).toHaveLength(2);
-    const spendingFirst = mux.sentSpendingAuths[0] as Record<string, unknown>;
-    const reserveSecond = mux.sentSpendingAuths[1] as Record<string, unknown>;
-    expect(spendingFirst.cumulativeAmount).toBe('65000');
-    expect(spendingFirst.reserveMaxAmount).toBeUndefined();
-    expect(reserveSecond.cumulativeAmount).toBe('65000');
-    expect(reserveSecond.reserveMaxAmount).toBe('200000');
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBeUndefined();
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '65000',
+      currentAcceptedCumulative: '64999',
+      deposit: '100000',
+      lastRequestCost: '1',
+    }, mux);
+
+    expect(mux.sentSpendingAuths).toHaveLength(3);
+    const reserveTopUp = mux.sentSpendingAuths[2] as Record<string, unknown>;
+    expect(reserveTopUp.cumulativeAmount).toBe('65000');
+    expect(reserveTopUp.reserveMaxAmount).toBe('200000');
+  });
+
+  it('handleNeedAuth later top-ups use $0.50 headroom regardless of lifetime ceiling', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 1_000_000n, maxPerRequestUsdc: 1_000_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+
+    const sellerPeerId = fakePeerId('seller-needauth-absolute-topup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n);
+    (manager as unknown as { _currentReserveCeiling: Map<string, bigint> })
+      ._currentReserveCeiling.set(sellerPeerId, 10_000_000n);
+    mux.sentSpendingAuths.length = 0;
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '9499999',
+      currentAcceptedCumulative: '0',
+      deposit: '10000000',
+      lastRequestCost: '9499999',
+    }, mux);
+
+    expect(mux.sentSpendingAuths).toHaveLength(1);
+    expect((mux.sentSpendingAuths[0] as Record<string, unknown>).reserveMaxAmount).toBeUndefined();
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId,
+      requiredCumulativeAmount: '9500000',
+      currentAcceptedCumulative: '9499999',
+      deposit: '10000000',
+      lastRequestCost: '1',
+    }, mux);
+
+    expect(mux.sentSpendingAuths).toHaveLength(3);
+    const reserveTopUp = mux.sentSpendingAuths[2] as Record<string, unknown>;
+    expect(reserveTopUp.cumulativeAmount).toBe('9500000');
+    expect(reserveTopUp.reserveMaxAmount).toBe('11000000');
   });
 
   it('handleNeedAuth sends spending auth before reserve top-up when the ceiling blocks the required amount', async () => {
@@ -1789,6 +1842,21 @@ describe('BuyerPaymentManager', () => {
     const channel = store.getActiveChannelByPeer(sellerPeerId, CHANNEL_ROLE.BUYER);
     expect(channel).not.toBeNull();
     expect(channel!.authMax).toBe(extended.cumulativeAmount);
+  });
+
+  it('extendCurrentSpendingAuth reports the newly signed amount as spend', async () => {
+    const sellerPeerId = fakePeerId('seller-extend-spend');
+    await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId: (mux.sentSpendingAuths[0] as Record<string, string>).channelId! });
+    const before = manager.getCumulativeAmount(sellerPeerId);
+    const spendEvents: BuyerSpendEvent[] = [];
+    manager.setSpendListener((event) => spendEvents.push(event));
+
+    await manager.extendCurrentSpendingAuth(sellerPeerId, 50_000n, mux, undefined, 'req-extend');
+
+    expect(spendEvents).toHaveLength(1);
+    expect(spendEvents[0]).toMatchObject({ sellerPeerId, requestId: 'req-extend', outputTokens: '0' });
+    expect(BigInt(spendEvents[0]!.amountUsdc)).toBe(manager.getCumulativeAmount(sellerPeerId) - before);
   });
 
   it('extendCurrentSpendingAuth advances verifiedCost to unblock a collapsed overdraft window', async () => {

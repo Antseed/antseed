@@ -7,7 +7,7 @@ hide_title: true
 
 # Run a TEE-Attested Seller
 
-A seller running on Intel TDX hardware can prove it — cryptographically, to every buyer, before any payment. This guide takes an existing seller (see [Become a Provider](/docs/guides/become-a-provider)) and adds TEE attestation via the [`antseed-verifier`](https://github.com/AntSeed/antseed-verifier) SDK, so buyers running `--require-verifier` will route to you.
+A seller running on Intel TDX hardware can prove it — cryptographically, to every buyer, before any payment. This guide takes an existing seller (see [Become a Provider](/docs/guides/become-a-provider)) and adds TEE attestation via the [`antseed-verifier`](https://github.com/AntSeed/antseed/tree/main/packages/antseed-verifier) SDK, so buyers running `--require-verifier` will route to you.
 
 :::info Availability
 Verifier SDK support landed in the CLI with [PR #713](https://github.com/AntSeed/antseed/pull/713) (July 2026). Check that your `antseed seller start --help` lists a `--verifiers` option; older releases don't have it.
@@ -31,12 +31,15 @@ If the prover fails to load at startup, the seller exits rather than advertising
 
 The CLI resolves the id `antseed-verifier` to the npm package `@antseed/antseed-verifier`, version-pinned, and auto-installs it into `~/.antseed/plugins` on first use (`npm install --ignore-scripts` under the hood).
 
-Until the package is published to npm, install it into the plugins directory from source:
+To test an unpublished source checkout, install it into the plugins directory from the monorepo package:
 
 ```bash
-git clone https://github.com/AntSeed/antseed-verifier
-cd antseed-verifier
-npm install && npm run build && npm pack
+git clone https://github.com/AntSeed/antseed.git
+cd antseed
+pnpm install
+pnpm --filter @antseed/antseed-verifier build
+cd packages/antseed-verifier
+npm pack
 npm install --prefix ~/.antseed/plugins ./antseed-antseed-verifier-*.tgz
 ```
 
@@ -101,7 +104,7 @@ export ANTSEED_VERIFIER_PROVIDER_EVIDENCE_URL='http://127.0.0.1:9000/evidence?no
 export ANTSEED_VERIFIER_PROVIDER_TEE_FIELD=quote
 
 # The frozen report_data binding scheme the provider's quote uses:
-#   antseed-rd-v1            — AntSeed's canonical scheme
+#   antseed-rd-v1            — Antseed's canonical scheme
 #   nonce-pubkey-sha256-v1   — used by e.g. Chutes
 export ANTSEED_VERIFIER_PROVIDER_BINDING_SCHEME=antseed-rd-v1
 export ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD=e2e_pubkey
@@ -110,7 +113,7 @@ export ANTSEED_VERIFIER_PROVIDER_BINDING_PUBKEY_FIELD=e2e_pubkey
 # export ANTSEED_VERIFIER_PROVIDER_GPU_FIELD=gpu_evidence
 ```
 
-The SDK is provider-agnostic — no vendor hosts or schemas are baked in. Pointing at a different confidential-inference backend is configuration only. For a worked example against a live third-party TDX provider (Chutes), including the small auth shim it needs, see the [SDK's e2e guide](https://github.com/AntSeed/antseed-verifier/blob/main/docs/e2e-report-data-schemes.md).
+The SDK is provider-agnostic — no vendor hosts or schemas are baked in. Pointing at a different confidential-inference backend is configuration only. For a worked example against a live third-party TDX provider (Chutes), including the small auth shim it needs, see the [SDK's e2e guide](https://github.com/AntSeed/antseed/blob/main/packages/antseed-verifier/docs/e2e-report-data-schemes.md).
 
 ## 6. Test the full loop as a buyer
 

@@ -2,7 +2,7 @@
  * Comparable retail-price catalog.
  *
  * Fetches a configurable models API and derives per-model retail pricing
- * (USD per million tokens) that the renderer strikes through on the VPR Home
+ * (USD per million tokens) that the renderer strikes through on the AI VPN Home
  * "Popular" list as a savings baseline. The endpoint must serve the
  * OpenRouter-compatible models schema —
  * `{ data: [{ id, name, pricing: { prompt, completion, input_cache_read } }] }`

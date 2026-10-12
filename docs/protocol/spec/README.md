@@ -4,7 +4,7 @@
 
 ## Overview
 
-AntSeed is a fully decentralized protocol for peer-to-peer AI services directly between peers, without any central server, marketplace, or intermediary. Nodes discover each other, negotiate terms, stream inference results, meter token usage, settle payments, and build reputation — all through direct peer-to-peer communication. The network exists entirely as the set of participating nodes; there is no infrastructure beyond the nodes themselves.
+Antseed is a fully decentralized protocol for peer-to-peer AI services directly between peers, without any central server, marketplace, or intermediary. Nodes discover each other, negotiate terms, stream inference results, meter token usage, settle payments, and build reputation — all through direct peer-to-peer communication. The network exists entirely as the set of participating nodes; there is no infrastructure beyond the nodes themselves.
 
 ## Architecture
 
@@ -67,6 +67,10 @@ See: [03-metering.md](./03-metering.md)
 How Buyers pay Sellers for inference. Covers pricing terms, payment settlement, deposit and session mechanics, and refund conditions.
 
 See: [04-payments.md](./04-payments.md)
+
+For the recognized-usage accounting extensions, see [Reward
+Policies](../../../apps/website/docs/protocol/reward-policies.md). This separates
+the deployed policy mechanism from the proposed model-verification designs below.
 
 ### 5. Reputation
 

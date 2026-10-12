@@ -1,0 +1,41 @@
+.filter {
+  min-width: 0;
+}
+
+.filter button[aria-haspopup='listbox'] {
+  max-width: 100%;
+}
+
+.badge {
+  display: inline-flex;
+  max-width: 100%;
+  border-radius: 999px;
+}
+
+.badge:focus-visible {
+  outline: 2px solid var(--text-muted);
+  outline-offset: 2px;
+}
+
+.notice {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 6px;
+  padding: 12px;
+  border: 1px solid var(--border);
+  border-radius: 12px;
+  color: var(--text-muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+
+.notice button {
+  padding: 4px 0;
+  color: var(--text-primary);
+  background: transparent;
+  border: 0;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+  cursor: pointer;
+}

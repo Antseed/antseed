@@ -18,7 +18,7 @@ test('classifyChatStreamFailure detects retryable upstream 502 failures', () => 
 test('classifyChatStreamFailure preserves protocol peer guidance without a stream prefix', () => {
   const message = [
     'Oops, pinned peer could not complete the request.',
-    'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+    'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
     'Original Response: {"message":"Insufficient balance or no resource package. Please recharge.","status":429}',
   ].join('\n');
   const reason = classifyChatStreamFailure({

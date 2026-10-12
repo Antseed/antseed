@@ -2,15 +2,15 @@
 sidebar_position: 3
 slug: /guides/agents
 title: Connect Agents
-description: Connect Hermes, OpenClaw, and other agents to the AntSeed VPR locally or through an authenticated public HTTPS endpoint.
+description: Connect Hermes, OpenClaw, and other agents to the Antseed AI VPN locally or through an authenticated public HTTPS endpoint.
 ---
 
 # Connect Agents
 
-The AntSeed VPR exposes the models selected by your routing policy through an OpenAI- and Anthropic-compatible API. An agent can connect in either of two ways:
+The Antseed AI VPN exposes the models selected by your routing policy through an OpenAI- and Anthropic-compatible API. An agent can connect in either of two ways:
 
 - **Local agent** — use the buyer API on the same computer at `http://127.0.0.1:8377/v1`.
-- **Remote agent or hosted client** — define an authenticated internet-accessible endpoint from the VPR's **Agents** view.
+- **Remote agent or hosted client** — define an authenticated internet-accessible endpoint from the AI VPN's **Agents** view.
 
 The public endpoint is useful for agents on another server, hosted development tools such as Cursor, CI workers, and custom applications that cannot reach your computer's `localhost` address.
 
@@ -19,13 +19,13 @@ The public endpoint is useful for agents on another server, hosted development t
 Use the maintained setup skill for the agent you want to connect:
 
 - [Hermes integration](/integrations/hermes) and [Hermes Agent skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) — configure the current Hermes `providers:` schema, select models, fund the buyer, and use local or public endpoints.
-- [OpenClaw integration](/integrations/openclaw) and [OpenClaw skill](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed) — configure AntSeed under `models.providers`, including bearer-header authentication for a public endpoint.
+- [OpenClaw integration](/integrations/openclaw) and [OpenClaw skill](https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed) — configure Antseed under `models.providers`, including bearer-header authentication for a public endpoint.
 
 For another agent, use its custom OpenAI or Anthropic provider settings with the base URL and API key described below. See [Using the API](/docs/guides/using-the-api) for request formats and routing behavior.
 
 ## Connect locally
 
-Use the local endpoint when the agent runs on the same computer as the VPR:
+Use the local endpoint when the agent runs on the same computer as the AI VPN:
 
 ```bash
 export ANTSEED_BASE_URL="http://127.0.0.1:8377/v1"
@@ -43,7 +43,7 @@ curl "$ANTSEED_BASE_URL/models" \
 
 ### Hermes
 
-Current Hermes releases store named custom endpoints under `providers:`. Add AntSeed in `~/.hermes/config.yaml`:
+Current Hermes releases store named custom endpoints under `providers:`. Add Antseed in `~/.hermes/config.yaml`:
 
 ```yaml
 model:
@@ -54,7 +54,7 @@ model:
 
 providers:
   antseed:
-    name: AntSeed
+    name: Antseed
     api: http://127.0.0.1:8377/v1
     api_key: antseed-p2p
     transport: chat_completions
@@ -70,11 +70,11 @@ providers:
         context_length: 256000
 ```
 
-The `antseed` model follows the current VPR model picker. Add concrete IDs returned by `GET /v1/models` when you want them in Hermes' model menu. The [Hermes Agent skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) covers funding, systemd, auxiliary models, and routing in detail.
+The `antseed` model follows the current AI VPN model picker. Add concrete IDs returned by `GET /v1/models` when you want them in Hermes' model menu. The [Hermes Agent skill](https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed) covers funding, systemd, auxiliary models, and routing in detail.
 
 ### OpenClaw
 
-Add AntSeed under `models.providers` in `~/.openclaw/openclaw.json`:
+Add Antseed under `models.providers` in `~/.openclaw/openclaw.json`:
 
 ```json
 {
@@ -88,7 +88,7 @@ Add AntSeed under `models.providers` in `~/.openclaw/openclaw.json`:
         "models": [
           {
             "id": "kimi-k2.6",
-            "name": "Kimi K2.6 via AntSeed",
+            "name": "Kimi K2.6 via Antseed",
             "reasoning": false,
             "input": ["text"],
             "contextWindow": 256000,
@@ -105,15 +105,15 @@ Then run `openclaw models set "antseed/kimi-k2.6"` followed by `openclaw gateway
 
 ## Connect a remote agent
 
-When the agent cannot reach the VPR on `localhost`, first create an authenticated endpoint by following the [Public HTTPS Tunnels guide](/docs/guides/public-tunnels). That guide is the canonical reference for ngrok and Cloudflare setup, authentication, supported routes, CLI commands, Cursor, and troubleshooting.
+When the agent cannot reach the AI VPN on `localhost`, first create an authenticated endpoint by following the [Public HTTPS Tunnels guide](/docs/guides/public-tunnels). That guide is the canonical reference for ngrok and Cloudflare setup, authentication, supported routes, CLI commands, Cursor, and troubleshooting.
 
-After the endpoint starts, replace the local placeholder values in the configuration above with the values shown by the VPR:
+After the endpoint starts, replace the local placeholder values in the configuration above with the values shown by the AI VPN:
 
-| Agent | Public endpoint field | AntSeed API key field |
+| Agent | Public endpoint field | Antseed API key field |
 |---|---|---|
 | Hermes | `providers.antseed.api` | `providers.antseed.api_key` |
 | OpenClaw | `models.providers.antseed.baseUrl` | `models.providers.antseed.apiKey` |
 
-Use the complete public base URL ending in `/v1`. For OpenClaw, keep `authHeader: true` so it sends the generated AntSeed key as a bearer token.
+Use the complete public base URL ending in `/v1`. For OpenClaw, keep `authHeader: true` so it sends the generated Antseed key as a bearer token.
 
 For another agent, use its custom OpenAI- or Anthropic-compatible provider settings. See [Using the API](/docs/guides/using-the-api) for request formats and model routing.

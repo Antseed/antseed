@@ -2,28 +2,28 @@
 sidebar_position: 3
 slug: /guides/public-tunnels
 title: Public HTTPS Tunnels
-description: Expose the AntSeed VPR's authenticated OpenAI-compatible API through Cloudflare Tunnel or ngrok for Cursor, remote agents, servers, and custom SDK clients.
+description: Expose the Antseed AI VPN's authenticated OpenAI-compatible API through Cloudflare Tunnel or ngrok for Cursor, remote agents, servers, and custom SDK clients.
 ---
 
 # Public HTTPS Tunnels
 
-The VPR normally exposes its buyer API only on `localhost`. A public tunnel gives that API an authenticated HTTPS address so a client running somewhere else can reach it.
+The AI VPN normally exposes its buyer API only on `localhost`. A public tunnel gives that API an authenticated HTTPS address so a client running somewhere else can reach it.
 
 This is useful for:
 
-- **Remote agents and servers** that need to use the models and routing policy configured on your VPR.
+- **Remote agents and servers** that need to use the models and routing policy configured on your AI VPN.
 - **Cursor and other hosted AI clients** whose requests may originate outside your computer.
 - **Custom applications and SDKs** that support an OpenAI-compatible base URL and API key.
 
-The tunnel does not expose the whole desktop or the unrestricted local proxy. AntSeed places a small authenticated gateway in front of the buyer API and permits only the supported model routes listed below.
+The tunnel does not expose the whole desktop or the unrestricted local proxy. Antseed places a small authenticated gateway in front of the buyer API and permits only the supported model routes listed below.
 
 :::warning Protect the API key
-Anyone with the public URL and API key can send requests through your VPR and spend its available AntSeed credits. Store the key as a secret, rotate the tunnel configuration if it is exposed, and stop the tunnel when you no longer need remote access.
+Anyone with the public URL and API key can send requests through your AI VPN and spend its available Antseed credits. Store the key as a secret, rotate the tunnel configuration if it is exposed, and stop the tunnel when you no longer need remote access.
 :::
 
-## Configure a tunnel in the VPR
+## Configure a tunnel in the AI VPN
 
-Open **Tunnels** in the desktop app and configure one provider. Only one provider runs at a time, but the generated AntSeed API key works with either provider.
+Open **Tunnels** in the desktop app and configure one provider. Only one provider runs at a time, but the generated Antseed API key works with either provider.
 
 ### Cloudflare Tunnel
 
@@ -32,24 +32,24 @@ Use Cloudflare when you want a stable hostname on a domain you control.
 1. Create a named tunnel in Cloudflare Zero Trust.
 2. Add a public hostname whose service points to `http://localhost:8379`.
 3. Copy the tunnel's run token.
-4. In **VPR → Tunnels → Cloudflare Tunnel**, paste the token and the public `https://` hostname.
+4. In **AI VPN → Tunnels → Cloudflare Tunnel**, paste the token and the public `https://` hostname.
 5. Select **Save and start**.
 
-The VPR manages the local authenticated gateway and starts the bundled `cloudflared` process with your named-tunnel token.
+The AI VPN manages the local authenticated gateway and starts the bundled `cloudflared` process with your named-tunnel token.
 
 ### ngrok
 
 Use ngrok for a quick generated endpoint or an ngrok static domain.
 
 1. Install the ngrok CLI and copy your account authtoken.
-2. In **VPR → Tunnels → ngrok**, paste the authtoken.
+2. In **AI VPN → Tunnels → ngrok**, paste the authtoken.
 3. Leave **Public hostname** blank for a generated `ngrok-free.dev` URL, or enter your configured static ngrok domain.
 4. Select **Save and start**.
 
 After the tunnel starts, the page displays two connection values:
 
 - **OpenAI base URL** — for example, `https://example.ngrok-free.dev/v1`.
-- **API key** — an AntSeed-generated secret beginning with `antseed_`.
+- **API key** — an Antseed-generated secret beginning with `antseed_`.
 
 ## Authentication
 
@@ -59,18 +59,20 @@ Send the API key as an HTTP bearer token:
 Authorization: Bearer antseed_your_api_key
 ```
 
+To give several people their own keys, each with its own spend limits, usage and optionally its own wallet, see [Shared Gateway API Keys](/docs/guides/gateway-api-keys). Every key created with `antseed gateway key create` also works through the tunnel.
+
 The public gateway accepts the standard `Authorization` header. It does not use `x-api-key`, URL query parameters, cookies, or a key embedded in the hostname. The gateway validates the bearer token and removes it before forwarding the request to the local buyer proxy.
 
 ## Test the connection
 
-Set the values copied from the VPR:
+Set the values copied from the AI VPN:
 
 ```bash
 export ANTSEED_BASE_URL="https://your-tunnel.example/v1"
 export ANTSEED_API_KEY="antseed_your_api_key"
 ```
 
-List the models currently available through your VPR:
+List the models currently available through your AI VPN:
 
 ```bash
 curl "$ANTSEED_BASE_URL/models" \
@@ -93,16 +95,16 @@ curl "$ANTSEED_BASE_URL/chat/completions" \
 
 In Cursor's model settings:
 
-1. Enable the OpenAI API key option and paste the AntSeed tunnel API key.
-2. Enable **Override OpenAI Base URL** and paste the complete VPR value ending in `/v1`.
+1. Enable the OpenAI API key option and paste the Antseed tunnel API key.
+2. Enable **Override OpenAI Base URL** and paste the complete AI VPN value ending in `/v1`.
 3. Add or select a model ID returned by `GET /v1/models`.
-4. Run a small request and confirm it appears in the VPR or tunnel logs.
+4. Run a small request and confirm it appears in the AI VPN or tunnel logs.
 
-Use the **AntSeed API key shown in VPR → Tunnels**, not your ngrok authtoken or Cloudflare tunnel token. Paste it into Cursor's **OpenAI API Key** field; Cursor sends that value to the tunnel as `Authorization: Bearer <API_KEY>`.
+Use the **Antseed API key shown in AI VPN → Tunnels**, not your ngrok authtoken or Cloudflare tunnel token. Paste it into Cursor's **OpenAI API Key** field; Cursor sends that value to the tunnel as `Authorization: Bearer <API_KEY>`.
 
 The public URL matters for Cursor because some Cursor flows can originate from Cursor's infrastructure rather than directly from your local Electron process. A `localhost` URL, private LAN address, or hostname that resolves only on your computer cannot be reached from such a flow.
 
-If Cursor shows its own “resource not found” page and the tunnel receives no request, the failure happened before AntSeed. Recheck Cursor's base URL override, API-key setting, and custom model configuration. If the tunnel log receives the request, use the HTTP status and troubleshooting section below.
+If Cursor shows its own “resource not found” page and the tunnel receives no request, the failure happened before Antseed. Recheck Cursor's base URL override, API-key setting, and custom model configuration. If the tunnel log receives the request, use the HTTP status and troubleshooting section below.
 
 ## Use it from an OpenAI SDK
 
@@ -137,12 +139,15 @@ The tunnel gateway intentionally allows only these routes:
 | `POST` | `/v1/responses` | OpenAI Responses API |
 | `POST` | `/v1/images/generations` | Image generation |
 | `POST` | `/v1/images/edits` | Image editing |
+| `GET` | `/v1/key` | Usage and spend limits of the calling key |
 
 Other paths return `404 Not Found`. Requests without the exact bearer key return `401 Unauthorized`.
 
 ## CLI setup
 
 For a headless machine, start the buyer proxy first and run the tunnel as a separate CLI process.
+
+On a Linux server, the [gateway installer](/docs/guides/gateway-server) sets this up as systemd services: pass `--cloudflare-token` and `--public-url`.
 
 Cloudflare example:
 
@@ -166,6 +171,8 @@ export ANTSEED_TUNNEL_API_KEY="antseed_generate_a_long_random_secret"
 antseed tunnel start --provider ngrok
 ```
 
+`ANTSEED_TUNNEL_API_KEY` is optional once you have created keys with `antseed gateway key create`. When it is set, it is kept as an unlimited key on your default identity.
+
 Use `antseed tunnel status` from another terminal to inspect the active public URL, and `antseed tunnel stop` to stop it.
 
 ## Troubleshooting
@@ -181,7 +188,7 @@ Use `antseed tunnel status` from another terminal to inspect the active public U
 
 - Send `Authorization: Bearer <API_KEY>` exactly.
 - Do not put the key in the URL.
-- Copy the AntSeed API key, not the Cloudflare tunnel token or ngrok authtoken.
+- Copy the Antseed API key, not the Cloudflare tunnel token or ngrok authtoken.
 
 ### `404 Not found`
 
@@ -189,8 +196,8 @@ Use `antseed tunnel status` from another terminal to inspect the active public U
 - Configure SDKs with the base URL ending in `/v1`; do not append `/v1` twice.
 - For a raw HTTP call, use a path such as `/v1/models` or `/v1/responses`.
 
-### `502 AntSeed buyer proxy is unavailable`
+### `502 Antseed buyer proxy is unavailable`
 
-The public tunnel is running, but the local buyer proxy is not accepting requests on its configured port. Start the VPR router or `antseed buyer start`, then retry.
+The public tunnel is running, but the local buyer proxy is not accepting requests on its configured port. Start the AI VPN router or `antseed buyer start`, then retry.
 
 For local-only integrations that do not need a public endpoint, see [Using the API](/docs/guides/using-the-api).

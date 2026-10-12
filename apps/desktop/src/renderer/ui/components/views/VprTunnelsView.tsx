@@ -12,14 +12,14 @@ const AGENTS = [
   {
     name: 'Hermes Agent',
     brand: 'hermes',
-    description: 'Connect Hermes to the VPR with the OpenAI-compatible endpoint.',
+    description: 'Connect Hermes to the AI VPN with the OpenAI-compatible endpoint.',
     integrationUrl: 'https://antseed.com/integrations/hermes/',
     skillUrl: 'https://github.com/AntSeed/antseed/tree/main/skills/hermes-antseed',
   },
   {
     name: 'OpenClaw',
     icon: OPENCLAW_ICON,
-    description: 'Register AntSeed as an Anthropic Messages provider for OpenClaw.',
+    description: 'Register Antseed as an Anthropic Messages provider for OpenClaw.',
     integrationUrl: 'https://antseed.com/integrations/openclaw/',
     skillUrl: 'https://github.com/AntSeed/antseed/tree/main/skills/openclaw-antseed',
   },
@@ -33,7 +33,7 @@ export function VprTunnelsView() {
       <VprPage title="Agents" backFallback="home">
         <div className={styles.stack}>
           <section className={tunnelStyles.intro}>
-            <h2 className={tunnelStyles.introTitle}>Connect an agent to your VPR</h2>
+            <h2 className={tunnelStyles.introTitle}>Connect an agent to your AI VPN</h2>
             <p className={tunnelStyles.introText}>Agents on this computer can use <code>http://127.0.0.1:8377/v1</code>. Remote agents use your protected internet-accessible endpoint.</p>
           </section>
 

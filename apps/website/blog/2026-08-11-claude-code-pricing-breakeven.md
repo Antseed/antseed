@@ -46,7 +46,7 @@ One pattern worth noticing before we go further: output is priced at exactly fiv
 
 ## The breakeven is 351 requests a month
 
-To turn rates into a bill you need to know the shape of a real request, not a hypothetical one. We pulled ours from the [AntSeed network stats endpoint](https://network.antseed.com/stats), which reports live totals across the peers currently online.
+To turn rates into a bill you need to know the shape of a real request, not a hypothetical one. We pulled ours from the [Antseed network stats endpoint](https://network.antseed.com/stats), which reports live totals across the peers currently online.
 
 As of 11 August 2026, that endpoint reports 13,984,528 requests carrying 88.96 billion input tokens and 14.07 billion output tokens. The average request is **6,361 input tokens and 1,006 output tokens**.
 
@@ -93,7 +93,7 @@ We will say the uncomfortable part plainly: on a cache-heavy workload under abou
 
 Above that line, the question changes from "subscription or API" to "whose API". This is where an open market of independent providers gets interesting, and where the numbers stop being flattering in one direction only.
 
-The table below compares Anthropic's list input price against what providers on the AntSeed network were actually charging on 11 August 2026.
+The table below compares Anthropic's list input price against what providers on the Antseed network were actually charging on 11 August 2026.
 
 | Model | Providers | Official | Market median | Market low | Below list |
 |---|---|---|---|---|---|
@@ -134,7 +134,7 @@ Do not take our request shape. Take yours.
 1. Pull your actual token counts from the `usage` block Anthropic returns on every response. You want `input_tokens`, `output_tokens`, and `cache_read_input_tokens` separately.
 2. Compute your own input-to-output ratio. If it is far below 6.32:1 you are doing something unusual and the output rate matters more for you than it does for most.
 3. Multiply by the published rates in the first table. That is your monthly bill at first-party pricing.
-4. Compare against live market rates with `curl -s https://network.antseed.com/stats`, or the [AntSeed pricing schema documentation](/docs/pricing) if you want the field definitions.
+4. Compare against live market rates with `curl -s https://network.antseed.com/stats`, or the [Antseed pricing schema documentation](/docs/pricing) if you want the field definitions.
 
 If you decide the numbers justify moving, [pointing Claude Code at a different backend](/integrations/claude-code) is a base URL change and takes about two minutes. If you want the broader argument for why routing through an open market beats routing through one company's gateway, we made it in our [comparison against OpenRouter](/vs/openrouter).
 

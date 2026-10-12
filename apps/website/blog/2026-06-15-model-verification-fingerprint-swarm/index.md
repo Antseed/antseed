@@ -3,7 +3,7 @@ slug: model-verification-fingerprint-swarm
 title: "Model Verification Needs More Than a Label"
 authors: [antseed]
 tags: [protocol, model-verification, decentralized-ai, P2P AI, cryptography, fingerprints]
-description: How AntSeed turns AI API responses into attributable evidence, then builds toward black-box model fingerprints and a torrent-like public fingerprint swarm.
+description: How Antseed turns AI API responses into attributable evidence, then builds toward black-box model fingerprints and a torrent-like public fingerprint swarm.
 keywords: [AI model verification, LLM fingerprinting, ResponseAuth, decentralized AI, P2P AI, KBF, fingerprint swarm, model substitution, shadow APIs]
 image: /og-image.jpg
 date: 2026-06-15
@@ -20,7 +20,7 @@ But if an endpoint silently routes you to a cheaper model, mixes traffic across 
 
 Usually: almost none.
 
-AntSeed is building the missing verification layer for that market.
+Antseed is building the missing verification layer for that market.
 
 <!-- truncate -->
 
@@ -28,7 +28,7 @@ AntSeed is building the missing verification layer for that market.
 
 The problem is not hypothetical. The paper [Real Money, Fake Models](https://arxiv.org/abs/2603.01919) audits shadow APIs that claim to serve official frontier models and finds divergence across utility, safety, and identity verification. The economic incentive is obvious: charge for the expensive model, serve something cheaper, pocket the spread.
 
-Centralized APIs can ask users to trust brand, contracts, or customer support. A peer-to-peer market cannot depend on any of that. AntSeed sellers are independent peers. Buyers need evidence that travels with the response.
+Centralized APIs can ask users to trust brand, contracts, or customer support. A peer-to-peer market cannot depend on any of that. Antseed sellers are independent peers. Buyers need evidence that travels with the response.
 
 That starts with a distinction that matters:
 
@@ -40,7 +40,7 @@ That is the base layer. Once a seller's responses are attributable, buyers can r
 
 ## What Is Already Implemented: ResponseAuth
 
-AntSeed now has a signed response-authentication substrate in `@antseed/node`.
+Antseed now has a signed response-authentication substrate in `@antseed/node`.
 
 For supported buyer-seller connections, the seller signs a `ResponseAuthPayload` after serving a response. The payload commits to:
 
@@ -92,17 +92,17 @@ Private probes matter for adversarial enforcement. If every seller can see the e
 
 But public fingerprints still matter.
 
-They are useful for reproducibility, smoke tests, shared baselines, research, and network-wide learning. The question is how to distribute them without turning AntSeed into another centralized API or hosted database.
+They are useful for reproducibility, smoke tests, shared baselines, research, and network-wide learning. The question is how to distribute them without turning Antseed into another centralized API or hosted database.
 
 The answer in the spec is a fingerprint swarm.
 
 Think torrent, not registry:
 
-| Torrent concept | AntSeed fingerprint swarm |
+| Torrent concept | Antseed fingerprint swarm |
 |---|---|
 | `.torrent` / magnet metadata | fingerprint pack announcement |
 | info hash | `packId` |
-| tracker / DHT | AntSeed discovery topics |
+| tracker / DHT | Antseed discovery topics |
 | seeders | peers mirroring verified packs |
 | downloaded files | signed fingerprint packs |
 | piece hashes | optional chunk hashes |
@@ -120,14 +120,14 @@ Signature proves who published the pack.
 Local trust policy decides whether I use it.
 ```
 
-No central server has to be the source of truth. GitHub can be a review surface and bootstrap mirror. IPFS, Arweave, HTTPS mirrors, and AntSeed peers can all serve the same pack bytes. The pack is valid if the hash and signature check out.
+No central server has to be the source of truth. GitHub can be a review surface and bootstrap mirror. IPFS, Arweave, HTTPS mirrors, and Antseed peers can all serve the same pack bytes. The pack is valid if the hash and signature check out.
 
 ## What This Enables
 
 The long-term flow looks like this:
 
 1. A seller advertises a model or service.
-2. The buyer sends normal requests through AntSeed.
+2. The buyer sends normal requests through Antseed.
 3. The seller signs response provenance with ResponseAuth.
 4. The buyer stores verified evidence locally.
 5. The buyer imports trusted public fingerprint packs from the swarm.
@@ -145,7 +145,7 @@ The merged specs define the implementation path:
 - `@antseed/fingerprints`: shared verifier interfaces, reference schemas, pack schemas, canonical hashing, and KBF as the first verifier.
 - Fingerprint swarm support: signed pack announcements, content-addressed fetches, peer seeding, mirrors, and local trust policy.
 - Buyer reference store: trusted references under `<dataDir>/fingerprints/references`.
-- Audit runner: send normal AntSeed requests, require verified ResponseAuth, force-store audit evidence, compute verifier results.
+- Audit runner: send normal Antseed requests, require verified ResponseAuth, force-store audit evidence, compute verifier results.
 - Local routing policy: downgrade or avoid sellers with repeated adverse evidence.
 - Dispute path later: commit-reveal, off-chain exhibit verification, and compact on-chain slash signals only for confirmed substitution.
 
@@ -163,7 +163,7 @@ It also needs private probes, because public tests can be gamed.
 
 And it needs cryptographic provenance, because without attribution, every model-verification result is just a claim.
 
-AntSeed is putting those pieces together:
+Antseed is putting those pieces together:
 
 - signed responses for attribution;
 - black-box verifier suites for model identity signals;
@@ -173,7 +173,7 @@ AntSeed is putting those pieces together:
 
 A normal API response is just text.
 
-An AntSeed response can become attributable audit evidence.
+An Antseed response can become attributable audit evidence.
 
 [Read the model-verification spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/spec/07-model-verification.md)
 

@@ -3,7 +3,7 @@ import { DroidBrandIcon } from './DroidBrandIcon';
 import { HermesBrandIcon } from './HermesBrandIcon';
 
 /**
- * Vendor brand marks for the VPR Home screen (tool buttons + Popular list).
+ * Vendor brand marks for the AI VPN Home screen (tool buttons + Popular list).
  *
  * These render inline as SVG so they inherit `currentColor` where monochrome
  * and pin brand hues where the mark is iconic.

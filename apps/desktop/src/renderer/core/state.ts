@@ -74,9 +74,20 @@ export type ServiceCapabilitiesView = {
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];
+  /** Advertised options of a native video model; absent fields mean unknown. */
+  video?: VideoOptionsView;
 };
 
-export type VprModelKind = 'text' | 'image';
+export type VideoOptionsView = {
+  durationsSeconds?: number[];
+  resolutions?: string[];
+  aspectRatios?: string[];
+  inputs?: string[];
+  requiredInputs?: string[];
+  audio?: boolean;
+};
+
+export type VprModelKind = 'text' | 'image' | 'video';
 
 export type ChatServiceOptionEntry = {
   id: string;
@@ -146,6 +157,11 @@ export type VprModelCatalogEntry = {
   maxCachedInputUsdPerMillion: number | null;
   minImageUsdPerImage: number | null;
   maxImageUsdPerImage: number | null;
+  /** Video models: advertised per-second / per-video price ranges. */
+  minVideoUsdPerSecond: number | null;
+  maxVideoUsdPerSecond: number | null;
+  minVideoUsdPerVideo: number | null;
+  maxVideoUsdPerVideo: number | null;
   expectedSavingsPct: number | null;
   /**
    * True when some seller auto-routing may actually pick (trust/allow/block
@@ -164,6 +180,29 @@ export type VprModelCatalogEntry = {
   baselineOutputUsdPerMillion?: number | null;
 };
 
+/**
+ * Renderer-side mirror of `TrustBreakdown` from `@antseed/node`
+ * (`packages/node/src/reputation/trust-score.ts`). The renderer only imports
+ * `@antseed/node` subpath modules, so the shape is restated here.
+ *
+ *   trust = washFlagged ? 0 : history + usage + power + identity
+ *   (weights 50 / 20 / 10 / 20)
+ */
+export type TrustBreakdown = {
+  /** Final trust score, 0-100. */
+  score: number;
+  /** Settled service history; `null` when channel stats are unavailable. */
+  history: { score: number; channelCount: number; totalVolumeUsdcMicros: number } | null;
+  /** Last epoch's share of all pools' usage points; `null` when usage accounting data is unavailable. */
+  usage: { score: number; shareBps: number; epoch: number } | null;
+  /** Current epoch's share of all pools' staking power; `null` when pool data is unavailable. */
+  power: { score: number; shareBps: number; epoch: number } | null;
+  /** Verified-identity part; `null` when no verified identity has usable history. */
+  identity: { score: number; kind: 'github' | 'domain'; claim: string } | null;
+  /** Wash-trading registry verdict; `null` when the registry is unavailable. */
+  washFlagged: boolean | null;
+};
+
 export type DiscoverVerificationLink = {
   kind: 'domain' | 'github';
   label: string;
@@ -174,6 +213,7 @@ export type DiscoverVerificationLink = {
 };
 
 export type DiscoverRow = {
+  advertisedVerifierIds?: string[];
   // Identity
   rowKey: string;              // `${peerId}:${serviceId}`
   serviceId: string;
@@ -208,6 +248,11 @@ export type DiscoverRow = {
   cachedInputUsdPerMillion: number | null;
   minImageUsdPerImage: number | null;
   maxImageUsdPerImage: number | null;
+  /** Native video offers: advertised `video_seconds` / `video_generations` price ranges. */
+  minVideoUsdPerSecond: number | null;
+  maxVideoUsdPerSecond: number | null;
+  minVideoUsdPerVideo: number | null;
+  maxVideoUsdPerVideo: number | null;
 
   // Local buyer history (from ChannelStore)
   lifetimeSessions: number;
@@ -220,19 +265,24 @@ export type DiscoverRow = {
   // Peer metadata
   onChainChannelCount: number | null;
 
-  // On-chain staking (AntseedStaking)
+  // On-chain staking (AntseedStakingPools)
   agentId: number;
-  stakeUsdc: string;            // bigint as string, 6-decimal USDC
+  /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
+  poolStakeAnts: number;
 
   // On-chain agent stats (AntseedChannels.getAgentStats)
   onChainActiveChannelCount: number;
   onChainGhostCount: number;
   onChainTotalVolumeUsdc: string;
   onChainLastSettledAt: number;
-  onChainReputationScore: number | null; // displayed 0-100 score
-  onChainTrustScore: number | null;
+  /** Buyer-computed trust score, 0-100 (see `TrustBreakdown`). */
+  onChainReputationScore: number | null;
   /** Model-specific 0-100 reputation after pricing-completeness adjustments. */
   effectiveReputationScore?: number | null;
+  /** Parts that make up `onChainReputationScore`; `null`/absent when the buyer has not scored the peer. */
+  trust?: TrustBreakdown | null;
+  /** `AntseedWashTradingRegistry` verdict; `null` when the registry was unavailable. */
+  washFlagged: boolean | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
 
@@ -336,6 +386,10 @@ export type RendererUiState = {
   /** Spendable deposits plus wallet USDC. Used by balance headlines. */
   creditsTotalOwnedUsdc: string;
   creditsCreditLimitUsdc: string;
+  /** Contract floor for the first deposit (net of the relay fee). */
+  creditsMinFirstDepositUsdc: string;
+  /** Relay fee taken from each wallet sweep into credits. */
+  creditsDepositFeeUsdc: string;
   creditsEvmAddress: string | null;
   creditsOperatorAddress: string | null;
   creditsBuyerUsage: DesktopBuyerUsageTotals | null;
@@ -362,7 +416,6 @@ export type RendererUiState = {
   } | null;
   chatPaymentApprovalLoading: boolean;
   chatPaymentApprovalError: string | null;
-  chatLowBalanceWarning: boolean;
 
   // --- Active payment channels (keyed by peerId) ---
   chatActiveChannels: Map<string, ActiveChannelInfo>;
@@ -523,6 +576,8 @@ export function createInitialUiState(): RendererUiState {
     creditsWalletUsdc: '0',
     creditsTotalOwnedUsdc: '0',
     creditsCreditLimitUsdc: '0',
+    creditsMinFirstDepositUsdc: '1',
+    creditsDepositFeeUsdc: '0.05',
     creditsEvmAddress: null,
     creditsOperatorAddress: null,
     creditsBuyerUsage: null,
@@ -543,7 +598,6 @@ export function createInitialUiState(): RendererUiState {
     chatPaymentApprovalPeerInfo: null,
     chatPaymentApprovalLoading: false,
     chatPaymentApprovalError: null,
-    chatLowBalanceWarning: false,
 
     // Active payment channels
     chatActiveChannels: new Map(),

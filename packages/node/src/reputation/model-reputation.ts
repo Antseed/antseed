@@ -1,10 +1,9 @@
-import { scoreFromTrust } from './on-chain-reputation.js';
-
 export const MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER = 0.5;
 
 export type ModelReputationSource = {
+  /** Buyer-computed trust score (0-100). */
   onChainReputationScore?: number | null;
-  onChainTrustScore?: number | null;
+  /** Seller-reported score; only used when the buyer has not scored the peer. */
   reputationScore?: number | null;
 };
 
@@ -12,15 +11,9 @@ function finiteScore(value: number | null | undefined): number | null {
   return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
-/** Normalize every reputation source to the protocol's 0-100 score. */
+/** The buyer's trust score when available, otherwise the seller-reported score. */
 export function normalizedModelReputationScore(source: ModelReputationSource): number | null {
-  const reputation = finiteScore(source.onChainReputationScore);
-  if (reputation !== null) return reputation;
-
-  const trust = finiteScore(source.onChainTrustScore);
-  if (trust !== null) return scoreFromTrust(trust);
-
-  return finiteScore(source.reputationScore);
+  return finiteScore(source.onChainReputationScore) ?? finiteScore(source.reputationScore);
 }
 
 /**

@@ -84,6 +84,48 @@ export type { ANTSTokenClientConfig } from './evm/ants-token-client.js';
 // Emissions
 export { EmissionsClient } from './evm/emissions-client.js';
 export type { EmissionsClientConfig, EmissionsEpochParams } from './evm/emissions-client.js';
+export { RegistryClient } from './evm/registry-client.js';
+export type { RegistryClientConfig } from './evm/registry-client.js';
+export { UsageAccountingClient } from './evm/usage-accounting-client.js';
+export type { UsageAccountingClientConfig, UsagePoints, UsageTotals } from './evm/usage-accounting-client.js';
+export { UsageRewardsClient } from './evm/usage-rewards-client.js';
+export type { UsageRewardsClientConfig, DynamicUsageConfig } from './evm/usage-rewards-client.js';
+export { SellerPoolsClient, estimateEarlyExit, positionState, projectedEarlyExitSlashBps } from './evm/seller-pools-client.js';
+export type { SellerPoolsClientConfig, SellerPoolPosition, EarlyExitEstimate, SellerPoolConfig, PositionPowerSegment, PositionState } from './evm/seller-pools-client.js';
+export { SellerPoolsRewardsClient } from './evm/seller-pools-rewards-client.js';
+export type { SellerPoolsRewardsClientConfig, DynamicStakerConfig } from './evm/seller-pools-rewards-client.js';
+export { SellerRegistryClient, SellerRegistrationVerificationError } from './evm/seller-registry-client.js';
+export type { SellerRegistryClientConfig } from './evm/seller-registry-client.js';
+export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards } from './reward-claims.js';
+export type { RewardTransactionRecorder } from './reward-claims.js';
+export { PositionInitClient } from './evm/position-init-client.js';
+export type { PositionInitClientConfig } from './evm/position-init-client.js';
+export { EmissionsGateClient, GATE_MINTERS, gateMinterId } from './evm/emissions-gate-client.js';
+export type { EmissionsGateClientConfig, GateMinter } from './evm/emissions-gate-client.js';
+export { WashTradingRegistryClient, validateSellerProofArtifact, sellerProofId } from './evm/wash-trading-registry-client.js';
+export type {
+  WashTradingRegistryClientConfig, WashTradingSellerStatus, WashTradingProofStatus, WashTradingRegistryConfig,
+  BlockReference, BlockAuthenticationChunk, SellerProofArtifact, SellerProofSubmissionStep,
+} from './evm/wash-trading-registry-client.js';
+export { PointsPolicyRegistryClient } from './evm/points-policy-registry-client.js';
+export type { PointsPolicyRegistryClientConfig } from './evm/points-policy-registry-client.js';
+export { SellerRewardsPoolClient } from './evm/seller-rewards-pool-client.js';
+export type { SellerRewardsPoolClientConfig } from './evm/seller-rewards-pool-client.js';
+export { multicallRead, MULTICALL3_ADDRESS } from './evm/multicall.js';
+export type { MulticallRequest } from './evm/multicall.js';
+export {
+  ContractStackMismatchError,
+  legacyEpochs,
+  newEpochs,
+  resolveContractStack,
+  resolveLegacyContractAddresses,
+} from './contract-stack.js';
+export type {
+  ContractStackAddresses,
+  ContractStackMode,
+  ContractStackResolution,
+  ContractStackRpcOptions,
+} from './contract-stack.js';
 
 // Channel persistence
 export { ChannelStore, CHANNEL_KIND, CHANNEL_ROLE, CHANNEL_STATUS } from './channel-store.js';
@@ -98,6 +140,8 @@ export { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './seller-free-usage-manager.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, FreeTierDecision } from './seller-free-tier-limiter.js';
 
 // Buyer payment negotiator (402 handling, SpendingAuth flow, cost tracking)
 export { BuyerPaymentNegotiator } from './buyer-payment-negotiator.js';

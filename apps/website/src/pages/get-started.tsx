@@ -2,9 +2,9 @@
  * /get-started — the mobile onboarding flow (Figma "mobile-1" / "mobile-2").
  *
  * On phones the site's "Get Started" CTAs land here instead of the desktop
- * installer: AntSeed runs on a computer, so the mobile path walks through
+ * installer: Antseed runs on a computer, so the mobile path walks through
  * creating a Telegram bot with @BotFather now and pasting the token into
- * the VPR later. Two screens, hash-routed (`#instructions`) so the browser
+ * the AI VPN later. Two screens, hash-routed (`#instructions`) so the browser
  * back button works between them. Rendered without the site Layout — the
  * design is a bare, focused flow with its own "Back to site" affordance.
  */
@@ -65,7 +65,7 @@ function BackArrow() {
 
 /* ---------- screen 1 — "Almost there." ---------- */
 const INTRO_CARDS = [
-  {icon: <ComputerIcon />, text: 'For now, AntSeed can only run on a server or local computer.'},
+  {icon: <ComputerIcon />, text: 'For now, Antseed can only run on a server or local computer.'},
   {icon: <TelegramIcon />, text: "To use it from your mobile, you'll go through Telegram instead."},
   {icon: <ClockIcon />, text: "1 minute now. 30 seconds later on a laptop. Then you're on the network."},
 ];
@@ -117,7 +117,7 @@ function InstructionsScreen({onBack}: {onBack: () => void}) {
     const url = `${window.location.origin}/get-started`;
     try {
       if (navigator.share) {
-        await navigator.share({title: 'Get started with AntSeed', url});
+        await navigator.share({title: 'Get started with Antseed', url});
       } else {
         await navigator.clipboard.writeText(url);
         setCopied(true);
@@ -170,18 +170,18 @@ function InstructionsScreen({onBack}: {onBack: () => void}) {
           />
           <div className={styles.stepRow}>
             <span className={styles.stepNumber}>2</span>
-            <p>You&apos;ll get a token back, keep it, you&apos;ll paste it into the VPR after installing.</p>
+            <p>You&apos;ll get a token back, keep it, you&apos;ll paste it into the AI VPN after installing.</p>
           </div>
         </Reveal>
         <Reveal delay={180} className={styles.stepCard}>
           <img
             className={`${styles.stepImage} ${styles.stepImageFlush}`}
             src="/img/get-started/step-vpr.png"
-            alt="AntSeed VPR's Telegram Bot settings with the token field"
+            alt="Antseed AI VPN's Telegram Bot settings with the token field"
           />
           <div className={styles.stepRow}>
             <span className={styles.stepNumber}>3</span>
-            <p>When you get to your computer, install the VPR and paste the token into it.</p>
+            <p>When you get to your computer, install the AI VPN and paste the token into it.</p>
           </div>
         </Reveal>
       </div>
@@ -223,10 +223,10 @@ export default function GetStartedPage() {
   return (
     <main className={styles.page} data-step={step}>
       <Head>
-        <title>Get Started — AntSeed</title>
+        <title>Get Started — Antseed</title>
         <meta
           name="description"
-          content="Get on the AntSeed network from your phone: create a Telegram bot now, paste the token into the VPR on your computer later."
+          content="Get on the Antseed network from your phone: create a Telegram bot now, paste the token into the AI VPN on your computer later."
         />
       </Head>
       {step === 1 ? <IntroScreen onContinue={goInstructions} /> : <InstructionsScreen onBack={goIntro} />}

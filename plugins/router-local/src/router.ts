@@ -1,4 +1,4 @@
-import { computeOnChainReputationScore, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
+import { normalizedModelReputationScore, type Router, type PeerInfo, type SerializedHttpRequest } from '@antseed/node';
 import {
   scoreCandidates,
   PeerMetricsTracker,
@@ -153,7 +153,7 @@ export class LocalRouter implements Router {
   }
 
   private _effectiveReputation(p: PeerInfo): number {
-    return computeOnChainReputationScore(p) ?? p.reputationScore ?? 0;
+    return normalizedModelReputationScore(p) ?? 0;
   }
 
   private _extractRequestedService(req: SerializedHttpRequest): string | null {

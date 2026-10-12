@@ -58,7 +58,7 @@ const DROPDOWN_MODEL_COUNT = 5;
 const DROPDOWN_FREE_COUNT = 3;
 
 function isFreeEntry(entry: VprModelCatalogEntry | undefined): boolean {
-  if (!entry || entry.kind === 'image') return false;
+  if (!entry || entry.kind !== 'text') return false;
   const { minInputUsdPerMillion: i, minOutputUsdPerMillion: o } = entry;
   return i !== null && o !== null && i <= 0 && o <= 0;
 }
@@ -227,7 +227,7 @@ export function VprHomeView({ onSelectView }: Props) {
     const entry = findCatalogEntry(snap.catalog, provider, serviceId);
     if (!entry) return;
     setModelMenuOpen(false);
-    if (entry.kind === 'image') return;
+    if (entry.kind !== 'text') return;
     applyModelForNewChats(entry);
   }
 
@@ -501,7 +501,7 @@ export function VprHomeView({ onSelectView }: Props) {
      exist the user knows the flow (the full list lives on the Apps page). */
   const appsPitch = (conversations === null ? !expectChats : conversations.length === 0) ? (
     <div className={styles.appsGroup}>
-      <p className={styles.appsLabel}>Use AntSeed on your favorite app</p>
+      <p className={styles.appsLabel}>Use Antseed on your favorite app</p>
 
       <div className={styles.toolList}>
         {/* Same lead items as the Apps tab (Telegram, Claude, Cursor), then
@@ -721,7 +721,7 @@ export function VprHomeView({ onSelectView }: Props) {
                   <HugeiconsIcon icon={ArrowReloadHorizontalIcon} size={18} strokeWidth={2} />
                   <span>
                     <strong>{restartProfiles.length === 1 ? restartProfiles[0]!.displayName : `${restartProfiles.length} apps`} need a restart</strong>
-                    <small>Restart to apply the VPR connection.</small>
+                    <small>Restart to apply the AI VPN connection.</small>
                   </span>
                 </button>
                 <button

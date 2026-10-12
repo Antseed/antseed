@@ -10,7 +10,7 @@ type AlertKind = RendererUiState['networkAlert'];
 const MESSAGES: Record<Exclude<AlertKind, 'none'>, { title: string; body: string }> = {
   'no-internet': {
     title: 'No internet connection',
-    body: 'VPR can’t reach the peer-to-peer network. Check your connection — requests won’t work until you’re back online.',
+    body: 'AI VPN can’t reach the peer-to-peer network. Check your connection — requests won’t work until you’re back online.',
   },
   blocked: {
     title: 'Peer-to-peer network unreachable',

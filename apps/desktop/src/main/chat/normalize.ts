@@ -61,7 +61,7 @@ export function normalizePeerId(value: unknown): string | null {
     return null;
   }
   const peerId = value.trim().toLowerCase();
-  // AntSeed currently uses 20-byte EVM-address peer IDs in the buyer catalog,
+  // Antseed currently uses 20-byte EVM-address peer IDs in the buyer catalog,
   // while some older/local router paths can surface 32-byte IDs. Accept both
   // so response metadata never silently fails to bind a conversation.
   return /^(?:[0-9a-f]{40}|[0-9a-f]{64})$/i.test(peerId) ? peerId : null;

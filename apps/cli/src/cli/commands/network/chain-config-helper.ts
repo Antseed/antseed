@@ -14,10 +14,28 @@ export interface ChainCryptoOverrides {
   fallbackRpcUrls?: string[];
   depositsContractAddress?: string;
   channelsContractAddress?: string;
+  registryContractAddress?: string;
   freeUsageContractAddress?: string;
   usdcContractAddress?: string;
   stakingContractAddress?: string;
   identityRegistryAddress?: string;
+  emissionsContractAddress?: string;
+  legacyEmissionsContractAddress?: string;
+  legacyStakingContractAddress?: string;
+  legacyEmissionsV1ContractAddress?: string;
+  antsTokenAddress?: string;
+  emissionsGateAddress?: string;
+  sellerPoolsAddress?: string;
+  sellerRegistryAddress?: string;
+  positionInitAddress?: string;
+  usageAccountingAddress?: string;
+  usageRewardsAddress?: string;
+  sellerPoolsRewardsAddress?: string;
+  legacyEmissionsEscrowAddress?: string;
+  washTradingRegistryAddress?: string;
+  pointsPolicyRegistryAddress?: string;
+  /** Explorer REST base for seller profiles in `antseed ants`; empty string disables the lookup. */
+  explorerApiUrl?: string;
 }
 
 /**
@@ -35,7 +53,9 @@ export interface ChainCryptoOverrides {
  * The `stakingAddress` + `identityRegistryAddress` wiring is critical: without
  * them `AntseedNode._initializePayments` never creates a `StakingClient` /
  * `IdentityClient`, which gates the on-chain verification loop in
- * `discoverPeers()`.
+ * `discoverPeers()`. The seller-pools, usage-accounting and wash-trading
+ * registry addresses feed the `TrustSignalsClient` behind the buyer trust
+ * score; without them the usage, stake and wash parts of `peer.trust` stay null.
  */
 export function buildPaymentsConfig(
   cryptoOverrides: ChainCryptoOverrides | undefined,
@@ -60,6 +80,9 @@ export function buildPaymentsConfig(
       chainId: resolved.evmChainId,
       ...(resolved.stakingContractAddress ? { stakingAddress: resolved.stakingContractAddress } : {}),
       ...(resolved.identityRegistryAddress ? { identityRegistryAddress: resolved.identityRegistryAddress } : {}),
+      ...(resolved.sellerPoolsAddress ? { sellerPoolsAddress: resolved.sellerPoolsAddress } : {}),
+      ...(resolved.usageAccountingAddress ? { usageAccountingAddress: resolved.usageAccountingAddress } : {}),
+      ...(resolved.washTradingRegistryAddress ? { washTradingRegistryAddress: resolved.washTradingRegistryAddress } : {}),
     };
     return paymentsConfig;
   } catch {

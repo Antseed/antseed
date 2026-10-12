@@ -12,7 +12,7 @@ import {
 } from 'ethers';
 
 const FALLBACK_STALL_TIMEOUT_MS = 750;
-const JSON_RPC_REQUEST_TIMEOUT_MS = 2_500;
+const JSON_RPC_REQUEST_TIMEOUT_MS = 10_000;
 
 function createJsonRpcProvider(url: string, network?: Network, opts?: object): JsonRpcProvider {
   const request = new FetchRequest(url);
@@ -50,7 +50,7 @@ const GAS_BUFFER_NUMERATOR = 130n;
 const GAS_BUFFER_DENOMINATOR = 100n;
 
 export abstract class BaseEvmClient {
-  protected readonly _provider: AbstractProvider;
+  protected _provider: AbstractProvider;
   protected readonly _contractAddress: string;
   protected readonly _nonceCursor = new Map<string, number>();
   private readonly _nonceLocks = new Map<string, Promise<void>>();
@@ -61,6 +61,15 @@ export abstract class BaseEvmClient {
   }
 
   get provider(): AbstractProvider { return this._provider; }
+
+  /**
+   * Route every read and write through `provider` instead of the one built
+   * from the RPC URLs, e.g. a single batching provider shared by many clients.
+   */
+  withProvider(provider: AbstractProvider): this {
+    this._provider = provider;
+    return this;
+  }
   get contractAddress(): string { return this._contractAddress; }
 
   protected _ensureConnected(signer: AbstractSigner): AbstractSigner {

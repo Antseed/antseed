@@ -17,7 +17,7 @@ export const rendererUrl = process.env['VITE_DEV_SERVER_URL'] ?? `file://${RENDE
 
 export const INTERNAL_APP_NAME = 'AntStation Desktop';
 const devInstanceName = isMultiInstanceDevelopment() ? desktopInstanceName() : '';
-export const APP_NAME = devInstanceName ? `AntSeed VPR [${devInstanceName}]` : 'AntSeed VPR';
+export const APP_NAME = devInstanceName ? `Antseed AI VPN [${devInstanceName}]` : 'Antseed AI VPN';
 export const DESKTOP_DEBUG_ENV = 'ANTSEED_DESKTOP_DEBUG';
 export const DESKTOP_DEBUG_FLAGS = new Set(['--debug-runtime', '--desktop-debug']);
 
@@ -72,13 +72,13 @@ export function getMacUpdateInstallHint(): string | undefined {
 
   const executablePath = process.execPath;
   if (executablePath.includes('/AppTranslocation/')) {
-    return 'Quit AntSeed, move it to Applications, reopen, and try again.';
+    return 'Quit Antseed, move it to Applications, reopen, and try again.';
   }
   if (executablePath.startsWith('/Volumes/')) {
-    return 'Quit AntSeed, move it from the disk image to Applications, reopen, and try again.';
+    return 'Quit Antseed, move it from the disk image to Applications, reopen, and try again.';
   }
   if (executablePath.includes('.app/') && !executablePath.startsWith('/Applications/')) {
-    return 'Quit AntSeed, move it to Applications, reopen, and try again.';
+    return 'Quit Antseed, move it to Applications, reopen, and try again.';
   }
   return undefined;
 }

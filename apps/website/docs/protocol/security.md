@@ -7,11 +7,16 @@ hide_title: true
 
 # Security
 
-AntSeed separates signing authority from fund custody. The node identity that signs protocol messages and payment authorizations never holds funds directly. The wallet that holds your money deposits into a contract and never touches the node.
+Antseed separates a buyer's deposit balance from the node wallet. USDC committed
+to service payments is held by `AntseedDeposits`; the node signs spending
+authorizations. Incoming USDC can be swept from the node wallet into the deposit
+contract through a gasless authorization.
 
 ## Identity
 
-Each node has a single secp256k1 private key. The corresponding EVM address is both the PeerId on the network and the on-chain signing identity. There is no key derivation step and no two-key system — one key handles everything.
+Each node uses a secp256k1 private key. Its EVM address is the peer identity and
+payment-signing identity. A separate wallet can fund the node's deposit or act
+as its deposits operator; those roles do not have to share the node key.
 
 | Function | Mechanism |
 |---|---|
@@ -21,15 +26,19 @@ Each node has a single secp256k1 private key. The corresponding EVM address is b
 
 ## Signing Identity vs Funding Wallet
 
-The node's secp256k1 key is the **signing identity**. It signs both protocol messages (handshakes, metadata, metering receipts) and EIP-712 payment messages (`ReserveAuth` to authorize session budgets, `SpendingAuth` to authorize cumulative spending). It never holds funds directly.
+The **signing identity** signs protocol messages and payment authorizations.
+Gasless buyer funding can send USDC to this address first, then use a signed
+authorization and a permissionless relayer to sweep it into `AntseedDeposits`.
+Sellers also use their node wallet for transaction gas and USDC earnings.
 
-The **funding wallet** is any external wallet the user controls — hardware wallet, multisig, or EOA. It deposits USDC into the AntseedDeposits contract via `depositFor(buyer, amount)`, where `buyer` is the signing identity's address. The funding wallet has no ongoing role after deposit.
+An external **funding wallet** can instead approve USDC and call
+`deposit(buyer, amount)` directly. Funding a buyer does not automatically make
+that wallet the buyer's operator.
 
-This separation means:
-
-- The signing identity can run unattended without risking the funding wallet
-- The funding wallet never interacts with the application
-- Worst-case exposure from a compromised signing identity is bounded by the current deposit balance
+The **deposits operator** can withdraw the buyer's available deposit balance.
+The buyer authorizes its initial operator with an EIP-712 signature; the current
+operator controls subsequent operator transfers. Check `getOperator(buyer)`
+rather than assuming the funding wallet has withdrawal authority.
 
 ## Key Storage
 
@@ -53,13 +62,15 @@ Both modes produce identical on-chain outcomes. The difference is whether the si
 
 | Scenario | Signing Identity Exposed | Funding Wallet Exposed | Maximum Loss |
 |---|---|---|---|
-| **Node compromised** | Yes | No | Current deposit balance |
-| **Signing key extracted** | Yes | No | Current deposit balance |
-| **Funding wallet compromised** | No | Yes | Funding wallet balance (deposits unaffected once deposited) |
-| **Both compromised** | Yes | Yes | Deposit balance + funding wallet balance |
+| **Node compromised** | Yes | Not if its key is kept separately | Authorized deposit spending, node-wallet assets, and any roles held by that key |
+| **Signing key extracted** | Yes | Not if its key is kept separately | Same exposure as the signing identity |
+| **Funding wallet compromised** | Not necessarily | Yes | Wallet assets; available deposits too if it is their operator |
+| **Deposits operator compromised** | Not necessarily | Depends on key reuse | Available deposits for accounts it operates |
 | **Deposits contract exploit** | N/A | N/A | All deposited funds across all users |
 
-In the common attack surface — node compromise — the funding wallet is never at risk. The attacker can sign ReserveAuths against the existing deposit balance but cannot access the funding wallet or deposit additional funds.
+These roles can use the same address, in which case their risks combine. A
+separate funding wallet is not exposed merely because it previously funded a
+buyer, but shared keys, allowances, and operator permissions must be considered.
 
 ## Protocol-Level Controls
 
@@ -77,26 +88,30 @@ All communication happens over an untrusted network. Every trust-critical operat
 | **Discovery** | Signed metadata with freshness checks, topic normalization, private IP filtering |
 | **Connection** | EIP-191 signed intro envelopes with nonce replay guard, timestamp skew rejection, per-IP connection cap (10) |
 | **Transport** | Frame type and size validation (64 MiB max), fail-closed on decode errors, request and stream timeouts |
-| **Upload/Stream** | Per-request cap (32 MiB), global pending cap (256 MiB), upload timeout (120s), stream buffer (16 MiB) and duration (5 min) limits |
+| **Upload/Stream** | Per-request cap (32 MiB), global pending cap (256 MiB), upload timeout (120s), bounded stream buffers and configurable duration limits |
 | **Metering** | Bilateral EIP-191 signed receipts with running totals, auto-ack enabled by default |
 | **Payment** | 402 gating until ReserveAuth is committed on-chain via `reserve()`, bounded by maxAmount and deadline |
 
 ## Default Limits
 
+Buyer request and stream defaults are defined in `packages/buyer-core` and the
+CLI configuration. They are configurable; upload and connection limits are
+separate transport controls.
+
 | Parameter | Default |
 |---|---|
-| Request timeout | 30 s |
+| Buyer request timeout | 5 min |
 | Max stream buffer | 16 MiB |
-| Max stream duration | 5 min |
+| Buyer max stream duration | 30 min |
 | Per-upload cap | 32 MiB |
 | Global pending upload cap | 256 MiB |
 | Upload timeout | 120 s |
-| Metadata fetch timeout | 2 s |
+| Node metadata fetch timeout | 1.5 s |
 | Max inbound connections per IP | 10 |
 
 ## Best Practices
 
-1. Use `depositFor()` on AntseedDeposits from a hardware wallet or multisig. Never fund the signing identity directly.
+1. Keep treasury and operator keys separate from the node where possible. Use `deposit(buyer, amount)` for direct external funding, or the [gasless sweep flow](../guides/payments.md) when funding the node address. Minimize assets left in the hot wallet.
 2. Deposit only what you need for a session. Top up as needed rather than pre-loading large amounts into AntseedDeposits.
 3. Keep `allowPrivateIPs=false` in production.
 4. Keep signature verification and stale metadata rejection enabled (both on by default).

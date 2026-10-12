@@ -1,0 +1,42 @@
+{
+  "name": "@antseed/antseed-verifier",
+  "version": "0.1.0",
+  "description": "AntSeed capability-based attestation SDK: buyer verifier + seller prover. A menu of independent seller capabilities (seller-node-tee-genuine, seller-provider-tee-genuine, seller-bound, seller-provider-measured-image, seller-provider-gpu-cc), one claim each.",
+  "license": "GPL-3.0-only",
+  "type": "module",
+  "publishConfig": {
+    "access": "public"
+  },
+  "files": [
+    "dist",
+    "LICENSE"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "exports": {
+    ".": {
+      "types": "./dist/index.d.ts",
+      "import": "./dist/index.js"
+    }
+  },
+  "engines": {
+    "node": ">=20.19.0"
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
+  },
+  "dependencies": {
+    "@noble/curves": "^2.2.0",
+    "@noble/hashes": "^2.2.0",
+    "@phala/dcap-qvl": "^0.5.2",
+    "jose": "^6.2.3"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

@@ -508,6 +508,12 @@ const api = {
   getAppSetupStatus(): Promise<{ needed: boolean; complete: boolean }> {
     return ipcRenderer.invoke('app:get-setup-status') as Promise<{ needed: boolean; complete: boolean }>;
   },
+  getTeeStatus(): Promise<unknown> {
+    return ipcRenderer.invoke('tee:status');
+  },
+  checkSellerTee(peerId: string): Promise<unknown> {
+    return ipcRenderer.invoke('tee:check', peerId);
+  },
   getTelemetryStatus(): Promise<TelemetryStatus> {
     return ipcRenderer.invoke('telemetry:get-status') as Promise<TelemetryStatus>;
   },
@@ -549,22 +555,22 @@ const api = {
   setDebugLogs(enabled: boolean): Promise<{ ok: true }> {
     return ipcRenderer.invoke('desktop:set-debug-logs', enabled) as Promise<{ ok: true }>;
   },
-  creditsGetInfo() {
-    return ipcRenderer.invoke('credits:get-info');
+  creditsGetInfo(opts?: { fresh?: boolean }) {
+    return ipcRenderer.invoke('credits:get-info', opts);
   },
   identityExportKey: () => ipcRenderer.invoke('identity:export-key'),
   identityImportKey: (privateKeyHex: string) => ipcRenderer.invoke('identity:import-key', privateKeyHex),
   paymentsSignSpendingAuth: (params: unknown) => ipcRenderer.invoke('payments:sign-spending-auth', params),
   paymentsGetPeerInfo: (peerId: string) => ipcRenderer.invoke('payments:get-peer-info', peerId),
+  stakingOpen: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:open', options),
+  stakingCopyLink: (options?: { page?: 'stake' | 'rewards' }) => ipcRenderer.invoke('staking:copyLink', options),
   paymentsOpenPayPage: (opts: { kind?: string; amountUsdc?: string; channelId?: string }) => ipcRenderer.invoke('payments:open-pay-page', opts),
   paymentsCardProviders: () => ipcRenderer.invoke('payments:card-providers'),
   paymentsOpenCardProvider: (opts?: { providerId?: string; amountUsdc?: string }) => ipcRenderer.invoke('payments:open-card-provider', opts),
-  paymentsFunkitConfig: () => ipcRenderer.invoke('payments:funkit-config'),
-  paymentsOnrampAvailability: () => ipcRenderer.invoke('payments:onramp-availability'),
   paymentsCloseCheckoutWindows: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('payments:close-checkout-windows') as Promise<{ ok: boolean }>,
   paymentsGetBuyerUsage: () => ipcRenderer.invoke('payments:get-buyer-usage'),
   paymentsGetBuyerSpendHistory: () => ipcRenderer.invoke('payments:get-buyer-spend-history'),
-  paymentsGetChannels: () => ipcRenderer.invoke('payments:get-channels'),
+  paymentsGetChannels: (opts?: { fresh?: boolean }) => ipcRenderer.invoke('payments:get-channels', opts),
   paymentsRequestCooperativeClose: (opts: { peerId: string }) => ipcRenderer.invoke('payments:request-cooperative-close', opts),
   paymentsGetRewardsSummary: () => ipcRenderer.invoke('payments:get-rewards-summary'),
   onPaymentsCompleted(handler: () => void): () => void {

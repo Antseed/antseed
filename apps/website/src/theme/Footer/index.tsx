@@ -1,3 +1,4 @@
+import type {JSX} from 'react';
 import Link from '@docusaurus/Link';
 import styles from './footer.module.css';
 
@@ -5,9 +6,8 @@ const COLUMNS: {title: string; links: {label: string; to?: string; href?: string
   {
     title: 'Product',
     links: [
-      {label: 'Pricing ↗', href: 'https://antseedstats.com/network'},
+      {label: 'Live prices ↗', href: 'https://antseedstats.com/network'},
       {label: 'Integrations', to: '/integrations'},
-      {label: 'Providers', to: '/providers'},
       {label: 'Ecosystem', to: '/ecosystem'},
       {label: 'Docs', to: '/docs'},
       {label: 'Light Paper', to: '/docs/lightpaper'},
@@ -16,7 +16,7 @@ const COLUMNS: {title: string; links: {label: string; to?: string; href?: string
   {
     title: 'Network',
     links: [
-      {label: '$ANTS Token', to: '/ants-token'},
+      {label: 'How it works', to: '/network'},
       {label: 'vs OpenRouter', to: '/vs/openrouter'},
       {label: 'AntSeedStats ↗', href: 'https://antseedstats.com'},
       {label: 'AIPs ↗', href: 'https://aips.antseed.com'},
@@ -38,12 +38,12 @@ export default function Footer(): JSX.Element {
       <div className={styles.inner}>
         <div className={styles.brandCol}>
           <div className={styles.brandRow}>
-            <img src="/logo-white.svg" alt="AntSeed" className={styles.logo} />
+            <img src="/logo-white.svg" alt="Antseed" className={styles.logo} />
           </div>
           <p className={styles.tagline}>
             The open market for AI inference.
             <br />
-            Peer-to-peer, no account, no middleman.
+            Run your agents on your terms
           </p>
           <div className={styles.social}>
             <a href="https://github.com/antseed" target="_blank" rel="noopener noreferrer" title="GitHub" aria-label="GitHub">
@@ -62,7 +62,7 @@ export default function Footer(): JSX.Element {
               </svg>
             </a>
           </div>
-          <div className={styles.copyright}>&copy; 2026 AntSeed Foundation</div>
+          <div className={styles.copyright}>&copy; 2026 Antseed Foundation</div>
         </div>
 
         <div className={styles.columns}>

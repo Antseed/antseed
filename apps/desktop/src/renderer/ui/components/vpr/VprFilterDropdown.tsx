@@ -11,6 +11,7 @@ export type VprFilterOption<Value extends string> = {
 };
 
 type Props<Value extends string> = {
+  active?: boolean;
   label: string;
   value: Value;
   options: readonly VprFilterOption<Value>[];
@@ -62,6 +63,7 @@ function handleOptionKeyDown(
 }
 
 export function VprFilterDropdown<Value extends string>({
+  active,
   label,
   value,
   options,
@@ -95,7 +97,7 @@ export function VprFilterDropdown<Value extends string>({
         label={label}
         displayLabel={selected.label}
         icon={selected.icon}
-        active={Boolean(value)}
+        active={active ?? Boolean(value)}
         open={open}
         menuId={menuId}
         onClick={() => setOpen((current) => !current)}

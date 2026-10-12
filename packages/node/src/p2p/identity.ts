@@ -62,7 +62,7 @@ export class FileIdentityStore implements IdentityStore {
     throw new Error(
       `An app-encrypted identity already exists at ${this.encryptedKeyPath}. ` +
       'The CLI cannot decrypt Electron safeStorage identities and will not create a second wallet in the same data directory. ' +
-      'Back up the private key from VPR and import it for CLI use, launch the CLI through VPR, or choose a different --data-dir.',
+      'Back up the private key from the AI VPN and import it for CLI use, launch the CLI through the AI VPN, or choose a different --data-dir.',
     );
   }
 

@@ -1,31 +1,31 @@
 ---
 name: hermes-antseed
-description: "Connect Hermes Agent to the AntSeed P2P AI network. Install and fund the buyer, configure Hermes' current providers schema, and use either the local VPR endpoint or its authenticated public tunnel. Use when: user asks to connect Hermes to AntSeed, set up a remote Hermes agent, deposit funds, or change the routed model."
+description: "Connect Hermes Agent to the Antseed P2P AI network. Install and fund the buyer, configure Hermes' current providers schema, and use either the local AI VPN endpoint or its authenticated public tunnel. Use when: user asks to connect Hermes to Antseed, set up a remote Hermes agent, deposit funds, or change the routed model."
 user-invocable: true
 metadata: { "hermes-antseed": { "emoji": "🐝" } }
 ---
 
-# Connect Hermes to AntSeed
+# Connect Hermes to Antseed
 
-Set up AntSeed as the model backend for a Hermes agent. AntSeed is a P2P network of AI service providers, and its buyer proxy routes Hermes model calls through the network. Hermes can connect locally or through the VPR's authenticated public endpoint.
+Set up Antseed as the model backend for a Hermes agent. Antseed is a P2P network of AI service providers, and its buyer proxy routes Hermes model calls through the network. Hermes can connect locally or through the AI VPN's authenticated public endpoint.
 
 ## Picture
 
 ```
-Hermes agent  →  local buyer proxy or HTTPS tunnel  →  AntSeed P2P  →  Provider peer
+Hermes agent  →  local buyer proxy or HTTPS tunnel  →  Antseed P2P  →  Provider peer
 ```
 
 - Buyer proxy discovers providers via DHT, opens a payment channel per seller, signs per-request vouchers.
 - Exposes an OpenAI-compatible `/v1/*` endpoint configured under `providers.<name>` in `~/.hermes/config.yaml`.
-- The model ID Hermes passes is an id or alias from AntSeed's network-wide `/v1/models` catalog (e.g. `minimax-m2.7`). The proxy resolves it to the selected seller's actual advertised service id.
+- The model ID Hermes passes is an id or alias from Antseed's network-wide `/v1/models` catalog (e.g. `minimax-m2.7`). The proxy resolves it to the selected seller's actual advertised service id.
 
-When Hermes runs on the buyer machine, use the local endpoint. When it runs elsewhere, use the authenticated endpoint generated under **VPR → Agents → Define your internet-accessible AntSeed endpoint**. Never expose port `8377` directly to the internet.
+When Hermes runs on the buyer machine, use the local endpoint. When it runs elsewhere, use the authenticated endpoint generated under **AI VPN → Agents → Define your internet-accessible Antseed endpoint**. Never expose port `8377` directly to the internet.
 
 ## Before you start
 
 Ask the user anything you don't already have:
 
-- **Where Hermes is running** — beside the VPR/buyer proxy, or on a remote host that will use the VPR's authenticated HTTPS endpoint.
+- **Where Hermes is running** — beside the AI VPN/buyer proxy, or on a remote host that will use the AI VPN's authenticated HTTPS endpoint.
 - **Chain** — `base-mainnet` for real funds, `base-sepolia` for testnet. Default to `base-mainnet` unless the user says otherwise.
 
 ---
@@ -93,7 +93,7 @@ Foreground, for a laptop or a quick test:
 antseed buyer start
 ```
 
-For an isolated Hermes buyer, use a dedicated data directory. This is where AntSeed writes `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`:
+For an isolated Hermes buyer, use a dedicated data directory. This is where Antseed writes `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`:
 
 ```bash
 export BUYDIR="$HOME/.antseed-buyer-hermes"
@@ -112,7 +112,7 @@ Persistent (Linux, systemd):
 ```bash
 sudo tee /etc/systemd/system/antseed-buyer.service > /dev/null <<EOF
 [Unit]
-Description=AntSeed Buyer Proxy
+Description=Antseed Buyer Proxy
 After=network-online.target
 Wants=network-online.target
 
@@ -157,7 +157,7 @@ No port forwarding is needed anymore: `antseed buyer deposit` is plain terminal 
 
 ## Choose the endpoint
 
-For Hermes running on the same machine as the VPR or buyer proxy:
+For Hermes running on the same machine as the AI VPN or buyer proxy:
 
 ```bash
 export ANTSEED_BASE_URL="http://127.0.0.1:8377/v1"
@@ -168,8 +168,8 @@ The local buyer proxy does not validate the key, but Hermes requires a non-empty
 
 For Hermes running on another machine:
 
-1. Open **Agents** in the VPR.
-2. Under **Define your internet-accessible AntSeed endpoint**, configure and start ngrok or Cloudflare Tunnel.
+1. Open **Agents** in the AI VPN.
+2. Under **Define your internet-accessible Antseed endpoint**, configure and start ngrok or Cloudflare Tunnel.
 3. Copy the displayed **OpenAI base URL** and generated **API key**.
 4. Set them on the Hermes machine:
 
@@ -211,7 +211,7 @@ Session pins are stored in `buyer.state.json`, survive buyer-proxy restarts, and
 
 ## Wiring Hermes to the buyer proxy
 
-Register AntSeed as a named provider in `~/.hermes/config.yaml`. Current Hermes releases use the `providers:` mapping; the older `custom_providers:` list is legacy and auto-migrated by Hermes.
+Register Antseed as a named provider in `~/.hermes/config.yaml`. Current Hermes releases use the `providers:` mapping; the older `custom_providers:` list is legacy and auto-migrated by Hermes.
 
 ```yaml
 model:
@@ -222,7 +222,7 @@ model:
 
 providers:
   antseed:
-    name: AntSeed
+    name: Antseed
     api: ${ANTSEED_BASE_URL}
     api_key: ${ANTSEED_API_KEY}
     transport: chat_completions
@@ -241,10 +241,10 @@ providers:
 Notes:
 
 - Hermes expands `${ANTSEED_BASE_URL}` and `${ANTSEED_API_KEY}` placeholders at runtime. Literal values also work.
-- For a local connection, the API key can be any non-empty placeholder. For a public endpoint, it must be the generated `antseed_...` key from the VPR.
+- For a local connection, the API key can be any non-empty placeholder. For a public endpoint, it must be the generated `antseed_...` key from the AI VPN.
 - `transport: chat_completions` selects the OpenAI Chat Completions wire format supported by Hermes and the buyer proxy.
-- `models` is a mapping in current Hermes releases. Keep `antseed` to follow the current VPR selection and add concrete IDs returned by `GET $ANTSEED_BASE_URL/models` when needed.
-- `model.provider: antseed` selects the named provider. `model.default: antseed` follows the current VPR model picker rather than pinning a seller.
+- `models` is a mapping in current Hermes releases. Keep `antseed` to follow the current AI VPN selection and add concrete IDs returned by `GET $ANTSEED_BASE_URL/models` when needed.
+- `model.provider: antseed` selects the named provider. `model.default: antseed` follows the current AI VPN model picker rather than pinning a seller.
 
 ### Auxiliary calls when using openai-responses models
 
@@ -287,7 +287,7 @@ Then send a prompt through Hermes and watch the buyer log — you should see a c
 
 ## References
 
-- AntSeed integration page: `https://antseed.com/integrations/hermes/`
-- AntSeed public tunnel guide: `https://antseed.com/docs/guides/public-tunnels`
+- Antseed integration page: `https://antseed.com/integrations/hermes/`
+- Antseed public tunnel guide: `https://antseed.com/docs/guides/public-tunnels`
 - Hermes Agent provider documentation: `https://hermes-agent.nousresearch.com/docs/integrations/providers`
 - Hermes Agent source: `https://github.com/NousResearch/hermes-agent`

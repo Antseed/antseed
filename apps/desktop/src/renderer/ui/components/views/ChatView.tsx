@@ -28,7 +28,8 @@ import { WalkingAnt } from '../chat/WalkingAnt';
 import { ImageGenerationPlaceholder } from '../chat/ImageGenerationPlaceholder';
 import { SessionApprovalCard } from '../chat/SessionApprovalCard';
 import { ToolApprovalCard } from '../chat/ToolApprovalCard';
-import { LowBalanceWarning } from '../chat/LowBalanceWarning';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { VprModelDropdown } from '../chat/VprModelDropdown';
 import { SwitchServiceDialog } from '../chat/SwitchServiceDialog';
 import { LowReputationDialog } from '../chat/LowReputationDialog';
@@ -39,8 +40,10 @@ import { buildDisplayMessages } from '../chat/chat-shared';
 import type { ChatPermissionMode, RawChatAttachment } from '../../../types/bridge';
 import type { VprModelCatalogEntry } from '../../../core/state';
 import { getPeerDisplayName } from '../../../core/peer-utils';
+import { selectHeadlineBalanceUsdc } from '../../../core/balance';
 import { getUiStateRef, notifyUiStateChangedSync } from '../../../core/store';
 import { VprStackedLogo } from '../VprLogo';
+import { VprHeaderActions } from '../vpr/VprHeaderActions';
 import { cancelVoiceRecording, startVoiceRecording, stopVoiceRecording } from '../../lib/voice-recorder';
 import styles from './ChatView.module.scss';
 import bubbleStyles from '../chat/ChatBubble.module.scss';
@@ -232,7 +235,13 @@ const chatViewCache: ChatViewCache = {
 };
 
 export function ChatView({ onSelectView }: ChatViewProps) {
+  // Blockers only (a deposit short of the minimum, credits all held in
+  // sessions); dismissing hides this one until the situation changes.
+  const funding = useFundingStatus();
+  const fundingKey = `${funding.kind}:${funding.title}`;
+  const [dismissedFundingKey, setDismissedFundingKey] = useState<string | null>(null);
   const snap = useUiSelector((state) => ({
+    headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     browserPreviewRequestId: state.browserPreviewRequestId,
     browserPreviewUrl: state.browserPreviewUrl,
     chatAbortVisible: state.chatAbortVisible,
@@ -244,7 +253,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatError: state.chatError,
     chatRoutingNotice: state.chatRoutingNotice,
     chatInputDisabled: state.chatInputDisabled,
-    chatLowBalanceWarning: state.chatLowBalanceWarning,
     chatMessages: state.chatMessages,
     chatOpeningConversationId: state.chatOpeningConversationId,
     chatPaymentApprovalAmount: state.chatPaymentApprovalAmount,
@@ -269,7 +277,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatToolApprovalRequests: state.chatToolApprovalRequests,
     chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
     chatWorkspacePath: state.chatWorkspacePath,
-    creditsAvailableUsdc: state.creditsAvailableUsdc,
     discoverRows: state.discoverRows,
     vprModelCatalog: state.vprModelCatalog,
     vprRouteSelection: state.vprRouteSelection,
@@ -685,7 +692,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     )) ?? snap.discoverRows.find((row) => row.peerId === peerId) ?? null;
   }, [currentServiceOption, snap.chatSelectedPeerId, snap.chatRoutedPeerId, snap.discoverRows]);
   const lowReputationPeer = useMemo(() => {
-    const score = currentDiscoverRow?.onChainReputationScore;
+    const score = currentDiscoverRow?.effectiveReputationScore ?? currentDiscoverRow?.onChainReputationScore;
     const peerId = currentDiscoverRow?.peerId || currentServiceOption?.peerId || snap.chatSelectedPeerId || snap.chatRoutedPeerId || '';
     if (!peerId || typeof score !== 'number' || !Number.isFinite(score) || score >= LOW_REPUTATION_SCORE_THRESHOLD) {
       return null;
@@ -697,7 +704,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     };
   }, [currentDiscoverRow, currentServiceOption?.peerId, snap.chatSelectedPeerId, snap.chatRoutedPeerId, peerDisplayName]);
 
-  // Switching models routes through the VPR selection (auto seller pick);
+  // Switching models routes through the AI VPN selection (auto seller pick);
   // with an open conversation this also rebinds the thread to the new model.
   const applyModelChange = useCallback(
     (entry: VprModelCatalogEntry) => {
@@ -1181,8 +1188,8 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           )}
         </div>
         )}
-        {snap.chatActiveConversation && (
-          <div className={`${styles.pageHeaderRight}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+          <div className={`${styles.pageHeaderRight}${messageSearchOpen ? ` ${styles.pageHeaderRightSearching}` : ''}${searchOnlyHeader ? ` ${styles.pageHeaderRightSearchOnly}` : ''}`}>
+            {snap.chatActiveConversation && <>
             {!searchOnlyHeader && snap.chatActiveConversation && currentPeerId && (
               <button
                 type="button"
@@ -1264,8 +1271,9 @@ export function ChatView({ onSelectView }: ChatViewProps) {
                 <HugeiconsIcon icon={BrowserIcon} size={15} strokeWidth={1.8} />
               </button>
             )}
+            </>}
+            <VprHeaderActions credits={snap.headlineBalanceUsdc} onSelectView={onSelectView} />
           </div>
-        )}
       </div>
 
       {showWelcome && (
@@ -1273,7 +1281,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
           className={styles.chatExternalHint}
           onClick={() => onSelectView?.('tools')}
         >
-          <span>Connect tools through your VPR profiles</span>
+          <span>Connect tools through your AI VPN profiles</span>
           <HugeiconsIcon icon={ArrowRight01Icon} size={12} strokeWidth={1.5} />
         </button>
       )}
@@ -1391,6 +1399,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               peerInfo={snap.chatPaymentApprovalPeerInfo}
               error={snap.chatPaymentApprovalError}
               onAddCredits={() => onSelectView?.('deposit')}
+              onManageSessions={() => onSelectView?.('activity')}
               onRetry={() => actions.retryAfterPayment()}
               onCancel={() => actions.rejectPaymentSession()}
             />
@@ -1415,11 +1424,16 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {attachmentError && <div className={styles.chatError}>{attachmentError}</div>}
             {voiceError && <div className={styles.chatError}>{voiceError}</div>}
             {attachmentWarning && <div className={styles.chatWarning}>{attachmentWarning}</div>}
-            <LowBalanceWarning
-              visible={snap.chatLowBalanceWarning}
-              availableUsdc={snap.creditsAvailableUsdc}
-              onAddCredits={() => onSelectView?.('deposit')}
-            />
+            {dismissedFundingKey !== fundingKey ? (
+              <FundingStatusNotice
+                variant="strip"
+                status={funding}
+                includeInfo={false}
+                onAddFunds={() => onSelectView?.('deposit')}
+                onManageSessions={() => onSelectView?.('activity')}
+                onDismiss={() => setDismissedFundingKey(fundingKey)}
+              />
+            ) : null}
             <ToolApprovalCard
               request={activeToolApprovalRequest}
               pendingCount={activeToolApprovalRequests.length}

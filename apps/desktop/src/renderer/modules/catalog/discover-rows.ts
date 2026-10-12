@@ -1,8 +1,65 @@
-import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView } from '../../core/state';
+import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, TrustBreakdown, VideoOptionsView } from '../../core/state';
 import type { DiscoverVerificationLink } from '../../core/state';
 import { isTextCapableRow } from './model-capabilities';
+import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
 
 const CHAT_SERVICE_SELECTION_SEPARATOR = '\u0001';
+
+function boundedScore(input: unknown): number | null {
+  return typeof input === 'number' && Number.isFinite(input) && input >= 0 && input <= 100 ? input : null;
+}
+
+function nonNegative(input: unknown): number | null {
+  return typeof input === 'number' && Number.isFinite(input) && input >= 0 ? input : null;
+}
+
+function asObject(input: unknown): Record<string, unknown> | null {
+  return input && typeof input === 'object' && !Array.isArray(input) ? input as Record<string, unknown> : null;
+}
+
+/** Validate the buyer's `TrustBreakdown`; each part is nullable, the final score must be 0-100. */
+export function normalizeTrust(raw: unknown): TrustBreakdown | null {
+  const value = asObject(raw);
+  if (!value) return null;
+  const score = boundedScore(value.score);
+  if (score === null) return null;
+  return {
+    score,
+    history: normalizeHistoryPart(asObject(value.history)),
+    usage: normalizeSharePart(asObject(value.usage)),
+    power: normalizeSharePart(asObject(value.power)),
+    identity: normalizeIdentityPart(asObject(value.identity)),
+    washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
+  };
+}
+
+function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  const channelCount = nonNegative(raw.channelCount);
+  const totalVolumeUsdcMicros = nonNegative(raw.totalVolumeUsdcMicros);
+  if (score === null || channelCount === null || totalVolumeUsdcMicros === null) return null;
+  return { score, channelCount, totalVolumeUsdcMicros };
+}
+
+/** A usage or power part: weighted score plus the share and epoch it came from. */
+function normalizeSharePart(raw: Record<string, unknown> | null): TrustBreakdown['usage'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  const shareBps = nonNegative(raw.shareBps);
+  const epoch = nonNegative(raw.epoch);
+  if (score === null || shareBps === null || epoch === null) return null;
+  return { score, shareBps, epoch };
+}
+
+function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakdown['identity'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  if (score === null) return null;
+  if (raw.kind !== 'github' && raw.kind !== 'domain') return null;
+  const claim = typeof raw.claim === 'string' ? raw.claim : '';
+  return { score, kind: raw.kind, claim };
+}
 
 function toNullableBigintString(v: unknown): string | null {
   if (v === null || v === undefined) return null;
@@ -57,6 +114,7 @@ function normalizeCapabilities(value: unknown): ServiceCapabilitiesView | null {
     const result = [...new Set(candidate.filter((item): item is string => typeof item === 'string' && item.length > 0))];
     return result.length > 0 ? result : undefined;
   };
+  const video = normalizeVideoOptions(raw.video);
   const normalized: ServiceCapabilitiesView = {
     ...(positiveInteger(raw.contextWindow) ? { contextWindow: positiveInteger(raw.contextWindow) } : {}),
     ...(positiveInteger(raw.maxOutputTokens) ? { maxOutputTokens: positiveInteger(raw.maxOutputTokens) } : {}),
@@ -66,8 +124,33 @@ function normalizeCapabilities(value: unknown): ServiceCapabilitiesView | null {
     ...(typeof raw.toolUse === 'boolean' ? { toolUse: raw.toolUse } : {}),
     ...(typeof raw.structuredOutput === 'boolean' ? { structuredOutput: raw.structuredOutput } : {}),
     ...(stringList(raw.supportedParameters) ? { supportedParameters: stringList(raw.supportedParameters) } : {}),
+    ...(video ? { video } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function normalizeVideoOptions(value: unknown): VideoOptionsView | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const strings = (candidate: unknown): string[] | undefined => {
+    if (!Array.isArray(candidate)) return undefined;
+    const result = [...new Set(candidate.filter((item): item is string => typeof item === 'string' && item.length > 0))];
+    return result.length > 0 ? result : undefined;
+  };
+  const durations = Array.isArray(raw.durationsSeconds)
+    ? [...new Set(raw.durationsSeconds.filter((item): item is number => (
+      typeof item === 'number' && Number.isFinite(item) && item > 0
+    )))].sort((a, b) => a - b)
+    : [];
+  const video: VideoOptionsView = {
+    ...(durations.length > 0 ? { durationsSeconds: durations } : {}),
+    ...(strings(raw.resolutions) ? { resolutions: strings(raw.resolutions) } : {}),
+    ...(strings(raw.aspectRatios) ? { aspectRatios: strings(raw.aspectRatios) } : {}),
+    ...(strings(raw.inputs) ? { inputs: strings(raw.inputs) } : {}),
+    ...(strings(raw.requiredInputs) ? { requiredInputs: strings(raw.requiredInputs) } : {}),
+    ...(typeof raw.audio === 'boolean' ? { audio: raw.audio } : {}),
+  };
+  return Object.keys(video).length > 0 ? video : undefined;
 }
 
 function normalizeHttpsUrl(value: unknown): string | null {
@@ -87,6 +170,7 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
   const serviceId = String(r.serviceId ?? '').trim();
   if (!peerId || !serviceId) return null;
   return {
+    advertisedVerifierIds: normalizeAdvertisedVerifierIds(r.advertisedVerifierIds),
     rowKey: String(r.rowKey ?? `${peerId}:${serviceId}`),
     serviceId,
     serviceLabel: String(r.serviceLabel ?? serviceId),
@@ -115,6 +199,10 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
       : (typeof r.inputUsdPerMillion === 'number' ? r.inputUsdPerMillion : null),
     minImageUsdPerImage: typeof r.minImageUsdPerImage === 'number' ? r.minImageUsdPerImage : null,
     maxImageUsdPerImage: typeof r.maxImageUsdPerImage === 'number' ? r.maxImageUsdPerImage : null,
+    minVideoUsdPerSecond: nonNegative(r.minVideoUsdPerSecond),
+    maxVideoUsdPerSecond: nonNegative(r.maxVideoUsdPerSecond),
+    minVideoUsdPerVideo: nonNegative(r.minVideoUsdPerVideo),
+    maxVideoUsdPerVideo: nonNegative(r.maxVideoUsdPerVideo),
     lifetimeSessions: Number(r.lifetimeSessions) || 0,
     lifetimeRequests: Number(r.lifetimeRequests) || 0,
     lifetimeInputTokens: Number(r.lifetimeInputTokens) || 0,
@@ -123,7 +211,7 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
     lifetimeLastSessionAt: typeof r.lifetimeLastSessionAt === 'number' ? r.lifetimeLastSessionAt : null,
     onChainChannelCount: typeof r.onChainChannelCount === 'number' ? r.onChainChannelCount : null,
     agentId: Number(r.agentId) || 0,
-    stakeUsdc: String(r.stakeUsdc ?? '0'),
+    poolStakeAnts: nonNegative(r.poolStakeAnts) ?? 0,
     onChainActiveChannelCount: Number(r.onChainActiveChannelCount) || 0,
     onChainGhostCount: Number(r.onChainGhostCount) || 0,
     onChainTotalVolumeUsdc: String(r.onChainTotalVolumeUsdc ?? '0'),
@@ -131,9 +219,8 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
     onChainReputationScore: typeof r.onChainReputationScore === 'number' && Number.isFinite(r.onChainReputationScore)
       ? r.onChainReputationScore
       : null,
-    onChainTrustScore: typeof r.onChainTrustScore === 'number' && Number.isFinite(r.onChainTrustScore)
-      ? r.onChainTrustScore
-      : null,
+    trust: normalizeTrust(r.trust),
+    washFlagged: typeof r.washFlagged === 'boolean' ? r.washFlagged : null,
     effectiveReputationScore: typeof r.effectiveReputationScore === 'number' && Number.isFinite(r.effectiveReputationScore)
       ? r.effectiveReputationScore
       : null,
@@ -158,7 +245,7 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
 export function projectRowsToChatServiceOptions(rows: DiscoverRow[]): ChatServiceOptionEntry[] {
   const grouped = new Map<string, ChatServiceOptionEntry>();
   for (const row of rows) {
-    // VPR can browse image generators, but the built-in chat pipeline must
+    // AI VPN can browse image generators, but the built-in chat pipeline must
     // only receive protocols it knows how to serialize and stream.
     if (!isTextCapableRow(row)) continue;
     const key = `${row.provider}${CHAT_SERVICE_SELECTION_SEPARATOR}${row.serviceId}${CHAT_SERVICE_SELECTION_SEPARATOR}${row.peerId}`;

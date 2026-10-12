@@ -3,9 +3,14 @@
 // handles signing itself when identity is set, making ad-hoc signing unnecessary.
 
 import { execFileSync } from 'node:child_process';
+import { chmod } from 'node:fs/promises';
 import path from 'node:path';
 
 export default async function afterPack(context) {
+  if (context.electronPlatformName === 'linux') {
+    await chmod(path.join(context.appOutDir, 'chrome-sandbox'), 0o4755);
+    return;
+  }
   if (context.electronPlatformName !== 'darwin') return;
 
   const identity = context.packager.platformSpecificBuildOptions.identity;

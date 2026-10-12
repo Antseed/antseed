@@ -1,0 +1,131 @@
+.well {
+  background: var(--as-soil-0);
+  border-radius: 28px;
+  padding: 20px;
+}
+
+.panel {
+  position: relative;
+  background: #fff;
+  border-radius: 20px;
+  aspect-ratio: 520 / 340;
+  overflow: hidden;
+}
+
+.svg {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+  display: block;
+}
+
+.route {
+  fill: none;
+  stroke: var(--as-green);
+  stroke-width: 4;
+  stroke-linecap: round;
+  stroke-dasharray: 0.1 10;
+  opacity: 0.9;
+}
+
+.chip {
+  fill: #fff;
+  stroke: rgba(0, 30, 18, 0.12);
+}
+
+.node {
+  fill: #fff;
+  stroke: var(--as-green);
+  stroke-width: 1.5;
+}
+
+.nodeHalo {
+  fill: rgba(16, 185, 129, 0.1);
+  stroke: none;
+  transform-box: fill-box;
+  transform-origin: center;
+  transform: scale(1.14);
+}
+
+.pulse {
+  fill: none;
+  stroke: var(--as-green);
+  stroke-width: 1.5;
+  transform-box: fill-box;
+  transform-origin: center;
+  animation: pulse 1.8s ease-out infinite;
+  animation-delay: 1.2s;
+}
+
+@keyframes pulse {
+  0% { transform: scale(1); opacity: 0.6; }
+  70% { transform: scale(1.5); opacity: 0; }
+  100% { transform: scale(1.5); opacity: 0; }
+}
+
+.dot {
+  fill: var(--as-green);
+}
+
+/* ---- readouts (HTML, top-right of the panel) ---- */
+.readouts {
+  position: absolute;
+  right: 6.5%;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.pill {
+  display: inline-flex;
+  align-items: baseline;
+  gap: 8px;
+  padding: 6px 12px;
+  border-radius: 999px;
+  background: #fff;
+  border: 1px solid rgba(0, 30, 18, 0.12);
+  font-family: var(--as-font-data);
+  font-size: clamp(11px, 1.05vw, 13px);
+  line-height: 1.3;
+  color: var(--as-text-2);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+.pillCost {
+  background: rgba(16, 185, 129, 0.1);
+  border-color: transparent;
+}
+
+.pillCost strong {
+  font-size: clamp(14px, 1.4vw, 18px);
+  font-weight: 700;
+  color: var(--as-green-deep);
+}
+
+.pillCost s {
+  color: var(--as-text-2);
+}
+
+.count {
+  font-weight: 600;
+  color: var(--as-heading);
+}
+
+.label {
+  color: var(--as-text-2);
+}
+
+.pillMuted {
+  color: var(--as-text-2);
+}
+
+/* reduced motion: hide the travelling dots, stop the pulse */
+.reduced .dot,
+.reduced .pulse {
+  display: none;
+}

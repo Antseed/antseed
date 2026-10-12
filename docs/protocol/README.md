@@ -1,10 +1,11 @@
 # Antseed Network
 
-AntSeed is a peer-to-peer AI services network that enables direct connections between AI service providers and buyers. It eliminates intermediary platforms by providing protocol-level discovery, metering, and payment settlement.
+Antseed is a peer-to-peer AI services network that enables direct connections between AI service providers and buyers. It eliminates intermediary platforms by providing protocol-level discovery, metering, and payment settlement.
 
 ## Repository Structure
 
 - [spec/](spec/) — Protocol specification
+  - [10-native-video.md](spec/10-native-video.md) — Native video relays, routing, and billing
   - [00-conventions.md](spec/00-conventions.md) — Data formats and conventions
   - [01-discovery.md](spec/01-discovery.md) — DHT-based peer discovery
   - [02-transport.md](spec/02-transport.md) — Binary framing and connection management
@@ -16,6 +17,14 @@ AntSeed is a peer-to-peer AI services network that enables direct connections be
 - [templates/router-plugin/](templates/router-plugin/) — Starter template for building a router plugin (consume AI services)
 
 ## Getting Started
+
+For protocol behavior from epoch 22, start with [Recognized Usage and ANTS
+Rewards](../../apps/website/docs/protocol/recognized-usage.md), [Reward
+Policies](../../apps/website/docs/protocol/reward-policies.md), and the separate
+[legacy claims reference](../../apps/website/docs/protocol/legacy-emissions.md).
+Deployment procedures belong in the contract migration runbooks; the model
+verification and fingerprint-swarm specifications describe proposed work rather
+than additional active reward policies.
 
 Install the CLI globally:
 
@@ -57,4 +66,5 @@ cd my-router && npm install && npm run verify
 - [@antseed/provider-claude-code](https://npmjs.com/package/@antseed/provider-claude-code) — Claude Code provider (keychain, testing only)
 - [@antseed/provider-openai](https://npmjs.com/package/@antseed/provider-openai) — OpenAI-compatible provider (OpenAI, Together, OpenRouter)
 - [@antseed/provider-local-llm](https://npmjs.com/package/@antseed/provider-local-llm) — Local LLM provider
+- [@antseed/provider-typesafe](https://npmjs.com/package/@antseed/provider-typesafe) — TypeSafe System One decision-model provider
 - [@antseed/router-local](https://npmjs.com/package/@antseed/router-local) — Local router (Claude Code, Codex)

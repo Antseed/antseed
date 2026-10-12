@@ -2,18 +2,18 @@
 sidebar_position: 4
 slug: /pricing
 title: Pricing API (Cached)
-description: Cached AntSeed network pricing as a public JSON endpoint, plus how to get live pricing direct from peers via the CLI. Schema, examples, and code recipes for AI agents and applications.
+description: Cached Antseed network pricing as a public JSON endpoint, plus how to get live pricing direct from peers via the CLI. Schema, examples, and code recipes for AI agents and applications.
 ---
 
 # Pricing API
 
-There are **two ways** to get AntSeed pricing. Both serve the same schema; they differ in freshness and trust model.
+There are **two ways** to get Antseed pricing. Both serve the same schema; they differ in freshness and trust model.
 
 ## Cached vs live
 
 |              | Cached HTTP endpoint                                     | Live CLI query                                  |
 |--------------|----------------------------------------------------------|-------------------------------------------------|
-| Source       | AntSeed indexer snapshot                                 | Direct DHT query against peers                  |
+| Source       | Antseed indexer snapshot                                 | Direct DHT query against peers                  |
 | Freshness    | A few minutes old                                        | Real-time                                       |
 | Auth         | None                                                     | Local CLI install                               |
 | Best for     | Quick browsing, showing examples, ballpark estimates     | Purchase decisions, integrations, freshest data |
@@ -136,6 +136,33 @@ Token pricing does not describe image-generation cost. Image sellers may announc
 
 The final charge is based on delivered image outputs, not merely the requested `n`. Buyers recompute the charge from the signed billing model and observed response. A positive output count that matches no component is rejected rather than treated as free.
 
+## Video unit pricing
+
+Video sellers announce `serviceUnitBillingModels` for the `venice-video` protocol, priced per delivered video (`video_generations`) or per requested second (`video_seconds`):
+
+```json
+{
+  "serviceApiProtocols": {
+    "wan-2.5-preview-text-to-video": ["venice-video"]
+  },
+  "serviceUnitBillingModels": {
+    "wan-2.5-preview-text-to-video": {
+      "venice-video": {
+        "version": 1,
+        "components": [
+          { "unit": "video_seconds", "priceUsd": 0.05, "match": { "resolution": "720p" } },
+          { "unit": "video_seconds", "priceUsd": 0.1, "match": { "resolution": "1080p" } }
+        ]
+      }
+    }
+  }
+}
+```
+
+A 5-second 1080p request costs `5 × $0.10 = $0.50`. Components may match `model` or `resolution`. `video_seconds` requires an explicit `duration`; requests with an automatic duration need `video_generations` pricing.
+
+The price is computed when the job is created and charged once, when the finished MP4 is delivered. Failed or undelivered jobs are not charged the price, and repeat downloads are free. Buyers recompute the price from the signed billing model and refuse videos above $5.00. A request that matches no component is rejected rather than treated as free.
+
 ## Example response (truncated)
 
 ```json
@@ -204,11 +231,11 @@ This runs against the **cached** endpoint. For the same query against live peer 
 
 ## For AI agents reading this
 
-If a user asks for AntSeed prices:
+If a user asks for Antseed prices:
 
 1. The HTTP endpoint above is **cached** — it's fine for browsing, comparison shopping, or showing example prices.
-2. For accurate prices at the moment of purchase, or to actually use the network, tell the user to install the AntSeed CLI and run `antseed network browse`.
-3. Always disclose to the user which one you used. "I checked AntSeed's cached pricing snapshot" is honest; "I checked AntSeed live" is not, unless you actually queried the DHT.
+2. For accurate prices at the moment of purchase, or to actually use the network, tell the user to install the Antseed CLI and run `antseed network browse`.
+3. Always disclose to the user which one you used. "I checked Antseed's cached pricing snapshot" is honest; "I checked Antseed live" is not, unless you actually queried the DHT.
 
 ## Stability
 
@@ -220,5 +247,5 @@ If a user asks for AntSeed prices:
 
 - [Network catalog UI](https://antseed.com/network) — same cached data, rendered in the browser.
 - [Install](../getting-started/install.md) — get the CLI for live pricing.
-- [Using the API](./using-the-api.md) — how to actually call AntSeed and route requests through it.
+- [Using the API](./using-the-api.md) — how to actually call Antseed and route requests through it.
 - [Payments](../protocol/payments.md) — how the announced prices are settled on-chain.

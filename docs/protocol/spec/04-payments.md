@@ -1,6 +1,6 @@
 # 04 - Payments: Streaming SpendingAuth
 
-This document specifies the payment protocol for the AntSeed P2P AI compute network. Payments use USDC on Base with two EIP-712 signed messages: **ReserveAuth** (session budget) and **SpendingAuth** (cumulative per-request authorization). AntseedChannels orchestrates the lifecycle but holds no USDC — all funds stay in AntseedDeposits.
+This document specifies the payment protocol for the Antseed P2P AI compute network. Payments use USDC on Base with two EIP-712 signed messages: **ReserveAuth** (session budget) and **SpendingAuth** (cumulative per-request authorization). AntseedChannels orchestrates the lifecycle but holds no USDC — all funds stay in AntseedDeposits.
 
 ## 1. Session Lifecycle (Reserve → Serve → Settle/Close)
 
@@ -174,14 +174,19 @@ Stats are factual counters with no reputation scoring logic. They feed into emis
 | Layer | Mechanism | Default |
 |---|---|---|
 | Minimum deposit | Buyers must deposit at least N USDC to participate | 10 USDC |
-| Minimum stake | Sellers must stake USDC bound to ERC-8004 agentId | 10 USDC |
+| Seller eligibility | Checked through the registry's active staking contract | Legacy USDC fallback while enabled; ANTS pool rules after cutover |
 | Budget binding | ReserveAuth binds maxAmount and deadline to buyer signature | Per-session |
 | Cumulative auth | SpendingAuth cumulativeAmount is monotonically increasing | Per-request |
 | Gasless buyer | Buyer never submits transactions — cannot be griefed for gas | Always |
 
 ## 6. Staking
 
-Sellers must stake USDC via `stake(agentId, amount)` on `AntseedStaking`, binding their stake to an ERC-8004 agentId. Minimum stake: `MIN_SELLER_STAKE` (default: 10 USDC). An unstaked seller cannot have `reserve()` called — the transaction reverts.
+Before the epoch-22 cutover, `AntseedStaking` uses USDC stake bound to an ERC-8004
+agent ID, with a 10 USDC minimum. After cutover, `AntseedSellerRegistry` supplies
+seller eligibility, with legacy USDC stake accepted while its fallback is enabled.
+New reward points additionally require sufficient ANTS pool power. See
+[staking and exit terms](../../../apps/website/docs/protocol/recognized-usage.md)
+and [legacy USDC staking](../../../apps/website/docs/protocol/legacy-emissions.md#legacy-usdc-staking).
 
 ## 7. Stats and Identity
 
@@ -201,116 +206,93 @@ For local testing only. Simulates the ERC-8004 registry interface so contracts c
 
 ### ANTS Token
 
-ERC-20 on Base. No pre-mine. No initial supply. All ANTS distributed through verified work over 10 years.
+ERC-20 on Base with a 1.04 billion ANTS maximum supply and zero initial supply.
+Scheduled emissions fund participant rewards and protocol allocations. M001
+pre-mints the remaining pre-effective-epoch schedule into the legacy escrow;
+that reserve is not a new user reward or freely claimable balance.
 
-**Phase 1 (current):** Non-transferable. `transfer()` and `transferFrom()` revert. Participants earn and claim but cannot trade. Owner calls `enableTransfers()` (one-way toggle) when the network matures.
+**Transfer-restricted phase:** Ordinary transfers are disabled; minting and transfers by whitelisted senders are allowed. Owner calls `enableTransfers()` as a separate, irreversible action. M001 does not enable trading.
 
-Mint authority restricted to `AntseedEmissionsV2` contract (`setEmissionsContract()` — one-time setter).
+After M001 phase 1 on September 6, 2026, `ANTSToken.registry()` points to
+`AntseedEmissionsGate` (`0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD`). The gate
+controls minting; legacy V2's unchanged mint calls now transfer from
+`AntseedLegacyEmissionsEscrow` (`0x4d0fC3C0BBb5233Af6c4Ce33223e5330c34db9ab`).
 
-### AntseedEmissionsV2
+### Recognized Usage (From Epoch 22)
 
-Deployed upgrade of the original `AntseedEmissions`. Backward-compatible with V1 by reading V1's genesis, epoch constants, and combining V1 + V2 points for the migration epoch and all earlier epochs.
+**Protocol start: September 10, 2026 at 09:54:21 UTC (epoch 22).**
 
-- **Base mainnet address:** `0xF13bE52c4A3afC6AE29536f073588d01A0564088`
-- **Genesis:** copied from V1 (`legacyEmissions.genesis()`)
-- **Epoch duration / halving interval:** copied from V1
+The standard reward model combines eligible usage with ANTS seller-pool power.
+`AntseedRegistry.staking()` resolves to `AntseedSellerRegistry`
+(`0x99c533BCc6Ca646E543dbA835Fdbb9C2ee02Cb60`) and `emissions()` to
+`AntseedUsageAccounting` (`0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9`)
+after activation. Buyer USDC deposits, channel signatures, and settlement are unchanged.
 
-#### Epochs
+Allocation ceilings are 40% seller-pool rewards, 20% usage rewards, 15% team,
+15% reserve, and 10% verification. Pool and usage payouts follow dynamic
+allocation and eligibility rules rather than paying their ceiling unconditionally.
+The gate uses weekly epochs and a 104-epoch halving interval.
 
-Epochs advance automatically via block timestamp:
+For epoch 22, the dynamic stake target is 400 million active ANTS and the usage
+target is 1 million USDC of recognized volume per epoch. These are curve
+reference points, not maximum-share thresholds: reaching them produces a 21%
+staker share and 7.5% each for buyer and seller/operator usage. See
+[stake and usage targets](../../../apps/website/docs/protocol/recognized-usage.md#stake-and-usage-targets)
+for the formula, post-policy volume measure, and emission-scaled stake target.
 
-```
-currentEpoch = (block.timestamp - genesis) / EPOCH_DURATION
-```
+Unallocated seller-pool and usage budgets are settled through the gate: burns
+take priority up to a shared cap of 30% of the epoch's scheduled emissions, with
+excess sent to the emissions reserve. This does not sweep earned but unclaimed
+rewards. Burns require remainder settlement and mint ANTS to the dead address;
+they do not reduce ERC-20 `totalSupply()`. See the
+[burn and reserve rule](../../../apps/website/docs/protocol/recognized-usage.md#unallocated-emissions-and-burns)
+for the calculation and the separate early-withdrawal burn.
 
-No manual `advanceEpoch()` is required. Epoch parameters (share percentages and per-epoch caps) are snapshotted on first V2 touch of each epoch and remain immutable for that epoch.
+Accounting tracks raw and pool-weighted points and applies sequential policies.
+The public policy returns remain `(sellerPoints, buyerPoints)`. A zeroed side
+cannot be restored and evaluation stops when both sides are zero. Historical
+wash flags zero future records involving the seller, not previously credited
+points, and do not prevent starter-position initialization or USDC settlement.
 
-#### Emission Schedule
+See [Reward Policies](../../../apps/website/docs/protocol/reward-policies.md)
+for modifier composition, failure handling, and the distinction
+between proof verification and canonical block authentication.
 
-- Epoch emission: `e_e = e_0 / 2^(epoch / HALVING_INTERVAL)` — halving every ~6 months
-- Epoch duration: configurable (default 1 week, 26 epochs per halving interval)
+Locked ANTS positions are lANTS NFTs. Power activates in the next epoch. For a
+contract seller, an authorized operator may call `initPosition(seller)`; the
+caller owns the resulting position and its rewards/withdrawal rights.
 
-#### Emission Split (per-epoch snapshot)
+See [Recognized Usage and ANTS Rewards](../../../apps/website/docs/protocol/recognized-usage.md)
+for the full specification guide and address inventory. Activation is an
+explicit registry-pointer operation; operational sequencing remains in the M001 runbook.
 
-| Bucket | Default | Purpose |
-|---|---|---|
-| Seller share | 50% | Proven delivery (locked rewards pool until unlocked) |
-| Buyer share | 20% | Rewards network usage and feedback |
-| Reserve share | 15% | Protocol Reserve (network sustainability, liquidity) |
-| Team share | 15% | Protocol team |
+### Pre-Migration Emissions
 
-#### Points Accrual
-
-During `settle()` / `close()`, `AntseedChannels` calls one of:
-
-- `accrueSellerPoints(seller, pointsDelta)`
-- `accrueBuyerPoints(buyer, pointsDelta)`
-- `accruePoints(channelId, buyer, seller, pointsDelta)` — optional pair-aware hook for future channels
-
-For epochs `<= MIGRATION_EPOCH`, V1 points are combined with V2 points on claim. For later epochs, only V2 points are used.
-
-#### Points Policy Hook
-
-An optional `IAntseedPointsPolicy` can be set by owner. If set and its `points()` call succeeds, it returns weighted seller/buyer points. If not set, or if the call reverts, raw points are used.
-
-#### Per-Epoch Pro-Rata Distribution
-
-Claiming computes rewards per finalized epoch:
-
-```
-sellerBudget = epochEmission * sellerSharePct / 100
-sellerReward = (userSellerPoints / epochTotalSellerPoints) * sellerBudget
-
-buyerBudget  = epochEmission * buyerSharePct / 100
-buyerReward  = (userBuyerPoints / epochTotalBuyerPoints) * buyerBudget
-```
-
-#### Per-Epoch Caps
-
-- **Seller cap:** `maxSellerSharePct` (default 50% of the seller bucket). Excess redirected to reserve.
-- **Buyer cap:** `maxBuyerSharePct` (default 5% of the buyer bucket). Excess redirected to reserve.
-
-#### Seller Claiming
-
-Sellers call `claimSellerEmissions(epochs[])` for finalized epochs.
-
-If `sellerUnlockPolicy.canClaimSellerUnlocked(seller)` returns true, ANTS are minted directly to the seller.
-
-If the policy returns false (or is not set), ANTS are minted to `AntseedSellerRewardsPool` and recorded as locked for that seller. They remain locked until the unlock policy later allows release.
-
-#### Buyer Claiming
-
-Anyone can call `claimBuyerEmissions(buyer, epochs[])` provided `msg.sender == Deposits.getOperator(buyer)`. Reward is minted to `msg.sender`.
-
-#### Reserve & Team
-
-Reserve and team shares accumulate in the contract until flushed by owner:
-
-- `flushReserve()` — mints accumulated reserve ANTS to `registry.protocolReserve()`
-- `flushTeam()` — mints accumulated team ANTS to `registry.teamWallet()`
-
-### Legacy V1 Backward Compatibility
-
-`AntseedEmissionsV2` reads the legacy `AntseedEmissions` contract for:
-
-- `genesis`, `EPOCH_DURATION`, `HALVING_INTERVAL`, `INITIAL_EMISSION`
-- Claimed state for epochs `< MIGRATION_EPOCH`
-- User points and total points for epochs `<= MIGRATION_EPOCH`
-
-This ensures sellers and buyers do not lose historical points during the upgrade.
+**Looking for legacy emissions or historical claims?** See
+[Legacy emissions and claims](../../../apps/website/docs/protocol/legacy-emissions.md).
+The pre-migration V2 configuration is **65% sellers, 5% buyers, 15% reserve,
+15% team**, with per-epoch snapshots governing historical rewards. Legacy V2
+continues paying historical claims and owner-triggered team/reserve flushes
+from the pre-minted escrow after migration.
 
 ## 9. Contract Architecture
 
 ```
-ANTSToken (ERC-20)              ── mint restricted to AntseedEmissionsV2
-AntseedDeposits                 ── buyer USDC deposits, holds ALL buyer USDC
-AntseedChannels                 ── Reserve→Settle/Close lifecycle (holds NO USDC, swappable)
-AntseedStaking                  ── seller stake bound to ERC-8004 agentId
-AntseedStats                    ── factual per-agent session metrics
-AntseedEmissionsV2              ── USDC volume-based epoch emissions (backward-compatible with V1)
-AntseedSellerRewardsPool        ── holds locked ANTS for sellers pending unlock policy
-AntseedSellerUnlockPolicy       ── on-chain policy determining if seller can claim unlocked
-MockERC8004Registry             ── local testing only (mainnet: deployed ERC-8004)
+ANTSToken                     ── mint authority is AntseedEmissionsGate
+AntseedDeposits                ── holds buyer USDC deposits and seller payouts
+AntseedChannels                ── signed payment channels, holds no USDC
+AntseedSellerRegistry          ── ERC-8004 seller eligibility
+AntseedSellerPools             ── locked ANTS positions and pool power
+AntseedUsageAccounting         ── recognized usage and pool-weighted points
+AntseedPointsPolicyRegistry    ── sequential points transformations
+AntseedWashTradingRegistry     ── authenticated historical seller proofs
+AntseedWashTradingPointsPolicy ── zeros future points for flagged sellers
+AntseedSellerPoolsRewards      ── staker rewards
+AntseedUsageRewards            ── buyer and seller/operator usage rewards
+AntseedPositionInit            ── starter-position faucet
+AntseedEmissionsGate           ── emission schedule and allocations
+AntseedLegacyEmissionsEscrow   ── funds pre-migration claims and flushes
+AntseedStats                   ── factual per-agent session metrics
 ```
 
 Contracts reference each other by address (set at deployment, updateable by owner). No inheritance between contracts — only interface calls.

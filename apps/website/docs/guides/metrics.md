@@ -7,13 +7,13 @@ hide_title: true
 
 # Metrics
 
-AntSeed includes a native Prometheus-compatible metrics exporter for buyers and sellers:
+Antseed includes a native Prometheus-compatible metrics exporter for buyers and sellers:
 
 ```bash
 antseed metrics serve
 ```
 
-The exporter reads local AntSeed runtime state, payment channel ledgers, and metering stores, then exposes them using Prometheus text exposition format.
+The exporter reads local Antseed runtime state, payment channel ledgers, and metering stores, then exposes them using Prometheus text exposition format.
 
 ## Start the exporter
 
@@ -154,6 +154,6 @@ The exporter is designed to be safe to scrape:
 
 ## Operational notes
 
-Run the exporter where it can read the same AntSeed data directory as the buyer or seller process. Expose `/metrics` to your monitoring system according to your infrastructure's normal access-control model.
+Run the exporter where it can read the same Antseed data directory as the buyer or seller process. Expose `/metrics` to your monitoring system according to your infrastructure's normal access-control model.
 
 If `--include-chain` is enabled, the exporter may perform RPC reads. For larger fleets, it is often better to collect chain balances separately or use a dedicated RPC endpoint.

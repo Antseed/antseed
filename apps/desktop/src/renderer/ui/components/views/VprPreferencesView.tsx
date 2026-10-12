@@ -4,7 +4,7 @@ import { GlobalIcon, Moon02Icon, Sun02Icon, Tick02Icon } from '@hugeicons/core-f
 import { routesForSelectedModel } from '../../../modules/catalog/view-models';
 import { peerAccessSummaryLabel } from '../../../modules/routing/peer-access';
 import { buildVprPeerOptions } from '../../../modules/routing/tools';
-import { reputationScaleLabel, sellerMetaLabel, sellerReputationLabel } from '../../../modules/catalog/seller-format';
+import { reputationScaleLabel, sellerMetaLabel, sellerReputationLabel, sellerReputationExplanation } from '../../../modules/catalog/seller-format';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { activeThemeMode, applyThemeMode, type ThemeMode } from '../../lib/theme';
@@ -184,7 +184,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
                     {snap.selection.model?.label ? ` · ${snap.selection.model.label}` : ''}
                   </span>
                 </span>
-                <span className={styles.pinnedScore}>{sellerReputationLabel(pinnedRoute)}</span>
+                <span className={styles.pinnedScore} title={sellerReputationExplanation(pinnedRoute)}>{sellerReputationLabel(pinnedRoute)}</span>
               </button>
             </VprCard>
           </div>
@@ -241,7 +241,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
               title="Product telemetry"
               hint={telemetryStatus?.available === false
                 ? 'Telemetry is unavailable in this build or has been disabled by configuration.'
-                : 'Help improve VPR by sharing coarse feature usage and reliability information linked to your public on-chain address. Prompts, messages, files, and exact financial values are never collected.'}
+                : 'Help improve AI VPN by sharing coarse feature usage and reliability information linked to your public on-chain address. Prompts, messages, files, and exact financial values are never collected.'}
               control={(
                 <VprToggle
                   checked={telemetryStatus?.enabled ?? false}
@@ -266,7 +266,7 @@ export function VprPreferencesView({ onSelectView }: Props) {
           <VprCard className={styles.card}>
             <VprSettingRow
               title="Theme"
-              hint="Applies to every VPR window."
+              hint="Applies to every AI VPN window."
               control={(
                 <div className={styles.themeSegment} role="radiogroup" aria-label="Theme">
                   {([

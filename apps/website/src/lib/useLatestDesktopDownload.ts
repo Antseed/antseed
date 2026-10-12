@@ -3,7 +3,7 @@ import ExecutionEnvironment from '@docusaurus/ExecutionEnvironment';
 import {isMobileGetStartedVisitor} from './useMobileGetStarted';
 
 /**
- * Resolves the AntSeed Desktop download URL for the visitor's OS + arch.
+ * Resolves the Antseed Desktop download URL for the visitor's OS + arch.
  *
  * Download CTAs point at our download proxy (a Cloudflare Worker on
  * download.antseed.com, see apps/download-proxy) instead of GitHub release

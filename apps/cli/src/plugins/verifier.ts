@@ -1,6 +1,9 @@
 import { ANTSEED_ATTEST_PATH, type SellerRequest, type SellerResponse } from '@antseed/node'
 import { loadVerifierPlugin } from './loader.js'
 import { TRUSTED_VERIFIER_PLUGINS } from './registry.js'
+import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
+import { passedSellerNodeClaims, TEE_VERIFIER_ID, type TeeClaim } from '@antseed/node/tee-status'
+export { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 
 export const ANTSEED_VERIFIER_SDKS_ENV = 'ANTSEED_VERIFIER_SDKS'
 const VSDK = 'verifier.'
@@ -24,24 +27,6 @@ export function normalizeVerifierIds(raw: string): string[] {
 export function buildVerifierCapabilities(ids: string[]): string[] {
   const clean = normalizeVerifierIds(ids.join(','))
   return clean.flatMap((id, i) => (i === 0 ? [`${VSDK}${id}`, `${VSDK_DEFAULT}${id}`] : [`${VSDK}${id}`]))
-}
-
-export function parseVerifierCapabilities(caps: string[] | undefined): { supported: string[]; default?: string } {
-  const supported: string[] = []
-  let dflt: string | undefined
-  for (const cap of caps ?? []) {
-    const isDefault = cap.startsWith(VSDK_DEFAULT)
-    const raw = isDefault
-      ? cap.slice(VSDK_DEFAULT.length)
-      : cap.startsWith(VSDK)
-        ? cap.slice(VSDK.length)
-        : ''
-    const id = raw.trim().toLowerCase()
-    if (!isVerifierId(id)) continue
-    if (!supported.includes(id)) supported.push(id)
-    if (isDefault) dflt = id
-  }
-  return dflt ? { supported, default: dflt } : { supported }
 }
 
 export function curatedVerifierIds(): Set<string> {
@@ -94,6 +79,10 @@ export interface VerifyOutcome {
   reason?: string
   /** True for install/network/timeout failures — a transient outcome must not be cached. */
   transient?: boolean
+  code?: 'busy'
+  sellerNodeVerified?: boolean
+  claims?: TeeClaim[]
+  version?: string
 }
 
 /** Stable fingerprint of a peer's verifier-relevant capabilities. */
@@ -142,6 +131,7 @@ export async function runVerifier(
   caps: string[] | undefined,
   makeReach: (chosenId: string) => SellerReach,
   signal?: AbortSignal,
+  load: typeof loadVerifierPlugin = loadVerifierPlugin,
 ): Promise<VerifyOutcome> {
   const sup = parseVerifierCapabilities(caps)
   const chosen = selectVerifier(policy, sup)
@@ -149,10 +139,10 @@ export async function runVerifier(
   const reach = makeReach(chosen)
   let sdk
   try {
-    sdk = await loadVerifierPlugin(chosen, { install: false })
+    sdk = await load(chosen, { install: false })
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    return { ok: !policy.require, verified: false, sdk: chosen, reason: `verifier not prepared: ${reason}`, transient: true }
+    return { ok: !policy.require, verified: false, sdk: chosen, reason: `verifier not prepared: ${reason}`.slice(0, 2048), transient: true }
   }
   if (sdk.name !== chosen) {
     return { ok: !policy.require, verified: false, sdk: chosen, reason: `verifier package exported name "${sdk.name}", expected "${chosen}"` }
@@ -168,43 +158,24 @@ export async function runVerifier(
       }),
       signal,
     )
-    if (result.ok) return { ok: true, verified: true, sdk: chosen }
-    const failed = result.claims.filter((c) => !c.ok).map((c) => `${c.claim}: ${c.detail ?? 'failed'}`).join('; ')
-    return { ok: !policy.require, verified: false, sdk: chosen, reason: failed || 'verifier returned not-ok' }
+    const valid = Array.isArray(result.claims) && result.claims.length <= 128
+      && result.claims.every((claim) => claim && typeof claim.claim === 'string'
+        && claim.claim.length <= 256 && typeof claim.ok === 'boolean'
+        && (claim.detail === undefined || typeof claim.detail === 'string'))
+    const claims: TeeClaim[] = valid ? result.claims.map((claim) => ({
+      claim: claim.claim, ok: claim.ok,
+      ...(claim.detail ? { detail: claim.detail.slice(0, 1024) } : {}),
+    })) : []
+    const verified = result.ok === true
+    const sellerNodeVerified = verified && valid && chosen === TEE_VERIFIER_ID && passedSellerNodeClaims(claims)
+    const failed = claims.filter((claim) => !claim.ok).map((claim) => `${claim.claim}: ${claim.detail ?? 'failed'}`).join('; ')
+    return {
+      ok: !policy.require || verified, verified, sellerNodeVerified, sdk: chosen,
+      version: sdk.version, claims,
+      ...(!sellerNodeVerified ? { reason: (failed || 'Required seller-node claims did not pass').slice(0, 2048) } : {}),
+    }
   } catch (err) {
     const reason = err instanceof Error ? err.message : String(err)
-    return { ok: !policy.require, verified: false, sdk: chosen, reason: `verify error: ${reason}`, transient: true }
+    return { ok: !policy.require, verified: false, sdk: chosen, reason: `verify error: ${reason}`.slice(0, 2048), transient: true }
   }
-}
-
-export interface CachedVerdict {
-  outcome: VerifyOutcome
-  expires: number
-}
-
-export async function getCachedVerdict(
-  cache: Map<string, CachedVerdict>,
-  key: string,
-  now: number,
-  ttlMs: number,
-  maxEntries: number,
-  run: () => Promise<VerifyOutcome>,
-): Promise<VerifyOutcome> {
-  const cached = cache.get(key)
-  if (cached && cached.expires > now) return cached.outcome
-  if (cached) cache.delete(key)
-
-  const outcome = await run()
-  if (!outcome.transient) {
-    if (cache.size >= maxEntries) {
-      for (const [k, v] of cache) if (v.expires <= now) cache.delete(k)
-      while (cache.size >= maxEntries) {
-        const oldest = cache.keys().next().value
-        if (oldest === undefined) break
-        cache.delete(oldest)
-      }
-    }
-    cache.set(key, { outcome, expires: now + ttlMs })
-  }
-  return outcome
 }

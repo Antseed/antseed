@@ -4,7 +4,7 @@ title: "Why P2P AI Wins Now — When It Couldn't Before"
 authors: [antseed]
 tags: [decentralized-ai, P2P AI, AI agents, AI infrastructure, protocol]
 description: P2P networks lost to centralized services because humans needed convenience. Agents don't. That changes everything about which infrastructure model wins.
-keywords: [decentralized AI infrastructure, P2P AI network, AI agents infrastructure, autonomous agents AI, AntSeed protocol, agent-to-agent commerce]
+keywords: [decentralized AI infrastructure, P2P AI network, AI agents infrastructure, autonomous agents AI, Antseed protocol, agent-to-agent commerce]
 image: /og-image.jpg
 date: 2026-03-03
 ---
@@ -37,7 +37,7 @@ On every one of those dimensions, P2P is the better answer — and centralized s
 
 **Agents need uptime, not UX.** A centralized provider has maintenance windows, rate limits, and outages. When a human hits a rate limit, they wait. When an agent hits one, the task fails. P2P routes around unavailability automatically — if one provider is overloaded, the next one picks up the request. Always on isn't a feature. It's a structural property of the network.
 
-**Agents need to pay without humans in the loop.** Every centralized AI API requires a billing account — a credit card, an email, a human identity. That model breaks completely for autonomous agents. An agent can't renew a subscription or enter a CAPTCHA. AntSeed settles payments in USDC directly between the agent and the provider. The agent holds a wallet, selects a provider, pays per request. No human involved, ever.
+**Agents need to pay without humans in the loop.** Every centralized AI API requires a billing account — a credit card, an email, a human identity. That model breaks completely for autonomous agents. An agent can't renew a subscription or enter a CAPTCHA. Antseed settles payments in USDC directly between the agent and the provider. The agent holds a wallet, selects a provider, pays per request. No human involved, ever.
 
 **Agents can use reputation, not brand recognition.** Humans choose providers based on name recognition and marketing. Agents don't have brand preferences. They can evaluate providers on actual performance: latency, uptime history, cost per token, model quality scores. P2P networks surface this data structurally — every provider builds a reputation record that any agent can read and act on. The best providers win more traffic. The network self-optimizes in a way that centralized markets never can.
 
@@ -62,7 +62,7 @@ For agents: P2P wins on everything that matters.
 
 The infrastructure that seemed like the obviously right choice for a decade turns out to have been optimized for the wrong user. Agents don't need Spotify. They need BitTorrent.
 
-AntSeed is building the BitTorrent for AI — a protocol, not a product. Open to any provider. Accessible to any agent. Priced by competition, not by rate cards. Always on, because the network doesn't have a single point to fail.
+Antseed is building the BitTorrent for AI — a protocol, not a product. Open to any provider. Accessible to any agent. Priced by competition, not by rate cards. Always on, because the network doesn't have a single point to fail.
 
 [Read the lightpaper](/docs/lightpaper)
 

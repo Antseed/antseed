@@ -3,9 +3,11 @@ import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowRight01Icon, CreditCardIcon, Download01Icon, SquareLock01Icon, Upload01Icon, Wallet01Icon } from '@hugeicons/core-free-icons';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
-import { formatCredits, shortAddress } from '../../../core/format';
+import { shortAddress } from '../../../core/format';
 import { formatCompactTokens, VprCard, VprPage, VprStatRow, VprStatTile } from '../vpr/VprKit';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
 import styles from './VprCreditsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -27,11 +29,11 @@ export function VprCreditsView({ onSelectView }: Props) {
     evmAddress: state.creditsEvmAddress,
     operatorAddress: state.creditsOperatorAddress,
     usage: state.creditsBuyerUsage,
-    rewards: state.creditsRewards,
   }), shallowEqual);
   // Local to the button: background pollers (floating pill, payment events)
   // also refresh the summary, and mirroring their in-flight state here made
   // the button flip to "Refreshing..." constantly while traffic flowed.
+  const funding = useFundingStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [exportKeyOpen, setExportKeyOpen] = useState(false);
   const [importKeyOpen, setImportKeyOpen] = useState(false);
@@ -73,6 +75,12 @@ export function VprCreditsView({ onSelectView }: Props) {
         <div className={styles.balanceGroup}>
           <BalanceSummaryCard
             values={balanceValues}
+            notice={(
+              <FundingStatusNotice
+                status={funding}
+                onManageSessions={() => onSelectView?.('activity')}
+              />
+            )}
             actions={(
               <div className={styles.payButtons}>
                 <button type="button" onClick={() => onSelectView?.('deposit')}>
@@ -109,23 +117,6 @@ export function VprCreditsView({ onSelectView }: Props) {
           />
           <VprStatTile label="Sellers" value={snap.usage?.uniqueSellers ?? 0} />
         </VprStatRow>
-
-        <VprCard className={styles.rewardsCard}>
-          <span className={styles.rewardsText}>
-            <strong>Network rewards</strong>{' '}
-            {snap.rewards?.available
-              ? `${formatCredits(snap.rewards.pendingAnts)} ANTS pending this epoch from your usage.`
-              : 'Earn ANTS from your usage once rewards go live on this chain.'}
-          </span>
-          <button
-            type="button"
-            className={styles.rewardsLink}
-            onClick={() => onSelectView?.('rewards')}
-          >
-            <span>Rewards</span>
-            <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
-          </button>
-        </VprCard>
 
         <VprCard className={styles.rewardsCard}>
           <span className={styles.rewardsText}>
@@ -190,6 +181,21 @@ export function VprCreditsView({ onSelectView }: Props) {
               {refreshing ? 'Refreshing...' : 'Refresh'}
             </button>
           </div> */}
+        </VprCard>
+
+        <VprCard className={styles.rewardsCard}>
+          <span className={styles.rewardsText}>
+            <strong>Help &amp; support</strong>{' '}
+            Guides, troubleshooting, and diagnostics.
+          </span>
+          <button
+            type="button"
+            className={styles.rewardsLink}
+            onClick={() => onSelectView?.('help')}
+          >
+            <span>Help</span>
+            <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
+          </button>
         </VprCard>
       </div>
       </VprPage>

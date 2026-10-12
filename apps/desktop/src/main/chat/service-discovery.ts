@@ -7,13 +7,16 @@
  */
 
 import { readFile } from 'node:fs/promises';
-import { readPeerHealth, type RawPeerHealth } from '../runtime/peer-cache.js';
+import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
+import { readPeerHealth, type RawPeerHealth } from '../runtime/peer-health.js';
 import {
   DESKTOP_DEFAULT_MAX_INPUT_USD_PER_MILLION,
   DESKTOP_DEFAULT_MAX_OUTPUT_USD_PER_MILLION,
 } from '../runtime/config-io.js';
 import { normalizeProviderId } from './provider-hint.js';
+import { isNativeVideoProtocol } from '@antseed/node';
 import {
+  normalizeVideoOptions,
   sortChatServiceCatalogEntries,
   type CatalogServiceCapabilities,
   type CatalogServiceProtocol,
@@ -28,6 +31,7 @@ import {
   normalizeServiceValue,
 } from './normalize.js';
 import type { DesktopVerificationLink } from '../connected-apps/domain-site-metadata.js';
+import type { TrustBreakdown } from '@antseed/node';
 
 export type BuyerMaxPricingDefaults = {
   inputUsdPerMillion: number;
@@ -36,6 +40,9 @@ export type BuyerMaxPricingDefaults = {
 };
 
 export type DiscoverRowEntry = {
+  advertisedVerifierIds?: string[];
+  /** Parts that make up `onChainReputationScore`; `null` when the buyer has not scored the peer. */
+  trust?: TrustBreakdown | null;
   rowKey: string;
   serviceId: string;
   serviceLabel: string;
@@ -56,6 +63,10 @@ export type DiscoverRowEntry = {
   cachedInputUsdPerMillion: number | null;
   minImageUsdPerImage: number | null;
   maxImageUsdPerImage: number | null;
+  minVideoUsdPerSecond: number | null;
+  maxVideoUsdPerSecond: number | null;
+  minVideoUsdPerVideo: number | null;
+  maxVideoUsdPerVideo: number | null;
   lifetimeSessions: number;
   lifetimeRequests: number;
   lifetimeInputTokens: number;
@@ -64,13 +75,15 @@ export type DiscoverRowEntry = {
   lifetimeLastSessionAt: number | null;
   onChainChannelCount: number | null;
   agentId: number;
-  stakeUsdc: string;
+  /** ANTS actively staked in the seller's pool this epoch (whole ANTS). */
+  poolStakeAnts: number;
   onChainActiveChannelCount: number;
   onChainGhostCount: number;
   onChainTotalVolumeUsdc: string;
   onChainLastSettledAt: number;
   onChainReputationScore: number | null;
-  onChainTrustScore: number | null;
+  /** Wash-trading registry verdict; `null` when the registry was unavailable. */
+  washFlagged: boolean | null;
   effectiveReputationScore: number | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
@@ -115,6 +128,7 @@ function normalizeCatalogServiceCapabilities(raw: unknown): CatalogServiceCapabi
   const maxOutputTokens = positiveInteger(value.maxOutputTokens);
   const inputs = modalities(value.inputs);
   const outputs = modalities(value.outputs);
+  const video = normalizeVideoOptions(value.video);
   const normalized: CatalogServiceCapabilities = {
     ...(contextWindow ? { contextWindow } : {}),
     ...(maxOutputTokens ? { maxOutputTokens } : {}),
@@ -124,6 +138,7 @@ function normalizeCatalogServiceCapabilities(raw: unknown): CatalogServiceCapabi
     ...(typeof value.toolUse === 'boolean' ? { toolUse: value.toolUse } : {}),
     ...(typeof value.structuredOutput === 'boolean' ? { structuredOutput: value.structuredOutput } : {}),
     ...(parameters?.length ? { supportedParameters: parameters } : {}),
+    ...(video ? { video } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : null;
 }
@@ -230,7 +245,13 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
   const id = normalizeServiceValue(entry.id);
   const provider = normalizeProviderId(entry.provider);
   const protocol = entry.protocol;
-  if (!id || !provider || (protocol !== 'openai-images' && !isChatServiceProtocol(protocol))) {
+  // Image and native video services are listed for browsing; the chat
+  // pipeline still only accepts chat protocols (see isChatServiceProtocol).
+  if (!id || !provider || (
+    protocol !== 'openai-images'
+    && !isNativeVideoProtocol(protocol)
+    && !isChatServiceProtocol(protocol)
+  )) {
     return null;
   }
 
@@ -244,6 +265,12 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
   const cachedInputUsd = normalizeOptionalNumber(entry.cachedInputUsdPerMillion);
   const minImageUsd = normalizeOptionalNumber(entry.minImageUsdPerImage);
   const maxImageUsd = normalizeOptionalNumber(entry.maxImageUsdPerImage);
+  const videoPrices = {
+    minVideoUsdPerSecond: normalizeNonNegativeNumber(entry.minVideoUsdPerSecond),
+    maxVideoUsdPerSecond: normalizeNonNegativeNumber(entry.maxVideoUsdPerSecond),
+    minVideoUsdPerVideo: normalizeNonNegativeNumber(entry.minVideoUsdPerVideo),
+    maxVideoUsdPerVideo: normalizeNonNegativeNumber(entry.maxVideoUsdPerVideo),
+  };
   const categories = Array.isArray(entry.categories) ? entry.categories.filter((c): c is string => typeof c === 'string') : undefined;
   const description = typeof entry.description === 'string' ? entry.description.trim() : undefined;
   const capabilities = normalizeCatalogServiceCapabilities(entry.capabilities);
@@ -255,6 +282,7 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
     protocol,
     ...(capabilities ? { capabilities } : {}),
     count: normalizedCount,
+    advertisedVerifierIds: normalizeAdvertisedVerifierIds(entry.advertisedVerifierIds),
     ...(peerId ? { peerId } : {}),
     ...(peerLabel ? { peerLabel } : {}),
     ...(effectiveReputationScore != null && effectiveReputationScore >= 0 ? { effectiveReputationScore } : {}),
@@ -263,6 +291,7 @@ export function normalizeChatServiceCatalogEntry(raw: unknown): ChatServiceCatal
     ...(cachedInputUsd != null && cachedInputUsd >= 0 ? { cachedInputUsdPerMillion: cachedInputUsd } : {}),
     ...(minImageUsd != null && minImageUsd >= 0 ? { minImageUsdPerImage: minImageUsd } : {}),
     ...(maxImageUsd != null && maxImageUsd >= 0 ? { maxImageUsdPerImage: maxImageUsd } : {}),
+    ...Object.fromEntries(Object.entries(videoPrices).filter(([, value]) => value !== null)),
     ...(categories?.length ? { categories } : {}),
     ...(description ? { description } : {}),
   };
@@ -310,20 +339,86 @@ export function limitChatServiceCatalogEntries(entries: ChatServiceCatalogEntry[
 }
 
 export type BuyerStateDiscoveredPeer = {
+  trust: TrustBreakdown | null;
   onChainAgentId: number | null;
-  onChainStakeUsdcMicros: number | null;
+  onChainPoolStakeAnts: number | null;
   onChainChannelCount: number | null;
   onChainGhostCount: number | null;
   onChainTotalVolumeUsdcMicros: number | null;
   onChainLastSettledAtSec: number | null;
   onChainReputationScore: number | null;
-  onChainTrustScore: number | null;
+  onChainWashFlagged: boolean | null;
   onChainSybilRisk: number | null;
   onChainSybilFlags: string[];
   sellerContract?: string;
   verificationLinks: DiscoverVerificationLink[];
   peerIconUrl: string | null;
 };
+
+function boundedScore(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 && value <= 100 ? value : null;
+}
+
+function nonNegative(value: unknown): number | null {
+  return typeof value === 'number' && Number.isFinite(value) && value >= 0 ? value : null;
+}
+
+/**
+ * Validate a `trust` blob read from buyer.state.json. The buyer daemon writes
+ * `TrustBreakdown`, but the file may predate the field or be hand-edited, so
+ * every part is checked and the whole breakdown is dropped when the final
+ * score is missing or out of range.
+ */
+export function normalizeTrustBreakdown(raw: unknown): TrustBreakdown | null {
+  const value = asPlainObject(raw);
+  if (!value) return null;
+  const score = boundedScore(value.score);
+  if (score === null) return null;
+  return {
+    score,
+    history: normalizeHistoryPart(asPlainObject(value.history)),
+    usage: normalizeSharePart(asPlainObject(value.usage)),
+    power: normalizeSharePart(asPlainObject(value.power)),
+    identity: normalizeIdentityPart(asPlainObject(value.identity)),
+    freeModels: normalizeFreeModelsPart(asPlainObject(value.freeModels)),
+    washFlagged: typeof value.washFlagged === 'boolean' ? value.washFlagged : null,
+  };
+}
+
+function normalizeFreeModelsPart(raw: Record<string, unknown> | null): TrustBreakdown['freeModels'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  if (score === null || typeof raw.service !== 'string' || raw.service.length === 0) return null;
+  return { score, service: raw.service };
+}
+
+function normalizeHistoryPart(raw: Record<string, unknown> | null): TrustBreakdown['history'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  const channelCount = nonNegative(raw.channelCount);
+  const totalVolumeUsdcMicros = nonNegative(raw.totalVolumeUsdcMicros);
+  if (score === null || channelCount === null || totalVolumeUsdcMicros === null) return null;
+  return { score, channelCount, totalVolumeUsdcMicros };
+}
+
+/** A usage or power part: weighted score plus the share and epoch it came from. */
+function normalizeSharePart(raw: Record<string, unknown> | null): TrustBreakdown['usage'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  const shareBps = nonNegative(raw.shareBps);
+  const epoch = nonNegative(raw.epoch);
+  if (score === null || shareBps === null || epoch === null) return null;
+  return { score, shareBps, epoch };
+}
+
+function normalizeIdentityPart(raw: Record<string, unknown> | null): TrustBreakdown['identity'] {
+  if (!raw) return null;
+  const score = boundedScore(raw.score);
+  if (score === null) return null;
+  if (raw.kind !== 'github' && raw.kind !== 'domain') return null;
+  const claim = typeof raw.claim === 'string' ? raw.claim : '';
+  return { score, kind: raw.kind, claim };
+}
 
 export function invalidateOnChainEnrichmentCache(): void {
   // On-chain enrichment now comes from the buyer daemon's buyer.state.json.
@@ -355,13 +450,13 @@ export async function buildDiscoverRows(
 
     const stats = peerStats.get(peerId);
     const agentId = peerBlob?.onChainAgentId ?? 0;
-    const stakeUsdc = String(peerBlob?.onChainStakeUsdcMicros ?? 0);
+    const poolStakeAnts = peerBlob?.onChainPoolStakeAnts ?? 0;
     const onChainActiveChannelCount = peerBlob?.onChainChannelCount ?? 0;
     const onChainGhostCount = peerBlob?.onChainGhostCount ?? 0;
     const onChainTotalVolumeUsdc = String(peerBlob?.onChainTotalVolumeUsdcMicros ?? 0);
     const onChainLastSettledAt = peerBlob?.onChainLastSettledAtSec ?? 0;
     const onChainReputationScore = peerBlob?.onChainReputationScore ?? null;
-    const onChainTrustScore = peerBlob?.onChainTrustScore ?? null;
+    const washFlagged = peerBlob?.onChainWashFlagged ?? null;
     const onChainSybilRisk = peerBlob?.onChainSybilRisk ?? null;
     const onChainSybilFlags = peerBlob?.onChainSybilFlags ?? [];
     const netForAgent = agentId > 0 ? networkStats.get(agentId) ?? null : null;
@@ -378,6 +473,7 @@ export async function buildDiscoverRows(
       provider: entry.provider,
       protocol: entry.protocol,
       capabilities: entry.capabilities ?? null,
+      advertisedVerifierIds: normalizeAdvertisedVerifierIds(entry.advertisedVerifierIds),
       peerId,
       peerEvmAddress,
       sellerEvmAddress,
@@ -391,6 +487,10 @@ export async function buildDiscoverRows(
       cachedInputUsdPerMillion: entry.cachedInputUsdPerMillion ?? null,
       minImageUsdPerImage: entry.minImageUsdPerImage ?? null,
       maxImageUsdPerImage: entry.maxImageUsdPerImage ?? null,
+      minVideoUsdPerSecond: entry.minVideoUsdPerSecond ?? null,
+      maxVideoUsdPerSecond: entry.maxVideoUsdPerSecond ?? null,
+      minVideoUsdPerVideo: entry.minVideoUsdPerVideo ?? null,
+      maxVideoUsdPerVideo: entry.maxVideoUsdPerVideo ?? null,
       lifetimeSessions: stats?.totalSessions ?? 0,
       lifetimeRequests: stats?.totalRequests ?? 0,
       lifetimeInputTokens: stats?.totalInputTokens ?? 0,
@@ -399,13 +499,14 @@ export async function buildDiscoverRows(
       lifetimeLastSessionAt: stats?.lastSessionAt ?? null,
       onChainChannelCount: peerBlob?.onChainChannelCount ?? null,
       agentId,
-      stakeUsdc,
+      poolStakeAnts,
       onChainActiveChannelCount,
       onChainGhostCount,
       onChainTotalVolumeUsdc,
       onChainLastSettledAt,
       onChainReputationScore,
-      onChainTrustScore,
+      trust: peerBlob?.trust ?? null,
+      washFlagged,
       effectiveReputationScore: entry.effectiveReputationScore ?? null,
       onChainSybilRisk,
       onChainSybilFlags,

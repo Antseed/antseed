@@ -126,7 +126,7 @@ export async function waitForSystemProxyReady(
 export function notifyWindowsProxyChanged(): void {
   const script = [
     '$sig = \'[DllImport("wininet.dll", SetLastError=true)] public static extern bool InternetSetOption(IntPtr hInternet, int dwOption, IntPtr lpBuffer, int dwBufferLength);\'',
-    '$t = Add-Type -MemberDefinition $sig -Name AntSeedWinInet -Namespace AntSeed -PassThru',
+    '$t = Add-Type -MemberDefinition $sig -Name AntseedWinInet -Namespace Antseed -PassThru',
     '$t::InternetSetOption([IntPtr]::Zero, 39, [IntPtr]::Zero, 0) | Out-Null',
     '$t::InternetSetOption([IntPtr]::Zero, 37, [IntPtr]::Zero, 0) | Out-Null',
   ].join('; ');
@@ -150,7 +150,7 @@ export function clearOsSystemProxy(port = DEFAULT_SYSTEM_PROXY_PORT): void {
     }
   } else if (process.platform === 'win32') {
     try {
-      // Ownership guard: only disable the proxy if it points at the AntSeed proxy.
+      // Ownership guard: only disable the proxy if it points at the Antseed proxy.
       const out = execFileSync('reg', [
         'query', WINDOWS_INTERNET_SETTINGS_KEY,
         '/v', 'ProxyServer',

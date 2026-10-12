@@ -1,0 +1,157 @@
+.well {
+  background: var(--as-soil-0);
+  border-radius: 28px;
+  padding: 20px;
+}
+
+.panel {
+  position: relative;
+  background: #fff;
+  border-radius: 20px;
+  padding: clamp(16px, 2.2vw, 24px);
+  display: flex;
+  flex-direction: column;
+  gap: clamp(14px, 1.8vw, 20px);
+  font-family: var(--as-font-data);
+}
+
+/* ---- epoch clock ---- */
+.bar {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  font-size: clamp(10px, 1.1vw, 12px);
+  line-height: 18px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--as-text-3);
+}
+
+.bar strong {
+  font-weight: 600;
+  color: var(--as-heading);
+}
+
+.epochTrack {
+  flex: 1;
+  height: 4px;
+  border-radius: 999px;
+  background: var(--as-soil-1);
+  overflow: hidden;
+}
+
+.epochFill {
+  display: block;
+  height: 100%;
+  border-radius: 999px;
+  background: var(--as-green);
+}
+
+/* ---- supply ---- */
+.supply {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: clamp(12px, 1.6vw, 18px);
+  border-radius: 16px;
+  background: var(--as-soil-0);
+}
+
+.supplyLabel {
+  display: inline-flex;
+  align-items: center;
+  font-size: clamp(10px, 1.1vw, 12px);
+  line-height: 16px;
+  letter-spacing: 0.1em;
+  text-transform: uppercase;
+  color: var(--as-text-3);
+}
+
+.liveDot {
+  display: inline-block;
+  width: 6px;
+  height: 6px;
+  margin-left: 8px;
+  border-radius: 50%;
+  background: var(--as-green);
+  animation: liveDot 2s ease-in-out infinite;
+}
+
+@keyframes liveDot {
+  0%, 100% { box-shadow: 0 0 0 0 rgba(16, 185, 129, 0.35); }
+  50% { box-shadow: 0 0 0 5px rgba(16, 185, 129, 0); }
+}
+
+.supplyValue {
+  font-family: var(--as-font-display);
+  font-size: clamp(28px, 3.4vw, 40px);
+  line-height: 1.05;
+  font-weight: 600;
+  letter-spacing: -0.5px;
+  color: var(--as-heading);
+  font-variant-numeric: tabular-nums;
+}
+
+.supplyTrack {
+  display: block;
+  height: 10px;
+  margin-top: 6px;
+  border-radius: 999px;
+  background: #fff;
+  overflow: hidden;
+}
+
+.supplyFill {
+  display: block;
+  height: 100%;
+  min-width: 4px;
+  border-radius: 999px;
+  background: var(--as-green);
+  transition: width 0.6s var(--as-ease, ease);
+}
+
+.supplySub {
+  font-size: clamp(11px, 1.15vw, 12px);
+  line-height: 18px;
+  color: var(--as-text-2);
+}
+
+/* ---- three facts ---- */
+.grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 8px;
+}
+
+.term {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  min-width: 0;
+  padding: clamp(10px, 1.2vw, 12px) clamp(10px, 1.3vw, 14px);
+  border-radius: 14px;
+  border: 1px solid var(--as-line);
+}
+
+.termLabel {
+  font-size: clamp(9px, 1vw, 11px);
+  line-height: 14px;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--as-text-3);
+  white-space: nowrap;
+}
+
+.termValue {
+  font-size: clamp(15px, 1.7vw, 19px);
+  line-height: 1.2;
+  font-weight: 600;
+  color: var(--as-heading);
+  font-variant-numeric: tabular-nums;
+  white-space: nowrap;
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .liveDot { animation: none; }
+}

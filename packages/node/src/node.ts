@@ -1,6 +1,9 @@
 import { EventEmitter } from "node:events";
 import { homedir } from "node:os";
 import { join } from "node:path";
+import { IDENTITY_HISTORY_TTL_MS, IdentityHistoryCollector } from './reputation/identity-history.js';
+import { computeTrustScore } from './reputation/trust-score.js';
+import { TrustSignalsClient } from './payments/evm/trust-signals-client.js';
 
 import type { Identity, IdentityStore } from "./p2p/identity.js";
 import { loadOrCreateIdentity } from "./p2p/identity.js";
@@ -12,8 +15,8 @@ import type {
   SerializedHttpRequest,
   SerializedHttpResponse,
 } from "./types/http.js";
-import type { ConnectionConfig } from "./types/connection.js";
 import { MeteringStorage } from "./metering/storage.js";
+import { ResourceOwnershipStore } from "./resources/resource-ownership-store.js";
 import { ReceiptGenerator } from "./metering/receipt-generator.js";
 import {
   SellerSessionTracker,
@@ -72,6 +75,7 @@ import type {
 import type { Router } from "./interfaces/buyer-router.js";
 import type { Prover } from "./interfaces/plugin.js";
 import { NatTraversal } from "./p2p/nat-traversal.js";
+import { getOrOpenOutboundConnection } from "./p2p/outbound-connection.js";
 import { signUtf8 } from "./p2p/identity.js";
 import {
   BalanceManager,
@@ -82,6 +86,8 @@ import {
   FreeUsageClient,
   BuyerFreeUsageManager,
   SellerFreeUsageManager,
+  SellerFreeTierLimiter,
+  type SellerFreeTierConfig,
   StakingClient,
   ChannelStore,
   CHANNEL_KIND,
@@ -90,6 +96,7 @@ import {
 } from "./payments/index.js";
 import { debugLog, debugWarn } from "./utils/debug.js";
 import { parsePublicAddress } from "./discovery/public-address.js";
+import { sanitizePeerDisplayName } from "./discovery/display-name.js";
 import { BuyerPaymentManager, type BuyerPaymentConfig } from "./payments/buyer-payment-manager.js";
 import { BuyerPaymentNegotiator } from "./payments/buyer-payment-negotiator.js";
 import { RpcHealthMonitor, type RpcHealthStatus } from "./payments/rpc-health.js";
@@ -106,13 +113,23 @@ import {
 } from "./buyer-request-handler.js";
 import {
   buildSybilContext,
-  computeOnChainScore,
-  computeOnChainScoreWithRisk,
   computeOnChainSybilRisk,
-  computeOnChainTrust,
   type SybilContext,
-} from "./reputation/on-chain-reputation.js";
+} from "./reputation/sybil-risk.js";
 import { buyerFault } from "./errors.js";
+import {
+  BuyerIdentityContext,
+  DEFAULT_BUYER_IDENTITY,
+  isValidBuyerIdentityName,
+} from "./buyer-identity-context.js";
+
+/** Store the trust score on the peer; leaves the fields untouched when the peer is unscored. */
+function applyTrust(peer: PeerInfo): void {
+  const trust = computeTrustScore(peer);
+  if (!trust) return;
+  peer.trust = trust;
+  peer.onChainReputationScore = trust.score;
+}
 
 export type { Provider, ProviderStreamCallbacks };
 export type { Router };
@@ -125,7 +142,7 @@ export type BuyerChannelSummary = {
   peerId: string;
   seller: string;
   buyer: string;
-  /** Latest in-memory ReserveAuth ceiling. Null when it is not available. */
+  /** Live session reserve or persisted confirmed one-off reserve. Null when unavailable. */
   reserveCeiling: string | null;
   /** Latest cumulative SpendingAuth amount persisted in the channel store. */
   cumulativeSigned: string;
@@ -172,8 +189,14 @@ export interface NodePaymentsConfig {
   usdcAddress?: string;
   /** ERC-8004 IdentityRegistry contract address */
   identityRegistryAddress?: string;
-  /** AntseedStaking contract address */
+  /** AntseedSellerRegistry (or legacy AntseedStaking) contract address: seller → agent id. */
   stakingAddress?: string;
+  /** AntseedSellerPools contract address (buyer trust score: pool staking power). */
+  sellerPoolsAddress?: string;
+  /** AntseedUsageAccounting contract address (buyer trust score: recognized usage per epoch). */
+  usageAccountingAddress?: string;
+  /** AntseedWashTradingRegistry contract address (buyer trust score: proven wash traders). */
+  washTradingRegistryAddress?: string;
   /** Chain ID for EIP-712 domain. Default: 8453 (Base) */
   chainId?: number;
   /** Default maximum USDC per spending auth. Default: 500000 ($0.50) */
@@ -184,12 +207,16 @@ export interface NodePaymentsConfig {
   minBudgetPerRequest?: string;
   /** Minimum unsettled delta (base units) required before idle settle submits a tx. Default: "2000" (~$0.002). */
   minSettleDelta?: string;
+  /** Serve channels whose buyer already requested close on-chain, risking uncollectible work. Default: false. */
+  serveWhileClosePending?: boolean;
   /** Optional seller-side slack for estimate-only reserve preflight checks. Unset disables estimate-only rejection. */
   reserveEstimateOverdraftUsdc?: string;
   /** Maximum USDC the buyer authorizes per single request (base units). Default: "500000" ($0.50). */
   maxPerRequestUsdc?: string;
   /** Maximum total USDC the buyer will reserve in a single SpendingAuth (base units). Default: "10000000" ($10.00). */
   maxReserveAmountUsdc?: string;
+  /** Maximum USDC the buyer pays for one video generation (base units). Default: "5000000" ($5.00). */
+  maxVideoRequestUsdc?: string;
   /** Disable per-service buyer attribution in metadata v2. Default: false. */
   disableMetadataV2Services?: boolean;
   /** Deployed AntseedDepositRelay contract address (gasless deposit sweeps). */
@@ -228,6 +255,8 @@ export interface NodeConfig {
   capabilities?: string[];
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy peers fall back to plaintext). */
   requireSecureTransport?: boolean;
+  /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -250,6 +279,10 @@ export interface NodeConfig {
   dhtOperationTimeoutMs?: number;
   /** Optional seller-side payment runtime wiring. */
   payments?: NodePaymentsConfig;
+  /** Optional per-address request limit for zero-priced seller services. */
+  freeTier?: SellerFreeTierConfig;
+  /** Seller free-usage on-chain record batching. */
+  freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default). */
   relayer?: NodeRelayerConfig;
   /** Optional buyer-side verification storage and sampling settings. */
@@ -285,6 +318,16 @@ export interface BuyerUsageServicePoint {
   requestCount: number;
 }
 
+/** Request options; `buyerIdentity` picks the wallet that pays (default: the node's own). */
+export interface NodeRequestOptions extends RequestExecutionOptions {
+  buyerIdentity?: string;
+}
+
+export interface BuyerIdentitySummary {
+  name: string;
+  address: string;
+}
+
 export interface BuyerUsageTotals {
   totalRequests: number;
   totalInputTokens: string;
@@ -307,7 +350,7 @@ const EMPTY_BUYER_USAGE: BuyerUsageTotals = {
   services: [],
 };
 
-const EXTERNAL_VERIFICATION_RESULT_TTL_MS = 15 * 60_000;
+const EXTERNAL_VERIFICATION_RESULT_TTL_MS = IDENTITY_HISTORY_TTL_MS;
 
 /** How long one relayer gets exclusive first refusal on a sweep offer before
  *  it passes to the next candidate. The relayer replies 'submitted' right
@@ -337,6 +380,7 @@ export class AntseedNode extends EventEmitter {
   private _keepalives = new Map<PeerId, KeepaliveManager>();
   private _nat: NatTraversal | null = null;
   private _metering: MeteringStorage | null = null;
+  private _resourceOwnership: ResourceOwnershipStore | null = null;
   private _receiptGenerator: ReceiptGenerator | null = null;
   private _balanceManager: BalanceManager | null = null;
   private _depositsClient: DepositsClient | null = null;
@@ -344,13 +388,18 @@ export class AntseedNode extends EventEmitter {
   private _freeUsageClient: FreeUsageClient | null = null;
   private _buyerFreeUsageManager: BuyerFreeUsageManager | null = null;
   private _sellerFreeUsageManager: SellerFreeUsageManager | null = null;
+  private _sellerFreeTierLimiter: SellerFreeTierLimiter | null = null;
   private _stakingClient: StakingClient | null = null;
+  /** Batched reader for the on-chain inputs of the buyer trust score. */
+  private _trustSignalsClient: TrustSignalsClient | null = null;
   private _sellerAddressResolver: SellerAddressResolver | null = null;
   private _identityClient: IdentityClient | null = null;
   private _paymentMuxes = new Map<PeerId, PaymentMux>();
   private _verificationMuxes = new Map<PeerId, VerificationMux>();
   private _sweepMuxes = new Map<PeerId, SweepMux>();
   private _peerCapabilities = new Map<PeerId, Set<string>>();
+  /** Buyer identities beyond the default one, by name. */
+  private _buyerIdentities = new Map<string, BuyerIdentityContext>();
   /** Seller-side deposit-sweep relayer (initialized when configured + enabled). */
   private _depositRelayer: DepositRelayer | null = null;
   /** Seller-side request handler (provider matching, execution, load tracking). */
@@ -383,6 +432,7 @@ export class AntseedNode extends EventEmitter {
   private _partialPeerEnrichmentChain: Promise<void> = Promise.resolve();
   /** Serializes non-blocking external claim verification for discovered peers. */
   private _externalVerificationChain: Promise<void> = Promise.resolve();
+  private _identityHistoryCollector: IdentityHistoryCollector | undefined;
   private _externalVerificationCache = new Map<PeerId, {
     claimsKey: string;
     checkedAtMs: number;
@@ -576,6 +626,12 @@ export class AntseedNode extends EventEmitter {
       return;
     }
 
+    const extraIdentities = [...this._buyerIdentities.values()];
+    this._buyerIdentities.clear();
+    await Promise.all(extraIdentities.map((context) => context.stop().catch((err: unknown) => {
+      debugWarn(`[Node] Failed to stop buyer identity "${context.name}": ${err instanceof Error ? err.message : err}`);
+    })));
+
     // Give in-transit NeedAuth messages time to arrive on the DataChannel,
     // then wait for their handlers to finish. This ensures the seller has a
     // valid SpendingAuth for settlement before we close the connection.
@@ -663,6 +719,15 @@ export class AntseedNode extends EventEmitter {
       this._metering = null;
     }
 
+    if (this._resourceOwnership) {
+      try {
+        this._resourceOwnership.close();
+      } catch {
+        // ignore close errors
+      }
+      this._resourceOwnership = null;
+    }
+
     if (this._verificationStorage) {
       try {
         this._verificationStorage.close();
@@ -695,7 +760,9 @@ export class AntseedNode extends EventEmitter {
     this._freeUsageClient = null;
     this._buyerFreeUsageManager = null;
     this._sellerFreeUsageManager = null;
+    this._sellerFreeTierLimiter = null;
     this._stakingClient = null;
+    this._trustSignalsClient = null;
     this._identityClient = null;
     this._sellerAddressResolver = null;
     this._buyerPaymentManager = null;
@@ -800,12 +867,12 @@ export class AntseedNode extends EventEmitter {
   }
 
   private _queuePartialPeerEnrichment(peers: PeerInfo[]): void {
-    if (peers.length === 0 || !this._channelsClient || !this._stakingClient) {
+    if (peers.length === 0 || !this._trustSignalsClient) {
       return;
     }
-    const peersToEnrich = peers.map((peer) => ({ ...peer }));
+    const peersToEnrich = peers;
     this._partialPeerEnrichmentChain = this._partialPeerEnrichmentChain.then(async () => {
-      if (!this._started || !this._channelsClient || !this._stakingClient) {
+      if (!this._started || !this._trustSignalsClient) {
         return;
       }
       await this._enrichPeersWithOnChainStats(peersToEnrich);
@@ -843,6 +910,7 @@ export class AntseedNode extends EventEmitter {
     const queued: PeerInfo[] = [];
     const nowMs = Date.now();
     for (const peer of peers) {
+      if (this._externalVerificationInFlight.size >= 512) break;
       const claimsKey = this._externalVerificationClaimsKey(peer);
       if (!claimsKey) continue;
       const cacheKey = `${peer.peerId}:${claimsKey}`;
@@ -856,7 +924,7 @@ export class AntseedNode extends EventEmitter {
         continue;
       }
       this._externalVerificationInFlight.add(cacheKey);
-      queued.push({ ...peer });
+      queued.push(peer);
     }
     if (queued.length === 0) return;
 
@@ -914,17 +982,19 @@ export class AntseedNode extends EventEmitter {
         domains,
         github,
       };
+      this._identityHistoryCollector ??= new IdentityHistoryCollector();
+      results.identityHistory = await this._identityHistoryCollector.collect(results);
+      if (this._externalVerificationCache.size >= 512) {
+        this._externalVerificationCache.delete(this._externalVerificationCache.keys().next().value!);
+      }
       this._externalVerificationCache.set(peer.peerId, {
         claimsKey,
         checkedAtMs,
         results,
       });
-      const verifiedPeer: PeerInfo = { ...peer, verificationResults: results };
-      const risk = typeof verifiedPeer.onChainSybilRisk === 'number'
-        ? verifiedPeer.onChainSybilRisk
-        : 0;
-      verifiedPeer.onChainReputationScore = computeOnChainScoreWithRisk(verifiedPeer, risk) ?? verifiedPeer.onChainReputationScore;
-      return verifiedPeer;
+      peer.verificationResults = results;
+      applyTrust(peer);
+      return peer;
     } catch (err) {
       debugWarn(`[Node] External verification failed for ${peer.peerId.slice(0, 12)}...: ${err instanceof Error ? err.message : err}`);
       return null;
@@ -955,7 +1025,7 @@ export class AntseedNode extends EventEmitter {
    * enriches its results, so volume / last-settled / ghost counts are
    * available when chain RPC is configured.
    */
-  async findPeer(peerId: string): Promise<PeerInfo | null> {
+  async findPeer(peerId: string, options?: { awaitExternalVerification?: boolean }): Promise<PeerInfo | null> {
     if (!this._peerLookup) {
       throw buyerFault("Node not started or not in buyer mode", "node-not-started");
     }
@@ -985,7 +1055,11 @@ export class AntseedNode extends EventEmitter {
     );
     const peer = this._lookupResultToPeerInfo(best);
     this._attachCachedExternalVerificationResults([peer]);
-    this._queueExternalVerification([peer]);
+    if (options?.awaitExternalVerification && !peer.verificationResults && this._externalVerificationClaimsKey(peer)) {
+      await this._verifyExternalClaimsForPeer(peer);
+    } else {
+      this._queueExternalVerification([peer]);
+    }
     await this._enrichPeersWithOnChainStats([peer]);
     return peer;
   }
@@ -1003,98 +1077,83 @@ export class AntseedNode extends EventEmitter {
    * configured — callers can safely invoke this regardless.
    */
   private async _enrichPeersWithOnChainStats(peers: PeerInfo[]): Promise<void> {
-    if (!this._channelsClient || !this._stakingClient || peers.length === 0) {
+    const client = this._trustSignalsClient;
+    if (!client || peers.length === 0) {
       return;
     }
-    const channelsClient = this._channelsClient;
-    const stakingClient = this._stakingClient;
     const resolver = this._sellerAddressResolver;
-    const DISCOVERY_RPC_CONCURRENCY = 8;
-    // Throttle on-chain reads across rapid discovery cycles. 60s is short
-    // enough that freshness feels real-time in the UI, and long enough that
-    // back-to-back `discoverPeers()` calls don't hammer the RPC endpoint.
-    const ON_CHAIN_STATS_TTL_MS = 60_000;
+    // Every stale peer is read in one batched pass (two Multicall3 round
+    // trips), so the refresh interval bounds RPC usage per discovery cycle
+    // instead of the peer count.
+    const ON_CHAIN_STATS_TTL_MS = 120_000;
     const nowMs = Date.now();
-    const queue = peers.slice();
     const peersWithCompleteStats = new Set<PeerInfo>();
-    const verifyOne = async (p: PeerInfo): Promise<void> => {
-      if (
-        typeof p.onChainStatsFetchedAt === 'number'
-        && nowMs - p.onChainStatsFetchedAt < ON_CHAIN_STATS_TTL_MS
-      ) {
+    const stale: Array<{ peer: PeerInfo; address: string }> = [];
+    for (const p of peers) {
+      if (typeof p.onChainStatsFetchedAt === 'number' && nowMs - p.onChainStatsFetchedAt < ON_CHAIN_STATS_TTL_MS) {
         peersWithCompleteStats.add(p);
-        return;
+        continue;
       }
       try {
-        const evmAddress = resolver
+        const address = resolver
           ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
           : peerIdToAddress(p.peerId);
-        const [agentId, stake, stakedAt] = await Promise.all([
-          stakingClient.getAgentId(evmAddress),
-          stakingClient.getStake(evmAddress).catch(() => null),
-          stakingClient.getStakedAt(evmAddress).catch(() => null),
-        ]);
-        const stats = await channelsClient.getAgentStats(agentId);
-        if (stake === null || stakedAt === null) {
-          return;
-        }
-        p.onChainAgentId = agentId;
-        p.onChainStakeUsdcMicros = stake <= BigInt(Number.MAX_SAFE_INTEGER)
-          ? Number(stake)
-          : Number.MAX_SAFE_INTEGER;
-        p.onChainChannelCount = stats.channelCount;
-        p.onChainGhostCount = stats.ghostCount;
-        // totalVolumeUsdc is base-6 USDC. Clamp to safe-int range before
-        // narrowing to Number — ~9M USDC fits Number.MAX_SAFE_INTEGER.
-        const volumeMicros = stats.totalVolumeUsdc;
-        p.onChainTotalVolumeUsdcMicros = volumeMicros <= BigInt(Number.MAX_SAFE_INTEGER)
-          ? Number(volumeMicros)
-          : Number.MAX_SAFE_INTEGER;
-        p.onChainLastSettledAtSec = stats.lastSettledAt;
-        // Some migrated/facade staking accounts return zero for `stakedAt`,
-        // and transient RPC failures used to be coerced to zero as well. A
-        // zero read must not erase a previously verified positive timestamp.
-        if (typeof stakedAt === 'number' && Number.isFinite(stakedAt) && stakedAt > 0) {
-          p.onChainStakedAtSec = stakedAt;
-        }
-        p.onChainStatsFetchedAt = Date.now();
-        peersWithCompleteStats.add(p);
+        stale.push({ peer: p, address });
       } catch {
-        // Per-peer verification failure — preserve the previous complete
-        // snapshot, or leave a newly discovered peer unenriched.
+        // Unresolvable seller address: leave the previous snapshot in place.
       }
-    };
-    const workers: Array<Promise<void>> = [];
-    for (let i = 0; i < Math.min(DISCOVERY_RPC_CONCURRENCY, queue.length); i++) {
-      workers.push((async () => {
-        for (;;) {
-          const next = queue.shift();
-          if (!next) return;
-          await verifyOne(next);
-        }
-      })());
     }
-    await Promise.all(workers);
-
-    this._applyTrustAndSybil(peers, peersWithCompleteStats);
+    if (stale.length === 0) {
+      this._applyTrust(peers, peersWithCompleteStats);
+      return;
+    }
+    let signals: Awaited<ReturnType<TrustSignalsClient['read']>>;
+    try {
+      signals = await client.read(stale.map((entry) => entry.address));
+    } catch (err) {
+      debugWarn(`[Node] On-chain trust signal read failed: ${err instanceof Error ? err.message : err}`);
+      this._applyTrust(peers, peersWithCompleteStats);
+      return;
+    }
+    for (const { peer: p, address } of stale) {
+      const read = signals.get(address);
+      // A peer without an agent id (or a failed batch entry) keeps its
+      // previous complete snapshot, or stays unenriched when newly discovered.
+      if (!read) continue;
+      p.onChainAgentId = read.agentId;
+      if (read.channelCount !== undefined) p.onChainChannelCount = read.channelCount;
+      if (read.ghostCount !== undefined) p.onChainGhostCount = read.ghostCount;
+      if (read.totalVolumeUsdcMicros !== undefined) p.onChainTotalVolumeUsdcMicros = read.totalVolumeUsdcMicros;
+      if (read.lastSettledAtSec !== undefined) p.onChainLastSettledAtSec = read.lastSettledAtSec;
+      if (read.usageEpoch !== undefined) {
+        p.onChainUsageEpoch = read.usageEpoch;
+        p.onChainUsageShareBps = read.usageShareBps;
+        p.onChainUsageLastEpochUsdcMicros = read.usageLastEpochUsdcMicros;
+      }
+      if (read.poolStakeAnts !== undefined) p.onChainPoolStakeAnts = read.poolStakeAnts;
+      if (read.poolPowerShareBps !== undefined) p.onChainPoolPowerShareBps = read.poolPowerShareBps;
+      if (read.washFlagged !== undefined) p.onChainWashFlagged = read.washFlagged;
+      if (read.washShareBps !== undefined) p.onChainWashShareBps = read.washShareBps;
+      p.onChainStatsFetchedAt = Date.now();
+      peersWithCompleteStats.add(p);
+    }
+    this._applyTrust(peers, peersWithCompleteStats);
   }
 
-  private _applyTrustAndSybil(peers: PeerInfo[], peersToUpdate?: ReadonlySet<PeerInfo>): void {
+  /** Recompute the trust score and the display-only sybil heuristic. */
+  private _applyTrust(peers: PeerInfo[], peersToUpdate?: ReadonlySet<PeerInfo>): void {
     if (peers.length === 0) return;
     const ctx: SybilContext | undefined = peers.length >= 2
       ? buildSybilContext(peers)
       : undefined;
     for (const p of peers) {
       if (peersToUpdate && !peersToUpdate.has(p)) continue;
-      const trust = computeOnChainTrust(p);
-      if (trust === null) continue;
-      p.onChainTrustScore = trust;
-      if (ctx) {
+      if (ctx && typeof p.onChainChannelCount === 'number') {
         const sybil = computeOnChainSybilRisk(p, ctx);
         p.onChainSybilRisk = sybil.risk;
         p.onChainSybilFlags = sybil.flags;
       }
-      p.onChainReputationScore = computeOnChainScore(p, ctx) ?? undefined;
+      applyTrust(p);
     }
   }
 
@@ -1102,7 +1161,12 @@ export class AntseedNode extends EventEmitter {
    * Eagerly open a connection to a peer and wire up the mux.
    * Subsequent sendRequest / sendRequestStream calls will reuse this connection.
    */
-  async connectToPeer(peer: PeerInfo): Promise<void> {
+  async connectToPeer(peer: PeerInfo, buyerIdentity?: string): Promise<void> {
+    const context = this._buyerContext(buyerIdentity);
+    if (context) {
+      await context.connect(peer);
+      return;
+    }
     const conn = await this._getOrCreateConnection(peer);
     this._getOrCreateMux(peer.peerId, conn);
     const negotiator = this._buyerNegotiator;
@@ -1127,9 +1191,11 @@ export class AntseedNode extends EventEmitter {
    */
   async requestChannelClose(
     sellerPeerId: string,
-    opts: { includeAuth?: boolean; timeoutMs?: number } = {},
+    opts: { includeAuth?: boolean; timeoutMs?: number; buyerIdentity?: string } = {},
   ): Promise<CloseChannelResultPayload> {
-    const negotiator = this._buyerNegotiator;
+    const { buyerIdentity, ...closeOptions } = opts;
+    const context = this._buyerContext(buyerIdentity);
+    const negotiator = context ? context.negotiator : this._buyerNegotiator;
     if (!negotiator) {
       throw new Error('Buyer payments are not configured on this node');
     }
@@ -1138,21 +1204,7 @@ export class AntseedNode extends EventEmitter {
     }
 
     const peerId = sellerPeerId as PeerId;
-    let conn = this._connectionManager.getConnection(peerId);
-    if (!conn || (conn.state !== ConnectionState.Open && conn.state !== ConnectionState.Authenticated)) {
-      const peer = await this.findPeer(sellerPeerId);
-      if (!peer) {
-        throw new Error(
-          `Seller ${sellerPeerId.slice(0, 12)}... is not connected and could not be found on the network. ` +
-          `A cooperative close needs the seller online — otherwise use the on-chain request-close flow.`,
-        );
-      }
-      await this.connectToPeer(peer);
-      conn = this._connectionManager.getConnection(peer.peerId);
-      if (!conn) {
-        throw new Error(`Failed to establish a connection to seller ${sellerPeerId.slice(0, 12)}...`);
-      }
-    }
+    const conn = await this._sellerConnectionForClose(peerId, context);
 
     // A seller that predates this feature drops the 0x59 frame silently, so
     // without this the buyer would wait out the full 60s response timeout and
@@ -1171,7 +1223,33 @@ export class AntseedNode extends EventEmitter {
       );
     }
 
-    return negotiator.requestChannelClose(peerId, conn, opts);
+    return negotiator.requestChannelClose(peerId, conn, closeOptions);
+  }
+
+  /** The paying identity's open connection to a seller, reconnecting when needed. */
+  private async _sellerConnectionForClose(peerId: PeerId, context: BuyerIdentityContext | null): Promise<PeerConnection> {
+    if (context) {
+      const live = context.liveConnection(peerId);
+      if (live) return live;
+    } else {
+      const live = this._connectionManager!.getConnection(peerId);
+      if (live && (live.state === ConnectionState.Open || live.state === ConnectionState.Authenticated)) return live;
+    }
+
+    const peer = await this.findPeer(peerId);
+    if (!peer) {
+      throw new Error(
+        `Seller ${peerId.slice(0, 12)}... is not connected and could not be found on the network. ` +
+        `A cooperative close needs the seller online — otherwise use the on-chain request-close flow.`,
+      );
+    }
+    if (context) return context.connect(peer);
+    await this.connectToPeer(peer);
+    const conn = this._connectionManager!.getConnection(peer.peerId);
+    if (!conn) {
+      throw new Error(`Failed to establish a connection to seller ${peerId.slice(0, 12)}...`);
+    }
+    return conn;
   }
 
   /**
@@ -1179,7 +1257,7 @@ export class AntseedNode extends EventEmitter {
    * Combines channel store data (authoritative payment/session info) with
    * metering events when available.
    */
-  getMeteringStatsByPeer(sellerPeerId: string): {
+  getMeteringStatsByPeer(sellerPeerId: string, buyerIdentity?: string): {
     // Current session
     totalRequests: number;
     inputTokens: number;
@@ -1199,7 +1277,7 @@ export class AntseedNode extends EventEmitter {
     lifetimeFirstSessionAt: number | null;
     lifetimeLastSessionAt: number | null;
   } | null {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+    const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     const channel = (buyerAddress != null)
       ? (
         this._channelStore?.getActiveChannelByPeerAndBuyer(sellerPeerId, CHANNEL_ROLE.BUYER, buyerAddress)
@@ -1216,7 +1294,7 @@ export class AntseedNode extends EventEmitter {
       : this._channelStore?.getTotalsByPeer(sellerPeerId, CHANNEL_ROLE.BUYER)
       ?? null;
 
-    const liveTotals = this._buyerPaymentManager?.getResponseTokenTotals(sellerPeerId);
+    const liveTotals = paymentManager?.getResponseTokenTotals(sellerPeerId);
     const inputTokens = (liveTotals != null) ? liveTotals.input
       : (channel != null) ? Number(channel.tokensDelivered || '0')
       : 0;
@@ -1229,7 +1307,7 @@ export class AntseedNode extends EventEmitter {
       inputTokens,
       outputTokens,
       totalTokens: inputTokens + outputTokens,
-      reservedUsdc: this._buyerPaymentManager?.getReserveCeiling(sellerPeerId)?.toString() ?? null,
+      reservedUsdc: paymentManager?.getReserveCeiling(sellerPeerId)?.toString() ?? null,
       consumedUsdc: channel?.authMax ?? null,
       channelStatus: channel?.status ?? null,
       reservedAt: channel?.reservedAt ?? null,
@@ -1249,16 +1327,19 @@ export class AntseedNode extends EventEmitter {
    * Combines the persistent ChannelStore (session metadata + cumulative signed
    * amount) with the in-memory reserve ceiling tracked by BuyerPaymentManager.
    *
-   * The ReserveAuth ceiling lives only in the payment manager. When it is not
-   * available, return null rather than substituting the unrelated cumulative
-   * SpendingAuth amount stored in authMax.
+   * One-off channels use their own persisted confirmed reserve, never the
+   * seller's session reserve. Unavailable reserves are null rather than the
+   * unrelated cumulative SpendingAuth amount stored in authMax.
    */
-  getActiveBuyerChannels(): BuyerChannelSummary[] {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+  getActiveBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
+    const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getActiveChannelsByBuyer(CHANNEL_ROLE.BUYER, buyerAddress);
+    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress)
+      .filter((channel) => channel.status === CHANNEL_STATUS.ACTIVE);
     return stored.map((c) => {
-      const liveReserve = this._buyerPaymentManager?.getReserveCeiling(c.peerId);
+      const liveReserve = c.channelKind === CHANNEL_KIND.ONE_OFF
+        ? BigInt(c.confirmedReserveAmount ?? '0')
+        : paymentManager?.getReserveCeiling(c.peerId);
       return {
         channelId: c.sessionId,
         peerId: c.peerId,
@@ -1281,13 +1362,15 @@ export class AntseedNode extends EventEmitter {
   }
 
   /** All buyer channels (any local status), used for history views. */
-  getAllBuyerChannels(): BuyerChannelSummary[] {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+  getAllBuyerChannels(buyerIdentity?: string): BuyerChannelSummary[] {
+    const { address: buyerAddress, paymentManager } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return [];
-    const stored = this._channelStore.getAllChannelsByBuyer('buyer', buyerAddress);
+    const stored = this._channelStore.getBuyerPaymentChannels(buyerAddress);
     return stored.map((c) => {
       const liveReserve = c.status === CHANNEL_STATUS.ACTIVE
-        ? this._buyerPaymentManager?.getReserveCeiling(c.peerId)
+        ? c.channelKind === CHANNEL_KIND.ONE_OFF
+          ? BigInt(c.confirmedReserveAmount ?? '0')
+          : paymentManager?.getReserveCeiling(c.peerId)
         : null;
       return {
         channelId: c.sessionId,
@@ -1316,8 +1399,8 @@ export class AntseedNode extends EventEmitter {
    * columns are semantically overloaded vs seller rows. Set in
    * buyer-payment-manager.recordAndPersistTokens.
    */
-  getBuyerUsageTotals(): BuyerUsageTotals {
-    const buyerAddress = this._identity?.wallet.address ?? null;
+  getBuyerUsageTotals(buyerIdentity?: string): BuyerUsageTotals {
+    const { address: buyerAddress } = this._buyerAccount(buyerIdentity);
     if (!buyerAddress || !this._channelStore) return EMPTY_BUYER_USAGE;
     // Paid channels plus free-usage sessions — both carry real traffic and
     // the desktop usage tiles/float must reflect the sum.
@@ -1360,6 +1443,9 @@ export class AntseedNode extends EventEmitter {
       inputTokens: s.inputTokens,
       cachedInputTokens: s.cachedInputTokens,
       outputTokens: s.outputTokens,
+      outputImages: s.outputImages,
+      videoGenerations: s.videoGenerations,
+      videoSeconds: s.videoSeconds,
       requestCount: s.requestCount,
     }));
     return {
@@ -1377,20 +1463,151 @@ export class AntseedNode extends EventEmitter {
   async sendRequest(
     peer: PeerInfo,
     req: SerializedHttpRequest,
-    options?: RequestExecutionOptions,
+    options?: NodeRequestOptions,
   ): Promise<SerializedHttpResponse> {
-    if (!this._buyerHandler) throw buyerFault("Node not started or not in buyer mode", "node-not-started");
-    return this._buyerHandler.sendRequest(peer, req, undefined, options);
+    return this._dispatchBuyerRequest(peer, req, undefined, options);
   }
 
   async sendRequestStream(
     peer: PeerInfo,
     req: SerializedHttpRequest,
     callbacks: RequestStreamCallbacks,
-    options?: RequestExecutionOptions,
+    options?: NodeRequestOptions,
+  ): Promise<SerializedHttpResponse> {
+    return this._dispatchBuyerRequest(peer, req, callbacks, options);
+  }
+
+  private _dispatchBuyerRequest(
+    peer: PeerInfo,
+    req: SerializedHttpRequest,
+    callbacks: RequestStreamCallbacks | undefined,
+    options: NodeRequestOptions | undefined,
   ): Promise<SerializedHttpResponse> {
     if (!this._buyerHandler) throw buyerFault("Node not started or not in buyer mode", "node-not-started");
-    return this._buyerHandler.sendRequest(peer, req, callbacks, options);
+    const { buyerIdentity, ...executionOptions } = options ?? {};
+    const context = this._buyerContext(buyerIdentity);
+    return context
+      ? context.sendRequest(peer, req, callbacks, executionOptions)
+      : this._buyerHandler.sendRequest(peer, req, callbacks, executionOptions);
+  }
+
+  /** Buyer payment settings shared by every identity; null when payments are off. */
+  private _buyerPaymentConfig(paymentsDir: string): BuyerPaymentConfig | null {
+    const payments = this._config.payments;
+    if (!payments?.enabled || !payments.rpcUrl || !payments.depositsAddress || !payments.channelsAddress || !payments.usdcAddress) {
+      return null;
+    }
+    return {
+      rpcUrl: payments.rpcUrl,
+      ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
+      depositsContractAddress: payments.depositsAddress,
+      channelsContractAddress: payments.channelsAddress,
+      usdcAddress: payments.usdcAddress,
+      identityRegistryAddress: payments.identityRegistryAddress ?? '',
+      chainId: payments.chainId ?? 8453,
+      defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
+      maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
+      maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
+      maxVideoRequestUsdc: BigInt(payments.maxVideoRequestUsdc ?? "5000000"),  // $5.00 default per video
+      disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+      dataDir: paymentsDir,
+    };
+  }
+
+  /**
+   * Let this buyer node also pay as another wallet. The identity reuses the
+   * node's discovery, routing and chain clients; sellers see it as its own
+   * buyer with its own connections, channels and deposits. Select it per
+   * request with `buyerIdentity`.
+   */
+  async addBuyerIdentity(name: string, identity: Identity): Promise<BuyerIdentitySummary> {
+    if (!this._started || !this._buyerHandler || !this._identity) {
+      throw new Error("Buyer identities can only be added to a started buyer node");
+    }
+    if (!isValidBuyerIdentityName(name) || name === DEFAULT_BUYER_IDENTITY) {
+      throw new Error(`Invalid buyer identity name "${name}"`);
+    }
+    if (this._buyerIdentities.has(name)) {
+      throw new Error(`Buyer identity "${name}" is already loaded`);
+    }
+    const address = identity.wallet.address.toLowerCase();
+    if (this.buyerIdentities().some((entry) => entry.address.toLowerCase() === address)) {
+      throw new Error(`Wallet ${identity.wallet.address} is already loaded as another buyer identity`);
+    }
+
+    const payments = this._config.payments;
+    const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
+    const context = await BuyerIdentityContext.create({
+      name,
+      identity,
+      paymentConfig: this._buyerPaymentConfig(join(dataDir, "payments")),
+      freeUsage: this._freeUsageClient && payments?.freeUsageAddress
+        ? {
+          chainId: payments.chainId ?? 8453,
+          freeUsageContractAddress: payments.freeUsageAddress,
+          defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
+          disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
+        }
+        : null,
+      requestHandler: {
+        requestTimeoutMs: this._config.requestTimeoutMs,
+        maxStreamBufferBytes: this._config.maxStreamBufferBytes,
+        maxStreamDurationMs: this._config.maxStreamDurationMs,
+      },
+      maxUploadBodyBytes: this._config.maxUploadBodyBytes,
+      requireSecureTransport: this._config.requireSecureTransport,
+      shared: {
+        channelStore: this._channelStore,
+        depositsClient: this._depositsClient,
+        channelsClient: this._channelsClient,
+        sellerAddressResolver: this._sellerAddressResolver,
+        verificationStorage: this._verificationStorage,
+        verificationSampler: this._verificationSampler,
+        peerCapabilities: this._peerCapabilities,
+        isChainReachable: () => this._rpcHealth?.reachable ?? true,
+        onChainReadFailure: () => this._rpcHealth?.reportFailure(),
+      },
+      emit: (event, payload) => { this.emit(event, payload); },
+    });
+    this._buyerIdentities.set(name, context);
+    debugLog(`[Node] Buyer identity "${name}" loaded (wallet=${identity.wallet.address.slice(0, 10)}...)`);
+    return { name, address: identity.wallet.address };
+  }
+
+  /** Close an identity's connections, letting sellers settle what they already served. */
+  async removeBuyerIdentity(name: string): Promise<void> {
+    const context = this._buyerIdentities.get(name);
+    if (!context) return;
+    this._buyerIdentities.delete(name);
+    await context.stop();
+  }
+
+  hasBuyerIdentity(name: string): boolean {
+    return name === DEFAULT_BUYER_IDENTITY ? this._identity !== null : this._buyerIdentities.has(name);
+  }
+
+  /** Every identity this node can pay as, the default one first. */
+  buyerIdentities(): BuyerIdentitySummary[] {
+    const identities: BuyerIdentitySummary[] = [];
+    if (this._identity) identities.push({ name: DEFAULT_BUYER_IDENTITY, address: this._identity.wallet.address });
+    for (const context of this._buyerIdentities.values()) {
+      identities.push({ name: context.name, address: context.address });
+    }
+    return identities;
+  }
+
+  private _buyerContext(name: string | undefined): BuyerIdentityContext | null {
+    if (name === undefined || name === DEFAULT_BUYER_IDENTITY) return null;
+    const context = this._buyerIdentities.get(name);
+    if (!context) throw buyerFault(`Unknown buyer identity "${name}"`, "invalid-request");
+    return context;
+  }
+
+  /** Wallet address and payment manager behind an identity name. */
+  private _buyerAccount(name: string | undefined): { address: string | null; paymentManager: BuyerPaymentManager | null } {
+    const context = this._buyerContext(name);
+    if (context) return { address: context.address, paymentManager: context.paymentManager };
+    return { address: this._identity?.wallet.address ?? null, paymentManager: this._buyerPaymentManager };
   }
 
   private _createDHTConfig(port: number, bootstrapNodes: Array<{ host: string; port: number }>): DHTNodeConfig {
@@ -1476,7 +1693,10 @@ export class AntseedNode extends EventEmitter {
         this._muxes.get(peerId)?.abortPendingUploads();
         this._muxes.delete(peerId);
         this._paymentMuxes.delete(peerId);
-        this._peerCapabilities.delete(peerId);
+        // Other buyer identities share this map; keep it while one is still connected.
+        if (![...this._buyerIdentities.values()].some((context) => context.liveConnection(peerId))) {
+          this._peerCapabilities.delete(peerId);
+        }
         this._verificationMuxes.get(peerId)?.close();
         this._verificationMuxes.delete(peerId);
         this._sweepMuxes.delete(peerId);
@@ -1533,6 +1753,11 @@ export class AntseedNode extends EventEmitter {
     } catch (err) {
       debugWarn(`[Node] Metering storage unavailable: ${err instanceof Error ? err.message : err}`);
     }
+    try {
+      this._resourceOwnership = new ResourceOwnershipStore(join(dataDir, "metering.db"));
+    } catch (err) {
+      debugWarn(`[Node] Resource ownership storage unavailable; video services will be refused: ${err instanceof Error ? err.message : err}`);
+    }
 
     if (this._metering) {
       this._receiptGenerator = new ReceiptGenerator({
@@ -1553,6 +1778,9 @@ export class AntseedNode extends EventEmitter {
       },
     );
 
+    this._sellerFreeTierLimiter = this._config.freeTier
+      ? new SellerFreeTierLimiter(this._config.freeTier, this._metering)
+      : null;
     await this._initializePayments(dataDir);
     this._warnIfFreeUsageMeteringUnavailable();
 
@@ -1577,6 +1805,7 @@ export class AntseedNode extends EventEmitter {
     // Create ConnectionManager and start listening
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
+      ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
     });
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {
@@ -1666,6 +1895,14 @@ export class AntseedNode extends EventEmitter {
       );
     }
 
+    const sellerFreeTierLimiter = this._sellerFreeTierLimiter;
+    if (sellerFreeTierLimiter) {
+      debugLog(`[Node] Seller free tier enabled: ${sellerFreeTierLimiter.describe()}`);
+      if (!this._metering) {
+        debugWarn('[Node] Seller free-tier limits are using in-memory accounting because metering storage is unavailable; counters reset on restart.');
+      }
+    }
+
     // Create seller request handler
     this._sellerHandler = new SellerRequestHandler({
       identity,
@@ -1673,10 +1910,12 @@ export class AntseedNode extends EventEmitter {
       provers: this._provers,
       sellerPaymentManager: this._sellerPaymentManager,
       sellerFreeUsageManager: this._sellerFreeUsageManager,
+      sellerFreeTierLimiter,
       sessionTracker: this._sessionTracker,
       channelsClient: this._channelsClient,
       announcer: this._announcer,
       maxUploadBodyBytes: this._config.maxUploadBodyBytes,
+      resourceOwnershipStore: this._resourceOwnership,
       ...(this._config.payments?.reserveEstimateOverdraftUsdc != null
         ? { reserveEstimateOverdraftUsdc: BigInt(this._config.payments.reserveEstimateOverdraftUsdc) }
         : {}),
@@ -1744,24 +1983,11 @@ export class AntseedNode extends EventEmitter {
         }
       }
       if (this._channelStore) {
-        const buyerPaymentConfig: BuyerPaymentConfig = {
-          rpcUrl: payments.rpcUrl,
-          ...(payments.fallbackRpcUrls ? { fallbackRpcUrls: payments.fallbackRpcUrls } : {}),
-          depositsContractAddress: payments.depositsAddress,
-          channelsContractAddress: payments.channelsAddress,
-          usdcAddress: payments.usdcAddress,
-          identityRegistryAddress: payments.identityRegistryAddress ?? '',
-          chainId: payments.chainId ?? 8453,
-          defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900, // 15 min — seller must call reserve() promptly
-          maxPerRequestUsdc: BigInt(payments.maxPerRequestUsdc ?? "500000"),  // $0.50 default — covers most LLM requests
-          maxReserveAmountUsdc: BigInt(payments.maxReserveAmountUsdc ?? "1000000"),  // $1.00 default per session (matches FIRST_SIGN_CAP)
-          disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
-          dataDir: paymentsDir,
-        };
+        const buyerPaymentConfig = this._buyerPaymentConfig(paymentsDir)!;
         this._buyerPaymentManager = new BuyerPaymentManager(identity, buyerPaymentConfig, this._channelStore, this._sellerAddressResolver ?? undefined);
         // Re-emit per-request spend so callers can attribute it to whatever
         // issued the request — the node only knows the seller and requestId.
-        this._buyerPaymentManager.setSpendListener((event) => this.emit('payment:spend', event));
+        this._buyerPaymentManager.setSpendListener((event) => this.emit('payment:spend', { ...event, buyerIdentity: DEFAULT_BUYER_IDENTITY }));
         debugLog(`[Node] Buyer payment manager initialized (wallet=${identity.wallet.address.slice(0, 10)}... chainId=${buyerPaymentConfig.chainId} deposits=${buyerPaymentConfig.depositsContractAddress.slice(0, 10)}...)`);
 
         // Create negotiator that wraps the BPM with 402 handling and per-request auth
@@ -1884,7 +2110,7 @@ export class AntseedNode extends EventEmitter {
     if (this._sellerFreeUsageManager) {
       const freeUsage = this._sellerFreeUsageManager;
       paymentMux.onFreeUsageOpen((payload) => {
-        freeUsage.handleOpen(buyerPeerId, payload, paymentMux);
+        freeUsage.handleOpen(buyerPeerId, payload, paymentMux, conn.remoteAddress ?? null);
       });
       paymentMux.onFreeUsageAuth((payload) => {
         freeUsage.handleAuth(buyerPeerId, payload, paymentMux);
@@ -2014,20 +2240,21 @@ export class AntseedNode extends EventEmitter {
           ...(fallbackRpcUrls ? { fallbackRpcUrls } : {}),
           freeUsageContractAddress: payments.freeUsageAddress,
           chainId: payments.chainId ?? 8453,
+          ...(this._config.freeUsage ?? {}),
         };
         this._buyerFreeUsageManager = new BuyerFreeUsageManager(
           this._identity,
           {
             chainId: freeUsageConfig.chainId,
             freeUsageContractAddress: freeUsageConfig.freeUsageContractAddress,
-            defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 900,
+            defaultAuthDurationSecs: payments.defaultAuthDurationSecs ?? 3600,
             disableMetadataV2Services: payments.disableMetadataV2Services ?? false,
           },
           this._sellerAddressResolver ?? undefined,
           this._channelStore ?? undefined,
         );
         if (this._config.role === 'seller') {
-          this._sellerFreeUsageManager = new SellerFreeUsageManager(this._identity, freeUsageConfig);
+          this._sellerFreeUsageManager = new SellerFreeUsageManager(this._identity, freeUsageConfig, this._sellerFreeTierLimiter);
         }
       }
     }
@@ -2042,6 +2269,16 @@ export class AntseedNode extends EventEmitter {
         ...(payments.chainId ? { evmChainId: payments.chainId } : {}),
       });
       debugLog(`[Node] StakingClient initialized (contract=${payments.stakingAddress.slice(0, 10)}...)`);
+    }
+    if (this._channelsClient && payments.stakingAddress && payments.channelsAddress) {
+      this._trustSignalsClient = new TrustSignalsClient(this._channelsClient.provider, {
+        sellerRegistry: payments.stakingAddress,
+        channels: payments.channelsAddress,
+        ...(payments.sellerPoolsAddress ? { sellerPools: payments.sellerPoolsAddress } : {}),
+        ...(payments.usageAccountingAddress ? { usageAccounting: payments.usageAccountingAddress } : {}),
+        ...(payments.washTradingRegistryAddress ? { washTradingRegistry: payments.washTradingRegistryAddress } : {}),
+      });
+      debugLog(`[Node] TrustSignalsClient initialized (pools=${Boolean(payments.sellerPoolsAddress)} usage=${Boolean(payments.usageAccountingAddress)} wash=${Boolean(payments.washTradingRegistryAddress)})`);
     }
 
     // Initialize IdentityClient (ERC-8004 IdentityRegistry)
@@ -2066,6 +2303,9 @@ export class AntseedNode extends EventEmitter {
         dataDir: paymentsDir,
         ...(payments.minBudgetPerRequest ? { minBudgetPerRequest: payments.minBudgetPerRequest } : {}),
         ...(payments.minSettleDelta ? { minSettleDelta: payments.minSettleDelta } : {}),
+        ...(payments.serveWhileClosePending !== undefined
+          ? { serveWhileClosePending: payments.serveWhileClosePending }
+          : {}),
       };
       this._sellerPaymentManager = new SellerPaymentManager(this._identity, sellerConfig, this._channelStore);
       debugLog(`[Node] SellerPaymentManager initialized`);
@@ -2150,88 +2390,12 @@ export class AntseedNode extends EventEmitter {
     if (!this._connectionManager || !this._identity) {
       throw buyerFault("Node not started", "node-not-started");
     }
-
-    const existing = this._connectionManager.getConnection(peer.peerId);
-    const peerCapabilities = new Set(peer.capabilities ?? peer.metadata?.capabilities ?? []);
-    this._peerCapabilities.set(peer.peerId, peerCapabilities);
-    let endpointChanged = false;
-
-    // Check if the peer's endpoint has changed (e.g. IP rotation).
-    // Only applies to outbound connections where we registered the endpoint;
-    // inbound connections (peer connected to us) have no registered endpoint
-    // and are not subject to pinned-peer routing.
-    if (existing && peer.publicAddress) {
-      const currentEndpoint = ConnectionManager.resolvePeerEndpoint(peer.peerId);
-      const { host: newHost, port: newPort } = parsePeerAddress(peer.publicAddress);
-      if (currentEndpoint && (currentEndpoint.host !== newHost || currentEndpoint.port !== newPort)) {
-        debugLog(`[Node] Peer ${peer.peerId.slice(0, 12)}... endpoint changed from ${currentEndpoint.host}:${currentEndpoint.port} to ${newHost}:${newPort}, reconnecting`);
-        existing.close();
-        this._peerCapabilities.set(peer.peerId, peerCapabilities);
-        endpointChanged = true;
-      }
-    }
-
-    if (
-      existing && !endpointChanged &&
-      existing.state !== ConnectionState.Closed &&
-      existing.state !== ConnectionState.Failed
-    ) {
-      debugLog(`[Node] Reusing existing connection to ${peer.peerId.slice(0, 12)}... (state=${existing.state})`);
-      // If still connecting, wait for it to reach Open or Authenticated
-      if (existing.state === ConnectionState.Connecting) {
-        debugLog(`[Node] Waiting for connection to open...`);
-        await new Promise<void>((resolve, reject) => {
-          const onState = (state: ConnectionState): void => {
-            if (state === ConnectionState.Open || state === ConnectionState.Authenticated) {
-              existing.off("stateChange", onState);
-              resolve();
-            } else if (state === ConnectionState.Failed || state === ConnectionState.Closed) {
-              existing.off("stateChange", onState);
-              reject(new Error(`Connection to ${peer.peerId} failed`));
-            }
-          };
-          existing.on("stateChange", onState);
-        });
-      }
-      return existing;
-    }
-
-    // Register the peer endpoint so ConnectionManager can resolve it
-    if (peer.publicAddress) {
-      const { host, port } = parsePeerAddress(peer.publicAddress);
-      this._connectionManager.registerPeerEndpoint(peer.peerId, { host, port });
-      debugLog(`[Node] Connecting to ${peer.peerId.slice(0, 12)}... at ${host}:${port}`);
-    } else {
-      debugWarn(`[Node] Peer ${peer.peerId.slice(0, 12)}... has no public address`);
-    }
-
-    const connConfig: ConnectionConfig = {
-      remotePeerId: peer.peerId,
-      isInitiator: true,
-      remoteCapabilities: [...peerCapabilities],
-    };
-
-    const conn = this._connectionManager.createConnection(connConfig);
-
-    // Wait for connection to open
-    await new Promise<void>((resolve, reject) => {
-      const onState = (state: ConnectionState): void => {
-        debugLog(`[Node] Connection state: ${state}`);
-        if (state === ConnectionState.Open || state === ConnectionState.Authenticated) {
-          conn.off("stateChange", onState);
-          resolve();
-        } else if (state === ConnectionState.Failed || state === ConnectionState.Closed) {
-          conn.off("stateChange", onState);
-          reject(new Error(`Connection to ${peer.peerId} failed`));
-        }
-      };
-      conn.on("stateChange", onState);
-    });
-
-    debugLog(`[Node] Connected to ${peer.peerId.slice(0, 12)}... via ${conn.transportDescription}`);
-    this._peerCapabilities.set(peer.peerId, peerCapabilities);
-    this._wireConnection(conn, peer.peerId);
-    return conn;
+    return getOrOpenOutboundConnection(
+      this._connectionManager,
+      peer,
+      this._peerCapabilities,
+      (conn) => this._wireConnection(conn, peer.peerId),
+    );
   }
 
   private _getOrCreateMux(peerId: PeerId, conn: PeerConnection): ProxyMux {
@@ -2392,6 +2556,7 @@ export class AntseedNode extends EventEmitter {
   }
 
   private _lookupResultToPeerInfo(result: LookupResult): PeerInfo {
+    const displayName = sanitizePeerDisplayName(result.metadata.displayName);
     const providers = result.metadata.providers.map((p) => p.provider);
     const firstProvider = result.metadata.providers[0];
     const providerPricingEntries: NonNullable<PeerInfo["providerPricing"]> = {};
@@ -2483,7 +2648,7 @@ export class AntseedNode extends EventEmitter {
 
     return {
       peerId: result.metadata.peerId,
-      displayName: result.metadata.displayName,
+      displayName,
       // `metadata.timestamp` is signed by the seller and can reflect the
       // seller's wall clock, not this buyer's. Freshness validation in
       // PeerLookup already handles seller/buyer clock skew using the HTTP Date
@@ -2543,11 +2708,6 @@ export class AntseedNode extends EventEmitter {
       && pricing.outputUsdPerMillion === 0
       && cachedPrice === 0;
   }
-}
-
-function parsePeerAddress(address: string): { host: string; port: number } {
-  const parts = address.split(":");
-  return { host: parts[0]!, port: parseInt(parts[1] ?? "6882", 10) };
 }
 
 /**

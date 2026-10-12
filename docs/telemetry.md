@@ -1,6 +1,6 @@
-# VPR Desktop Telemetry
+# AI VPN Desktop Telemetry
 
-The AntSeed VPR desktop app collects privacy-conscious product telemetry to
+The Antseed AI VPN desktop app collects privacy-conscious product telemetry to
 understand the activation funnel (first open → setup → deposit → first chat),
 network readiness, model selection, and app reliability. Events are associated
 with the buyer's public on-chain address. This document lists every event and
@@ -119,7 +119,7 @@ human-readable logs. Model pricing is classified locally from offers that pass
 the buyer's routing price policy; exact prices never enter telemetry.
 
 User actions are explicit semantic signals from maintained controller paths.
-VPR does not enable PostHog autocapture and does not record arbitrary clicks,
+The app does not enable PostHog autocapture and does not record arbitrary clicks,
 button labels, typed values, scrolls, hovers, URLs, clipboard contents, or view
 names outside the fixed documented surface enum. The main process validates
 the action and surface, calculates elapsed time, and marks only the first valid
@@ -129,7 +129,7 @@ The setup event is emitted only after an actual first-run plugin installation
 starts. Routine refreshes of an already-installed plugin do not begin a setup
 measurement; a repair may only finish a first-run measurement that was already
 started before an interrupted install.
-Immediately before the first valid chat is submitted, VPR reads the current
+Immediately before the first valid chat is submitted, the app reads the current
 on-chain deposit balance locally and converts it to `had_deposit` and a coarse
 bucket. The exact balance never enters the telemetry service.
 
@@ -145,7 +145,7 @@ Each valid remote chat attempt also receives a random `request_id` used only to
 correlate its start and finish events. It is not derived from chat contents,
 the on-chain identifier, a peer, or a wallet.
 
-When telemetry is introduced to an existing VPR installation, the pre-existing
+When telemetry is introduced to an existing installation, the pre-existing
 encrypted or legacy signing identity suppresses `app_first_opened` if no valid
 telemetry state exists yet. This prevents an upgrade from being counted as a
 new installation. A genuinely fresh install, where the app creates both the
@@ -176,7 +176,7 @@ builds contain no default and therefore send nothing unless configured locally.
 - Clean shutdown waits briefly for the final `app_closed` capture while also
   clearing the local crash marker. Delivery remains bounded by a short flush
   timeout.
-- While VPR runs, a local-only heartbeat updates the crash marker once per
+- While the app runs, a local-only heartbeat updates the crash marker once per
   minute. Crash recovery uses the last heartbeat, so time spent offline before
   the next launch is not counted as session duration.
 - Contact: hello@antseed.com

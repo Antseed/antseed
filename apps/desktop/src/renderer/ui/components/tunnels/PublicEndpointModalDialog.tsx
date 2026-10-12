@@ -188,7 +188,7 @@ export function PublicEndpointModal({
         isOpen={isOpen}
         onClose={onClose}
         size="lg"
-        title="Internet-accessible AntSeed endpoint"
+        title="Internet-accessible Antseed endpoint"
         subtitle="Connect Cursor, remote agents, hosted clients, and servers through an authenticated HTTPS endpoint."
         className={styles.modal}
         bodyClassName={styles.modalBody}
@@ -196,7 +196,7 @@ export function PublicEndpointModal({
       <section className={styles.intro}>
         <div>
           <h3 className={styles.sectionTitle}>Choose a tunnel provider</h3>
-          <p className={styles.sectionHint}>Only AntSeed’s authenticated <code>/v1</code> model API is published. Port 8377 remains local.</p>
+          <p className={styles.sectionHint}>Only Antseed’s authenticated <code>/v1</code> model API is published. Port 8377 remains local.</p>
         </div>
         <button type="button" className={styles.docsLink} onClick={() => void window.antseedDesktop?.openExternalUrl?.(TUNNEL_DOCS_URL)}>
           Public tunnel guide <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
@@ -294,7 +294,7 @@ export function PublicEndpointModal({
         onClose={closeConfigure}
         size="sm"
         title={selectedProvider?.name ?? 'Tunnel provider'}
-        subtitle="Expose only AntSeed’s authenticated /v1 API."
+        subtitle="Expose only Antseed’s authenticated /v1 API."
         className={styles.modal}
         bodyClassName={styles.settingsBody}
       >

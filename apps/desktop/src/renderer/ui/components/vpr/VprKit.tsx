@@ -2,14 +2,14 @@ import { useContext } from 'react';
 import type { CSSProperties, JSX, ReactNode } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowLeft01Icon, Search01Icon } from '@hugeicons/core-free-icons';
-import { formatCredits } from '../../../core/format';
 import { useUiSelector } from '../../hooks/useUiSelector';
 import { VprNavContext, useVprNavBack } from './VprNavContext';
+import { VprHeaderActions } from './VprHeaderActions';
 import type { ViewName } from '../../types';
 import styles from './VprKit.module.scss';
 
 /**
- * Shared brand-guideline primitives for the VPR screens (Figma: Toggle -
+ * Shared brand-guideline primitives for the AI VPN screens (Figma: Toggle -
  * Switch, Badge, Slider - Center-biased, Default model tiles, search).
  */
 
@@ -28,7 +28,7 @@ export function VprBackTitle({ title, onBack, fallback = 'home' }: {
   return (
     <button type="button" className={styles.backTitle} onClick={onBack ?? historyBack} title="Back">
       <HugeiconsIcon icon={ArrowLeft01Icon} size={16} strokeWidth={2} />
-      <span>{title}</span>
+      <span title={title}>{title}</span>
     </button>
   );
 }
@@ -59,14 +59,7 @@ export function VprPage({ title, onBack, backFallback, header, children }: {
         <div className={styles.pageTopInner}>
           <div className={styles.pageHeaderRow}>
             <VprBackTitle title={title} onBack={onBack} fallback={backFallback} />
-            <button
-              type="button"
-              className={styles.headerCredits}
-              onClick={() => nav?.navigate('deposit')}
-              title="Add credits"
-            >
-              ${formatCredits(credits)}
-            </button>
+            <VprHeaderActions credits={credits} onSelectView={nav?.navigate} />
           </div>
           {header}
         </div>

@@ -31,7 +31,7 @@ export function findChatOptionForVprSelection(
 }
 
 /**
- * Resolve the chat option a VPR selection should dispatch to. Pinned mode
+ * Resolve the chat option an AI VPN selection should dispatch to. Pinned mode
  * requires the exact peer (a missing pin returns null so callers can fall
  * back to the user's explicit chat selection). Auto mode picks the peer via
  * the routing-preferences scorer instead of whichever option sorts first, so

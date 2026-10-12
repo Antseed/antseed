@@ -1,4 +1,4 @@
-# AntSeed
+# Antseed
 
 A peer-to-peer AI services network. Providers offer AI services, buyers discover providers via DHT and route requests through encrypted P2P connections.
 
@@ -12,11 +12,15 @@ A peer-to-peer AI services network. Providers offer AI services, buyers discover
 
 ## Terms of Use
 
-AntSeed is infrastructure for building differentiated AI services — not for raw resale of API keys or subscription access. Providers are expected to add value through domain-specific skills, agent workflows, Trusted Execution Environments (TEEs), fine-tuned models, or other product differentiation. Reselling personal subscription credentials (e.g., Claude Pro/Team plans) violates the upstream provider's terms of service and is not permitted. Always review your API provider's usage policies before offering capacity on the network. Subscription-based provider plugins (e.g., `provider-claude-code`, `provider-claude-oauth`) are provided for local testing and development only.
+Antseed is infrastructure for building differentiated AI services — not for raw resale of API keys or subscription access. Providers are expected to add value through domain-specific skills, agent workflows, Trusted Execution Environments (TEEs), fine-tuned models, or other product differentiation. Reselling personal subscription credentials (e.g., Claude Pro/Team plans) violates the upstream provider's terms of service and is not permitted. Always review your API provider's usage policies before offering capacity on the network. Subscription-based provider plugins (e.g., `provider-claude-code`, `provider-claude-oauth`) are provided for local testing and development only.
 
 ## Quick Start
 
 ```bash
+# Select the repository's Node 24 development runtime
+nvm install
+nvm use
+
 # Install dependencies
 pnpm install
 
@@ -58,6 +62,7 @@ plugins/              Provider and router plugins
   provider-claude-oauth/    Claude OAuth provider
   provider-openai/          OpenAI-compatible provider (OpenAI, Together, OpenRouter)
   provider-local-llm/       Local LLM provider (Ollama, llama.cpp)
+  provider-typesafe/        TypeSafe System One decision-model provider
   router-local/             Local router (Claude Code, Aider, Continue.dev)
 
 apps/                 Applications
@@ -75,7 +80,7 @@ docs/protocol/        Protocol specification
 @antseed/node (core SDK)
   ├── provider-core
   │     └── provider-anthropic, provider-claude-code, provider-claude-oauth,
-  │         provider-openai, provider-local-llm
+  │         provider-openai, provider-local-llm, provider-typesafe
   ├── router-core
   │     └── router-local
   ├── payments (peer: node)
@@ -139,7 +144,7 @@ See [packages/node/README.md](packages/node/README.md) for the `Provider` and `R
 
 ## Tech Stack
 
-- **Runtime**: Node.js >= 20, ES modules
+- **Development runtime**: Node.js 24 (pinned in `.nvmrc`), ES modules
 - **Language**: TypeScript 5.x, strict mode
 - **Package Manager**: pnpm workspaces
 - **Build**: tsc for libraries, Vite for web apps

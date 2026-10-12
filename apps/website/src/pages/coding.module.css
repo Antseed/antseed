@@ -1,0 +1,101 @@
+/* /coding — reuses agents.module.css for the shared page pieces. */
+
+/* ---- connect: quiet app list left, connection animation right ---- */
+.connectSplit {
+  display: grid;
+  grid-template-columns: minmax(0, 0.9fr) minmax(0, 1.1fr);
+  gap: 40px;
+  align-items: stretch;
+  max-width: 1080px;
+  margin: 40px auto 0;
+}
+
+/* rows spread to the animation's height so both columns end together */
+.appList {
+  display: flex;
+  flex-direction: column;
+  justify-content: space-between;
+}
+
+.appRow {
+  display: flex;
+  align-items: center;
+  gap: 14px;
+  padding: 14px 8px;
+  border-bottom: 1px solid var(--as-line);
+  text-decoration: none;
+  color: var(--as-heading);
+  transition: background 0.15s ease;
+  border-radius: 10px;
+}
+
+.appRow:last-child {
+  border-bottom: none;
+}
+
+.appRow:hover {
+  text-decoration: none;
+  color: var(--as-heading);
+  background: var(--as-soil-2);
+}
+
+.appMark {
+  flex-shrink: 0;
+  display: inline-flex;
+  width: 36px;
+  height: 36px;
+  align-items: center;
+  justify-content: center;
+  border-radius: 10px;
+  background: var(--as-soil-2);
+  border: 1px solid var(--as-line);
+  color: var(--as-heading);
+}
+
+.appMark img,
+.appMark svg {
+  width: 20px;
+  height: 20px;
+  display: block;
+}
+
+.appName {
+  flex: 1;
+  min-width: 0;
+  font-family: var(--as-font-display);
+  font-size: 17px;
+  line-height: 24px;
+  font-weight: 600;
+}
+
+.appLink {
+  display: inline-flex;
+  align-items: center;
+  gap: 4px;
+  font-size: 13px;
+  line-height: 20px;
+  font-weight: 600;
+  color: var(--as-green-deep);
+  white-space: nowrap;
+  opacity: 0.85;
+}
+
+.appRow:hover .appLink {
+  opacity: 1;
+  gap: 7px;
+}
+
+.artCol {
+  min-width: 0;
+  display: flex;
+}
+
+.artCol > * {
+  width: 100%;
+}
+
+@media (max-width: 900px) {
+  .connectSplit {
+    grid-template-columns: 1fr;
+  }
+}

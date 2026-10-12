@@ -1,21 +1,15 @@
 /**
- * Fun (fun.xyz) checkout popup windows.
+ * Checkout popup windows (the hosted AntSeed Pay page and any sized popups
+ * it opens — card processors, sign-ins).
  *
- * The Fun SDK opens its external payment flows — Meld/Swapped card pages,
- * brokerage sign-ins ("continue with Google", Coinbase, …) — via window.open
- * with explicit popup dimensions, then writes a loading spinner into the
- * about:blank document before pointing it at the real URL. Punting those to
- * the system browser (the old blanket deny + shell.openExternal) breaks that
- * dance and leaves an orphaned browser tab the app can never close.
- *
- * Instead, sized popups open as plain Electron child windows: no browser
- * chrome (the `--app` look), window.opener intact for the OAuth postMessage
- * flows, and the app owns the handle — the deposit watcher closes every
- * checkout window the moment the bought USDC lands at the hot wallet.
+ * Sized popups open as plain Electron child windows: no browser chrome (the
+ * `--app` look), window.opener intact for OAuth postMessage flows, and the
+ * app owns the handle — the deposit watcher closes every checkout window the
+ * moment the bought USDC lands at the hot wallet.
  *
  * Plain `_blank` links (terms, explorers) still go to the system browser.
  */
-import { app, shell, BrowserWindow, type BrowserWindowConstructorOptions, type HandlerDetails } from 'electron';
+import { app, screen, shell, BrowserWindow, type BrowserWindowConstructorOptions, type HandlerDetails } from 'electron';
 
 type WindowOpenResponse =
   | { action: 'deny' }
@@ -51,7 +45,7 @@ export function checkoutWindowOpenHandler(details: HandlerDetails): WindowOpenRe
     return {
       action: 'allow',
       overrideBrowserWindowOptions: {
-        title: 'AntSeed — Secure checkout',
+        title: 'Antseed — Secure checkout',
         autoHideMenuBar: true,
         // webPreferences stay inherited on purpose: the SDK's spinner
         // injection needs the about:blank child in the opener's renderer
@@ -91,14 +85,20 @@ export function adoptCheckoutWindow(win: BrowserWindow): void {
  */
 export function openCheckoutPopup(url: string, parent?: BrowserWindow | null): BrowserWindow {
   // Narrow, like the Fun SDK's sign-in popups — the page renders its bare
-  // one-column checkout at this width.
+  // one-column checkout at this width. Tall enough that the Crossmint card
+  // form fits without inner scrolling, clamped to the work area of whichever
+  // display the app sits on.
+  const display = parent && !parent.isDestroyed()
+    ? screen.getDisplayMatching(parent.getBounds())
+    : screen.getPrimaryDisplay();
+  const height = Math.min(800, display.workArea.height - 24);
   const win = new BrowserWindow({
     width: 420,
-    height: 700,
+    height,
     minWidth: 360,
     minHeight: 560,
     ...(parent && !parent.isDestroyed() ? { parent } : {}),
-    title: 'AntSeed — Secure checkout',
+    title: 'Antseed — Secure checkout',
     autoHideMenuBar: true,
     backgroundColor: '#ffffff',
     webPreferences: {

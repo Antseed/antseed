@@ -163,7 +163,7 @@ export function SetupScreen() {
             </div>
           </div>
 
-          {/* The app itself as the loader: a miniature VPR window cycling
+          {/* The app itself as the loader: a miniature AI VPN window cycling
               Home → Models → Chat, filling in with real discovered models. */}
 
           {/* networkAlert carries a startup grace period, so this only appears

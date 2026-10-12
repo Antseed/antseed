@@ -32,7 +32,7 @@ export type DiscoverFilterState = {
   peerSet: Set<string>;
   maxInputPrice: number;
   maxOutputPrice: number;
-  minStakeUsdc: number;
+  minStakeAnts: number;
   minReputationScore: number;
   sortKey: DiscoverSortKey;
 
@@ -45,7 +45,7 @@ export type DiscoverFilterState = {
   togglePeer: (peerId: string) => void;
   setMaxInputPrice: (v: number) => void;
   setMaxOutputPrice: (v: number) => void;
-  setMinStakeUsdc: (v: number) => void;
+  setMinStakeAnts: (v: number) => void;
   setMinReputationScore: (v: number) => void;
   setSortKey: (k: DiscoverSortKey) => void;
   resetAll: () => void;
@@ -58,7 +58,7 @@ const discoverFilterCache = {
   peerSet: new Set<string>(),
   maxInputPrice: MAX_INPUT_PRICE_SLIDER_USD,
   maxOutputPrice: MAX_OUTPUT_PRICE_SLIDER_USD,
-  minStakeUsdc: 0,
+  minStakeAnts: 0,
   minReputationScore: DEFAULT_MIN_REPUTATION_SCORE,
   sortKey: 'reputationDesc' as DiscoverSortKey,
 };
@@ -77,7 +77,7 @@ export function useDiscoverFilters(rows: DiscoverRow[]): DiscoverFilterState {
   );
   const [maxInputPrice, setMaxInputPrice] = useRetainedState(discoverFilterCache, 'maxInputPrice');
   const [maxOutputPrice, setMaxOutputPrice] = useRetainedState(discoverFilterCache, 'maxOutputPrice');
-  const [minStakeUsdc, setMinStakeUsdc] = useRetainedState(discoverFilterCache, 'minStakeUsdc');
+  const [minStakeAnts, setMinStakeAnts] = useRetainedState(discoverFilterCache, 'minStakeAnts');
   const [minReputationScore, setMinReputationScore] = useRetainedState(discoverFilterCache, 'minReputationScore');
   const [sortKey, setSortKey] = useRetainedState(discoverFilterCache, 'sortKey');
 
@@ -106,7 +106,7 @@ export function useDiscoverFilters(rows: DiscoverRow[]): DiscoverFilterState {
     setPeerSet(new Set());
     setMaxInputPrice(MAX_INPUT_PRICE_SLIDER_USD);
     setMaxOutputPrice(MAX_OUTPUT_PRICE_SLIDER_USD);
-    setMinStakeUsdc(0);
+    setMinStakeAnts(0);
     setMinReputationScore(DEFAULT_MIN_REPUTATION_SCORE);
     setSortKey('reputationDesc');
   }, [
@@ -114,7 +114,7 @@ export function useDiscoverFilters(rows: DiscoverRow[]): DiscoverFilterState {
     setMaxInputPrice,
     setMaxOutputPrice,
     setMinReputationScore,
-    setMinStakeUsdc,
+    setMinStakeAnts,
     setPeerSet,
     setSearch,
     setSortKey,
@@ -151,10 +151,10 @@ export function useDiscoverFilters(rows: DiscoverRow[]): DiscoverFilterState {
 
   const filteredRows = useMemo(
     () => applyFilters(rows, {
-      search, categorySet, peerSet, maxInputPrice, maxOutputPrice, minStakeUsdc,
+      search, categorySet, peerSet, maxInputPrice, maxOutputPrice, minStakeAnts,
       minReputationScore,
     }),
-    [rows, search, categorySet, peerSet, maxInputPrice, maxOutputPrice, minStakeUsdc,
+    [rows, search, categorySet, peerSet, maxInputPrice, maxOutputPrice, minStakeAnts,
       minReputationScore],
   );
 
@@ -169,7 +169,7 @@ export function useDiscoverFilters(rows: DiscoverRow[]): DiscoverFilterState {
     peerSet,
     maxInputPrice,
     maxOutputPrice,
-    minStakeUsdc,
+    minStakeAnts,
     minReputationScore,
     sortKey,
 
@@ -182,7 +182,7 @@ export function useDiscoverFilters(rows: DiscoverRow[]): DiscoverFilterState {
     togglePeer,
     setMaxInputPrice,
     setMaxOutputPrice,
-    setMinStakeUsdc,
+    setMinStakeAnts,
     setMinReputationScore,
     setSortKey,
     resetAll,

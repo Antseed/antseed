@@ -24,7 +24,7 @@ import {
   routesForSelectedModel,
 } from '../../../modules/catalog/view-models';
 import { shortPeerId } from '../../../modules/routing/tools';
-import { isFreeRoute, sellerMetaLabel, sellerReputationLabel } from '../../../modules/catalog/seller-format';
+import { isFreeRoute, sellerMetaLabel, sellerReputationLabel, sellerReputationExplanation } from '../../../modules/catalog/seller-format';
 import { buyerConversationsResource, systemProxyResource } from '../../../modules/app/vpr-resources';
 import { useCachedResource } from '../../../modules/app/cached-resource';
 import type { DiscoverRow } from '../../../core/state';
@@ -117,13 +117,15 @@ export function VprChatsView({ onSelectView: _onSelectView }: Props) {
   // never disappears from its own picker.
   const favorites = useMemo(loadFavoriteModels, [selectedId]);
   const models = useMemo(() => {
-    const favoriteEntries = selectFavoriteVprCatalog(snap.catalog, favorites);
-    const recommended = selectRecommendedVprCatalog(snap.catalog)
+    // Chats can't be pinned to video models (they run via the Videos skill).
+    const catalog = snap.catalog.filter((entry) => entry.kind !== 'video');
+    const favoriteEntries = selectFavoriteVprCatalog(catalog, favorites);
+    const recommended = selectRecommendedVprCatalog(catalog)
       .filter((entry) => !favorites.has(catalogEntryKey(entry)));
     const list = [...favoriteEntries, ...recommended];
     const pinnedServiceId = selected ? conversationPinnedServiceId(selected) : null;
     if (pinnedServiceId && !list.some((entry) => entry.serviceId === pinnedServiceId)) {
-      const pinnedEntry = snap.catalog.find((entry) => entry.serviceId === pinnedServiceId);
+      const pinnedEntry = catalog.find((entry) => entry.serviceId === pinnedServiceId);
       if (pinnedEntry) list.unshift(pinnedEntry);
     }
     return list;
@@ -293,7 +295,7 @@ export function VprChatsView({ onSelectView: _onSelectView }: Props) {
                               </span>
                               <span className={styles.sellerMeta}>{sellerMetaLabel(route)}</span>
                             </span>
-                            <span className={styles.sellerScore}>{sellerReputationLabel(route)}</span>
+                            <span className={styles.sellerScore} title={sellerReputationExplanation(route)}>{sellerReputationLabel(route)}</span>
                           </button>
                         );
                       })}

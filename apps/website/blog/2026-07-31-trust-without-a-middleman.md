@@ -1,17 +1,17 @@
 ---
 slug: trust-without-a-middleman
-title: "Trust Without a Middleman: How AntSeed's Security and Anonymity Actually Work"
+title: "Trust Without a Middleman: How Antseed's Security and Anonymity Actually Work"
 authors: [antseed]
 tags: [security, privacy, anonymous AI, P2P, TEE, reputation, ANTS]
-description: "How AntSeed's security architecture works and what anonymous by design actually means in practice — including where the boundaries are."
-keywords: [AntSeed security, anonymous AI, AI privacy architecture, P2P AI network, TEE inference, on-chain reputation, recognized usage, payment channels, model verification]
+description: "How Antseed's security architecture works and what anonymous by design actually means in practice — including where the boundaries are."
+keywords: [Antseed security, anonymous AI, AI privacy architecture, P2P AI network, TEE inference, on-chain reputation, recognized usage, payment channels, model verification]
 image: /og-image.jpg
 date: 2026-07-31
 ---
 
-Every centralized AI platform asks you for the same things: an account, a payment card, and blind trust that whatever you send through their servers is handled well. AntSeed is built on a different premise — that you shouldn't have to trust a company, because there is no company sitting between you and the AI you're using.
+Every centralized AI platform asks you for the same things: an account, a payment card, and blind trust that whatever you send through their servers is handled well. Antseed is built on a different premise — that you shouldn't have to trust a company, because there is no company sitting between you and the AI you're using.
 
-That's a strong claim, and strong claims deserve scrutiny. This post walks through how AntSeed's security architecture works and what "anonymous by design" actually means in practice — including where the boundaries are. If you want the full technical detail, every section links to the protocol documentation.
+That's a strong claim, and strong claims deserve scrutiny. This post walks through how Antseed's security architecture works and what "anonymous by design" actually means in practice — including where the boundaries are. If you want the full technical detail, every section links to the protocol documentation.
 
 <!-- truncate -->
 
@@ -19,17 +19,17 @@ That's a strong claim, and strong claims deserve scrutiny. This post walks throu
 
 On a centralized platform, your identity is a row in a database: email, payment method, request history, all tied together. Anonymity on such a platform is a policy — something the operator promises, and can change.
 
-AntSeed has no such database because there is nothing to put one in. There is no sign-up, no central account, and no platform-issued API key. Your identity on the network is simply a cryptographic keypair generated on your own machine. The address derived from that key is how peers recognize you — and it's connected to nothing else: no name, no email, no card.
+Antseed has no such database because there is nothing to put one in. There is no sign-up, no central account, and no platform-issued API key. Your identity on the network is simply a cryptographic keypair generated on your own machine. The address derived from that key is how peers recognize you — and it's connected to nothing else: no name, no email, no card.
 
 When you want AI inference, your node finds providers through a distributed hash table (the same class of decentralized directory that powers BitTorrent), picks one based on price, speed, reputation, or privacy preferences, and connects to it directly. Your request travels over an encrypted, direct peer-to-peer connection — mutually authenticated and end-to-end encrypted — from your machine to the provider's. There is no platform in the middle to read it, log it, or build a profile from it.
 
-This is the key distinction: on AntSeed, privacy is *structural*, not promised. A centralized aggregator sees every request from every user, and you must trust its retention policy. On AntSeed, there is no position in the network from which anyone could collect all requests, because requests never converge on a single point.
+This is the key distinction: on Antseed, privacy is *structural*, not promised. A centralized aggregator sees every request from every user, and you must trust its retention policy. On Antseed, there is no position in the network from which anyone could collect all requests, because requests never converge on a single point.
 
 Details: [Peer Discovery](/docs/discovery) · [Transport](/docs/transport)
 
 ## Paying without identifying yourself
 
-Payments are usually where anonymity dies — cards and bank accounts are identity. AntSeed replaces them with USDC (a dollar-pegged stablecoin) settled on-chain, per request, directly to the provider's wallet. No card, no billing account, no payment processor holding your details.
+Payments are usually where anonymity dies — cards and bank accounts are identity. Antseed replaces them with USDC (a dollar-pegged stablecoin) settled on-chain, per request, directly to the provider's wallet. No card, no billing account, no payment processor holding your details.
 
 The payment design is also where the security thinking shows most clearly:
 
@@ -51,11 +51,11 @@ Two mechanisms answer it. The first is **an on-chain track record that can't be 
 
 The second is **hardware-level privacy for sensitive work**. Some providers run inside Trusted Execution Environments (TEEs) — secure hardware enclaves that can cryptographically prove what code they're running and shield the data being processed even from the machine's own operator. When your work is sensitive, you can route only to TEE-attested providers, reducing what even the provider themselves can see of your request.
 
-Details: [Reputation](/docs/reputation) · [Seller Pools: The Trust Layer for AntSeed](/blog/seller-pools-reputation-tokenomics)
+Details: [Reputation](/docs/reputation) · [Seller Pools: The Trust Layer for Antseed](/blog/seller-pools-reputation-tokenomics)
 
 ## Is it really the model you paid for? Signed responses and black-box fingerprints
 
-There's a quieter fraud problem in the AI market that most platforms don't talk about: an API that says "premium frontier model" on the label can silently serve you something cheaper — a quantized substitute, a different model entirely — and pocket the difference. Independent audits of shadow APIs have shown this is happening in the wild. On a centralized platform, your only recourse is trusting the brand. On an open network, that's not good enough — so AntSeed is building a verification layer to replace trust with evidence.
+There's a quieter fraud problem in the AI market that most platforms don't talk about: an API that says "premium frontier model" on the label can silently serve you something cheaper — a quantized substitute, a different model entirely — and pocket the difference. Independent audits of shadow APIs have shown this is happening in the wild. On a centralized platform, your only recourse is trusting the brand. On an open network, that's not good enough — so Antseed is building a verification layer to replace trust with evidence.
 
 The first piece is already shipped: **ResponseAuth**, signed response provenance. On supported connections, the provider cryptographically signs each response — committing to the exact request, the exact response bytes, the service advertised, and timing. Your node verifies the signature and keeps a sample of the evidence locally. This doesn't yet prove *which model* answered, but it proves something crucial: the provider can never deny having served those exact bytes. It turns a complaint into evidence.
 
@@ -67,9 +67,9 @@ Details: [Model Verification Needs More Than a Label](/blog/model-verification-f
 
 ## What anonymity here does — and doesn't — mean
 
-Trust requires honesty about limits, so here are AntSeed's, stated plainly — the same way the [light paper](/docs/lightpaper) states them.
+Trust requires honesty about limits, so here are Antseed's, stated plainly — the same way the [light paper](/docs/lightpaper) states them.
 
-AntSeed's anonymity is *architectural*: no central account, no platform API key, no centralized chat database, and no aggregator reading your traffic. What it is not is a promise that every piece of data is invisible to every participant:
+Antseed's anonymity is *architectural*: no central account, no platform API key, no centralized chat database, and no aggregator reading your traffic. What it is not is a promise that every piece of data is invisible to every participant:
 
 - **The provider serving your request processes your request.** That's inherent to inference anywhere. The difference is that you choose the provider — including TEE-attested ones — rather than having one imposed on you. Providers are independent operators with their own data practices.
 - **On-chain activity is public.** Settlements are visible on the blockchain, tied to your pseudonymous address. That address links to your real identity only if you connect it yourself — but blockchain analysis is a real discipline, and users with strong anonymity needs should treat their funding path accordingly.
@@ -81,7 +81,7 @@ The practical guidance is simple: match the route to the sensitivity of the work
 
 Everything described above is inspectable. The protocol implementation is [open source on GitHub](https://github.com/AntSeed/antseed), the smart contracts are deployed and verified on Base (addresses published in the [payments documentation](/docs/payments)), and the full protocol specification is public. You don't have to take any of this post on faith — and that's precisely the point.
 
-Centralized platforms ask you to trust their intentions. AntSeed asks you to verify its architecture. In the long run, that's the only kind of trust that scales.
+Centralized platforms ask you to trust their intentions. Antseed asks you to verify its architecture. In the long run, that's the only kind of trust that scales.
 
 ---
 

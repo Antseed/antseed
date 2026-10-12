@@ -10,8 +10,12 @@ export {
   type BuyerUsageChannelPoint,
   type BuyerUsageServicePoint,
   type BuyerChannelSummary,
+  type NodeRequestOptions,
+  type BuyerIdentitySummary,
 } from './node.js';
+export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
 export type { Provider, ProviderStreamCallbacks } from './interfaces/seller-provider.js';
+export { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, VIDEO_DOWNLOAD_MAX_BYTES, VIDEO_DOWNLOAD_CHUNK_BYTES, ANTSEED_STREAMING_RESPONSE_HEADER } from './types/http.js';
 export {
   ModelHealthChecker,
   DEFAULT_HEALTH_CHECK_INTERVAL_MS,
@@ -73,6 +77,8 @@ export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from
 export {
   WELL_KNOWN_SERVICE_CATEGORIES,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
+  NATIVE_VIDEO_PROTOCOLS,
+  isNativeVideoProtocol,
   SERVICE_CAPABILITY_MODALITIES,
   MAX_CAPABILITY_TOKEN_COUNT,
   MAX_CAPABILITY_SUPPORTED_PARAMETERS,
@@ -82,6 +88,7 @@ export {
   type DomainVerificationMethod,
   type GithubVerificationClaim,
   type ServiceApiProtocol,
+  type NativeVideoProtocol,
   type ServiceCapabilities,
   type ServiceCapabilityModality,
   type PeerMetadata,
@@ -118,7 +125,9 @@ export {
   type PeerVerificationLink,
 } from './discovery/verification-links.js';
 export { MetadataServer, type MetadataServerConfig } from './discovery/metadata-server.js';
+export { parseVerifierCapabilities, normalizeAdvertisedVerifierIds, advertisesTeeSupport } from './discovery/verifier-capabilities.js';
 export { parsePublicAddress, MAX_PUBLIC_ADDRESS_LENGTH, type ParsedPublicAddress } from './discovery/public-address.js';
+export { sanitizePeerDisplayName } from './discovery/display-name.js';
 export {
   buildNetworkServiceOffers,
   inferServiceProtocol,
@@ -129,6 +138,8 @@ export {
   type NetworkServiceOffer,
 } from './discovery/service-catalog.js';
 export { MeteringStorage } from './metering/storage.js';
+export { ResourceOwnershipStore } from './resources/resource-ownership-store.js';
+export type { FreeTierConsumption } from './metering/storage.js';
 export { BalanceManager } from './payments/balance-manager.js';
 export {
   computeCostUsdc,
@@ -155,6 +166,29 @@ export {
 export { IdentityClient, type IdentityClientConfig } from './payments/evm/identity-client.js';
 export { StakingClient, type StakingClientConfig } from './payments/evm/staking-client.js';
 export { EmissionsClient, type EmissionsClientConfig, type EmissionsEpochParams } from './payments/evm/emissions-client.js';
+export { RegistryClient, type RegistryClientConfig } from './payments/evm/registry-client.js';
+export { UsageAccountingClient, type UsageAccountingClientConfig } from './payments/evm/usage-accounting-client.js';
+export { UsageRewardsClient, type UsageRewardsClientConfig } from './payments/evm/usage-rewards-client.js';
+export { SellerPoolsClient, estimateEarlyExit, positionState, projectedEarlyExitSlashBps, type SellerPoolsClientConfig, type SellerPoolPosition, type EarlyExitEstimate, type SellerPoolConfig, type PositionPowerSegment, type PositionState } from './payments/evm/seller-pools-client.js';
+export { SellerPoolsRewardsClient, type SellerPoolsRewardsClientConfig } from './payments/evm/seller-pools-rewards-client.js';
+export { SellerRegistryClient, SellerRegistrationVerificationError, type SellerRegistryClientConfig } from './payments/evm/seller-registry-client.js';
+export { pendingEpochRewards, claimEpochRewards, claimBuyerEpochRewards, previewPoolRewards, claimPoolRewards, type RewardTransactionRecorder } from './payments/reward-claims.js';
+export { PositionInitClient, type PositionInitClientConfig } from './payments/evm/position-init-client.js';
+export { EmissionsGateClient, GATE_MINTERS, gateMinterId, type EmissionsGateClientConfig, type GateMinter } from './payments/evm/emissions-gate-client.js';
+export { WashTradingRegistryClient, validateSellerProofArtifact, sellerProofId, type WashTradingRegistryClientConfig, type WashTradingSellerStatus, type WashTradingProofStatus, type WashTradingRegistryConfig, type SellerProofArtifact, type SellerProofSubmissionStep, type BlockAuthenticationChunk, type BlockReference } from './payments/evm/wash-trading-registry-client.js';
+export { PointsPolicyRegistryClient, type PointsPolicyRegistryClientConfig } from './payments/evm/points-policy-registry-client.js';
+export { SellerRewardsPoolClient, type SellerRewardsPoolClientConfig } from './payments/evm/seller-rewards-pool-client.js';
+export {
+  ContractStackMismatchError,
+  legacyEpochs,
+  newEpochs,
+  resolveContractStack,
+  resolveLegacyContractAddresses,
+  type ContractStackAddresses,
+  type ContractStackMode,
+  type ContractStackResolution,
+  type ContractStackRpcOptions,
+} from './payments/contract-stack.js';
 export { RpcHealthMonitor, probeRpcEndpoint } from './payments/rpc-health.js';
 export type { RpcHealthState, RpcHealthStatus, RpcHealthMonitorOptions } from './payments/rpc-health.js';
 export { ANTSTokenClient, type ANTSTokenClientConfig } from './payments/evm/ants-token-client.js';
@@ -219,12 +253,14 @@ export { BuyerFreeUsageManager } from './payments/buyer-free-usage-manager.js';
 export type { BuyerFreeUsageConfig } from './payments/buyer-free-usage-manager.js';
 export { SellerFreeUsageManager } from './payments/seller-free-usage-manager.js';
 export type { SellerFreeUsageConfig } from './payments/seller-free-usage-manager.js';
+export { SellerFreeTierLimiter, DEFAULT_FREE_TIER_WINDOW_MS, normalizeRemoteIp } from './payments/seller-free-tier-limiter.js';
+export type { SellerFreeTierConfig, FreeTierDecision } from './payments/seller-free-tier-limiter.js';
 export { SellerPaymentManager } from './payments/seller-payment-manager.js';
 export type { SellerPaymentConfig } from './payments/seller-payment-manager.js';
 export { ChannelStore } from './payments/channel-store.js';
 export type { StoredChannel, StoredReceipt } from './payments/channel-store.js';
 export { getChainConfig, resolveChainConfig, DEFAULT_CHAIN_ID, CHAIN_CONFIGS } from './payments/chain-config.js';
-export type { ChainConfig } from './payments/chain-config.js';
+export type { ChainConfig, RecognizedUsageDeployment } from './payments/chain-config.js';
 export { formatUsdc, parseUsdc } from './payments/usdc-utils.js';
 export { ProxyMux } from './proxy/proxy-mux.js';
 export { SweepMux, type SweepMessageHandler } from './p2p/sweep-mux.js';
@@ -279,6 +315,17 @@ export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
 // Reputation
 export { UptimeTracker } from './reputation/uptime-tracker.js';
 export {
+  computeTrustScore, historyCurve, trustScore, shareCurve, SHARE_CURVE_RANGE,
+  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
+  type TrustBreakdown,
+} from './reputation/trust-score.js';
+export {
+  IdentityHistoryCollector, scoreIdentityHistory,
+  IDENTITY_HISTORY_VERSION, IDENTITY_HISTORY_TTL_MS, IDENTITY_GITHUB_MAX_POINTS, IDENTITY_DOMAIN_MAX_POINTS,
+  type IdentityHistoryEvidence, type IdentityHistory, type IdentityScore,
+} from './reputation/identity-history.js';
+export { TrustSignalsClient, type TrustSignals, type TrustSignalsAddresses } from './payments/evm/trust-signals-client.js';
+export {
   MISSING_CACHED_INPUT_PRICE_REPUTATION_MULTIPLIER,
   compareEffectiveModelReputation,
   effectiveModelReputationScore,
@@ -286,22 +333,8 @@ export {
   type ModelReputationSource,
 } from './reputation/model-reputation.js';
 export {
-  computeOnChainTrust,
-  computeOnChainTrustBreakdown,
   buildSybilContext,
   computeOnChainSybilRisk,
-  computeOnChainScore,
-  scoreFromTrust,
-  computeOnChainReputationScore,
-  ON_CHAIN_TRUST_TICKET_TARGET_USDC,
-  ON_CHAIN_TRUST_TICKET_MIN,
-  ON_CHAIN_TRUST_TICKET_MAX,
-  ON_CHAIN_TRUST_RECENCY_FRESH_DAYS,
-  ON_CHAIN_TRUST_RECENCY_STALE_DAYS,
-  ON_CHAIN_TRUST_RECENCY_DORMANT_FACTOR,
-  ON_CHAIN_TRUST_STAKE_THRESHOLD_USDC,
-  ON_CHAIN_TRUST_NO_STAKE_FACTOR,
-  ON_CHAIN_SCORE_LOG_CAP_EXPONENT,
   SYBIL_WEIGHT_SUBFLOOR_TICKET,
   SYBIL_WEIGHT_BURN_RATE,
   SYBIL_WEIGHT_NARROW_CUSTOM,
@@ -314,11 +347,10 @@ export {
   SYBIL_YOUNG_CHANNEL_FLOOR,
   SYBIL_YOUNG_CHANNEL_SATURATION,
   SYBIL_ADVERTISED_CHEAP_INPUT_USD_PER_MILLION,
-  type OnChainTrustBreakdown,
   type SybilContext,
   type SybilRiskResult,
   type SybilFlag,
-} from './reputation/on-chain-reputation.js';
+} from './reputation/sybil-risk.js';
 export type { UptimeWindow, PeerUptimeRecord } from './reputation/uptime-tracker.js';
 export { ReportManager } from './reputation/report-manager.js';
 export type { PeerReport, ReportReason, ReportEvidence, ReportStatus } from './types/report.js';

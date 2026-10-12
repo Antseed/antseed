@@ -113,7 +113,7 @@
     }
   }
   ```
-  The file is read with no integrity check. The PID liveness check (`process.kill(pid, 0)`) only verifies *any* process exists at that PID, not that it's a legitimate AntSeed seeder.
+  The file is read with no integrity check. The PID liveness check (`process.kill(pid, 0)`) only verifies *any* process exists at that PID, not that it's a legitimate Antseed seeder.
 - **Fix**:
   1. Verify the daemon state file permissions (owner-only `0600`).
   2. Add an HMAC or signature over the state file, verifiable with the node's identity.

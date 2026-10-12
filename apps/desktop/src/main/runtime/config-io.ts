@@ -15,7 +15,7 @@ export const DESKTOP_DEFAULT_SELLER_MAX_CONCURRENT_BUYERS = 50;
 const ROUTING_PEER_ID_PATTERN = /^(?:0x)?[0-9a-f]{40}$/i;
 
 const DEFAULT_CONFIG: Record<string, unknown> = {
-  identity: { displayName: 'AntSeed Node' },
+  identity: { displayName: 'Antseed Node' },
   seller: {
     reserveFloor: 10,
     maxConcurrentBuyers: DESKTOP_DEFAULT_SELLER_MAX_CONCURRENT_BUYERS,

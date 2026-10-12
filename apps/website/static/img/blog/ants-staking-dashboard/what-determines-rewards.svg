@@ -1,0 +1,34 @@
+<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 1600 1020" width="1600" height="1020" role="img" aria-labelledby="t d">
+<title id="t">What determines your ANTS rewards?</title>
+<desc id="d">Four factors: how much the provider is used, how much you stake and for how long, how much others stake in that pool, and how much you personally use Antseed.</desc>
+<defs><pattern id="dots" width="22" height="22" patternUnits="userSpaceOnUse"><circle cx="1.5" cy="1.5" r="1.2" fill="rgba(16,185,129,0.14)"/></pattern><linearGradient id="bg" x1="0" y1="0" x2="1" y2="1"><stop offset="0" stop-color="#02130D"/><stop offset="1" stop-color="#03251A"/></linearGradient></defs>
+<rect width="1600" height="1020" fill="url(#bg)"/><rect width="1600" height="1020" fill="url(#dots)"/>
+<text x="90" y="128" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="66" font-weight="600" fill="#FFFFFF" letter-spacing="-1.5">What determines your <tspan fill="#10B981">ANTS</tspan> rewards?</text>
+<rect x="90" y="190" width="1420" height="790" rx="18" fill="#052B1F" stroke="rgba(255,255,255,0.10)"/>
+<path d="M108 190 H1492 a18 18 0 0 1 18 18 V260 H90 V208 a18 18 0 0 1 18 -18 Z" fill="#0A3A2A"/>
+<text x="126" y="234" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="13" font-weight="500" fill="rgba(255,255,255,0.75)" text-anchor="start" letter-spacing="0.18em">FACTOR</text>
+<text x="610" y="234" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="13" font-weight="500" fill="rgba(255,255,255,0.75)" text-anchor="start" letter-spacing="0.18em">HOW IT AFFECTS YOUR REWARDS</text>
+<line x1="90" y1="260" x2="1510" y2="260" stroke="rgba(255,255,255,0.10)"/>
+<text x="126" y="312" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="13" font-weight="500" fill="#10B981" text-anchor="start">01</text>
+<text x="126" y="352" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">How much the provider is</text>
+<text x="126" y="388" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">used</text>
+<text x="610" y="322" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">Qualifying paid usage helps determine the pool’s staking rewards.</text>
+<line x1="90" y1="440" x2="1510" y2="440" stroke="rgba(255,255,255,0.10)"/>
+<text x="126" y="492" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="13" font-weight="500" fill="#10B981" text-anchor="start">02</text>
+<text x="126" y="532" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">How much you stake, and for</text>
+<text x="126" y="568" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">how long</text>
+<text x="610" y="502" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">Determines your staking power and your share of the pool’s rewards.</text>
+<line x1="90" y1="620" x2="1510" y2="620" stroke="rgba(255,255,255,0.10)"/>
+<text x="126" y="672" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="13" font-weight="500" fill="#10B981" text-anchor="start">03</text>
+<text x="126" y="712" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">How much others stake in that</text>
+<text x="126" y="748" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">pool</text>
+<text x="610" y="682" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">Their power affects your relative share. This includes the provider’s own</text>
+<text x="610" y="720" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">stake and everyone else’s, not just the provider’s tokens. More pool</text>
+<text x="610" y="758" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">stake doesn’t automatically mean more rewards for you.</text>
+<line x1="90" y1="800" x2="1510" y2="800" stroke="rgba(255,255,255,0.10)"/>
+<text x="126" y="852" font-family="'Geist Mono', ui-monospace, Menlo, monospace" font-size="13" font-weight="500" fill="#10B981" text-anchor="start">04</text>
+<text x="126" y="892" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">How much you personally use</text>
+<text x="126" y="928" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="28" font-weight="600" fill="#FFFFFF" text-anchor="start">Antseed</text>
+<text x="610" y="862" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">Eligible usage earns separate buyer rewards. If you use the provider</text>
+<text x="610" y="900" font-family="Geist, 'General Sans', Inter, system-ui, sans-serif" font-size="22" font-weight="400" fill="rgba(255,255,255,0.62)" text-anchor="start">you stake with, that activity also contributes to its qualifying usage.</text>
+</svg>

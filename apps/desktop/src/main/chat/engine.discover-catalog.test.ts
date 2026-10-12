@@ -1,5 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
+import { buildDiscoverRows, normalizeChatServiceCatalogEntries } from './service-discovery.js';
 
 import {
   buildChatServiceCatalogFromNetworkModels,
@@ -8,6 +9,56 @@ import {
 
 const venicePeerId = '9'.repeat(40);
 const flashPeerId = 'f'.repeat(40);
+
+test('TEE advertisements survive live, persisted, normalization and discovery projections', async () => {
+  const offer = {
+    peerId: venicePeerId, provider: 'openai', serviceId: 'gpt-test', protocol: 'openai-chat-completions',
+    advertisedVerifierIds: [' Antseed-Verifier ', 'antseed-verifier', null, 'bad id'],
+  };
+  const live = buildChatServiceCatalogFromNetworkModels({ data: [{ peers: [offer] }] });
+  const persisted = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: venicePeerId, providers: ['openai'], services: ['gpt-test'],
+    capabilities: ['verifier.antseed-verifier'],
+  }] });
+  for (const entries of [live, persisted]) {
+    assert.deepEqual(entries[0]?.advertisedVerifierIds, ['antseed-verifier']);
+    const normalized = normalizeChatServiceCatalogEntries(entries);
+    assert.deepEqual(normalized[0]?.advertisedVerifierIds, ['antseed-verifier']);
+    const rows = await buildDiscoverRows(normalized, new Map(), {}, new Map());
+    assert.deepEqual(rows[0]?.advertisedVerifierIds, ['antseed-verifier']);
+  }
+  for (const advertisedVerifierIds of [undefined, null, 'antseed-verifier', ['bad id', null]]) {
+    const entries = buildChatServiceCatalogFromNetworkModels({ data: [{ peers: [{ ...offer, advertisedVerifierIds }] }] });
+    assert.deepEqual(entries[0]?.advertisedVerifierIds, []);
+  }
+});
+
+test('persisted catalog uses the buyer trust score and falls back to the seller-reported score', () => {
+  const protocols = { openai: { services: { 'example-model': ['openai-chat-completions'] } } };
+  const scored = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 70, reputationScore: 99,
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(scored[0]?.effectiveReputationScore, 70);
+
+  const zero = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'], onChainReputationScore: 0, reputationScore: 99,
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(zero[0]?.effectiveReputationScore, 0);
+
+  const unscored = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'], reputationScore: 42,
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(unscored[0]?.effectiveReputationScore, 42);
+
+  const unknown = buildChatServiceCatalogFromPersistedPeers({ discoveredPeers: [{
+    peerId: flashPeerId, providers: ['openai'],
+    providerServiceApiProtocols: protocols,
+  }] });
+  assert.equal(unknown[0]?.effectiveReputationScore, null);
+});
 
 function modelsPayload(): unknown {
   return {
@@ -119,4 +170,65 @@ test('persisted peer catalog keeps stale offers available during cold start', ()
   assert.equal(catalog[0]?.peerId, peerId);
   assert.equal(catalog[0]?.id, 'gpt-5.6-sol');
   assert.equal(catalog[0]?.inputUsdPerMillion, 2);
+});
+
+test('network models catalog lists native video offers with unit-billed prices and video options', async () => {
+  const peerId = 'v'.repeat(40);
+  const catalog = buildChatServiceCatalogFromNetworkModels({
+    object: 'list',
+    data: [{
+      name: 'Wan 2.5',
+      peers: [{
+        peerId,
+        provider: 'venice',
+        serviceId: 'wan-2.5',
+        protocol: 'venice-video',
+        capabilities: { video: { durationsSeconds: [10, 5], resolutions: ['720p', '1080p'], audio: true } },
+        unitBillingModels: {
+          'venice-video': {
+            version: 1,
+            components: [
+              { unit: 'video_seconds', priceUsd: 0.1, match: { resolution: '720p' } },
+              { unit: 'video_seconds', priceUsd: 0.25, match: { resolution: '1080p' } },
+              { unit: 'video_generations', priceUsd: 0.05 },
+            ],
+          },
+        },
+      }],
+    }],
+  });
+
+  assert.equal(catalog.length, 1);
+  assert.equal(catalog[0]?.protocol, 'venice-video');
+  assert.equal(catalog[0]?.minVideoUsdPerSecond, 0.1);
+  assert.equal(catalog[0]?.maxVideoUsdPerSecond, 0.25);
+  assert.equal(catalog[0]?.minVideoUsdPerVideo, 0.05);
+  assert.deepEqual(catalog[0]?.capabilities?.video, { durationsSeconds: [5, 10], resolutions: ['720p', '1080p'], audio: true });
+
+  const normalized = normalizeChatServiceCatalogEntries(catalog);
+  assert.equal(normalized.length, 1);
+  assert.equal(normalized[0]?.maxVideoUsdPerSecond, 0.25);
+  const rows = await buildDiscoverRows(normalized, new Map(), {}, new Map());
+  assert.equal(rows[0]?.protocol, 'venice-video');
+  assert.equal(rows[0]?.minVideoUsdPerSecond, 0.1);
+  assert.equal(rows[0]?.minVideoUsdPerVideo, 0.05);
+  assert.deepEqual(rows[0]?.capabilities?.video?.durationsSeconds, [5, 10]);
+});
+
+test('persisted peer catalog keeps native video offers and their prices', () => {
+  const catalog = buildChatServiceCatalogFromPersistedPeers({
+    discoveredPeers: [{
+      peerId: 'b'.repeat(40),
+      providers: ['fal'],
+      services: ['bytedance/seedance/text-to-video'],
+      providerServiceApiProtocols: { fal: { services: { 'bytedance/seedance/text-to-video': ['fal-video'] } } },
+      providerServiceUnitBillingModels: { fal: { services: { 'bytedance/seedance/text-to-video': {
+        'fal-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.4 }] },
+      } } } },
+    }],
+  });
+  assert.equal(catalog[0]?.protocol, 'fal-video');
+  assert.equal(catalog[0]?.minVideoUsdPerVideo, 0.4);
+  assert.equal(catalog[0]?.maxVideoUsdPerVideo, 0.4);
+  assert.equal(catalog[0]?.minVideoUsdPerSecond, undefined);
 });

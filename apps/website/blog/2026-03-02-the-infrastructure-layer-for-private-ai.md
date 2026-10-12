@@ -1,10 +1,10 @@
 ---
 slug: the-infrastructure-layer-for-private-ai
-title: "Venice AI Built the Vision. AntSeed Is Building the Rails."
+title: "Venice AI Built the Vision. Antseed Is Building the Rails."
 authors: [antseed]
 tags: [privacy, decentralized-ai, P2P AI, anonymous AI, AI infrastructure]
-description: Venice AI showed the world that people want private, uncensored AI. AntSeed is building the open network they and every other AI provider could run on.
-keywords: [private AI network, decentralized AI infrastructure, P2P AI inference, anonymous AI, Venice AI, AntSeed]
+description: Venice AI showed the world that people want private, uncensored AI. Antseed is building the open network they and every other AI provider could run on.
+keywords: [private AI network, decentralized AI infrastructure, P2P AI inference, anonymous AI, Venice AI, Antseed]
 image: /og-image.jpg
 date: 2026-03-02
 ---
@@ -13,7 +13,7 @@ Venice AI did something important: they showed the world that people genuinely w
 
 That's not a small thing. Before Venice, "private AI" was a talking point. After Venice, it's a proven market with hundreds of thousands of users who vote with their attention every day.
 
-We built AntSeed because we think that market deserves infrastructure to match its ambition.
+We built Antseed because we think that market deserves infrastructure to match its ambition.
 
 <!-- truncate -->
 
@@ -39,27 +39,27 @@ In each case, the transition from product to protocol meant:
 
 AI is at the product stage. The protocol stage hasn't happened yet.
 
-## AntSeed Is the Protocol Layer
+## Antseed Is the Protocol Layer
 
-AntSeed is a peer-to-peer network for AI services. Providers, anyone running open-source models, frontier APIs, or specialized agents, join the network and offer their capabilities. Buyers connect and get access to all of them through a single interface, with automatic routing by price, speed, or privacy requirements.
+Antseed is a peer-to-peer network for AI services. Providers, anyone running open-source models, frontier APIs, or specialized agents, join the network and offer their capabilities. Buyers connect and get access to all of them through a single interface, with automatic routing by price, speed, or privacy requirements.
 
-There is no AntSeed server between buyer and provider. No central registry. No partnership required to participate.
+There is no Antseed server between buyer and provider. No central registry. No partnership required to participate.
 
 The privacy properties aren't a promise. They're a consequence of the architecture. When there's no central server, there's nothing to log. Providers never learn who is sending requests. For the strongest guarantee, TEE nodes run with cryptographic attestation, mathematical proof that not even the operator can read the prompts.
 
-Anonymity is the default. Every request through AntSeed reaches the provider without revealing who the buyer is. The network enforces it structurally, not as a policy.
+Anonymity is the default. Every request through Antseed reaches the provider without revealing who the buyer is. The network enforces it structurally, not as a policy.
 
-## Venice as a Provider on AntSeed
+## Venice as a Provider on Antseed
 
 Here's where the story gets interesting for Venice and their users.
 
-Venice's infrastructure, their models, their privacy stack, their proven reliability, could become a provider on AntSeed's network. Venice users who love Venice's interface and model selection would still have it. But buyers routing through AntSeed could choose Venice as their preferred provider, automatically, based on reputation and quality.
+Venice's infrastructure, their models, their privacy stack, their proven reliability, could become a provider on Antseed's network. Venice users who love Venice's interface and model selection would still have it. But buyers routing through Antseed could choose Venice as their preferred provider, automatically, based on reputation and quality.
 
-In this model, Venice doesn't compete with AntSeed. Venice wins *because* of AntSeed. Their reputation and quality earn them more routing from a much larger pool of buyers than they could reach as a standalone product.
+In this model, Venice doesn't compete with Antseed. Venice wins *because* of Antseed. Their reputation and quality earn them more routing from a much larger pool of buyers than they could reach as a standalone product.
 
 This is what protocol-level competition looks like. The best providers win more traffic because the network can measure and reward quality. Not because they locked users in, because they earned it.
 
-## The Providers AntSeed Opens Up
+## The Providers Antseed Opens Up
 
 Beyond established players like Venice, the protocol enables provider types that couldn't viably exist as standalone products:
 
@@ -73,7 +73,7 @@ Beyond established players like Venice, the protocol enables provider types that
 
 ## The Bigger Picture
 
-Venice proved that people want AI that respects them. AntSeed is building the network where that's not a product promise, it's structural.
+Venice proved that people want AI that respects them. Antseed is building the network where that's not a product promise, it's structural.
 
 The same infrastructure that makes AI private also makes it censorship-resistant, price-competitive through open markets, resilient through automatic failover, and composable enough for agents to hire other agents autonomously.
 
@@ -81,6 +81,6 @@ That's not a niche. That's the next layer of the internet.
 
 Venice built the vision. The rails are next.
 
-[Read the AntSeed lightpaper](/docs/lightpaper)
+[Read the Antseed lightpaper](/docs/lightpaper)
 
 [Get started in one command](/docs/install)

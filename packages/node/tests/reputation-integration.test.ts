@@ -1,7 +1,7 @@
 import { describe, it, expect } from 'vitest';
 import { encodeMetadata, decodeMetadata } from '../src/discovery/metadata-codec.js';
 import { METADATA_VERSION, type PeerMetadata } from '../src/discovery/peer-metadata.js';
-import { computeOnChainReputationScore } from '../src/reputation/on-chain-reputation.js';
+import { computeTrustScore } from '../src/reputation/trust-score.js';
 import type { PeerInfo } from '../src/types/peer.js';
 
 function makeMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
@@ -80,9 +80,9 @@ describe('Reputation Integration', () => {
     expect(peerInfo.onChainGhostCount).toBe(1);
   });
 
-  it('should prefer computed on-chain reputation over reported reputation', () => {
+  it('should prefer the buyer trust score over reported reputation', () => {
     function effectiveReputation(p: PeerInfo): number {
-      return computeOnChainReputationScore(p) ?? p.reputationScore ?? 0;
+      return computeTrustScore(p)?.score ?? p.reputationScore ?? 0;
     }
 
     // Keep this coupled to path selection, not the exact score curve.
@@ -91,24 +91,22 @@ describe('Reputation Integration', () => {
       peerId: 'a'.repeat(40) as any,
       lastSeen: Date.now(),
       providers: ['anthropic'],
-      onChainChannelCount: 120,
-      onChainGhostCount: 0,
-      onChainTotalVolumeUsdcMicros: 1_000_000_000,
-      onChainStakeUsdcMicros: 10_000_000,
-      onChainStakedAtSec: Math.floor(Date.now() / 1000) - 31 * 24 * 60 * 60,
-      onChainLastSettledAtSec: Math.floor(Date.now() / 1000),
+      onChainUsageEpoch: 22,
+      onChainUsageShareBps: 2_000,
+      onChainPoolPowerShareBps: 2_000,
+      onChainWashFlagged: false,
       reputationScore: reportedScore,
     };
 
-    const computed = computeOnChainReputationScore(peer);
-    expect(computed).not.toBeNull();
+    const computed = computeTrustScore(peer)?.score;
+    expect(computed).not.toBeUndefined();
     expect(effectiveReputation(peer)).toBe(computed);
     expect(effectiveReputation(peer)).not.toBe(reportedScore);
   });
 
   it('should fall back to reported reputation when on-chain reputation is not available', () => {
     function effectiveReputation(p: PeerInfo): number {
-      return computeOnChainReputationScore(p) ?? p.reputationScore ?? 0;
+      return computeTrustScore(p)?.score ?? p.reputationScore ?? 0;
     }
 
     const peerWithRep: PeerInfo = {

@@ -15,6 +15,8 @@ const __dirname = path.dirname(fileURLToPath(import.meta.url));
 export interface PaymentsServerOptions {
   port: number;
   dataDir?: string;
+  configPath?: string;
+  chainOverrides?: Record<string, unknown>;
   identityHex?: string;
   /**
    * Fallback RPC URL used when the user has not set `payments.crypto.rpcUrl`
@@ -29,6 +31,8 @@ export interface PaymentsServerOptions {
    * and refresh balances immediately instead of waiting for a poll.
    */
   onPaymentCompleted?: () => void;
+  /** Compatibility entry for retired claim pages. Opens the unified dashboard. */
+  onOpenRewards?: () => Promise<void>;
 }
 
 export async function createServer(options: PaymentsServerOptions) {
@@ -79,9 +83,9 @@ export async function createServer(options: PaymentsServerOptions) {
   let userOverrides: Record<string, unknown> = {};
   let proxyPort = 8377;
   try {
-    const cfgPath = options.dataDir
+    const cfgPath = options.configPath ?? (options.dataDir
       ? path.join(options.dataDir, 'config.json')
-      : path.join(homedir(), '.antseed', 'config.json');
+      : path.join(homedir(), '.antseed', 'config.json'));
     const raw = await readFile(cfgPath, 'utf-8');
     const config = JSON.parse(raw) as Record<string, unknown>;
     const payments = (config.payments ?? {}) as Record<string, unknown>;
@@ -94,6 +98,7 @@ export async function createServer(options: PaymentsServerOptions) {
     // No config file — use protocol defaults
   }
 
+  userOverrides = { ...userOverrides, ...options.chainOverrides };
   const userRpcUrl = typeof userOverrides.rpcUrl === 'string' && userOverrides.rpcUrl.trim().length > 0
     ? (userOverrides.rpcUrl as string)
     : undefined;
@@ -122,6 +127,12 @@ export async function createServer(options: PaymentsServerOptions) {
   };
 
   registerRoutes(fastify, { cryptoCtx, cryptoConfig, chainConfig, proxyPort });
+
+  fastify.post('/api/pay/open-rewards', async (_request, reply) => {
+    if (!options.onOpenRewards) return reply.status(409).send({ ok: false, error: 'Open the ANTS dashboard with antseed ants, using this account’s data directory, then select Rewards.' });
+    try { await options.onOpenRewards(); return { ok: true }; }
+    catch (error) { return reply.status(500).send({ ok: false, error: error instanceof Error ? error.message : String(error) }); }
+  });
 
   // Pay pages report completion here (bearer-protected like all /api routes)
   // so the host app can refocus its window and refresh balances right away.

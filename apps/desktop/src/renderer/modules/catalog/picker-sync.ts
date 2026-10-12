@@ -54,7 +54,7 @@ export function initModelPickerSync({ bridge, uiState }: {
     const recommended = selectRecommendedVprCatalog(uiState.vprModelCatalog)
       .filter((entry) => !favorites.has(catalogEntryKey(entry)));
     // External model pickers currently dispatch chat requests. Image-only
-    // endpoints remain browseable in VPR but must not leak into those pickers.
+    // endpoints remain browseable in AI VPN but must not leak into those pickers.
     const entries: VprModelCatalogEntry[] = [...favoriteEntries, ...recommended]
       .filter((entry) => entry.kind === 'text');
     const selection = uiState.vprRouteSelection.model;

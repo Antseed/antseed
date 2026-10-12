@@ -1,0 +1,220 @@
+.well {
+  background: var(--as-soil-0);
+  border-radius: 28px;
+  padding: 20px;
+}
+
+.panel {
+  position: relative;
+  background: #fff;
+  border-radius: 20px;
+  aspect-ratio: 520 / 340;
+  padding: clamp(18px, 2.4vw, 28px);
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  gap: 22px;
+  font-family: var(--as-font-data);
+}
+
+/* ---- scene: you — node — provider ---- */
+.scene {
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto minmax(0, 1fr) auto;
+  align-items: start;
+  gap: 0;
+}
+
+.node {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 10px;
+}
+
+.circle {
+  position: relative;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: clamp(48px, 5.6vw, 64px);
+  height: clamp(48px, 5.6vw, 64px);
+  border-radius: 50%;
+  color: var(--as-heading);
+}
+
+.circle svg {
+  width: 52%;
+  height: 52%;
+}
+
+.you {
+  border: 1.5px solid var(--as-heading);
+}
+
+.anon {
+  background: var(--as-void-deep, #001408);
+  border: 1.5px solid var(--as-green);
+}
+
+.anon img {
+  width: 48%;
+  height: 48%;
+}
+
+.halo {
+  position: absolute;
+  inset: -6px;
+  border-radius: 50%;
+  background: rgba(16, 185, 129, 0.12);
+  z-index: -1;
+  transition: transform 0.4s ease, opacity 0.4s ease;
+}
+
+.strip .halo {
+  transform: scale(1.35);
+  opacity: 0.7;
+}
+
+.provider {
+  border: 1.5px solid var(--as-heading);
+  border-radius: 16px;
+}
+
+.lock {
+  position: absolute;
+  right: -6px;
+  bottom: -6px;
+  width: 22px;
+  height: 22px;
+  border-radius: 50%;
+  background: var(--as-green-deep);
+  color: #fff;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+}
+
+.lock svg { width: 12px; height: 12px; }
+
+.label {
+  font-size: clamp(11px, 1.05vw, 13px);
+  color: var(--as-text-2);
+  white-space: nowrap;
+}
+
+.labelGreen {
+  color: var(--as-green-deep);
+  font-weight: 500;
+}
+
+/* ---- legs ---- */
+.leg {
+  position: relative;
+  height: clamp(48px, 5.6vw, 64px);
+  margin: 0 10px;
+}
+
+.line {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  height: 1px;
+  background: rgba(0, 30, 18, 0.3);
+}
+
+.dots {
+  position: absolute;
+  left: 0;
+  right: 0;
+  top: 50%;
+  transform: translateY(-50%);
+  display: flex;
+  justify-content: space-between;
+  padding: 0 4px;
+}
+
+.dots i {
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--as-green);
+}
+
+/* the travelling request */
+.packet {
+  position: absolute;
+  top: 50%;
+  left: 0;
+  transform: translate(-50%, -50%);
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 6px;
+  opacity: 0;
+  transition: left 1.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease;
+}
+
+.packet > i {
+  width: 10px;
+  height: 10px;
+  border-radius: 50%;
+  background: var(--as-green);
+  box-shadow: 0 0 0 4px rgba(16, 185, 129, 0.18);
+}
+
+/* leg 1: packet A moves you → node during "leave" */
+.leave .packetA { opacity: 1; left: 100%; }
+.strip .packetA { opacity: 1; left: 100%; }
+.deliver .packetA, .hold .packetA { opacity: 0; left: 100%; transition: opacity 0.2s ease; }
+.leave .packetA { transition: left 1.3s cubic-bezier(0.4, 0, 0.2, 1), opacity 0.25s ease; }
+
+/* reset A to the start without animating back */
+.hold .packetA { left: 0; transition: none; opacity: 0; }
+
+/* leg 2: packet B moves node → provider during "deliver" */
+.packetB { left: 0; }
+.deliver .packetB { opacity: 1; left: 100%; }
+.hold .packetB { opacity: 0; left: 100%; transition: opacity 0.25s ease; }
+.leave .packetB { left: 0; transition: none; opacity: 0; }
+
+/* ---- readout: one fixed line ---- */
+.sees {
+  display: flex;
+  align-items: baseline;
+  justify-content: center;
+  gap: 10px;
+  font-size: clamp(11px, 1.05vw, 13px);
+  color: var(--as-text-2);
+  white-space: nowrap;
+}
+
+.seesKey {
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  font-size: 10px;
+}
+
+.seesVal {
+  color: var(--as-heading);
+  transition: opacity 0.4s ease;
+}
+
+.seesVal em {
+  font-style: normal;
+  color: var(--as-green-deep);
+}
+
+/* the readout only fills in once a request has arrived */
+.leave .seesVal, .strip .seesVal { opacity: 0.35; }
+.deliver .seesVal, .hold .seesVal { opacity: 1; }
+
+/* reduced motion: static end state */
+.reduced .packetA, .reduced .packetB { display: none; }
+.reduced .seesVal { opacity: 1; }
+
+/* Phones: the readout line is longer than the card; let it wrap. */
+@media (max-width: 480px) {
+  .sees { white-space: normal; flex-wrap: wrap; text-align: center; font-size: 11px; gap: 6px 10px; padding: 0 8px; }
+}

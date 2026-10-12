@@ -5,6 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { Readable } from 'node:stream'
 import test from 'node:test'
+import { ResourceRoutes } from './resource-routes.js'
 import {
   ANTSEED_BUYER_FAULT_ERROR_CODE,
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
@@ -12,12 +13,14 @@ import {
   CONNECTION_CAPABILITY_RELAYS_SWEEPS_V1,
   adaptPeerFaultErrorResponse,
   buyerFault,
-  computeOnChainReputationScore,
+  computeTrustScore,
   type ModelRoutingPreferences,
   type PeerInfo,
+  type SerializedHttpRequest,
   type SerializedHttpResponse,
 } from '@antseed/node'
 import { DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS } from '../config/defaults.js'
+import { TeeVerification } from './tee-verification.js'
 import {
   BuyerProxy,
   isModelNotFoundResponse,
@@ -46,13 +49,192 @@ function makePeer(seed: string, providers: string[]): PeerInfo {
   }
 }
 
+for (const provider of ['venice'] as const) {
+  test(`native ${provider} routes concurrent jobs independently, persist before returning, and survive pin changes`, async () => {
+    const protocol = 'venice-video'
+    const resourceId = (suffix: string) => `task-${suffix}`
+    const statusPath = '/api/v1/video/retrieve'
+    const directory = await mkdtemp(join(tmpdir(), 'native-video-routes-'))
+    try {
+      const peers = [makePeer('a', [provider]), makePeer('b', [provider])]
+      for (const [index, peer] of peers.entries()) {
+        peer.providerServiceApiProtocols = { [provider]: { services: { [`model-${index}`]: [protocol] } } }
+      }
+      const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+      ;(proxy as any)._stateDir = directory
+      ;(proxy as any)._stateFile = join(directory, 'buyer.state.json')
+      await writeFile(join(directory, 'buyer.state.json'), JSON.stringify({ unrelated: 'preserved' }))
+      const calls: Array<{ peer: string; path: string; service?: string; provider?: string }> = []
+      const send = async (peer: PeerInfo, request: { requestId: string; method: string; path: string; headers: Record<string, string> }) => {
+        calls.push({ peer: peer.peerId, path: request.path, service: request.headers['x-antseed-service'], provider: request.headers['x-antseed-provider'] })
+        if (request.method === 'POST' && peer === peers[0]) await new Promise(resolve => setTimeout(resolve, 10))
+        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: resourceId(peer.peerId[0]!) })) }
+      }
+      ;(proxy as any)._node.sendRequest = send
+      ;(proxy as any)._node.sendRequestStream = send
+      const submissions = await Promise.all([0, 1].map(index => invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: `model-${index}`, duration: '8s', prompt: 'cat' } }))))
+      assert.deepEqual(submissions.map(result => result.statusCode), [200, 200])
+      const state = JSON.parse(await readFile(join(directory, 'buyer.state.json'), 'utf8'))
+      assert.equal(state.unrelated, 'preserved')
+      assert.equal(state.resourceRoutes.length, 2)
+      const restored = new ResourceRoutes()
+      restored.hydrate(state.resourceRoutes)
+      const restarted = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+      ;(restarted as any)._stateDir = directory
+      ;(restarted as any)._stateFile = join(directory, 'buyer.state.json')
+      ;(restarted as any)._resourceRoutes = restored
+      ;(restarted as any)._node.sendRequest = (proxy as any)._node.sendRequest
+      ;(restarted as any)._node.sendRequestStream = (proxy as any)._node.sendRequestStream
+      ;(restarted as any)._pinnedPeer = peers[1]!.peerId
+      ;(restarted as any)._defaultRoutedModel = `${peers[1]!.peerId}@unrelated-chat-model`
+      for (const [index, suffix] of ['a', 'b'].entries()) {
+        const result = await invokeProxy(restarted, makeProxyRequest({ method: 'POST', path: statusPath, body: { model: `model-${index}`, queue_id: resourceId(suffix) } }))
+        assert.equal(result.statusCode, 200)
+        assert.equal(calls.at(-1)?.peer, peers[index]!.peerId)
+        assert.equal(calls.at(-1)?.service, `model-${index}`)
+        assert.equal(calls.at(-1)?.provider, provider)
+      }
+      const recorded = await invokeProxy(restarted, makeProxyRequest({ method: 'POST', path: statusPath, body: { model: 'model-0', queue_id: resourceId('a') }, headers: { 'x-antseed-pin-peer': peers[1]!.peerId } }))
+      assert.equal(recorded.statusCode, 200)
+      assert.equal(calls.at(-1)?.peer, peers[0]!.peerId)
+      await (proxy as any)._stateWriteChain
+      await (restarted as any)._stateWriteChain
+    } finally {
+      await rm(directory, { recursive: true, force: true, maxRetries: 3 })
+    }
+  })
+}
+
+test('native video resolves antseed and peer-pinned models like images', async () => {
+  const cases = [
+    { provider: 'venice', protocol: 'venice-video', path: '/api/v1/video/queue', acceptance: { queue_id: 'queue' } },
+  ] as const
+  for (const { provider, protocol, path, acceptance } of cases) {
+    const peers = [makePeer('a', [provider]), makePeer('b', [provider])]
+    for (const peer of peers) peer.providerServiceApiProtocols = { [provider]: { services: { 'video-model': [protocol] } } }
+    for (const model of ['antseed', `${peers[1]!.peerId}@video-model`]) {
+      const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+      ;(proxy as any)._defaultRoutedModel = `${peers[1]!.peerId}@video-model`
+      ;(proxy as any)._persistResourceRoutes = async () => {}
+      const sent: Array<{ peer: string; model: string; custom: unknown }> = []
+      ;(proxy as any)._node.sendRequest = async (selected: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+        const body = JSON.parse(Buffer.from(request.body).toString())
+        sent.push({ peer: selected.peerId, model: body.model, custom: body.custom })
+        return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(acceptance)) }
+      }
+      const response = await invokeProxy(proxy, makeProxyRequest({ path, body: { model, prompt: 'cat', duration: 5, custom: { prompt: '猫' } } }))
+      assert.equal(response.statusCode, 200, response.body)
+      assert.deepEqual(sent, [{ peer: peers[1]!.peerId, model: 'video-model', custom: { prompt: '猫' } }])
+    }
+  }
+})
+
+test('native resource follow-ups fail when the recorded provider loses support instead of switching providers', async () => {
+  for (const provider of ['venice'] as const) {
+    const protocol = 'venice-video'
+    const peer = makePeer('a', [provider, 'replacement'])
+    peer.providerServiceApiProtocols = { [provider]: { services: { other: [protocol] } }, replacement: { services: { 'video-model': [protocol] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._persistResourceRoutes = async () => {}
+    const resourceId = 'task'
+    ;(proxy as any)._resourceRoutes.record({ protocol, resourceId, sellerPeerId: peer.peerId, provider, service: 'video-model' })
+    let calls = 0
+    ;(proxy as any)._node.sendRequest = async () => { calls += 1; throw new Error('must not dispatch') }
+    const response = await invokeProxy(proxy, makeProxyRequest({ method: 'POST', path: '/api/v1/video/retrieve', body: { model: 'video-model', queue_id: resourceId } }))
+    assert.ok(response.statusCode >= 400, response.body)
+    assert.equal(calls, 0)
+  }
+})
+
+test('native video creates are not retried automatically', async () => {
+  const peers = [makePeer('a', ['venice']), makePeer('b', ['venice'])]
+  for (const peer of peers) peer.providerServiceApiProtocols = { venice: { services: { model: ['venice-video'] } } }
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const sent: SerializedHttpRequest[] = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest) => {
+    sent.push(request)
+    throw new Error('uncertain connection loss')
+  }
+  const result = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'model', duration: '8s' } }))
+  assert.ok(result.statusCode >= 400)
+  assert.equal(sent.length, 1)
+  assert.equal(sent[0]!.headers['x-antseed-pin-peer'], undefined)
+})
+
+test('native video options are validated by the seller without buyer filtering or retries', async () => {
+  const peers = [makePeer('a', ['venice']), makePeer('b', ['venice'])]
+  for (const peer of peers) peer.providerServiceApiProtocols = { venice: { services: { model: ['venice-video'] } } }
+  peers[0]!.reputationScore = 99
+  peers[1]!.reputationScore = 70
+  peers[0]!.providerServiceCapabilities = { venice: { services: { model: { video: { durationsSeconds: [5] } } } } }
+  peers[1]!.providerServiceCapabilities = { venice: { services: { model: { video: { durationsSeconds: [5, 10, 15] } } } } }
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  ;(proxy as any)._persistResourceRoutes = async () => {}
+  const selected: string[] = []
+  const forwarded: unknown[] = []
+  const sellerError = { error: { code: 'unsupported_video_options', message: 'Seller does not support this duration' } }
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    selected.push(peer.peerId)
+    const body = JSON.parse(Buffer.from(request.body).toString())
+    forwarded.push(body)
+    if (body.duration === '15s') {
+      return { requestId: request.requestId, statusCode: 422, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(sellerError)) }
+    }
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ id: 'task' })) }
+  }
+  const create = (duration: number) => invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'model', duration: `${duration}s` } }))
+  assert.equal((await create(10)).statusCode, 200)
+  assert.deepEqual(selected, [peers[0]!.peerId])
+  const rejected = await create(15)
+  assert.equal(rejected.statusCode, 422, rejected.body)
+  assert.deepEqual(JSON.parse(rejected.body), sellerError)
+  assert.deepEqual(selected, [peers[0]!.peerId, peers[0]!.peerId])
+  assert.deepEqual(forwarded, [{ model: 'model', duration: '10s' }, { model: 'model', duration: '15s' }])
+})
+
+test('existing required CLI verification rejects a failed pin without payment/inference and auto falls back to a verified seller', async () => {
+  const rejected = makePeer('a', ['openai'])
+  const accepted = makePeer('b', ['openai'])
+  for (const peer of [rejected, accepted]) {
+    peer.capabilities = ['verifier.antseed-verifier']
+    peer.providerServiceApiProtocols = { openai: { services: { 'gpt-4o': ['openai-chat-completions'] } } }
+  }
+  rejected.reputationScore = 99
+  accepted.reputationScore = 90
+  const peers = [rejected, accepted]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter())
+  const policy = { require: true, prefer: ['antseed-verifier'] }
+  const verification = new TeeVerification(policy)
+  ;(proxy as any)._verifier = policy
+  ;(proxy as any)._teeVerification = verification
+  ;(proxy as any)._cachedPeers = peers
+  await verification.verify(rejected, policy, async () => ({ ok: false, verified: false, reason: 'Seller binding failed' }))
+  await verification.verify(accepted, policy, async () => ({ ok: true, verified: true, sellerNodeVerified: true }))
+  const dispatches: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    dispatches.push(peer.peerId)
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  const pinned = await invokeProxy(proxy, makeProxyRequest({ headers: { 'x-antseed-pin-peer': rejected.peerId } }))
+  assert.equal(pinned.statusCode, 502)
+  assert.match(pinned.body, /failed required verification/)
+  assert.deepEqual(dispatches, [])
+  const automatic = await invokeProxy(proxy, makeProxyRequest({}))
+  assert.equal(automatic.statusCode, 200)
+  assert.deepEqual(dispatches, [accepted.peerId])
+  const explicit = await invokeProxy(proxy, makeProxyRequest({ headers: { 'x-antseed-pin-peer': accepted.peerId } }))
+  assert.equal(explicit.statusCode, 200)
+  assert.deepEqual(dispatches, [accepted.peerId, accepted.peerId])
+});
+
 function makeProxyRequest(options: {
   method?: string
   path?: string
   headers?: Record<string, string>
   body?: Record<string, unknown>
+  rawBody?: string
 }): Readable {
-  const body = JSON.stringify(options.body ?? { model: 'gpt-4o', messages: [] })
+  const body = options.rawBody ?? JSON.stringify(options.body ?? { model: 'gpt-4o', messages: [] })
   const req = Readable.from([Buffer.from(body)]) as Readable & {
     method: string
     url: string
@@ -202,6 +384,28 @@ test('BuyerProxy accepts a custom background refresh interval', () => {
   })
 
   assert.equal((proxy as any)._bgRefreshIntervalMs, 15_000)
+})
+
+test('BuyerProxy rewrites upstream 413 responses into a clear request size error', () => {
+  const proxy = new BuyerProxy({
+    port: 0,
+    dataDir: '/tmp/antseed-test',
+    node: { router: null } as any,
+  })
+  const upstream = {
+    requestId: 'req-413',
+    statusCode: 413,
+    headers: { 'content-type': 'text/html' },
+    body: Buffer.from('<html><title>413 Request Entity Too Large</title></html>'),
+  }
+
+  const rewritten = (proxy as any)._withFriendlyUploadLimitError(upstream, 37 * 1024 * 1024, 'opus-5.5')
+  const { error } = JSON.parse(Buffer.from(rewritten.body).toString('utf-8'))
+
+  assert.equal(rewritten.headers['content-type'], 'application/json')
+  assert.equal(error.code, 'request_too_large')
+  assert.match(error.message, /Request body for opus-5\.5 is 37 MiB/)
+  assert.match(error.message, /Images and large attachments/)
 })
 
 test('BuyerProxy reloads model routing preferences from config', async (t) => {
@@ -574,12 +778,12 @@ test('selectCandidatePeersForRouting can still include peers without service pro
 
 test('model-only request routes to the highest-ranked canonical service match', async () => {
   const lower = makePeer('a', ['anthropic'])
-  lower.reputationScore = 40
+  lower.onChainReputationScore = 40
   lower.providerServiceApiProtocols = {
     anthropic: { services: { 'Claude Opus 5': ['anthropic-messages'] } },
   }
   const higher = makePeer('b', ['anthropic'])
-  higher.reputationScore = 90
+  higher.onChainReputationScore = 90
   higher.providerServiceApiProtocols = {
     anthropic: { services: { 'opus-5': ['anthropic-messages'] } },
   }
@@ -779,6 +983,31 @@ test('conversation routing keeps the actual peer as a soft preference and fails 
   assert.equal(JSON.parse(route.body).conversation.lastModel, `${rankedFirst.peerId}@Kimi K3`)
 })
 
+test('BuyerProxy does not forward the Expect header to the seller', async () => {
+  const peer = makePeer('c', ['openai'])
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'kimi-k3': ['openai-chat-completions'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let forwardedHeaders: Record<string, string> | undefined
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+    forwardedHeaders = request.headers
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{}'),
+    }
+  }
+
+  await invokeProxy(proxy, makeProxyRequest({
+    headers: { expect: '100-continue' },
+    body: { model: 'kimi-k3', messages: [{ role: 'user', content: 'hello' }] },
+  }))
+  assert.ok(forwardedHeaders)
+  assert.equal(forwardedHeaders['expect'], undefined)
+})
+
 test('model-only request applies a cached-input pricing reputation penalty', async () => {
   const priced = makePeer('a', ['openai'])
   priced.reputationScore = 75
@@ -824,7 +1053,7 @@ test('model-only request applies a cached-input pricing reputation penalty', asy
 
 test('model-only cached-input pricing penalty does not bury a substantially stronger peer', async () => {
   const priced = makePeer('a', ['openai'])
-  priced.reputationScore = 20
+  priced.onChainReputationScore = 20
   priced.providerPricing = {
     openai: {
       defaults: { inputUsdPerMillion: 2, outputUsdPerMillion: 4 },
@@ -837,7 +1066,7 @@ test('model-only cached-input pricing penalty does not bury a substantially stro
     openai: { services: { 'cache-model': ['openai-chat-completions'] } },
   }
   const unpriced = makePeer('b', ['openai'])
-  unpriced.reputationScore = 100
+  unpriced.onChainReputationScore = 100
   unpriced.providerServiceApiProtocols = {
     openai: { services: { 'cache-model': ['openai-chat-completions'] } },
   }
@@ -861,12 +1090,12 @@ test('model-only cached-input pricing penalty does not bury a substantially stro
 
 test('model-only request keeps reputation ordering when cached-input pricing is absent for all peers', async () => {
   const lower = makePeer('a', ['openai'])
-  lower.reputationScore = 20
+  lower.onChainReputationScore = 20
   lower.providerServiceApiProtocols = {
     openai: { services: { 'no-cache-model': ['openai-chat-completions'] } },
   }
   const higher = makePeer('b', ['openai'])
-  higher.reputationScore = 100
+  higher.onChainReputationScore = 100
   higher.providerServiceApiProtocols = {
     openai: { services: { 'no-cache-model': ['openai-chat-completions'] } },
   }
@@ -981,12 +1210,12 @@ test('model-only request uses the cheapest duplicate service advertised by one p
 
 test('antseed alias with a model-only default route uses automatic peer selection', async () => {
   const lower = makePeer('a', ['openai'])
-  lower.reputationScore = 40
+  lower.onChainReputationScore = 40
   lower.providerServiceApiProtocols = {
     openai: { services: { 'gpt-56-sol': ['openai-chat-completions'] } },
   }
   const higher = makePeer('b', ['openai'])
-  higher.reputationScore = 90
+  higher.onChainReputationScore = 90
   higher.providerServiceApiProtocols = {
     openai: { services: { 'openai-gpt-56-sol': ['openai-chat-completions'] } },
   }
@@ -1047,7 +1276,7 @@ test('model-only routing skips higher-reputation peers rejected by buyer policy'
 
 test('/models order and model-only dispatch use the same Price + Trust ranking', async () => {
   const cobaltRelay = makePeer('a', ['openai'])
-  cobaltRelay.reputationScore = 99
+  cobaltRelay.onChainReputationScore = 99
   cobaltRelay.providerPricing = {
     openai: { defaults: { inputUsdPerMillion: 1.88, outputUsdPerMillion: 9.38 } },
   }
@@ -1055,7 +1284,7 @@ test('/models order and model-only dispatch use the same Price + Trust ranking',
     openai: { services: { 'kimi-k3': ['openai-chat-completions'] } },
   }
   const emberRoute = makePeer('b', ['openai'])
-  emberRoute.reputationScore = 96
+  emberRoute.onChainReputationScore = 96
   emberRoute.providerPricing = {
     openai: { defaults: { inputUsdPerMillion: 0.9, outputUsdPerMillion: 2.7 } },
   }
@@ -1093,7 +1322,7 @@ test('/models order and model-only dispatch use the same Price + Trust ranking',
 
 test('Price + Trust routing falls back after the preferred cheaper peer fails', async () => {
   const cobaltRelay = makePeer('a', ['openai'])
-  cobaltRelay.reputationScore = 99
+  cobaltRelay.onChainReputationScore = 99
   cobaltRelay.providerPricing = {
     openai: { defaults: { inputUsdPerMillion: 1.88, outputUsdPerMillion: 9.38 } },
   }
@@ -1101,7 +1330,7 @@ test('Price + Trust routing falls back after the preferred cheaper peer fails', 
     openai: { services: { 'kimi-k3': ['openai-chat-completions'] } },
   }
   const emberRoute = makePeer('b', ['openai'])
-  emberRoute.reputationScore = 96
+  emberRoute.onChainReputationScore = 96
   emberRoute.providerPricing = {
     openai: { defaults: { inputUsdPerMillion: 0.9, outputUsdPerMillion: 2.7 } },
   }
@@ -1261,6 +1490,70 @@ test('model-only routing skips a cooling-down peer when another offer is ready',
   assert.equal(selectedPeerId, ready.peerId)
 })
 
+test('POST /v1/systemone routes only to peers advertising typesafe-systemone', async () => {
+  const chatOnly = makePeer('a', ['openai'])
+  chatOnly.reputationScore = 95
+  chatOnly.providerServiceApiProtocols = {
+    openai: { services: { jev: ['openai-chat-completions'] } },
+  }
+  const decision = makePeer('b', ['openai'])
+  decision.reputationScore = 80
+  decision.providerServiceApiProtocols = {
+    openai: { services: { jev: ['typesafe-systemone'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([chatOnly, decision], [chatOnly, decision], permissiveRouter())
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; path: string }) => {
+    attempts.push(peer.peerId)
+    assert.equal(request.path, '/v1/systemone')
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ model: 'jev', answers: {}, usage: { input_tokens: 3, output_tokens: 1 } })),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/systemone',
+    body: { model: 'jev', state: 'hello', questions: { ok: { type: 'noul', instructions: 'Is it fine?' } } },
+  }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [decision.peerId])
+})
+
+test('chat requests to a decision-only model get unsupported_protocol, not model_not_found', async () => {
+  const decision = makePeer('b', ['typesafe'])
+  decision.providerServiceApiProtocols = {
+    typesafe: { services: { 'jev-latest': ['typesafe-systemone'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([decision], [decision], permissiveRouter())
+  let forwarded = 0
+  ;(proxy as any)._node.sendRequest = async () => {
+    forwarded += 1
+    throw new Error('must not reach a peer')
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    path: '/v1/chat/completions',
+    body: { model: 'jev-latest', messages: [{ role: 'user', content: 'hi' }] },
+  }))
+
+  assert.equal(res.statusCode, 400)
+  const body = JSON.parse(res.body)
+  assert.equal(body.error.code, 'unsupported_protocol')
+  assert.deepEqual(body.error.supported_protocols, ['typesafe-systemone'])
+  assert.match(body.error.message, /call POST \/v1\/systemone/)
+  assert.equal(forwarded, 0)
+
+  const models = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models?type=decisions' }))
+  assert.equal(models.statusCode, 200)
+  assert.deepEqual(JSON.parse(models.body).data.map((model: { id: string; type: string }) => [model.id, model.type]), [['jev-latest', 'decision']])
+  const text = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models?type=text' }))
+  assert.deepEqual(JSON.parse(text.body).data, [])
+})
+
 test('model-only routing does not fail over after a buyer-attributed failure', async () => {
   const first = makePeer('a', ['openai'])
   first.reputationScore = 95
@@ -1284,6 +1577,19 @@ test('model-only routing does not fail over after a buyer-attributed failure', a
   assert.equal(res.statusCode, 503)
   assert.deepEqual(attempts, [first.peerId])
   assert.equal(JSON.parse(res.body).error.code, ANTSEED_BUYER_FAULT_ERROR_CODE)
+})
+
+test('video validation and buyer budget failures return client errors without penalizing sellers', async () => {
+  for (const [code, status] of [['invalid-request', 400], ['buyer-budget-too-low', 422]] as const) {
+    const peer = makePeer('a', ['venice'])
+    peer.providerServiceApiProtocols = { venice: { services: { video: ['venice-video'] } } }
+    const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+    ;(proxy as any)._node.sendRequest = async () => { throw buyerFault('Invalid video request', code) }
+    const result = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'video', prompt: 'boat' } }))
+    assert.equal(result.statusCode, status)
+    assert.equal(JSON.parse(result.body).error.code, ANTSEED_BUYER_FAULT_ERROR_CODE)
+    assert.equal((proxy as any)._peerHealth.get(peer.peerId)?.failureStreak ?? 0, 0)
+  }
 })
 
 test('pinned proxy request reports when the pinned peer is not discoverable', async () => {
@@ -1597,7 +1903,7 @@ test('a pinned seller failure explains the peer boundary and preserves the selle
   assert.equal(parsed.error.peer_status, 503)
   assert.equal(parsed.error.message, [
     'Oops, pinned peer could not complete the request.',
-    'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+    'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
     'Original Response: {"message":"No billing tier matches this request.","status":503}',
   ].join('\n'))
 })
@@ -2329,6 +2635,23 @@ test('parsePersistedPeers drops entries with non-array providers', () => {
   assert.equal(result.length, 0)
 })
 
+test('parsePersistedPeers removes decorative icons from legacy display names', () => {
+  const result = parsePersistedPeers(
+    {
+      discoveredPeers: [
+        {
+          peerId: validPeerId,
+          displayName: '▲ Example Seller ✅ 🌐',
+          providers: ['openai'],
+          lastSeen: NOW,
+        },
+      ],
+    },
+    NOW,
+  )
+  assert.equal(result[0]?.displayName, 'Example Seller')
+})
+
 test('parsePersistedPeers drops entries with stale or missing freshness anchors', () => {
   const result = parsePersistedPeers(
     {
@@ -2469,27 +2792,93 @@ test('parsePersistedPeers preserves provider metadata so routing filters still w
   assert.equal(result.routePlanByPeerId.get(validPeerId)?.provider, 'claude-oauth')
 })
 
-test('parsePersistedPeers re-derives on-chain reputation from persisted stats', () => {
+test('parsePersistedPeers re-derives the trust score from persisted on-chain signals', () => {
   const persisted = {
     discoveredPeers: [
       {
         peerId: validPeerId,
         providers: ['claude-oauth'],
         lastSeen: NOW - 5_000,
-        onChainStakeUsdcMicros: 2_000_000,
+        // A stale cached score and breakdown must never win over the signals.
+        onChainReputationScore: 3,
+        trust: { score: 3, history: null, usage: null, power: null, identity: null, washFlagged: null },
         onChainChannelCount: 20,
         onChainGhostCount: 0,
         onChainTotalVolumeUsdcMicros: 100_000_000,
         onChainLastSettledAtSec: Math.floor((NOW - 60_000) / 1000),
         onChainStakedAtSec: Math.floor((NOW - 40 * 86_400_000) / 1000),
+        onChainUsageEpoch: 22,
+        onChainUsageShareBps: 1_000,
+        onChainUsageLastEpochUsdcMicros: 500_000_000,
+        onChainPoolStakeAnts: 1_250.5,
+        onChainPoolPowerShareBps: 1_000,
+        onChainWashFlagged: false,
+        onChainWashShareBps: 0,
       },
     ],
   }
 
   const [peer] = parsePersistedPeers(persisted, NOW)
   assert.ok(peer)
-  assert.equal(peer.onChainReputationScore, computeOnChainReputationScore(peer, NOW))
-  assert.ok((peer.onChainReputationScore ?? 0) > 0)
+  assert.equal(peer.onChainUsageEpoch, 22)
+  assert.equal(peer.onChainUsageShareBps, 1_000)
+  assert.equal(peer.onChainUsageLastEpochUsdcMicros, 500_000_000)
+  assert.equal(peer.onChainPoolStakeAnts, 1_250.5)
+  assert.equal(peer.onChainPoolPowerShareBps, 1_000)
+  assert.equal(peer.onChainWashFlagged, false)
+  assert.equal(peer.onChainWashShareBps, 0)
+  assert.equal(peer.onChainStakedAtSec, Math.floor((NOW - 40 * 86_400_000) / 1000))
+  assert.ok(!('onChainStakeUsdcMicros' in peer))
+  assert.ok(!('onChainTrustScore' in peer))
+  assert.deepEqual(peer.trust, computeTrustScore(peer, NOW))
+  assert.equal(peer.onChainReputationScore, peer.trust?.score)
+  // Twenty settled sessions and 100 USDC of volume contribute about 45 history
+  // points; 10% usage and power shares add about 17 more.
+  assert.equal(Math.round(peer.onChainReputationScore ?? 0), 62)
+  assert.equal(peer.trust?.history?.channelCount, 20)
+  assert.equal(peer.trust?.history?.totalVolumeUsdcMicros, 100_000_000)
+  assert.equal(peer.trust?.usage?.epoch, 21)
+  assert.equal(peer.trust?.usage?.shareBps, 1_000)
+  assert.equal(peer.trust?.power?.shareBps, 1_000)
+  assert.equal(peer.trust?.washFlagged, false)
+})
+
+test('parsePersistedPeers scores a proven wash trader at zero regardless of usage', () => {
+  const [peer] = parsePersistedPeers({
+    discoveredPeers: [{
+      peerId: validPeerId,
+      providers: ['openai'],
+      lastSeen: NOW - 5_000,
+      onChainReputationScore: 95,
+      onChainUsageEpoch: 22,
+      onChainUsageShareBps: 10_000,
+      onChainPoolPowerShareBps: 10_000,
+      onChainWashFlagged: true,
+      onChainWashShareBps: 9_800,
+    }],
+  }, NOW)
+  assert.ok(peer)
+  assert.equal(peer.onChainWashFlagged, true)
+  assert.equal(peer.onChainWashShareBps, 9_800)
+  assert.equal(peer.onChainReputationScore, 0)
+  assert.equal(peer.trust?.washFlagged, true)
+  assert.equal(peer.trust?.score, 0)
+})
+
+test('parsePersistedPeers keeps the persisted score when nothing scoreable was stored', () => {
+  const [peer] = parsePersistedPeers({
+    discoveredPeers: [{
+      peerId: validPeerId,
+      providers: ['openai'],
+      lastSeen: NOW - 5_000,
+      onChainReputationScore: 42,
+      onChainChannelCount: 3,
+    }],
+  }, NOW)
+  assert.ok(peer)
+  assert.equal(computeTrustScore(peer, NOW), null)
+  assert.equal(peer.onChainReputationScore, 42)
+  assert.equal(peer.trust, undefined)
 })
 
 test('parsePersistedPeers restores sellerContract into peer.metadata', () => {
@@ -2518,6 +2907,8 @@ test('parsePersistedPeers restores sellerContract into peer.metadata', () => {
 
 test('parsePersistedPeers restores external verification claims and results', () => {
   const verificationResults = {
+    identityHistory: { version: 1, identities: [{ kind: 'domain', claim: 'example.com', identityId: 'domain:example.com',
+      status: 'available', fetchedAtMs: NOW - 500, createdAtMs: NOW - 10 * 365.25 * 86_400_000 }] },
     verified: true,
     checkedAtMs: NOW - 500,
     domains: [
@@ -2553,6 +2944,54 @@ test('parsePersistedPeers restores external verification claims and results', ()
     domains: [{ domain: 'example.com', methods: ['dns-txt'] }],
   })
   assert.deepEqual(peer!.verificationResults, verificationResults)
+  // A ten-year-old verified domain earns the full 12 identity points, worth 20 * 12 / 70 trust.
+  assert.equal(peer!.onChainReputationScore, 20 * 12 / 70)
+  assert.deepEqual(peer!.trust?.identity, { score: 20 * 12 / 70, kind: 'domain', claim: 'example.com' })
+  assert.equal(peer!.trust?.history, null)
+  assert.equal(peer!.trust?.usage, null)
+  assert.equal(peer!.trust?.washFlagged, null)
+  // Ownership proofs and identity evidence expire after seven days: once
+  // stale the peer is unscored again rather than keeping the cached score.
+  const [stale] = parsePersistedPeers(
+    { discoveredPeers: [{ peerId: validPeerId, providers: ['openai'], lastSeen: NOW + 8 * 86_400_000 - 1_000,
+      verifications: { domains: [{ domain: 'example.com', methods: ['dns-txt'] }] }, verificationResults }] },
+    NOW + 8 * 86_400_000,
+  )
+  assert.ok(stale)
+  assert.equal(computeTrustScore(stale, NOW + 8 * 86_400_000), null)
+  assert.equal(stale.onChainReputationScore, undefined)
+  assert.equal(stale.trust, undefined)
+})
+
+test('parsePersistedPeers restores GitHub identity history but never trusts persisted score breakdowns', () => {
+  const stored = { discoveredPeers: [{ peerId: validPeerId, providers: ['openai'], lastSeen: NOW - 1_000,
+    verifications: { github: [{ username: 'portfolio', repository: 'proof' }] },
+    onChainReputationScore: 100,
+    trust: { score: 100, history: { score: 50, channelCount: 100, totalVolumeUsdcMicros: 100_000_000 }, usage: { score: 20, shareBps: 10_000, epoch: 1 }, power: { score: 10, shareBps: 10_000, epoch: 1 }, identity: { score: 20, kind: 'github', claim: 'portfolio' }, washFlagged: false },
+    verificationResults: { verified: true, checkedAtMs: NOW - 500, domains: [],
+      github: [{ username: 'portfolio', repository: 'proof', peerId: validPeerId, verified: true, checkedAtMs: NOW - 500 }],
+      identityHistory: { version: 1, identities: [{ kind: 'github', claim: 'portfolio', identityId: 'github:42', status: 'available',
+        fetchedAtMs: NOW - 500, createdAtMs: NOW - 2 * 365.25 * 86_400_000,
+        projects: [
+          { id: 1, name: 'alpha', createdAtMs: NOW - 365.25 * 86_400_000, stars: 31, archived: false },
+          // The ownership-proof repository never counts, however popular.
+          { id: 2, name: 'proof', createdAtMs: NOW - 365.25 * 86_400_000, stars: 5_000, archived: false },
+        ] }] } },
+  }] }
+  const [peer] = parsePersistedPeers(JSON.parse(JSON.stringify(stored)), NOW)
+  assert.ok(peer)
+  assert.equal(peer.verificationResults?.identityHistory?.version, 1)
+  assert.equal(peer.verificationResults?.identityHistory?.identities[0]?.projects?.length, 2)
+  const trust = computeTrustScore(peer, NOW)
+  assert.ok(trust)
+  assert.deepEqual(peer.trust, trust)
+  assert.equal(peer.onChainReputationScore, trust.score)
+  assert.equal(trust.identity?.kind, 'github')
+  assert.equal(trust.identity?.claim, 'portfolio')
+  assert.equal(trust.usage, null)
+  assert.ok(trust.score > 0 && trust.score < 20, `expected a modest identity-only score, got ${trust.score}`)
+  const [stale] = parsePersistedPeers(JSON.parse(JSON.stringify(stored)), NOW + 8 * 86_400_000)
+  assert.equal(stale, undefined)
 })
 
 test('parsePersistedPeers leaves metadata undefined when sellerContract is absent', () => {
@@ -3393,9 +3832,41 @@ test('adaptPeerFaultErrorResponse upgrades a generic wrapper for a pinned route'
   assert.equal(parsed.error.peer_status, 429)
   assert.equal(parsed.error.message, [
     'Oops, pinned peer could not complete the request.',
-    'AntSeed is a peer-to-peer network. Try another peer or use Auto routing.',
+    'Antseed is a peer-to-peer network. Try another peer or use Auto routing.',
     'Original Response: {"message":"Insufficient balance or no resource package. Please recharge.","status":429}',
   ].join('\n'))
+})
+
+test('adaptPeerFaultErrorResponse keeps string errors and validation details', () => {
+  const response = adaptPeerFaultErrorResponse({
+    requestId: 'req-venice-details',
+    statusCode: 400,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({
+      error: 'Invalid request parameters',
+      details: { _errors: [], audio: { _errors: ['Audio is not configurable for this model'] } },
+    })),
+  }, 'venice-video', { pinned: true })
+  const parsed = JSON.parse(Buffer.from(response.body).toString('utf8')) as {
+    error: { type: string; message: string; peer_message: string; peer_status: number }
+  }
+
+  assert.equal(parsed.error.type, 'Invalid request parameters')
+  assert.equal(parsed.error.peer_message, 'Invalid request parameters: audio: Audio is not configurable for this model')
+  assert.equal(parsed.error.peer_status, 400)
+  assert.match(parsed.error.message, /audio: Audio is not configurable for this model/)
+})
+
+test('adaptPeerFaultErrorResponse falls back to JSON for unstructured details', () => {
+  const response = adaptPeerFaultErrorResponse({
+    requestId: 'req-raw-details',
+    statusCode: 400,
+    headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ error: 'Bad input', details: { field: 'resolution' } })),
+  }, 'venice-video')
+  const parsed = JSON.parse(Buffer.from(response.body).toString('utf8')) as { error: { peer_message: string } }
+
+  assert.equal(parsed.error.peer_message, 'Bad input: {"field":"resolution"}')
 })
 
 test('adaptPeerFaultErrorResponse preserves payment-required control messages', () => {
@@ -3505,4 +3976,92 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   assert.equal(proxy.getSweepReceipt(nonce), receipt)
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)
   assert.equal(proxy.getSweepReceipt('0x' + '00'.repeat(32)), null)
+})
+
+test('switching a chat route while a request is in flight is not reverted when that request completes', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-route-race-'))
+  try {
+    const oldPeer = makePeer('a', ['openai'])
+    oldPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+    const newPeer = makePeer('b', ['openai'])
+    newPeer.providerServiceApiProtocols = { openai: { services: { 'claude-sonnet': ['openai-chat-completions'] } } }
+    const proxy = new BuyerProxy({
+      port: 0,
+      dataDir: dir,
+      node: { router: permissiveRouter() } as any,
+    })
+    ;(proxy as any)._getPeers = async () => [oldPeer, newPeer]
+    ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+    ;(proxy as any)._defaultRoutedModel = 'gpt-5'
+
+    const attempts: string[] = []
+    let holdNext = false
+    let releaseHeld: (() => void) | null = null
+    let markDispatched: (() => void) | null = null
+    const dispatched = new Promise<void>((resolve) => { markDispatched = resolve })
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.peerId)
+      if (holdNext) {
+        holdNext = false
+        markDispatched?.()
+        await new Promise<void>((resolve) => { releaseHeld = resolve })
+      }
+      return {
+        requestId: request.requestId,
+        statusCode: 200,
+        headers: { 'content-type': 'application/json' },
+        body: Buffer.from(JSON.stringify({ peerId: peer.peerId })),
+      }
+    }
+
+    const headers = { 'x-vpr-session-id': 'route-race' }
+    const chatId = 'vpr:route-race'
+    const store = (proxy as any)._conversations
+
+    // Turn 1 settles the chat on the old route as soft (auto) affinity.
+    const first = await invokeProxy(proxy, makeProxyRequest({
+      headers,
+      body: { model: 'antseed', messages: [{ role: 'user', content: 'first turn' }] },
+    }))
+    assert.equal(first.statusCode, 200)
+    assert.equal(store.get(chatId)?.pinnedModel, `${oldPeer.peerId}@gpt-5`)
+    assert.equal(store.get(chatId)?.peerSource, 'auto')
+
+    // Turn 2 is held open upstream on the old route.
+    holdNext = true
+    const inFlight = invokeProxy(proxy, makeProxyRequest({
+      headers,
+      body: { model: 'antseed', messages: [{ role: 'user', content: 'long turn' }] },
+    }))
+    await dispatched
+
+    // The user switches the chat's model mid-flight.
+    const update = await invokeProxy(proxy, makeProxyRequest({
+      path: '/_antseed/conversations/update',
+      body: { id: chatId, pinnedModel: 'claude-sonnet', peerSource: 'auto' },
+    }))
+    assert.equal(update.statusCode, 200)
+
+    // The old request finishes afterwards.
+    ;(releaseHeld as (() => void) | null)?.()
+    const finished = await inFlight
+    assert.equal(finished.statusCode, 200)
+    assert.equal(store.get(chatId)?.pinnedModel, 'claude-sonnet')
+    assert.equal(store.get(chatId)?.peerSource, 'auto')
+    assert.equal(store.get(chatId)?.lastModel, `${oldPeer.peerId}@gpt-5`)
+
+    // The next turn routes to the newly selected model.
+    attempts.length = 0
+    const next = await invokeProxy(proxy, makeProxyRequest({
+      headers,
+      body: { model: 'antseed', messages: [{ role: 'user', content: 'after switch' }] },
+    }))
+    assert.equal(next.statusCode, 200)
+    assert.deepEqual(attempts, [newPeer.peerId])
+    assert.equal(store.get(chatId)?.pinnedModel, `${newPeer.peerId}@claude-sonnet`)
+
+    await store.flush()
+  } finally {
+    await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
+  }
 })

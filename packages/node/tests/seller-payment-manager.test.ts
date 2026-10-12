@@ -1078,6 +1078,181 @@ describe('SellerPaymentManager', () => {
     expect(channel!.sessionId).toBe(channelId);
   });
 
+  describe('retained channel reconnect', () => {
+    let channelId: string;
+
+    beforeEach(async () => {
+      manager = new SellerPaymentManager(sellerIdentity, {
+        rpcUrl: 'http://127.0.0.1:1', channelsContractAddress: CONTRACT_ADDR,
+        chainId: CHAIN_ID, dataDir: tempDir, settleOnDisconnect: false,
+      }, store);
+      vi.spyOn(manager.channelsClient, 'reserve').mockResolvedValue('0xreserve');
+      vi.spyOn(manager.channelsClient, 'close').mockResolvedValue('0xclose');
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
+        buyer: buyerIdentity.wallet.address, seller: sellerIdentity.wallet.address,
+        deposit: 10_000_000n, settled: 0n,
+      }));
+      channelId = makeChannelId(90);
+      const reserve = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { isReserve: true });
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, reserve, mux)).toBe('reserved');
+      mux.sentAuthAcks.length = 0;
+    });
+
+    it.each([0n, 25_000n])('acknowledges a replay at %s without changing earned spend', async (amount) => {
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: amount });
+      await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      manager.recordSpend(channelId, amount);
+      const stored = store.getChannel(channelId);
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      mux.sentAuthAcks.length = 0;
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('accepted');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
+      expect(mux.sentAuthAcks).toEqual([{ channelId }]);
+      expect(manager.getAcceptedCumulative(channelId)).toBe(amount);
+      expect(manager.getCumulativeSpend(channelId)).toBe(amount);
+      expect(store.getChannel(channelId)).toEqual(stored);
+    });
+
+    it('acknowledges a higher catch-up authorization on reconnect', async () => {
+      manager.recordSpend(channelId, 25_000n);
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 25_000n });
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('accepted');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
+      expect(mux.sentAuthAcks).toEqual([{ channelId }]);
+      expect(manager.getCumulativeSpend(channelId)).toBe(25_000n);
+      expect(store.getChannel(channelId)?.latestSpendingAuthSig).toBe(auth.spendingAuthSig);
+    });
+
+    it('re-acknowledges a duplicate if the previous acknowledgment was lost', async () => {
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 0n });
+      await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      expect(mux.sentAuthAcks).toEqual([{ channelId }, { channelId }]);
+      expect(manager.channelsClient.getSession).not.toHaveBeenCalled();
+    });
+
+    it('retains earned authorization queued before a disconnect without reactivating the buyer', async () => {
+      manager.recordSpend(channelId, 25_000n);
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 25_000n });
+      const acceptance = manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      expect(await acceptance).toBe('accepted');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(mux.sentAuthAcks).toEqual([]);
+      expect(store.getChannel(channelId)?.latestSpendingAuthSig).toBe(auth.spendingAuthSig);
+      expect(manager.getCumulativeSpend(channelId)).toBe(25_000n);
+      await manager.checkTimeouts();
+      expect(manager.channelsClient.close).toHaveBeenCalledWith(
+        expect.anything(), channelId, 25_000n, auth.metadata, auth.spendingAuthSig,
+      );
+    });
+
+    it('retains earned authorization when reconnect validation cannot read the chain', async () => {
+      manager.recordSpend(channelId, 25_000n);
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      vi.mocked(manager.channelsClient.getSession).mockRejectedValue(new Error('RPC unavailable'));
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 25_000n });
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('accepted');
+      expect(store.getChannel(channelId)?.latestSpendingAuthSig).toBe(auth.spendingAuthSig);
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(mux.sentAuthAcks).toEqual([]);
+    });
+
+    it('does not reactivate after a disconnect close fails during a pending top-up', async () => {
+      manager.recordSpend(channelId, 25_000n);
+      manager['_pendingTopUp'].set(channelId, {
+        newMaxAmount: 20_000_000n, deadline: Math.floor(Date.now() / 1000) + 3600, reserveAuthSig: '0x',
+      });
+      let release!: () => void;
+      let started!: () => void;
+      const toppingUp = new Promise<void>((resolve) => { started = resolve; });
+      vi.spyOn(manager.channelsClient, 'topUp').mockImplementation(async () => {
+        started();
+        await new Promise<void>((resolve) => { release = resolve; });
+        return '0xtopup';
+      });
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 25_000n });
+      const acceptance = manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      await toppingUp;
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      vi.mocked(manager.channelsClient.close).mockRejectedValue(makeInFlightTxLimitError());
+      await manager.settleSession(buyerIdentity.peerId, { cleanupOnFailure: true });
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      release();
+      expect(await acceptance).toBe('accepted');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(mux.sentAuthAcks).toEqual([]);
+      expect(store.getChannel(channelId)?.latestSpendingAuthSig).toBe(auth.spendingAuthSig);
+    });
+
+    it('validates hydrated channels before acknowledging their authorization', async () => {
+      const restored = new SellerPaymentManager(sellerIdentity, {
+        rpcUrl: 'http://127.0.0.1:1', channelsContractAddress: CONTRACT_ADDR,
+        chainId: CHAIN_ID, dataDir: tempDir,
+      }, store);
+      vi.spyOn(restored.channelsClient, 'getSession').mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, { status: 2 }));
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 0n });
+      expect(await restored.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('rejected');
+      expect(restored.channelsClient.getSession).toHaveBeenCalledOnce();
+      expect(mux.sentAuthAcks).toEqual([]);
+    });
+
+    it.each([
+      { name: 'closed', override: { status: 2 } },
+      { name: 'withdrawn', override: { status: 3 } },
+      { name: 'wrong buyer', override: { buyer: '0x' + '11'.repeat(20) } },
+      { name: 'wrong seller', override: { seller: '0x' + '22'.repeat(20) } },
+      { name: 'close requested', override: { closeRequestedAt: 1n } },
+      { name: 'already settled above the replay', override: { settled: 1n } },
+    ])('does not reactivate a channel that is $name', async ({ override }) => {
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      vi.mocked(manager.channelsClient.getSession).mockResolvedValue(makeOnChainChannel(buyerIdentity, sellerIdentity, {
+        buyer: buyerIdentity.wallet.address, seller: sellerIdentity.wallet.address,
+        deposit: 10_000_000n, settled: 0n, ...override,
+      }));
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 0n });
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('rejected');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(mux.sentAuthAcks).toEqual([]);
+    });
+
+    it('does not reactivate on an invalid signature or an unavailable chain read', async () => {
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 0n });
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, { ...auth, spendingAuthSig: '0x' }, mux)).toBe('rejected');
+      expect(manager.channelsClient.getSession).not.toHaveBeenCalled();
+      vi.mocked(manager.channelsClient.getSession).mockRejectedValue(new Error('RPC unavailable'));
+      expect(await manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux)).toBe('rejected');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(mux.sentAuthAcks).toEqual([]);
+    });
+
+    it.each(['close', 'disconnect'] as const)('does not reactivate when another %s occurs during validation', async (event) => {
+      manager.onBuyerDisconnect(buyerIdentity.peerId);
+      const state = await manager.channelsClient.getSession(channelId);
+      let release!: () => void;
+      let started!: () => void;
+      const reading = new Promise<void>((resolve) => { started = resolve; });
+      vi.mocked(manager.channelsClient.getSession).mockImplementation(async () => {
+        started();
+        await new Promise<void>((resolve) => { release = resolve; });
+        return state;
+      });
+      const auth = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount: 0n });
+      const result = manager.handleSpendingAuth(buyerIdentity.peerId, auth, mux);
+      await reading;
+      if (event === 'close') await manager.settleSession(buyerIdentity.peerId);
+      else manager.onBuyerDisconnect(buyerIdentity.peerId);
+      release();
+      expect(await result).toBe('rejected');
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(mux.sentAuthAcks).toEqual([]);
+    });
+  });
+
   it('test_onBuyerDisconnect: session persisted, not closed when settleOnDisconnect=false', async () => {
     const config2: SellerPaymentConfig = {
       rpcUrl: 'http://127.0.0.1:8545',
@@ -1659,12 +1834,13 @@ describe('SellerPaymentManager', () => {
       status: 0,
     };
 
-    function makeFreshManager() {
+    function makeFreshManager(overrides: Partial<SellerPaymentConfig> = {}) {
       const config: SellerPaymentConfig = {
         rpcUrl: 'http://127.0.0.1:8545',
         channelsContractAddress: CONTRACT_ADDR,
         chainId: CHAIN_ID,
         dataDir: tempDir,
+        ...overrides,
       };
       return new SellerPaymentManager(sellerIdentity, config, store);
     }
@@ -1826,6 +2002,64 @@ describe('SellerPaymentManager', () => {
 
       expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
     });
+
+    it('closes channel with stored voucher when close was requested while offline', async () => {
+      const channelId = makeChannelId(121);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+
+      const mgr = makeFreshManager();
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { closeRequestedAt: 12345n }),
+      );
+      const closeSpy = vi.spyOn(mgr.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+
+      await mgr.validateHydratedChannels();
+
+      expect(closeSpy).toHaveBeenCalledOnce();
+      const closeArgs = closeSpy.mock.calls[0]!;
+      expect(closeArgs[1]).toBe(channelId);
+      expect(closeArgs[2]).toBe(1_000_000n);
+      expect(closeArgs[4]).toBe('0xdead');
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
+      expect(mgr.hasSession(buyerIdentity.peerId)).toBe(false);
+    });
+
+    it('cleans up close-pending channel without a voucher instead of closing', async () => {
+      const channelId = makeChannelId(122);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity, {
+        authMax: '0',
+        latestSpendingAuthSig: null,
+      });
+
+      const mgr = makeFreshManager();
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { closeRequestedAt: 12345n }),
+      );
+      const closeSpy = vi.spyOn(mgr.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+
+      await mgr.validateHydratedChannels();
+
+      expect(closeSpy).not.toHaveBeenCalled();
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.TIMEOUT);
+      expect(mgr.hasSession(buyerIdentity.peerId)).toBe(false);
+    });
+
+    it('keeps close-pending channel when serveWhileClosePending is set', async () => {
+      const channelId = makeChannelId(123);
+      seedChannel(store, channelId, buyerIdentity, sellerIdentity);
+
+      const mgr = makeFreshManager({ serveWhileClosePending: true });
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, { closeRequestedAt: 12345n }),
+      );
+      const closeSpy = vi.spyOn(mgr.channelsClient, 'close').mockResolvedValue('0xclose-hash');
+
+      await mgr.validateHydratedChannels();
+
+      expect(closeSpy).not.toHaveBeenCalled();
+      expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
+      expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+    });
   });
 
   describe('settleSession idle-settle skip logic', () => {
@@ -1936,6 +2170,80 @@ describe('SellerPaymentManager', () => {
       expect(closeSpy).toHaveBeenCalledOnce();
       // close path never consults on-chain state for the dust check
       expect(getSessionSpy).not.toHaveBeenCalled();
+    });
+  });
+
+  describe('on-chain session recovery with a pending close request', () => {
+    // Reserve fields absent is what routes handleSpendingAuth into recovery.
+    async function buildRecoveryAuth(channelId: string, cumulativeAmount: bigint) {
+      const payload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, { cumulativeAmount });
+      delete (payload as Record<string, unknown>).reserveSalt;
+      delete (payload as Record<string, unknown>).reserveMaxAmount;
+      delete (payload as Record<string, unknown>).reserveDeadline;
+      return payload;
+    }
+
+    it('recovers a clean active channel', async () => {
+      const channelId = makeChannelId(0x41);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity) as never,
+      );
+
+      await manager.handleSpendingAuth(buyerIdentity.peerId, await buildRecoveryAuth(channelId, 900_000n), mux);
+
+      expect(mux.sentAuthAcks.length).toBe(1);
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(true);
+    });
+
+    it('refuses recovery when the buyer has requested close on-chain', async () => {
+      const channelId = makeChannelId(0x42);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, {
+          closeRequestedAt: BigInt(Math.floor(Date.now() / 1000) - 3600),
+        }) as never,
+      );
+
+      await manager.handleSpendingAuth(buyerIdentity.peerId, await buildRecoveryAuth(channelId, 900_000n), mux);
+
+      expect(mux.sentAuthAcks.length).toBe(0);
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+      expect(store.getChannel(channelId)).toBeNull();
+    });
+
+    it('refuses recovery even while the grace period is still running', async () => {
+      const channelId = makeChannelId(0x43);
+      vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, {
+          closeRequestedAt: BigInt(Math.floor(Date.now() / 1000)),
+        }) as never,
+      );
+
+      await manager.handleSpendingAuth(buyerIdentity.peerId, await buildRecoveryAuth(channelId, 900_000n), mux);
+
+      expect(mux.sentAuthAcks.length).toBe(0);
+      expect(manager.hasSession(buyerIdentity.peerId)).toBe(false);
+    });
+
+    it('recovers a close-pending channel when serveWhileClosePending is set', async () => {
+      const channelId = makeChannelId(0x44);
+      const optInConfig: SellerPaymentConfig = {
+        rpcUrl: 'http://127.0.0.1:8545',
+        channelsContractAddress: CONTRACT_ADDR,
+        chainId: CHAIN_ID,
+        dataDir: tempDir,
+        serveWhileClosePending: true,
+      };
+      const mgr = new SellerPaymentManager(sellerIdentity, optInConfig, store);
+      vi.spyOn(mgr.channelsClient, 'getSession').mockResolvedValue(
+        makeOnChainChannel(buyerIdentity, sellerIdentity, {
+          closeRequestedAt: BigInt(Math.floor(Date.now() / 1000) - 3600),
+        }) as never,
+      );
+
+      await mgr.handleSpendingAuth(buyerIdentity.peerId, await buildRecoveryAuth(channelId, 900_000n), mux);
+
+      expect(mux.sentAuthAcks.length).toBe(1);
+      expect(mgr.hasSession(buyerIdentity.peerId)).toBe(true);
     });
   });
 });

@@ -30,7 +30,7 @@ const root = join(dirname(fileURLToPath(import.meta.url)), '..');
 
 // Must match the --filter set in .github/workflows/npm-publish.yml.
 const GROUP_DIRS = ['packages', 'plugins'];
-const EXTRA_DIRS = ['apps/cli', 'apps/network-stats', 'apps/payments', 'apps/relay'];
+const EXTRA_DIRS = ['apps/cli', 'apps/network-stats', 'apps/payments', 'apps/ants', 'apps/relay'];
 
 function readPackage(dir) {
   const manifestPath = join(root, dir, 'package.json');

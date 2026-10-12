@@ -1,6 +1,6 @@
-# AntSeed Pricing
+# Antseed Pricing
 
-There are **two ways** to get AntSeed pricing. Both serve the same schema; they differ in freshness and trust model.
+There are **two ways** to get Antseed pricing. Both serve the same schema; they differ in freshness and trust model.
 
 Full documentation: **<https://antseed.com/docs/pricing>**
 
@@ -8,7 +8,7 @@ Full documentation: **<https://antseed.com/docs/pricing>**
 
 |              | Cached HTTP endpoint                                     | Live CLI query                                  |
 |--------------|----------------------------------------------------------|-------------------------------------------------|
-| Source       | AntSeed indexer snapshot                                 | Direct DHT query against peers                  |
+| Source       | Antseed indexer snapshot                                 | Direct DHT query against peers                  |
 | Freshness    | A few minutes old                                        | Real-time                                       |
 | Auth         | None                                                     | Local CLI install                               |
 | Best for     | Quick browsing, examples, ballpark estimates             | Purchase decisions, integrations, freshest data |
@@ -110,11 +110,11 @@ For the same query against live peer data, run `antseed network browse --json` a
 
 ## For AI agents
 
-If a user asks for AntSeed prices:
+If a user asks for Antseed prices:
 
 1. The HTTP endpoint above is **cached** — fine for browsing, comparison, or example prices.
 2. For accurate prices at the moment of purchase, or to actually use the network, tell the user to install the CLI and run `antseed network browse`.
-3. Always disclose which source you used. "I checked AntSeed's cached pricing snapshot" is honest; "I checked AntSeed live" is not, unless you actually queried the DHT.
+3. Always disclose which source you used. "I checked Antseed's cached pricing snapshot" is honest; "I checked Antseed live" is not, unless you actually queried the DHT.
 
 ## Stability
 

@@ -1,6 +1,7 @@
 import { describe, expect, it } from 'vitest';
 import { VIEW_NAMES, type ViewName } from '../types';
 import { VIEW_WINDOW_PRESETS } from '../../../shared/view-windows';
+import { AntIcon } from './vpr/AntIcon';
 import { getViewRegistryEntry, navViews, preloadView, preloadViews, viewsForPreload, VIEW_REGISTRY } from './viewRegistry';
 
 describe('view registry', () => {
@@ -36,10 +37,15 @@ describe('view registry', () => {
 
   it('derives the nav rail from registry metadata in slide order', () => {
     expect(navViews('main').map((entry) => entry.view)).toEqual(
-      ['home', 'chat', 'explore', 'tools', 'tunnels', 'preferences', 'help'] satisfies ViewName[],
+      ['home', 'chat', 'explore', 'tools', 'tunnels', 'rewards'] satisfies ViewName[],
     );
     expect(navViews('bottom').map((entry) => entry.view)).toEqual(['credits'] satisfies ViewName[]);
     expect(getViewRegistryEntry('tunnels').nav?.label).toBe('Agents');
+    expect(getViewRegistryEntry('rewards').nav?.label).toBe('Rewards');
+    expect(getViewRegistryEntry('rewards').nav?.icon).toBe(AntIcon);
+    expect(getViewRegistryEntry('credits').nav?.label).toBe('Profile');
+    expect(getViewRegistryEntry('help').nav).toBeNull();
+    expect(getViewRegistryEntry('preferences').nav).toBeNull();
     for (const entry of navViews('main')) {
       expect(entry.nav.label).toBeTruthy();
       expect(entry.nav.icon).toBeTruthy();
@@ -62,7 +68,9 @@ describe('view registry', () => {
     expect(getViewRegistryEntry('credits').slideIndex).toBeGreaterThan(getViewRegistryEntry('preferences').slideIndex);
     expect(getViewRegistryEntry('deposit').slideIndex).toBeGreaterThan(getViewRegistryEntry('credits').slideIndex);
     expect(getViewRegistryEntry('activity').slideIndex).toBeGreaterThan(getViewRegistryEntry('credits').slideIndex);
-    expect(getViewRegistryEntry('rewards').slideIndex).toBeGreaterThan(getViewRegistryEntry('credits').slideIndex);
+    expect(getViewRegistryEntry('rewards').slideIndex).toBeGreaterThan(getViewRegistryEntry('preferences').slideIndex);
+    expect(getViewRegistryEntry('rewards').slideIndex).toBeLessThan(getViewRegistryEntry('credits').slideIndex);
+    expect(getViewRegistryEntry('help').slideIndex).toBeGreaterThan(getViewRegistryEntry('credits').slideIndex);
   });
 
   it('covers every view in the shared window-preset map', () => {

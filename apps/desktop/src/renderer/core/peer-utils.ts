@@ -84,6 +84,7 @@ export function formatPerMillionPrice(usdPerMillion: number): string {
 export type PeerReputationSource = {
   peerId: string;
   onChainReputationScore?: number | null;
+  effectiveReputationScore?: number | null;
 };
 
 export function normalizeReputationScore(score: unknown): number | null {
@@ -99,7 +100,7 @@ export function formatReputationScore(score: unknown): string {
 export function buildPeerReputationScoreMap(rows: PeerReputationSource[]): Map<string, number> {
   const scores = new Map<string, number>();
   for (const row of rows) {
-    const score = normalizeReputationScore(row.onChainReputationScore);
+    const score = normalizeReputationScore(row.effectiveReputationScore ?? row.onChainReputationScore);
     if (score === null) continue;
     const existing = scores.get(row.peerId);
     if (existing === undefined || score > existing) {
@@ -113,5 +114,5 @@ export function getPeerReputationScore(
   peer: PeerReputationSource,
   scoresByPeerId: ReadonlyMap<string, number>,
 ): number | null {
-  return scoresByPeerId.get(peer.peerId) ?? normalizeReputationScore(peer.onChainReputationScore);
+  return scoresByPeerId.get(peer.peerId) ?? normalizeReputationScore(peer.effectiveReputationScore ?? peer.onChainReputationScore);
 }

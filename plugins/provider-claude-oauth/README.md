@@ -105,7 +105,8 @@ This will download the plugin from npm, register it with the local Antseed node,
 
 | Key                            | Type     | Required | Default | Description                          |
 | ------------------------------ | -------- | -------- | ------- | ------------------------------------ |
-| `CLAUDE_ACCESS_TOKEN`          | secret   | Yes      | --      | Claude OAuth access token            |
+| `CLAUDE_ACCESS_TOKEN`          | secret   | Conditional | --   | Required unless an existing credential file supplies it |
+| `CLAUDE_AUTH_FILE`             | string   | No       | --      | Writable development/testing OAuth credential file |
 | `CLAUDE_REFRESH_TOKEN`         | secret   | No       | --      | OAuth refresh token for auto-renewal |
 | `CLAUDE_TOKEN_EXPIRES_AT`      | number   | No       | --      | Epoch ms when access token expires   |
 | `CLAUDE_OAUTH_CLIENT_ID`       | string   | Yes      | --      | OAuth application client ID used when refreshing tokens |
@@ -113,6 +114,51 @@ This will download the plugin from npm, register it with the local Antseed node,
 | `ANTSEED_OUTPUT_USD_PER_MILLION`| number  | No       | 10      | Output token price (USD per 1M)      |
 | `ANTSEED_MAX_CONCURRENCY`      | number   | No       | 5       | Max concurrent requests              |
 | `ANTSEED_ALLOWED_SERVICES`     | string[] | No       | --      | Comma-separated list of service IDs  |
+
+## Persistent authentication for development/testing
+
+Set `CLAUDE_AUTH_FILE` to a file in a private, writable directory that survives
+restarts. Create the directory beforehand, restrict its permissions, and use an
+absolute path. The plugin creates credential files with mode `0600` and atomically
+replaces them after refresh. Files are plaintext credentials, not encrypted storage;
+keep them out of version control and protect any backups.
+
+- On first use, supply `CLAUDE_ACCESS_TOKEN` and `CLAUDE_REFRESH_TOKEN`, plus
+  `CLAUDE_TOKEN_EXPIRES_AT` (epoch milliseconds) when known. These initialize the
+  file only if it does not exist.
+- An existing file is authoritative, even if environment credentials differ. Its
+  JSON fields are `accessToken`, `refreshToken`, and `expiresAt` (epoch milliseconds).
+  Environment credentials can be removed after initialization.
+- The plugin saves rotated tokens before completing refresh. If saving fails, it
+  retains the new tokens in memory and retries saving rather than reverting to the
+  old file. Fix storage errors before restarting: unsaved rotations cannot survive
+  a process crash.
+- Only one process may own/refresh a credential file and its OAuth session. This
+  is not a cross-process credential synchronization mechanism.
+- To repair revoked credentials, stop other credential writers and atomically
+  replace the file with a valid token pair and expiry. The next request or health
+  probe reloads it; restarting the development process is not required. Invalid
+  files are rejected rather than silently replaced with older environment values.
+- Without `CLAUDE_AUTH_FILE`, environment-only behavior remains supported. Without
+  a refresh token, the access token is static and stops working when it expires.
+
+### Failure isolation
+
+With model health checks enabled (the CLI default), an OAuth refresh failure at
+provider initialization leaves that provider unavailable instead of terminating
+the multi-provider development process. Other providers continue normally. Health
+probes retry and restore each affected service only after it responds successfully.
+Refresh attempts have exponential backoff from one second to a maximum of one
+minute; actual retries occur on requests/probes, not on a separate refresh timer.
+The default health sweep interval is five minutes.
+
+Missing configuration, invalid credential files, and unrelated initialization
+errors remain fatal. Disabling model health checks retains fail-fast initialization,
+since no background recovery loop would be running. A revoked refresh token still
+requires re-authentication; retries cannot make revoked credentials valid.
+
+This plugin remains **for testing and development only**, not subscription-access
+resale. No change to authentication reliability changes that restriction.
 
 ## License
 

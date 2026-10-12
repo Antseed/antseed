@@ -1588,6 +1588,13 @@ $dash-sidebar-width: 240px;
   color: var(--text-muted);
 }
 
+.authorize-wallet-connected-header {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+}
+
 .authorize-wallet-addr {
   font-family: 'SF Mono', 'Fira Code', monospace;
   font-size: 12px;
