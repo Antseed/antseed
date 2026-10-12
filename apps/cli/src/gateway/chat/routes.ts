@@ -41,6 +41,8 @@ import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { chatTools } from './tools.js'
 
 export const CHAT_KEY_LABEL = 'Web chat'
+/** Names the conversation for the buyer (`x-<tool>-session-id`, see proxy/conversation-identity.ts). */
+export const CHAT_SESSION_HEADER = 'x-antseed-chat-session-id'
 /** Tool rounds per answer: enough for search → read → write → run, bounded so a loop cannot spend forever. */
 const MAX_STEPS = 12
 const MODELS_TTL_MS = 60_000
@@ -208,7 +210,15 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
         })
         : {}
 
-      const provider = createOpenAICompatible({ name: 'antseed-gateway', baseURL: gatewayBase(), headers: asKey(caller.keyId), includeUsage: true })
+      // The thread id is the conversation the buyer tracks (its seller affinity
+      // and chat list): without it the buyer keys a conversation on its first
+      // message, so two chats that open alike would share one route.
+      const provider = createOpenAICompatible({
+        name: 'antseed-gateway',
+        baseURL: gatewayBase(),
+        headers: { ...asKey(caller.keyId), [CHAT_SESSION_HEADER]: threadId },
+        includeUsage: true,
+      })
       const abort = new AbortController()
       request.res.once('close', () => { if (!request.res.writableFinished) abort.abort() })
       const result = streamText({

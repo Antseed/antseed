@@ -310,6 +310,11 @@ function isLoopbackAddress(address: string | undefined): boolean {
 // because model_not_found already has dedicated unadvertise handling while a
 // generic 404 would repeat identically on every peer.
 const RETRYABLE_STATUS_CODES = new Set([401, 403, 408, 429, 500, 502, 503, 504])
+/**
+ * Automatic routing also moves on after a 402: the buyer could not fund that
+ * seller (no deposits for its reserve), but a free seller needs none.
+ */
+const AUTO_ROUTE_RETRYABLE_STATUS_CODES = new Set([...RETRYABLE_STATUS_CODES, 402])
 const MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER = 3
 const MODEL_RATE_LIMIT_RETRY_DELAYS_MS = [250, 750] as const
 const MODEL_RATE_LIMIT_MAX_RETRY_AFTER_MS = 2_000
@@ -373,7 +378,8 @@ function isControlPlaneServicesPath(path: string): boolean {
 }
 
 function isRouterSuccess(statusCode: number, path: string, retryableStatusCodes: Set<number>): boolean {
-  return isControlPlaneServicesPath(path) || !retryableStatusCodes.has(statusCode)
+  // A 402 is the buyer's own funding gap, never the seller's failure.
+  return isControlPlaneServicesPath(path) || statusCode === 402 || !retryableStatusCodes.has(statusCode)
 }
 
 /**
@@ -3426,7 +3432,12 @@ export class BuyerProxy {
 
       let lastRetry: Awaited<ReturnType<BuyerProxy['_dispatchToPeer']>> | null = null
       let lastVerificationError: string | null = null
+      // Set once a seller refused for lack of deposits: every other paid
+      // seller would too, so only free ones are still worth trying.
+      let unfunded = false
+      const isFree = (candidate: (typeof candidates)[number]): boolean => modelRouteTotalPrice(candidate) === 0
       for (const [index, selected] of candidates.entries()) {
+        if (unfunded && !isFree(selected)) continue
         if (this._verifier) {
           const makeReach = (chosenId: string): SellerReach =>
             makeVerifierReach(this._node, selected.peer, chosenId, clientAbortController.signal)
@@ -3454,12 +3465,14 @@ export class BuyerProxy {
             selected.serviceId,
             explicitProvider,
             router,
-            RETRYABLE_STATUS_CODES,
+            AUTO_ROUTE_RETRYABLE_STATUS_CODES,
             false,
             clientAbortController.signal,
           )
           if (result.done) {
-            if (trackedConversationId) {
+            // Only a seller that answered becomes the chat's route: a refusal
+            // must not pin later turns to it.
+            if (trackedConversationId && res.statusCode < 400) {
               this._conversations.recordRoutedModel(
                 trackedConversationId,
                 `${selected.peer.peerId}@${selected.serviceId}`,
@@ -3477,6 +3490,12 @@ export class BuyerProxy {
           }
           lastRetry = result
           if (result.responseHeaders[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() === 'buyer') {
+            const freeLeft = candidates.slice(index + 1).some(isFree)
+            if (result.statusCode === 402 && freeLeft) {
+              unfunded = true
+              log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers only.`)
+              break
+            }
             res.writeHead(result.statusCode, result.responseHeaders)
             res.end(result.responseBody)
             return

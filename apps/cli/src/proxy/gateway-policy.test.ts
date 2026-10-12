@@ -493,3 +493,34 @@ test('latency is measured per seller and model', async (t) => {
   assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'big-model'), 5000)
   assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'other'), null)
 })
+
+test('automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const other = makePeer('b', { input: 2, output: 2, trust: 90 })
+  const h = await startHarness(t, [paid, other, free])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (peer.peerId === free.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const res = await chat(h, { 'x-antseed-chat-session-id': 'thread-1' })
+  assert.equal(res.status, 200)
+  // The paid seller refused; the other paid one is skipped; the free one answered.
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, free.peerId])
+  const conversation = (h.proxy as any)._conversations.get('antseed-chat:thread-1')
+  assert.match(conversation?.pinnedModel ?? '', new RegExp(`^${free.peerId}@`))
+
+  // With no free seller left, the buyer's 402 reaches the client and no route is remembered.
+  const h2 = await startHarness(t, [paid])
+  ;(h2.proxy as any)._node.sendRequest = (h.proxy as any)._node.sendRequest
+  const refused = await chat(h2, { 'x-antseed-chat-session-id': 'thread-2' })
+  assert.equal(refused.status, 402)
+  assert.equal((h2.proxy as any)._conversations.get('antseed-chat:thread-2')?.pinnedModel ?? null, null)
+})
