@@ -378,6 +378,7 @@ export function initChatModule({
       uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
       if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
       if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
+      uiState.creditsBalanceKnown = result.data.balanceKnown ?? true;
       uiState.creditsEvmAddress = result.data.evmAddress;
       uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
       return parseFloat(result.data.availableUsdc || '0');

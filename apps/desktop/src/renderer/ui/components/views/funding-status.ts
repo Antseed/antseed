@@ -33,6 +33,7 @@ export const SESSION_RESERVE_BASE_UNITS = 1_000_000n;
 export const MIN_TOPUP_BASE_UNITS = 1_000_000n;
 
 export type FundingStatusKind =
+  | 'loading'
   | 'empty'
   | 'wallet-below-minimum'
   | 'depositing'
@@ -65,6 +66,8 @@ export type FundingStatus = {
 };
 
 export type FundingInputs = {
+  /** false while the balance hasn't been read yet: the amounts are placeholders. */
+  balanceKnown?: boolean;
   /** Decimal USDC strings, as CreditsInfo reports them. */
   available: string;
   reserved: string;
@@ -162,6 +165,9 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
     sendMoreBaseUnits: bigint | null = null,
     actions: FundingAction[] = [],
   ): FundingStatus => ({ kind, tone, title, body, sendMoreBaseUnits, actions, sessions });
+
+  // Placeholder zeros must never read as an empty account asking for a deposit.
+  if (inputs.balanceKnown === false) return status('loading', 'ok', 'Loading your balance…', '');
 
   // Copy: the title is the one line most surfaces show; the body is the
   // calm "why", kept to a sentence or two for details and tooltips.

@@ -34,6 +34,13 @@
   line-height: 32px;
 }
 
+.valueSkeleton {
+  width: 120px;
+  min-height: 0;
+  height: 28px;
+  margin: 2px 0;
+}
+
 .actions {
   display: grid;
   gap: 12px;

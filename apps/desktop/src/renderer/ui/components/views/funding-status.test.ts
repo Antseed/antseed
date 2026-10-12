@@ -41,6 +41,14 @@ test('an empty account explains the first-deposit minimum including the fee', ()
   assert.match(status.title, /\$1\.05/);
 });
 
+test('an unread balance stays silent instead of asking for a first deposit', () => {
+  const status = deriveFundingStatus({ ...base, balanceKnown: false });
+  assert.equal(status.kind, 'loading');
+  assert.equal(status.tone, 'ok');
+  assert.deepEqual(status.actions, []);
+  assert.equal(status.sendMoreBaseUnits, null);
+});
+
 test('$0.50 in the wallet asks for exactly $0.55 more', () => {
   const status = deriveFundingStatus({ ...base, wallet: '0.5' });
   assert.equal(status.kind, 'wallet-below-minimum');

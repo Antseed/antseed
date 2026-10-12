@@ -390,6 +390,8 @@ export type RendererUiState = {
   creditsMinFirstDepositUsdc: string;
   /** Relay fee taken from each wallet sweep into credits. */
   creditsDepositFeeUsdc: string;
+  /** False until the deposits balance has been read; the amounts are placeholders until then. */
+  creditsBalanceKnown: boolean;
   creditsEvmAddress: string | null;
   creditsOperatorAddress: string | null;
   creditsBuyerUsage: DesktopBuyerUsageTotals | null;
@@ -578,6 +580,7 @@ export function createInitialUiState(): RendererUiState {
     creditsCreditLimitUsdc: '0',
     creditsMinFirstDepositUsdc: '1',
     creditsDepositFeeUsdc: '0.05',
+    creditsBalanceKnown: false,
     creditsEvmAddress: null,
     creditsOperatorAddress: null,
     creditsBuyerUsage: null,
