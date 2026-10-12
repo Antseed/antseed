@@ -149,7 +149,7 @@
               # pnpm-lock.yaml change (the store no longer matches). After
               # touching the lockfile, regenerate it with:
               #   ./scripts/update-nix-hash.sh
-              hash = "sha256-AAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAAA=";
+              hash = "sha256-qjt4KRFAyZQWw99Jl645DXKYjJ9lCYrF0kpFa9Za6BQ=";
             };
 
             pnpmWorkspaces = [ "@antseed/cli..." ];
