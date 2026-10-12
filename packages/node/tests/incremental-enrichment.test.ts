@@ -140,6 +140,29 @@ describe('AntseedNode incremental discovery enrichment', () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
+  it('resolves seller addresses a few at a time instead of all at once', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+    (node as any)._trustSignalsClient = { read };
+    let inFlight = 0;
+    let maxInFlight = 0;
+    (node as any)._sellerAddressResolver = {
+      resolveSellerAddress: async (peerId: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight--;
+        return `0x${peerId}`;
+      },
+    };
+    const peers = Array.from({ length: 40 }, (_, index) => makePeer(index.toString(16).padStart(40, '0')));
+    await (node as any)._enrichPeersWithOnChainStats(peers);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0]![0]).toHaveLength(40);
+    expect(peers.every((peer) => peer.onChainAgentId === 123)).toBe(true);
+  });
+
   it('merges partial discovery batches queued during a read into one batched read', async () => {
     const node = new AntseedNode({ role: 'buyer' });
     (node as any)._started = true;

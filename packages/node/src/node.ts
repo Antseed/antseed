@@ -139,6 +139,8 @@ export const ON_CHAIN_STATS_TTL_MS = 10 * 60_000;
  */
 export const ON_CHAIN_STATS_MISS_TTL_MS = 2 * 60_000;
 const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
+/** Concurrent seller-address resolutions (each may be an eth_call) per enrichment pass. */
+const SELLER_RESOLVE_CONCURRENCY = 8;
 
 function sellerContractOf(p: PeerInfo): string | null {
   return p.metadata?.sellerContract?.toLowerCase().replace(/^0x/, '') ?? null;
@@ -1157,14 +1159,21 @@ export class AntseedNode extends EventEmitter {
       toResolve.push(p);
     }
     const stale: Array<{ peer: PeerInfo; address: string }> = [];
-    await Promise.all(toResolve.map(async (p) => {
-      try {
-        const address = resolver
-          ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
-          : peerIdToAddress(p.peerId);
-        stale.push({ peer: p, address });
-      } catch {
-        // Unresolvable seller address: leave the previous snapshot in place.
+    // Resolving a seller contract's operator is an eth_call per peer (cached
+    // by the resolver); a wildcard lookup must not fan hundreds of them out
+    // at once against a public RPC, so at most a few run concurrently.
+    let nextToResolve = 0;
+    await Promise.all(Array.from({ length: Math.min(SELLER_RESOLVE_CONCURRENCY, toResolve.length) }, async () => {
+      while (nextToResolve < toResolve.length) {
+        const p = toResolve[nextToResolve++]!;
+        try {
+          const address = resolver
+            ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
+            : peerIdToAddress(p.peerId);
+          stale.push({ peer: p, address });
+        } catch {
+          // Unresolvable seller address: leave the previous snapshot in place.
+        }
       }
     }));
     if (stale.length === 0) {
