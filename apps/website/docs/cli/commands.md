@@ -10,20 +10,20 @@ hide_title: true
 
 ### Getting started
 
-<div className="command-table">
+<CommandTable>
 
 | Command | Description |
 |---|---|
 | `antseed seller setup` | Initialize seller onboarding |
 | `antseed buyer start` | Start the buyer proxy |
 
-</div>
+</CommandTable>
 
 In normal use, you configure the node once with `antseed seller setup` or `antseed config ...`, then start it later with `antseed seller start` or `antseed buyer start` without repeating flags every time. Secrets such as API keys stay in env vars; provider definitions, services, pricing, capabilities, unit billing, and `baseUrl` live in `~/.antseed/config.json`.
 
 ### Providing (selling)
 
-<div className="command-table">
+<CommandTable>
 
 | Command | Description |
 |---|---|
@@ -38,11 +38,11 @@ In normal use, you configure the node once with `antseed seller setup` or `antse
 | `antseed seller pool withdraw <id...>` | Withdraw positions (`--accept-slashing` for early exit) |
 | `antseed seller rewards [claim]` | View or claim all seller rewards |
 
-</div>
+</CommandTable>
 
 ### ANTS staking
 
-<div className="command-table">
+<CommandTable>
 
 | Command | Description |
 |---|---|
@@ -70,14 +70,14 @@ In normal use, you configure the node once with `antseed seller setup` or `antse
 | `antseed ants verify submit <artifact.json>` | Stage, authenticate, and finalize a seller proof (resumable) |
 | `antseed ants verify proof <proofId>` | Proof submission progress |
 
-</div>
+</CommandTable>
 
 Every dashboard action maps to one of these commands; the dashboard runs on
 `127.0.0.1` and signs with the node wallet.
 
 ### Buying (consuming)
 
-<div className="command-table">
+<CommandTable>
 
 | Command | Description |
 |---|---|
@@ -92,11 +92,11 @@ Every dashboard action maps to one of these commands; the dashboard runs on
 | `antseed buyer balance` | Check wallet and deposit balance |
 | `antseed network browse` | Browse peers, models, and pricing (same catalog as `/v1/models`) |
 
-</div>
+</CommandTable>
 
 ### Network and monitoring
 
-<div className="command-table">
+<CommandTable>
 
 | Command | Description |
 |---|---|
@@ -112,7 +112,7 @@ Every dashboard action maps to one of these commands; the dashboard runs on
 | `antseed buyer connection` | Manage connection settings |
 | `antseed dev` | Run seller + buyer locally for testing |
 
-</div>
+</CommandTable>
 
 ### Service configuration
 

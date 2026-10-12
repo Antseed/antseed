@@ -5,6 +5,7 @@ import Container from '@theme/CodeBlock/Container';
 import Title from '@theme/CodeBlock/Title';
 import Content from '@theme/CodeBlock/Content';
 import type {Props} from '@theme/CodeBlock/Layout';
+import {CheckIcon, CopyIcon} from '@site/src/components/CopyIcons';
 import styles from './styles.module.css';
 
 /* Header label per fence language. Unlisted languages show as-is. */
@@ -41,25 +42,6 @@ function FileIcon() {
     <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
       <path d="M4 12.83V11.17C4 7.4 4 5.51 5.17 4.34C6.34 3.17 8.23 3.17 12 3.17C15.77 3.17 17.66 3.17 18.83 4.34C20 5.51 20 7.4 20 11.17V12.83C20 16.6 20 18.49 18.83 19.66C17.66 20.83 15.77 20.83 12 20.83C8.23 20.83 6.34 20.83 5.17 19.66C4 18.49 4 16.6 4 12.83Z" />
       <path d="M8 8H16M8 12H16M8 16H12" />
-    </svg>
-  );
-}
-
-/* hugeicons:copy-01 (16) */
-function CopyIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.5" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M9 15C9 12.17 9 10.76 9.88 9.88C10.76 9 12.17 9 15 9H16C18.83 9 20.24 9 21.12 9.88C22 10.76 22 12.17 22 15V16C22 18.83 22 20.24 21.12 21.12C20.24 22 18.83 22 16 22H15C12.17 22 10.76 22 9.88 21.12C9 20.24 9 18.83 9 16V15Z" />
-      <path d="M17 9C17 6.04 16.96 4.51 16.1 3.46C15.93 3.26 15.74 3.07 15.54 2.9C14.45 2 12.83 2 9.6 2C6.37 2 4.75 2 3.66 2.9C3.46 3.07 3.27 3.26 3.1 3.46C2 4.55 2 6.17 2 9.4C2 12.63 2 14.25 2.9 15.34C3.07 15.54 3.26 15.73 3.46 15.9C4.51 16.76 6.04 16.8 9 16.8" />
-    </svg>
-  );
-}
-
-/* hugeicons:tick-02 (16) */
-function CheckIcon() {
-  return (
-    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="1.75" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
-      <path d="M5 14L8.5 17.5L19 6.5" />
     </svg>
   );
 }
