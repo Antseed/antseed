@@ -114,10 +114,6 @@ export class BuyerRequestHandler {
     const mux = this._deps.getMux(peer.peerId, conn);
     const verificationMux = this._deps.getVerificationMux(peer.peerId, conn);
     const negotiator = options?.controlPlane ? null : this._deps.negotiator;
-    const expectedResponseAuthChannelId =
-      typeof negotiator?.bpm?.getActiveSession === 'function'
-        ? negotiator.bpm.getActiveSession(peer.peerId)?.sessionId ?? null
-        : null;
     if (negotiator) {
       this._deps.registerPaymentMux(peer.peerId, negotiator.getOrCreatePaymentMux(peer.peerId, conn));
     }
@@ -447,7 +443,6 @@ export class BuyerRequestHandler {
         retriedResponse,
         requestedService,
         verificationMux,
-        expectedResponseAuthChannelId,
         options?.captureResponseAuthPreimages === true,
       );
       return adaptPeerResponse(retriedResponse);
@@ -469,7 +464,6 @@ export class BuyerRequestHandler {
       response,
       requestedService,
       verificationMux,
-      expectedResponseAuthChannelId,
       options?.captureResponseAuthPreimages === true,
     );
     return adaptPeerResponse(response);
@@ -508,7 +502,6 @@ export class BuyerRequestHandler {
     response: SerializedHttpResponse,
     requestedService: string | undefined,
     verificationMux: VerificationMux,
-    sessionChannelId: string | null,
     capturePreimages: boolean,
   ): void {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
@@ -521,7 +514,8 @@ export class BuyerRequestHandler {
     const storage = this._deps.verificationStorage;
     const advertisedService = requestedService ?? 'unknown';
     const expectedChannelId = this._deps.negotiator?.bpm?.getResponseAuthChannelId(peer.peerId, request.requestId)
-      ?? sessionChannelId;
+      ?? this._deps.negotiator?.bpm?.getActiveSession(peer.peerId)?.sessionId
+      ?? null;
     const responseAuthPromise = verificationMux.waitForResponseAuth(
       request.requestId,
       this._config.responseAuthTimeoutMs ?? DEFAULT_RESPONSE_AUTH_GRACE_MS,

@@ -78,23 +78,6 @@ export interface ResponseAuthSink {
   insertResponseAuth(record: StoredResponseAuth): void;
 }
 
-export interface StoredRequestCost {
-  requestId: string;
-  sellerPeerId: string;
-  service: string;
-  channelId: string;
-  authorizedCostUsdc: bigint;
-  inputTokens: bigint;
-  outputTokens: bigint;
-  source: 'need-auth' | 'response';
-  recordedAt: number;
-}
-
-/** Optional sink for request-attributed costs accepted by the buyer. */
-export interface RequestCostSink {
-  insertRequestCost(record: StoredRequestCost): void;
-}
-
 export interface ResponseAuthSampleInput {
   request: SerializedHttpRequest;
   response: SerializedHttpResponse;

@@ -276,7 +276,6 @@ export {
   hashRequest,
   hashResponse,
   type ResponseAuthSampleInput,
-  type StoredRequestCost,
   type StoredResponseAuth,
   type StoredVerificationSample,
   type VerificationSampleConfig,

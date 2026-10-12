@@ -99,10 +99,8 @@ describe('runMigrations', () => {
   it('adds verification evidence storage without rewriting the base migration', () => {
     runMigrations(db, verificationMigrations);
 
-    const table = db.prepare(
-      "SELECT name FROM sqlite_master WHERE type = 'table' AND name = 'request_costs'",
-    ).get();
-    expect(table).toEqual({ name: 'request_costs' });
+    const columns = (db.pragma('table_info(response_auths)') as Array<{ name: string }>).map((column) => column.name);
+    expect(columns).toEqual(expect.arrayContaining(['request_preimage', 'response_preimage']));
     const versions = db.prepare('SELECT version, name FROM schema_version ORDER BY version').all();
     expect(versions).toEqual([
       { version: 1, name: 'create_verification_tables' },

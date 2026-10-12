@@ -1,6 +1,6 @@
 import { hexlify, randomBytes } from 'ethers';
 import { type AbstractSigner } from 'ethers';
-import type { BuyerIdentity, RequestCostSink } from './interfaces.js';
+import type { BuyerIdentity } from './interfaces.js';
 import type { PaymentMux } from './payment-mux.js';
 import type {
   SpendingAuthPayload,
@@ -206,7 +206,6 @@ export class BuyerPaymentManager {
   private readonly _depositsClient: DepositsClient;
   private readonly _config: BuyerPaymentConfig;
   private readonly _channelStore: BuyerChannelStore;
-  private readonly _requestCostSink?: RequestCostSink;
   /** In-memory map of active confirmed sessions by seller peerId for fast lookups. */
   private readonly _confirmedPeers = new Set<string>();
   /** Peers that explicitly rejected our spending auth. */
@@ -266,13 +265,7 @@ export class BuyerPaymentManager {
   /** Cached EIP-712 domain — static for the lifetime of this manager. */
   private readonly _channelsDomain: ReturnType<typeof makeChannelsDomain>;
 
-  constructor(
-    identity: BuyerIdentity,
-    config: BuyerPaymentConfig,
-    channelStore: BuyerChannelStore,
-    sellerAddressResolver?: SellerAddressResolver,
-    requestCostSink?: RequestCostSink,
-  ) {
+  constructor(identity: BuyerIdentity, config: BuyerPaymentConfig, channelStore: BuyerChannelStore, sellerAddressResolver?: SellerAddressResolver) {
     this._identity = identity;
     this._config = config;
     this._sellerAddressResolver = sellerAddressResolver;
@@ -285,7 +278,6 @@ export class BuyerPaymentManager {
       evmChainId: config.chainId,
     });
     this._channelStore = channelStore;
-    this._requestCostSink = requestCostSink;
     this._channelsDomain = makeChannelsDomain(config.chainId, config.channelsContractAddress);
 
     // Hydrate cumulative maps from persisted active sessions
@@ -1549,19 +1541,6 @@ export class BuyerPaymentManager {
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
     if (!alreadyCounted) this._serviceTokensCounted.mark(responseStats.requestId);
-    if (!alreadyCounted && responseStats.requestId) {
-      this._requestCostSink?.insertRequestCost({
-        requestId: responseStats.requestId,
-        sellerPeerId,
-        service: responseStats.service ?? '',
-        channelId: session.sessionId,
-        authorizedCostUsdc: signedDelta,
-        inputTokens: estimatedInputTokens,
-        outputTokens: estimatedOutputTokens,
-        source: 'response',
-        recordedAt: Date.now(),
-      });
-    }
     this._reportSpend({
       sellerPeerId,
       requestId: responseStats.requestId ?? null,
@@ -1853,19 +1832,6 @@ export class BuyerPaymentManager {
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
     if (deliveredResponse && !alreadyCounted) this._serviceTokensCounted.mark(payload.requestId);
-    if (deliveredResponse && !alreadyCounted && payload.requestId) {
-      this._requestCostSink?.insertRequestCost({
-        requestId: payload.requestId,
-        sellerPeerId,
-        service: buyerService ?? payload.service ?? '',
-        channelId: session.sessionId,
-        authorizedCostUsdc: serviceAmountDelta,
-        inputTokens: attributedInputTokens,
-        outputTokens: attributedOutputTokens,
-        source: 'need-auth',
-        recordedAt: Date.now(),
-      });
-    }
     this._reportSpend({
       sellerPeerId,
       requestId: payload.requestId ?? null,

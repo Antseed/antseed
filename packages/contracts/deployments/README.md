@@ -89,9 +89,9 @@ remains editable at 10%, that exactly one wash-trading points policy is register
 
 ## Commands
 
-`M003` deploys the registry-only verification contract through a single `deploy`
-phase. See [M003VerificationRegistry](../script/migrations/M003VerificationRegistry/README.md)
-for signer configuration, the initial verifier list, and recovery instructions.
+`M003` deploys the verification contract through a single `deploy` phase. See
+[M003VerificationRegistry](../script/migrations/M003VerificationRegistry/README.md)
+for signer configuration, the initial auditor list, and recovery instructions.
 
 - `pnpm contracts:deploy -- ...` runs one migration phase.
 - `pnpm contracts:snapshot` deliberately regenerates gas snapshots.

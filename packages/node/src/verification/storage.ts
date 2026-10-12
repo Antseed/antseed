@@ -11,25 +11,11 @@ export interface StoredResponseAuth extends ResponseAuthPayload {
   responsePreimage?: Uint8Array | null;
 }
 
-export interface StoredRequestCost {
-  requestId: string;
-  sellerPeerId: string;
-  service: string;
-  channelId: string;
-  authorizedCostUsdc: bigint;
-  inputTokens: bigint;
-  outputTokens: bigint;
-  source: 'need-auth' | 'response';
-  recordedAt: number;
-}
-
 export class VerificationStorage {
   private readonly _db: Database.Database;
   private readonly _insertResponseAuth: Database.Statement;
   private readonly _getResponseAuth: Database.Statement;
   private readonly _listResponseAuthsBySeller: Database.Statement;
-  private readonly _insertRequestCost: Database.Statement;
-  private readonly _getRequestCost: Database.Statement;
 
   constructor(dbPath: string) {
     this._db = new Database(dbPath);
@@ -40,8 +26,6 @@ export class VerificationStorage {
     this._insertResponseAuth = statements.insertResponseAuth;
     this._getResponseAuth = statements.getResponseAuth;
     this._listResponseAuthsBySeller = statements.listResponseAuthsBySeller;
-    this._insertRequestCost = statements.insertRequestCost;
-    this._getRequestCost = statements.getRequestCost;
   }
 
   private _prepareStatements(): VerificationStorageStatements {
@@ -51,25 +35,6 @@ export class VerificationStorage {
       listResponseAuthsBySeller: this._db.prepare(
         'SELECT * FROM response_auths WHERE seller_peer_id = ? ORDER BY received_at DESC LIMIT ?',
       ),
-      insertRequestCost: this._db.prepare(`
-        INSERT INTO request_costs (
-          request_id, seller_peer_id, service, channel_id, authorized_cost_usdc,
-          input_tokens, output_tokens, source, recorded_at
-        ) VALUES (
-          @requestId, @sellerPeerId, @service, @channelId, @authorizedCostUsdc,
-          @inputTokens, @outputTokens, @source, @recordedAt
-        )
-        ON CONFLICT(request_id) DO UPDATE SET
-          seller_peer_id = excluded.seller_peer_id,
-          service = excluded.service,
-          channel_id = excluded.channel_id,
-          authorized_cost_usdc = excluded.authorized_cost_usdc,
-          input_tokens = excluded.input_tokens,
-          output_tokens = excluded.output_tokens,
-          source = excluded.source,
-          recorded_at = excluded.recorded_at
-      `),
-      getRequestCost: this._db.prepare('SELECT * FROM request_costs WHERE request_id = ?'),
     };
   }
 
@@ -140,25 +105,6 @@ export class VerificationStorage {
     return rows.map(rowToResponseAuth);
   }
 
-  insertRequestCost(record: StoredRequestCost): void {
-    this._insertRequestCost.run({
-      requestId: record.requestId,
-      sellerPeerId: record.sellerPeerId,
-      service: record.service,
-      channelId: record.channelId,
-      authorizedCostUsdc: record.authorizedCostUsdc.toString(),
-      inputTokens: record.inputTokens.toString(),
-      outputTokens: record.outputTokens.toString(),
-      source: record.source,
-      recordedAt: record.recordedAt,
-    });
-  }
-
-  getRequestCost(requestId: string): StoredRequestCost | null {
-    const row = this._getRequestCost.get(requestId) as RequestCostRow | undefined;
-    return row ? rowToRequestCost(row) : null;
-  }
-
   close(): void {
     this._db.close();
   }
@@ -168,20 +114,6 @@ interface VerificationStorageStatements {
   insertResponseAuth: Database.Statement;
   getResponseAuth: Database.Statement;
   listResponseAuthsBySeller: Database.Statement;
-  insertRequestCost: Database.Statement;
-  getRequestCost: Database.Statement;
-}
-
-interface RequestCostRow {
-  request_id: string;
-  seller_peer_id: string;
-  service: string;
-  channel_id: string;
-  authorized_cost_usdc: string;
-  input_tokens: string;
-  output_tokens: string;
-  source: 'need-auth' | 'response';
-  recorded_at: number;
 }
 
 interface ResponseAuthRow {
@@ -225,19 +157,5 @@ function rowToResponseAuth(row: ResponseAuthRow): StoredResponseAuth {
     verificationError: row.verification_error,
     requestPreimage: row.request_preimage ? new Uint8Array(row.request_preimage) : null,
     responsePreimage: row.response_preimage ? new Uint8Array(row.response_preimage) : null,
-  };
-}
-
-function rowToRequestCost(row: RequestCostRow): StoredRequestCost {
-  return {
-    requestId: row.request_id,
-    sellerPeerId: row.seller_peer_id,
-    service: row.service,
-    channelId: row.channel_id,
-    authorizedCostUsdc: BigInt(row.authorized_cost_usdc),
-    inputTokens: BigInt(row.input_tokens),
-    outputTokens: BigInt(row.output_tokens),
-    source: row.source,
-    recordedAt: row.recorded_at,
   };
 }

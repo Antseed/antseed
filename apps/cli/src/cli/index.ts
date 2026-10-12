@@ -53,4 +53,4 @@ registerGatewayCommands(program);
 registerAntsCommands(program);
 registerAppsCommands(program);
 
-await program.parseAsync(process.argv);
+program.parse(process.argv);

@@ -16,4 +16,4 @@ export {
   type StoredVerificationSample,
   type VerificationSampleConfig,
 } from './samples.js';
-export { VerificationStorage, type StoredRequestCost, type StoredResponseAuth } from './storage.js';
+export { VerificationStorage, type StoredResponseAuth } from './storage.js';
