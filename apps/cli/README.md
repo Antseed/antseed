@@ -500,8 +500,8 @@ Then you earn bonus $ANTS on your usage for 12 weeks.
 **Rewards.** For 12 weeks after the binding the inviter and the new buyer
 split the buyer's referral share 50/50; after that the inviter keeps earning
 alone. The invitee's bonus is paid only to its authorized wallet (operator).
-The inviter's rewards go to its authorized wallet when it has one, otherwise to
-the inviting address itself (sellers and plain wallets). Claims are per week
+The inviter's rewards are paid only to its authorized wallet too, so an inviter
+(buyer or seller) needs one set before it can claim. Claims are per week
 and open in `antseed ants` (Desktop's Claim buttons open the same dashboard).
 
 **Status.** `antseed referral status` reads the binding, the bonus and your

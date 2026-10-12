@@ -176,8 +176,9 @@ ended. Claiming is permissionless, and the recipient is fixed by the contract:
   Deposits operator), never to the buyer hot wallet. Until the buyer has an
   authorized wallet the claim cannot be made; it can be retried once one is
   set.
-- **The inviter's rewards** go to the inviter's authorized wallet when it has
-  one, otherwise to the inviting address itself (sellers and plain wallets).
+- **The inviter's rewards** are paid only to the inviter's authorized wallet
+  as well, whether the inviter is a buyer or a seller. Until it has one, the
+  claim cannot be made.
 
 A wallet can be both an inviter and an invited user; the two claims are
 separate. Claim from the ANTS dashboard (`antseed ants`, **Rewards**). In
