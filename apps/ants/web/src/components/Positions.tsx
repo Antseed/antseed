@@ -108,8 +108,8 @@ export function PositionsCard({ pools, enabled = true }: { pools: PoolView[]; en
               items={[
                 { label: 'Split', onSelect: () => openRowAction(p.id, 'split'), disabled: actionProblem(p, 'split', info?.current) !== null, title: actionProblem(p, 'split', info?.current) ?? undefined },
                 { label: 'Extend lock', onSelect: () => openRowAction(p.id, 'extend'), disabled: actionProblem(p, 'extend', info?.current) !== null, title: actionProblem(p, 'extend', info?.current) ?? undefined },
-                { label: willBeMaxLocked(p) ? 'Disable max lock' : 'Enable max lock', onSelect: () => openRowAction(p.id, 'max-lock') },
-                { label: 'Move allocation', onSelect: () => openRowAction(p.id, 'move') },
+                { label: willBeMaxLocked(p) ? 'Disable max lock' : 'Enable max lock', onSelect: () => openRowAction(p.id, 'max-lock'), disabled: maxLockProblem(p, info?.current) !== null, title: maxLockProblem(p, info?.current) ?? undefined },
+                { label: 'Move allocation', onSelect: () => openRowAction(p.id, 'move'), disabled: actionProblem(p, 'move', info?.current) !== null, title: actionProblem(p, 'move', info?.current) ?? undefined },
                 { label: 'Withdraw', onSelect: () => openRowAction(p.id, 'withdraw') },
               ]}
             />
@@ -217,6 +217,10 @@ function StateBadge({ position }: { position: PositionView }) {
 function actionProblem(position: PositionView, action: PositionAction, currentEpoch?: number): string | null {
   const effective = currentEpoch === undefined ? null : positionActionEpoch(action, currentEpoch, [position]);
   return positionActionProblem(position, action, effective);
+}
+
+function maxLockProblem(position: PositionView, currentEpoch?: number): string | null {
+  return actionProblem(position, willBeMaxLocked(position) ? 'disable-max-lock' : 'enable-max-lock', currentEpoch);
 }
 
 function PositionUnlock({ position, dateOnly = false }: { position: PositionView; dateOnly?: boolean }) {
@@ -347,7 +351,7 @@ function MaxLockForm({ position, config, onStarted }: { position: PositionView; 
   const info = useEpochInfo();
   const enable = !willBeMaxLocked(position);
   const body: MaxLockRequest = { positionId: position.id, enable };
-  const problem = actionProblem(position, enable ? 'enable-max-lock' : 'disable-max-lock', info?.current);
+  const problem = maxLockProblem(position, info?.current);
   const restartEnd = info ? info.current + 1 + config.maxStakeEpochs : null;
   return (
     <div className="stack">

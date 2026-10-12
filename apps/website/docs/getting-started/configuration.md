@@ -205,7 +205,7 @@ Each service entry supports five optional fields:
 | `categories` | string[] | Normie-friendly tags announced in peer metadata (e.g. `chat`, `coding`, `math`, `study`, `fast`, `free`). |
 | `pricing` | object | Per-service pricing in USD per million tokens. If omitted, the provider's `defaults` are used. |
 | `capabilities` | object | Optional discovery hints: `contextWindow`, `maxOutputTokens`, `inputs`, `outputs`, `reasoning`, `toolUse`, `structuredOutput`, and `supportedParameters`. |
-| `unitBillingModels` | object | Optional per-protocol non-token pricing. Currently consumed by the `openai` provider for `openai-images` services. |
+| `unitBillingModels` | object | Optional per-protocol non-token pricing. Consumed by the `openai` provider for `openai-images` services and by the `venice-video` provider for `venice-video` services. |
 
 Capabilities are hints, not enforced limits. Omitted fields mean “unknown.” Supported modality values for `inputs` and `outputs` are `text`, `image`, `audio`, `video`, and `pdf`. `supportedParameters` lists extra request-body parameter names the service accepts (lowercase snake_case, e.g. `background`, `output_format`, `seed`) — useful for image services where clients otherwise have to guess. The `openai` provider automatically advertises `outputs: ["image"]` for `openai-images` services; explicit config extends or overrides that default per field.
 
@@ -333,6 +333,19 @@ antseed config seller set freeTier.windowMs 86400000
 ```
 
 Omit `windowMs` to use the 24-hour default. Remove `seller.freeTier` to restore unlimited zero-priced service access.
+
+## Restricted Countries
+
+By default a seller refuses inbound connections from IP addresses in Cuba, Iran, North Korea, Syria and Russia. The country is looked up locally in the bundled [`geoip-country`](https://www.npmjs.com/package/geoip-country) database, so no buyer address leaves the seller. The check is best effort: buyers behind a VPN or proxy are seen at that server's address.
+
+A refused buyer gets a short message instead of a dropped connection: the request fails with "This seller does not accept connections from your location.", and a `GET /metadata` request gets `403 Forbidden` with the same text.
+
+Set your own list of ISO country codes, or `[]` to turn the check off:
+
+```bash
+antseed config seller set restrictedCountries '["CU","IR","KP","SY","RU"]'
+antseed config seller set restrictedCountries '[]'
+```
 
 ## Free-Usage Transactions
 

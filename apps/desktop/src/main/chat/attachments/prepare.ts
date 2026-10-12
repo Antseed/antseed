@@ -371,6 +371,7 @@ async function prepareOneAttachment(
         size: raw.size,
         kind: 'image',
         status: 'ready',
+        ...(attachmentId ? { text: `<uploaded-image id="${safeAttribute(attachmentId)}" name="${safeAttribute(name)}" mime="${safeAttribute(mimeType)}">` } : {}),
         image: { type: 'image', data: buffer.toString('base64'), mimeType: normalizeMime(mimeType) || mimeType },
       },
       consumedChars: 0,

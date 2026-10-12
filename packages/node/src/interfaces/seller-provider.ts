@@ -65,7 +65,8 @@ export interface Provider {
    * `callbacks.onResponseStart` once, then `callbacks.onResponseChunk`
    * zero or more times (including a final `done=true` chunk).
    *
-   * Must resolve with the complete reconstructed response body.
+   * Must resolve with the complete reconstructed response body, except negotiated
+   * video downloads, whose body is hashed incrementally by the node.
    */
   handleRequestStream?(
     req: SerializedHttpRequest,
@@ -80,6 +81,7 @@ export interface Provider {
 }
 
 export interface ProviderStreamCallbacks {
+  signal?: AbortSignal;
   onResponseStart: (response: SerializedHttpResponse) => void;
-  onResponseChunk: (chunk: SerializedHttpResponseChunk) => void;
+  onResponseChunk: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }

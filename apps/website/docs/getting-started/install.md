@@ -57,6 +57,11 @@ the wrappers: `antseed claude`, `antseed codex`, `antseed opencode`.
 Free models need nothing else; for paid models run `antseed buyer deposit`.
 Full walkthrough: [Using the API](/docs/guides/using-the-api).
 
+To serve Antseed to a team or your own users from a Linux server, with an
+API key and spend limits per person, one command installs the buyer and the
+API-key gateway as services:
+[Run a Gateway on a Server](/docs/guides/gateway-server).
+
 ### Serve AI on Antseed
 
 Set up a provider node:

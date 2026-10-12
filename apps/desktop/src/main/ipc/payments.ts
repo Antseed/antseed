@@ -59,6 +59,7 @@ import {
   startPaymentsPortal,
 } from '../payments/portal.js';
 import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-window.js';
+import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import {
   lookupPeer,
@@ -137,7 +138,7 @@ export function registerPaymentsIpc(): void {
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };
       const providers = await readCardProviders();
-      // The chooser's fixed lineup (Meridian, Antseed Pay) must resolve even
+      // The chooser's fixed lineup (Meridian, Antseed Pay, Peer Pay) must resolve even
       // when a legacy config overrides the provider list with other entries.
       const provider = opts?.providerId
         ? providers.find((entry) => entry.id === opts.providerId)
@@ -147,6 +148,17 @@ export function registerPaymentsIpc(): void {
 
       const amount = Number(opts?.amountUsdc);
       const hasAmount = Number.isFinite(amount) && amount > 0;
+      if (provider.id === 'peer-pay') {
+        if (!hasAmount) return { ok: false, error: 'Enter an amount before opening Peer Pay' };
+        const checkoutUrl = await createPeerPayCheckout({
+          endpoint: provider.url,
+          address: identity.wallet.address,
+          amount: opts?.amountUsdc ?? '',
+        }, identity.wallet);
+        if (isDev) console.log('[payments] Peer Pay checkout created');
+        openCheckoutPopup(checkoutUrl, getMainWindow());
+        return { ok: true };
+      }
       let template = provider.url.split('{address}').join(identity.wallet.address);
       if (hasAmount) template = template.split('{amount}').join(String(amount));
       let parsed: URL;

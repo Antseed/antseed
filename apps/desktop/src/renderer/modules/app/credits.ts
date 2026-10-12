@@ -57,6 +57,9 @@ export function initCreditsModule({
           uiState.creditsSpendableUsdc !== result.data.spendableUsdc ||
           uiState.creditsWalletUsdc !== result.data.walletUsdc ||
           uiState.creditsTotalOwnedUsdc !== result.data.totalOwnedUsdc ||
+          uiState.creditsCreditLimitUsdc !== result.data.creditLimitUsdc ||
+          (result.data.minFirstDepositUsdc != null && uiState.creditsMinFirstDepositUsdc !== result.data.minFirstDepositUsdc) ||
+          (result.data.depositFeeUsdc != null && uiState.creditsDepositFeeUsdc !== result.data.depositFeeUsdc) ||
           uiState.creditsEvmAddress !== result.data.evmAddress ||
           uiState.creditsOperatorAddress !== (result.data.operatorAddress ?? null);
 
@@ -68,6 +71,8 @@ export function initCreditsModule({
         uiState.creditsWalletUsdc = result.data.walletUsdc;
         uiState.creditsTotalOwnedUsdc = result.data.totalOwnedUsdc;
         uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
+        if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
+        if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
         uiState.creditsEvmAddress = result.data.evmAddress;
         uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
 
@@ -77,12 +82,7 @@ export function initCreditsModule({
           uiState.chatActiveChannels.clear();
         }
 
-        // Low balance detection
         const available = parseFloat(uiState.creditsAvailableUsdc);
-        const lowBalance = available > 0 && (available < 1.0 || (reserved > 0 && available < reserved));
-        if (uiState.chatLowBalanceWarning !== lowBalance) {
-          uiState.chatLowBalanceWarning = lowBalance;
-        }
 
         // Auto-retry: if the payment approval card is visible and balance
         // now covers the required amount, dismiss the card and retry.

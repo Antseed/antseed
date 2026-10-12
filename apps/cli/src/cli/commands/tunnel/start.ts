@@ -7,12 +7,12 @@ import chalk from 'chalk'
 import ora from 'ora'
 import { getGlobalOptions } from '../types.js'
 import { setupShutdownHandler } from '../../shutdown.js'
-import { TunnelGateway } from '../../../tunnel/gateway.js'
+import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
+import { DEFAULT_GATEWAY_PORT, topupConfig } from '../gateway/shared.js'
 import { ensureCloudflared } from '../../../tunnel/cloudflared.js'
 import { tunnelDir, tunnelPidFile, tunnelStateFile } from './paths.js'
 
 const DEFAULT_BUYER_PORT = 8377
-const DEFAULT_GATEWAY_PORT = 8379
 type TunnelProvider = 'cloudflare' | 'ngrok'
 
 function parseTunnelProvider(value: string): TunnelProvider {
@@ -150,7 +150,8 @@ export function registerTunnelStartCommand(cmd: Command): void {
     .option('--buyer-port <number>', 'Local buyer proxy port', String(DEFAULT_BUYER_PORT))
     .option('--gateway-port <number>', 'Local authenticated gateway port', String(DEFAULT_GATEWAY_PORT))
     .action(async (options: { provider?: string; buyerPort: string; gatewayPort: string }) => {
-      const dataDir = getGlobalOptions(cmd).dataDir
+      const globalOptions = getGlobalOptions(cmd)
+      const dataDir = globalOptions.dataDir
       const buyerPort = parseInt(options.buyerPort, 10) || DEFAULT_BUYER_PORT
       const gatewayPort = parseInt(options.gatewayPort, 10) || DEFAULT_GATEWAY_PORT
       const provider = parseTunnelProvider(options.provider ?? process.env['ANTSEED_TUNNEL_PROVIDER'] ?? 'cloudflare')
@@ -161,18 +162,25 @@ export function registerTunnelStartCommand(cmd: Command): void {
         throw new Error(`Set ${providerTokenEnvironmentName(provider)} before starting the tunnel.`)
       }
       let publicUrl = parsePublicUrl(configuredPublicUrl, provider)
-      if (apiKey.length < 16) {
-        throw new Error('ANTSEED_TUNNEL_API_KEY must be at least 16 characters.')
-      }
 
-      const gateway = new TunnelGateway({
-        buyerPort,
-        apiKey,
-        listenPort: gatewayPort,
-        onLog: (message) => process.stderr.write(`[tunnel] ${message}\n`),
-      })
+      const topup = topupConfig()
       const spinner = ora('Starting authenticated API gateway...').start()
-      await gateway.start()
+      let gateway: GatewayRuntime
+      try {
+        gateway = await startGatewayRuntime({
+          dataDir,
+          configPath: globalOptions.config,
+          listenPort: gatewayPort,
+          buyerPort,
+          environmentApiKey: apiKey || null,
+          ...(topup ? { topup } : {}),
+          onLog: (message) => process.stderr.write(`[tunnel] ${message}\n`),
+        })
+      } catch (error) {
+        spinner.fail(chalk.red(`Could not start the API gateway: ${errorMessage(error)}`))
+        process.exitCode = 1
+        return
+      }
       let tunnelProcess: ReturnType<typeof spawn> | null = null
       try {
         const binary = provider === 'cloudflare'
@@ -223,7 +231,9 @@ export function registerTunnelStartCommand(cmd: Command): void {
 
       spinner.succeed(chalk.green('Public HTTPS tunnel is running'))
       console.log(`${chalk.bold('Base URL:')} ${baseUrl}`)
-      console.log(chalk.dim('Use the same ANTSEED_TUNNEL_API_KEY as the client API key.'))
+      console.log(chalk.dim(apiKey
+        ? 'Use ANTSEED_TUNNEL_API_KEY or a key from `antseed gateway key create` as the client API key.'
+        : 'Use a key from `antseed gateway key create` as the client API key.'))
 
       setupShutdownHandler(async () => {
         tunnelProcess?.kill('SIGTERM')

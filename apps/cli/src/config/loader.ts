@@ -422,6 +422,9 @@ function mergeSellerConfig(
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
     ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
+    ...(value['restrictedCountries'] !== undefined
+      ? { restrictedCountries: value['restrictedCountries'] as string[] }
+      : {}),
     ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
   };
 }

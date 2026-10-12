@@ -2,7 +2,7 @@ import type { Command } from 'commander';
 import chalk from 'chalk';
 import ora from 'ora';
 import type { CloseChannelResultPayload, StoredChannel } from '@antseed/node';
-import { CHANNEL_STATUS } from '@antseed/node/payments';
+import { CHANNEL_KIND, CHANNEL_STATUS } from '@antseed/node/payments';
 import { getGlobalOptions } from '../types.js';
 import { loadConfig } from '../../../config/loader.js';
 import {
@@ -129,11 +129,17 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
         localChannel = resolveBuyerChannelById(
-          store.getAllChannelsByBuyer('buyer', address),
+          store.getBuyerPaymentChannels(address),
           channelId,
         );
       } finally {
         store.close();
+      }
+
+      if (localChannel.channelKind === CHANNEL_KIND.ONE_OFF) {
+        console.error(chalk.red('One-off video channels do not support cooperative close.'));
+        console.error(chalk.dim(`Use antseed buyer channels request-close ${localChannel.sessionId}, then withdraw after the grace period.`));
+        process.exit(1);
       }
 
       if (localChannel.status !== CHANNEL_STATUS.ACTIVE) {
@@ -194,7 +200,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
         localChannel = resolveBuyerChannelById(
-          store.getAllChannelsByBuyer('buyer', address),
+          store.getBuyerPaymentChannels(address),
           channelId,
         );
       } finally {
@@ -272,7 +278,7 @@ export function registerBuyerChannelWithdrawCommands(channelsCmd: Command, buyer
       const store = openChannelStoreOrExit(globalOpts.dataDir);
       try {
         localChannel = resolveBuyerChannelById(
-          store.getAllChannelsByBuyer('buyer', address),
+          store.getBuyerPaymentChannels(address),
           channelId,
         );
       } finally {

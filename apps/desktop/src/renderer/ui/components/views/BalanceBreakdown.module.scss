@@ -127,3 +127,23 @@
   outline: none;
   box-shadow: 0 0 0 2px rgba(var(--brand-rgb), 0.4);
 }
+
+.subRow {
+  padding-left: 12px;
+  font-size: 11px;
+}
+
+.subRow > span:last-child {
+  font-weight: 400;
+}
+
+.subRowLabel {
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.subRowNote {
+  color: var(--text-secondary);
+}

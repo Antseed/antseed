@@ -33,6 +33,7 @@ const WORKSPACE_PACKAGES = {
   '@antseed/antseed-verifier': path.resolve(appDir, '..', '..', 'packages', 'antseed-verifier'),
   '@antseed/api-adapter': path.resolve(appDir, '..', '..', 'packages', 'api-adapter'),
   '@antseed/buyer-core': path.resolve(appDir, '..', '..', 'packages', 'buyer-core'),
+  '@antseed/connected-apps': path.resolve(appDir, '..', '..', 'packages', 'connected-apps'),
   '@antseed/node': path.resolve(appDir, '..', '..', 'packages', 'node'),
   '@antseed/payments': path.resolve(appDir, '..', 'payments'),
   '@antseed/protocol': path.resolve(appDir, '..', '..', 'packages', 'protocol'),
