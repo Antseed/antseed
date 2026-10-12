@@ -31,12 +31,12 @@ const WISE_LOGO = new URL('../../../assets/wise.png', import.meta.url).href;
 const AMOUNT_PRESETS = ['5', '10', '25'];
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
-type Stage = 'choose' | 'crypto';
+type Stage = 'choose' | 'crypto' | 'peer';
 
 // The chooser sits "before" the method screen on the slide axis, so
 // entering a method slides forward and going back slides back — same
 // mechanics as ViewHost, reusing the global .view-pane animations.
-const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1 };
+const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1, peer: 1 };
 // Must match the .view-pane-in/-out animation duration (--motion-duration).
 const STAGE_SLIDE_MS = 300;
 
@@ -345,7 +345,7 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
  * checkout (hosted page in a narrow app popup) — no region gating; the pay
  * page itself shows a proper dead-end screen where a region can't be served.
  * Then the quick USDC-on-Base transfer (scan-to-pay QR), with hosted
- * providers (Meridian) behind "More options". Everything lands in the hot
+ * providers (Meridian, Outerfound) behind "More options". Everything lands in the hot
  * wallet the main-process sweeper watches. Only pages that need an external
  * wallet signature leave the app.
  */
@@ -592,8 +592,6 @@ export function VprDepositView({ onSelectView }: Props) {
             notice={<FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />}
           />
 
-          {amountForm}
-
           <div className={styles.primaryMethods}>
             {/* Primary path — always the antseed-pay Crossmint card checkout,
                 regardless of region (the pay page shows its own dead-end
@@ -645,23 +643,31 @@ export function VprDepositView({ onSelectView }: Props) {
               </button>
             </div>
             <div className={styles.methodGroup}>
+              {/* Peer Pay needs an amount up front, so it gets its own step. */}
               <button
                 type="button"
                 className={styles.methodCta}
-                onClick={() => openCardProvider('peer-pay')}
+                onClick={() => {
+                  recordUserAction('deposit_start', 'deposit');
+                  setCardNotice(null);
+                  goToStage('peer');
+                }}
               >
                 <span className={styles.methodCtaIcon}>
                   <PeerMark size={24} />
                 </span>
                 <span className={styles.methodCtaText}>
                   <span className={styles.methodCtaTitle}>Deposit using Peer</span>
-                  <span className={styles.methodCtaCaption}>Bank or payment app · Peer Pay</span>
+                  <span className={styles.methodCtaCaption}>Bank or payment app</span>
                 </span>
                 <span className={styles.methodBadges}>
                   <PaymentRailMark src={VENMO_LOGO} label="Venmo" />
                   <PaymentRailMark src={PAYPAL_LOGO} label="PayPal" />
                   <PaymentRailMark src={REVOLUT_LOGO} label="Revolut" />
                   <PaymentRailMark src={WISE_LOGO} label="Wise" />
+                </span>
+                <span className={styles.methodArrow} aria-hidden="true">
+                  <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
                 </span>
               </button>
               <span className={styles.methodFootnote}>* Deposited to your credits by the Antseed relayer network</span>
@@ -734,6 +740,35 @@ export function VprDepositView({ onSelectView }: Props) {
             </span>
           </div>
         </div>
+        </VprPage>
+      );
+    }
+
+    if (current === 'peer') {
+      return (
+        <VprPage title="Deposit using Peer" onBack={() => goToStage('choose')}>
+          <div className={styles.stack}>
+
+            {amountForm}
+
+            <button
+              type="button"
+              className={styles.funCta}
+              disabled={amount === '' || amountBelowMinimum}
+              onClick={() => openCardProvider('peer-pay')}
+            >
+              <span className={styles.funCtaText}>
+                <span className={styles.funCtaTitle}>Continue to Peer Pay</span>
+                <span className={styles.funCtaCaption}>Venmo, PayPal, Revolut, Wise and more</span>
+              </span>
+              <span className={styles.methodArrow} aria-hidden="true">
+                <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} />
+              </span>
+            </button>
+            {cardNotice && <div className={styles.cardNotice} role="alert">{cardNotice}</div>}
+
+            <span className={styles.methodFootnote}>* Deposited to your credits by the Antseed relayer network</span>
+          </div>
         </VprPage>
       );
     }
