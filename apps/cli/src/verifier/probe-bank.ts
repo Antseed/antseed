@@ -29,6 +29,11 @@ interface BankProbeV1 {
   probe: KbfProbe
   selfTest: ReferenceProbeSelfTestV1
   distinguishingContrastModels: string[]
+  /**
+   * Contrast models that returned a parseable answer for this probe. Absent on
+   * banks built before it was recorded; every contrast then counts as answered.
+   */
+  answeredContrastModels?: string[]
 }
 
 export interface ProbeBankV1 {
@@ -131,6 +136,7 @@ export async function appendModelReferenceToBank(input: {
   model: string
   reference: KbfReferenceV1
   cost: ReferenceBuildCostV1
+  answeredContrastModelsByProbeId?: ReadonlyMap<string, readonly string[]>
 }): Promise<{
   path: string
   addedProbeCount: number
@@ -145,7 +151,12 @@ export async function appendModelReferenceToBank(input: {
       minimumStatisticalPower: Number.EPSILON,
     })
     const existing = await readJsonIfExists<ProbeBankV1>(path)
-    const incoming = bankFromReference(input.model, validatedReference, input.cost)
+    const incoming = bankFromReference(
+      input.model,
+      validatedReference,
+      input.cost,
+      input.answeredContrastModelsByProbeId,
+    )
     if (!existing) {
       await writeJsonAtomic(path, incoming)
       return {
@@ -180,6 +191,14 @@ export async function appendModelReferenceToBank(input: {
         ...previous.distinguishingContrastModels,
         ...entry.distinguishingContrastModels,
       ])].sort()
+      if (previous.answeredContrastModels && entry.answeredContrastModels) {
+        previous.answeredContrastModels = [...new Set([
+          ...previous.answeredContrastModels,
+          ...entry.answeredContrastModels,
+        ])].sort()
+      } else {
+        delete previous.answeredContrastModels
+      }
     }
     bank.contrastModels = [...incoming.contrastModels].sort()
     if (!bank.sourceReferenceIds.includes(validatedReference.referenceId)) {
@@ -658,7 +677,12 @@ export async function findEpochProbeReference(banksDir: string, referenceId: str
   return null
 }
 
-function bankFromReference(model: string, reference: KbfReferenceV1, cost: ReferenceBuildCostV1): ProbeBankV1 {
+function bankFromReference(
+  model: string,
+  reference: KbfReferenceV1,
+  cost: ReferenceBuildCostV1,
+  answeredContrastModelsByProbeId?: ReadonlyMap<string, readonly string[]>,
+): ProbeBankV1 {
   const assumptions = {
     alpha: reference.statisticalPowerEvidence.alpha,
     clopperPearsonConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
@@ -694,6 +718,12 @@ function bankFromReference(model: string, reference: KbfReferenceV1, cost: Refer
       probe,
       selfTest: outcomes.get(probe.id)!,
       distinguishingContrastModels: (contrastByProbe.get(probe.id) ?? []).sort(),
+      ...(answeredContrastModelsByProbeId ? {
+        answeredContrastModels: [...new Set([
+          ...(answeredContrastModelsByProbeId.get(probe.id) ?? []),
+          ...(contrastByProbe.get(probe.id) ?? []),
+        ])].sort(),
+      } : {}),
     })),
     sourceReferenceIds: [reference.referenceId],
     referenceCosts: [{
@@ -713,7 +743,7 @@ function bankFromReference(model: string, reference: KbfReferenceV1, cost: Refer
   }
 }
 
-function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): string {
+export function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): string {
   return canonicalHashBytes32({
     model: normalized(model),
     referenceModel: normalized(reference.referenceModel),
@@ -732,6 +762,64 @@ function probeBankCompatibilityHash(model: string, reference: KbfReferenceV1): s
       clopperPearsonConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
     },
   })
+}
+
+export async function loadBankEnrollmentReference(banksDir: string, model: string): Promise<KbfReferenceV1 | undefined> {
+  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  if (!bank) return undefined
+  if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
+    throw new Error(`invalid probe bank for ${model}`)
+  }
+  assertCurrentBankEnrollment(bank, model)
+  const reference = referenceFromBankEntries(bank, bank.probes, Date.parse(bank.updatedAt))
+  validateKbfReferenceV1(reference, { minimumStatisticalPower: Number.EPSILON })
+  if (probeBankCompatibilityHash(model, reference) !== bank.compatibilityHash) {
+    throw new Error(`probe bank for ${model} has inconsistent enrollment metadata`)
+  }
+  return reference
+}
+
+function referenceFromBankEntries(bank: ProbeBankV1, selected: BankProbeV1[], now: number): KbfReferenceV1 {
+  const selfTest = aggregateKbfSelfTestOutcomes(selected.map((entry) => entry.selfTest))
+  const power = computeBinomialPower({
+    selfHamming: selfTest.hamming,
+    selfTotal: selfTest.total,
+    probeCount: selected.length,
+    minimumMismatchDelta: bank.referenceTemplate.minimumMismatchDelta,
+    alpha: bank.statisticalAssumptions.alpha,
+    cpConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+  })
+  const reference: KbfReferenceV1 = {
+    version: KBF_REFERENCE_VERSION,
+    kind: 'kbf',
+    referenceId: '',
+    ...bank.referenceTemplate,
+    createdAt: new Date(now).toISOString(),
+    queryProfile: bank.queryProfile,
+    selfTest,
+    probes: selected.map((entry) => entry.probe),
+    selectedProbeCount: selected.length,
+    statisticalPower: power.power,
+    statisticalPowerEvidence: {
+      test: 'one-sided-binomial',
+      alpha: bank.statisticalAssumptions.alpha,
+      clopperPearsonConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
+      selfHamming: selfTest.hamming,
+      selfTotal: selfTest.total,
+      probeCount: selected.length,
+      p0UpperBound: power.p0,
+      alternativeMismatchRate: power.p1,
+      criticalMismatchCount: power.criticalMismatchCount,
+      power: power.power,
+    },
+    contrasts: bank.contrastModels.map((model) => ({
+      model,
+      distinguishingProbeIds: selected.filter((entry) => entry.distinguishingContrastModels.includes(model))
+        .map((entry) => entry.probe.id),
+    })),
+  }
+  reference.referenceId = computeReferenceId(reference)
+  return reference
 }
 
 function selectPoweredReference(
@@ -769,6 +857,7 @@ function selectPoweredReference(
     const contrastDetection = computeContrastDetection({
       probeIds: selected.map((entry) => entry.probe.id),
       contrasts,
+      answeredProbeIds: answeredContrastProbeIds(bank.contrastModels, selected),
       selfHamming: selfTest.hamming,
       selfTotal: selfTest.total,
       alpha: bank.statisticalAssumptions.alpha,
@@ -778,36 +867,23 @@ function selectPoweredReference(
     // DIFF. A contrast that distinguishes no bank probe at all never answered
     // during enrollment (for example, it was unavailable) and cannot be tested.
     if (contrastDetection.some((entry) => testableContrasts.has(entry.model) && !entry.detected)) continue
-    const reference: KbfReferenceV1 = {
-      version: KBF_REFERENCE_VERSION,
-      kind: 'kbf',
-      referenceId: '',
-      ...bank.referenceTemplate,
-      createdAt: new Date(now).toISOString(),
-      queryProfile: bank.queryProfile,
-      selfTest,
-      probes: selected.map((entry) => entry.probe),
-      selectedProbeCount: count,
-      statisticalPower: power.power,
-      statisticalPowerEvidence: {
-        test: 'one-sided-binomial',
-        alpha: bank.statisticalAssumptions.alpha,
-        clopperPearsonConfidence: bank.statisticalAssumptions.clopperPearsonConfidence,
-        selfHamming: selfTest.hamming,
-        selfTotal: selfTest.total,
-        probeCount: count,
-        p0UpperBound: power.p0,
-        alternativeMismatchRate: power.p1,
-        criticalMismatchCount: power.criticalMismatchCount,
-        power: power.power,
-      },
-      contrasts,
-      contrastDetection,
-    }
+    const reference = { ...referenceFromBankEntries(bank, selected, now), contrasts, contrastDetection }
     reference.referenceId = computeReferenceId(reference)
     return validateKbfReferenceV1(reference, { minimumStatisticalPower: sizing.minimumStatisticalPower })
   }
   return null
+}
+
+function answeredContrastProbeIds(
+  contrastModels: readonly string[],
+  selected: readonly BankProbeV1[],
+): Map<string, Set<string>> | undefined {
+  if (!selected.every((entry) => Array.isArray(entry.answeredContrastModels))) return undefined
+  const answered = new Map(contrastModels.map((model) => [model, new Set<string>()]))
+  for (const entry of selected) {
+    for (const model of entry.answeredContrastModels!) answered.get(model)?.add(entry.probe.id)
+  }
+  return answered
 }
 
 function cryptoShuffle<T>(values: readonly T[]): T[] {

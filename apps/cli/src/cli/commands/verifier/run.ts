@@ -55,6 +55,7 @@ import {
 } from '../../../verifier/proxy-evidence.js'
 import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
 import { getGlobalOptions } from '../types.js'
+import { ensureAuditableReference } from '../../../verifier/ensure-auditable-reference.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
 import {
@@ -67,6 +68,21 @@ interface RunOptions {
   allowProbeReuse?: boolean
   peer?: string
   resumeRun?: string
+  enrollIfNeeded?: boolean
+  maxEnrollmentRequests?: string
+}
+
+export function enrollmentRequestBudget(options: RunOptions): number | null {
+  if (!options.enrollIfNeeded) {
+    if (options.maxEnrollmentRequests !== undefined) throw new Error('--max-enrollment-requests requires --enroll-if-needed')
+    return null
+  }
+  if (options.resumeRun) throw new Error('--enroll-if-needed cannot be combined with --resume-run')
+  const budget = Number(options.maxEnrollmentRequests)
+  if (!Number.isSafeInteger(budget) || budget <= 0) {
+    throw new Error('--enroll-if-needed requires --max-enrollment-requests <positive integer> per model')
+  }
+  return budget
 }
 
 export interface ResumeCandidate {
@@ -116,7 +132,10 @@ export function registerVerifierRunCommand(verifier: Command): void {
     .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
+    .option('--enroll-if-needed', 'enroll additional reference probes before auditing an insufficient bank')
+    .option('--max-enrollment-requests <count>', 'maximum physical reference requests per model, including retries')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
+      const enrollmentBudget = enrollmentRequestBudget(options)
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
       const selectedPeerId = options.peer ? normalizeVerifierPeerId(options.peer) : null
@@ -131,8 +150,8 @@ export function registerVerifierRunCommand(verifier: Command): void {
       let status: VerifierStatusV1 | null = null
       let runProgress: VerifierRunProgress | null = null
       try {
-        const epochWindow = utcDayAuditEpochWindow()
-        const epoch = epochWindow.epoch
+        let epochWindow = utcDayAuditEpochWindow()
+        let epoch = epochWindow.epoch
         if (requestedResumeManifest && requestedResumeManifest.epoch !== epoch) {
           throw new Error(
             `resume run ${requestedResumeManifest.runId} belongs to epoch ${requestedResumeManifest.epoch}; current epoch is ${epoch}`,
@@ -169,8 +188,8 @@ export function registerVerifierRunCommand(verifier: Command): void {
           const peerSuffix = selectedPeerId ? ` and peer ${selectedPeerId}` : ''
           throw new Error(`resume run ${resumeSourceRunId} has no undetermined audits for the selected models${peerSuffix}`)
         }
-        const proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
-        const selectedPeers = selectedPeerId
+        let proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
+        let selectedPeers = selectedPeerId
           ? [selectVerifierPeer(proxy.peers, selectedPeerId)]
           : proxy.peers
         const targetPolicy = {
@@ -194,6 +213,39 @@ export function registerVerifierRunCommand(verifier: Command): void {
           } else if (advertisedModels.length === 0) {
             throw new Error(`peer ${selectedPeerId} does not advertise model ${runModels[0]}`)
           }
+        }
+        if (enrollmentBudget !== null) {
+          if (resumeOnly) throw new Error('an audit resume is pending; complete it before enrolling new probes')
+          const readyModels: string[] = []
+          for (const model of runModels) {
+            if (!selectedPeers.some((peer) => classifyVerificationTargetServices(
+              peer, verifierModelServices(config.verifier, model), targetPolicy,
+            ).eligible)) {
+              console.log(chalk.dim(`[enrollment:${model}] no eligible sellers; no enrollment calls needed`))
+              readyModels.push(model)
+              continue
+            }
+            try {
+              await ensureAuditableReference({
+                model, banksDir,
+                referencesDir: config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references'),
+                config: config.verifier,
+                maxRequests: enrollmentBudget,
+                buyerProxyPort: config.buyer.proxyPort,
+                log: (message) => console.log(chalk.dim(`[enrollment:${model}] ${message}`)),
+              })
+              readyModels.push(model)
+            } catch (error) {
+              console.warn(chalk.yellow(`SKIPPED ${model}: enrollment failed: ${asError(error).message}`))
+              process.exitCode = 1
+            }
+          }
+          runModels = readyModels
+          if (runModels.length === 0) throw new Error('no models ready after reference enrollment')
+          epochWindow = utcDayAuditEpochWindow()
+          epoch = epochWindow.epoch
+          proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
+          selectedPeers = selectedPeerId ? [selectVerifierPeer(proxy.peers, selectedPeerId)] : proxy.peers
         }
         responseAuthReader = await openResponseAuthReader({
           dataDir: globalOptions.dataDir,
