@@ -963,6 +963,17 @@ aside.theme-doc-sidebar-container {
   border-radius: 6px;
 }
 
+/* Inline chips move to the next line whole instead of splitting mid-token
+   (e.g. `--` / `output`). Only a chip wider than the column wraps, inside
+   its own box. */
+.markdown :not(pre) > code {
+  display: inline-block;
+  max-width: 100%;
+  line-height: 1.45;
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+}
+
 .markdown table {
   font-family: var(--as-font-data);
   font-size: 12px;

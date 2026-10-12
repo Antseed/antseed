@@ -118,6 +118,8 @@ Every dashboard action maps to one of these commands; the dashboard runs on
 
 `antseed config seller add-service <provider> <serviceId>` supports:
 
+<div className="command-table">
+
 | Option | Purpose |
 |---|---|
 | `--upstream <model>` | Map the public service ID to an upstream model ID |
@@ -126,6 +128,8 @@ Every dashboard action maps to one of these commands; the dashboard runs on
 | `--capabilities <json>` | Model hints such as context window, input modalities, reasoning, and tool use |
 | `--unit-billing-models <json>` | Per-protocol non-token billing, currently used by `openai-images` |
 | `--base-url <url>` | Set the provider-wide upstream base URL |
+
+</div>
 
 ```bash
 antseed config seller add-service openai flux.1-schnell \
