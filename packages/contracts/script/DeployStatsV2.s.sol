@@ -20,10 +20,13 @@ import { AntseedStatsV2 } from "../stats/AntseedStatsV2.sol";
  *      statsV2.setReferrals(...). Wire the sinks BEFORE re-pointing the
  *      registry: settlements Stats forwards while a sink is still unset are
  *      never attributed.
- *   2. Record `contracts.stats` = statsV2 (with its deploymentBlock) in
+ *   2. Register AntseedReferrals and AntseedClientRewards as emissions gate
+ *      minters with RegisterAttributionMinters (verification 4%, client
+ *      rewards 4%, referrals 2%); shares take effect from the next epoch.
+ *   3. Record `contracts.stats` = statsV2 (with its deploymentBlock) in
  *      deployments/<network>/current.json and regenerate chain config, so
  *      statsContractAddress / statsDeployBlock move together.
- *   3. AntseedRegistry.setStats(statsV2) — Channels and FreeUsage resolve it live.
+ *   4. AntseedRegistry.setStats(statsV2) — Channels and FreeUsage resolve it live.
  *
  * Channels open across the cutover report their cumulative totals once as a
  * first delta in the new contract. The network-stats indexer nets that
@@ -43,6 +46,6 @@ contract DeployStatsV2 is Script {
         vm.stopBroadcast();
 
         console.log("AntseedStatsV2:", address(stats));
-        console.log("Next: AntseedRegistry.setStats(statsV2), then deploy AttributionUsage, Referrals and ClientRewards against it.");
+        console.log("Next: deploy AttributionUsage, Referrals and ClientRewards against it and wire them, then AntseedRegistry.setStats(statsV2).");
     }
 }

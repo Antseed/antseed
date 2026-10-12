@@ -30,8 +30,8 @@ import { AntseedReferrals } from "../rewards/AntseedReferrals.sol";
  * so `scripts/generate-contract-chain-config.mjs` emits `referralsAddress` for
  * every client; `payments.crypto.referralsAddress` in config.json overrides it
  * per install (CLI and Desktop both read that key). The controller pays
- * nothing until governance registers it as a gate minter
- * (`AntseedEmissionsGate.setMinter`) with its own minter id and share.
+ * nothing until the gate owner registers it as a gate minter with
+ * script/RegisterAttributionMinters.s.sol (referrals 2%).
  */
 contract DeployReferrals is Script {
     function run() external returns (AntseedReferrals referrals) {

@@ -293,6 +293,9 @@ contract AntseedReferralsTest is Test {
             keccak256(abi.encode(keccak256("Invite(uint256 issuedEpoch,uint256 index)"), issuedEpoch, index));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
         assertEq(atFixed.INVITE_TYPEHASH(), keccak256("Invite(uint256 issuedEpoch,uint256 index)"));
+        assertEq(atFixed.INVITE_TYPEHASH(), 0x787424ddbd067db314529d6126aaa36d95cddd0034c3b0321ba23f851eaa52a8);
+        assertEq(domainSeparator, 0x7c61f7df600144621a276a74c7d6dcb93fdecf901357c79df42bcca8b8743495);
+        assertEq(structHash, 0x0fd739de67ca2598fb01ecdc42b4dbc8cc4aa98cca50e14e2af44bfcaa6cef83);
         assertEq(atFixed.inviteDigest(issuedEpoch, index), digest);
         assertEq(digest, 0x23a154885f1032c2161dc1e68d05535b819dbdeb17a51793c019bdfe30d4b4c9);
 

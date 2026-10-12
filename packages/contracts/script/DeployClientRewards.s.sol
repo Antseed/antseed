@@ -15,8 +15,8 @@ import { AntseedClientRewards } from "../emissions/AntseedClientRewards.sol";
  *   ATTRIBUTION_USAGE      — AntseedAttributionUsage ledger
  *   IDENTITY_REGISTRY      — ERC-8004 IdentityRegistry
  *
- * The controller pays nothing until governance registers it as a gate minter
- * (`AntseedEmissionsGate.setMinter`) with its own minter id and share.
+ * The controller pays nothing until the gate owner registers it as a gate
+ * minter with script/RegisterAttributionMinters.s.sol (client rewards 4%).
  */
 contract DeployClientRewards is Script {
     function run() external returns (AntseedClientRewards rewards) {

@@ -138,8 +138,10 @@ usage, read from `AntseedAttributionUsage`:
 - **Clients** (`AntseedClientRewards`): usage is credited to the ERC-8004 agent
   of the client software that produced it, and paid to that agent's owner.
 
-Each controller pays nothing until governance registers it as an emissions-gate
-minter with its own share; this page does not list those shares. The design is
+Each controller pays nothing until it is registered as an emissions-gate
+minter. Both buckets come out of the 10% verification bucket: once they are
+registered, it becomes 4% verification, 4% clients and 2% referrals, from the
+next epoch. The other allocations do not change. The design is
 in AIP-6 ([proposal](https://github.com/Antseed/AIPs/pull/12)).
 
 ### Stake and usage targets

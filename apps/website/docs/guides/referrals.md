@@ -152,9 +152,9 @@ without one configured they are hidden.
 ## What both sides earn
 
 Referral rewards are ANTS from a referral bucket of each epoch's emissions,
-paid by `AntseedReferrals` as an emissions-gate controller. The bucket's share
-of emissions is set by governance when the controller is registered with the
-emissions gate. Each week's bucket is split pro rata to referral points among
+paid by `AntseedReferrals` as an emissions-gate controller. Once the
+controller is registered with the emissions gate, the bucket is 2% of each
+epoch's emissions. Each week's bucket is split pro rata to referral points among
 everyone with a claim that week.
 
 A referred buyer's recognized usage after the binding earns referral points:
