@@ -39,7 +39,7 @@ export function parseEpochList(value: string): bigint[] {
 export function registerVerifierRewardsCommand(verifierCmd: Command): void {
   verifierCmd
     .command('rewards')
-    .description('Show auditor rewards (weighted by the pool power of audited agents) and optionally claim them')
+    .description('Show auditor rewards (paid in proportion to audit credits) and optionally claim them')
     .requiredOption('--epochs <list>', 'comma-separated epochs or ranges, e.g. 12,14-16')
     .option('--claim', 'claim the pending rewards for the listed epochs')
     .option('--yes', 'claim without an interactive confirmation prompt')
@@ -55,17 +55,18 @@ export function registerVerifierRewardsCommand(verifierCmd: Command): void {
       if (options.claim && auditor !== address) throw new Error('--claim cannot be combined with another --auditor')
 
       const pending = await Promise.all(epochs.map(async (epoch) => {
-        const [amount, power] = await Promise.all([
+        const [amount, credits] = await Promise.all([
           verifierClient.pendingAuditorReward(auditor, epoch),
-          verifierClient.auditPower(auditor, epoch),
+          verifierClient.auditCredits(auditor, epoch),
         ])
-        return { epoch, amount, power }
+        return { epoch, amount, credits }
       }))
-      const table = new Table({ head: ['Epoch', 'Share of audited power', 'Pending ANTS'] })
+      const table = new Table({ head: ['Epoch', 'Credits', 'Share of credits', 'Pending ANTS'] })
       for (const entry of pending) {
         table.push([
           entry.epoch.toString(),
-          formatShare(entry.power.auditor, entry.power.total),
+          `${entry.credits.auditor} / ${entry.credits.total}`,
+          formatShare(entry.credits.auditor, entry.credits.total),
           formatUnits(entry.amount, ANTS_DECIMALS),
         ])
       }

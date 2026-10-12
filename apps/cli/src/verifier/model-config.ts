@@ -52,7 +52,7 @@ export function resolveVerifierCommandModels(
   all: boolean,
 ): string[] {
   const model = modelValue?.trim() ?? ''
-  if ((model.length > 0) === all) throw new Error('provide exactly one of <model> or --all')
+  if ((model.length > 0) === all) throw new Error('provide exactly one of <model>, --all, or --auditor <address>')
   if (all) {
     const models = configuredVerifierModels(config)
     if (models.length === 0) throw new Error('no enabled verifier models are configured')

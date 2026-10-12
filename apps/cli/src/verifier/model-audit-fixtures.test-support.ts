@@ -50,7 +50,8 @@ export interface FixtureAudit {
   model: string
   service: string
   routedService?: string
-  verdict: 'SAME' | 'DIFF'
+  /** UNDETERMINED answers like SAME, then is recorded as lacking verified ResponseAuth. */
+  verdict: 'SAME' | 'DIFF' | 'UNDETERMINED'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
   reference?: KbfReferenceV1
@@ -126,6 +127,7 @@ export async function writeSignedAuditRun(input: {
   epoch: string
   auditor: Wallet
   audits: FixtureAudit[]
+  epochSource?: VerifierRunManifestV1['epochSource']
 }): Promise<VerifierRunManifestV1> {
   const models = [...new Set(input.audits.map((audit) => audit.model))]
   const timestamps = {
@@ -172,6 +174,11 @@ export async function writeSignedAuditRun(input: {
       const matchVector = reference.probes.map((probe) => matchesById.get(probe.id) ?? null)
       const fragment = verifyKbf(reference, { answers, matchVector }, { minCoverage: 1 })
       if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
+      const undetermined = audit.verdict === 'UNDETERMINED'
+      const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict
+      const verdictReason = undetermined
+        ? 'one or more successful proxy batches lacked valid verified ResponseAuth'
+        : fragment.verdictReason
       const cost = summarizeAuditExchangeCosts(exchanges)
       const evidence: ProxyAuditEvidenceV1 = {
         version: 1,
@@ -197,14 +204,14 @@ export async function writeSignedAuditRun(input: {
           matchVector,
           matchVectorHash: fragment.matchVectorHash,
           stats: fragment.stats,
-          verdict: fragment.verdict,
-          verdictReason: fragment.verdictReason,
+          verdict,
+          verdictReason,
           outcomeReason: null,
           cost,
           cumulativeCost: cost,
         },
       }
-      if (fragment.verdict !== audit.verdict) throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
+      if (verdict !== audit.verdict) throw new Error(`fixture produced ${fragment.verdict}, expected ${audit.verdict}`)
       const auditId = canonicalHashBytes32({ fixture: input.runId, model, peerId })
       const written = await writeProxyAuditEvidence(
         modelAuditSellersDirectory(input.evidenceDir, input.epoch, model, input.runId),
@@ -216,7 +223,7 @@ export async function writeSignedAuditRun(input: {
         displayName: evidence.target.displayName,
         agentId: audit.agentId,
         service: audit.service,
-        status: fragment.verdict,
+        status: verdict,
         outcomeReason: null,
         auditId,
         parsedProbeCount: evidence.result.parsedProbeCount,
@@ -270,7 +277,7 @@ export async function writeSignedAuditRun(input: {
     runId: input.runId,
     state: 'completed',
     epoch: input.epoch,
-    epochSource: 'utc-day',
+    epochSource: input.epochSource ?? 'onchain',
     ...timestamps,
     summaryPath,
     modelOrder: models,
@@ -294,7 +301,7 @@ function signedExchanges(input: FixtureAudit & {
     const body = buildKbfProbeRequestBody(input.service, input.reference.queryProfile, probes, promptVariantId)
     const headers = { 'content-type': 'application/json' }
     const content = probes
-      .map((probe, index) => `(${index + 1}) ${input.verdict === 'SAME' ? probe.consensus : probe.consensus + 500}`)
+      .map((probe, index) => `(${index + 1}) ${input.verdict !== 'DIFF' ? probe.consensus : probe.consensus + 500}`)
       .join('\n')
     const responseBody = new TextEncoder().encode(JSON.stringify({
       choices: [{ message: { role: 'assistant', content }, finish_reason: 'stop' }],

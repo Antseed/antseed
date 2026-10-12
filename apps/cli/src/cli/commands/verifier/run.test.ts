@@ -12,14 +12,17 @@ import {
   type ProxyAuditEvidenceV1,
 } from '../../../verifier/proxy-evidence.js'
 import { registerVerifierCommands } from './index.js'
+import { validateRunEpoch } from './submit.js'
 import {
   enrollmentRequestBudget,
   filterCompatibleResumeCandidates,
   filterResumeCandidatesByPeer,
   loadResumeCandidates,
   normalizeVerifierPeerId,
+  resolveAssignedAuditModels,
   resolveRunModels,
   selectVerifierPeer,
+  validateAssignedModeOptions,
   type ResumeCandidate,
 } from './run.js'
 
@@ -54,12 +57,12 @@ test('verifier reference exposes only the explicit build workflow', () => {
   assert.deepEqual(reference.commands[0]!.options.map((option) => option.long), ['--all'])
 })
 
-test('verifier run accepts one model or all configured models', () => {
+test('verifier run accepts one model, all configured models, or an auditor assignment', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
   const run = verifier.commands.find((entry) => entry.name() === 'run')!
   assert.deepEqual(
     run.options.map((option) => option.long),
-    ['--all', '--allow-probe-reuse', '--peer', '--resume-run', '--enroll-if-needed', '--max-enrollment-requests'],
+    ['--all', '--auditor', '--allow-probe-reuse', '--peer', '--resume-run', '--enroll-if-needed', '--max-enrollment-requests'],
   )
   assert.deepEqual(run.registeredArguments.map((argument) => argument.name()), ['model'])
 })
@@ -316,4 +319,61 @@ test('automatic resume ignores candidates whose archived bank reservation no lon
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
+})
+
+test('assigned mode assigns every enabled model for the audit epoch', () => {
+  const config = {
+    verifier: {
+      referenceEndpoint: {
+        baseUrl: 'https://example.test',
+        apiKeyEnv: 'TEST_API_KEY',
+        sourceId: 'test',
+        trust: 'trusted' as const,
+        models: {
+          'model-b': { upstreamModel: 'vendor/model-b' },
+          'model-a': { upstreamModel: 'vendor/model-a' },
+          'model-c': { upstreamModel: 'vendor/model-c', enabled: false },
+        },
+      },
+    },
+  } as unknown as Parameters<typeof resolveAssignedAuditModels>[0]
+  const epoch = { epoch: '12', startedAt: 220, endsAt: 230, source: 'onchain' as const }
+  assert.deepEqual(resolveAssignedAuditModels(config, '0x70997970c51812dc3a010c7d01b50e0d17dc79c8', epoch), {
+    auditor: '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
+    epoch: '12',
+    strategy: 'all',
+    models: ['model-a', 'model-b'],
+  })
+})
+
+test('--auditor cannot be combined with an explicit model, --all, or --resume-run', () => {
+  const auditor = '0x70997970c51812dc3a010c7d01b50e0d17dc79c8'
+  assert.doesNotThrow(() => validateAssignedModeOptions(undefined, { auditor }))
+  assert.throws(() => validateAssignedModeOptions('model-a', { auditor }), /--auditor/)
+  assert.throws(() => validateAssignedModeOptions(undefined, { auditor, all: true }), /--auditor/)
+  assert.throws(() => validateAssignedModeOptions(undefined, { auditor, resumeRun: 'run-1' }), /--resume-run/)
+})
+
+test('submit only accepts runs audited in the current on-chain epoch', () => {
+  const manifest = {
+    version: 1 as const,
+    kind: 'antseed-verifier-run-manifest' as const,
+    runId: 'run-1',
+    state: 'completed' as const,
+    epoch: '7',
+    epochSource: 'onchain' as const,
+    epochStartedAt: '1970-01-01T00:11:40.000Z',
+    epochEndsAt: '1970-01-01T00:13:20.000Z',
+    startedAt: '1970-01-01T00:12:00.000Z',
+    completedAt: '1970-01-01T00:13:00.000Z',
+    summaryPath: '/tmp/summary.json',
+    modelOrder: [],
+    models: [],
+    failureCount: 0,
+  }
+  const window = { epoch: 7n, startedAt: 700, endsAt: 800 }
+  assert.doesNotThrow(() => validateRunEpoch(manifest, window))
+  assert.throws(() => validateRunEpoch({ ...manifest, epochSource: 'utc-day' }, window), /epoch fallback/)
+  assert.throws(() => validateRunEpoch(manifest, { ...window, epoch: 8n }), /current on-chain epoch is 8/)
+  assert.throws(() => validateRunEpoch({ ...manifest, completedAt: '1970-01-01T00:13:30.000Z' }, window), /outside/)
 })

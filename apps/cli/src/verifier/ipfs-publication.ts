@@ -20,7 +20,8 @@ export interface PreparedVerificationPublication {
   version: 1
   kind: 'antseed-verifier-ipfs-publication-package'
   runId: string
-  agentId: string
+  /** Model audit key the package belongs to. */
+  model: string
   evidenceHash: string
   packageName: string
   files: VerificationPublicationFile[]
@@ -64,14 +65,15 @@ class PinataUploadError extends Error {
 }
 
 /**
- * Packages one agent's audit evidence for public pinning: the canonical evidence document,
+ * Packages one model audit's evidence for public pinning: the canonical evidence document,
  * the exported KBF references, and every referenced seller evidence pack (with signed exchanges).
  * Paths mirror the evidence directory so the document's relative links resolve inside the CID.
  */
 export async function prepareAuditPublication(input: {
   evidenceDir: string
   runId: string
-  agentId: string
+  /** Model audit key the package belongs to. */
+  model: string
   evidenceHash: string
   evidencePath: string
   evidenceBytes: Uint8Array
@@ -96,7 +98,7 @@ export async function prepareAuditPublication(input: {
     version: 1,
     kind: 'antseed-verifier-ipfs-publication',
     runId: input.runId,
-    agentId: input.agentId,
+    model: input.model,
     evidenceHash: input.evidenceHash,
     evidencePath: publicationPath(input.evidencePath),
     scope: {
@@ -123,9 +125,9 @@ export async function prepareAuditPublication(input: {
     version: 1,
     kind: 'antseed-verifier-ipfs-publication-package',
     runId: input.runId,
-    agentId: input.agentId,
+    model: input.model,
     evidenceHash: input.evidenceHash,
-    packageName: `antseed-verification-${safeServiceSlug(input.runId)}-agent-${safeServiceSlug(input.agentId)}`,
+    packageName: `antseed-verification-${safeServiceSlug(input.runId)}-model-${safeServiceSlug(input.model)}`,
     files: allFiles,
     fileCount: allFiles.length,
     totalBytes: allFiles.reduce((total, file) => total + file.size, 0),
@@ -215,7 +217,7 @@ async function uploadPublication(
   form.append('keyvalues', JSON.stringify({
     kind: 'antseed-verifier-evidence',
     runId: publication.runId,
-    agentId: publication.agentId,
+    model: publication.model,
     evidenceHash: publication.evidenceHash,
   }))
   form.append('cid_version', 'v1')

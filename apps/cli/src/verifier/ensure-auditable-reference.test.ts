@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
 import { ensureAuditableReference } from './ensure-auditable-reference.js'
-import { referenceFixture } from './agent-audit-fixtures.test-support.js'
+import { referenceFixture } from './model-audit-fixtures.test-support.js'
 
 async function fixture(body: (input: Parameters<typeof ensureAuditableReference>[0], calls: string[], operations: NonNullable<Parameters<typeof ensureAuditableReference>[1]>) => Promise<void>) {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-ensure-reference-'))

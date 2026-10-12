@@ -615,6 +615,43 @@ Use `base-sepolia` for testing with MockUSDC.
 
 Provider-specific options are configured via each plugin's config schema (see `antseed plugin add --help`).
 
+## Assigned Model Audits
+
+`verifier run` audits one `<model>`, every enabled model with `--all`, or the
+models assigned to an auditor with `--auditor <address>`:
+
+```bash
+antseed --config ./audit-config.json verifier run --auditor 0xYourAuditorAddress
+```
+
+Every `verifier run` labels its evidence with the current on-chain epoch from the
+emissions gate, the epoch `AntseedVerification` checks on submit. When no chain
+is reachable it falls back to the UTC-day epoch with a warning; that evidence
+cannot be submitted on-chain. The assignment uses the same epoch and is printed
+before the audit starts. Today every auditor is assigned every enabled
+configured model; a later release rotates models across auditors per epoch
+off-chain. `--auditor` cannot be combined with `<model>`, `--all`, or
+`--resume-run`.
+
+## Submitting Model Audits
+
+Approved auditors submit a completed run with one transaction per model:
+
+```bash
+antseed verifier submit --run-id <run-id> --dry-run
+antseed verifier submit --run-id <run-id> --publish-ipfs --yes
+```
+
+Each model's submission covers every seller result for that model: `SAME`,
+`DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
+be submitted. The contract rejects any other epoch, so submit before the epoch
+ends. Results the contract would reject (your own agent, unknown agents,
+evidence that no longer matches its hash) are listed as excluded and do not
+block the model. Re-running is safe: a ledger under
+`<evidenceDir>/submissions/<run-id>/` records each model, and models already
+recorded on-chain are skipped. `verifier rewards --epochs <list>` shows the
+credits earned per epoch and claims the auditor share once an epoch is final.
+
 ## Model Audits With Reference Enrollment
 
 Audits normally use existing reference banks and do not make reference-building

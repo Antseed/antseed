@@ -23,7 +23,10 @@ import {
   type VerifierRunManifestV1,
   type VerifierStatusV1,
 } from '../../../verifier/audit-artifacts.js'
-import { utcDayAuditEpochWindow } from '../../../verifier/audit-epoch.js'
+import { resolveAuditEpochWindow, type AuditEpochWindow, type OnchainEpochReader } from '../../../verifier/audit-epoch.js'
+import { assignAuditModels, type AuditAssignment } from '../../../verifier/audit-assignment.js'
+import { createEmissionsGateClient, createVerifierClient } from '../../payment-utils.js'
+import type { AntseedConfig } from '../../../config/types.js'
 import {
   ConcurrencyLimiter,
   KeyedSerialLimiter,
@@ -31,7 +34,7 @@ import {
   mapConcurrently,
 } from '../../../verifier/audit-concurrency.js'
 import { acquirePidFileLock } from '../../../verifier/atomic-files.js'
-import { resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
+import { configuredVerifierModels, resolveVerifierCommandModels, verifierModelServices } from '../../../verifier/model-config.js'
 import { asError } from '../../../verifier/utils.js'
 import {
   classifyVerificationTargetServices,
@@ -65,6 +68,7 @@ import {
 
 interface RunOptions {
   all?: boolean
+  auditor?: string
   allowProbeReuse?: boolean
   peer?: string
   resumeRun?: string
@@ -83,6 +87,57 @@ export function enrollmentRequestBudget(options: RunOptions): number | null {
     throw new Error('--enroll-if-needed requires --max-enrollment-requests <positive integer> per model')
   }
   return budget
+}
+
+/**
+ * Reads the epoch the verification contract checks on submit (`registry.emissions()`). Without a
+ * configured verification contract it falls back to the configured emissions gate.
+ */
+export function auditEpochReader(config: AntseedConfig): OnchainEpochReader {
+  let verifier: ReturnType<typeof createVerifierClient> | null = null
+  try {
+    verifier = createVerifierClient(config)
+  } catch {
+    return createEmissionsGateClient(config)
+  }
+  const window = verifier.currentEpochWindow()
+  window.catch(() => undefined)
+  return {
+    currentEpoch: async () => Number((await window).epoch),
+    genesis: async () => {
+      const { epoch, startedAt, endsAt } = await window
+      return startedAt - Number(epoch) * (endsAt - startedAt)
+    },
+    epochDuration: async () => {
+      const { startedAt, endsAt } = await window
+      return endsAt - startedAt
+    },
+  }
+}
+
+export function resolveAssignedAuditModels(
+  config: AntseedConfig,
+  auditor: string,
+  epoch: AuditEpochWindow,
+): AuditAssignment {
+  const assignment = assignAuditModels({
+    auditor,
+    epoch: epoch.epoch,
+    availableModels: configuredVerifierModels(config.verifier),
+  })
+  if (assignment.models.length === 0) throw new Error('no enabled verifier models are configured')
+  return assignment
+}
+
+export function printAuditAssignment(assignment: AuditAssignment, epoch: AuditEpochWindow): void {
+  console.log(`Audit assignment for ${assignment.auditor}, epoch ${assignment.epoch} (${epoch.source}), strategy ${assignment.strategy}:`)
+  for (const model of assignment.models) console.log(`  ${model}`)
+}
+
+export function validateAssignedModeOptions(modelValue: string | undefined, options: RunOptions): void {
+  if (!options.auditor) return
+  if (modelValue?.trim() || options.all) throw new Error('--auditor runs the assigned models; do not combine it with <model> or --all')
+  if (options.resumeRun) throw new Error('--auditor cannot be combined with --resume-run')
 }
 
 export interface ResumeCandidate {
@@ -127,30 +182,43 @@ export function filterResumeCandidatesByPeer(
 export function registerVerifierRunCommand(verifier: Command): void {
   verifier
     .command('run [model]')
-    .description('Verify live peers for one configured model or every enabled model')
+    .description('Verify live peers for one configured model, every enabled model, or the models assigned to an auditor')
     .option('--all', 'verify every enabled configured model')
+    .option('--auditor <address>', 'verify the models assigned to this auditor address in the current on-chain epoch')
     .option('--allow-probe-reuse', 'allow a seller\'s new epoch reference to reuse probes it was assigned in earlier epochs')
     .option('--peer <peerId>', 'verify only this discovered seller peer')
     .option('--resume-run <runId>', 'repair only undetermined sellers from a compatible run')
     .option('--enroll-if-needed', 'enroll additional reference probes before auditing an insufficient bank')
     .option('--max-enrollment-requests <count>', 'maximum physical reference requests per model, including retries')
     .action(async (modelValue: string | undefined, options: RunOptions, command: Command) => {
+      validateAssignedModeOptions(modelValue, options)
       const enrollmentBudget = enrollmentRequestBudget(options)
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
+      const resolveEpoch = async (): Promise<AuditEpochWindow> => {
+        const resolved = await resolveAuditEpochWindow(() => auditEpochReader(config))
+        if (resolved.warning) console.warn(chalk.yellow(resolved.warning))
+        return resolved.window
+      }
+      let epochWindow = await resolveEpoch()
+      let assignedModels: string[] | null = null
+      if (options.auditor) {
+        const assignment = resolveAssignedAuditModels(config, options.auditor, epochWindow)
+        printAuditAssignment(assignment, epochWindow)
+        assignedModels = assignment.models
+      }
       const selectedPeerId = options.peer ? normalizeVerifierPeerId(options.peer) : null
       const banksDir = config.verifier?.banksDir ?? join(globalOptions.dataDir, 'verifier', 'banks')
       const evidenceDir = config.verifier?.evidenceDir ?? join(globalOptions.dataDir, 'verifier', 'evidence')
       const requestedResumeManifest = options.resumeRun
         ? await readVerifierRunManifest(evidenceDir, options.resumeRun)
         : null
-      const models = resolveRunModels(config.verifier, modelValue, options.all === true, requestedResumeManifest)
+      const models = assignedModels ?? resolveRunModels(config.verifier, modelValue, options.all === true, requestedResumeManifest)
       const runLock = await acquirePidFileLock(join(evidenceDir, '.run.lock'))
       let responseAuthReader: Awaited<ReturnType<typeof openResponseAuthReader>> | null = null
       let status: VerifierStatusV1 | null = null
       let runProgress: VerifierRunProgress | null = null
       try {
-        let epochWindow = utcDayAuditEpochWindow()
         let epoch = epochWindow.epoch
         if (requestedResumeManifest && requestedResumeManifest.epoch !== epoch) {
           throw new Error(
@@ -242,7 +310,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
           }
           runModels = readyModels
           if (runModels.length === 0) throw new Error('no models ready after reference enrollment')
-          epochWindow = utcDayAuditEpochWindow()
+          epochWindow = await resolveEpoch()
           epoch = epochWindow.epoch
           proxy = await loadBuyerProxySnapshot(globalOptions.dataDir)
           selectedPeers = selectedPeerId ? [selectVerifierPeer(proxy.peers, selectedPeerId)] : proxy.peers

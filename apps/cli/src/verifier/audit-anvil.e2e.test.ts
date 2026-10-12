@@ -9,13 +9,13 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { VerifierClient } from '@antseed/node/payments'
+import { VERIFIER_VERDICT, VerifierClient, modelHash } from '@antseed/node/payments'
 import {
   FIXTURE_CONFIG,
   referenceFixture,
   writeSignedAuditRun,
   type FixtureAudit,
-} from './agent-audit-fixtures.test-support.js'
+} from './model-audit-fixtures.test-support.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
@@ -28,7 +28,10 @@ const SELLER_OWNERS = [
   '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
 ] as const
 const RUN_ID = 'anvil-audit-run'
-const EPOCH = '2026-10-07'
+const EPOCH = String(AUDIT_EPOCH)
+/** Puts epoch AUDIT_EPOCH on 2026-10-07 (UTC), where the fixture run's timestamps fall. */
+const EPOCH_DURATION = 86_400
+const GENESIS = Date.parse('2026-10-07T00:00:00.000Z') / 1_000 - AUDIT_EPOCH * EPOCH_DURATION
 
 const compiledTestDirectory = dirname(fileURLToPath(import.meta.url))
 const repoRoot = resolve(compiledTestDirectory, '../../../..')
@@ -45,7 +48,7 @@ interface RunCliOptions {
   importPath?: string
 }
 
-test('an approved auditor submits power-weighted audits and a re-run is a no-op', {
+test('an approved auditor submits one audit per model, earns credits, and a re-run is a no-op', {
   skip: !RUN_ANVIL_E2E,
   timeout: 300_000,
 }, async () => {
@@ -71,6 +74,7 @@ test('an approved auditor submits power-weighted audits and a re-run is a no-op'
     castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
     castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
     const auditor = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
     castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
     // Agent 3 belongs to the auditor, who must not audit it.
@@ -86,6 +90,7 @@ test('an approved auditor submits power-weighted audits and a re-run is a no-op'
       { agentId: '1', seller: sellers[0]!, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a') },
       { agentId: '1', seller: sellers[0]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
       { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', reference: referenceFixture('model-a') },
+      { agentId: '2', seller: sellers[1]!, model: 'model-b', service: 'model-b', verdict: 'UNDETERMINED', reference: referenceFixture('model-b') },
       { agentId: '3', seller: sellers[2]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
     ]
     const crypto = {
@@ -124,7 +129,7 @@ test('an approved auditor submits power-weighted audits and a re-run is a no-op'
     assert.equal(dryRun.status, 0, dryRun.output)
     assert.match(dryRun.output, /Dry run complete/)
     assert.match(dryRun.output, /self-audit/)
-    assert.equal((await client.queryAudits()).length, 0)
+    assert.equal((await client.queryModelAudits()).length, 0)
 
     const refused = submit(unapproved, ['--yes'])
     assert.equal(refused.status, 1, refused.output)
@@ -132,25 +137,37 @@ test('an approved auditor submits power-weighted audits and a re-run is a no-op'
 
     const first = submit(approved, ['--yes', '--publish-ipfs'])
     assert.equal(first.status, 0, first.output)
-    assert.match(first.output, /Submitted: 2; already submitted: 0; failed: 0/)
+    assert.match(first.output, /Submitted: 2; recovered: 0; already submitted: 0; failed: 0/)
     const uploads = (await readFile(pinataLogPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {
-      agentId: string
+      model: string
       files: string[]
     })
-    assert.deepEqual(uploads.map((upload) => upload.agentId).sort(), ['1', '2'])
+    assert.deepEqual(uploads.map((upload) => upload.model).sort(), ['model-a', 'model-b'])
 
     const repeat = submit(approved, ['--yes'])
     assert.equal(repeat.status, 0, repeat.output)
     assert.match(repeat.output, /Nothing to submit/)
 
-    const onChain = await client.queryAudits()
+    const onChain = await client.queryModelAudits()
     assert.equal(onChain.length, 2)
-    assert.ok(onChain.every((audit) => audit.auditor === auditor.address && audit.evidenceUri.startsWith('ipfs://')))
+    assert.ok(onChain.every((audit) => audit.auditor === auditor.address
+      && audit.epoch === BigInt(AUDIT_EPOCH)
+      && audit.evidenceUri.startsWith('ipfs://')))
+    assert.deepEqual(onChain.map((audit) => audit.modelHash).sort(), [modelHash('model-a'), modelHash('model-b')].sort())
     assert.equal(await client.isVerified(1n), true)
     assert.equal(await client.isVerified(2n), false)
     assert.equal(await client.isVerified(3n), false)
     assert.equal((await client.queryServiceAudits(1n)).length, 2)
-    assert.deepEqual(await client.auditPower(auditor.address, AUDIT_EPOCH), { auditor: 400n, total: 400n })
+    const undetermined = await client.serviceStatus(2n, 'model-b')
+    assert.equal(undetermined.lastResult, VERIFIER_VERDICT.UNDETERMINED)
+    assert.equal(undetermined.verdict, VERIFIER_VERDICT.NONE)
+    assert.equal(undetermined.undeterminedStreak, 1)
+    assert.deepEqual(await client.auditCredits(auditor.address, AUDIT_EPOCH), { auditor: 2n, total: 2n })
+
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])
+    const stale = submit(approved, ['--yes'])
+    assert.equal(stale.status, 1, stale.output)
+    assert.match(stale.output, new RegExp(`current on-chain epoch is ${AUDIT_EPOCH + 1}`))
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })
@@ -197,13 +214,13 @@ globalThis.fetch = async (input, init) => {
   const form = init.body
   const metadata = JSON.parse(String(form.get('keyvalues')))
   appendFileSync(logPath, JSON.stringify({
-    agentId: metadata.agentId,
+    model: metadata.model,
     evidenceHash: metadata.evidenceHash,
     files: form.getAll('file').map((file) => file.name),
   }) + '\\n')
   return new Response(JSON.stringify({
     data: {
-      cid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3r3eifqeedsvt2eubqtskghp' + 'mnp'[Number(metadata.agentId) % 3],
+      cid: 'bafybeigdyrzt5sfp7udm7hu76uh7y26nf3r3eifqeedsvt2eubqtskghp' + (metadata.model === 'model-a' ? 'm' : 'n'),
       size: form.getAll('file').reduce((total, file) => total + file.size, 0),
       created_at: '2026-10-07T12:00:00.000Z',
     },

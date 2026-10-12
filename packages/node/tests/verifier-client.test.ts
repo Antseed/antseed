@@ -3,6 +3,8 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   VERIFICATION_ABI,
   VerifierClient,
+  VERIFIER_VERDICT,
+  modelHash,
   serviceHash,
   sortServiceResults,
 } from '../src/payments/evm/verifier-client.js';
@@ -12,53 +14,72 @@ const VERIFICATION_ADDRESS = '0x' + '10'.repeat(20);
 
 describe('VerifierClient audit ABI', () => {
   const results = [
-    { serviceHash: '0x' + '02'.repeat(32), modelHash: '0x' + 'bb'.repeat(32), passed: false },
-    { serviceHash: '0x' + '01'.repeat(32), modelHash: '0x' + 'aa'.repeat(32), passed: true },
+    { agentId: 2n, serviceHash: '0x' + '01'.repeat(32), verdict: VERIFIER_VERDICT.UNDETERMINED },
+    { agentId: 1n, serviceHash: '0x' + '02'.repeat(32), verdict: VERIFIER_VERDICT.DIFF },
+    { agentId: 1n, serviceHash: '0x' + '01'.repeat(32), verdict: VERIFIER_VERDICT.SAME },
   ];
 
   it('normalizes service names before hashing', () => {
     expect(serviceHash('  GPT-5.6-SOL ')).toBe(serviceHash('gpt-5.6-sol'));
   });
 
-  it('orders results by service hash', () => {
-    expect(sortServiceResults(results).map((result) => result.serviceHash)).toEqual([
-      '0x' + '01'.repeat(32),
-      '0x' + '02'.repeat(32),
+  it('orders results by agent, then service hash', () => {
+    expect(sortServiceResults(results).map((result) => [result.agentId, result.serviceHash])).toEqual([
+      [1n, '0x' + '01'.repeat(32)],
+      [1n, '0x' + '02'.repeat(32)],
+      [2n, '0x' + '01'.repeat(32)],
     ]);
   });
 
-  it('submits an audit with results in contract order', async () => {
+  it('mirrors the contract verdict enum', () => {
+    expect(VERIFIER_VERDICT).toEqual({ NONE: 0, SAME: 1, DIFF: 2, UNDETERMINED: 3 });
+  });
+
+  it('submits a model audit with results in contract order', async () => {
     const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS });
     const execWrite = vi.fn().mockResolvedValue('0xsubmit');
     (client as unknown as { _execWrite: typeof execWrite })._execWrite = execWrite;
     const signer = Wallet.createRandom();
-    await expect(client.submitAudit(signer, {
-      agentId: 9n,
-      results,
+    await expect(client.submitModelAudit(signer, {
+      expectedEpoch: 7n,
+      modelHash: modelHash('model-a'),
       evidenceHash: '0x' + '99'.repeat(32),
       evidenceUri: 'ipfs://bafytest',
+      results,
     })).resolves.toBe('0xsubmit');
     expect(execWrite).toHaveBeenCalledWith(
       signer,
       VERIFICATION_ABI,
-      'submitAudit',
-      9n,
-      sortServiceResults(results).map((result) => [result.serviceHash, result.modelHash, result.passed]),
+      'submitModelAudit',
+      7n,
+      modelHash('model-a'),
       '0x' + '99'.repeat(32),
       'ipfs://bafytest',
+      sortServiceResults(results).map((result) => [result.agentId, result.serviceHash, result.verdict]),
     );
+    const encoded = new Interface(VERIFICATION_ABI).encodeFunctionData('submitModelAudit', execWrite.mock.calls[0]!.slice(3));
+    expect(encoded.startsWith('0x')).toBe(true);
   });
 
-  it('exposes per-service audit events for routing', () => {
+  it('exposes model and service audit events', () => {
     const iface = new Interface(VERIFICATION_ABI);
     expect(iface.getEvent('ServiceAudited')?.inputs.map((input) => input.name)).toEqual([
       'agentId',
       'serviceHash',
+      'auditor',
       'modelHash',
-      'passed',
+      'verdict',
     ]);
-    expect(iface.getFunction('submitReport')).toBeNull();
-    expect(iface.getFunction('claimAuditorRewards')).not.toBeNull();
+    expect(iface.getEvent('ModelAudited')?.inputs.map((input) => input.name)).toEqual([
+      'modelHash',
+      'auditor',
+      'epoch',
+      'evidenceHash',
+      'evidenceUri',
+      'resultCount',
+    ]);
+    expect(iface.getFunction('submitAudit')).toBeNull();
+    expect(iface.getFunction('auditorEpochCredits')).not.toBeNull();
   });
 });
 
@@ -97,7 +118,7 @@ describe('verifier event block ranges', () => {
     const queryFilter = vi.fn(async (_event: unknown, _from: number, _to: number | 'latest') => [] as unknown[]);
     const contract = {
       filters: {
-        AgentAudited: () => 'audit-filter',
+        ModelAudited: () => 'model-filter',
         ServiceAudited: () => 'service-filter',
       },
       queryFilter,
@@ -116,7 +137,7 @@ describe('verifier event block ranges', () => {
     });
     const queryFilter = stubContract(client, 25_500);
 
-    await client.queryAudits(9n);
+    await client.queryModelAudits({ model: modelHash('model-a') });
     expect(queryFilter.mock.calls.map(([, from, to]) => [from, to])).toEqual([
       [1_000, 10_999],
       [11_000, 20_999],
@@ -132,10 +153,10 @@ describe('verifier event block ranges', () => {
     const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS });
     const queryFilter = stubContract(client, 100);
 
-    await expect(client.queryAudits()).rejects.toThrow(/explicit fromBlock/);
+    await expect(client.queryModelAudits()).rejects.toThrow(/explicit fromBlock/);
     await expect(client.queryServiceAudits(1n)).rejects.toThrow(/explicit fromBlock/);
     expect(queryFilter).not.toHaveBeenCalled();
-    await client.queryAudits(null, 0);
+    await client.queryModelAudits({}, 0);
     expect(queryFilter.mock.calls.map(([, from, to]) => [from, to])).toEqual([[0, 'latest']]);
   });
 });

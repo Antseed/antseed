@@ -24,60 +24,100 @@ export interface VerifierClientConfig {
   logQueryChunkBlocks?: number;
 }
 
-export interface ServiceResultInput {
-  serviceHash: string;
-  modelHash: string;
-  passed: boolean;
+/** Mirrors IAntseedVerification.Verdict. */
+export const VERIFIER_VERDICT = {
+  NONE: 0,
+  SAME: 1,
+  DIFF: 2,
+  UNDETERMINED: 3,
+} as const;
+
+export type VerifierVerdictName = Exclude<keyof typeof VERIFIER_VERDICT, 'NONE'>;
+export type VerifierVerdict = (typeof VERIFIER_VERDICT)[keyof typeof VERIFIER_VERDICT];
+
+export function verifierVerdict(name: VerifierVerdictName): VerifierVerdict {
+  return VERIFIER_VERDICT[name];
 }
 
-export interface SubmitAuditInput {
+/** AntseedVerification.MAX_RESULTS_PER_AUDIT. */
+export const MAX_RESULTS_PER_MODEL_AUDIT = 256;
+
+export interface ServiceResultInput {
   agentId: bigint;
-  results: ServiceResultInput[];
+  serviceHash: string;
+  verdict: VerifierVerdict;
+}
+
+export interface SubmitModelAuditInput {
+  expectedEpoch: bigint;
+  modelHash: string;
   evidenceHash: string;
   evidenceUri: string;
+  results: ServiceResultInput[];
 }
 
 export interface ServiceAuditedEvent {
   agentId: bigint;
   serviceHash: string;
+  auditor: string;
   modelHash: string;
-  passed: boolean;
+  verdict: VerifierVerdict;
   blockNumber: number;
   logIndex: number;
   transactionHash: string;
 }
 
-export interface AgentAuditedEvent {
-  agentId: bigint;
+export interface ModelAuditedEvent {
+  modelHash: string;
   auditor: string;
-  passed: boolean;
-  verifiedUntil: bigint;
+  epoch: bigint;
   evidenceHash: string;
   evidenceUri: string;
+  resultCount: number;
   blockNumber: number;
   logIndex: number;
   transactionHash: string;
+}
+
+export interface AuditorCredits {
+  auditor: bigint;
+  total: bigint;
 }
 
 export const VERIFICATION_ABI = [
   'function setAuditor(address auditor, bool approved) external',
-  'function submitAudit(uint256 agentId,(bytes32 serviceHash,bytes32 modelHash,bool passed)[] results,bytes32 evidenceHash,string evidenceUri) external',
+  'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
+  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint16 diffVotes,uint32 round,uint64 updatedAt,uint8 lastResult,uint16 undeterminedStreak,uint64 lastAuditedAt))',
+  'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount,uint64 verifiedUntil))',
   'function verifiedUntil(uint256 agentId) external view returns (uint64)',
   'function isVerified(uint256 agentId) external view returns (bool)',
+  'function usedEvidence(bytes32 evidenceHash) external view returns (bool)',
   'function claimAuditorRewards(uint256[] epochs) external returns (uint256)',
   'function pendingAuditorReward(address auditor,uint256 epoch) external view returns (uint256)',
-  'function auditorEpochPower(uint256 epoch,address auditor) external view returns (uint256)',
-  'function epochAuditPower(uint256 epoch) external view returns (uint256)',
+  'function epochCredits(uint256 epoch) external view returns (uint256)',
+  'function auditorEpochCredits(uint256 epoch,address auditor) external view returns (uint256)',
+  'function modelCredits(uint256 epoch,address auditor,bytes32 modelHash) external view returns (uint256)',
+  'function maxCreditsPerAuditorPerEpoch() external view returns (uint32)',
+  'function maxCreditsPerModelPerEpoch() external view returns (uint32)',
+  'function diffConfirmations() external view returns (uint16)',
+  'function validity() external view returns (uint64)',
   'function registry() external view returns (address)',
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
-  'event AgentAudited(uint256 indexed agentId,address indexed auditor,bool passed,uint64 verifiedUntil,bytes32 evidenceHash,string evidenceUri)',
-  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,bool passed)',
-  'event AuditPowerCredited(uint256 indexed epoch,address indexed auditor,uint256 indexed agentId,uint256 power)',
+  'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
+  'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict)',
+  'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
+] as const;
+
+const EMISSIONS_GATE_EPOCH_ABI = [
+  'function currentEpoch() external view returns (uint256)',
+  'function genesis() external view returns (uint256)',
+  'function epochDuration() external view returns (uint256)',
 ] as const;
 
 const ANTSEED_REGISTRY_ABI = [
   'function identityRegistry() external view returns (address)',
+  'function emissions() external view returns (address)',
 ] as const;
 
 const IDENTITY_REGISTRY_ABI = [
@@ -93,9 +133,10 @@ export function modelHash(model: string): string {
   return keccak256(toUtf8Bytes(model.trim().toLowerCase()));
 }
 
-/** Orders results the way the contract requires (strictly ascending serviceHash). */
+/** Orders results the way the contract requires: strictly ascending (agentId, serviceHash). */
 export function sortServiceResults(results: readonly ServiceResultInput[]): ServiceResultInput[] {
   return [...results].sort((a, b) => {
+    if (a.agentId !== b.agentId) return a.agentId < b.agentId ? -1 : 1;
     const left = BigInt(a.serviceHash);
     const right = BigInt(b.serviceHash);
     return left < right ? -1 : left > right ? 1 : 0;
@@ -122,16 +163,17 @@ export class VerifierClient extends BaseEvmClient {
     return this._execWrite(signer, VERIFICATION_ABI, 'setAuditor', getAddress(auditor), approved);
   }
 
-  /** Records an audit of one agent. The signer must be an approved auditor. */
-  async submitAudit(signer: AbstractSigner, input: SubmitAuditInput): Promise<string> {
+  /** Records one auditor's results for every seller audited as one model. */
+  async submitModelAudit(signer: AbstractSigner, input: SubmitModelAuditInput): Promise<string> {
     return this._execWrite(
       signer,
       VERIFICATION_ABI,
-      'submitAudit',
-      input.agentId,
-      sortServiceResults(input.results).map((result) => [result.serviceHash, result.modelHash, result.passed]),
+      'submitModelAudit',
+      input.expectedEpoch,
+      input.modelHash,
       input.evidenceHash,
       input.evidenceUri,
+      sortServiceResults(input.results).map((result) => [result.agentId, result.serviceHash, result.verdict]),
     );
   }
 
@@ -143,14 +185,49 @@ export class VerifierClient extends BaseEvmClient {
     return BigInt(await this._contract().getFunction('pendingAuditorReward')(getAddress(auditor), BigInt(epoch)));
   }
 
-  /** Pool power the auditor was credited with in `epoch`, and the epoch's total. */
-  async auditPower(auditor: string, epoch: number | bigint): Promise<{ auditor: bigint; total: bigint }> {
+  /** Credits the auditor earned in `epoch`, and the epoch's total. */
+  async auditCredits(auditor: string, epoch: number | bigint): Promise<AuditorCredits> {
     const contract = this._contract();
-    const [auditorPower, total] = await Promise.all([
-      contract.getFunction('auditorEpochPower')(BigInt(epoch), getAddress(auditor)),
-      contract.getFunction('epochAuditPower')(BigInt(epoch)),
+    const [auditorCredits, total] = await Promise.all([
+      contract.getFunction('auditorEpochCredits')(BigInt(epoch), getAddress(auditor)),
+      contract.getFunction('epochCredits')(BigInt(epoch)),
     ]);
-    return { auditor: BigInt(auditorPower), total: BigInt(total) };
+    return { auditor: BigInt(auditorCredits), total: BigInt(total) };
+  }
+
+  async modelCredits(epoch: number | bigint, auditor: string, model: string): Promise<bigint> {
+    return BigInt(await this._contract().getFunction('modelCredits')(BigInt(epoch), getAddress(auditor), model));
+  }
+
+  async creditLimits(): Promise<{ perAuditor: bigint; perModel: bigint }> {
+    const contract = this._contract();
+    const [perAuditor, perModel] = await Promise.all([
+      contract.getFunction('maxCreditsPerAuditorPerEpoch')(),
+      contract.getFunction('maxCreditsPerModelPerEpoch')(),
+    ]);
+    return { perAuditor: BigInt(perAuditor), perModel: BigInt(perModel) };
+  }
+
+  async evidenceUsed(evidenceHash: string): Promise<boolean> {
+    return Boolean(await this._contract().getFunction('usedEvidence')(evidenceHash));
+  }
+
+  /** The emissions gate the contract checks `expectedEpoch` against (`registry.emissions()`). */
+  async emissionsGate(): Promise<string> {
+    const registry = new Contract(await this.registry(), ANTSEED_REGISTRY_ABI, this._provider);
+    return getAddress(String(await registry.getFunction('emissions')()));
+  }
+
+  /** The current epoch exactly as `submitModelAudit` checks it. */
+  async currentEpochWindow(): Promise<{ epoch: bigint; startedAt: number; endsAt: number }> {
+    const gate = new Contract(await this.emissionsGate(), EMISSIONS_GATE_EPOCH_ABI, this._provider);
+    const [epoch, genesis, duration] = await Promise.all([
+      gate.getFunction('currentEpoch')(),
+      gate.getFunction('genesis')(),
+      gate.getFunction('epochDuration')(),
+    ]);
+    const startedAt = Number(BigInt(genesis) + BigInt(epoch) * BigInt(duration));
+    return { epoch: BigInt(epoch), startedAt, endsAt: startedAt + Number(duration) };
   }
 
   async verifiedUntil(agentId: number | bigint): Promise<bigint> {
@@ -159,6 +236,36 @@ export class VerifierClient extends BaseEvmClient {
 
   async isVerified(agentId: number | bigint): Promise<boolean> {
     return Boolean(await this._contract().getFunction('isVerified')(BigInt(agentId)));
+  }
+
+  async agentStatus(agentId: number | bigint): Promise<{ verifiedCount: number; diffCount: number; verifiedUntil: bigint }> {
+    const status = await this._contract().getFunction('agentStatus')(BigInt(agentId));
+    return {
+      verifiedCount: Number(status.verifiedCount ?? status[0]),
+      diffCount: Number(status.diffCount ?? status[1]),
+      verifiedUntil: BigInt(status.verifiedUntil ?? status[2]),
+    };
+  }
+
+  async serviceStatus(agentId: number | bigint, service: string): Promise<{
+    modelHash: string;
+    verdict: VerifierVerdict;
+    diffVotes: number;
+    lastResult: VerifierVerdict;
+    undeterminedStreak: number;
+    updatedAt: bigint;
+    lastAuditedAt: bigint;
+  }> {
+    const status = await this._contract().getFunction('serviceStatus')(BigInt(agentId), serviceHash(service));
+    return {
+      modelHash: String(status.modelHash ?? status[0]),
+      verdict: Number(status.verdict ?? status[1]) as VerifierVerdict,
+      diffVotes: Number(status.diffVotes ?? status[2]),
+      updatedAt: BigInt(status.updatedAt ?? status[4]),
+      lastResult: Number(status.lastResult ?? status[5]) as VerifierVerdict,
+      undeterminedStreak: Number(status.undeterminedStreak ?? status[6]),
+      lastAuditedAt: BigInt(status.lastAuditedAt ?? status[7]),
+    };
   }
 
   async approvedAuditor(auditor: string): Promise<boolean> {
@@ -200,8 +307,9 @@ export class VerifierClient extends BaseEvmClient {
       return [{
         agentId: BigInt(log.args.agentId ?? log.args[0]),
         serviceHash: String(log.args.serviceHash ?? log.args[1]),
-        modelHash: String(log.args.modelHash ?? log.args[2]),
-        passed: Boolean(log.args.passed ?? log.args[3]),
+        auditor: getAddress(String(log.args.auditor ?? log.args[2])),
+        modelHash: String(log.args.modelHash ?? log.args[3]),
+        verdict: Number(log.args.verdict ?? log.args[4]) as VerifierVerdict,
         blockNumber: log.blockNumber,
         logIndex: log.index,
         transactionHash: log.transactionHash,
@@ -209,29 +317,30 @@ export class VerifierClient extends BaseEvmClient {
     });
   }
 
-  async queryAudits(
-    agentId: number | bigint | null = null,
+  /** Model audits, optionally narrowed to one model and auditor. */
+  async queryModelAudits(
+    filter: { model?: string | null; auditor?: string | null } = {},
     fromBlock?: number,
     toBlock: number | 'latest' = 'latest',
-  ): Promise<AgentAuditedEvent[]> {
+  ): Promise<ModelAuditedEvent[]> {
     const contract = this._contract();
-    const filterFactory = contract.filters.AgentAudited;
-    if (!filterFactory) throw new Error('AgentAudited event is missing from verification ABI');
+    const filterFactory = contract.filters.ModelAudited;
+    if (!filterFactory) throw new Error('ModelAudited event is missing from verification ABI');
     const logs = await this._queryEvents(
       contract,
-      filterFactory(agentId === null ? null : BigInt(agentId), null),
+      filterFactory(filter.model ?? null, filter.auditor ? getAddress(filter.auditor) : null),
       fromBlock,
       toBlock,
     );
     return logs.flatMap((log) => {
       if (!(log instanceof EventLog)) return [];
       return [{
-        agentId: BigInt(log.args.agentId ?? log.args[0]),
+        modelHash: String(log.args.modelHash ?? log.args[0]),
         auditor: getAddress(String(log.args.auditor ?? log.args[1])),
-        passed: Boolean(log.args.passed ?? log.args[2]),
-        verifiedUntil: BigInt(log.args.verifiedUntil ?? log.args[3]),
-        evidenceHash: String(log.args.evidenceHash ?? log.args[4]),
-        evidenceUri: String(log.args.evidenceUri ?? log.args[5]),
+        epoch: BigInt(log.args.epoch ?? log.args[2]),
+        evidenceHash: String(log.args.evidenceHash ?? log.args[3]),
+        evidenceUri: String(log.args.evidenceUri ?? log.args[4]),
+        resultCount: Number(log.args.resultCount ?? log.args[5]),
         blockNumber: log.blockNumber,
         logIndex: log.index,
         transactionHash: log.transactionHash,

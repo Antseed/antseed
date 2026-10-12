@@ -37,7 +37,7 @@ import {
 } from './model-run.js'
 import type { ProxyAuditEvidenceV1, ProxyAuditSkipEvidenceV1 } from './proxy-evidence.js'
 import { createResponseAuthReader, type ResponseAuthReader } from './response-auth-reader.js'
-import { referenceFixture } from './agent-audit-fixtures.test-support.js'
+import { referenceFixture } from './model-audit-fixtures.test-support.js'
 
 function peer(overrides: Partial<PeerInfo> = {}): PeerInfo {
   return {

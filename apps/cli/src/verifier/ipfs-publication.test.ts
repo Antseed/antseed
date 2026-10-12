@@ -37,7 +37,7 @@ test('builds a portable agent report package and excludes operational files', as
     const prepare = () => prepareAuditPublication({
       evidenceDir,
       runId,
-      agentId: '1',
+      model: 'model-a',
       evidenceHash: `0x${'11'.repeat(32)}`,
       evidencePath,
       evidenceBytes: Buffer.from(JSON.stringify({ kind: 'agent-evidence' })),
@@ -81,14 +81,14 @@ test('builds a portable agent report package and excludes operational files', as
     )
     const indexFile = publication.files.find((file) => file.path === 'publication.json')!
     const index = JSON.parse(Buffer.from(indexFile.bytes).toString('utf8')) as {
-      agentId: string
+      model: string
       evidenceHash: string
       evidencePath: string
       sourceFileCount: number
       archives: Array<{ path: string; files: Array<{ path: string; sha256: string }> }>
       files: Array<{ path: string; sha256: string }>
     }
-    assert.equal(index.agentId, '1')
+    assert.equal(index.model, 'model-a')
     assert.equal(index.evidenceHash, `0x${'11'.repeat(32)}`)
     assert.equal(index.evidencePath, `reports/${runId}/1.evidence.json`)
     assert.ok(index.sourceFileCount > publication.fileCount)
@@ -179,9 +179,9 @@ function fixturePublication(fileCount = 1): PreparedVerificationPublication {
     version: 1,
     kind: 'antseed-verifier-ipfs-publication-package',
     runId: 'run',
-    agentId: '1',
+    model: 'model-a',
     evidenceHash: `0x${'11'.repeat(32)}`,
-    packageName: 'antseed-verification-run-agent-1',
+    packageName: 'antseed-verification-run-model-model-a',
     files,
     fileCount: files.length,
     totalBytes: files.reduce((total, file) => total + file.size, 0),
