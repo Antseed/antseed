@@ -1,5 +1,5 @@
 import '../chat/chat.css'
-import { useEffect, useLayoutEffect, useMemo, useRef, useState } from 'react'
+import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, type UIMessage } from 'ai'
@@ -103,33 +103,78 @@ function peerLabel(peer: { peerId: string; name: string | null }): string {
   return peer.name ? `${peer.name} (${shortId(peer.peerId)})` : shortId(peer.peerId)
 }
 
-/** Which peer answered: the user must always be able to tell where a reply came from. */
-function AnsweredBy({ metadata, streaming }: { metadata: ChatMessageMetadata | undefined; streaming: boolean }) {
+/** "Shahaf Antwarg" → "SA". */
+function initials(label: string): string {
+  const parts = label.trim().split(/\s+/).filter(Boolean)
+  return ((parts[0]?.[0] ?? '?') + (parts.length > 1 ? parts[parts.length - 1]![0] : '')).toUpperCase()
+}
+
+/** A small label: green for free, blue for TEE, outlined grey otherwise. */
+function Pill({ tone = 'neutral', children, title }: { tone?: 'free' | 'tee' | 'neutral'; children: ReactNode; title?: string }) {
+  const tones = {
+    free: 'border-success/30 bg-success/10 text-success',
+    tee: 'border-info/30 bg-info/10 text-info',
+    neutral: 'border-border text-muted-foreground',
+  }
+  return <span title={title} className={`inline-flex items-center rounded border px-1.5 py-px font-medium text-[10px] leading-4 ${tones[tone]}`}>{children}</span>
+}
+
+/** A stable colour per seller, so the same seller always looks the same across answers. */
+function peerColor(peerId: string): string {
+  let hash = 0
+  for (const char of peerId) hash = (hash * 31 + char.charCodeAt(0)) % 360
+  return `hsl(${hash} 65% 55%)`
+}
+
+/** A price, or the green Free label. */
+function PriceTag({ offer }: { offer: { inputUsdPerMillion: number | null; outputUsdPerMillion: number | null } }) {
+  return isFreeOffer(offer) ? <Pill tone="free">Free</Pill> : <span className="text-muted-foreground text-xs">{priceRange(offer)}</span>
+}
+
+/** Who wrote a message: "You", or the seller(s) that answered with the model. */
+function MessageAuthor({ message, streaming, initials }: { message: ChatMessage; streaming: boolean; initials: string }) {
+  if (message.role === 'user') {
+    return (
+      <div className="flex items-center justify-end gap-1.5 text-xs">
+        <span className="font-medium text-muted-foreground">You</span>
+        <span className="flex size-5 items-center justify-center rounded-full bg-foreground font-semibold text-[9px] text-background">{initials}</span>
+      </div>
+    )
+  }
+  const metadata = message.metadata
   if (!metadata) return null
   const peers = metadata.peers
+  const free = metadata.costUsd === 0 && (metadata.usage?.outputTokens ?? 0) > 0
   return (
-    <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs" aria-live="polite">
-      <ServerIcon className="size-3.5" />
+    <div className="flex flex-wrap items-center gap-1.5 text-xs" aria-live="polite">
       {peers.length === 0
-        ? <span>{streaming ? (metadata.pinnedPeerId ? `Waiting for ${shortId(metadata.pinnedPeerId)}…` : 'Choosing a peer…') : 'No peer answered'}</span>
-        : (
-          <span>
-            Answered by{' '}
-            {peers.map((peer, index) => (
-              <span key={`${peer.peerId}-${index}`}>
-                {index > 0 && ', then '}
-                <span className="font-medium text-foreground" title={peer.peerId}>{peerLabel(peer)}</span>
-              </span>
-            ))}
-            {' · '}{metadata.model}{metadata.pinnedPeerId ? ' · pinned' : ''}
-            {metadata.usage && (metadata.usage.inputTokens > 0 || metadata.usage.outputTokens > 0) && (
-              <>
-                {' · '}{formatTokens(metadata.usage.inputTokens)} in / {formatTokens(metadata.usage.outputTokens)} out tokens
-                {' · '}<span className="text-foreground" title="At the serving peer's advertised prices; the signed amount is in Logs.">{estimate(metadata.costUsd)}</span>
-              </>
-            )}
+        ? <span className="text-muted-foreground">{streaming ? (metadata.pinnedPeerId ? `Waiting for ${shortId(metadata.pinnedPeerId)}…` : 'Choosing a seller…') : 'No seller answered'}</span>
+        : peers.map((peer, index) => (
+          <span key={`${peer.peerId}-${index}`} className="inline-flex items-center gap-1.5">
+            {index > 0 && <span className="text-muted-foreground">then</span>}
+            <span className="size-2 rounded-full" style={{ background: peerColor(peer.peerId) }} aria-hidden="true" />
+            <span className="font-medium text-foreground" title={peer.peerId}>{peerLabel(peer)}</span>
           </span>
-        )}
+        ))}
+      <Pill>{metadata.model}</Pill>
+      {metadata.pinnedPeerId && <Pill>Pinned</Pill>}
+      {free && <Pill tone="free">Free</Pill>}
+    </div>
+  )
+}
+
+/** Under an answer: the tokens it used and what it cost (estimated at the serving seller's prices). */
+function AnswerUsage({ metadata }: { metadata: ChatMessageMetadata | undefined }) {
+  const usage = metadata?.usage
+  if (!usage || (usage.inputTokens === 0 && usage.outputTokens === 0)) return null
+  return (
+    <div className="flex flex-wrap items-center gap-1.5 text-muted-foreground text-xs">
+      <ServerIcon className="size-3.5" />
+      <span>{formatTokens(usage.inputTokens)} in / {formatTokens(usage.outputTokens)} out tokens</span>
+      <span>·</span>
+      {metadata.costUsd === 0
+        ? <Pill tone="free">Free</Pill>
+        : <span className="font-medium text-foreground" title="At the serving seller's advertised prices; the signed amount is in Logs.">{estimate(metadata.costUsd)}</span>}
     </div>
   )
 }
@@ -165,10 +210,13 @@ function FilterBar<F extends string, S extends string>({ filters, active, onTogg
 
 /** Small capability tags after a name. */
 function Tags({ free, tools, reasoning, vision, tee }: { free?: boolean; tools?: boolean; reasoning?: boolean; vision?: boolean; tee?: boolean }) {
-  const tags = [free && 'Free', tools && 'Tools', reasoning && 'Reasoning', vision && 'Vision', tee && 'TEE'].filter(Boolean) as string[]
   return (
     <span className="flex flex-wrap gap-1">
-      {tags.map((tag) => <span key={tag} className="rounded border px-1 py-px text-[10px] text-muted-foreground leading-none">{tag}</span>)}
+      {free && <Pill tone="free">Free</Pill>}
+      {tee && <Pill tone="tee">TEE</Pill>}
+      {tools && <Pill>Tools</Pill>}
+      {reasoning && <Pill>Reasoning</Pill>}
+      {vision && <Pill>Vision</Pill>}
     </span>
   )
 }
@@ -206,9 +254,9 @@ function ModelPicker({ models, value, onChange }: { models: ChatModel[]; value: 
       <ModelSelectorTrigger asChild>
         <Button variant="outline" size="sm" className="max-w-80 justify-between gap-2">
           <span className="truncate">{value ? value.name : 'Pick a model'}</span>
-          {value && value.inputUsdPerMillion !== null && (
-            <span className="text-muted-foreground text-xs">{value.free ? 'free offers' : `from ${priceRange(value)}`}</span>
-          )}
+          {value && value.inputUsdPerMillion !== null && (value.free
+            ? <Pill tone="free">Free offers</Pill>
+            : <span className="text-muted-foreground text-xs">from {priceRange(value)}</span>)}
           <ChevronsUpDownIcon className="size-3.5 opacity-60" />
         </Button>
       </ModelSelectorTrigger>
@@ -227,7 +275,7 @@ function ModelPicker({ models, value, onChange }: { models: ChatModel[]; value: 
                 </span>
                 <span className="ml-auto shrink-0 text-right text-muted-foreground text-xs">
                   {model.offers} seller{model.offers === 1 ? '' : 's'}
-                  <span className="block">{model.free ? 'free offers' : `from ${priceRange(model)}`}</span>
+                  <span className="mt-0.5 block">{model.free ? <Pill tone="free">Free offers</Pill> : `from ${priceRange(model)}`}</span>
                 </span>
                 {value?.id === model.id && <CheckIcon className="size-3.5 shrink-0" />}
               </ModelSelectorItem>
@@ -240,12 +288,20 @@ function ModelPicker({ models, value, onChange }: { models: ChatModel[]; value: 
 }
 
 /** What automatic routing would do right now: its first seller, or why none. */
-function autoSummary(pick: ReturnType<typeof autoPick>, model: ChatModel | null, loading: boolean): string {
+function autoSummary(pick: ReturnType<typeof autoPick>, model: ChatModel | null, loading: boolean): ReactNode {
   if (loading) return 'Checking which seller automatic routing picks…'
   if (!pick) return 'No seller passes your routing settings for this model right now.'
   const peer = model?.peers.find((entry) => entry.peerId === pick.peerId.toLowerCase())
   const name = peer ? peerLabel(peer) : peerLabel({ peerId: pick.peerId, name: pick.displayName })
-  return `Right now: ${name} · ${priceRange(pick)}${pick.trustScore !== null ? ` · trust ${Math.round(pick.trustScore)}` : ''}.`
+  return (
+    <span className="inline-flex flex-wrap items-center gap-1.5 align-middle">
+      Right now:
+      <span className="size-2 rounded-full" style={{ background: peerColor(pick.peerId.toLowerCase()) }} aria-hidden="true" />
+      <span className="font-medium text-foreground">{name}</span>
+      <PriceTag offer={pick} />
+      {pick.trustScore !== null && <span>trust {Math.round(pick.trustScore)}</span>}
+    </span>
+  )
 }
 
 function PeerPicker({ model, value, onChange, preview, previewLoading }: {
@@ -268,11 +324,11 @@ function PeerPicker({ model, value, onChange, preview, previewLoading }: {
     <ModelSelector open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger asChild>
         <Button variant="outline" size="sm" className="max-w-96 justify-between gap-2" disabled={!model}>
-          {pinned ? <ServerIcon className="size-3.5" /> : <ShuffleIcon className="size-3.5" />}
+          {pinned ? <span className="size-2 rounded-full" style={{ background: peerColor(pinned.peerId) }} aria-hidden="true" /> : <ShuffleIcon className="size-3.5" />}
           <span className="truncate">
             {pinned ? peerLabel(pinned) : <>Auto{pickedPeer ? <span className="text-muted-foreground"> · {pickedPeer.name ?? shortId(pickedPeer.peerId)}</span> : ''}</>}
           </span>
-          {(pinned ?? pickedPeer) && <span className="text-muted-foreground text-xs">{priceRange((pinned ?? pickedPeer)!)}</span>}
+          {(pinned ?? pickedPeer) && <PriceTag offer={(pinned ?? pickedPeer)!} />}
           <ChevronsUpDownIcon className="size-3.5 opacity-60" />
         </Button>
       </ModelSelectorTrigger>
@@ -298,7 +354,7 @@ function PeerPicker({ model, value, onChange, preview, previewLoading }: {
               const skipped = verdict !== undefined && !verdict.eligible
               return (
                 <ModelSelectorItem key={peer.peerId} value={`${peer.name ?? ''} ${peer.peerId}`} onSelect={() => { onChange(peer.peerId); setOpen(false) }} className="items-start py-2">
-                  <ServerIcon className="mt-0.5 size-3.5" />
+                  <span className="mt-1.5 size-2 shrink-0 rounded-full" style={{ background: peerColor(peer.peerId) }} aria-hidden="true" />
                   <span className="flex min-w-0 flex-col gap-1">
                     <span className={`flex items-center gap-2 ${skipped ? 'text-muted-foreground' : ''}`}>
                       <ModelSelectorName>{peerLabel(peer)}</ModelSelectorName>
@@ -308,9 +364,9 @@ function PeerPicker({ model, value, onChange, preview, previewLoading }: {
                     {skipped && <span className="text-muted-foreground text-xs">Auto skips it: {verdict.reasons[0] ?? 'not eligible'}. You can still pin it.</span>}
                     {!peer.toolUse && <span className="text-muted-foreground text-xs">No tools: plain chat when pinned.</span>}
                   </span>
-                  <span className="ml-auto shrink-0 text-right text-muted-foreground text-xs">
-                    {priceRange(peer)}
-                    {peer.reputation !== null && <span className="block">trust {Math.round(peer.reputation)}</span>}
+                  <span className="ml-auto flex shrink-0 flex-col items-end gap-0.5 text-muted-foreground text-xs">
+                    <PriceTag offer={peer} />
+                    {peer.reputation !== null && <span>trust {Math.round(peer.reputation)}</span>}
                   </span>
                   {value === peer.peerId && <CheckIcon className="size-3.5 shrink-0" />}
                 </ModelSelectorItem>
@@ -344,7 +400,7 @@ function ToolCall({ part }: { part: ToolPart }) {
  * member's "Web chat" key. Which peer answers is always shown.
  */
 export default function Chat() {
-  const { workspace, viewer } = useConsole()
+  const { workspace, viewer, me } = useConsole()
   const models = useQuery({ queryKey: qk.chatModels(workspace.id), queryFn: () => api.chat.models(workspace.id), staleTime: 60_000 })
   const [modelId, setModelId] = useState<string | null>(() => load(`model:${workspace.id}`, null))
   const [peerId, setPeerId] = useState<string | null>(() => load(`peer:${workspace.id}`, null))
@@ -491,9 +547,10 @@ export default function Chat() {
         <p className="text-muted-foreground text-xs">
           {peerId && model
             ? <>Every turn goes to <span className="font-medium text-foreground">{peerLabel(model.peers.find((p) => p.peerId === peerId) ?? { peerId, name: null })}</span>. Each answer shows the peer that served it.</>
-            : <>The gateway routes each turn to the best offer for {model?.name ?? 'the model'}. {autoSummary(autoPick(preview.data), model, preview.isLoading)} Each answer shows the seller that served it; pin one to always use it.</>}
+            : <>The gateway routes each turn to the best offer for {model?.name ?? 'the model'}; each answer shows the seller that served it, and you can pin one to always use it.</>}
           {' '}Tools run on the gateway.
         </p>
+        {!peerId && <p className="text-muted-foreground text-xs">{autoSummary(autoPick(preview.data), model, preview.isLoading)}</p>}
         <p className="text-muted-foreground text-xs">
           <PaidBy apiKey={context.data?.key} workspaceName={context.data?.workspaceName ?? workspace.name} chatCost={chatCost} />
         </p>
@@ -516,6 +573,7 @@ export default function Chat() {
                 const streaming = busy && index === messages.length - 1
                 return (
                   <Message key={message.id} from={message.role}>
+                    <MessageAuthor message={message} streaming={streaming} initials={initials(me.member.label)} />
                     <MessageContent>
                       {message.parts.map((part, partIndex) => {
                         const key = `${message.id}-${partIndex}`
@@ -532,13 +590,21 @@ export default function Chat() {
                         return null
                       })}
                     </MessageContent>
-                    {message.role === 'assistant' && <AnsweredBy metadata={message.metadata} streaming={streaming} />}
+                    {message.role === 'assistant' && <AnswerUsage metadata={message.metadata} />}
                   </Message>
                 )
               })}
             {error && (
               <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
-                <span className="font-medium">The request failed.</span> {error.message}
+                {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
+                  ? (
+                    <>
+                      <span className="font-medium">No funds for a paid seller.</span>{' '}
+                      The {workspace.name} wallet has no deposits, and no free seller could take this request.{' '}
+                      <a className="font-medium underline underline-offset-2" href={href('wallet')} onClick={linkHandler('wallet')}>Add funds</a>, or pick a seller marked <Pill tone="free">Free</Pill>.
+                    </>
+                  )
+                  : <><span className="font-medium">The request failed.</span> {error.message}</>}
               </div>
             )}
           </ConversationContent>
