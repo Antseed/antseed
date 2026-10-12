@@ -42,15 +42,6 @@ export {
   serviceHash,
   modelHash,
   sortServiceResults,
-  hashServiceResults,
-  auditReportDomain,
-  hashAuditReport,
-  signAuditReport,
-  recoverAuditReportSigner,
-  AUDIT_REPORT_TYPES,
-  SERVICE_MODEL_MATCH,
-  SERVICE_PRICE_MATCH,
-  SERVICE_UNDETERMINED,
 } from './evm/verifier-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
@@ -61,11 +52,9 @@ export type { BlockRangeOptions } from './evm/block-range.js';
 export type {
   VerifierClientConfig,
   ServiceResultInput,
-  AuditReportInput,
-  SubmitReportInput,
-  AgentScore,
+  SubmitAuditInput,
   ServiceAuditedEvent,
-  ReportSubmittedEvent,
+  AgentAuditedEvent,
 } from './evm/verifier-client.js';
 
 export {

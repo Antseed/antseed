@@ -42,6 +42,5 @@ const result = await auditEndpoint({
 console.log(result.evaluation.verdict)
 ```
 
-Any transport can be audited by implementing `ModelEndpoint`. `computeScoreBps`
-reproduces the on-chain agent score from per-service results, so anyone can check
-an `AntseedVerification` score against its published evidence.
+Any transport can be audited by implementing `ModelEndpoint`, so anyone can re-check
+an `AntseedVerification` audit against its published evidence.

@@ -1,89 +1,51 @@
-import { AbiCoder, Interface, Wallet, keccak256 } from 'ethers';
+import { Interface, Wallet } from 'ethers';
 import { describe, expect, it, vi } from 'vitest';
 import {
-  SERVICE_MODEL_MATCH,
-  SERVICE_PRICE_MATCH,
   VERIFICATION_ABI,
   VerifierClient,
-  auditReportDomain,
-  hashAuditReport,
-  hashServiceResults,
-  recoverAuditReportSigner,
   serviceHash,
-  signAuditReport,
   sortServiceResults,
 } from '../src/payments/evm/verifier-client.js';
 import { queryInBlockChunks, resolveScanFromBlock } from '../src/payments/evm/block-range.js';
 
 const VERIFICATION_ADDRESS = '0x' + '10'.repeat(20);
 
-describe('VerifierClient report ABI', () => {
+describe('VerifierClient audit ABI', () => {
   const results = [
-    { serviceHash: '0x' + '02'.repeat(32), modelHash: '0x' + 'bb'.repeat(32), flags: SERVICE_MODEL_MATCH },
-    {
-      serviceHash: '0x' + '01'.repeat(32),
-      modelHash: '0x' + 'aa'.repeat(32),
-      flags: SERVICE_MODEL_MATCH | SERVICE_PRICE_MATCH,
-    },
+    { serviceHash: '0x' + '02'.repeat(32), modelHash: '0x' + 'bb'.repeat(32), passed: false },
+    { serviceHash: '0x' + '01'.repeat(32), modelHash: '0x' + 'aa'.repeat(32), passed: true },
   ];
 
   it('normalizes service names before hashing', () => {
     expect(serviceHash('  GPT-5.6-SOL ')).toBe(serviceHash('gpt-5.6-sol'));
   });
 
-  it('orders results canonically and hashes them like abi.encode', () => {
-    const sorted = sortServiceResults(results);
-    expect(sorted.map((result) => result.serviceHash)).toEqual(['0x' + '01'.repeat(32), '0x' + '02'.repeat(32)]);
-    const encoded = AbiCoder.defaultAbiCoder().encode(
-      ['tuple(bytes32 serviceHash,bytes32 modelHash,uint16 flags)[]'],
-      [sorted.map((result) => [result.serviceHash, result.modelHash, result.flags])],
-    );
-    expect(hashServiceResults(sorted)).toBe(keccak256(encoded));
-    expect(hashServiceResults(sorted)).not.toBe(hashServiceResults(results));
+  it('orders results by service hash', () => {
+    expect(sortServiceResults(results).map((result) => result.serviceHash)).toEqual([
+      '0x' + '01'.repeat(32),
+      '0x' + '02'.repeat(32),
+    ]);
   });
 
-  it('signs a report as the auditor and recovers the auditor, not the submitter', async () => {
-    const auditor = Wallet.createRandom();
-    const domain = auditReportDomain(8453n, VERIFICATION_ADDRESS);
-    const report = {
-      agentId: 9n,
-      metadataHash: '0x' + '66'.repeat(32),
-      evidenceHash: '0x' + '99'.repeat(32),
-      resultsHash: hashServiceResults(sortServiceResults(results)),
-      auditedAt: 1_800_000_000n,
-    };
-    const signature = await signAuditReport(auditor, domain, report);
-    expect(recoverAuditReportSigner(domain, report, signature)).toBe(auditor.address);
-    expect(recoverAuditReportSigner(domain, { ...report, agentId: 10n }, signature)).not.toBe(auditor.address);
-    expect(hashAuditReport(domain, report)).toMatch(/^0x[0-9a-f]{64}$/);
-  });
-
-  it('encodes report submission with ordered tuple results', async () => {
+  it('submits an audit with results in contract order', async () => {
     const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS });
     const execWrite = vi.fn().mockResolvedValue('0xsubmit');
     (client as unknown as { _execWrite: typeof execWrite })._execWrite = execWrite;
     const signer = Wallet.createRandom();
-    const report = {
+    await expect(client.submitAudit(signer, {
       agentId: 9n,
-      metadataHash: '0x' + '66'.repeat(32),
-      evidenceHash: '0x' + '99'.repeat(32),
-      resultsHash: '0x' + '77'.repeat(32),
-      auditedAt: 1n,
-    };
-    await expect(client.submitReport(signer, {
-      report,
       results,
+      evidenceHash: '0x' + '99'.repeat(32),
       evidenceUri: 'ipfs://bafytest',
-      auditorSignature: '0x1234',
     })).resolves.toBe('0xsubmit');
     expect(execWrite).toHaveBeenCalledWith(
       signer,
       VERIFICATION_ABI,
-      'submitReport',
-      report,
-      results.map((result) => [result.serviceHash, result.modelHash, result.flags]),
+      'submitAudit',
+      9n,
+      sortServiceResults(results).map((result) => [result.serviceHash, result.modelHash, result.passed]),
+      '0x' + '99'.repeat(32),
       'ipfs://bafytest',
-      '0x1234',
     );
   });
 
@@ -92,12 +54,10 @@ describe('VerifierClient report ABI', () => {
     expect(iface.getEvent('ServiceAudited')?.inputs.map((input) => input.name)).toEqual([
       'agentId',
       'serviceHash',
-      'auditor',
       'modelHash',
-      'flags',
-      'evidenceHash',
+      'passed',
     ]);
-    expect(iface.getFunction('submitVerificationBundle')).toBeNull();
+    expect(iface.getFunction('submitReport')).toBeNull();
     expect(iface.getFunction('claimAuditorRewards')).not.toBeNull();
   });
 });
@@ -137,7 +97,7 @@ describe('verifier event block ranges', () => {
     const queryFilter = vi.fn(async (_event: unknown, _from: number, _to: number | 'latest') => [] as unknown[]);
     const contract = {
       filters: {
-        ReportSubmitted: () => 'report-filter',
+        AgentAudited: () => 'audit-filter',
         ServiceAudited: () => 'service-filter',
       },
       queryFilter,
@@ -148,7 +108,7 @@ describe('verifier event block ranges', () => {
     return queryFilter;
   }
 
-  it('scans reports from the deployment block to head in 10k windows', async () => {
+  it('scans audits from the deployment block to head in 10k windows', async () => {
     const client = new VerifierClient({
       rpcUrl: 'http://127.0.0.1:1',
       contractAddress: VERIFICATION_ADDRESS,
@@ -156,7 +116,7 @@ describe('verifier event block ranges', () => {
     });
     const queryFilter = stubContract(client, 25_500);
 
-    await client.queryReports(9n);
+    await client.queryAudits(9n);
     expect(queryFilter.mock.calls.map(([, from, to]) => [from, to])).toEqual([
       [1_000, 10_999],
       [11_000, 20_999],
@@ -172,10 +132,10 @@ describe('verifier event block ranges', () => {
     const client = new VerifierClient({ rpcUrl: 'http://127.0.0.1:1', contractAddress: VERIFICATION_ADDRESS });
     const queryFilter = stubContract(client, 100);
 
-    await expect(client.queryReports()).rejects.toThrow(/explicit fromBlock/);
+    await expect(client.queryAudits()).rejects.toThrow(/explicit fromBlock/);
     await expect(client.queryServiceAudits(1n)).rejects.toThrow(/explicit fromBlock/);
     expect(queryFilter).not.toHaveBeenCalled();
-    await client.queryReports(null, 0);
+    await client.queryAudits(null, 0);
     expect(queryFilter.mock.calls.map(([, from, to]) => [from, to])).toEqual([[0, 'latest']]);
   });
 });

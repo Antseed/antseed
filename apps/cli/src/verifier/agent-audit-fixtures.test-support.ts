@@ -20,7 +20,6 @@ import {
   encodeHttpRequest,
   encodeHttpResponse,
   encodeResponseAuthSigningPayload,
-  type StoredRequestCost,
 } from '@antseed/node'
 import {
   modelAuditSellersDirectory,
@@ -53,10 +52,6 @@ export interface FixtureAudit {
   verdict: 'SAME' | 'DIFF'
   /** Seller key that actually signs ResponseAuth (defaults to `seller`). */
   signer?: Wallet
-  /** Multiplier applied to the honest authorized cost (default 1). */
-  costMultiplier?: number
-  /** Omit the buyer request cost record. */
-  omitCost?: boolean
   reference?: KbfReferenceV1
 }
 
@@ -122,7 +117,7 @@ export function peerIdOf(wallet: Wallet): string {
   return wallet.address.slice(2).toLowerCase()
 }
 
-/** Writes a completed run (summaries, signed evidence, seller references) and returns its request costs. */
+/** Writes a completed run (summaries, signed evidence, seller references) and returns its manifest. */
 export async function writeSignedAuditRun(input: {
   evidenceDir: string
   banksDir: string
@@ -130,8 +125,7 @@ export async function writeSignedAuditRun(input: {
   epoch: string
   auditor: Wallet
   audits: FixtureAudit[]
-}): Promise<{ manifest: VerifierRunManifestV1; requestCosts: Map<string, StoredRequestCost> }> {
-  const requestCosts = new Map<string, StoredRequestCost>()
+}): Promise<VerifierRunManifestV1> {
   const models = [...new Set(input.audits.map((audit) => audit.model))]
   const timestamps = {
     epochStartedAt: '2026-10-07T00:00:00.000Z',
@@ -164,7 +158,7 @@ export async function writeSignedAuditRun(input: {
         createdAt: timestamps.startedAt,
         createdByRunId: input.runId,
       })
-      const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId, requestCosts })
+      const exchanges = signedExchanges({ ...audit, reference, auditor: input.auditor, runId: input.runId })
       const answersById = new Map<string, number | null>()
       const matchesById = new Map<string, 0 | 1 | null>()
       for (const exchange of exchanges) {
@@ -283,14 +277,13 @@ export async function writeSignedAuditRun(input: {
     failureCount: 0,
   }
   await writeVerifierRunManifest(input.evidenceDir, manifest)
-  return { manifest, requestCosts }
+  return manifest
 }
 
 function signedExchanges(input: FixtureAudit & {
   reference: KbfReferenceV1
   auditor: Wallet
   runId: string
-  requestCosts: Map<string, StoredRequestCost>
 }): ProxyAuditEvidenceExchangeV1[] {
   const batches = createDomainHomogeneousKbfBatches(input.reference.probes, KBF_PROBES_PER_REQUEST, (values) => [...values])
   const peerId = peerIdOf(input.seller)
@@ -332,19 +325,6 @@ function signedExchanges(input: FixtureAudit & {
       tokenSource: 'usage',
       provider: 'openai',
       service: input.service,
-    }
-    if (!input.omitCost) {
-      input.requestCosts.set(requestId, {
-        requestId,
-        sellerPeerId: peerId,
-        service: input.service,
-        channelId: `0x${'cc'.repeat(32)}`,
-        authorizedCostUsdc: BigInt(Math.round(140 * (input.costMultiplier ?? 1))),
-        inputTokens: 100n,
-        outputTokens: 20n,
-        source: 'need-auth',
-        recordedAt: 3_000,
-      })
     }
     const url = 'http://127.0.0.1:8377/v1/chat/completions'
     const localHeaders = {

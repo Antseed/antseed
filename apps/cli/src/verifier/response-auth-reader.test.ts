@@ -37,7 +37,6 @@ function responseAuth(overrides: Partial<StoredResponseAuth> = {}): StoredRespon
 test('ResponseAuth reader polls until the record is available', async () => {
   let calls = 0
   const reader = createResponseAuthReader({
-    getRequestCost: () => null,
     getResponseAuth() {
       calls += 1
       return calls < 3 ? null : responseAuth()
@@ -62,7 +61,7 @@ test('ResponseAuth validation rejects missing or tampered exact preimages', () =
 })
 
 test('ResponseAuth reader reports a missing record at timeout', async () => {
-  const reader = createResponseAuthReader({ getResponseAuth: () => null, getRequestCost: () => null }, 0)
+  const reader = createResponseAuthReader({ getResponseAuth: () => null}, 0)
   const result = await reader.waitForVerified({
     requestId: 'request-1', sellerPeerId: '22'.repeat(20), advertisedService: 'model-a',
   })
@@ -72,7 +71,7 @@ test('ResponseAuth reader reports a missing record at timeout', async () => {
 test('ResponseAuth reader stops when the seller audit is aborted', async () => {
   const controller = new AbortController()
   controller.abort()
-  const reader = createResponseAuthReader({ getResponseAuth: () => null, getRequestCost: () => null }, 10_000)
+  const reader = createResponseAuthReader({ getResponseAuth: () => null}, 10_000)
   const result = await reader.waitForVerified({
     requestId: 'request-1', sellerPeerId: '22'.repeat(20), advertisedService: 'model-a',
     signal: controller.signal,

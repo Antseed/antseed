@@ -28,21 +28,20 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, reference, status, report, submit, and rewards workflows', () => {
+test('verifier exposes run, reference, status, submit, and rewards workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['reference', 'report', 'rewards', 'run', 'status', 'submit'],
+    ['reference', 'rewards', 'run', 'status', 'submit'],
   )
 })
 
-test('verifier report, submit, and rewards expose the auditor and verifier controls', () => {
+test('verifier submit and rewards expose the auditor controls', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
   const options = (name: string) => verifier.commands.find((entry) => entry.name() === name)!
     .options.map((option) => option.long)
-  assert.deepEqual(options('report'), ['--run-id', '--rpc-url', '--publish-ipfs'])
-  assert.deepEqual(options('submit'), ['--report', '--dry-run', '--yes', '--rpc-url'])
+  assert.deepEqual(options('submit'), ['--run-id', '--publish-ipfs', '--dry-run', '--yes', '--rpc-url'])
   assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
 })
 

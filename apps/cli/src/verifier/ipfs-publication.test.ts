@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { dirname, join } from 'node:path'
 import test from 'node:test'
 import {
-  prepareReportPublication,
+  prepareAuditPublication,
   publishVerificationToPinata,
   type PreparedVerificationPublication,
 } from './ipfs-publication.js'
@@ -34,7 +34,7 @@ test('builds a portable agent report package and excludes operational files', as
     await writeFile(join(sellerDirectory, 'evidence.json.tmp-1-fixture'), '{}')
     await writeFile(referencePath, JSON.stringify({ referenceId: 'reference-1' }))
 
-    const prepare = () => prepareReportPublication({
+    const prepare = () => prepareAuditPublication({
       evidenceDir,
       runId,
       agentId: '1',

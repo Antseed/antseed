@@ -64,11 +64,11 @@ class PinataUploadError extends Error {
 }
 
 /**
- * Packages one agent's audit report evidence for public pinning: the canonical evidence document,
+ * Packages one agent's audit evidence for public pinning: the canonical evidence document,
  * the exported KBF references, and every referenced seller evidence pack (with signed exchanges).
  * Paths mirror the evidence directory so the document's relative links resolve inside the CID.
  */
-export async function prepareReportPublication(input: {
+export async function prepareAuditPublication(input: {
   evidenceDir: string
   runId: string
   agentId: string

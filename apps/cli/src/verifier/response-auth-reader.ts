@@ -4,7 +4,6 @@ import { keccak256 } from 'ethers'
 import {
   VerificationStorage,
   encodeResponseAuthSigningPayload,
-  type StoredRequestCost,
   type StoredResponseAuth,
 } from '@antseed/node'
 import { normalized, sleep } from './utils.js'
@@ -14,7 +13,6 @@ export const RESPONSE_AUTH_POLL_INTERVAL_MS = 100
 
 export interface ResponseAuthLookup {
   getResponseAuth(requestId: string): StoredResponseAuth | null
-  getRequestCost(requestId: string): StoredRequestCost | null
 }
 
 export interface ResponseAuthEvidenceStatus {
@@ -43,7 +41,6 @@ export interface ResponseAuthReader {
     timeoutMs?: number
     signal?: AbortSignal
   }): Promise<ResponseAuthEvidenceStatus>
-  getRequestCost(requestId: string): StoredRequestCost | null
   close(): void
 }
 
@@ -94,9 +91,6 @@ export function createResponseAuthReader(
         }
         await sleepFn(Math.min(RESPONSE_AUTH_POLL_INTERVAL_MS, Math.max(1, deadline - Date.now())))
       }
-    },
-    getRequestCost(requestId) {
-      return storage.getRequestCost(requestId)
     },
     close() {
       storage.close?.()

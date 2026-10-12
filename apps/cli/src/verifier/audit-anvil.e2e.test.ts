@@ -9,29 +9,25 @@ import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
 import { Wallet } from 'ethers'
-import { VerificationStorage } from '@antseed/node'
 import { VerifierClient } from '@antseed/node/payments'
 import {
   FIXTURE_CONFIG,
   referenceFixture,
   writeSignedAuditRun,
   type FixtureAudit,
-} from './audit-report-fixtures.test-support.js'
-import { submissionLedgerPath, type ReportSubmissionLedgerV1 } from './submission-ledger.js'
+} from './agent-audit-fixtures.test-support.js'
 
 const randomWallet = (): Wallet => new Wallet(Wallet.createRandom().privateKey)
 const RUN_ANVIL_E2E = process.env['ANTSEED_RUN_VERIFIER_ANVIL_E2E'] === '1'
 const DEPLOYER_PRIVATE_KEY = 'ac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80'
-const AUDITOR_PRIVATE_KEYS = [
-  '8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba',
-  '92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e',
-] as const
-const VERIFIER_ADDRESS = '0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266'
+const AUDITOR_PRIVATE_KEY = '8b3a350cf5c34c9194ca85829a2df0ec3153be0318b5e2d3348e872092edffba'
+const UNAPPROVED_PRIVATE_KEY = '92db14e403b83dfe3df233f83dfa3a0d7096f21ca9b0d6d6b8d88b2b4ec1564e'
+const AUDIT_EPOCH = 5
 const SELLER_OWNERS = [
   '0x70997970C51812dc3A010C7d01b50e0d17dc79C8',
   '0x3C44CdDdB6a900fa2b585dd299e03d12FA4293BC',
 ] as const
-const RUN_ID = 'anvil-report-run'
+const RUN_ID = 'anvil-audit-run'
 const EPOCH = '2026-10-07'
 
 const compiledTestDirectory = dirname(fileURLToPath(import.meta.url))
@@ -49,7 +45,7 @@ interface RunCliOptions {
   importPath?: string
 }
 
-test('two auditors sign reports, one verifier checks and submits both, and the score finalizes', {
+test('an approved auditor submits power-weighted audits and a re-run is a no-op', {
   skip: !RUN_ANVIL_E2E,
   timeout: 300_000,
 }, async () => {
@@ -57,41 +53,41 @@ test('two auditors sign reports, one verifier checks and submits both, and the s
   requireCommand('cast')
   requireCommand('forge')
 
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-report-e2e-'))
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-audit-e2e-'))
   const port = await availablePort()
   const rpcUrl = `http://127.0.0.1:${port}`
   const anvil = startAnvil(port)
   try {
     await waitForRpcReady(rpcUrl, anvil)
     const registryAddress = deployContract(rpcUrl, 'core/AntseedRegistry.sol:AntseedRegistry')
-    const identityRegistryAddress = deployContract(
-      rpcUrl,
-      'test/mocks/MockERC8004Registry.sol:MockERC8004Registry',
-    )
+    const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
+    const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
+    const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
     const verificationAddress = deployContract(
       rpcUrl,
       'verification/AntseedVerification.sol:AntseedVerification',
-      [registryAddress],
+      [registryAddress, poolsAddress],
     )
     castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
-    castSend(rpcUrl, verificationAddress, 'setVerifier(address,bool)', [VERIFIER_ADDRESS, 'true'])
-    const auditors = AUDITOR_PRIVATE_KEYS.map((key) => new Wallet(`0x${key}`))
-    // Agent 3 belongs to the first auditor, who must not audit it.
-    const owners = [...SELLER_OWNERS, auditors[0]!.address]
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
+    const auditor = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
+    castSend(rpcUrl, verificationAddress, 'setAuditor(address,bool)', [auditor.address, 'true'])
+    // Agent 3 belongs to the auditor, who must not audit it.
+    const owners = [...SELLER_OWNERS, auditor.address]
     for (const [index, owner] of owners.entries()) {
       castSend(rpcUrl, identityRegistryAddress, 'setOwner(uint256,address)', [String(index + 1), owner])
     }
+    castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', ['1', String(AUDIT_EPOCH), '300'])
+    castSend(rpcUrl, poolsAddress, 'setPower(uint256,uint256,uint256)', ['2', String(AUDIT_EPOCH), '100'])
 
     const sellers = [randomWallet(), randomWallet(), randomWallet()]
-    // Both auditors audit against the same references so their results agree.
-    const references = { 'model-a': referenceFixture('model-a'), 'model-b': referenceFixture('model-b') }
     const audits: FixtureAudit[] = [
-      { agentId: '1', seller: sellers[0]!, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: references['model-a'] },
-      { agentId: '1', seller: sellers[0]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: references['model-b'] },
-      { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', reference: references['model-a'] },
-      { agentId: '3', seller: sellers[2]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: references['model-b'] },
+      { agentId: '1', seller: sellers[0]!, model: 'model-a', service: 'model-a', verdict: 'SAME', reference: referenceFixture('model-a') },
+      { agentId: '1', seller: sellers[0]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
+      { agentId: '2', seller: sellers[1]!, model: 'model-a', service: 'model-a', verdict: 'DIFF', reference: referenceFixture('model-a') },
+      { agentId: '3', seller: sellers[2]!, model: 'model-b', service: 'model-b', verdict: 'SAME', reference: referenceFixture('model-b') },
     ]
-
     const crypto = {
       chainId: 'base-local',
       rpcUrl,
@@ -99,127 +95,62 @@ test('two auditors sign reports, one verifier checks and submits both, and the s
       verificationDeployBlock: 0,
       identityRegistryAddress,
     }
-    const auditorDirs: Array<{ dataDir: string; configPath: string; evidenceDir: string }> = []
-    for (const [index, auditor] of auditors.entries()) {
-      const dataDir = join(directory, `auditor-${index + 1}`)
+    const setUpDataDir = async (name: string, key: string) => {
+      const dataDir = join(directory, name)
       const evidenceDir = join(dataDir, 'verifier', 'evidence')
       const banksDir = join(dataDir, 'verifier', 'banks')
       const configPath = join(dataDir, 'config.json')
       await mkdir(dataDir, { recursive: true })
-      await writeFile(join(dataDir, 'identity.key'), `${AUDITOR_PRIVATE_KEYS[index]}\n`, { mode: 0o600 })
+      await writeFile(join(dataDir, 'identity.key'), `${key}\n`, { mode: 0o600 })
       await writeFile(configPath, JSON.stringify({
         payments: { preferredMethod: 'crypto', crypto },
         verifier: { evidenceDir, banksDir, ...FIXTURE_CONFIG },
       }))
-      const { requestCosts } = await writeSignedAuditRun({ evidenceDir, banksDir, runId: RUN_ID, epoch: EPOCH, auditor, audits })
-      const storage = new VerificationStorage(join(dataDir, 'verification.db'))
-      try {
-        for (const cost of requestCosts.values()) storage.insertRequestCost(cost)
-      } finally {
-        storage.close()
-      }
-      auditorDirs.push({ dataDir, configPath, evidenceDir })
+      await writeSignedAuditRun({ evidenceDir, banksDir, runId: RUN_ID, epoch: EPOCH, auditor: new Wallet(`0x${key}`), audits })
+      return { dataDir, configPath, evidenceDir }
     }
-
-    const verifierDataDir = join(directory, 'verifier')
-    const verifierConfigPath = join(verifierDataDir, 'config.json')
-    const verifierEvidenceDir = join(verifierDataDir, 'verifier', 'evidence')
-    await mkdir(verifierDataDir, { recursive: true })
-    await writeFile(join(verifierDataDir, 'identity.key'), `${DEPLOYER_PRIVATE_KEY}\n`, { mode: 0o600 })
-    await writeFile(verifierConfigPath, JSON.stringify({
-      payments: { preferredMethod: 'crypto', crypto },
-      verifier: {
-        evidenceDir: verifierEvidenceDir,
-        banksDir: join(verifierDataDir, 'verifier', 'banks'),
-        ...FIXTURE_CONFIG,
-      },
-    }))
+    const approved = await setUpDataDir('auditor', AUDITOR_PRIVATE_KEY)
+    const unapproved = await setUpDataDir('unapproved', UNAPPROVED_PRIVATE_KEY)
 
     const pinataLogPath = join(directory, 'pinata-uploads.jsonl')
     const pinataPreloadPath = join(directory, 'mock-pinata.mjs')
     await writeMockPinataPreload(pinataPreloadPath, pinataLogPath)
-
-    const firstReport = runCli(auditorDirs[0]!.dataDir, auditorDirs[0]!.configPath, rpcUrl, [
-      'report', '--run-id', RUN_ID, '--publish-ipfs',
+    const submit = (dirs: typeof approved, extra: string[]) => runCli(dirs.dataDir, dirs.configPath, rpcUrl, [
+      'submit', '--run-id', RUN_ID, ...extra,
     ], { importPath: pinataPreloadPath, env: { PINATA_JWT: 'test-pinata-jwt' } })
-    assert.equal(firstReport.status, 0, firstReport.output)
-    assert.match(firstReport.output, /Reports signed: 2; excluded audits: 1/)
-    assert.match(firstReport.output, /self-audit/)
+    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+
+    const dryRun = submit(approved, ['--dry-run'])
+    assert.equal(dryRun.status, 0, dryRun.output)
+    assert.match(dryRun.output, /Dry run complete/)
+    assert.match(dryRun.output, /self-audit/)
+    assert.equal((await client.queryAudits()).length, 0)
+
+    const refused = submit(unapproved, ['--yes'])
+    assert.equal(refused.status, 1, refused.output)
+    assert.match(refused.output, /not approved/)
+
+    const first = submit(approved, ['--yes', '--publish-ipfs'])
+    assert.equal(first.status, 0, first.output)
+    assert.match(first.output, /Submitted: 2; already submitted: 0; failed: 0/)
     const uploads = (await readFile(pinataLogPath, 'utf8')).trim().split('\n').map((line) => JSON.parse(line) as {
       agentId: string
       files: string[]
     })
     assert.deepEqual(uploads.map((upload) => upload.agentId).sort(), ['1', '2'])
-    assert.ok(uploads.every((upload) => upload.files.includes('publication.json')))
-    const secondReport = runCli(auditorDirs[1]!.dataDir, auditorDirs[1]!.configPath, rpcUrl, [
-      'report', '--run-id', RUN_ID,
-    ])
-    assert.equal(secondReport.status, 0, secondReport.output)
-    assert.match(secondReport.output, /Reports signed: 3; excluded audits: 0/)
 
-    const reportsDir = (index: number) => join(auditorDirs[index]!.evidenceDir, 'reports', RUN_ID)
-    const firstReportFile = JSON.parse(await readFile(join(reportsDir(0), '1.report.json'), 'utf8')) as {
-      evidenceUri: string
-    }
-    assert.match(firstReportFile.evidenceUri, /^ipfs:\/\//)
-
-    const client = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
-    const submit = (index: number, extra: string[]) => runCli(verifierDataDir, verifierConfigPath, rpcUrl, [
-      'submit', '--report', reportsDir(index), ...extra,
-    ])
-
-    const dryRun = submit(0, ['--dry-run'])
-    assert.equal(dryRun.status, 0, dryRun.output)
-    assert.match(dryRun.output, /Dry run complete/)
-    assert.equal((await client.queryReports()).length, 0)
-
-    const tamperedPath = join(reportsDir(1), '2.report.json')
-    const original = await readFile(tamperedPath, 'utf8')
-    const tampered = JSON.parse(original) as { results: Array<{ flags: number }> }
-    tampered.results[0]!.flags |= 1
-    await writeFile(tamperedPath, JSON.stringify(tampered))
-    const refused = submit(1, ['--dry-run'])
-    assert.equal(refused.status, 1, refused.output)
-    assert.match(refused.output, /Refusing .*2\.report\.json/)
-    assert.match(refused.output, /results: resultsHash does not match the results/)
-    await writeFile(tamperedPath, original)
-
-    const first = submit(0, ['--yes'])
-    assert.equal(first.status, 0, first.output)
-    assert.match(first.output, /Submitted: 2; skipped: 0; refused: 0; failed: 0/)
-    assert.equal((await client.agentScore(1n)).finalizedAt, 0n)
-
-    const repeat = submit(0, ['--yes'])
+    const repeat = submit(approved, ['--yes'])
     assert.equal(repeat.status, 0, repeat.output)
-    assert.match(repeat.output, /Submitted: 0; skipped: 2; refused: 0; failed: 0/)
+    assert.match(repeat.output, /Nothing to submit/)
 
-    const second = submit(1, ['--yes'])
-    assert.equal(second.status, 0, second.output)
-    assert.match(second.output, /Submitted: 3; skipped: 0; refused: 0; failed: 0/)
-
-    const reports = await client.queryReports()
-    assert.equal(reports.length, 5)
-    assert.ok(reports.every((report) => report.verifier === VERIFIER_ADDRESS))
-    assert.deepEqual(
-      new Set(reports.filter((report) => report.agentId === 1n).map((report) => report.auditor)),
-      new Set(auditors.map((auditor) => auditor.address)),
-    )
-    const agentOne = await client.agentScore(1n)
-    assert.ok(agentOne.finalizedAt > 0n)
-    assert.ok(agentOne.scoreBps > 0)
-    const agentTwo = await client.agentScore(2n)
-    assert.ok(agentTwo.finalizedAt > 0n)
-    assert.equal(agentTwo.scoreBps, 0)
-    assert.equal((await client.agentScore(3n)).finalizedAt, 0n)
-    assert.equal((await client.queryServiceAudits(1n)).length, 4)
-
-    const ledger = JSON.parse(await readFile(
-      submissionLedgerPath(verifierEvidenceDir, 31_337n, verificationAddress),
-      'utf8',
-    )) as ReportSubmissionLedgerV1
-    const entries = Object.values(ledger.reports)
-    assert.equal(entries.length, 5)
-    assert.ok(entries.every((entry) => entry.status === 'submitted' && entry.transactionHash))
+    const onChain = await client.queryAudits()
+    assert.equal(onChain.length, 2)
+    assert.ok(onChain.every((audit) => audit.auditor === auditor.address && audit.evidenceUri.startsWith('ipfs://')))
+    assert.equal(await client.isVerified(1n), true)
+    assert.equal(await client.isVerified(2n), false)
+    assert.equal(await client.isVerified(3n), false)
+    assert.equal((await client.queryServiceAudits(1n)).length, 2)
+    assert.deepEqual(await client.auditPower(auditor.address, AUDIT_EPOCH), { auditor: 400n, total: 400n })
   } finally {
     await stopProcess(anvil)
     await rm(directory, { recursive: true, force: true })

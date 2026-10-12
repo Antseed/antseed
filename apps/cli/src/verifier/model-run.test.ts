@@ -220,7 +220,6 @@ async function runTarget(
     })
   }
   const responseAuthReader: ResponseAuthReader = {
-    getRequestCost() { return null },
     async waitForVerified(input) {
       if (authMode === 'missing') {
         return {
@@ -321,7 +320,6 @@ async function runSkippedTarget(response: Response): Promise<{
         requestTimeoutMs: 10_000,
         auditTimeoutMs: 10_000,
         responseAuthReader: {
-          getRequestCost() { return null },
           async waitForVerified() { throw new Error('unexpected ResponseAuth wait') },
           close() {},
         },
