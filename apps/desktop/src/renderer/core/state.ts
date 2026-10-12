@@ -416,7 +416,6 @@ export type RendererUiState = {
   } | null;
   chatPaymentApprovalLoading: boolean;
   chatPaymentApprovalError: string | null;
-  chatLowBalanceWarning: boolean;
 
   // --- Active payment channels (keyed by peerId) ---
   chatActiveChannels: Map<string, ActiveChannelInfo>;
@@ -599,7 +598,6 @@ export function createInitialUiState(): RendererUiState {
     chatPaymentApprovalPeerInfo: null,
     chatPaymentApprovalLoading: false,
     chatPaymentApprovalError: null,
-    chatLowBalanceWarning: false,
 
     // Active payment channels
     chatActiveChannels: new Map(),

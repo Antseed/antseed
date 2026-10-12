@@ -25,6 +25,13 @@ import { channelRecoverableBaseUnits, isFundedCurrentChannel } from './vpr-activ
  */
 export const SESSION_RESERVE_BASE_UNITS = 1_000_000n;
 
+/**
+ * The deposit watcher's smallest headroom-clamped top-up: when the wallet
+ * holds more than the remaining credit-limit headroom, it waits until at
+ * least this much headroom is free (MIN_TOPUP_BASE_UNITS in deposit-watcher).
+ */
+export const MIN_TOPUP_BASE_UNITS = 1_000_000n;
+
 export type FundingStatusKind =
   | 'empty'
   | 'wallet-below-minimum'
@@ -195,8 +202,10 @@ export function deriveFundingStatus(inputs: FundingInputs): FundingStatus {
   // ── Credits exist; a top-up may be waiting in the wallet. ──
   // An unread credit limit (0) must not read as "at the limit".
   const headroom = creditLimit === 0n ? wallet : creditLimit > deposited ? creditLimit - deposited : 0n;
-  const walletSweepable = wallet > fee && headroom > 0n;
-  const walletAtLimit = wallet > fee && headroom === 0n && creditLimit > 0n;
+  // Mirrors the watcher: a sweep clamped by headroom waits for a full top-up.
+  const waitsForHeadroom = headroom === 0n || (wallet - fee > headroom && headroom < MIN_TOPUP_BASE_UNITS);
+  const walletSweepable = wallet > fee && !waitsForHeadroom;
+  const walletAtLimit = wallet > fee && waitsForHeadroom && creditLimit > 0n;
 
   if (available < SESSION_RESERVE_BASE_UNITS) {
     // Money already on its way covers it — say so instead of asking for more.

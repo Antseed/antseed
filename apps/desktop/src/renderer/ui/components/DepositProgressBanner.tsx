@@ -55,7 +55,6 @@ export function DepositProgressBanner({ onAddFunds, onDepositView = false }: {
       if (data.phase !== 'sweeping') actions.refreshCredits();
       setStatus(data);
       if (data.phase === 'credited') {
-        actions.refreshCredits();
         hideTimer.current = window.setTimeout(() => setStatus(null), CREDITED_AUTO_HIDE_MS);
       }
     });

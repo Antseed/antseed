@@ -13,6 +13,7 @@
  */
 import { buildReceiveAuthorization, makeUsdcDomain } from '@antseed/node'
 import type { Identity, SweepReceiptPayload, SweepRequestPayload } from '@antseed/node'
+import { log } from './request-utils.js'
 
 export type DepositWatchPhase = 'deferred' | 'received' | 'sweeping' | 'credited' | 'error'
 
@@ -383,7 +384,8 @@ export class DepositWatcher {
     try {
       this._minFirstDeposit = await depositsClient.getMinBuyerDeposit()
       return this._minFirstDeposit
-    } catch {
+    } catch (err) {
+      log(`MIN_BUYER_DEPOSIT read failed, assuming ${MIN_FIRST_DEPOSIT_BASE_UNITS} base units: ${err instanceof Error ? err.message : String(err)}`)
       return MIN_FIRST_DEPOSIT_BASE_UNITS // transient — re-read next sweep
     }
   }

@@ -116,6 +116,16 @@ test('wallet funds above the credit limit wait for headroom', () => {
   assert.equal(status.kind, 'wallet-at-limit');
 });
 
+test('a top-up larger than sub-minimum headroom waits, like the watcher', () => {
+  const status = deriveFundingStatus({ ...base, available: '7.5', creditLimit: '8', wallet: '5' });
+  assert.equal(status.kind, 'wallet-at-limit');
+});
+
+test('a top-up that fits the remaining headroom still deposits', () => {
+  const status = deriveFundingStatus({ ...base, available: '7.5', creditLimit: '8', wallet: '0.4' });
+  assert.equal(status.kind, 'depositing');
+});
+
 test('closed or zero-held channels are not listed as sessions', () => {
   const status = deriveFundingStatus({
     ...base,

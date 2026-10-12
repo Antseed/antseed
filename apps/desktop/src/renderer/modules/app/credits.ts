@@ -82,12 +82,7 @@ export function initCreditsModule({
           uiState.chatActiveChannels.clear();
         }
 
-        // Low balance detection
         const available = parseFloat(uiState.creditsAvailableUsdc);
-        const lowBalance = available > 0 && (available < 1.0 || (reserved > 0 && available < reserved));
-        if (uiState.chatLowBalanceWarning !== lowBalance) {
-          uiState.chatLowBalanceWarning = lowBalance;
-        }
 
         // Auto-retry: if the payment approval card is visible and balance
         // now covers the required amount, dismiss the card and retry.

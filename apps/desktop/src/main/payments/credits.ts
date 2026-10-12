@@ -216,8 +216,10 @@ async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient
       depositsClient.getMinBuyerDeposit(),
       relay ? relay.fee() : Promise.resolve(DEFAULT_DEPOSIT_FEE),
     ]);
-    cachedDepositRules = { minFirstDeposit, fee };
-    return cachedDepositRules;
+    const rules = { minFirstDeposit, fee };
+    // Without a relay the fee is only the default; re-read once it's configured.
+    if (relay) cachedDepositRules = rules;
+    return rules;
   } catch {
     return null; // keep the defaults; retried on the next poll
   }
