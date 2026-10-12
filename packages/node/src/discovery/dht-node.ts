@@ -1,6 +1,10 @@
 import DHT from "bittorrent-dht";
 import { createHash } from "node:crypto";
 import { EventEmitter } from "node:events";
+import { lookup as lookupHost } from "node:dns/promises";
+import type { LookupAddress } from "node:dns";
+import { isIP } from "node:net";
+import { debugWarn } from "../utils/debug.js";
 import type { PeerId } from "../types/peer.js";
 import { OFFICIAL_BOOTSTRAP_NODES, toBootstrapConfig } from "./bootstrap.js";
 
@@ -17,6 +21,8 @@ export interface DHTNodeConfig {
   operationTimeoutMs: number;
   /** Allow private/loopback IPs in lookup results. Default: false. Set true for local testing. */
   allowPrivateIPs?: boolean;
+  /** Injectable bootstrap DNS lookup. Always called with IPv4 and all answers requested. */
+  lookup?: (host: string, options: { family: 4; all: true }) => Promise<LookupAddress[]>;
 }
 
 export const DEFAULT_DHT_CONFIG: Omit<DHTNodeConfig, "peerId"> = {
@@ -136,12 +142,35 @@ export class DHTNode {
     this.config = config;
   }
 
+  private async resolveBootstrap(): Promise<string[]> {
+    const lookup: NonNullable<DHTNodeConfig["lookup"]> = this.config.lookup ?? lookupHost;
+    const resolved = await Promise.all(this.config.bootstrapNodes.map(async ({ host, port }) => {
+      const family = isIP(host);
+      if (family === 4) return [`${host}:${port}`];
+      if (family === 6) return [];
+      try {
+        // k-rpc-socket uses UDP4, but its hostname lookup can return DNS64 IPv6.
+        const answers = await lookup(host, { family: 4, all: true });
+        return answers
+          .filter(({ address }) => isIP(address) === 4)
+          .map(({ address }) => `${address}:${port}`);
+      } catch (err) {
+        debugWarn(`[DHTNode] Failed to resolve bootstrap ${host}: ${String(err)}`);
+        return [];
+      }
+    }));
+    const bootstrap = [...new Set(resolved.flat())];
+    if (bootstrap.length === 0 && this.config.bootstrapNodes.length > 0) {
+      debugWarn(`[DHTNode] No IPv4 bootstrap addresses resolved from ${this.config.bootstrapNodes.length} configured node(s)`);
+    }
+    return bootstrap;
+  }
+
   async start(): Promise<void> {
+    const bootstrap = await this.resolveBootstrap();
     return new Promise<void>((resolve, reject) => {
       this.dht = new DHT({
-        bootstrap: this.config.bootstrapNodes.map(
-          (n) => `${n.host}:${n.port}`
-        ),
+        bootstrap,
       });
 
       const timeout = setTimeout(() => {

@@ -3,6 +3,16 @@ import { getChainConfig, resolveChainConfig } from '../src/payments/chain-config
 import { DEPLOYED_CONTRACT_ADDRESSES } from '../src/payments/generated-contract-addresses.js';
 
 describe('recognized-usage deployment configuration', () => {
+  it.each(['base-mainnet', 'base-sepolia', 'base-local'] as const)('has a complete payment stack for %s', (chainId) => {
+    const config = getChainConfig(chainId);
+
+    expect(config.evmChainId).toBeGreaterThan(0);
+    expect(config.rpcUrl).toMatch(/^https?:\/\//);
+    for (const address of [config.usdcContractAddress, config.depositsContractAddress, config.channelsContractAddress]) {
+      expect(address).toMatch(/^0x[0-9a-fA-F]{40}$/);
+    }
+  });
+
   it('exposes the generated inventory separately from active endpoints', () => {
     const config = getChainConfig('base-mainnet');
     const generated = DEPLOYED_CONTRACT_ADDRESSES['base-mainnet'];
@@ -24,6 +34,20 @@ describe('recognized-usage deployment configuration', () => {
     expect(config.recognizedUsage).toEqual(getChainConfig('base-mainnet').recognizedUsage);
     expect(config.rpcUrl).toBe('http://localhost:8545');
     expect(config.fallbackRpcUrls).toEqual([]);
+  });
+
+  it('allows payment contract overrides without changing the selected chain', () => {
+    const config = resolveChainConfig({
+      chainId: 'base-sepolia',
+      depositsContractAddress: '0x1111111111111111111111111111111111111111',
+      channelsContractAddress: '0x2222222222222222222222222222222222222222',
+    });
+
+    expect(config.chainId).toBe('base-sepolia');
+    expect(config.evmChainId).toBe(84532);
+    expect(config.depositsContractAddress).toBe('0x1111111111111111111111111111111111111111');
+    expect(config.channelsContractAddress).toBe('0x2222222222222222222222222222222222222222');
+    expect(config.usdcContractAddress).toBe(getChainConfig('base-sepolia').usdcContractAddress);
   });
 
   it('does not expose mainnet deployment metadata for local chains', () => {

@@ -11,7 +11,7 @@ import path from 'node:path';
  *
  * Merge rules: an entry in the packaged/env profile list with the same `name`
  * replaces the default here, so releases can still tweak or extend the
- * catalog; user-added custom apps (custom.ts) merge in separately.
+ * catalog; user-added custom apps (the desktop's connected-apps/custom.ts) merge in separately.
  */
 
 /**
@@ -121,7 +121,7 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
       thirdPartyDir: '~/Library/Application Support/Claude-3p',
       // Claude talks to the desktop's local Claude gateway (Anthropic-native
       // model catalog + forwarding to the buyer proxy), not the buyer proxy
-      // directly — see connected-apps/claude-desktop-gateway.ts.
+      // directly — see apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts.
       baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
     },
   },

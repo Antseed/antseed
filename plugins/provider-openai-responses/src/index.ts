@@ -389,6 +389,8 @@ function collapseResponsesSseResponse(response: SerializedHttpResponse): Seriali
 }
 
 function parseResponsesSse(text: string): { body: Record<string, unknown>; statusCode?: number } | null {
+  const outputItems: Array<Record<string, unknown> | undefined> = [];
+
   for (const block of text.replace(/\r\n/g, '\n').split('\n\n')) {
     const lines = block.split('\n');
     const event = lines
@@ -399,6 +401,7 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
       event !== 'response.completed'
       && event !== 'response.failed'
       && event !== 'error'
+      && event !== 'response.output_item.done'
     ) {
       continue;
     }
@@ -412,6 +415,16 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
 
     try {
       const parsed = JSON.parse(data) as Record<string, unknown>;
+      if (event === 'response.output_item.done') {
+        const item = parsed.item;
+        const outputIndex = parsed.output_index;
+        if (typeof outputIndex === 'number' && Number.isInteger(outputIndex) && outputIndex >= 0
+          && item && typeof item === 'object' && !Array.isArray(item)) {
+          outputItems[outputIndex] = item as Record<string, unknown>;
+        }
+        continue;
+      }
+
       if (event === 'error') {
         return { body: normalizeUpstreamStreamError(parsed), statusCode: 502 };
       }
@@ -421,6 +434,12 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
         const body = nested as Record<string, unknown>;
         if (event === 'response.failed') {
           return { body: normalizeUpstreamStreamError(body), statusCode: 502 };
+        }
+        const completedOutput = outputItems.filter(
+          (item): item is Record<string, unknown> => item !== undefined,
+        );
+        if (completedOutput.length > 0 && (!Array.isArray(body.output) || body.output.length === 0)) {
+          return { body: { ...body, output: completedOutput } };
         }
         return { body };
       }

@@ -41,6 +41,8 @@ describe('BuyerRequestHandler response auth sampling', () => {
 
     const maybeStoreResponseAuthSample = vi.fn(async () => null);
     const insertResponseAuth = vi.fn();
+    let deliverAuth!: () => void;
+    const authReady = new Promise<void>(resolve => { deliverAuth = resolve; });
     const handler = new BuyerRequestHandler(
       {},
       {
@@ -59,13 +61,16 @@ describe('BuyerRequestHandler response auth sampling', () => {
           cancelProxyRequest: vi.fn(),
         })) as any,
         getVerificationMux: vi.fn(() => ({
-          waitForResponseAuth: vi.fn(async () => responseAuth),
+          waitForResponseAuth: vi.fn(async () => { await authReady; return responseAuth; }),
         })) as any,
         registerPaymentMux: vi.fn(),
       },
     );
 
-    await handler.sendRequest(peer, request, undefined, { captureResponseAuthPreimages: true });
+    const responsePreimage = encodeHttpResponse(response);
+    const received = await handler.sendRequest(peer, request, undefined, { captureResponseAuthPreimages: true });
+    received.headers['x-antseed-seller-peer'] = seller.peerId;
+    deliverAuth();
 
     await vi.waitFor(() => {
       expect(maybeStoreResponseAuthSample).toHaveBeenCalledOnce();
@@ -73,11 +78,11 @@ describe('BuyerRequestHandler response auth sampling', () => {
     });
     expect(insertResponseAuth).toHaveBeenCalledWith(expect.objectContaining({
       requestPreimage: encodeHttpRequest(request),
-      responsePreimage: encodeHttpResponse(response),
+      responsePreimage,
     }));
     expect(maybeStoreResponseAuthSample).toHaveBeenCalledWith(expect.objectContaining({
       request,
-      response,
+      response: expect.objectContaining({ headers: { 'content-type': 'application/json' } }),
       responseAuth,
       verified: true,
       verificationError: null,
@@ -212,6 +217,7 @@ describe('BuyerRequestHandler response auth sampling', () => {
     const maybeStoreResponseAuthSample = vi.fn(async () => null);
     const bpm = {
       trackRequestService: vi.fn(),
+      getResponseAuthChannelId: vi.fn(() => null),
       getActiveSession: vi.fn(() => ({ sessionId: requestDispatched ? rotatedChannel : channelAtDispatch })),
     };
     const handler = new BuyerRequestHandler(

@@ -74,9 +74,20 @@ export type ServiceCapabilitiesView = {
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];
+  /** Advertised options of a native video model; absent fields mean unknown. */
+  video?: VideoOptionsView;
 };
 
-export type VprModelKind = 'text' | 'image';
+export type VideoOptionsView = {
+  durationsSeconds?: number[];
+  resolutions?: string[];
+  aspectRatios?: string[];
+  inputs?: string[];
+  requiredInputs?: string[];
+  audio?: boolean;
+};
+
+export type VprModelKind = 'text' | 'image' | 'video';
 
 export type ChatServiceOptionEntry = {
   id: string;
@@ -146,6 +157,11 @@ export type VprModelCatalogEntry = {
   maxCachedInputUsdPerMillion: number | null;
   minImageUsdPerImage: number | null;
   maxImageUsdPerImage: number | null;
+  /** Video models: advertised per-second / per-video price ranges. */
+  minVideoUsdPerSecond: number | null;
+  maxVideoUsdPerSecond: number | null;
+  minVideoUsdPerVideo: number | null;
+  maxVideoUsdPerVideo: number | null;
   expectedSavingsPct: number | null;
   /**
    * True when some seller auto-routing may actually pick (trust/allow/block
@@ -232,6 +248,11 @@ export type DiscoverRow = {
   cachedInputUsdPerMillion: number | null;
   minImageUsdPerImage: number | null;
   maxImageUsdPerImage: number | null;
+  /** Native video offers: advertised `video_seconds` / `video_generations` price ranges. */
+  minVideoUsdPerSecond: number | null;
+  maxVideoUsdPerSecond: number | null;
+  minVideoUsdPerVideo: number | null;
+  maxVideoUsdPerVideo: number | null;
 
   // Local buyer history (from ChannelStore)
   lifetimeSessions: number;

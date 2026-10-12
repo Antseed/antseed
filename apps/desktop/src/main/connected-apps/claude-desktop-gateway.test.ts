@@ -13,7 +13,7 @@ import {
   rewriteModel,
   type ClaudeGatewayModel,
 } from './claude-desktop-gateway.js';
-import { ROUTED_MODEL_ALIAS } from '../system-proxy/config-patch.js';
+import { ROUTED_MODEL_ALIAS } from '@antseed/connected-apps/config-patch';
 
 type StubRequest = {
   method: string;

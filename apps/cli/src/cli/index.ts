@@ -16,7 +16,9 @@ import { registerMetricsCommand } from './commands/metrics.js';
 import { registerWrappedToolCommands } from './commands/wrapped-tools.js';
 import { registerSystemProxyCommands } from './commands/system-proxy/index.js';
 import { registerTunnelCommands } from './commands/tunnel/index.js';
+import { registerGatewayCommands } from './commands/gateway/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
+import { registerAppsCommands } from './commands/apps/index.js';
 
 loadEnvFromFiles();
 
@@ -47,6 +49,8 @@ registerMetricsCommand(program);
 registerWrappedToolCommands(program);
 registerSystemProxyCommands(program);
 registerTunnelCommands(program);
+registerGatewayCommands(program);
 registerAntsCommands(program);
+registerAppsCommands(program);
 
 await program.parseAsync(process.argv);
