@@ -9,11 +9,11 @@ protocol registry pointers. M002 is not a prerequisite.
 
 After M003:
 
-- **Points boost is live.** Every settlement runs through the new policy. A verified
-  seller earns `+bonusBps` per verified model (default 100, +1%), capped at +50% in
-  total; unverified sellers and sellers with a DIFF are unchanged. `bonusBps` is an
-  owner setting on the policy; removing the policy from the registry turns the boost
-  off without a redeploy.
+- **Points boost starts at 0.** Every settlement runs through the new policy, but with
+  the default `bonusBps = 0` no seller's points change, so sellers have time to adjust.
+  Turn it on later with `setBonusBps` (e.g. 100 = +1% per verified model, capped at
+  +50% in total); unverified sellers and sellers with a DIFF are never boosted.
+  Removing the policy from the registry also turns it off without a redeploy.
 - **Auditor rewards stay off.** Audit credits accrue from the first audit, but claims
   pay nothing until the emissions-gate owner hands the verification bucket to the
   contract: `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
@@ -31,7 +31,7 @@ After M003:
 - Optionally set `VERIFICATION_AUDITORS` to comma-separated, nonzero auditor
   addresses in `packages/contracts/.env`. Omit it for an empty initial allowlist.
   Duplicate addresses are rejected. Review the list in the decoded dry-run plan.
-- Optionally set `VERIFICATION_BONUS_BPS` (0 to 5000, default 100).
+- Optionally set `VERIFICATION_BONUS_BPS` (0 to 5000, default 0).
   It is fixed in the checkpoint; change it later with `setBonusBps`.
 - Set the network RPC environment variable and `BASESCAN_API_KEY` as for M001/M002.
   Non-fork broadcasts submit source verification through the existing runner.

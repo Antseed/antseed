@@ -295,6 +295,8 @@ contract AntseedVerificationTest is Test {
         vm.expectRevert();
         verification.setMaxCreditsPerAuditorPerEpoch(5);
         vm.expectRevert();
+        verification.setMaxCreditsPerModelPerEpoch(3);
+        vm.expectRevert();
         verification.setSellerPools(address(pools));
         vm.expectRevert();
         verification.clearVerification(agentId);
@@ -308,6 +310,8 @@ contract AntseedVerificationTest is Test {
         verification.setDiffConfirmations(0);
         vm.expectRevert(AntseedVerification.InvalidValue.selector);
         verification.setMaxCreditsPerAuditorPerEpoch(0);
+        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        verification.setMaxCreditsPerModelPerEpoch(0);
         vm.expectRevert(AntseedVerification.InvalidAddress.selector);
         verification.setSellerPools(address(0x1234));
     }
@@ -336,6 +340,22 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 1);
         gate.setCurrentEpoch(EPOCH + 1);
         assertEq(_claim(auditorA), 900 ether);
+    }
+
+    function test_configurableCreditsPerModelPerEpoch() public {
+        assertEq(verification.maxCreditsPerModelPerEpoch(), 1);
+        verification.setMaxCreditsPerModelPerEpoch(3);
+        for (uint256 i = 0; i < 4; i++) {
+            _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        }
+        assertEq(verification.modelCredits(EPOCH, auditorA, MODEL_A), 3, "fourth audit earns nothing");
+        assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 3);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 4, "other models still earn");
+
+        verification.setMaxCreditsPerAuditorPerEpoch(4);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 4, "overall cap still applies");
     }
 
     function test_creditsRestartEachEpoch() public {

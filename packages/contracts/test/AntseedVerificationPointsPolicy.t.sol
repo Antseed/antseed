@@ -114,6 +114,14 @@ contract AntseedVerificationPointsPolicyTest is Test {
         assertEq(sellerPoints, 1_000, "unknown seller");
     }
 
+    function test_zeroBonusLeavesVerifiedSellerUnchanged() public {
+        policy.setBonusBps(0);
+        _verify(10);
+        (uint256 sellerPoints, uint256 buyerPoints) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
+        assertEq(sellerPoints, 1_000);
+        assertEq(buyerPoints, 1_000);
+    }
+
     function test_failingDependenciesNeverRevert() public {
         _verify(2);
         scores.setReverts(true);

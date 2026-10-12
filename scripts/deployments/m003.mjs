@@ -17,7 +17,7 @@ export const RELEASE = '003-verification-registry';
 const ZERO = '0x0000000000000000000000000000000000000000';
 const ADDRESS = /^0x[0-9a-fA-F]{40}$/;
 const CONTRACT_NAMES = { AntseedVerification: 'verification', AntseedVerificationPointsPolicy: 'verificationPointsPolicy' };
-export const DEFAULT_BONUS_BPS = 100;
+export const DEFAULT_BONUS_BPS = 0;
 const MAX_BONUS_BPS = 5_000;
 const TARGET = 'script/migrations/M003VerificationRegistry/Deploy.s.sol:M003DeployVerificationRegistry';
 

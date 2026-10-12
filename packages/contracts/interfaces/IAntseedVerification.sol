@@ -7,7 +7,8 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 /// @notice Model-verification audits submitted by approved auditors, one model per submission.
 /// @dev Status is kept per (agent, service). SAME and DIFF set the service's verdict; UNDETERMINED
 ///      is recorded as the latest result for routing but leaves the verdict unchanged. Auditors
-///      earn one credit per audited model per epoch, whatever the results, and are paid from the
+///      earn one credit per model audit, whatever the results, up to an owner-set number per model
+///      and epoch (default 1), and are paid from the
 ///      verification emission bucket in proportion to their credits.
 interface IAntseedVerification {
     enum Verdict {

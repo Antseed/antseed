@@ -49,22 +49,24 @@ to remediate a wrong result.
 ## Points
 
 `AntseedVerificationPointsPolicy` boosts a verified seller's points by `bonusBps` per
-verified model (default `100`, +1%), capped at +50% in total:
+verified model (`100` = +1%), capped at +50% in total:
 `sellerPoints × (1 + min(verifiedCount × bonusBps, 5_000) / 10_000)`. A seller counts as
 verified while `verifiedUntil` has not passed and no service is marked DIFF; anyone else
 is unchanged. Buyer points always pass through.
 
-`bonusBps` is owner-settable from 0 to 5,000. Every external read falls back to unchanged
+`bonusBps` is owner-settable from 0 to 5,000. M003 launches it at 0, so points are
+unchanged until the owner turns the boost on. Every external read falls back to unchanged
 points, so the policy can never revert a settlement.
 
 ## Auditor rewards
 
 The 10% verification emission bucket is split by **audit credits**:
 
-- An auditor earns one credit per audited model per epoch, whatever the verdicts
-  (including UNDETERMINED), up to
-  `maxCreditsPerAuditorPerEpoch` (owner-settable, default 100). Repeating the same
-  model in an epoch earns nothing more.
+- An auditor earns one credit per model audit, whatever the verdicts (including
+  UNDETERMINED). Repeat audits of the same model in an epoch earn credits up to
+  `maxCreditsPerModelPerEpoch` (owner-settable, default 1, so a repeat earns nothing),
+  and all audits together up to `maxCreditsPerAuditorPerEpoch` (owner-settable,
+  default 100).
 - An audit earns a credit only if at least one audited agent has staked pool power,
   so auditing fake agents pays nothing.
 - After the epoch ends, an auditor claims `budget × auditorCredits / totalCredits`.

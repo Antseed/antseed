@@ -2077,8 +2077,9 @@ test('M003 validates and normalizes initial auditor addresses', () => {
 });
 
 test('M003 defaults and validates the bonus', () => {
-  assert.equal(parseBonusBps(), 100);
-  assert.equal(parseBonusBps(''), 100);
+  assert.equal(parseBonusBps(), 0, 'launches with the boost off');
+  assert.equal(parseBonusBps(''), 0);
+  assert.equal(parseBonusBps('100'), 100);
   assert.equal(parseBonusBps('0'), 0);
   assert.equal(parseBonusBps('5000'), 5_000);
   for (const value of ['5001', '-1', '1.5', 'abc']) {

@@ -20,7 +20,8 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 ///         expiry. An agent is verified while it has an unexpired SAME and no service with a DIFF
 ///         status.
 ///
-///         Rewards: an auditor earns one credit per model per epoch, whatever the results, provided
+///         Rewards: an auditor earns one credit per model audit, whatever the results, up to
+///         `maxCreditsPerModelPerEpoch` per model and `maxCreditsPerAuditorPerEpoch` overall, provided
 ///         the audit covers at least one agent with staked pool power. Once the epoch is final an auditor claims
 ///         `budget * credits / totalCredits` from the verification emission bucket.
 contract AntseedVerification is IAntseedVerification, Ownable2Step {
@@ -32,6 +33,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     uint64 public validity = 14 days;
     uint16 public diffConfirmations = 1;
     uint32 public maxCreditsPerAuditorPerEpoch = 100;
+    uint32 public maxCreditsPerModelPerEpoch = 1;
 
     mapping(address auditor => bool approved) public override approvedAuditors;
     mapping(bytes32 evidenceHash => bool used) public usedEvidence;
@@ -43,8 +45,8 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
 
     mapping(uint256 epoch => uint256 credits) public epochCredits;
     mapping(uint256 epoch => mapping(address auditor => uint256 credits)) public auditorEpochCredits;
-    mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => bool credited))) public
-        modelCredited;
+    mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => uint256 credits))) public
+        modelCredits;
     mapping(uint256 epoch => mapping(address auditor => bool claimed)) public auditorEpochClaimed;
 
     event AuditorSet(address indexed auditor, bool approved);
@@ -52,6 +54,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     event ValiditySet(uint64 validity);
     event DiffConfirmationsSet(uint16 diffConfirmations);
     event MaxCreditsPerAuditorPerEpochSet(uint32 maxCredits);
+    event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
     event ModelAudited(
         bytes32 indexed modelHash,
         address indexed auditor,
@@ -119,6 +122,13 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         if (maxCredits == 0) revert InvalidValue();
         maxCreditsPerAuditorPerEpoch = maxCredits;
         emit MaxCreditsPerAuditorPerEpochSet(maxCredits);
+    }
+
+    /// @notice Credited audits of the same model per auditor and epoch (default 1).
+    function setMaxCreditsPerModelPerEpoch(uint32 maxCredits) external onlyOwner {
+        if (maxCredits == 0) revert InvalidValue();
+        maxCreditsPerModelPerEpoch = maxCredits;
+        emit MaxCreditsPerModelPerEpochSet(maxCredits);
     }
 
     /// @notice Remediation: ends the agent's verification until its next SAME result.
@@ -304,11 +314,11 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         emit ServiceStatusChanged(agentId, serviceHash, modelHash, previous, current);
     }
 
-    /// @dev One credit per auditor, model, and epoch, up to the per-epoch cap.
+    /// @dev One credit per audit, up to the per-model and per-auditor caps for the epoch.
     function _creditAudit(uint256 epoch, bytes32 modelHash) private {
-        if (modelCredited[epoch][msg.sender][modelHash]) return;
+        if (modelCredits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
         if (auditorEpochCredits[epoch][msg.sender] >= maxCreditsPerAuditorPerEpoch) return;
-        modelCredited[epoch][msg.sender][modelHash] = true;
+        modelCredits[epoch][msg.sender][modelHash] += 1;
         auditorEpochCredits[epoch][msg.sender] += 1;
         epochCredits[epoch] += 1;
         emit AuditCredited(epoch, msg.sender, modelHash);
