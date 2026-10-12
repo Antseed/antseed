@@ -26,6 +26,10 @@ const CREDITS_FAST_REFRESH_INTERVAL_MS = 5_000;
 const PAYMENT_SUMMARY_THROTTLE_MS = 55_000;
 
 const MAX_AUTO_RETRIES = 2;
+// Until the balance has been read once, a failed or empty read retries on a
+// short backoff instead of leaving the placeholder up until the next poll.
+const UNKNOWN_BALANCE_RETRY_BASE_MS = 2_000;
+const UNKNOWN_BALANCE_RETRY_MAX_MS = 30_000;
 
 export function initCreditsModule({
   bridge,
@@ -39,6 +43,22 @@ export function initCreditsModule({
   let lastCardVisibleAt = 0;
   let lastPaymentSummaryRefreshAt = 0;
   let paymentSummaryRefreshInFlight = false;
+  let unknownBalanceRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let unknownBalanceRetries = 0;
+
+  function scheduleUnknownBalanceRetry(): void {
+    if (uiState.creditsBalanceKnown) {
+      unknownBalanceRetries = 0;
+      return;
+    }
+    if (unknownBalanceRetryTimer || !refreshTimer) return;
+    const delay = Math.min(UNKNOWN_BALANCE_RETRY_BASE_MS * 2 ** unknownBalanceRetries, UNKNOWN_BALANCE_RETRY_MAX_MS);
+    unknownBalanceRetries++;
+    unknownBalanceRetryTimer = setTimeout(() => {
+      unknownBalanceRetryTimer = null;
+      void refreshCredits();
+    }, delay);
+  }
 
   async function refreshCredits(fresh = true): Promise<void> {
     if (!bridge?.creditsGetInfo) return;
@@ -117,6 +137,7 @@ export function initCreditsModule({
     } catch {
       // Silently fail — cached values remain
     }
+    scheduleUnknownBalanceRetry();
   }
 
   async function refreshPaymentSummary(force = false): Promise<void> {
@@ -181,8 +202,8 @@ export function initCreditsModule({
 
   function startPeriodicRefresh(): void {
     if (refreshTimer) return;
-    void refreshCredits();
     refreshTimer = setInterval(() => void refreshCredits(false), CREDITS_REFRESH_INTERVAL_MS);
+    void refreshCredits();
     window.addEventListener('focus', onWindowFocus);
   }
 
@@ -190,6 +211,10 @@ export function initCreditsModule({
     if (refreshTimer) {
       clearInterval(refreshTimer);
       refreshTimer = null;
+    }
+    if (unknownBalanceRetryTimer) {
+      clearTimeout(unknownBalanceRetryTimer);
+      unknownBalanceRetryTimer = null;
     }
     stopFastRefresh();
     window.removeEventListener('focus', onWindowFocus);

@@ -1,9 +1,9 @@
 import { after, test } from 'node:test';
 import assert from 'node:assert/strict';
-import { cachedRead, clearChainReads, invalidateChainReads, refreshFresh } from './read-cache.js';
+import { cachedRead, clearChainReads, disposeChainReads, invalidateChainReads, refreshFresh } from './read-cache.js';
 
 // gcTime timers would keep the test process alive.
-after(() => clearChainReads());
+after(() => disposeChainReads());
 
 function counter<T>(value: T) {
   let calls = 0;
@@ -17,6 +17,17 @@ test('concurrent callers share one read and a fresh result is served from memory
   assert.deepEqual(results, [42, 42, 42]);
   assert.equal(await cachedRead(['t', 'dedupe'], 60_000, source.read), 42);
   assert.equal(source.calls, 1);
+});
+
+test('clearing the cache does not cancel a read in flight', async () => {
+  clearChainReads();
+  const source = counter(7);
+  const pending = refreshFresh(['credits', '0xabc'], source.read);
+  clearChainReads();
+  assert.equal(await pending, 7);
+  // The cleared read is not served to the next caller.
+  await cachedRead(['credits', '0xabc'], 60_000, source.read);
+  assert.equal(source.calls, 2);
 });
 
 test('a stale result is refetched', async () => {
