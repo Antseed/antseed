@@ -22,15 +22,21 @@ import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
 
+const PEER_PAY_LOGO = new URL('../../../assets/peer-pay.webp', import.meta.url).href;
+const VENMO_LOGO = new URL('../../../assets/venmo.svg', import.meta.url).href;
+const PAYPAL_LOGO = new URL('../../../assets/paypal.svg', import.meta.url).href;
+const REVOLUT_LOGO = new URL('../../../assets/revolut.png', import.meta.url).href;
+const WISE_LOGO = new URL('../../../assets/wise.png', import.meta.url).href;
+
 const AMOUNT_PRESETS = ['5', '10', '25'];
 
 type Props = { onSelectView?: (view: import('../../types').ViewName) => void };
-type Stage = 'choose' | 'crypto';
+type Stage = 'choose' | 'crypto' | 'peer';
 
 // The chooser sits "before" the method screen on the slide axis, so
 // entering a method slides forward and going back slides back — same
 // mechanics as ViewHost, reusing the global .view-pane animations.
-const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1 };
+const STAGE_INDEX: Record<Stage, number> = { choose: 0, crypto: 1, peer: 1 };
 // Must match the .view-pane-in/-out animation duration (--motion-duration).
 const STAGE_SLIDE_MS = 300;
 
@@ -167,6 +173,16 @@ function BaseMark({ size = 18 }: { size?: number }) {
       <rect x="1" y="10.95" width="15.85" height="2.1" fill="#fff" />
     </svg>
   );
+}
+
+function PeerMark({ size = 20 }: { size?: number }) {
+  return (
+    <img className={styles.peerMark} src={PEER_PAY_LOGO} width={size} height={size} alt="" aria-hidden="true" />
+  );
+}
+
+function PaymentRailMark({ src, label }: { src: string; label: string }) {
+  return <img className={styles.paymentRailMark} src={src} alt={label} title={label} />;
 }
 
 /** Apple logo silhouette (the classic bitten-apple path, 814×1000 box). */
@@ -329,7 +345,7 @@ function explorerTxUrl(chainId: number | undefined, txHash: string): string | nu
  * checkout (hosted page in a narrow app popup) — no region gating; the pay
  * page itself shows a proper dead-end screen where a region can't be served.
  * Then the quick USDC-on-Base transfer (scan-to-pay QR), with hosted
- * providers (Meridian) behind "More options". Everything lands in the hot
+ * providers (Meridian, Outerfound) behind "More options". Everything lands in the hot
  * wallet the main-process sweeper watches. Only pages that need an external
  * wallet signature leave the app.
  */
@@ -354,7 +370,7 @@ export function VprDepositView({ onSelectView }: Props) {
     direction: 'forward',
   }));
   const stage = slide.stage;
-  const [amount, setAmount] = useState('10');
+  const [amount, setAmount] = useState('');
   const [watchInfo, setWatchInfo] = useState<DepositWatchInfo | null>(null);
   const [watchError, setWatchError] = useState<string | null>(null);
   const [watchStatus, setWatchStatus] = useState<DepositWatchStatus | null>(null);
@@ -554,6 +570,7 @@ export function VprDepositView({ onSelectView }: Props) {
             type="text"
             inputMode="decimal"
             value={amount}
+            placeholder="Enter amount"
             aria-label="Deposit amount in USD"
             onChange={(e) => setAmount(e.target.value.replace(/[^0-9.]/g, ''))}
           />
@@ -619,6 +636,35 @@ export function VprDepositView({ onSelectView }: Props) {
                   <span className={styles.badgeChip}>
                     <HugeiconsIcon icon={QrCodeIcon} size={12} strokeWidth={2} />
                   </span>
+                </span>
+                <span className={styles.methodArrow} aria-hidden="true">
+                  <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
+                </span>
+              </button>
+            </div>
+            <div className={styles.methodGroup}>
+              {/* Peer Pay needs an amount up front, so it gets its own step. */}
+              <button
+                type="button"
+                className={styles.methodCta}
+                onClick={() => {
+                  recordUserAction('deposit_start', 'deposit');
+                  setCardNotice(null);
+                  goToStage('peer');
+                }}
+              >
+                <span className={styles.methodCtaIcon}>
+                  <PeerMark size={24} />
+                </span>
+                <span className={styles.methodCtaText}>
+                  <span className={styles.methodCtaTitle}>Deposit using Peer</span>
+                  <span className={styles.methodCtaCaption}>Bank or payment app</span>
+                </span>
+                <span className={styles.methodBadges}>
+                  <PaymentRailMark src={VENMO_LOGO} label="Venmo" />
+                  <PaymentRailMark src={PAYPAL_LOGO} label="PayPal" />
+                  <PaymentRailMark src={REVOLUT_LOGO} label="Revolut" />
+                  <PaymentRailMark src={WISE_LOGO} label="Wise" />
                 </span>
                 <span className={styles.methodArrow} aria-hidden="true">
                   <HugeiconsIcon icon={ArrowRight01Icon} size={16} strokeWidth={2} />
@@ -694,6 +740,35 @@ export function VprDepositView({ onSelectView }: Props) {
             </span>
           </div>
         </div>
+        </VprPage>
+      );
+    }
+
+    if (current === 'peer') {
+      return (
+        <VprPage title="Deposit using Peer" onBack={() => goToStage('choose')}>
+          <div className={styles.stack}>
+
+            {amountForm}
+
+            <button
+              type="button"
+              className={styles.funCta}
+              disabled={amount === '' || amountBelowMinimum}
+              onClick={() => openCardProvider('peer-pay')}
+            >
+              <span className={styles.funCtaText}>
+                <span className={styles.funCtaTitle}>Continue to Peer Pay</span>
+                <span className={styles.funCtaCaption}>Venmo, PayPal, Revolut, Wise and more</span>
+              </span>
+              <span className={styles.methodArrow} aria-hidden="true">
+                <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} />
+              </span>
+            </button>
+            {cardNotice && <div className={styles.cardNotice} role="alert">{cardNotice}</div>}
+
+            <span className={styles.methodFootnote}>* Deposited to your credits by the Antseed relayer network</span>
+          </div>
         </VprPage>
       );
     }
