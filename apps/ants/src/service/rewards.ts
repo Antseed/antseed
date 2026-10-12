@@ -325,6 +325,10 @@ export async function restake(ctx: AntsContext, request: RestakeRequest, report:
   const config = await pools.poolConfig();
   const epochs = assertEpochs(request.epochs, config.minStakeEpochs, config.maxStakeEpochs);
   const requested = request.positionIds && request.positionIds.length > 0 ? assertPositiveIds(request.positionIds) : null;
+  if (requested) {
+    const foreign = (await pools.positionsBatch(requested)).filter(position => position.owner.toLowerCase() !== ctx.address.toLowerCase());
+    if (foreign.length > 0) throw new Error(`Position(s) ${foreign.map(position => position.id).join(', ')} are not owned by this wallet.`);
+  }
   const includeIds = requested ?? await rewardCandidateIds(ctx);
   const pending = (await previewPoolRewards(pools, poolRewards, ctx.address, undefined, { includeIds }))
     .filter((position) => position.amount > 0n && (!requested || requested.includes(position.id)));

@@ -1,5 +1,5 @@
-import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, ServiceCapabilities, ServiceCapabilityModality } from "./peer-metadata.js";
-import { SERVICE_CAPABILITY_MODALITIES } from "./peer-metadata.js";
+import type { DomainVerificationClaim, DomainVerificationMethod, GithubVerificationClaim, PeerMetadata, ServiceCapabilities, ServiceCapabilityModality, VideoInputKind, VideoOptions } from "./peer-metadata.js";
+import { SERVICE_CAPABILITY_MODALITIES, VIDEO_INPUT_KINDS } from "./peer-metadata.js";
 import type { PeerOffering } from "../types/capability.js";
 import { hexToBytes, bytesToHex } from "../utils/hex.js";
 import { toPeerId } from "../types/peer.js";
@@ -469,13 +469,22 @@ const CAP_HAS_SUPPORTED_PARAMETERS = 1 << 7;
 const CAP_PRESENCE_MASK = CAP_HAS_CONTEXT_WINDOW | CAP_HAS_MAX_OUTPUT_TOKENS | CAP_HAS_INPUTS
   | CAP_HAS_REASONING | CAP_HAS_TOOL_USE | CAP_HAS_STRUCTURED_OUTPUT
   | CAP_HAS_OUTPUTS | CAP_HAS_SUPPORTED_PARAMETERS;
-// Value bits for the boolean-values byte. Deliberately a separate namespace
-// from the presence bits: presence says "announced", value says "true".
 const CAP_VAL_REASONING = 1 << 0;
 const CAP_VAL_TOOL_USE = 1 << 1;
 const CAP_VAL_STRUCTURED_OUTPUT = 1 << 2;
-const CAP_VALUE_MASK = CAP_VAL_REASONING | CAP_VAL_TOOL_USE | CAP_VAL_STRUCTURED_OUTPUT;
+const CAP_VAL_VIDEO_OPTIONS = 1 << 3;
+const CAP_VALUE_MASK = CAP_VAL_REASONING | CAP_VAL_TOOL_USE | CAP_VAL_STRUCTURED_OUTPUT
+  | CAP_VAL_VIDEO_OPTIONS;
 const CAP_MODALITY_MASK = (1 << SERVICE_CAPABILITY_MODALITIES.length) - 1;
+const VIDEO_HAS_DURATIONS = 1 << 0;
+const VIDEO_HAS_RESOLUTIONS = 1 << 1;
+const VIDEO_HAS_ASPECT_RATIOS = 1 << 2;
+const VIDEO_HAS_INPUTS = 1 << 3;
+const VIDEO_HAS_REQUIRED_INPUTS = 1 << 4;
+const VIDEO_HAS_AUDIO = 1 << 5;
+const VIDEO_AUDIO = 1 << 6;
+const VIDEO_OPTION_MASK = (1 << 7) - 1;
+const VIDEO_INPUT_MASK = (1 << VIDEO_INPUT_KINDS.length) - 1;
 
 function encodeModalityBits(modalities: ServiceCapabilityModality[]): number {
   let bits = 0;
@@ -495,6 +504,74 @@ function decodeModalityBits(bits: number, label: string): ServiceCapabilityModal
     if (bits & (1 << id)) modalities.push(SERVICE_CAPABILITY_MODALITIES[id]!);
   }
   return modalities;
+}
+
+function encodeVideoInputs(inputs: VideoInputKind[]): number {
+  return inputs.reduce((bits, input) => bits | (1 << VIDEO_INPUT_KINDS.indexOf(input)), 0);
+}
+
+function decodeVideoInputs(bits: number): VideoInputKind[] {
+  if (bits & ~VIDEO_INPUT_MASK) throw new Error(`Unknown video input bits 0x${bits.toString(16)}`);
+  return VIDEO_INPUT_KINDS.filter((_, id) => bits & (1 << id));
+}
+
+function encodeVideoOptions(parts: Uint8Array[], video: VideoOptions): void {
+  let flags = 0;
+  if (video.durationsSeconds) flags |= VIDEO_HAS_DURATIONS;
+  if (video.resolutions) flags |= VIDEO_HAS_RESOLUTIONS;
+  if (video.aspectRatios) flags |= VIDEO_HAS_ASPECT_RATIOS;
+  if (video.inputs) flags |= VIDEO_HAS_INPUTS;
+  if (video.requiredInputs) flags |= VIDEO_HAS_REQUIRED_INPUTS;
+  if (video.audio !== undefined) flags |= VIDEO_HAS_AUDIO | (video.audio ? VIDEO_AUDIO : 0);
+  parts.push(new Uint8Array([flags]));
+  if (video.durationsSeconds) {
+    parts.push(new Uint8Array([video.durationsSeconds.length]));
+    for (const duration of video.durationsSeconds) parts.push(new Uint8Array([duration >> 8, duration & 0xff]));
+  }
+  for (const values of [video.resolutions, video.aspectRatios]) {
+    if (!values) continue;
+    parts.push(new Uint8Array([values.length]));
+    for (const value of values) pushUtf8(parts, value);
+  }
+  if (video.inputs) parts.push(new Uint8Array([encodeVideoInputs(video.inputs)]));
+  if (video.requiredInputs) parts.push(new Uint8Array([encodeVideoInputs(video.requiredInputs)]));
+}
+
+function decodeVideoOptions(
+  data: Uint8Array,
+  offset: number,
+  checkBounds: (offset: number, needed: number, total: number) => void,
+): [VideoOptions, number] {
+  checkBounds(offset, 1, data.length);
+  const flags = data[offset++]!;
+  if (flags & ~VIDEO_OPTION_MASK || (flags & VIDEO_AUDIO && !(flags & VIDEO_HAS_AUDIO))) throw new Error(`Unknown video option bits 0x${flags.toString(16)}`);
+  const video: VideoOptions = {};
+  if (flags & VIDEO_HAS_DURATIONS) {
+    checkBounds(offset, 1, data.length);
+    const count = data[offset++]!;
+    checkBounds(offset, count * 2, data.length);
+    video.durationsSeconds = Array.from({ length: count }, (_, index) => (data[offset + index * 2]! << 8) | data[offset + index * 2 + 1]!);
+    offset += count * 2;
+  }
+  for (const [flag, field] of [[VIDEO_HAS_RESOLUTIONS, "resolutions"], [VIDEO_HAS_ASPECT_RATIOS, "aspectRatios"]] as const) {
+    if (!(flags & flag)) continue;
+    checkBounds(offset, 1, data.length);
+    const count = data[offset++]!;
+    const values: string[] = [];
+    for (let index = 0; index < count; index += 1) {
+      const [value, nextOffset] = readUtf8(data, offset, checkBounds);
+      values.push(value);
+      offset = nextOffset;
+    }
+    video[field] = values;
+  }
+  for (const [flag, field] of [[VIDEO_HAS_INPUTS, "inputs"], [VIDEO_HAS_REQUIRED_INPUTS, "requiredInputs"]] as const) {
+    if (!(flags & flag)) continue;
+    checkBounds(offset, 1, data.length);
+    video[field] = decodeVideoInputs(data[offset++]!);
+  }
+  if (flags & VIDEO_HAS_AUDIO) video.audio = (flags & VIDEO_AUDIO) !== 0;
+  return [video, offset];
 }
 
 function encodeServiceCapabilities(
@@ -539,6 +616,7 @@ function encodeServiceCapabilities(
     if (caps.reasoning === true) boolBits |= CAP_VAL_REASONING;
     if (caps.toolUse === true) boolBits |= CAP_VAL_TOOL_USE;
     if (caps.structuredOutput === true) boolBits |= CAP_VAL_STRUCTURED_OUTPUT;
+    if (caps.video !== undefined) boolBits |= CAP_VAL_VIDEO_OPTIONS;
     parts.push(new Uint8Array([boolBits]));
     if (caps.supportedParameters !== undefined) {
       // Code-unit sort for the same reason as the entry sort above: buyers
@@ -552,6 +630,7 @@ function encodeServiceCapabilities(
         pushUtf8(parts, parameter);
       }
     }
+    if (caps.video !== undefined) encodeVideoOptions(parts, caps.video);
   }
 }
 
@@ -620,6 +699,7 @@ function decodeServiceCapabilities(
       }
       caps.supportedParameters = parameters;
     }
+    if (boolBits & CAP_VAL_VIDEO_OPTIONS) [caps.video, offset] = decodeVideoOptions(data, offset, checkBounds);
     serviceCapabilities[serviceName] = caps;
   }
   setOffset(offset);

@@ -1,6 +1,6 @@
 import test from 'node:test';
 import assert from 'node:assert/strict';
-import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/node/types';
+import { ANTSEED_MODEL_CONTEXT_WINDOW, ANTSEED_MODEL_MAX_OUTPUT_TOKENS } from '@antseed/protocol/service-api';
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises';
 import { existsSync } from 'node:fs';
 import { tmpdir } from 'node:os';
@@ -22,7 +22,7 @@ import {
   type DroidConfigPatchDef,
   type OpencodeConfigPatchDef,
 } from './config-patch.js';
-import { DEFAULT_APP_PROFILES } from '../connected-apps/defaults.js';
+import { DEFAULT_APP_PROFILES } from './defaults.js';
 
 const PEER_ID = '0123456789abcdef0123456789abcdef01234567';
 

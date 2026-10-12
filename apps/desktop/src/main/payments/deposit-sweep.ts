@@ -22,6 +22,10 @@ type DepositWatchStatus = {
   amountBaseUnits?: string;
   txHash?: string;
   error?: string;
+  /** Why a 'deferred' sweep is waiting (absent from older daemons). */
+  reason?: 'below-minimum' | 'credit-limit';
+  /** below-minimum: the wallet balance a sweep needs, relay fee included. */
+  minRequiredBaseUnits?: string;
 };
 
 /** Wire shape of the daemon's watcher status (see apps/cli deposit-watcher). */
@@ -150,6 +154,8 @@ async function pollDaemonWatch(): Promise<void> {
     ...(event.amountBaseUnits ? { amountBaseUnits: event.amountBaseUnits } : {}),
     ...(event.txHash ? { txHash: event.txHash } : {}),
     ...(event.error ? { error: event.error } : {}),
+    ...(event.reason ? { reason: event.reason } : {}),
+    ...(event.minRequiredBaseUnits ? { minRequiredBaseUnits: event.minRequiredBaseUnits } : {}),
   });
 }
 

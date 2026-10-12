@@ -1,4 +1,4 @@
-import { describe, it, expect } from 'vitest';
+import { describe, it, expect, vi, afterEach } from 'vitest';
 import plugin from './index.js';
 
 describe('provider-claude-oauth plugin manifest', () => {
@@ -115,5 +115,85 @@ describe('createProvider', () => {
 
     expect(provider).toBeDefined();
     expect(provider.name).toBe('claude-oauth');
+  });
+});
+
+describe('Claude Code identity system prompt', () => {
+  const IDENTITY = "You are Claude Code, Anthropic's official CLI for Claude.";
+  const identityBlock = { type: 'text', text: IDENTITY };
+
+  afterEach(() => {
+    vi.unstubAllGlobals();
+  });
+
+  async function upstreamSystem(system: unknown, stream = false): Promise<unknown> {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200, headers: { 'content-type': 'application/json' } }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider({ CLAUDE_ACCESS_TOKEN: 'test-access-token' });
+    const body: Record<string, unknown> = { model: 'claude-sonnet-4-5', max_tokens: 16, messages: [{ role: 'user', content: 'hi' }] };
+    if (system !== undefined) body.system = system;
+    const request = {
+      requestId: 'req-1',
+      method: 'POST',
+      path: '/v1/messages',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify(body)),
+    };
+    if (stream) {
+      await provider.handleRequestStream!(request, {
+        onResponseStart: () => undefined,
+        onResponseChunk: () => undefined,
+      });
+    } else {
+      await provider.handleRequest(request);
+    }
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    return (JSON.parse(new TextDecoder().decode(options.body as Uint8Array)) as Record<string, unknown>).system;
+  }
+
+  it('keeps the buyer system prompt blocks after the identity', async () => {
+    const buyerBlocks = [
+      { type: 'text', text: 'App instructions', cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: '<available_skills>antseed-videos</available_skills>' },
+    ];
+    expect(await upstreamSystem(buyerBlocks)).toEqual([identityBlock, ...buyerBlocks]);
+  });
+
+  it('keeps a string system prompt after the identity', async () => {
+    expect(await upstreamSystem('Be brief.')).toEqual([identityBlock, { type: 'text', text: 'Be brief.' }]);
+  });
+
+  it('adds only the identity when the request has no system prompt', async () => {
+    expect(await upstreamSystem(undefined)).toEqual([identityBlock]);
+  });
+
+  it('does not duplicate the identity when the request already starts with it', async () => {
+    const buyerBlocks = [
+      { type: 'text', text: IDENTITY, cache_control: { type: 'ephemeral' } },
+      { type: 'text', text: 'App instructions' },
+    ];
+    expect(await upstreamSystem(buyerBlocks)).toEqual(buyerBlocks);
+  });
+
+  it('leaves image request bodies untouched', async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response('{}', { status: 200 }));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider({ CLAUDE_ACCESS_TOKEN: 'test-access-token' });
+    await provider.handleRequest({
+      requestId: 'req-img',
+      method: 'POST',
+      path: '/v1/images/generations',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({ model: 'img', prompt: 'A seedling' })),
+    });
+    const [, options] = fetchMock.mock.calls[0] as [string, RequestInit];
+    expect(JSON.parse(new TextDecoder().decode(options.body as Uint8Array))).toEqual({ model: 'img', prompt: 'A seedling' });
+  });
+
+  it('applies to streaming requests', async () => {
+    expect(await upstreamSystem([{ type: 'text', text: 'App instructions' }], true)).toEqual([
+      identityBlock,
+      { type: 'text', text: 'App instructions' },
+    ]);
   });
 });
