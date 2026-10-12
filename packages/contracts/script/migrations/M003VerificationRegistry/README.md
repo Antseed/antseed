@@ -1,14 +1,14 @@
 # M003 — Verification registry
 
-Deploys `AntseedVerification` and optionally approves an initial verifier list.
-Auditors sign per-service audit reports; approved verifiers check the evidence and
-submit them; a quorum of agreeing auditors finalizes a per-agent score. It does not
+Deploys `AntseedVerification` and optionally approves an initial auditor list.
+Approved auditors submit per-service audit results; an audit that passes every
+service verifies the agent for 14 days (see `docs/protocol/verification.md`). It does not
 change emissions, points policies, staking, or protocol registry pointers. M002 is
 not a prerequisite.
 
 M003 deliberately leaves two switches off, so the contract runs in shadow mode:
 
-- **Auditor rewards.** Audit units accrue from the first finalized score, but claims
+- **Auditor rewards.** Pool-power-weighted audit credit accrues from the first audit, but claims
   pay nothing until the emissions-gate owner hands the verification bucket to the
   contract: `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
   Unclaimed epochs stay claimable after the handoff, up to each epoch's bucket budget.
@@ -19,11 +19,11 @@ M003 deliberately leaves two switches off, so the contract runs in shadow mode:
 
 ## Configuration
 
-- Use the canonical network `current.json` registry and identity registry.
+- Use the canonical network `current.json` registry, identity registry, and seller pools.
 - The live protocol registry owner signs deployment and becomes the verification
   owner directly. Supply `--signer verificationOwner=<spec>` using the existing
   keystore, Ledger, or unlocked signer support. No ownership handoff is needed.
-- Optionally set `VERIFICATION_VERIFIERS` to comma-separated, nonzero verifier
+- Optionally set `VERIFICATION_AUDITORS` to comma-separated, nonzero auditor
   addresses in `packages/contracts/.env`. Omit it for an empty initial allowlist.
   Duplicate addresses are rejected. Review the list in the decoded dry-run plan.
 - Set the network RPC environment variable and `BASESCAN_API_KEY` as for M001/M002.
@@ -53,7 +53,7 @@ so they cannot overwrite production receipts or block the subsequent live run.
 ## Resume and records
 
 The existing checkpoint facility saves the original deployment nonce, predicted
-CREATE address, owner, and verifier list before broadcast. Keep the checkpoint
+CREATE address, owner, seller pools, and auditor list before broadcast. Keep the checkpoint
 and Foundry receipts until the history record is committed. Resume with the same
 command: an existing deployment is checked against the local artifact, registry,
 and owner; only missing approvals are sent. Confirmed receipts are merged into
@@ -63,7 +63,7 @@ If the deployment is absent but its nonce has been consumed or is pending, the
 migration stops instead of deploying at another address. Resolve the original
 transaction first. Missing creation provenance also stops the migration: restore
 the original checkpoint/receipts rather than deleting them to start over. Changes
-to the initial verifier list during recovery are rejected.
+to the initial auditor list during recovery are rejected.
 
 Once deployment and approvals are confirmed, the runner appends
 `history/003-verification-registry.json`, folds `contracts.verification` into
@@ -72,5 +72,5 @@ Undeployed networks keep that optional address absent. Existing explicit CLI
 overrides still take precedence. No existing history files are edited.
 
 M003 records the initial approvals, not all future governance changes. Manage
-subsequent verifier additions/revocations separately; do not change and reapply
+subsequent auditor additions/revocations separately; do not change and reapply
 the deployment's initial list as an administration mechanism.

@@ -12,8 +12,8 @@ interface IAntseedSellerPoolsSource {
     function sellerPools() external view returns (IAntseedSellerPools);
 }
 
-/// @notice Boosts seller points for agents with an active verification score:
-///         sellerPoints * (1 + bonusBps * scoreBps / BPS^2). Buyer points pass through.
+/// @notice Boosts seller points for verified agents: sellerPoints * (1 + bonusBps / BPS).
+///         Buyer points pass through.
 /// @dev A reverting points modifier zeroes every settlement in the registry chain, so
 ///      every external read here falls back to returning points unchanged.
 contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step {
@@ -52,28 +52,25 @@ contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step
         returns (uint256 adjustedSellerPoints, uint256 adjustedBuyerPoints)
     {
         uint256 bonus = bonusBps;
-        if (sellerPoints == 0 || bonus == 0) return (sellerPoints, buyerPoints);
-
-        uint256 scoreBps = _activeScoreBps(seller);
-        if (scoreBps > BPS) scoreBps = BPS;
-        return (sellerPoints + (sellerPoints * bonus * scoreBps) / (BPS * BPS), buyerPoints);
+        if (sellerPoints == 0 || bonus == 0 || !_isVerified(seller)) return (sellerPoints, buyerPoints);
+        return (sellerPoints + (sellerPoints * bonus) / BPS, buyerPoints);
     }
 
-    function _activeScoreBps(address seller) private view returns (uint256) {
+    function _isVerified(address seller) private view returns (bool) {
         try usageAccounting.sellerPools() returns (IAntseedSellerPools pools) {
-            if (address(pools).code.length == 0) return 0;
+            if (address(pools).code.length == 0) return false;
             try pools.agentIdForSeller(seller) returns (uint256 agentId) {
-                if (agentId == 0) return 0;
-                try verification.activeScoreBps(agentId) returns (uint256 scoreBps) {
-                    return scoreBps;
+                if (agentId == 0) return false;
+                try verification.isVerified(agentId) returns (bool verified) {
+                    return verified;
                 } catch {
-                    return 0;
+                    return false;
                 }
             } catch {
-                return 0;
+                return false;
             }
         } catch {
-            return 0;
+            return false;
         }
     }
 }

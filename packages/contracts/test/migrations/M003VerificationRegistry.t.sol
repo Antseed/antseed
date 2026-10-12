@@ -4,6 +4,7 @@ import { Test } from "forge-std/Test.sol";
 import { AntseedRegistry } from "../../core/AntseedRegistry.sol";
 import { AntseedVerification } from "../../verification/AntseedVerification.sol";
 import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
+import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
 import { IAntseedVerification } from "../../interfaces/IAntseedVerification.sol";
 import { M003DeployVerificationRegistry } from "../../script/migrations/M003VerificationRegistry/Deploy.s.sol";
 
@@ -11,12 +12,14 @@ contract M003VerificationRegistryTest is Test {
     M003DeployVerificationRegistry private script;
     AntseedRegistry private registry;
     MockERC8004Registry private identity;
+    MockVerificationSellerPools private pools;
     address private owner = address(0xA11CE);
-    address private verifier = address(0xB0B);
+    address private auditor = address(0xB0B);
 
     function setUp() public {
         registry = new AntseedRegistry();
         identity = new MockERC8004Registry();
+        pools = new MockVerificationSellerPools();
         registry.setIdentityRegistry(address(identity));
         registry.setEmissions(address(0xE111));
         registry.setStaking(address(0x5111));
@@ -26,15 +29,16 @@ contract M003VerificationRegistryTest is Test {
     }
 
     function config() private view returns (M003DeployVerificationRegistry.Config memory result) {
-        address[] memory verifiers = new address[](1);
-        verifiers[0] = verifier;
+        address[] memory auditors = new address[](1);
+        auditors[0] = auditor;
         result = M003DeployVerificationRegistry.Config({
             chainId: block.chainid,
             registry: address(registry),
             identityRegistry: address(identity),
+            sellerPools: address(pools),
             owner: owner,
             deploymentNonce: vm.getNonce(owner),
-            verifiers: verifiers
+            auditors: auditors
         });
     }
 
@@ -44,7 +48,8 @@ contract M003VerificationRegistryTest is Test {
         assertEq(verification.owner(), owner);
         assertEq(verification.pendingOwner(), address(0));
         assertEq(address(verification.registry()), address(registry));
-        assertTrue(verification.approvedVerifiers(verifier));
+        assertEq(address(verification.sellerPools()), address(pools));
+        assertTrue(verification.approvedAuditors(auditor));
         uint64 nonce = vm.getNonce(owner);
         assertEq(address(script.runWith(settings)), address(verification));
         assertEq(vm.getNonce(owner), nonce);
@@ -55,47 +60,37 @@ contract M003VerificationRegistryTest is Test {
     function test_resumeApprovalsOnOriginalDeployment() public {
         M003DeployVerificationRegistry.Config memory settings = config();
         M003DeployVerificationRegistry.Config memory empty = config();
-        empty.verifiers = new address[](0);
+        empty.auditors = new address[](0);
         AntseedVerification verification = script.runWith(empty);
-        assertFalse(verification.approvedVerifiers(verifier));
+        assertFalse(verification.approvedAuditors(auditor));
         assertEq(address(script.runWith(settings)), address(verification));
-        assertTrue(verification.approvedVerifiers(verifier));
+        assertTrue(verification.approvedAuditors(auditor));
     }
 
     function test_runReadsEnvironmentWithEmptyAllowlist() public {
         vm.setEnv("EXPECTED_CHAIN_ID", vm.toString(block.chainid));
         vm.setEnv("ANTSEED_REGISTRY", vm.toString(address(registry)));
         vm.setEnv("EXPECTED_IDENTITY_REGISTRY", vm.toString(address(identity)));
+        vm.setEnv("SELLER_POOLS", vm.toString(address(pools)));
         vm.setEnv("VERIFICATION_OWNER", vm.toString(owner));
         vm.setEnv("VERIFICATION_DEPLOYMENT_NONCE", vm.toString(vm.getNonce(owner)));
-        vm.setEnv("VERIFICATION_VERIFIERS", "");
+        vm.setEnv("VERIFICATION_AUDITORS", "");
         AntseedVerification verification = script.run();
         assertEq(verification.owner(), owner);
-        assertFalse(verification.approvedVerifiers(verifier));
+        assertFalse(verification.approvedAuditors(auditor));
     }
 
-    function test_approvedVerifierCanSubmitAuditorSignedReport() public {
+    function test_approvedAuditorCanSubmitAudit() public {
         AntseedVerification verification = script.runWith(config());
         vm.prank(address(0xCAFE));
         uint256 agentId = identity.register();
         IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](1);
         results[0] = IAntseedVerification.ServiceResult({
-            serviceHash: keccak256("model"), modelHash: keccak256("reference"), flags: 3
+            serviceHash: keccak256("service"), modelHash: keccak256("model"), passed: true
         });
-        IAntseedVerification.AuditReport memory report = IAntseedVerification.AuditReport({
-            agentId: agentId,
-            metadataHash: keccak256("metadata"),
-            evidenceHash: keccak256("evidence"),
-            resultsHash: keccak256(abi.encode(results)),
-            auditedAt: uint64(block.timestamp)
-        });
-        uint256 auditorKey = 0xA0D;
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(auditorKey, verification.hashAuditReport(report));
-        vm.prank(verifier);
-        verification.submitReport(report, results, "ipfs://evidence", abi.encodePacked(r, s, v));
-        (,,, address[] memory auditors) = verification.pendingAttestation(agentId);
-        assertEq(auditors.length, 1);
-        assertEq(auditors[0], vm.addr(auditorKey));
+        vm.prank(auditor);
+        verification.submitAudit(agentId, results, keccak256("evidence"), "ipfs://evidence");
+        assertTrue(verification.isVerified(agentId));
     }
 
     function test_rejectsWrongChain() public {
@@ -112,10 +107,10 @@ contract M003VerificationRegistryTest is Test {
         script.runWith(settings);
     }
 
-    function test_rejectsZeroVerifierBeforeDeployment() public {
+    function test_rejectsZeroAuditorBeforeDeployment() public {
         M003DeployVerificationRegistry.Config memory settings = config();
-        settings.verifiers[0] = address(0);
-        vm.expectRevert("M003: zero verifier");
+        settings.auditors[0] = address(0);
+        vm.expectRevert("M003: zero auditor");
         script.runWith(settings);
         assertEq(vm.getNonce(owner), settings.deploymentNonce);
     }

@@ -7,339 +7,248 @@ import {AntseedRegistry} from "../../core/AntseedRegistry.sol";
 import {IAntseedVerification} from "../../interfaces/IAntseedVerification.sol";
 import {AntseedVerification} from "../../verification/AntseedVerification.sol";
 import {MockERC8004Registry} from "../mocks/MockERC8004Registry.sol";
+import {MockVerificationEmissionsGate} from "../mocks/MockVerificationEmissionsGate.sol";
+import {MockVerificationSellerPools} from "../mocks/MockVerificationSellerPools.sol";
 
 contract AntseedVerificationTest is Test {
-    uint16 private constant PASS = 3; // MODEL_MATCH | PRICE_MATCH
-    uint16 private constant MODEL_ONLY = 1;
-    uint16 private constant UNDETERMINED = 4;
+    uint256 private constant EPOCH = 5;
 
-    uint256 private constant AUDITOR_A_KEY = 0xA1;
-    uint256 private constant AUDITOR_B_KEY = 0xB2;
-    uint256 private constant AUDITOR_C_KEY = 0xC3;
-    uint256 private constant SELLER_KEY = 0x5E;
+    address private auditorA = address(0xA1);
+    address private auditorB = address(0xB2);
+    address private seller = address(0x5E1);
 
-    address private verifier = address(0xA11CE);
-    address private seller;
-
+    AntseedRegistry private registry;
     AntseedVerification private verification;
     MockERC8004Registry private identityRegistry;
+    MockVerificationEmissionsGate private gate;
+    MockVerificationSellerPools private pools;
     uint256 private agentId;
 
     function setUp() public {
         vm.warp(1_800_000_000);
-        AntseedRegistry registry = new AntseedRegistry();
+        registry = new AntseedRegistry();
         identityRegistry = new MockERC8004Registry();
+        gate = new MockVerificationEmissionsGate();
+        pools = new MockVerificationSellerPools();
         registry.setIdentityRegistry(address(identityRegistry));
-        verification = new AntseedVerification(address(registry));
-        verification.setVerifier(verifier, true);
-        seller = vm.addr(SELLER_KEY);
-        vm.prank(seller);
-        agentId = identityRegistry.register();
+        registry.setEmissions(address(gate));
+        verification = new AntseedVerification(address(registry), address(pools));
+        verification.setAuditor(auditorA, true);
+        verification.setAuditor(auditorB, true);
+        gate.setCurrentEpoch(EPOCH);
+        gate.setBudget(address(verification), EPOCH, 900 ether);
+        agentId = _register(seller, 300);
     }
 
-    // ── quorum and score ─────────────────────────────────────────────
+    // ── status ───────────────────────────────────────────────────────
 
-    function test_finalizesScoreWhenTwoAuditorsAgree() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
+    function test_passingAuditVerifiesUntilExpiry() public {
+        _audit(auditorA, agentId, true, true);
+        assertTrue(verification.isVerified(agentId));
+        assertEq(verification.verifiedUntil(agentId), block.timestamp + 14 days);
 
-        _submit(AUDITOR_A_KEY, results, keccak256("evidence-a"));
-        assertEq(verification.activeScoreBps(agentId), 0, "one auditor is not a quorum");
-
-        _submit(AUDITOR_B_KEY, results, keccak256("evidence-b"));
-        // two distinct passed references, maxBreadth 8: log2(3)/log2(9) = 0.5
-        assertEq(verification.activeScoreBps(agentId), 5_000);
-        IAntseedVerification.AgentScore memory score = verification.agentScore(agentId);
-        assertEq(score.validUntil, block.timestamp + 14 days);
-        (,,, address[] memory pendingAuditors) = verification.pendingAttestation(agentId);
-        assertEq(pendingAuditors.length, 0);
+        vm.warp(block.timestamp + 14 days);
+        assertFalse(verification.isVerified(agentId));
     }
 
-    function test_scorePenalizesEveryFailedService() public view {
-        // one of two services fails price: breadth log2(2)/log2(9), integrity 0.5^4
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, MODEL_ONLY, keccak256("ref-b"));
-        assertEq(verification.computeScoreBps(results), 197);
-
-        results = _results2(PASS, UNDETERMINED | PASS, keccak256("ref-b"));
-        assertEq(verification.computeScoreBps(results), 197, "undetermined counts as failed");
-
-        results = _results2(MODEL_ONLY, MODEL_ONLY, keccak256("ref-b"));
-        assertEq(verification.computeScoreBps(results), 0);
+    function test_anyFailedServiceClearsVerification() public {
+        _audit(auditorA, agentId, true, true);
+        _audit(auditorB, agentId, true, false);
+        assertFalse(verification.isVerified(agentId));
+        assertEq(verification.verifiedUntil(agentId), 0);
     }
 
-    function test_breadthCountsDistinctReferencesOnly() public view {
-        IAntseedVerification.ServiceResult[] memory aliases = _results2(PASS, PASS, keccak256("ref-a"));
-        IAntseedVerification.ServiceResult[] memory distinct = _results2(PASS, PASS, keccak256("ref-b"));
-        assertEq(verification.computeScoreBps(aliases), 3_154);
-        assertEq(verification.computeScoreBps(distinct), 5_000);
+    function test_ownerCanClearVerification() public {
+        _audit(auditorA, agentId, true, true);
+        verification.clearVerification(agentId);
+        assertFalse(verification.isVerified(agentId));
     }
 
-    function test_breadthSaturatesAtMaxBreadth() public {
-        verification.setMaxBreadth(2);
-        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](3);
-        for (uint256 i = 0; i < 3; i++) {
-            results[i] = IAntseedVerification.ServiceResult({
-                serviceHash: bytes32(i + 1), modelHash: keccak256(abi.encode(i)), flags: PASS
-            });
-        }
-        assertEq(verification.computeScoreBps(results), 10_000);
+    function test_emitsPerServiceResults() public {
+        vm.expectEmit(true, true, false, true, address(verification));
+        emit AntseedVerification.ServiceAudited(agentId, bytes32(uint256(1)), keccak256("model-a"), true);
+        vm.expectEmit(true, true, false, true, address(verification));
+        emit AntseedVerification.ServiceAudited(agentId, bytes32(uint256(2)), keccak256("model-b"), false);
+        vm.expectEmit(true, true, false, true, address(verification));
+        emit AntseedVerification.AgentAudited(agentId, auditorA, false, 0, keccak256("evidence"), "ipfs://cid");
+        _audit(auditorA, agentId, true, false);
     }
 
-    function test_disagreementRestartsQuorum() public {
-        _submit(AUDITOR_A_KEY, _results2(PASS, PASS, keccak256("ref-b")), keccak256("evidence-a"));
-        _submit(AUDITOR_B_KEY, _results2(PASS, MODEL_ONLY, keccak256("ref-b")), keccak256("evidence-b"));
-        assertEq(verification.activeScoreBps(agentId), 0);
-        (,,, address[] memory pendingAuditors) = verification.pendingAttestation(agentId);
-        assertEq(pendingAuditors.length, 1);
-        assertEq(pendingAuditors[0], vm.addr(AUDITOR_B_KEY));
+    // ── access and validation ────────────────────────────────────────
 
-        _submit(AUDITOR_C_KEY, _results2(PASS, MODEL_ONLY, keccak256("ref-b")), keccak256("evidence-c"));
-        assertEq(verification.activeScoreBps(agentId), 197);
+    function test_rejectsUnapprovedAuditor() public {
+        vm.expectRevert(AntseedVerification.NotApprovedAuditor.selector);
+        _audit(address(0xBAD), agentId, true, true);
+
+        verification.setAuditor(auditorA, false);
+        vm.expectRevert(AntseedVerification.NotApprovedAuditor.selector);
+        _audit(auditorA, agentId, true, true);
     }
 
-    function test_expiredPendingClaimRestartsQuorum() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        _submit(AUDITOR_A_KEY, results, keccak256("evidence-a"));
-        vm.warp(block.timestamp + 3 days + 1);
-        _submit(AUDITOR_B_KEY, results, keccak256("evidence-b"));
-        assertEq(verification.activeScoreBps(agentId), 0);
-    }
-
-    function test_quorumOfOneFinalizesImmediately() public {
-        verification.setQuorum(1);
-        _submit(AUDITOR_A_KEY, _results2(PASS, PASS, keccak256("ref-b")), keccak256("evidence-a"));
-        assertEq(verification.activeScoreBps(agentId), 5_000);
-    }
-
-    function test_scoreExpiresAndRefreshIsRateLimited() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        _submit(AUDITOR_A_KEY, results, keccak256("evidence-a"));
-        _submit(AUDITOR_B_KEY, results, keccak256("evidence-b"));
-
-        vm.warp(block.timestamp + 6 days);
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence-c"));
-        bytes memory signature = _sign(AUDITOR_C_KEY, report);
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.RefreshTooSoon.selector);
-        verification.submitReport(report, results, "", signature);
-
-        vm.warp(block.timestamp + 8 days);
-        assertEq(verification.activeScoreBps(agentId), 0, "score expires after validity");
-    }
-
-    // ── auditor / verifier separation ────────────────────────────────
-
-    function test_rejectsUnapprovedSubmitter() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(vm.addr(AUDITOR_A_KEY));
-        vm.expectRevert(AntseedVerification.NotApprovedVerifier.selector);
-        verification.submitReport(report, results, "", signature);
-    }
-
-    function test_emitsAuditorAndVerifierPerReport() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.expectEmit(true, true, true, true);
-        emit AntseedVerification.ReportSubmitted(
-            agentId, vm.addr(AUDITOR_A_KEY), verifier, report.metadataHash, report.evidenceHash, report.resultsHash, "ipfs://e"
-        );
-        vm.expectEmit(true, true, true, true);
-        emit AntseedVerification.ServiceAudited(
-            agentId, results[0].serviceHash, vm.addr(AUDITOR_A_KEY), results[0].modelHash, PASS, report.evidenceHash
-        );
-        vm.prank(verifier);
-        verification.submitReport(report, results, "ipfs://e", signature);
-    }
-
-    function test_rejectsDuplicateAuditorAndReplay() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(verifier);
-        verification.submitReport(report, results, "", signature);
-
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.ReportAlreadyUsed.selector);
-        verification.submitReport(report, results, "", signature);
-
-        IAntseedVerification.AuditReport memory second = _report(results, keccak256("evidence-2"));
-        bytes memory secondSignature = _sign(AUDITOR_A_KEY, second);
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.DuplicateAuditor.selector);
-        verification.submitReport(second, results, "", secondSignature);
-    }
-
-    function test_rejectsSelfAuditByAuditorOrVerifier() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(SELLER_KEY, report);
-        vm.prank(verifier);
+    function test_rejectsSelfAudit() public {
+        verification.setAuditor(seller, true);
         vm.expectRevert(AntseedVerification.SelfAudit.selector);
-        verification.submitReport(report, results, "", signature);
-
-        verification.setVerifier(seller, true);
-        signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(seller);
-        vm.expectRevert(AntseedVerification.SelfAudit.selector);
-        verification.submitReport(report, results, "", signature);
-    }
-
-    function test_rejectsTamperedResultsAndBadSignature() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-
-        IAntseedVerification.ServiceResult[] memory tampered = _results2(PASS, MODEL_ONLY, keccak256("ref-b"));
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.ResultsHashMismatch.selector);
-        verification.submitReport(report, tampered, "", signature);
-
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.InvalidSignature.selector);
-        verification.submitReport(report, results, "", hex"1234");
-    }
-
-    function test_signatureBindsTheWholeReport() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        report.evidenceHash = keccak256("other evidence");
-        vm.prank(verifier);
-        verification.submitReport(report, results, "", signature);
-        (,,, address[] memory pendingAuditors) = verification.pendingAttestation(agentId);
-        assertTrue(pendingAuditors[0] != vm.addr(AUDITOR_A_KEY), "altered report recovers a different signer");
-    }
-
-    // ── input validation ─────────────────────────────────────────────
-
-    function test_rejectsStaleOrFutureReports() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        report.auditedAt = uint64(block.timestamp - 3 days - 1);
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.StaleReport.selector);
-        verification.submitReport(report, results, "", signature);
-
-        report.auditedAt = uint64(block.timestamp + 1);
-        signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.StaleReport.selector);
-        verification.submitReport(report, results, "", signature);
-    }
-
-    function test_rejectsUnorderedDuplicateOrUnknownFlagResults() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        (results[0], results[1]) = (results[1], results[0]);
-        _expectInvalidResults(results);
-
-        results = _results2(PASS, PASS, keccak256("ref-b"));
-        results[1].serviceHash = results[0].serviceHash;
-        _expectInvalidResults(results);
-
-        results = _results2(PASS, 8, keccak256("ref-b"));
-        _expectInvalidResults(results);
-
-        results = _results2(PASS, PASS, bytes32(0));
-        _expectInvalidResults(results);
-
-        _expectInvalidResults(new IAntseedVerification.ServiceResult[](0));
+        _audit(seller, agentId, true, true);
     }
 
     function test_rejectsUnknownAgent() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        report.agentId = 999;
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(verifier);
         vm.expectRevert(AntseedVerification.UnknownAgent.selector);
-        verification.submitReport(report, results, "", signature);
+        _audit(auditorA, 999, true, true);
     }
 
-    function test_validatesEvidenceUri() public {
-        IAntseedVerification.ServiceResult[] memory results = _results2(PASS, PASS, keccak256("ref-b"));
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(verifier);
-        vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
-        verification.submitReport(report, results, "https://example.com/e", signature);
+    function test_rejectsEmptyUnorderedOrDuplicateResults() public {
+        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](0);
+        _expectInvalidResults(results);
 
-        vm.prank(verifier);
+        results = _results(true, true);
+        (results[0], results[1]) = (results[1], results[0]);
+        _expectInvalidResults(results);
+
+        results = _results(true, true);
+        results[1].serviceHash = results[0].serviceHash;
+        _expectInvalidResults(results);
+
+        results = _results(true, true);
+        results[0].modelHash = bytes32(0);
+        _expectInvalidResults(results);
+    }
+
+    function test_validatesEvidence() public {
+        IAntseedVerification.ServiceResult[] memory results = _results(true, true);
+        vm.startPrank(auditorA);
+        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        verification.submitAudit(agentId, results, bytes32(0), "");
         vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
-        verification.submitReport(report, results, "ipfs://", signature);
+        verification.submitAudit(agentId, results, keccak256("evidence"), "https://example.com/e");
+        vm.expectRevert(AntseedVerification.InvalidEvidenceUri.selector);
+        verification.submitAudit(agentId, results, keccak256("evidence"), "ipfs://");
+        verification.submitAudit(agentId, results, keccak256("evidence"), "");
+        vm.stopPrank();
     }
 
     function test_onlyOwnerConfigures() public {
-        vm.startPrank(verifier);
+        vm.startPrank(auditorA);
         vm.expectRevert();
-        verification.setVerifier(address(0xB0B), true);
+        verification.setAuditor(address(0xB0B), true);
         vm.expectRevert();
-        verification.setQuorum(1);
+        verification.setValidity(1 days);
         vm.expectRevert();
-        verification.setMaxBreadth(4);
+        verification.setSellerPools(address(pools));
         vm.expectRevert();
-        verification.setTiming(1 days, 1 days, 1 days);
+        verification.clearVerification(agentId);
         vm.stopPrank();
 
         vm.expectRevert(AntseedVerification.InvalidValue.selector);
-        verification.setQuorum(5);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
-        verification.setMaxBreadth(33);
-        vm.expectRevert(AntseedVerification.InvalidValue.selector);
-        verification.setTiming(1 days, 2 days, 1 days);
+        verification.setValidity(0);
+        vm.expectRevert(AntseedVerification.InvalidAddress.selector);
+        verification.setSellerPools(address(0x1234));
+    }
+
+    // ── rewards ──────────────────────────────────────────────────────
+
+    function test_rewardsArePoolPowerWeighted() public {
+        uint256 small = _register(address(0x5E2), 100);
+        uint256 unstaked = _register(address(0x5E3), 0);
+
+        _audit(auditorA, agentId, true, true);
+        _audit(auditorB, small, true, false);
+        _audit(auditorB, unstaked, true, true);
+
+        assertEq(verification.auditorEpochPower(EPOCH, auditorA), 300);
+        assertEq(verification.auditorEpochPower(EPOCH, auditorB), 100, "unstaked agent earns nothing");
+        assertEq(verification.epochAuditPower(EPOCH), 400);
+
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(auditorA), 675 ether);
+        assertEq(_claim(auditorB), 225 ether);
+        assertEq(_claim(auditorA), 0, "second claim pays nothing");
+        assertEq(gate.minted(auditorA), 675 ether);
+    }
+
+    function test_onlyFirstAuditOfAnAgentPerEpochEarns() public {
+        _audit(auditorA, agentId, true, true);
+        _audit(auditorB, agentId, true, true);
+        assertEq(verification.auditorEpochPower(EPOCH, auditorA), 300);
+        assertEq(verification.auditorEpochPower(EPOCH, auditorB), 0);
+        assertTrue(verification.isVerified(agentId), "later audits still update status");
+
+        gate.setCurrentEpoch(EPOCH + 1);
+        pools.setPower(agentId, EPOCH + 1, 50);
+        _audit(auditorB, agentId, true, true);
+        assertEq(verification.auditorEpochPower(EPOCH + 1, auditorB), 50);
+    }
+
+    function test_claimsOnlyFinalizedEpochs() public {
+        _audit(auditorA, agentId, true, true);
+        uint256[] memory epochs = new uint256[](1);
+        epochs[0] = EPOCH;
+        vm.prank(auditorA);
+        vm.expectRevert(AntseedVerification.EpochNotFinalized.selector);
+        verification.claimAuditorRewards(epochs);
+    }
+
+    function test_unfundedBucketStaysClaimable() public {
+        _audit(auditorA, agentId, true, true);
+        gate.setBudget(address(verification), EPOCH, 0);
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(auditorA), 0);
+        assertFalse(verification.auditorEpochClaimed(EPOCH, auditorA));
+
+        gate.setBudget(address(verification), EPOCH, 100 ether);
+        assertEq(_claim(auditorA), 100 ether);
+    }
+
+    function test_auditSurvivesMissingGateOrFailingPools() public {
+        pools.setReverts(true);
+        _audit(auditorA, agentId, true, true);
+        assertTrue(verification.isVerified(agentId));
+        assertEq(verification.epochAuditPower(EPOCH), 0);
+
+        AntseedRegistry noGateRegistry = new AntseedRegistry();
+        noGateRegistry.setIdentityRegistry(address(identityRegistry));
+        verification = new AntseedVerification(address(noGateRegistry), address(pools));
+        verification.setAuditor(auditorA, true);
+        _audit(auditorA, agentId, true, true);
+        assertTrue(verification.isVerified(agentId));
     }
 
     // ── helpers ──────────────────────────────────────────────────────
 
-    function _results2(uint16 firstFlags, uint16 secondFlags, bytes32 secondModel)
+    function _register(address owner, uint256 power) private returns (uint256 id) {
+        vm.prank(owner);
+        id = identityRegistry.register();
+        pools.setPower(id, EPOCH, power);
+    }
+
+    function _results(bool first, bool second)
         private
         pure
         returns (IAntseedVerification.ServiceResult[] memory results)
     {
         results = new IAntseedVerification.ServiceResult[](2);
         results[0] = IAntseedVerification.ServiceResult({
-            serviceHash: bytes32(uint256(1)), modelHash: keccak256("ref-a"), flags: firstFlags
+            serviceHash: bytes32(uint256(1)), modelHash: keccak256("model-a"), passed: first
         });
         results[1] = IAntseedVerification.ServiceResult({
-            serviceHash: bytes32(uint256(2)), modelHash: secondModel, flags: secondFlags
+            serviceHash: bytes32(uint256(2)), modelHash: keccak256("model-b"), passed: second
         });
     }
 
-    function _report(IAntseedVerification.ServiceResult[] memory results, bytes32 evidenceHash)
-        private
-        view
-        returns (IAntseedVerification.AuditReport memory)
-    {
-        return IAntseedVerification.AuditReport({
-            agentId: agentId,
-            metadataHash: keccak256("signed metadata"),
-            evidenceHash: evidenceHash,
-            resultsHash: keccak256(abi.encode(results)),
-            auditedAt: uint64(block.timestamp)
-        });
+    function _audit(address auditor, uint256 id, bool first, bool second) private {
+        vm.prank(auditor);
+        verification.submitAudit(id, _results(first, second), keccak256("evidence"), "ipfs://cid");
     }
 
-    function _sign(uint256 key, IAntseedVerification.AuditReport memory report) private view returns (bytes memory) {
-        (uint8 v, bytes32 r, bytes32 s) = vm.sign(key, verification.hashAuditReport(report));
-        return abi.encodePacked(r, s, v);
-    }
-
-    function _submit(uint256 auditorKey, IAntseedVerification.ServiceResult[] memory results, bytes32 evidenceHash)
-        private
-    {
-        IAntseedVerification.AuditReport memory report = _report(results, evidenceHash);
-        bytes memory signature = _sign(auditorKey, report);
-        vm.prank(verifier);
-        verification.submitReport(report, results, "", signature);
+    function _claim(address auditor) private returns (uint256) {
+        uint256[] memory epochs = new uint256[](1);
+        epochs[0] = EPOCH;
+        vm.prank(auditor);
+        return verification.claimAuditorRewards(epochs);
     }
 
     function _expectInvalidResults(IAntseedVerification.ServiceResult[] memory results) private {
-        IAntseedVerification.AuditReport memory report = _report(results, keccak256("evidence"));
-        bytes memory signature = _sign(AUDITOR_A_KEY, report);
-        vm.prank(verifier);
+        vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.InvalidResults.selector);
-        verification.submitReport(report, results, "", signature);
+        verification.submitAudit(agentId, results, keccak256("evidence"), "");
     }
 }

@@ -24,17 +24,17 @@ function receiptFile(context, simulated = false) {
   return context.forkTest ? path.join(context.receiptDirectory, path.relative(CONTRACTS_ROOT, file)) : file;
 }
 
-export function parseVerifiers(value = '') {
-  const verifiers = value.trim() ? value.split(',').map((address) => address.trim().toLowerCase()) : [];
-  if (verifiers.some((address) => !ADDRESS.test(address) || sameAddress(address, ZERO))) {
-    throw new Error('VERIFICATION_VERIFIERS must be comma-separated nonzero addresses');
+export function parseAuditors(value = '') {
+  const auditors = value.trim() ? value.split(',').map((address) => address.trim().toLowerCase()) : [];
+  if (auditors.some((address) => !ADDRESS.test(address) || sameAddress(address, ZERO))) {
+    throw new Error('VERIFICATION_AUDITORS must be comma-separated nonzero addresses');
   }
-  if (new Set(verifiers).size !== verifiers.length) throw new Error('Duplicate VERIFICATION_VERIFIERS');
-  return verifiers.sort();
+  if (new Set(auditors).size !== auditors.length) throw new Error('Duplicate VERIFICATION_AUDITORS');
+  return auditors.sort();
 }
 
 export function validateBaseline(canonical) {
-  for (const name of ['registry', 'identityRegistry']) {
+  for (const name of ['registry', 'identityRegistry', 'sellerPools']) {
     if (!ADDRESS.test(canonical.contracts?.[name]?.address ?? '')) throw new Error(`M003 missing ${name}`);
   }
 }
@@ -44,18 +44,19 @@ export function recordErrors(record) {
   const contract = record.contracts?.verification;
   if (!config || !contract) return ['M003 requires verification contract and configuration'];
   const errors = [];
-  for (const key of ['registry', 'identityRegistry', 'owner', 'address']) {
+  for (const key of ['registry', 'identityRegistry', 'sellerPools', 'owner', 'address']) {
     if (!ADDRESS.test(config[key] ?? '') || sameAddress(config[key], ZERO)) errors.push(`M003 invalid ${key}`);
   }
   if (!sameAddress(contract.address, config.address)) errors.push('M003 verification address mismatch');
   if (!sameAddress(contract.owner, config.owner)) errors.push('M003 verification owner mismatch');
-  if (contract.constructorArguments?.length !== 1 || !sameAddress(contract.constructorArguments[0], config.registry)) {
+  if (contract.constructorArguments?.length !== 2 || !sameAddress(contract.constructorArguments[0], config.registry)
+    || !sameAddress(contract.constructorArguments[1], config.sellerPools)) {
     errors.push('M003 verification constructor mismatch');
   }
   if (!Number.isSafeInteger(config.deploymentNonce) || config.deploymentNonce < 0) errors.push('M003 invalid nonce');
   try {
-    if (!Array.isArray(config.verifiers)) throw new Error('M003 verifiers must be an array');
-    parseVerifiers(config.verifiers.join(','));
+    if (!Array.isArray(config.auditors)) throw new Error('M003 auditors must be an array');
+    parseAuditors(config.auditors.join(','));
   } catch (error) { errors.push(error.message); }
   return errors;
 }
@@ -82,7 +83,7 @@ async function collectReceipts(context, checkpoint) {
 async function observe(context) {
   const { rpcUrl, expected, canonical } = context;
   if (chainId(rpcUrl) !== canonical.chainId) throw new Error('M003 wrong RPC chain');
-  if (!hasCode(rpcUrl, expected.registry) || !hasCode(rpcUrl, expected.identityRegistry)
+  if (!hasCode(rpcUrl, expected.registry) || !hasCode(rpcUrl, expected.identityRegistry) || !hasCode(rpcUrl, expected.sellerPools)
     || !sameAddress(call(rpcUrl, expected.registry, 'identityRegistry()(address)'), expected.identityRegistry)) {
     throw new Error('M003 registry or identity registry mismatch');
   }
@@ -104,16 +105,17 @@ async function observe(context) {
     const address = cast(rpcUrl, ['compute-address', owner, '--nonce', String(deploymentNonce)]).match(/0x[0-9a-fA-F]{40}/)?.[0];
     if (!address) throw new Error('M003 could not compute deployment address');
     checkpoint = {
-      ...expected, owner, deploymentNonce, address, verifiers: parseVerifiers(process.env.VERIFICATION_VERIFIERS),
+      ...expected, owner, deploymentNonce, address, auditors: parseAuditors(process.env.VERIFICATION_AUDITORS),
       sourceCommit: sourceCommit(), contracts: {}, transactions: [],
     };
   } else {
-    if (!sameAddress(checkpoint.registry, expected.registry) || !sameAddress(checkpoint.identityRegistry, expected.identityRegistry)) {
+    if (!sameAddress(checkpoint.registry, expected.registry) || !sameAddress(checkpoint.identityRegistry, expected.identityRegistry)
+      || !sameAddress(checkpoint.sellerPools, expected.sellerPools)) {
       throw new Error('M003 checkpoint baseline mismatch');
     }
-    if (process.env.VERIFICATION_VERIFIERS !== undefined
-      && JSON.stringify(parseVerifiers(process.env.VERIFICATION_VERIFIERS)) !== JSON.stringify(checkpoint.verifiers)) {
-      throw new Error('M003 verifier list differs from the original deployment; restore the reviewed list');
+    if (process.env.VERIFICATION_AUDITORS !== undefined
+      && JSON.stringify(parseAuditors(process.env.VERIFICATION_AUDITORS)) !== JSON.stringify(checkpoint.auditors)) {
+      throw new Error('M003 auditor list differs from the original deployment; restore the reviewed list');
     }
     checkpoint = await collectReceipts(context, checkpoint);
   }
@@ -125,14 +127,15 @@ async function observe(context) {
     const mismatch = compareRuntimeCode(rpcUrl, verification, found.artifact);
     if (mismatch) throw new Error(`M003 ${mismatch}`);
     if (!sameAddress(call(rpcUrl, verification, 'registry()(address)'), expected.registry)
+      || !sameAddress(call(rpcUrl, verification, 'sellerPools()(address)'), expected.sellerPools)
       || !sameAddress(call(rpcUrl, verification, 'owner()(address)'), checkpoint.owner)
       || !sameAddress(call(rpcUrl, verification, 'pendingOwner()(address)'), ZERO)) {
       throw new Error('M003 verification registry or ownership mismatch');
     }
     if (!checkpoint.contracts.verification) throw new Error('M003 restore confirmed deployment receipts before continuing');
-    const approved = checkpoint.verifiers.every((verifier) => call(rpcUrl, verification, 'approvedVerifiers(address)(bool)', [verifier]) === 'true');
+    const approved = checkpoint.auditors.every((auditor) => call(rpcUrl, verification, 'approvedAuditors(address)(bool)', [auditor]) === 'true');
     if (!approved && await historyRecordExists(context, RELEASE)) {
-      throw new Error('M003 initial approvals changed after activation; manage verifiers separately');
+      throw new Error('M003 initial approvals changed after activation; manage auditors separately');
     }
     state = approved ? 'active' : 'ready';
   } else if (checkpoint.contracts.verification
@@ -217,7 +220,11 @@ export const migration = {
     }
   },
   validateBaseline,
-  expectedState: (canonical) => ({ registry: canonical.contracts.registry.address, identityRegistry: canonical.contracts.identityRegistry.address }),
+  expectedState: (canonical) => ({
+    registry: canonical.contracts.registry.address,
+    identityRegistry: canonical.contracts.identityRegistry.address,
+    sellerPools: canonical.contracts.sellerPools.address,
+  }),
   observe,
   printStatus: (observation) => console.log(`M003 state: ${observation.state}`),
   expectedSigner: (_role, _context, observation) => observation.deployment.checkpoint.owner,
@@ -226,8 +233,9 @@ export const migration = {
     return {
       ...process.env, ...extra, EXPECTED_CHAIN_ID: String(context.canonical.chainId),
       ANTSEED_REGISTRY: checkpoint.registry, EXPECTED_IDENTITY_REGISTRY: checkpoint.identityRegistry,
+      SELLER_POOLS: checkpoint.sellerPools,
       VERIFICATION_OWNER: signers.verificationOwner, VERIFICATION_DEPLOYMENT_NONCE: String(checkpoint.deploymentNonce),
-      VERIFICATION_VERIFIERS: checkpoint.verifiers.join(','),
+      VERIFICATION_AUDITORS: checkpoint.auditors.join(','),
       ...(context.forkTest ? { FOUNDRY_BROADCAST: path.join(context.receiptDirectory, 'broadcast') } : {}),
     };
   },

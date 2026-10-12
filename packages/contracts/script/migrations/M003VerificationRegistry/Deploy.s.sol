@@ -9,9 +9,10 @@ contract M003DeployVerificationRegistry is Script {
         uint256 chainId;
         address registry;
         address identityRegistry;
+        address sellerPools;
         address owner;
         uint256 deploymentNonce;
-        address[] verifiers;
+        address[] auditors;
     }
 
     function run() external returns (AntseedVerification) {
@@ -20,9 +21,10 @@ contract M003DeployVerificationRegistry is Script {
                 chainId: vm.envUint("EXPECTED_CHAIN_ID"),
                 registry: vm.envAddress("ANTSEED_REGISTRY"),
                 identityRegistry: vm.envAddress("EXPECTED_IDENTITY_REGISTRY"),
+                sellerPools: vm.envAddress("SELLER_POOLS"),
                 owner: vm.envAddress("VERIFICATION_OWNER"),
                 deploymentNonce: vm.envUint("VERIFICATION_DEPLOYMENT_NONCE"),
-                verifiers: vm.envOr("VERIFICATION_VERIFIERS", ",", new address[](0))
+                auditors: vm.envOr("VERIFICATION_AUDITORS", ",", new address[](0))
             })
         );
     }
@@ -35,9 +37,10 @@ contract M003DeployVerificationRegistry is Script {
             IAntseedRegistry(config.registry).identityRegistry() == config.identityRegistry,
             "M003: wrong identity registry"
         );
+        require(config.sellerPools.code.length > 0, "M003: missing seller pools");
         require(config.owner != address(0), "M003: missing owner");
-        for (uint256 index; index < config.verifiers.length; index++) {
-            require(config.verifiers[index] != address(0), "M003: zero verifier");
+        for (uint256 index; index < config.auditors.length; index++) {
+            require(config.auditors[index] != address(0), "M003: zero auditor");
         }
 
         address predicted = vm.computeCreateAddress(config.owner, config.deploymentNonce);
@@ -45,16 +48,17 @@ contract M003DeployVerificationRegistry is Script {
         vm.startBroadcast(config.owner);
         if (predicted.code.length == 0) {
             require(vm.getNonce(config.owner) == config.deploymentNonce, "M003: deployment nonce changed");
-            verification = new AntseedVerification(config.registry);
+            verification = new AntseedVerification(config.registry, config.sellerPools);
             require(address(verification) == predicted, "M003: unexpected deployment address");
         }
         require(address(verification.registry()) == config.registry, "M003: wrong registry");
+        require(address(verification.sellerPools()) == config.sellerPools, "M003: wrong seller pools");
         require(verification.owner() == config.owner, "M003: wrong owner");
         require(verification.pendingOwner() == address(0), "M003: pending ownership transfer");
-        for (uint256 index; index < config.verifiers.length; index++) {
-            address verifier = config.verifiers[index];
-            if (!verification.approvedVerifiers(verifier)) verification.setVerifier(verifier, true);
-            require(verification.approvedVerifiers(verifier), "M003: verifier not approved");
+        for (uint256 index; index < config.auditors.length; index++) {
+            address auditor = config.auditors[index];
+            if (!verification.approvedAuditors(auditor)) verification.setAuditor(auditor, true);
+            require(verification.approvedAuditors(auditor), "M003: auditor not approved");
         }
         vm.stopBroadcast();
     }
