@@ -70,6 +70,7 @@ import {
   makeProxyService,
   fetchProxyConversationRoute,
   normalizePaymentBody,
+  paymentRequiredAmount,
   resolveProxyPort,
   resolveSystemPrompt,
   PROXY_RUNTIME_API_KEY,
@@ -688,7 +689,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             } else {
               cacheFallbackPaymentRequired(conversationId, suggestedAmount);
             }
-            paymentRequiredFailure = emitPaymentRequiredStreamError(conversationId, suggestedAmount);
+            paymentRequiredFailure = emitPaymentRequiredStreamError(
+              conversationId,
+              paymentRequiredAmount(paymentBody, suggestedAmount),
+            );
             const activeRun = activeRunsByConversation.get(conversationId);
             if (activeRun) void abortAndClearActiveRun(activeRun);
             return;
@@ -703,7 +707,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
               ? paymentBody.suggestedAmount : '100000';
             // Cache payment info so the approve IPC handler can build the SpendingAuth
             cachedPaymentRequired.set(conversationId, paymentBody);
-            paymentRequiredFailure = emitPaymentRequiredStreamError(conversationId, suggestedAmount);
+            paymentRequiredFailure = emitPaymentRequiredStreamError(
+              conversationId,
+              paymentRequiredAmount(paymentBody, suggestedAmount),
+            );
             const activeRun = activeRunsByConversation.get(conversationId);
             if (activeRun) void abortAndClearActiveRun(activeRun);
             return;
@@ -860,7 +867,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             cacheFallbackPaymentRequired(conversationId, amt);
           }
           pendingAssistantMessage = null;
-          const reason = emitPaymentRequiredStreamError(conversationId, amt);
+          const reason = emitPaymentRequiredStreamError(conversationId, paymentRequiredAmount(payBody, amt));
           finishTelemetry('failed', reason, lastText);
           return { ok: false, error: 'Payment required', stopReason: reason };
         }
@@ -953,7 +960,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             suggestedAmount: amt,
           });
         }
-        const reason = emitPaymentRequiredStreamError(conversationId, amt);
+        const reason = emitPaymentRequiredStreamError(conversationId, paymentRequiredAmount(payBody, amt));
         finishTelemetry('failed', reason, message);
         return { ok: false, error: message, stopReason: reason };
       } else {

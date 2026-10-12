@@ -8,7 +8,11 @@ import {
   walletBalanceMessage,
   type BalanceBreakdownValues,
 } from './balance-breakdown';
+import { formatUsd, SESSION_RESERVE_BASE_UNITS, type FundingStatusKind } from './funding-status';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './BalanceBreakdown.module.scss';
+
+const WALLET_FUNDING_KINDS = new Set<FundingStatusKind>(['wallet-below-minimum', 'depositing', 'wallet-at-limit', 'wallet-dust']);
 
 export function BalanceWarning({ values }: { values: BalanceBreakdownValues }): JSX.Element | null {
   if (!isEntireBalanceLocked(values)) return null;
@@ -34,18 +38,35 @@ export function BalanceBreakdown({ values, compact = false, onManageOpenSessions
   compact?: boolean;
   onManageOpenSessions?: () => void;
 }): JSX.Element {
-  const walletMessage = walletBalanceMessage(values);
+  const funding = useFundingStatus();
+  // The funding status knows why wallet USDC hasn't moved (below the first-
+  // deposit minimum, smaller than the fee, at the limit); prefer its wording.
+  const walletMessage = WALLET_FUNDING_KINDS.has(funding.kind) ? funding.body : walletBalanceMessage(values);
+  const hasReserved = hasPositiveAmount(values.reserved);
   return (
     <div className={`${styles.breakdown}${compact ? ` ${styles.compact}` : ''}`}>
-      {hasPositiveAmount(values.available) ? (
+      {/* With money held in sessions, "ready" is the number that decides
+          whether another session can start — show it even at $0.00. */}
+      {hasPositiveAmount(values.available) || hasReserved ? (
         <div className={styles.row}>
-          <span>Ready to use</span><span>${formatCredits(values.available)}</span>
+          <span>Available for new sessions</span><span>${formatCredits(values.available)}</span>
         </div>
       ) : null}
-      {hasPositiveAmount(values.reserved) ? (
+      {hasReserved ? (
         <div className={styles.row}>
           <span className={styles.rowLabel}>
             Held in open sessions
+            <InfoTooltip
+              align="left"
+              content={(
+                <span>
+                  Each seller session sets aside {formatUsd(SESSION_RESERVE_BASE_UNITS)} at a time from your available
+                  credits. Only that seller can draw on it; whatever it doesn't use comes back when the session closes.
+                </span>
+              )}
+            >
+              <button type="button" className={styles.infoButton} aria-label="About held funds">i</button>
+            </InfoTooltip>
             <BalanceWarning values={values} />
             {onManageOpenSessions ? (
               <button
@@ -61,6 +82,17 @@ export function BalanceBreakdown({ values, compact = false, onManageOpenSessions
           <span>${formatCredits(values.reserved)}</span>
         </div>
       ) : null}
+      {hasReserved ? funding.sessions.map((session, index) => (
+        <div key={`${session.sellerName}-${index}`} className={`${styles.row} ${styles.subRow}`}>
+          <span className={styles.subRowLabel}>{session.sellerName}</span>
+          <span>
+            {formatUsd(session.heldBaseUnits)}
+            {session.unusedBaseUnits > 0n && session.unusedBaseUnits < session.heldBaseUnits
+              ? <span className={styles.subRowNote}> ({formatUsd(session.unusedBaseUnits)} unused)</span>
+              : null}
+          </span>
+        </div>
+      )) : null}
       {hasPositiveAmount(values.pending) ? (
         <div className={styles.row}>
           <span>Authorized, not yet charged</span>
@@ -70,7 +102,7 @@ export function BalanceBreakdown({ values, compact = false, onManageOpenSessions
       {hasPositiveAmount(values.wallet) ? (
         <div className={styles.row}>
           <span className={styles.rowLabel}>
-            In deposit wallet
+            In deposit wallet (not in credits yet)
             <InfoTooltip align="left" content={<span>{walletMessage}</span>}>
               <button type="button" className={styles.infoButton} aria-label="About deposit wallet balance">i</button>
             </InfoTooltip>

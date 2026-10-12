@@ -16,6 +16,9 @@ import { shortAddress } from '../../../core/format';
 import { VprCard, VprPage } from '../vpr/VprKit';
 import type { DepositWatchStatus } from '../../../types/bridge';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { formatUsd, shortfallBaseUnits, usdcToBaseUnits } from './funding-status';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import styles from './VprDepositView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
 
@@ -340,7 +343,10 @@ export function VprDepositView({ onSelectView }: Props) {
     wallet: state.creditsWalletUsdc,
     totalOwned: state.creditsTotalOwnedUsdc,
     creditLimit: state.creditsCreditLimitUsdc,
+    minFirstDeposit: state.creditsMinFirstDepositUsdc,
+    depositFee: state.creditsDepositFeeUsdc,
   }), shallowEqual);
+  const funding = useFundingStatus();
 
   const [slide, setSlide] = useState<StageSlide>(() => ({
     stage: 'choose',
@@ -403,7 +409,8 @@ export function VprDepositView({ onSelectView }: Props) {
     });
     const unsubscribe = bridge?.onDepositsWatchStatus?.((status) => {
       setWatchStatus(status);
-      if (status.phase === 'credited') actions.refreshCredits();
+      // Any wallet movement changes what the funding status should say.
+      if (status.phase !== 'sweeping') actions.refreshCredits();
     });
     return () => {
       cancelled = true;
@@ -452,8 +459,25 @@ export function VprDepositView({ onSelectView }: Props) {
     });
   }, [amount]);
 
+  const feeBaseUnits = usdcToBaseUnits(snap.depositFee);
+  const firstDepositNeeds = usdcToBaseUnits(snap.minFirstDeposit) + feeBaseUnits;
+  const isFirstDeposit = usdcToBaseUnits(snap.total) === 0n;
+
   const statusLine = (() => {
     if (watchError) return { tone: 'error' as const, text: watchError };
+    // Too little in the wallet to deposit: the sweep waits silently, so ask
+    // for the exact shortfall instead of spinning on "preparing".
+    const receivedShort = (have: bigint, short: bigint) => ({
+      tone: 'idle' as const,
+      text: `Received ${formatUsd(have)} · send ${formatUsd(short, 'up')} more to finish`,
+    });
+    if (watchStatus?.phase === 'deferred' && watchStatus.reason === 'below-minimum' && watchStatus.minRequiredBaseUnits) {
+      const have = BigInt(watchStatus.amountBaseUnits ?? '0');
+      return receivedShort(have, shortfallBaseUnits(BigInt(watchStatus.minRequiredBaseUnits), have));
+    }
+    if (funding.kind === 'wallet-below-minimum' && (!watchStatus || watchStatus.phase === 'received' || watchStatus.phase === 'deferred')) {
+      return receivedShort(usdcToBaseUnits(snap.wallet), funding.sendMoreBaseUnits ?? 0n);
+    }
     if (!watchStatus) return { tone: 'idle' as const, text: 'Waiting for USDC on Base…' };
     switch (watchStatus.phase) {
       case 'deferred':
@@ -482,13 +506,14 @@ export function VprDepositView({ onSelectView }: Props) {
     : statusLine.tone === 'error'
       ? 'var(--accent-red, #d64545)'
       : '#f59e0b';
+  const staticDot = statusLine.tone === 'error';
   const watchStatusRow = (
     <div className={`${styles.watchStatus} ${styles[`watchStatus_${statusLine.tone}`] ?? ''}`} role="status">
       {statusLine.tone === 'done' ? (
         <HugeiconsIcon icon={Tick02Icon} size={15} strokeWidth={2.5} className={styles.watchCheck} />
       ) : (
         <span
-          className={`${styles.watchPulse}${statusLine.tone === 'error' ? ` ${styles.watchPulseStatic}` : ''}`}
+          className={`${styles.watchPulse}${staticDot ? ` ${styles.watchPulseStatic}` : ''}`}
           style={{ background: dotColor }}
           aria-hidden="true"
         />
@@ -496,6 +521,18 @@ export function VprDepositView({ onSelectView }: Props) {
       {statusLine.text}
     </div>
   );
+
+  // What this amount still has to clear: the first-deposit floor (net of what
+  // already sits in the wallet). Later top-ups only need to beat the fee.
+  const amountBaseUnits = usdcToBaseUnits(amount);
+  const walletBaseUnits = usdcToBaseUnits(snap.wallet);
+  const amountNeeded = isFirstDeposit ? shortfallBaseUnits(firstDepositNeeds, walletBaseUnits) : feeBaseUnits + 1n;
+  const amountBelowMinimum = amount !== '' && amountBaseUnits < amountNeeded;
+  const amountHint = (() => {
+    if (!isFirstDeposit) return `1 credit = 1 USDC · ${formatUsd(feeBaseUnits)} network fee per deposit`;
+    if (walletBaseUnits > 0n) return `You've sent ${formatUsd(walletBaseUnits)} · ${formatUsd(amountNeeded, 'up')} more to go`;
+    return `1 credit = 1 USDC · first deposit ${formatUsd(firstDepositNeeds)} minimum, incl. ${formatUsd(feeBaseUnits)} network fee`;
+  })();
 
   const amountForm = (
     <VprCard className={styles.amountCard}>
@@ -522,8 +559,8 @@ export function VprDepositView({ onSelectView }: Props) {
           />
         </div>
       </div>
-      <span className={styles.amountHint}>
-        1 credit = 1 USDC{Number(snap.total) === 0 ? ' · Minimum first deposit is $1' : ''}
+      <span className={`${styles.amountHint}${amountBelowMinimum ? ` ${styles.amountHintWarn}` : ''}`}>
+        {amountHint}
       </span>
     </VprCard>
   );
@@ -533,7 +570,10 @@ export function VprDepositView({ onSelectView }: Props) {
       return (
         <VprPage title="Add credits" backFallback="credits">
         <div className={styles.stack}>
-          <BalanceSummaryCard values={balanceValues} />
+          <BalanceSummaryCard
+            values={balanceValues}
+            notice={<FundingStatusNotice status={funding} onManageSessions={() => onSelectView?.('activity')} />}
+          />
 
           <div className={styles.primaryMethods}>
             {/* Primary path — always the antseed-pay Crossmint card checkout,
@@ -681,7 +721,7 @@ export function VprDepositView({ onSelectView }: Props) {
             <div className={styles.qrMeta}>
               <span>Credits update automatically</span>
               <span aria-hidden="true">·</span>
-              <span>$0.05 network fee</span>
+              <span>{formatUsd(feeBaseUnits)} network fee</span>
             </div>
             {creditedTxUrl && (
               <button
