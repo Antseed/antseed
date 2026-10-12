@@ -116,6 +116,7 @@ import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
+import { isClientCredentialHeader } from './credential-headers.js'
 import { loadConfig } from '../config/loader.js'
 
 // Re-export for backward compatibility (used by tests and other consumers)
@@ -2312,9 +2313,12 @@ export class BuyerProxy {
       return
     }
 
-    // Build serialized request
+    // Build serialized request. Client credentials (provider keys, cookies)
+    // never leave the machine — see credential-headers.ts for why no seller
+    // needs them.
     const headers: Record<string, string> = {}
     for (const [key, value] of Object.entries(req.headers)) {
+      if (isClientCredentialHeader(key)) continue
       if (typeof value === 'string') {
         headers[key] = value
       } else if (Array.isArray(value)) {
