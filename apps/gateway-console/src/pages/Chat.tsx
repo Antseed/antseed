@@ -11,8 +11,8 @@ import {
   type ModelFilter, type ModelSort, type PeerFilter, type PeerSort,
 } from '../lib/chat-pick'
 import { useConsole } from '../app/context'
-import { isOrgAdmin } from '../lib/nav'
-import { qk } from '../lib/queries'
+import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
+import { qk, useWallet } from '../lib/queries'
 import { useConsoleMutation } from '../lib/mutations'
 import { formatRelative, formatTokens, formatUsd, shortId } from '../lib/format'
 import { href, linkHandler } from '../lib/router'
@@ -288,7 +288,20 @@ function ModelPicker({ models, value, onChange }: { models: ChatModel[]; value: 
 }
 
 /** What automatic routing would do right now: its first seller, or why none. */
-function autoSummary(pick: ReturnType<typeof autoPick>, model: ChatModel | null, loading: boolean): ReactNode {
+/** Amber dot + one line, for something the user should act on. */
+function Notice({ children }: { children: ReactNode }) {
+  return (
+    <span className="inline-flex items-baseline gap-1.5">
+      <span className="size-2 shrink-0 translate-y-[-1px] rounded-full bg-amber-500" aria-hidden="true" />
+      <span>{children}</span>
+    </span>
+  )
+}
+
+/** Same model under another spelling ("glm-5.3-flash" vs "glm-5-3-flash"): the network list can re-key a model. */
+const modelKey = (id: string) => id.toLowerCase().replace(/[^a-z0-9]/g, '')
+
+function autoSummary(pick: ReturnType<typeof autoPick>, model: ChatModel | null, loading: boolean, unfunded: boolean): ReactNode {
   if (loading) return 'Checking which seller automatic routing picks…'
   if (!pick) return 'No seller passes your routing settings for this model right now.'
   const peer = model?.peers.find((entry) => entry.peerId === pick.peerId.toLowerCase())
@@ -300,16 +313,23 @@ function autoSummary(pick: ReturnType<typeof autoPick>, model: ChatModel | null,
       <span className="font-medium text-foreground">{name}</span>
       <PriceTag offer={pick} />
       {pick.trustScore !== null && <span>trust {Math.round(pick.trustScore)}</span>}
+      {unfunded && !isFreeOffer(pick) && (
+        <Notice>
+          No free seller offers {model?.name ?? 'this model'} right now, and the wallet has no funds for a paid one.{' '}
+          <a className="font-medium text-foreground underline underline-offset-2" href={href('wallet')} onClick={linkHandler('wallet')}>Add funds</a>
+        </Notice>
+      )}
     </span>
   )
 }
 
-function PeerPicker({ model, value, onChange, preview, previewLoading }: {
+function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded }: {
   model: ChatModel | null
   value: string | null
   onChange: (peerId: string | null) => void
   preview: RoutePreview | undefined
   previewLoading: boolean
+  unfunded: boolean
 }) {
   const [open, setOpen] = useState(false)
   const [filters, toggle] = useStoredSet<PeerFilter>('peer-filters')
@@ -343,7 +363,7 @@ function PeerPicker({ model, value, onChange, preview, previewLoading }: {
               <ShuffleIcon className="mt-0.5 size-3.5" />
               <span className="flex min-w-0 flex-col">
                 <ModelSelectorName>Auto: the gateway picks the best offer each turn</ModelSelectorName>
-                <span className="text-muted-foreground text-xs">{autoSummary(pick, model, previewLoading)}</span>
+                <span className="text-muted-foreground text-xs">{autoSummary(pick, model, previewLoading, unfunded)}</span>
               </span>
               {value === null && <CheckIcon className="ml-auto size-3.5" />}
             </ModelSelectorItem>
@@ -410,7 +430,13 @@ export default function Chat() {
   const fillRef = useFillViewport<HTMLDivElement>()
   // The open conversation; a new one gets its id here and is saved on the gateway with its first answer.
   const [chatId, setChatId] = useState<string>(() => load(`chat:${workspace.id}`, newChatId()))
-  const model = models.data?.find((entry) => entry.id === modelId) ?? null
+  const model = models.data?.find((entry) => entry.id === modelId)
+    ?? (modelId ? models.data?.find((entry) => modelKey(entry.id) === modelKey(modelId)) : undefined) ?? null
+  // A model no seller offers any more (sellers drop one while busy): the chat moves on and says so.
+  const [goneModel, setGoneModel] = useState<string | null>(null)
+  const canSeeWallet = isWorkspaceAdmin(viewer)
+  const wallet = useWallet(workspace.id, canSeeWallet)
+  const unfunded = !!wallet.data && Number(wallet.data.available) <= 0
   // What automatic routing does for this model with the chat key's policies and the buyer's settings.
   const chatKeyId = context.data?.key.id ?? null
   const preview = useQuery({
@@ -424,6 +450,7 @@ export default function Chat() {
   useEffect(() => {
     if (!models.data?.length || model) return
     const first = models.data.find((entry) => entry.toolUse) ?? models.data[0]!
+    if (modelId) setGoneModel(modelId)
     setModelId(first.id)
   }, [models.data, model])
   useEffect(() => { save(`model:${workspace.id}`, modelId) }, [workspace.id, modelId])
@@ -469,6 +496,15 @@ export default function Chat() {
     }
     // eslint-disable-next-line react-hooks/exhaustive-deps
   }, [status])
+
+  // A failed turn often means the network changed (a seller dropped the model): refresh what the pickers show.
+  useEffect(() => {
+    if (!error) return
+    void queryClient.invalidateQueries({ queryKey: qk.chatModels(workspace.id) })
+    void queryClient.invalidateQueries({ queryKey: ['chat-route-preview', workspace.id] })
+    if (canSeeWallet) void queryClient.invalidateQueries({ queryKey: qk.wallet(workspace.id) })
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [error])
 
   const busy = status === 'submitted' || status === 'streaming'
   // This conversation's estimated cost so far; null once any answer's cost is unknown.
@@ -538,8 +574,8 @@ export default function Chat() {
         <div className="flex min-w-0 flex-1 flex-col gap-3">
         <div className="flex flex-wrap items-center gap-2">
           <h1 className="mr-auto font-semibold text-xl">Chat</h1>
-          <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null) }} />
-          <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} />
+          <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null); setGoneModel(null) }} />
+          <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded} />
           <Button variant="ghost" size="sm" className="md:hidden" onClick={newChat} disabled={messages.length === 0 && !busy}>
             <MessageSquarePlusIcon className="size-3.5" /> New
           </Button>
@@ -550,7 +586,20 @@ export default function Chat() {
             : <>The gateway routes each turn to the best offer for {model?.name ?? 'the model'}; each answer shows the seller that served it, and you can pin one to always use it.</>}
           {' '}Tools run on the gateway.
         </p>
-        {!peerId && <p className="text-muted-foreground text-xs">{autoSummary(autoPick(preview.data), model, preview.isLoading)}</p>}
+        {goneModel && model && (
+          <p className="text-muted-foreground text-xs">
+            <Notice>No seller offers {goneModel} right now (sellers stop offering a model while they are busy), so the chat switched to {model.name}.</Notice>
+          </p>
+        )}
+        {peerId && model && !model.peers.some((peer) => peer.peerId === peerId) && (
+          <p className="text-muted-foreground text-xs">
+            <Notice>
+              {shortId(peerId)} no longer offers {model.name} (sellers stop offering a model while they are busy).{' '}
+              <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => setPeerId(null)}>Use Auto</button> or pick another seller.
+            </Notice>
+          </p>
+        )}
+        {!peerId && <p className="text-muted-foreground text-xs">{autoSummary(autoPick(preview.data), model, preview.isLoading, unfunded)}</p>}
         <p className="text-muted-foreground text-xs">
           <PaidBy apiKey={context.data?.key} workspaceName={context.data?.workspaceName ?? workspace.name} chatCost={chatCost} />
         </p>
@@ -599,12 +648,20 @@ export default function Chat() {
                 {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
                   ? (
                     <>
-                      <span className="font-medium">No funds for a paid seller.</span>{' '}
-                      The {workspace.name} wallet has no deposits, and no free seller could take this request.{' '}
-                      <a className="font-medium underline underline-offset-2" href={href('wallet')} onClick={linkHandler('wallet')}>Add funds</a>, or pick a seller marked <Pill tone="free">Free</Pill>.
+                      <span className="font-medium">No free seller took this, and paid ones need funds.</span>{' '}
+                      No free seller offers {model?.name ?? 'this model'} right now (free sellers stop offering a model while they are busy),
+                      and the {workspace.name} wallet has no deposits for a paid one.{' '}
+                      <a className="font-medium underline underline-offset-2" href={href('wallet')} onClick={linkHandler('wallet')}>Add funds</a>, or pick a model marked <Pill tone="free">Free</Pill>.
                     </>
                   )
-                  : <><span className="font-medium">The request failed.</span> {error.message}</>}
+                  : /model_not_found|not served by this peer/i.test(error.message)
+                    ? (
+                      <>
+                        <span className="font-medium">The seller stopped offering {model?.name ?? 'this model'}.</span>{' '}
+                        Sellers drop a model while they are busy, and the list had not caught up yet. Send again{peerId ? <> after switching to <button type="button" className="font-medium underline underline-offset-2" onClick={() => setPeerId(null)}>Auto</button></> : ''} to use another seller.
+                      </>
+                    )
+                    : <><span className="font-medium">The request failed.</span> {error.message}</>}
               </div>
             )}
           </ConversationContent>

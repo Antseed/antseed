@@ -1673,6 +1673,40 @@ test('model-only routing fails over to the next peer after a 401 or 403', async 
   }
 })
 
+test('model-only routing moves past a seller whose cached catalog still lists a model it stopped serving', async () => {
+  const stale = makePeer('a', ['openai'])
+  stale.reputationScore = 95
+  stale.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-5': ['openai-chat-completions'] } },
+  }
+  const serving = makePeer('b', ['openai'])
+  serving.reputationScore = 80
+  serving.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-5': ['openai-chat-completions'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([stale, serving], [stale, serving], permissiveRouter())
+  ;(proxy as any)._refreshPeersNow = async () => {}
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    const notServed = peer.peerId === stale.peerId
+    return {
+      requestId: request.requestId,
+      statusCode: notServed ? 400 : 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify(notServed
+        ? { error: { message: 'Service "gpt-5" is not served by this peer.', type: 'invalid_request_error', code: 'model_not_found' } }
+        : { peerId: peer.peerId })),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'gpt-5', messages: [] } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [stale.peerId, serving.peerId])
+  assert.equal(JSON.parse(res.body).peerId, serving.peerId)
+})
+
 test('pinned proxy request rewrites a canonical alias to the advertised service id', async () => {
   const pinnedPeer = makePeer('a', ['openai'])
   pinnedPeer.providerServiceApiProtocols = {

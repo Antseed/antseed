@@ -886,6 +886,12 @@ export function installMockApi(): void {
   const realFetch = window.fetch.bind(window)
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
+  // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
+  if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
+    db.keys.length = 0
+    db.requests.length = 0
+    for (const id of Object.keys(db.channels)) db.channels[id] = []
+  }
   session()
   lastSignInAt = Date.now() - FRESH_MS - 1
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {

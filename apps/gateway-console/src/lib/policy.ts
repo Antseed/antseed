@@ -201,6 +201,29 @@ export function describePolicy(policy: RoutingPolicy | null | undefined): string
  * "verified sellers only", "≤ $15.00/M in", "≤ $60.00/M out", "trust ≥ 60"].
  * Empty when none apply.
  */
+/**
+ * The buyer's config as a policy, the top of the chain every gateway level
+ * narrows (hard limits plus the automatic-routing preferences).
+ */
+export function buyerPolicy(limits: BuyerLimits | null | undefined): RoutingPolicy | null {
+  if (!limits) return null
+  const policy: RoutingPolicy = {}
+  if (limits.minPeerReputation > 0) policy.minReputation = limits.minPeerReputation
+  if (limits.requireVerifier) policy.requireVerified = true
+  if (limits.maxPricing) {
+    policy.maxInputUsdPerMillion = limits.maxPricing.inputUsdPerMillion
+    policy.maxOutputUsdPerMillion = limits.maxPricing.outputUsdPerMillion
+    if (limits.maxPricing.cachedInputUsdPerMillion !== null) policy.maxCachedInputUsdPerMillion = limits.maxPricing.cachedInputUsdPerMillion
+  }
+  const prefs = limits.routingPreferences
+  if (prefs) {
+    if (prefs.minTrustScore > 0) policy.minTrustScore = prefs.minTrustScore
+    if (prefs.allowedPeerIds.length > 0) policy.allowedPeerIds = [...prefs.allowedPeerIds]
+    if (prefs.blockedPeerIds.length > 0) policy.blockedPeerIds = [...prefs.blockedPeerIds]
+  }
+  return policy
+}
+
 export function describeBuyerLimits(limits: BuyerLimits): string[] {
   const parts: string[] = []
   if (limits.minPeerReputation > 0) parts.push(`reputation ≥ ${limits.minPeerReputation}`)

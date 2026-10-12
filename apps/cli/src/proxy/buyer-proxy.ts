@@ -315,6 +315,16 @@ const RETRYABLE_STATUS_CODES = new Set([401, 403, 408, 429, 500, 502, 503, 504])
  * seller (no deposits for its reserve), but a free seller needs none.
  */
 const AUTO_ROUTE_RETRYABLE_STATUS_CODES = new Set([...RETRYABLE_STATUS_CODES, 402])
+
+/**
+ * Whether the routing loop should try the next seller. Automatic routing also
+ * moves on from a seller's model_not_found: its cached catalog was stale (the
+ * seller stopped serving the model), and another seller may still serve it.
+ * A pinned request keeps the seller's answer.
+ */
+function shouldTryNextPeer(statusCode: number, modelNotFound: boolean, retryableStatusCodes: Set<number>): boolean {
+  return retryableStatusCodes.has(statusCode) || (modelNotFound && retryableStatusCodes === AUTO_ROUTE_RETRYABLE_STATUS_CODES)
+}
 const MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER = 3
 const MODEL_RATE_LIMIT_RETRY_DELAYS_MS = [250, 750] as const
 const MODEL_RATE_LIMIT_MAX_RETRY_AFTER_MS = 2_000
@@ -4110,7 +4120,7 @@ export class BuyerProxy {
           requestForPeer.requestId,
           latencyMs,
         )
-        if (retryableStatusCodes.has(responseForClient.statusCode)) {
+        if (shouldTryNextPeer(responseForClient.statusCode, modelNotFound, retryableStatusCodes)) {
           return {
             done: false,
             statusCode: responseForClient.statusCode,
@@ -4199,7 +4209,7 @@ export class BuyerProxy {
         }
 
         // Check if retryable
-        if (retryableStatusCodes.has(response.statusCode)) {
+        if (shouldTryNextPeer(response.statusCode, modelNotFound, retryableStatusCodes)) {
           return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null }
         }
 

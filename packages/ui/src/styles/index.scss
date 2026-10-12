@@ -633,6 +633,11 @@ body {
   outline-offset: 1px;
 }
 
+/* The tab bar clips overflow, so its focus ring sits inside the tab. */
+.as-tabs__tab:focus-visible {
+  outline-offset: -2px;
+}
+
 /* Badge */
 .as-badge {
   display: inline-flex;
@@ -751,12 +756,15 @@ body {
 .as-tabs {
   display: flex;
   gap: 0.25rem;
+  /* Horizontal scroll on narrow screens only; the rule is an inset shadow so
+     the tabs' underline needs no negative margin (which made it scroll vertically). */
   overflow-x: auto;
-  border-bottom: 1px solid var(--as-border);
+  overflow-y: hidden;
+  scrollbar-width: none;
+  box-shadow: inset 0 -1px 0 var(--as-border);
 }
 
 .as-tabs__tab {
-  margin-bottom: -1px;
   padding: 0.5rem 0.75rem;
   border: 0;
   border-bottom: 2px solid transparent;
