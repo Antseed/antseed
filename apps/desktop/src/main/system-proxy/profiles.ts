@@ -12,14 +12,14 @@ import path from 'node:path';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { loadAppLaunchSettings, normalizeToolSlugs } from '../connected-apps/launch-settings.js';
 import { customAppToCliProfile, loadCustomApps, type CustomAppRecord } from '../connected-apps/custom.js';
-import { mergeWithDefaultAppProfiles } from '../connected-apps/defaults.js';
+import { mergeWithDefaultAppProfiles } from '@antseed/connected-apps/defaults';
 import {
   readConfigPatch,
   readRequiredString,
   readString,
   removeConfigPatch,
   type ConfigPatchDef,
-} from './config-patch.js';
+} from '@antseed/connected-apps/config-patch';
 import { systemProxyDataDir, systemProxyWslTargetsPath } from './paths.js';
 
 export const DEFAULT_SYSTEM_PROXY_PORT = Number(process.env['ANTSEED_SYSTEM_PROXY_PORT']) || 8378;

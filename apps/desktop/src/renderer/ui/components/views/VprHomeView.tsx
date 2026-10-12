@@ -58,7 +58,7 @@ const DROPDOWN_MODEL_COUNT = 5;
 const DROPDOWN_FREE_COUNT = 3;
 
 function isFreeEntry(entry: VprModelCatalogEntry | undefined): boolean {
-  if (!entry || entry.kind === 'image') return false;
+  if (!entry || entry.kind !== 'text') return false;
   const { minInputUsdPerMillion: i, minOutputUsdPerMillion: o } = entry;
   return i !== null && o !== null && i <= 0 && o <= 0;
 }
@@ -81,6 +81,7 @@ export function VprHomeView({ onSelectView }: Props) {
     floatOpen: state.vprFloatOpen,
     creditsSpendable: state.creditsSpendableUsdc,
     creditsTotalOwned: state.creditsTotalOwnedUsdc,
+    creditsBalanceKnown: state.creditsBalanceKnown,
     creditsChannels: state.creditsChannels,
     reminderOffer: state.reminderOffer,
     networkAlert: state.networkAlert,
@@ -227,7 +228,7 @@ export function VprHomeView({ onSelectView }: Props) {
     const entry = findCatalogEntry(snap.catalog, provider, serviceId);
     if (!entry) return;
     setModelMenuOpen(false);
-    if (entry.kind === 'image') return;
+    if (entry.kind !== 'text') return;
     applyModelForNewChats(entry);
   }
 
@@ -358,10 +359,12 @@ export function VprHomeView({ onSelectView }: Props) {
   // $5 left it's just noise. Keyed off spendable, not the unreserved slice: an
   // open session holds funds that still buy requests.
   const creditsSpendableNum = Number(snap.creditsSpendable);
+  // Nothing to nudge about until the balance has actually been read.
   const showAddBalance = !addBalanceDismissed
+    && snap.creditsBalanceKnown
     && !(Number.isFinite(creditsSpendableNum) && creditsSpendableNum > 5);
   const hasDeposited = Number(snap.creditsTotalOwned) > 0 || snap.creditsChannels.length > 0;
-  const reminderOffer = hasDeposited ? null : snap.reminderOffer;
+  const reminderOffer = hasDeposited || !snap.creditsBalanceKnown ? null : snap.reminderOffer;
 
   function submitDraft(): void {
     const text = draft.trim();

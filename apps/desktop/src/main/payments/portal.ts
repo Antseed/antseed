@@ -117,10 +117,11 @@ export function openPaymentsPopup(url: string): void {
 // delivered on Base to the buyer hot wallet and credited into AntseedDeposits
 // via the P2P deposit relay — same path as a direct QR transfer.
 //
-// Providers come from config (payments.card.providers) as HTTPS URL templates
-// with {address} and optional {amount} placeholders. The default is Antseed's
-// hosted card page, which handles the Coinbase Onramp session server-side so
-// the CDP secret key never ships inside the app.
+// Providers come from config (payments.card.providers) as HTTPS pages or
+// server-side checkout endpoints. URL templates may use {address} and
+// optional {amount} placeholders. The default is Antseed's hosted card page,
+// which handles the onramp session server-side so provider credentials never
+// ship inside the app.
 export type CardProvider = { id: string; label: string; url: string };
 
 // The hosted pay page. Dev builds target the locally-run checkout (the
@@ -135,6 +136,11 @@ export const DEFAULT_CARD_PROVIDERS: CardProvider[] = [
   { id: 'antseed-pay', label: 'Antseed Pay', url: ANTSEED_PAY_URL },
   // Same page, opened on its Stripe integration (US only).
   { id: 'antseed-pay-stripe', label: 'Antseed Pay (Stripe)', url: ANTSEED_PAY_URL },
+  {
+    id: 'peer-pay',
+    label: 'Peer Pay',
+    url: 'https://antseed-checkout.pay.zkp2p.xyz/api/checkout',
+  },
 ];
 
 /** Which pay-page integration a provider id opens; null for other providers. */

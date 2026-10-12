@@ -5,15 +5,15 @@ authors: [antseed]
 tags: [API keys, gateway, self-hosting, teams, buyers, x402, product]
 description: "Run your own OpenAI-compatible Antseed endpoint on a server with one command. Give every person or app their own API key with spend limits, a separate wallet if you want one, and usage they can check themselves."
 keywords: [antseed gateway, deploy ai gateway, self-hosted ai api gateway, openai compatible gateway, shared ai api keys, ai api spend limits, team ai budget, x402 top up]
-image: /img/blog/deploy-your-own-antseed-gateway/header.jpg
+image: /img/blog/deploy-your-own-antseed-gateway/header.png
 date: 2026-10-07
 ---
 
-![Deploy your own Antseed gateway: one command, API keys per person, spend limits](/img/blog/deploy-your-own-antseed-gateway/header.webp)
+![Deploy your own AI gateway with Antseed: API keys and spend limits for teammates, agents, and users](/img/blog/deploy-your-own-antseed-gateway/header.png)
 
 You can now run your own Antseed gateway: an OpenAI-compatible API endpoint, on your own server, that many people can use at once.
 
-Each person or app gets their own API key, with its own usage history and optional spend limits. Each key can pay from your wallet or from a wallet of its own. All of it runs through one Antseed buyer.
+Each teammate, agent, or app gets their own API key, with its own usage history and optional spend limits. Each key can pay from your wallet or from a wallet of its own. One Antseed buyer handles routing and payments to providers on the network for all of these keys.
 
 <!-- truncate -->
 
@@ -86,7 +86,7 @@ The gateway sets the paying identity from the key itself. A client can't switch 
 
 A friend who wants to try Antseed doesn't have to install anything. Create a key with `--new-identity`, a lifetime limit, and an expiry, and send them the key and your gateway's address.
 
-Their requests use their own wallet, so you can see exactly what they've used, and when you're done, you revoke the key.
+Their requests use a separate wallet assigned to their key, so you can see exactly what they've used, and when you're done, you revoke the key.
 
 ## Letting key holders pay for themselves
 

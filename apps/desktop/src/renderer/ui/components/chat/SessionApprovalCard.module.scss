@@ -34,6 +34,14 @@
   }
 }
 
+.approval-reason {
+  display: block;
+  margin-top: 6px;
+  color: var(--text-secondary);
+  font-size: 13px;
+  line-height: 1.6;
+}
+
 .approval-error {
   padding: 6px 10px;
   margin-bottom: 10px;

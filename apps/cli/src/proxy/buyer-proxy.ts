@@ -120,6 +120,7 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TeeVerification } from './tee-verification.js'
 import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
+import { isClientCredentialHeader } from './credential-headers.js'
 import { loadConfig } from '../config/loader.js'
 import { resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../config/effective.js'
 import {
@@ -2973,9 +2974,12 @@ export class BuyerProxy {
       return
     }
 
-    // Build serialized request
+    // Build serialized request. Client credentials (provider keys, cookies)
+    // never leave the machine — see credential-headers.ts for why no seller
+    // needs them.
     const headers: Record<string, string> = {}
     for (const [key, value] of Object.entries(req.headers)) {
+      if (isClientCredentialHeader(key)) continue
       if (typeof value === 'string') {
         headers[key] = value
       } else if (Array.isArray(value)) {
@@ -3011,6 +3015,9 @@ export class BuyerProxy {
       return
     }
     const requestPolicy = requestPolicyResult.kind === 'policy' ? requestPolicyResult.policy : null
+    // Node already answered curl's `Expect: 100-continue` for large bodies;
+    // forwarded, it makes the seller's fetch fail.
+    delete headers['expect']
     // Internal marker from the system proxy: the body's model was assigned
     // by the proxy's route rewrite, not chosen by the tool. Stripped here so
     // it never reaches a seller.
@@ -3193,6 +3200,10 @@ export class BuyerProxy {
         this._trackRequestConversation(serializedReq.requestId, tracked.id)
       }
     }
+    // A chat switched while this request is in flight must keep the new route.
+    const conversationPinAtRouting = trackedConversationId
+      ? this._conversations.get(trackedConversationId)?.pinnedModel ?? null
+      : null
 
     const {
       body: servicePinBody,
@@ -3385,6 +3396,7 @@ export class BuyerProxy {
               this._conversations.recordRoutedModel(
                 trackedConversationId,
                 `${selected.peer.peerId}@${selected.serviceId}`,
+                conversationPinAtRouting,
               )
             }
             return
@@ -3654,6 +3666,7 @@ export class BuyerProxy {
       this._conversations.recordRoutedModel(
         trackedConversationId,
         `${selectedPeer.peerId}@${pinnedServiceId}`,
+        conversationPinAtRouting,
       )
     }
     if (!result.done) {
@@ -3698,18 +3711,32 @@ export class BuyerProxy {
     headers: Record<string, string>,
     requestBytes: number,
     requestedService: string | null,
-  ): string | null {
+  ): { code: string; message: string } | null {
     if (statusCode !== 413) return null
-    const bodyText = Buffer.from(body).toString('utf-8').trim()
-    if (!/upload body exceeds per-request limit/i.test(bodyText)) return null
-
-    const maxBytes = this._parseMaxUploadBodyBytes(headers)
     const requestSize = this._formatBytes(requestBytes)
-    const maxSize = maxBytes != null ? this._formatBytes(maxBytes) : 'the seller upload limit'
     const service = requestedService ? ` for ${requestedService}` : ''
-    return `Request body${service} is ${requestSize}, but the selected seller allows ${maxSize} per request. `
-      + 'This commonly happens when Codex sends a large repository context to /v1/responses. '
-      + 'Reduce Codex context, exclude large/generated files, or pick a seller with a higher seller.maxUploadBodyBytes limit.'
+    const bodyText = Buffer.from(body).toString('utf-8').trim()
+
+    if (/upload body exceeds per-request limit/i.test(bodyText)) {
+      const maxBytes = this._parseMaxUploadBodyBytes(headers)
+      const maxSize = maxBytes != null ? this._formatBytes(maxBytes) : 'the seller upload limit'
+      return {
+        code: 'upload_body_too_large',
+        message: `Request body${service} is ${requestSize}, but the selected seller allows ${maxSize} per request. `
+          + 'This commonly happens when Codex sends a large repository context to /v1/responses. '
+          + 'Reduce Codex context, exclude large/generated files, or pick a seller with a higher seller.maxUploadBodyBytes limit.',
+      }
+    }
+
+    // Upstream providers and the proxies in front of them answer oversized
+    // bodies with their own 413 (JSON or an HTML page). Clients resend the
+    // whole history each turn, so images and attachments add up.
+    return {
+      code: 'request_too_large',
+      message: `Request body${service} is ${requestSize}, more than the seller's upstream provider accepts. `
+        + 'Images and large attachments in the conversation history are the usual cause, because they are resent on every turn. '
+        + 'Start a new conversation or remove large attachments.',
+    }
   }
 
   private _withFriendlyUploadLimitError(
@@ -3717,22 +3744,22 @@ export class BuyerProxy {
     requestBytes: number,
     requestedService: string | null,
   ): SerializedHttpResponse {
-    const message = this._formatUploadLimitError(
+    const error = this._formatUploadLimitError(
       response.statusCode,
       response.body,
       response.headers,
       requestBytes,
       requestedService,
     )
-    if (!message) return response
+    if (!error) return response
     return {
       ...response,
       headers: { ...response.headers, 'content-type': 'application/json' },
       body: Buffer.from(JSON.stringify({
         error: {
-          type: 'upload_body_too_large',
-          code: 'upload_body_too_large',
-          message,
+          type: error.code,
+          code: error.code,
+          message: error.message,
           requestBytes,
           sellerMaxUploadBodyBytes: this._parseMaxUploadBodyBytes(response.headers),
         },

@@ -682,6 +682,45 @@ test('Proxy: rewrites model field and strips Authorization header', { timeout: 1
   }
 })
 
+test('Proxy: strips every client credential header (#1104)', { timeout: 15_000 }, async () => {
+  const tmpDir = await mkdtemp(join(tmpdir(), 'antseed-proxy-test-'))
+  try {
+    const buyer = await startFakeBuyerProxy()
+    const { proxy, caKeys } = await makeProxy(tmpDir, buyer.port)
+    try {
+      const result = await tlsHttpRequest({
+        host: '127.0.0.1',
+        port: proxy.innerTlsPort,
+        servername: 'api-b.example.test',
+        caCert: caKeys.certPem,
+        method: 'POST',
+        path: '/v1/chat/completions',
+        headers: {
+          'content-type': 'application/json',
+          'authorization': 'Bearer sk-secret-key',
+          'x-api-key': 'sk-ant-secret',
+          'x-goog-api-key': 'AIza-secret',
+          'api-key': 'azure-secret',
+          'cookie': 'session=secret',
+        },
+        body: Buffer.from(JSON.stringify({ model: 'model-default', messages: [] })),
+      })
+      assert.equal(result.statusCode, 200)
+      const captured = buyer.captured[0]!
+      assert.equal(captured.headers['authorization'], undefined)
+      assert.equal(captured.headers['x-api-key'], undefined)
+      assert.equal(captured.headers['x-goog-api-key'], undefined)
+      assert.equal(captured.headers['api-key'], undefined)
+      assert.equal(captured.headers['cookie'], undefined)
+    } finally {
+      await proxy.stop()
+      await buyer.close()
+    }
+  } finally {
+    await rm(tmpDir, { recursive: true, force: true })
+  }
+})
+
 test('Proxy: passes non-JSON body through without modification', { timeout: 15_000 }, async () => {
   const tmpDir = await mkdtemp(join(tmpdir(), 'antseed-proxy-test-'))
   try {

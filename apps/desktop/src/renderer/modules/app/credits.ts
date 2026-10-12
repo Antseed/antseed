@@ -26,6 +26,10 @@ const CREDITS_FAST_REFRESH_INTERVAL_MS = 5_000;
 const PAYMENT_SUMMARY_THROTTLE_MS = 55_000;
 
 const MAX_AUTO_RETRIES = 2;
+// Until the balance has been read once, a failed or empty read retries on a
+// short backoff instead of leaving the placeholder up until the next poll.
+const UNKNOWN_BALANCE_RETRY_BASE_MS = 2_000;
+const UNKNOWN_BALANCE_RETRY_MAX_MS = 30_000;
 
 export function initCreditsModule({
   bridge,
@@ -39,6 +43,22 @@ export function initCreditsModule({
   let lastCardVisibleAt = 0;
   let lastPaymentSummaryRefreshAt = 0;
   let paymentSummaryRefreshInFlight = false;
+  let unknownBalanceRetryTimer: ReturnType<typeof setTimeout> | null = null;
+  let unknownBalanceRetries = 0;
+
+  function scheduleUnknownBalanceRetry(): void {
+    if (uiState.creditsBalanceKnown) {
+      unknownBalanceRetries = 0;
+      return;
+    }
+    if (unknownBalanceRetryTimer || !refreshTimer) return;
+    const delay = Math.min(UNKNOWN_BALANCE_RETRY_BASE_MS * 2 ** unknownBalanceRetries, UNKNOWN_BALANCE_RETRY_MAX_MS);
+    unknownBalanceRetries++;
+    unknownBalanceRetryTimer = setTimeout(() => {
+      unknownBalanceRetryTimer = null;
+      void refreshCredits();
+    }, delay);
+  }
 
   async function refreshCredits(fresh = true): Promise<void> {
     if (!bridge?.creditsGetInfo) return;
@@ -57,6 +77,10 @@ export function initCreditsModule({
           uiState.creditsSpendableUsdc !== result.data.spendableUsdc ||
           uiState.creditsWalletUsdc !== result.data.walletUsdc ||
           uiState.creditsTotalOwnedUsdc !== result.data.totalOwnedUsdc ||
+          uiState.creditsCreditLimitUsdc !== result.data.creditLimitUsdc ||
+          (result.data.minFirstDepositUsdc != null && uiState.creditsMinFirstDepositUsdc !== result.data.minFirstDepositUsdc) ||
+          (result.data.depositFeeUsdc != null && uiState.creditsDepositFeeUsdc !== result.data.depositFeeUsdc) ||
+          uiState.creditsBalanceKnown !== (result.data.balanceKnown ?? true) ||
           uiState.creditsEvmAddress !== result.data.evmAddress ||
           uiState.creditsOperatorAddress !== (result.data.operatorAddress ?? null);
 
@@ -68,6 +92,9 @@ export function initCreditsModule({
         uiState.creditsWalletUsdc = result.data.walletUsdc;
         uiState.creditsTotalOwnedUsdc = result.data.totalOwnedUsdc;
         uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
+        if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
+        if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
+        uiState.creditsBalanceKnown = result.data.balanceKnown ?? true;
         uiState.creditsEvmAddress = result.data.evmAddress;
         uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
 
@@ -77,12 +104,7 @@ export function initCreditsModule({
           uiState.chatActiveChannels.clear();
         }
 
-        // Low balance detection
         const available = parseFloat(uiState.creditsAvailableUsdc);
-        const lowBalance = available > 0 && (available < 1.0 || (reserved > 0 && available < reserved));
-        if (uiState.chatLowBalanceWarning !== lowBalance) {
-          uiState.chatLowBalanceWarning = lowBalance;
-        }
 
         // Auto-retry: if the payment approval card is visible and balance
         // now covers the required amount, dismiss the card and retry.
@@ -115,6 +137,7 @@ export function initCreditsModule({
     } catch {
       // Silently fail — cached values remain
     }
+    scheduleUnknownBalanceRetry();
   }
 
   async function refreshPaymentSummary(force = false): Promise<void> {
@@ -179,8 +202,8 @@ export function initCreditsModule({
 
   function startPeriodicRefresh(): void {
     if (refreshTimer) return;
-    void refreshCredits();
     refreshTimer = setInterval(() => void refreshCredits(false), CREDITS_REFRESH_INTERVAL_MS);
+    void refreshCredits();
     window.addEventListener('focus', onWindowFocus);
   }
 
@@ -188,6 +211,10 @@ export function initCreditsModule({
     if (refreshTimer) {
       clearInterval(refreshTimer);
       refreshTimer = null;
+    }
+    if (unknownBalanceRetryTimer) {
+      clearTimeout(unknownBalanceRetryTimer);
+      unknownBalanceRetryTimer = null;
     }
     stopFastRefresh();
     window.removeEventListener('focus', onWindowFocus);

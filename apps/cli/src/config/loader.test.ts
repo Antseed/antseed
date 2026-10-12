@@ -759,6 +759,29 @@ test('loadConfig rejects invalid seller freeTier limits', async () => {
   }
 });
 
+test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
+  for (const restrictedCountries of [['IR', 'RU'], []]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { restrictedCountries } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.deepEqual(config.seller.restrictedCountries, restrictedCountries);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller restrictedCountries', async () => {
+  for (const restrictedCountries of ['IR', ['ir'], ['IRN'], [1]]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { restrictedCountries } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.restrictedCountries/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller agentDir setting', async () => {
   await withTempConfig(
     JSON.stringify({

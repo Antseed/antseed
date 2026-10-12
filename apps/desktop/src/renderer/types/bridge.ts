@@ -125,6 +125,10 @@ export type DepositWatchStatus = {
   amountBaseUnits?: string;
   txHash?: string;
   error?: string;
+  /** Why a 'deferred' sweep is waiting (absent from older daemons). */
+  reason?: 'below-minimum' | 'credit-limit';
+  /** below-minimum: the wallet balance a sweep needs, relay fee included. */
+  minRequiredBaseUnits?: string;
 };
 
 export type LogEvent = {
@@ -411,7 +415,7 @@ export type DesktopBridge = {
   downloadUpdate?: () => Promise<InstallUpdateResult>;
   getUpdateStatus?: () => Promise<UpdateStatus | null>;
   setDebugLogs?: (enabled: boolean) => Promise<{ ok: true }>;
-  creditsGetInfo?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string } | null; error: string | null }>;
+  creditsGetInfo?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string; minFirstDepositUsdc?: string; depositFeeUsdc?: string; balanceKnown?: boolean } | null; error: string | null }>;
   /** Prompts a native save dialog and writes the signer private key to the chosen file. */
   identityExportKey?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string | null }>;
   /** Replaces the signer private key (the current one is backed up on disk first). */

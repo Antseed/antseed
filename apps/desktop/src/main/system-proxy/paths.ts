@@ -42,7 +42,7 @@ export function systemProxySnapshotPath(): string {
 }
 
 /**
- * Which WSL distros the last connect patched a tool config in (see wsl.ts) —
+ * Which WSL distros the last connect patched a tool config in (see @antseed/connected-apps/wsl) —
  * kept so disconnect/quit can unpatch them and stop the relay without
  * re-running WSL discovery, which would cold-start distros.
  */

@@ -33,6 +33,15 @@
   @include chip.chip-hover;
 }
 
+/* Placeholder while the first balance read is in flight — never a fake $0.00. */
+.creditsSkeleton {
+  display: inline-block;
+  width: 3.25em;
+  min-height: 0;
+  height: 0.9em;
+  vertical-align: middle;
+}
+
 .iconButton:hover,
 .iconButton:focus-visible {
   background: transparent;
@@ -45,4 +54,20 @@
 .iconButton:focus-visible {
   outline: 2px solid var(--accent-green);
   outline-offset: 2px;
+}
+
+/* Something blocks paid use (deposit short of the minimum, all credits held
+   in sessions): an amber dot, with the reason in the tooltip. */
+.creditsBlocked {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+}
+
+.creditsDot {
+  flex: 0 0 auto;
+  width: 5px;
+  height: 5px;
+  border-radius: 50%;
+  background: var(--accent-orange, #d98b2b);
 }

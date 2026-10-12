@@ -6,6 +6,7 @@ import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
 import { newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
+import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
 import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
@@ -804,7 +805,9 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
   const headers: http.OutgoingHttpHeaders = {}
   for (const [name, value] of Object.entries(incoming)) {
     const normalized = name.toLowerCase()
-    if (normalized === 'host' || normalized === 'authorization' || normalized === 'cookie') continue
+    // The client's key authenticated it to this gateway; its other
+    // credentials are never needed downstream (see credential-headers.ts).
+    if (normalized === 'host' || isClientCredentialHeader(normalized)) continue
     // The key decides who pays, how spend is tagged and which sellers may serve, never the client.
     if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
     if (normalized === ROUTING_POLICY_HEADER || normalized === GATEWAY_CONTROL_HEADER || normalized === END_USER_HEADER) continue
