@@ -196,7 +196,11 @@ export function validateM001Baseline(canonical) {
   }
 }
 
-export function recordErrors(record) {
+/**
+ * `allowLaterPolicies` is for live-state checks: later releases (M003) append
+ * policies after the wash-trading policy, which must stay first.
+ */
+export function recordErrors(record, { allowLaterPolicies = false } = {}) {
   const errors = [];
   const configuration = record.verificationConfiguration;
   if (!configuration || typeof configuration !== 'object') return ['verificationConfiguration is required'];
@@ -207,7 +211,11 @@ export function recordErrors(record) {
   expect('verificationMinterController', (value) => address.test(value ?? ''), 'an address');
   expect('verificationMinterShareBps', (value) => value === 10_000, '10000');
   expect('verificationMinterEditable', (value) => value === true, 'true');
-  expect('pointsPolicyCount', (value) => value === 1, '1');
+  expect(
+    'pointsPolicyCount',
+    (value) => (allowLaterPolicies ? Number.isInteger(value) && value >= 1 : value === 1),
+    allowLaterPolicies ? 'at least 1' : '1',
+  );
   expect('emissionsGateOwner', (value) => address.test(value ?? ''), 'an address');
   expect('pointsPolicyRegistryOwner', (value) => address.test(value ?? ''), 'an address');
   expect(
@@ -232,7 +240,7 @@ function verificationConfiguration(context, contracts) {
     [VERIFICATION_MINTER_ID],
   );
   const pointsPolicyCount = numberValue(call(context.rpcUrl, contracts.pointsPolicyRegistry.address, 'policyCount()(uint256)'));
-  const washTradingPointsPolicy = pointsPolicyCount === 1
+  const washTradingPointsPolicy = pointsPolicyCount >= 1
     ? call(context.rpcUrl, contracts.pointsPolicyRegistry.address, 'policyAt(uint256)(address)', ['0'])
     : '0x0000000000000000000000000000000000000000';
   return {
@@ -264,7 +272,7 @@ function checkpointMatchesChain(context, checkpoint, liveChainId) {
   if (!sameAddress(call(rpcUrl, usageAccounting, 'pointsPolicy()(address)'), pointsPolicyRegistry)) return false;
 
   const actual = verificationConfiguration(context, checkpoint.contracts);
-  return recordErrors({ contracts: checkpoint.contracts, verificationConfiguration: actual }).length === 0
+  return recordErrors({ contracts: checkpoint.contracts, verificationConfiguration: actual }, { allowLaterPolicies: true }).length === 0
     && ['washTradingRegistry', 'washTradingPointsPolicy', 'verificationMinterController', 'emissionsGateOwner', 'pointsPolicyRegistryOwner']
       .every((key) => sameAddress(actual[key], expected[key]));
 }

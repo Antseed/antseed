@@ -1,31 +1,38 @@
-# M003 — Verification registry
+# M003 — Verification registry and points policy
 
-Deploys `AntseedVerification` and optionally approves an initial auditor list.
-Approved auditors submit per-service audit results; an audit that passes every
-service verifies the agent for 14 days (see `docs/protocol/verification.md`). It does not
-change emissions, points policies, staking, or protocol registry pointers. M002 is
-not a prerequisite.
+Deploys `AntseedVerification` and `AntseedVerificationPointsPolicy`, registers the
+policy in the existing `AntseedPointsPolicyRegistry` (after the wash-trading
+policy), and optionally approves an initial auditor list. Approved auditors submit
+one audit per model; each seller service gets `SAME`, `DIFF`, or `UNDETERMINED`
+(see `docs/protocol/verification.md`). It does not change emissions, staking, or
+protocol registry pointers. M002 is not a prerequisite.
 
-M003 deliberately leaves two switches off, so the contract runs in shadow mode:
+After M003:
 
-- **Auditor rewards.** Pool-power-weighted audit credit accrues from the first audit, but claims
+- **Points boost is live.** Every settlement runs through the new policy. A verified
+  seller earns `+bonusBps` per verified model (default 100, +1%), capped at +50% in
+  total; unverified sellers and sellers with a DIFF are unchanged. `bonusBps` is an
+  owner setting on the policy; removing the policy from the registry turns the boost
+  off without a redeploy.
+- **Auditor rewards stay off.** Audit credits accrue from the first audit, but claims
   pay nothing until the emissions-gate owner hands the verification bucket to the
   contract: `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
   Unclaimed epochs stay claimable after the handoff, up to each epoch's bucket budget.
-- **Points boost.** `AntseedVerificationPointsPolicy` is not deployed or registered
-  here. Deploy it in a later migration once shadow-mode scores show the honest-seller
-  pass rate and score stability, with `bonusBps` chosen from that data, then register
-  it in `AntseedPointsPolicyRegistry`.
 
 ## Configuration
 
-- Use the canonical network `current.json` registry, identity registry, and seller pools.
-- The live protocol registry owner signs deployment and becomes the verification
-  owner directly. Supply `--signer verificationOwner=<spec>` using the existing
+- Use the canonical network `current.json` registry, identity registry, seller pools,
+  usage accounting, and points policy registry. The usage accounting contract must
+  point at both the seller pools and the points policy registry.
+- The live protocol registry owner signs deployment and becomes the owner of both
+  new contracts directly. It must also own the points policy registry, since it
+  registers the policy. Supply `--signer verificationOwner=<spec>` using the existing
   keystore, Ledger, or unlocked signer support. No ownership handoff is needed.
 - Optionally set `VERIFICATION_AUDITORS` to comma-separated, nonzero auditor
   addresses in `packages/contracts/.env`. Omit it for an empty initial allowlist.
   Duplicate addresses are rejected. Review the list in the decoded dry-run plan.
+- Optionally set `VERIFICATION_BONUS_BPS` (0 to 5000, default 100).
+  It is fixed in the checkpoint; change it later with `setBonusBps`.
 - Set the network RPC environment variable and `BASESCAN_API_KEY` as for M001/M002.
   Non-fork broadcasts submit source verification through the existing runner.
 
@@ -52,11 +59,13 @@ so they cannot overwrite production receipts or block the subsequent live run.
 
 ## Resume and records
 
-The existing checkpoint facility saves the original deployment nonce, predicted
-CREATE address, owner, seller pools, and auditor list before broadcast. Keep the checkpoint
+The existing checkpoint facility saves the original deployment nonce, both predicted
+CREATE addresses (verification at the nonce, policy at the nonce + 1), owner, seller
+pools, usage accounting, points policy registry, per-model bonus, and auditor list
+before broadcast. Keep the checkpoint
 and Foundry receipts until the history record is committed. Resume with the same
 command: an existing deployment is checked against the local artifact, registry,
-and owner; only missing approvals are sent. Confirmed receipts are merged into
+and owner; only the missing policy deployment, approvals, and registration are sent. Confirmed receipts are merged into
 the checkpoint even if a later transaction or source verification fails.
 
 If the deployment is absent but its nonce has been consumed or is pending, the
@@ -66,11 +75,13 @@ the original checkpoint/receipts rather than deleting them to start over. Change
 to the initial auditor list during recovery are rejected.
 
 Once deployment and approvals are confirmed, the runner appends
-`history/003-verification-registry.json`, folds `contracts.verification` into
-`current.json`, and generates `verificationContractAddress` for the SDK/CLI.
+`history/003-verification-registry.json`, folds `contracts.verification` and
+`contracts.verificationPointsPolicy` into `current.json`, and generates `verificationContractAddress` for the SDK/CLI.
 Undeployed networks keep that optional address absent. Existing explicit CLI
 overrides still take precedence. No existing history files are edited.
 
-M003 records the initial approvals, not all future governance changes. Manage
+M003 records the initial approvals and registration, not all future governance
+changes. Removing the policy from the registry after activation makes a re-run stop
+instead of re-registering it. Manage
 subsequent auditor additions/revocations separately; do not change and reapply
 the deployment's initial list as an administration mechanism.

@@ -12,7 +12,8 @@ interface IAntseedSellerPoolsSource {
     function sellerPools() external view returns (IAntseedSellerPools);
 }
 
-/// @notice Boosts seller points for verified agents: sellerPoints * (1 + bonusBps / BPS).
+/// @notice Boosts seller points for verified agents by `bonusBps` per verified model, capped at
+///         MAX_BONUS_BPS in total: sellerPoints * (1 + min(verifiedCount * bonusBps, MAX) / BPS).
 ///         Buyer points pass through.
 /// @dev A reverting points modifier zeroes every settlement in the registry chain, so
 ///      every external read here falls back to returning points unchanged.
@@ -52,25 +53,31 @@ contract AntseedVerificationPointsPolicy is IAntseedPointsModifier, Ownable2Step
         returns (uint256 adjustedSellerPoints, uint256 adjustedBuyerPoints)
     {
         uint256 bonus = bonusBps;
-        if (sellerPoints == 0 || bonus == 0 || !_isVerified(seller)) return (sellerPoints, buyerPoints);
+        if (sellerPoints == 0 || bonus == 0) return (sellerPoints, buyerPoints);
+        uint256 verifiedModels = _verifiedModels(seller);
+        if (verifiedModels == 0) return (sellerPoints, buyerPoints);
+        bonus *= verifiedModels;
+        if (bonus > MAX_BONUS_BPS) bonus = MAX_BONUS_BPS;
         return (sellerPoints + (sellerPoints * bonus) / BPS, buyerPoints);
     }
 
-    function _isVerified(address seller) private view returns (bool) {
+    /// @dev Verified services of a verified agent (unexpired, no DIFF); 0 otherwise.
+    function _verifiedModels(address seller) private view returns (uint256) {
         try usageAccounting.sellerPools() returns (IAntseedSellerPools pools) {
-            if (address(pools).code.length == 0) return false;
+            if (address(pools).code.length == 0) return 0;
             try pools.agentIdForSeller(seller) returns (uint256 agentId) {
-                if (agentId == 0) return false;
-                try verification.isVerified(agentId) returns (bool verified) {
-                    return verified;
+                if (agentId == 0) return 0;
+                try verification.agentStatus(agentId) returns (IAntseedVerification.AgentStatus memory status) {
+                    if (block.timestamp >= status.verifiedUntil || status.diffCount != 0) return 0;
+                    return status.verifiedCount;
                 } catch {
-                    return false;
+                    return 0;
                 }
             } catch {
-                return false;
+                return 0;
             }
         } catch {
-            return false;
+            return 0;
         }
     }
 }

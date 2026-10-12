@@ -5,21 +5,26 @@ import { Test } from "forge-std/Test.sol";
 import { AntseedPointsPolicyRegistry } from "../policies/AntseedPointsPolicyRegistry.sol";
 import { AntseedVerificationPointsPolicy } from "../policies/AntseedVerificationPointsPolicy.sol";
 import { AntseedWashTradingPointsPolicy } from "../policies/AntseedWashTradingPointsPolicy.sol";
+import { IAntseedVerification } from "../interfaces/IAntseedVerification.sol";
 
 contract ScoreSourceForPoints {
-    mapping(uint256 => bool) public isVerified;
+    mapping(uint256 => IAntseedVerification.AgentStatus) private _status;
     bool public reverts;
 
-    function set(uint256 agentId, bool verified) external {
-        isVerified[agentId] = verified;
+    function set(uint256 agentId, uint16 verifiedCount, uint16 diffCount, uint64 verifiedUntil) external {
+        _status[agentId] = IAntseedVerification.AgentStatus(verifiedCount, diffCount, verifiedUntil);
     }
 
     function setReverts(bool value) external {
         reverts = value;
     }
+
+    function status(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
+        return _status[agentId];
+    }
 }
 
-/// @dev Routes `isVerified` through a switch so the policy can be tested against a reverting source.
+/// @dev Routes `agentStatus` through a switch so the policy can be tested against a reverting source.
 contract SwitchableScoreSource {
     ScoreSourceForPoints public immutable source;
 
@@ -27,9 +32,9 @@ contract SwitchableScoreSource {
         source = source_;
     }
 
-    function isVerified(uint256 agentId) external view returns (bool) {
+    function agentStatus(uint256 agentId) external view returns (IAntseedVerification.AgentStatus memory) {
         if (source.reverts()) revert("score source down");
-        return source.isVerified(agentId);
+        return source.status(agentId);
     }
 }
 
@@ -66,33 +71,51 @@ contract AntseedVerificationPointsPolicyTest is Test {
     address buyer = address(0x200);
 
     function setUp() public {
+        vm.warp(1_800_000_000);
         scores = new ScoreSourceForPoints();
         pools = new SellerPoolsForPoints();
         accounting = new UsageAccountingForPoints();
         accounting.setSellerPools(address(pools));
         pools.set(seller, 7);
         policy = new AntseedVerificationPointsPolicy(
-            address(new SwitchableScoreSource(scores)), address(accounting), 2_500, address(this)
+            address(new SwitchableScoreSource(scores)), address(accounting), 100, address(this)
         );
     }
 
-    function test_boostsVerifiedSellerPointsByBonus() public {
-        scores.set(7, true);
-        (uint256 sellerPoints, uint256 buyerPoints) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
-        assertEq(sellerPoints, 1_250);
-        assertEq(buyerPoints, 1_000, "buyer points pass through");
+    function test_eachVerifiedModelAddsBonusUpToCap() public {
+        _verify(1);
+        (uint256 sellerPoints, uint256 buyerPoints) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 10_100);
+        assertEq(buyerPoints, 10_000, "buyer points pass through");
+
+        _verify(30);
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 13_000);
+
+        _verify(500);
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 15_000, "total bonus capped at 50%");
     }
 
-    function test_unverifiedOrUnknownSellerIsUnchanged() public {
+    function test_expiredDiffUnverifiedOrUnknownSellerIsUnchanged() public {
         (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
         assertEq(sellerPoints, 1_000);
-        scores.set(7, true);
+
+        scores.set(7, 3, 0, uint64(block.timestamp));
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
+        assertEq(sellerPoints, 1_000, "expired");
+
+        scores.set(7, 3, 1, uint64(block.timestamp + 1 days));
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
+        assertEq(sellerPoints, 1_000, "a DIFF removes the bonus");
+
+        _verify(3);
         (sellerPoints,) = policy.points(bytes32(0), buyer, address(0x999), 1_000, 1_000);
-        assertEq(sellerPoints, 1_000);
+        assertEq(sellerPoints, 1_000, "unknown seller");
     }
 
     function test_failingDependenciesNeverRevert() public {
-        scores.set(7, true);
+        _verify(2);
         scores.setReverts(true);
         (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
         assertEq(sellerPoints, 1_000);
@@ -107,7 +130,7 @@ contract AntseedVerificationPointsPolicyTest is Test {
         vm.expectRevert(AntseedVerificationPointsPolicy.InvalidValue.selector);
         policy.setBonusBps(5_001);
         policy.setBonusBps(5_000);
-        scores.set(7, true);
+        _verify(1);
         (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
         assertEq(sellerPoints, 1_500);
 
@@ -116,12 +139,22 @@ contract AntseedVerificationPointsPolicyTest is Test {
         policy.setBonusBps(0);
     }
 
+    function testFuzz_boostMatchesCappedFormula(uint128 points_, uint16 count, uint16 bonus) public {
+        bonus = uint16(bound(bonus, 0, 5_000));
+        policy.setBonusBps(bonus);
+        _verify(count);
+        (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, points_, 1);
+        uint256 total = uint256(count) * bonus;
+        if (total > 5_000) total = 5_000;
+        assertEq(sellerPoints, uint256(points_) + (uint256(points_) * total) / 10_000);
+    }
+
     function test_washTradingZeroStaysZeroInTheRegistryChain() public {
         WashStatusForVerificationPoints wash = new WashStatusForVerificationPoints();
         AntseedPointsPolicyRegistry registry = new AntseedPointsPolicyRegistry(address(this));
         registry.registerPolicy(address(policy));
         registry.registerPolicy(address(new AntseedWashTradingPointsPolicy(address(wash))));
-        scores.set(7, true);
+        _verify(25);
 
         (uint256 sellerPoints, uint256 buyerPoints) = registry.points(bytes32(0), buyer, seller, 1_000);
         assertEq(sellerPoints, 1_250);
@@ -131,5 +164,9 @@ contract AntseedVerificationPointsPolicyTest is Test {
         (sellerPoints, buyerPoints) = registry.points(bytes32(0), buyer, seller, 1_000);
         assertEq(sellerPoints, 0);
         assertEq(buyerPoints, 0);
+    }
+
+    function _verify(uint16 verifiedCount) private {
+        scores.set(7, verifiedCount, 0, uint64(block.timestamp + 1 days));
     }
 }
