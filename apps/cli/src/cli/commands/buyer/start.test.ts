@@ -130,10 +130,11 @@ test('buyer start recognizes current proxies by AntSeed response header', async 
   });
 });
 
-test('buyer restart is only offered under a supervisor (systemd INVOCATION_ID or ANTSEED_SUPERVISED=1)', () => {
+test('buyer restart is only offered with the explicit ANTSEED_SUPERVISED=1 opt-in', () => {
   assert.equal(isSupervisedProcess({}), false);
-  assert.equal(isSupervisedProcess({ INVOCATION_ID: '0123456789abcdef0123456789abcdef' }), true);
-  assert.equal(isSupervisedProcess({ INVOCATION_ID: '' }), false);
+  // A desktop terminal running as a systemd user unit hands INVOCATION_ID to its shells: not a supervisor.
+  assert.equal(isSupervisedProcess({ INVOCATION_ID: '0123456789abcdef0123456789abcdef' }), false);
   assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: '1' }), true);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: ' 1 ' }), true);
   assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: 'true' }), false);
 });

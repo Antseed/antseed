@@ -57,13 +57,15 @@ export function buildRouterRuntimeEnvFromBuyerConfig(buyerConfig: BuyerCLIConfig
 }
 
 /**
- * Whether a supervisor restarts this process when it exits: systemd sets
- * INVOCATION_ID for every service it runs; other supervisors (Docker restart
- * policies, launchd, pm2) opt in with ANTSEED_SUPERVISED=1. Only then does
- * the buyer accept `POST /_antseed/restart`.
+ * Whether a supervisor restarts this process when it exits, so the buyer may
+ * accept `POST /_antseed/restart`. Explicit opt-in only (ANTSEED_SUPERVISED=1,
+ * set by the server installer's systemd unit, a Docker restart policy,
+ * launchd, pm2, …): systemd's INVOCATION_ID is not a signal, since desktop
+ * terminals running as user units pass it on to every shell they open, and a
+ * buyer started by hand there would exit and never come back.
  */
 export function isSupervisedProcess(env: NodeJS.ProcessEnv = process.env): boolean {
-  return Boolean(env['INVOCATION_ID']?.trim()) || env['ANTSEED_SUPERVISED']?.trim() === '1'
+  return env['ANTSEED_SUPERVISED']?.trim() === '1'
 }
 
 export function resolveBuyerRouterName(options: { router?: string }): string {

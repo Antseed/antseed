@@ -15,7 +15,7 @@ import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
 import { END_USER_HEADER, applyPreset, extractEndUser, presetSlug, sniffMultipartModel } from './request-shaping.js'
 import { ResponseUsageReader } from './response-usage.js'
-import type { SpendFeedState } from './spend-feed.js'
+import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
   PAYMENT_REQUIRED_HEADER,
   PAYMENT_RESPONSE_HEADER,
@@ -353,7 +353,9 @@ export class GatewayServer {
     if (state === 'reporting') return true
     const message = state === 'unsupported'
       ? 'The buyer for this API key does not report spend; upgrade it to enforce spend limits'
-      : 'The buyer for this API key is not reachable'
+      : state === 'unauthorized'
+        ? `The buyer for this API key does not report spend to this gateway; ${SPEND_FEED_UNAUTHORIZED_HINT}`
+        : 'The buyer for this API key is not reachable'
     sendError(res, 503, 'api_error', 'spend_tracking_unavailable', message)
     return false
   }

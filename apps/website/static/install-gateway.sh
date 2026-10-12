@@ -436,8 +436,9 @@ write_env_file() {
 write_units() {
   step "Writing systemd services"
   # Both services run as $SERVICE_USER with the same data dir, so the gateway
-  # can read the buyer-control secret the buyer creates. Restart=always also
-  # brings the buyer back after the console restarts it (exit code 75).
+  # can read the buyer-control secret the buyer creates. Restart=always brings
+  # the buyer back after the console restarts it (exit code 75), which the
+  # buyer only does when ANTSEED_SUPERVISED=1 tells it a supervisor is there.
   local common
   common="User=$SERVICE_USER
 Group=$SERVICE_USER
@@ -466,6 +467,7 @@ Wants=network-online.target
 
 [Service]
 ExecStart=$PREFIX/cli/bin/antseed buyer start --port $BUYER_PORT
+Environment=ANTSEED_SUPERVISED=1
 $common
 
 [Install]
