@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict';
-import { test } from 'vitest';
+import { test, vi } from 'vitest';
 import { createInitialUiState } from '../../core/state';
 import type { DesktopBridge } from '../../types/bridge';
 import { initCreditsModule } from './credits.js';
@@ -151,4 +151,40 @@ test('refreshPaymentSummary preserves spending history when its refresh fails', 
   await api.refreshPaymentSummary();
 
   assert.equal(uiState.creditsBuyerSpendHistory.days[0]?.spentUsdc, '100000');
+});
+
+test('a failed first balance read retries soon instead of waiting for the next poll', async () => {
+  vi.useFakeTimers();
+  vi.stubGlobal('window', { addEventListener: () => {}, removeEventListener: () => {} });
+  try {
+    const uiState = createInitialUiState();
+    let calls = 0;
+    const bridge: DesktopBridge = {
+      creditsGetInfo: async () => {
+        calls++;
+        if (calls === 1) return { ok: false, data: null, error: 'CancelledError' };
+        return {
+          ok: true,
+          data: {
+            evmAddress: '0xabc', operatorAddress: null, balanceUsdc: '5', reservedUsdc: '0', availableUsdc: '5',
+            pendingUsdc: '0', spendableUsdc: '5', walletUsdc: '0', totalOwnedUsdc: '5', creditLimitUsdc: '500',
+            balanceKnown: true,
+          },
+          error: null,
+        };
+      },
+    };
+    const api = initCreditsModule({ bridge, uiState });
+    api.startPeriodicRefresh();
+    await vi.advanceTimersByTimeAsync(0);
+    assert.equal(uiState.creditsBalanceKnown, false);
+    await vi.advanceTimersByTimeAsync(2_000);
+    assert.equal(calls, 2);
+    assert.equal(uiState.creditsBalanceKnown, true);
+    assert.equal(uiState.creditsTotalOwnedUsdc, '5');
+    api.stopPeriodicRefresh();
+  } finally {
+    vi.unstubAllGlobals();
+    vi.useRealTimers();
+  }
 });

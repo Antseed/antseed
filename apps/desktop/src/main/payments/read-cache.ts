@@ -91,8 +91,18 @@ export function invalidateChainReads(scope: QueryKey = []): void {
   bump(scope);
 }
 
-/** Drop everything, e.g. when the wallet or chain changes. */
+/**
+ * Drop everything, e.g. when the wallet or chain changes. Bumping the global
+ * generation is enough: no caller asks for the old keys again and they are
+ * garbage-collected. `client.clear()` would also cancel reads in flight, and
+ * their callers would get a CancelledError instead of a result.
+ */
 export function clearChainReads(): void {
+  bump([]);
+}
+
+/** Drop every query and its gc timer (tests); cancels reads in flight. */
+export function disposeChainReads(): void {
   bump([]);
   client.clear();
 }

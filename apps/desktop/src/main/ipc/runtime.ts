@@ -365,8 +365,10 @@ export function registerRuntimeIpc(deps: RuntimeIpcDeps): void {
           return config;
         });
         // Drop cached clients and the RPC backoff so the next read uses the
-        // new chain config instead of answers from the old chain.
-        invalidateChainClients();
+        // new chain config instead of answers from the old chain. Only the
+        // payments section names the chain; other saves (e.g. the routing
+        // preferences synced at every launch) must not reset chain reads.
+        if ('payments' in safeConfig) invalidateChainClients();
         invalidateOnChainEnrichmentCache();
         return { ok: true, data: { config: merged }, error: null, status: 200 };
       } catch (err) {
