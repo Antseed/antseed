@@ -5,8 +5,14 @@ import { createInitialUiState } from '../../../core/state';
 import { initStore } from '../../../core/store';
 import { VprHeaderActions } from './VprHeaderActions';
 
+function loadedState() {
+  const state = createInitialUiState();
+  state.creditsBalanceKnown = true;
+  return state;
+}
+
 beforeEach(() => {
-  initStore(createInitialUiState());
+  initStore(loadedState());
 });
 
 it('renders accessible Help, Settings, and balance buttons in that order', () => {
@@ -41,11 +47,19 @@ it('tolerates rendering outside a navigation provider', () => {
 });
 
 it('flags the balance when the deposit wallet is short of the first-deposit minimum', () => {
-  const state = createInitialUiState();
+  const state = loadedState();
   state.creditsWalletUsdc = '1';
   state.creditsTotalOwnedUsdc = '1';
   initStore(state);
   const markup = renderToStaticMarkup(<VprHeaderActions credits="1" />);
   expect(markup).toContain('Send $0.05 more');
   expect(markup).toContain('$1.00');
+});
+
+it('shows a placeholder, not $0.00 or a deposit prompt, before the balance is read', () => {
+  initStore(createInitialUiState());
+  const markup = renderToStaticMarkup(<VprHeaderActions credits="0" />);
+  expect(markup).toContain('aria-label="Add credits, loading balance"');
+  expect(markup).toContain('as-skeleton');
+  expect(markup).not.toContain('$0.00');
 });

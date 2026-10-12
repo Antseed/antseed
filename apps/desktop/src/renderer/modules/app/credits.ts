@@ -60,6 +60,7 @@ export function initCreditsModule({
           uiState.creditsCreditLimitUsdc !== result.data.creditLimitUsdc ||
           (result.data.minFirstDepositUsdc != null && uiState.creditsMinFirstDepositUsdc !== result.data.minFirstDepositUsdc) ||
           (result.data.depositFeeUsdc != null && uiState.creditsDepositFeeUsdc !== result.data.depositFeeUsdc) ||
+          uiState.creditsBalanceKnown !== (result.data.balanceKnown ?? true) ||
           uiState.creditsEvmAddress !== result.data.evmAddress ||
           uiState.creditsOperatorAddress !== (result.data.operatorAddress ?? null);
 
@@ -73,6 +74,7 @@ export function initCreditsModule({
         uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
         if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
         if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
+        uiState.creditsBalanceKnown = result.data.balanceKnown ?? true;
         uiState.creditsEvmAddress = result.data.evmAddress;
         uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
 

@@ -1,8 +1,10 @@
 import { HugeiconsIcon } from '@hugeicons/react';
 import { HelpCircleIcon, Settings01Icon } from '@hugeicons/core-free-icons';
+import { Skeleton } from '@antseed/ui';
 import { formatCredits } from '../../../core/format';
 import type { ViewName } from '../../types';
 import { useFundingStatus } from '../../hooks/useFundingStatus';
+import { useUiSelector } from '../../hooks/useUiSelector';
 import styles from './VprHeaderActions.module.scss';
 
 type Props = {
@@ -40,8 +42,16 @@ export function VprHeaderActions({ credits, onSelectView, className }: Props) {
 /** Balance pill; an amber dot (reason in the tooltip) when something blocks paid use. */
 function CreditsButton({ credits, onClick }: { credits: string; onClick: () => void }) {
   const balance = formatCredits(credits);
+  const balanceKnown = useUiSelector((state) => state.creditsBalanceKnown);
   const funding = useFundingStatus();
   const blocked = funding.tone === 'warning';
+  if (!balanceKnown) {
+    return (
+      <button type="button" className={styles.credits} title="Add credits" aria-label="Add credits, loading balance" onClick={onClick}>
+        <Skeleton className={styles.creditsSkeleton} />
+      </button>
+    );
+  }
   return (
     <button
       type="button"

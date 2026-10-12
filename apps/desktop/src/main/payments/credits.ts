@@ -51,6 +51,11 @@ export type CreditsInfo = {
   minFirstDepositUsdc: string;
   /** Fixed fee the deposit relayer takes from each wallet sweep. */
   depositFeeUsdc: string;
+  /**
+   * False until the deposits balance has been read once for this wallet.
+   * Until then every amount above is a placeholder zero, not a real balance.
+   */
+  balanceKnown: boolean;
 };
 
 const EMPTY_CREDITS: Omit<CreditsInfo, 'evmAddress'> = {
@@ -65,6 +70,7 @@ const EMPTY_CREDITS: Omit<CreditsInfo, 'evmAddress'> = {
   creditLimitUsdc: '0',
   minFirstDepositUsdc: '1',
   depositFeeUsdc: '0.05',
+  balanceKnown: false,
 };
 
 // Deposit rules: MIN_BUYER_DEPOSIT on AntseedDeposits and FEE on the deposit
@@ -91,6 +97,7 @@ type CreditsComponentCache = {
   creditLimit: bigint;
   operatorAddress: string | null;
   depositRules: DepositRules | null;
+  balanceKnown: boolean;
 };
 
 let cachedCreditsComponents: CreditsComponentCache | null = null;
@@ -164,6 +171,10 @@ export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
   return cachedCryptoConfig;
 }
 
+// The balance must not wait on the buyer proxy (still starting at launch) or
+// on its per-channel chain reads; pending spend catches up on the next poll.
+const PENDING_SPEND_MAX_WAIT_MS = 2_000;
+
 let creditsRpcFailCount = 0;
 let creditsRpcLastFailAt = 0;
 const CREDITS_RPC_BACKOFF_THRESHOLD = 3;
@@ -179,6 +190,7 @@ function componentCacheFor(evmAddress: string): CreditsComponentCache {
     creditLimit: 0n,
     operatorAddress: null,
     depositRules: cachedDepositRules,
+    balanceKnown: false,
   };
   return cachedCreditsComponents;
 }
@@ -198,6 +210,7 @@ function creditsInfoFromCache(cache: CreditsComponentCache): CreditsInfo {
     creditLimitUsdc: formatUsdc6(cache.creditLimit),
     minFirstDepositUsdc: formatUsdc6(cache.depositRules?.minFirstDeposit ?? DEFAULT_MIN_FIRST_DEPOSIT),
     depositFeeUsdc: formatUsdc6(cache.depositRules?.fee ?? DEFAULT_DEPOSIT_FEE),
+    balanceKnown: cache.balanceKnown,
   };
 }
 
@@ -250,19 +263,25 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
 
   const depositsClient = await getDepositsClient(cc);
 
-  const [balanceResult, creditLimitResult, operatorResult, pendingResult, walletResult, rulesResult] = await Promise.allSettled([
+  // The deposit rules only shape funding copy and the defaults match mainnet,
+  // so they never hold up the balance; a later poll picks them up.
+  void readDepositRules(cc, depositsClient).then((rules) => {
+    if (rules) cache.depositRules = rules;
+  });
+
+  const [balanceResult, creditLimitResult, operatorResult, pendingResult, walletResult] = await Promise.allSettled([
     depositsClient.getBuyerBalance(evmAddress),
     depositsClient.getBuyerCreditLimit(evmAddress),
     depositsClient.getOperator(evmAddress),
-    getPendingSpendUsdc(),
+    getPendingSpendUsdc(PENDING_SPEND_MAX_WAIT_MS),
     depositsClient.getUSDCBalance(evmAddress),
-    readDepositRules(cc, depositsClient),
   ]);
 
   const balanceUpdates: Partial<CreditsBalanceComponents> = {};
   if (balanceResult.status === 'fulfilled') {
     balanceUpdates.available = balanceResult.value.available;
     balanceUpdates.reserved = balanceResult.value.reserved;
+    cache.balanceKnown = true;
     creditsRpcFailCount = 0;
   } else {
     creditsRpcFailCount++;
@@ -278,7 +297,6 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
   cache.balance = updateCreditsBalanceComponents(cache.balance, balanceUpdates);
 
   if (creditLimitResult.status === 'fulfilled') cache.creditLimit = creditLimitResult.value;
-  if (rulesResult.status === 'fulfilled' && rulesResult.value) cache.depositRules = rulesResult.value;
   if (operatorResult.status === 'fulfilled') {
     const address = operatorResult.value;
     cache.operatorAddress = address && address !== '0x0000000000000000000000000000000000000000'
