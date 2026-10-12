@@ -164,6 +164,23 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.equal(undetermined.undeterminedStreak, 1)
     assert.deepEqual(await client.auditCredits(auditor.address, AUDIT_EPOCH), { auditor: 2n, total: 2n })
 
+    assert.deepEqual(await client.findExpiredServices(), [])
+    assert.ok((await client.serviceStatus(1n, 'model-a')).expiresAt > 0n)
+
+    runCommand('cast', ['rpc', '--rpc-url', rpcUrl, 'evm_increaseTime', String(14 * 24 * 60 * 60)], repoRoot)
+    runCommand('cast', ['rpc', '--rpc-url', rpcUrl, 'evm_mine'], repoRoot)
+    const later = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
+    const expired = await later.findExpiredServices()
+    assert.equal(expired.length, 3, 'agent 1 (2 SAME) and agent 2 (DIFF); UNDETERMINED and self-audits never counted')
+    const housekeeping = submit(approved, ['--yes'])
+    assert.equal(housekeeping.status, 0, housekeeping.output)
+    assert.match(housekeeping.output, /Cleared 3 expired verdict\(s\) in 1 transaction\(s\)/)
+    assert.deepEqual(await client.findExpiredServices(), [])
+    assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 0 })
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 })
+    assert.equal(await client.isVerified(1n), false)
+    assert.equal((await client.serviceStatus(1n, 'model-a')).lastResult, VERIFIER_VERDICT.SAME, 'latest result kept')
+
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])
     const stale = submit(approved, ['--yes'])
     assert.equal(stale.status, 1, stale.output)

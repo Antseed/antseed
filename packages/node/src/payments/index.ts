@@ -45,6 +45,7 @@ export {
   verifierVerdict,
   VERIFIER_VERDICT,
   MAX_RESULTS_PER_MODEL_AUDIT,
+  MAX_SERVICES_PER_EXPIRE,
 } from './evm/verifier-client.js';
 export {
   DEFAULT_LOG_QUERY_CHUNK_BLOCKS,
@@ -59,6 +60,8 @@ export type {
   ServiceAuditedEvent,
   ModelAuditedEvent,
   AuditorCredits,
+  ServiceKey,
+  VerifierServiceStatus,
   VerifierVerdict,
   VerifierVerdictName,
 } from './evm/verifier-client.js';

@@ -29,33 +29,43 @@ not enforce an assignment.
 
 Status is kept per `(agentId, serviceHash)`:
 
-- `SAME` verifies the service and refreshes the agent's `verifiedUntil` to
-  `now + validity` (14 days, owner-settable). It discards pending DIFF votes.
+- `SAME` verifies the service until its own `expiresAt = now + validity` (14 days,
+  owner-settable). It discards pending DIFF votes.
 - `DIFF` is a vote. The service is marked DIFF once `diffConfirmations` distinct
-  auditors (owner-settable, default 1) report it. A DIFF affects that service only.
+  auditors (owner-settable, default 1) report it, also until `now + validity`. A DIFF
+  affects that service only.
+- Repeating the current verdict refreshes its expiry.
 - `UNDETERMINED` changes no verdict, DIFF vote, or expiry. It is recorded so routing
   can see it: `serviceStatus` returns `lastResult`, `lastAuditedAt`, and
   `undeterminedStreak` (consecutive UNDETERMINED results since the last SAME or DIFF).
 - A result for a different `modelHash` resets the service first, so an old verdict
   never carries over to a new model.
 
-`agentStatus(agentId)` returns `(verifiedCount, diffCount, verifiedUntil)`.
-`isVerified(agentId)` is true while `verifiedUntil` has not passed, at least one
-service is verified, and no service is marked DIFF.
+`agentStatus(agentId)` returns `(verifiedCount, diffCount)`: the agent's services
+currently counted as SAME and DIFF. `isVerified(agentId)` is true while at least one
+service is counted SAME and none is counted DIFF.
 
-The owner can `clearVerification(agentId)` or `clearServiceStatus(agentId, serviceHash)`
-to remediate a wrong result.
+Expiry is per service. Once a service's `expiresAt` passes, anyone can call
+`expire([(agentId, serviceHash), ...])` to drop its verdict from the agent's counts
+(it becomes NONE; `lastResult` is kept). Until then the expired verdict is still
+counted. A new audit of the service expires it first, and `antseed verifier submit`
+clears every expired verdict it finds after submitting (`--no-expire` skips this).
+
+The owner can `clearServiceStatus(agentId, serviceHash)` to remediate a wrong result.
 
 ## Points
 
-`AntseedVerificationPointsPolicy` boosts a verified seller's points by `bonusBps` per
-verified model (`100` = +1%), capped at +50% in total:
-`sellerPoints × (1 + min(verifiedCount × bonusBps, 5_000) / 10_000)`. A seller counts as
-verified while `verifiedUntil` has not passed and no service is marked DIFF; anyone else
-is unchanged. Buyer points always pass through.
+`AntseedVerificationPointsPolicy` scales a seller's points by its counted SAME and DIFF
+services:
+`sellerPoints × max(0, 1 + min(verifiedCount × bonusBps, 5_000) / 10_000 − diffCount × penaltyBps / 10_000)`.
+Each verified model adds `bonusBps` (`100` = +1%, capped at +50% in total); each DIFF
+model subtracts `penaltyBps` (uncapped, so points can reach 0 but never go negative).
+A DIFF only affects its own model: the seller's other verified models keep their bonus.
+Buyer points always pass through.
 
-`bonusBps` is owner-settable from 0 to 5,000. M003 launches it at 0, so points are
-unchanged until the owner turns the boost on. Every external read falls back to unchanged
+`bonusBps` (0 to 5,000) and `penaltyBps` (any value) are owner-settable. M003 launches
+the bonus at 0 and the penalty starts at 0, so points are unchanged until the owner turns
+them on. Every external read falls back to unchanged
 points, so the policy can never revert a settlement.
 
 ## Auditor rewards

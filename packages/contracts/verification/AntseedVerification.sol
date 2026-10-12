@@ -12,13 +12,14 @@ import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 
 /// @notice Records model-verification audits from approved auditors, one model per submission.
 ///
-///         Status: each (agent, service) keeps its latest definitive verdict. A SAME verifies that
-///         service and refreshes the agent's expiry to `now + validity`. A DIFF only lands once
+///         Status: each (agent, service) keeps its latest definitive verdict with its own expiry.
+///         A SAME verifies that service until `now + validity`. A DIFF only lands once
 ///         `diffConfirmations` distinct auditors report it; until then the service keeps its status.
-///         A SAME discards pending DIFF votes. An UNDETERMINED result is recorded as the service's
-///         latest result (with a streak counter for routing) but changes no verdict, vote, or
-///         expiry. An agent is verified while it has an unexpired SAME and no service with a DIFF
-///         status.
+///         A SAME discards pending DIFF votes. Repeating the current verdict refreshes its expiry.
+///         An UNDETERMINED result is recorded as the service's latest result (with a streak
+///         counter for routing) but changes no verdict, vote, or expiry. Each agent counts its
+///         SAME and DIFF services; once a verdict expires, anyone can call `expire` to drop it
+///         from those counts.
 ///
 ///         Rewards: an auditor earns one credit per model audit, whatever the results, up to
 ///         `maxCreditsPerModelPerEpoch` per model and `maxCreditsPerAuditorPerEpoch` overall, provided
@@ -69,8 +70,8 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     event ServiceStatusChanged(
         uint256 indexed agentId, bytes32 indexed serviceHash, bytes32 modelHash, Verdict previous, Verdict current
     );
-    event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount, uint64 verifiedUntil);
-    event VerificationCleared(uint256 indexed agentId);
+    event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
+    event ServiceExpired(uint256 indexed agentId, bytes32 indexed serviceHash, Verdict verdict);
     event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash);
     event AuditorRewardClaimed(uint256 indexed epoch, address indexed auditor, uint256 amount);
 
@@ -129,14 +130,6 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         if (maxCredits == 0) revert InvalidValue();
         maxCreditsPerModelPerEpoch = maxCredits;
         emit MaxCreditsPerModelPerEpochSet(maxCredits);
-    }
-
-    /// @notice Remediation: ends the agent's verification until its next SAME result.
-    function clearVerification(uint256 agentId) external onlyOwner {
-        AgentStatus storage agent = _agentStatus[agentId];
-        agent.verifiedUntil = 0;
-        emit VerificationCleared(agentId);
-        emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount, 0);
     }
 
     /// @notice Remediation for a wrong service result: resets it and discards pending DIFF votes.
@@ -202,13 +195,15 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         return _agentStatus[agentId];
     }
 
-    function verifiedUntil(uint256 agentId) external view override returns (uint64) {
-        return _agentStatus[agentId].verifiedUntil;
-    }
-
     function isVerified(uint256 agentId) external view override returns (bool) {
         AgentStatus memory agent = _agentStatus[agentId];
-        return block.timestamp < agent.verifiedUntil && agent.verifiedCount > 0 && agent.diffCount == 0;
+        return agent.verifiedCount > 0 && agent.diffCount == 0;
+    }
+
+    function expire(ServiceKey[] calldata services) external override returns (uint256 expired) {
+        for (uint256 i = 0; i < services.length; i++) {
+            if (_expireIfStale(services[i].agentId, services[i].serviceHash)) expired += 1;
+        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -242,6 +237,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     // ═══════════════════════════════════════════════════════════════════
 
     function _applyResult(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict) private {
+        _expireIfStale(agentId, serviceHash);
         ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
         if (service.modelHash != modelHash) {
             if (service.modelHash != bytes32(0)) _resetService(agentId, serviceHash, service);
@@ -261,15 +257,19 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
             if (previous == Verdict.DIFF) agent.diffCount -= 1;
             if (previous != Verdict.SAME) agent.verifiedCount += 1;
             _discardDiffVotes(service);
+            service.expiresAt = uint64(block.timestamp) + validity;
+            if (previous == Verdict.SAME) return;
             service.verdict = Verdict.SAME;
             service.updatedAt = uint64(block.timestamp);
-            agent.verifiedUntil = uint64(block.timestamp) + validity;
-            if (previous != Verdict.SAME) _emitServiceChange(agentId, serviceHash, modelHash, previous, Verdict.SAME);
-            emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount, agent.verifiedUntil);
+            _emitServiceChange(agentId, serviceHash, modelHash, previous, Verdict.SAME);
+            emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
             return;
         }
 
-        if (service.verdict == Verdict.DIFF) return;
+        if (service.verdict == Verdict.DIFF) {
+            service.expiresAt = uint64(block.timestamp) + validity;
+            return;
+        }
         mapping(address => bool) storage voted = _diffVoted[agentId][serviceHash][service.round];
         if (voted[msg.sender]) return;
         voted[msg.sender] = true;
@@ -282,8 +282,9 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         _discardDiffVotes(service);
         service.verdict = Verdict.DIFF;
         service.updatedAt = uint64(block.timestamp);
+        service.expiresAt = uint64(block.timestamp) + validity;
         _emitServiceChange(agentId, serviceHash, modelHash, before, Verdict.DIFF);
-        emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount, agent.verifiedUntil);
+        emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
     }
 
     function _resetService(uint256 agentId, bytes32 serviceHash, ServiceStatus storage service) private {
@@ -296,10 +297,30 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         service.lastResult = Verdict.NONE;
         service.undeterminedStreak = 0;
         service.updatedAt = uint64(block.timestamp);
+        service.expiresAt = 0;
         if (previous != Verdict.NONE) {
             _emitServiceChange(agentId, serviceHash, service.modelHash, previous, Verdict.NONE);
-            emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount, agent.verifiedUntil);
+            emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
         }
+    }
+
+    /// @dev Drops an expired SAME/DIFF verdict from the agent's counts and discards pending DIFF
+    ///      votes. The latest result and model stay recorded.
+    function _expireIfStale(uint256 agentId, bytes32 serviceHash) private returns (bool) {
+        ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
+        Verdict previous = service.verdict;
+        if (previous == Verdict.NONE || block.timestamp < service.expiresAt) return false;
+        AgentStatus storage agent = _agentStatus[agentId];
+        if (previous == Verdict.SAME) agent.verifiedCount -= 1;
+        else agent.diffCount -= 1;
+        _discardDiffVotes(service);
+        service.verdict = Verdict.NONE;
+        service.updatedAt = uint64(block.timestamp);
+        service.expiresAt = 0;
+        emit ServiceExpired(agentId, serviceHash, previous);
+        _emitServiceChange(agentId, serviceHash, service.modelHash, previous, Verdict.NONE);
+        emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
+        return true;
     }
 
     function _discardDiffVotes(ServiceStatus storage service) private {

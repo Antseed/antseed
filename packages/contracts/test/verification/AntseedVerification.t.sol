@@ -54,19 +54,88 @@ contract AntseedVerificationTest is Test {
 
     // ── status ───────────────────────────────────────────────────────
 
-    function test_sameVerifiesServiceAndAgentUntilExpiry() public {
+    function test_sameVerifiesServiceUntilItsOwnExpiry() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(verification.isVerified(agentId));
-        assertEq(verification.verifiedUntil(agentId), block.timestamp + 14 days);
         IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
         assertEq(agent.verifiedCount, 1);
         assertEq(agent.diffCount, 0);
         IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(service.modelHash, MODEL_A);
         assertEq(uint8(service.verdict), uint8(SAME));
+        assertEq(service.expiresAt, block.timestamp + 14 days);
 
-        vm.warp(block.timestamp + 14 days);
+        vm.warp(block.timestamp + 14 days - 1);
+        assertEq(_expire(agentId, SERVICE_A), 0, "not yet expired");
+        vm.warp(block.timestamp + 1);
+        assertEq(_expire(agentId, SERVICE_A), 1);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0);
+        service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(uint8(service.verdict), uint8(NONE));
+        assertEq(uint8(service.lastResult), uint8(SAME), "latest result kept");
+        assertEq(service.expiresAt, 0);
         assertFalse(verification.isVerified(agentId));
+        assertEq(_expire(agentId, SERVICE_A), 0, "expiring twice is a no-op");
+    }
+
+    function test_eachServiceExpiresIndependently() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.warp(block.timestamp + 10 days);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        vm.warp(block.timestamp + 4 days);
+
+        IAntseedVerification.ServiceKey[] memory keys = new IAntseedVerification.ServiceKey[](2);
+        keys[0] = IAntseedVerification.ServiceKey(agentId, SERVICE_A);
+        keys[1] = IAntseedVerification.ServiceKey(agentId, SERVICE_B);
+        vm.prank(address(0xA11CE));
+        assertEq(verification.expire(keys), 1, "anyone can expire; only A is stale");
+        assertEq(verification.agentStatus(agentId).verifiedCount, 1);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_B).verdict), uint8(SAME));
+        assertTrue(verification.isVerified(agentId));
+    }
+
+    function test_repeatedVerdictRefreshesExpiry() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.warp(block.timestamp + 10 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).expiresAt, block.timestamp + 14 days);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 1);
+
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        vm.warp(block.timestamp + 10 days);
+        _audit(auditorB, MODEL_B, agentId, SERVICE_B, DIFF);
+        assertEq(verification.serviceStatus(agentId, SERVICE_B).expiresAt, block.timestamp + 14 days);
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+    }
+
+    function test_diffExpiresLikeSame() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+        vm.warp(block.timestamp + 14 days);
+        assertEq(_expire(agentId, SERVICE_A), 1);
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+    }
+
+    function test_newResultOnExpiredServiceStartsFresh() public {
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.warp(block.timestamp + 14 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+        assertEq(agent.verifiedCount, 0, "stale SAME expired by the new audit");
+        assertEq(agent.diffCount, 0, "one DIFF vote is not enough");
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).diffVotes, 1);
+
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+    }
+
+    function test_expireIgnoresUnauditedAndUndeterminedServices() public {
+        assertEq(_expire(agentId, SERVICE_A), 0);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        vm.warp(block.timestamp + 30 days);
+        assertEq(_expire(agentId, SERVICE_A), 0);
     }
 
     function test_eachVerifiedServiceCountsOnce() public {
@@ -141,14 +210,14 @@ contract AntseedVerificationTest is Test {
 
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
         vm.warp(block.timestamp + 1 days);
-        uint64 until = verification.verifiedUntil(agentId);
+        uint64 until = verification.serviceStatus(agentId, SERVICE_A).expiresAt;
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
         _audit(auditorC, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
         service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(service.verdict), uint8(SAME), "verdict kept");
         assertEq(uint8(service.lastResult), uint8(UNDETERMINED));
         assertEq(service.undeterminedStreak, 2);
-        assertEq(verification.verifiedUntil(agentId), until, "expiry not refreshed");
+        assertEq(service.expiresAt, until, "expiry not refreshed");
         assertTrue(verification.isVerified(agentId));
 
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
@@ -175,12 +244,10 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.serviceStatus(agentId, SERVICE_A).modelHash, MODEL_B);
     }
 
-    function test_ownerCanClearVerificationAndServiceStatus() public {
+    function test_ownerCanClearServiceStatus() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        verification.clearVerification(agentId);
-        assertFalse(verification.isVerified(agentId));
-
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        assertFalse(verification.isVerified(agentId));
         verification.clearServiceStatus(agentId, SERVICE_B);
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_B).verdict), uint8(NONE));
         assertEq(verification.agentStatus(agentId).diffCount, 0);
@@ -298,8 +365,6 @@ contract AntseedVerificationTest is Test {
         verification.setMaxCreditsPerModelPerEpoch(3);
         vm.expectRevert();
         verification.setSellerPools(address(pools));
-        vm.expectRevert();
-        verification.clearVerification(agentId);
         vm.expectRevert();
         verification.clearServiceStatus(agentId, SERVICE_A);
         vm.stopPrank();
@@ -479,6 +544,12 @@ contract AntseedVerificationTest is Test {
     {
         vm.prank(auditor);
         verification.submitModelAudit(EPOCH, model, _evidence(), "ipfs://cid", _single(id, service, verdict));
+    }
+
+    function _expire(uint256 id, bytes32 service) private returns (uint256) {
+        IAntseedVerification.ServiceKey[] memory keys = new IAntseedVerification.ServiceKey[](1);
+        keys[0] = IAntseedVerification.ServiceKey(id, service);
+        return verification.expire(keys);
     }
 
     function _claim(address auditor) private returns (uint256) {

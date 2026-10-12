@@ -649,7 +649,10 @@ ends. Results the contract would reject (your own agent, unknown agents,
 evidence that no longer matches its hash) are listed as excluded and do not
 block the model. Re-running is safe: a ledger under
 `<evidenceDir>/submissions/<run-id>/` records each model, and models already
-recorded on-chain are skipped. `verifier rewards --epochs <list>` shows the
+recorded on-chain are skipped. Each seller model's SAME or DIFF verdict expires
+14 days after its last audit; after submitting, `submit` also clears expired
+verdicts from sellers' counts (`--dry-run` lists them, `--no-expire` skips this).
+`verifier rewards --epochs <list>` shows the
 credits earned per epoch and claims the auditor share once an epoch is final.
 
 ## Model Audits With Reference Enrollment

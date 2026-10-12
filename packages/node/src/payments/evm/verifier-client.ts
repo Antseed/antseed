@@ -79,6 +79,14 @@ export interface ModelAuditedEvent {
   transactionHash: string;
 }
 
+export interface ServiceKey {
+  agentId: bigint;
+  serviceHash: string;
+}
+
+/** Max services per `expire` transaction sent by `expireServices`. */
+export const MAX_SERVICES_PER_EXPIRE = 100;
+
 export interface AuditorCredits {
   auditor: bigint;
   total: bigint;
@@ -87,10 +95,10 @@ export interface AuditorCredits {
 export const VERIFICATION_ABI = [
   'function setAuditor(address auditor, bool approved) external',
   'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
-  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint16 diffVotes,uint32 round,uint64 updatedAt,uint8 lastResult,uint16 undeterminedStreak,uint64 lastAuditedAt))',
-  'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount,uint64 verifiedUntil))',
-  'function verifiedUntil(uint256 agentId) external view returns (uint64)',
+  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint16 diffVotes,uint32 round,uint64 updatedAt,uint8 lastResult,uint16 undeterminedStreak,uint64 lastAuditedAt,uint64 expiresAt))',
+  'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount))',
   'function isVerified(uint256 agentId) external view returns (bool)',
+  'function expire((uint256 agentId,bytes32 serviceHash)[] services) external returns (uint256)',
   'function usedEvidence(bytes32 evidenceHash) external view returns (bool)',
   'function claimAuditorRewards(uint256[] epochs) external returns (uint256)',
   'function pendingAuditorReward(address auditor,uint256 epoch) external view returns (uint256)',
@@ -106,6 +114,7 @@ export const VERIFICATION_ABI = [
   'function approvedAuditors(address auditor) external view returns (bool)',
   'event ModelAudited(bytes32 indexed modelHash,address indexed auditor,uint256 indexed epoch,bytes32 evidenceHash,string evidenceUri,uint256 resultCount)',
   'event ServiceAudited(uint256 indexed agentId,bytes32 indexed serviceHash,address indexed auditor,bytes32 modelHash,uint8 verdict)',
+  'event ServiceStatusChanged(uint256 indexed agentId,bytes32 indexed serviceHash,bytes32 modelHash,uint8 previous,uint8 current)',
   'event AuditCredited(uint256 indexed epoch,address indexed auditor,bytes32 indexed modelHash)',
 ] as const;
 
@@ -141,6 +150,18 @@ export function sortServiceResults(results: readonly ServiceResultInput[]): Serv
     const right = BigInt(b.serviceHash);
     return left < right ? -1 : left > right ? 1 : 0;
   });
+}
+
+export interface VerifierServiceStatus {
+  modelHash: string;
+  verdict: VerifierVerdict;
+  diffVotes: number;
+  lastResult: VerifierVerdict;
+  undeterminedStreak: number;
+  updatedAt: bigint;
+  lastAuditedAt: bigint;
+  /** When the SAME/DIFF verdict stops applying; 0 when there is none. */
+  expiresAt: bigint;
 }
 
 export class VerifierClient extends BaseEvmClient {
@@ -230,33 +251,25 @@ export class VerifierClient extends BaseEvmClient {
     return { epoch: BigInt(epoch), startedAt, endsAt: startedAt + Number(duration) };
   }
 
-  async verifiedUntil(agentId: number | bigint): Promise<bigint> {
-    return BigInt(await this._contract().getFunction('verifiedUntil')(BigInt(agentId)));
-  }
-
   async isVerified(agentId: number | bigint): Promise<boolean> {
     return Boolean(await this._contract().getFunction('isVerified')(BigInt(agentId)));
   }
 
-  async agentStatus(agentId: number | bigint): Promise<{ verifiedCount: number; diffCount: number; verifiedUntil: bigint }> {
+  /** Counted SAME and DIFF services; expired ones stay counted until `expire` is called. */
+  async agentStatus(agentId: number | bigint): Promise<{ verifiedCount: number; diffCount: number }> {
     const status = await this._contract().getFunction('agentStatus')(BigInt(agentId));
     return {
       verifiedCount: Number(status.verifiedCount ?? status[0]),
       diffCount: Number(status.diffCount ?? status[1]),
-      verifiedUntil: BigInt(status.verifiedUntil ?? status[2]),
     };
   }
 
-  async serviceStatus(agentId: number | bigint, service: string): Promise<{
-    modelHash: string;
-    verdict: VerifierVerdict;
-    diffVotes: number;
-    lastResult: VerifierVerdict;
-    undeterminedStreak: number;
-    updatedAt: bigint;
-    lastAuditedAt: bigint;
-  }> {
-    const status = await this._contract().getFunction('serviceStatus')(BigInt(agentId), serviceHash(service));
+  async serviceStatus(agentId: number | bigint, service: string): Promise<VerifierServiceStatus> {
+    return this.serviceStatusByHash(agentId, serviceHash(service));
+  }
+
+  async serviceStatusByHash(agentId: number | bigint, hash: string): Promise<VerifierServiceStatus> {
+    const status = await this._contract().getFunction('serviceStatus')(BigInt(agentId), hash);
     return {
       modelHash: String(status.modelHash ?? status[0]),
       verdict: Number(status.verdict ?? status[1]) as VerifierVerdict,
@@ -265,7 +278,54 @@ export class VerifierClient extends BaseEvmClient {
       lastResult: Number(status.lastResult ?? status[5]) as VerifierVerdict,
       undeterminedStreak: Number(status.undeterminedStreak ?? status[6]),
       lastAuditedAt: BigInt(status.lastAuditedAt ?? status[7]),
+      expiresAt: BigInt(status.expiresAt ?? status[8]),
     };
+  }
+
+  /**
+   * Services whose SAME or DIFF verdict has expired but is still counted, found from
+   * `ServiceStatusChanged` events and checked against the latest block's timestamp.
+   */
+  async findExpiredServices(fromBlock?: number, toBlock: number | 'latest' = 'latest'): Promise<ServiceKey[]> {
+    const contract = this._contract();
+    const filterFactory = contract.filters.ServiceStatusChanged;
+    if (!filterFactory) throw new Error('ServiceStatusChanged event is missing from verification ABI');
+    const logs = await this._queryEvents(contract, filterFactory(), fromBlock, toBlock);
+    const candidates = new Map<string, ServiceKey>();
+    for (const log of logs) {
+      if (!(log instanceof EventLog)) continue;
+      const current = Number(log.args.current ?? log.args[4]);
+      if (current !== VERIFIER_VERDICT.SAME && current !== VERIFIER_VERDICT.DIFF) continue;
+      const key = { agentId: BigInt(log.args.agentId ?? log.args[0]), serviceHash: String(log.args.serviceHash ?? log.args[1]) };
+      candidates.set(`${key.agentId}:${key.serviceHash.toLowerCase()}`, key);
+    }
+    const block = await this._provider.getBlock('latest');
+    if (!block) throw new Error('latest block is unavailable');
+    const now = BigInt(block.timestamp);
+    const expired: ServiceKey[] = [];
+    for (const key of candidates.values()) {
+      const status = await this.serviceStatusByHash(key.agentId, key.serviceHash);
+      const counted = status.verdict === VERIFIER_VERDICT.SAME || status.verdict === VERIFIER_VERDICT.DIFF;
+      if (counted && status.expiresAt <= now) expired.push(key);
+    }
+    return expired.sort((a, b) => (a.agentId === b.agentId
+      ? (BigInt(a.serviceHash) < BigInt(b.serviceHash) ? -1 : 1)
+      : (a.agentId < b.agentId ? -1 : 1)));
+  }
+
+  /** Drops expired verdicts from their agents' counts, in batches; returns the transaction hashes. */
+  async expireServices(signer: AbstractSigner, services: readonly ServiceKey[]): Promise<string[]> {
+    const hashes: string[] = [];
+    for (let start = 0; start < services.length; start += MAX_SERVICES_PER_EXPIRE) {
+      const batch = services.slice(start, start + MAX_SERVICES_PER_EXPIRE);
+      hashes.push(await this._execWrite(
+        signer,
+        VERIFICATION_ABI,
+        'expire',
+        batch.map((service) => [service.agentId, service.serviceHash]),
+      ));
+    }
+    return hashes;
   }
 
   async approvedAuditor(auditor: string): Promise<boolean> {

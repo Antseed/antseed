@@ -12,7 +12,8 @@ After M003:
 - **Points boost starts at 0.** Every settlement runs through the new policy, but with
   the default `bonusBps = 0` no seller's points change, so sellers have time to adjust.
   Turn it on later with `setBonusBps` (e.g. 100 = +1% per verified model, capped at
-  +50% in total); unverified sellers and sellers with a DIFF are never boosted.
+  +50% in total) and `setPenaltyBps` (uncapped, per DIFF model; starts at 0). A DIFF
+  only affects its own model.
   Removing the policy from the registry also turns it off without a redeploy.
 - **Auditor rewards stay off.** Audit credits accrue from the first audit, but claims
   pay nothing until the emissions-gate owner hands the verification bucket to the

@@ -11,8 +11,8 @@ contract ScoreSourceForPoints {
     mapping(uint256 => IAntseedVerification.AgentStatus) private _status;
     bool public reverts;
 
-    function set(uint256 agentId, uint16 verifiedCount, uint16 diffCount, uint64 verifiedUntil) external {
-        _status[agentId] = IAntseedVerification.AgentStatus(verifiedCount, diffCount, verifiedUntil);
+    function set(uint256 agentId, uint16 verifiedCount, uint16 diffCount) external {
+        _status[agentId] = IAntseedVerification.AgentStatus(verifiedCount, diffCount);
     }
 
     function setReverts(bool value) external {
@@ -97,21 +97,51 @@ contract AntseedVerificationPointsPolicyTest is Test {
         assertEq(sellerPoints, 15_000, "total bonus capped at 50%");
     }
 
-    function test_expiredDiffUnverifiedOrUnknownSellerIsUnchanged() public {
+    function test_unverifiedOrUnknownSellerIsUnchanged() public {
         (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
         assertEq(sellerPoints, 1_000);
-
-        scores.set(7, 3, 0, uint64(block.timestamp));
-        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
-        assertEq(sellerPoints, 1_000, "expired");
-
-        scores.set(7, 3, 1, uint64(block.timestamp + 1 days));
-        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 1_000, 1_000);
-        assertEq(sellerPoints, 1_000, "a DIFF removes the bonus");
 
         _verify(3);
         (sellerPoints,) = policy.points(bytes32(0), buyer, address(0x999), 1_000, 1_000);
         assertEq(sellerPoints, 1_000, "unknown seller");
+    }
+
+    function test_diffOnlyRemovesThatModelAndPenaltyIsOffByDefault() public {
+        assertEq(policy.penaltyBps(), 0);
+        scores.set(7, 3, 1);
+        (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 10_300, "other verified models keep their bonus");
+    }
+
+    function test_penaltyPerDiffModelIsUncappedAndFloorsAtZero() public {
+        policy.setPenaltyBps(1_000);
+        scores.set(7, 20, 1);
+        (uint256 sellerPoints, uint256 buyerPoints) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 11_000, "1 + 20 * 1% - 1 * 10%");
+        assertEq(buyerPoints, 10_000);
+
+        scores.set(7, 0, 3);
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 7_000);
+
+        scores.set(7, 0, 11);
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 0, "never below zero");
+
+        policy.setPenaltyBps(type(uint256).max);
+        scores.set(7, 5, 2);
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 0, "huge penalty does not overflow");
+
+        policy.setBonusBps(0);
+        policy.setPenaltyBps(1_000);
+        scores.set(7, 5, 2);
+        (sellerPoints,) = policy.points(bytes32(0), buyer, seller, 10_000, 10_000);
+        assertEq(sellerPoints, 8_000, "penalty applies with the bonus off");
+
+        vm.prank(address(0xBAD));
+        vm.expectRevert();
+        policy.setPenaltyBps(0);
     }
 
     function test_zeroBonusLeavesVerifiedSellerUnchanged() public {
@@ -147,14 +177,19 @@ contract AntseedVerificationPointsPolicyTest is Test {
         policy.setBonusBps(0);
     }
 
-    function testFuzz_boostMatchesCappedFormula(uint128 points_, uint16 count, uint16 bonus) public {
+    function testFuzz_pointsMatchFormula(uint128 points_, uint16 count, uint16 diffs, uint16 bonus, uint32 penalty)
+        public
+    {
         bonus = uint16(bound(bonus, 0, 5_000));
         policy.setBonusBps(bonus);
-        _verify(count);
+        policy.setPenaltyBps(penalty);
+        scores.set(7, count, diffs);
         (uint256 sellerPoints,) = policy.points(bytes32(0), buyer, seller, points_, 1);
         uint256 total = uint256(count) * bonus;
         if (total > 5_000) total = 5_000;
-        assertEq(sellerPoints, uint256(points_) + (uint256(points_) * total) / 10_000);
+        uint256 minus = uint256(diffs) * penalty;
+        uint256 multiplier = 10_000 + total > minus ? 10_000 + total - minus : 0;
+        assertEq(sellerPoints, (uint256(points_) * multiplier) / 10_000);
     }
 
     function test_washTradingZeroStaysZeroInTheRegistryChain() public {
@@ -175,6 +210,6 @@ contract AntseedVerificationPointsPolicyTest is Test {
     }
 
     function _verify(uint16 verifiedCount) private {
-        scores.set(7, verifiedCount, 0, uint64(block.timestamp + 1 days));
+        scores.set(7, verifiedCount, 0);
     }
 }
