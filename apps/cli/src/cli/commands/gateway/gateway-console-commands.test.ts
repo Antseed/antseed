@@ -348,6 +348,7 @@ describe('gateway usage, logs, export and audit', () => {
     const lines = readFileSync(output, 'utf8').trim().split('\r\n')
     assert.equal(lines.length, 4)
     assert.match(lines[0]!, /^tag,startedAt,finishedAt,keyId/)
+    await assert.rejects(run('export', '--csv', '--output', join(dataDir, 'missing', 'usage.csv')), /ENOENT/)
 
     await run('routing', 'set', '--min-trust', '5')
     const audit = await runJson<{ entries: Array<{ action: string; actor: { kind: string } }> }>('audit', '--action', 'routing')
