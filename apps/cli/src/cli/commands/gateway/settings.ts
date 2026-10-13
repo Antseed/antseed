@@ -12,11 +12,14 @@ import { collect } from './policy-options.js'
 import { addBuyerPortOption, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
 
 async function settingsContext(gateway: CliGateway): Promise<SettingsContext> {
-  const auth = createConsoleAuth({ store: gateway.store, publicUrl: null, now: () => Date.now(), log: () => undefined }, { env: {} })
+  const publicUrl = readConsoleLocation(gateway.store)?.publicUrl ?? null
+  // SSO and Cloudflare Access come from this process's environment; the
+  // installed service reads its own EnvironmentFile, which a shell may not have.
+  const auth = createConsoleAuth({ store: gateway.store, publicUrl, now: () => Date.now(), log: () => undefined }, { env: process.env })
   return {
     ...gateway.ctx,
     configPath: gateway.configPath,
-    publicUrl: readConsoleLocation(gateway.store)?.publicUrl ?? null,
+    publicUrl,
     buyerPort: await gateway.buyerPort(),
     authConfig: () => auth.authConfig(),
   }
@@ -80,7 +83,7 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
       console.log(chalk.bold('Console'))
       console.log(`  Public URL: ${current.publicUrl ?? '-'}`)
       console.log(`  Owner claimed: ${auth.setupRequired ? 'no (`antseed gateway console-link`)' : 'yes'}`)
-      console.log(`  Sign-in: ${[auth.passkey && 'passkey', auth.wallet && 'wallet', auth.oidc && `SSO (${auth.oidc.label})`, auth.cloudflareAccess && 'Cloudflare Access', auth.apiKeyLogin && 'API key (read-only)'].filter(Boolean).join(', ')}`)
+      console.log(`  Sign-in: ${[auth.passkey && 'passkey', auth.wallet && 'wallet', auth.oidc && `SSO (${auth.oidc.label})`, auth.cloudflareAccess && 'Cloudflare Access', auth.apiKeyLogin && 'API key (read-only)'].filter(Boolean).join(', ')}` + chalk.dim(' (SSO and Cloudflare Access as this shell\'s environment sets them; the gateway service may differ)'))
     }))
 
   settings.command('set-observability')
