@@ -45,6 +45,8 @@ IMPORT_PASSWORD_FILE="${ANTSEED_GATEWAY_IMPORT_PASSWORD_FILE:-}"
 IMPORT_FORCE="${ANTSEED_GATEWAY_IMPORT_FORCE:-0}"
 IMPORT_PASSWORD=""
 PASSPHRASE="${ANTSEED_PASSPHRASE:-}"
+REPLACE_PASSPHRASE="${ANTSEED_GATEWAY_REPLACE_PASSPHRASE:-0}"
+PASSPHRASE_STORED=0
 DATA_DIR="$SERVICE_HOME/.antseed"
 DRY_RUN="${ANTSEED_INSTALL_DRY_RUN:-0}"
 VERBOSE="${ANTSEED_INSTALL_VERBOSE:-0}"
@@ -92,6 +94,9 @@ Wallet keys (optional; environment only, never a flag):
                                in /etc/antseed/wallet.env (0600, root), which both services load.
                                Keys that already exist stay as they are until you run
                                `sudo antseed buyer identity protect --all`.
+  --replace-passphrase         Store a different ANTSEED_PASSPHRASE although wallet keys are already
+                               encrypted with the one in wallet.env. Those keys will not open with
+                               the new one: run `sudo antseed buyer identity unprotect --all` first.
 
 Moving a gateway from another machine:
   --import <bundle>            Restore a bundle made with `antseed gateway export` (keys, members,
@@ -112,6 +117,7 @@ Environment variables (same as the flags):
   ANTSEED_OIDC_ISSUER, ANTSEED_OIDC_CLIENT_ID, ANTSEED_OIDC_CLIENT_SECRET,
   ANTSEED_OIDC_ALLOWED_DOMAINS, ANTSEED_CF_ACCESS_TEAM_DOMAIN, ANTSEED_CF_ACCESS_AUD,
   ANTSEED_GATEWAY_IMPORT, ANTSEED_GATEWAY_IMPORT_PASSWORD_FILE, ANTSEED_GATEWAY_IMPORT_FORCE=1,
+  ANTSEED_GATEWAY_REPLACE_PASSPHRASE=1,
   ANTSEED_INSTALL_DRY_RUN=1, ANTSEED_INSTALL_VERBOSE=1, NO_COLOR=1
   CDP_API_KEY_ID, CDP_API_KEY_SECRET (for --x402-facilitator cdp)
   ANTSEED_PASSPHRASE (wallet keys encrypted at rest; see above)
@@ -168,6 +174,7 @@ parse_args() {
       --import) IMPORT_BUNDLE="${2:?--import needs a bundle file}"; shift 2 ;;
       --import-password-file) IMPORT_PASSWORD_FILE="${2:?--import-password-file needs a file}"; shift 2 ;;
       --import-force) IMPORT_FORCE=1; shift ;;
+      --replace-passphrase) REPLACE_PASSPHRASE=1; shift ;;
       --dry-run) DRY_RUN=1; shift ;;
       --verbose) VERBOSE=1; shift ;;
       --uninstall) UNINSTALL=true; shift ;;
@@ -258,6 +265,7 @@ validate() {
   fi
   validate_sso
   validate_import
+  validate_stored_passphrase
 
   for tool in curl tar sha256sum; do
     command -v "$tool" >/dev/null 2>&1 || die "$tool is required"
@@ -323,6 +331,39 @@ validate_import() {
       [[ ! -e "$DATA_DIR/$path" ]] \
         || die "$DATA_DIR already holds a gateway or wallet ($path); add --import-force to move it aside and import over it"
     done
+  fi
+}
+
+# The ANTSEED_PASSPHRASE an earlier run stored, or nothing.
+stored_passphrase() {
+  [[ -r "$WALLET_ENV_FILE" ]] || return 0
+  local line
+  line="$(grep -m1 '^ANTSEED_PASSPHRASE=' "$WALLET_ENV_FILE" 2>/dev/null)" || return 0
+  line="${line#ANTSEED_PASSPHRASE=}"
+  if [[ ${#line} -ge 2 && "$line" == \'*\' ]]; then line="${line:1:${#line}-2}"; fi
+  printf '%s' "$line"
+}
+
+# An identity.key that holds a JSON envelope rather than 64 hex characters is
+# encrypted (see packages/node/src/p2p/identity-envelope.ts).
+has_encrypted_keys() {
+  local file
+  while IFS= read -r -d '' file; do
+    if LC_ALL=C grep -q '^[[:space:]]*{' "$file" 2>/dev/null; then return 0; fi
+  done < <(find "$DATA_DIR/identity.key" "$DATA_DIR/buyer-identities" -name identity.key -type f -print0 2>/dev/null)
+  return 1
+}
+
+# wallet.env is the only copy of the passphrase the services have: replacing it
+# with another while keys are encrypted with it locks the services out of them.
+validate_stored_passphrase() {
+  [[ -n "$PASSPHRASE" ]] || return 0
+  local stored
+  stored="$(stored_passphrase)"
+  if [[ -n "$stored" && "$stored" == "$PASSPHRASE" ]]; then PASSPHRASE_STORED=1; return 0; fi
+  [[ -n "$stored" && "$REPLACE_PASSPHRASE" != 1 ]] || return 0
+  if has_encrypted_keys; then
+    die "ANTSEED_PASSPHRASE differs from the one in $WALLET_ENV_FILE, which encrypts wallet keys in $DATA_DIR; the services could no longer open them. Re-run with the same passphrase, or without ANTSEED_PASSPHRASE to keep it. To change it, run 'sudo antseed buyer identity unprotect --all' first, then re-run with --replace-passphrase."
   fi
 }
 
@@ -462,7 +503,7 @@ write_env_file() {
   [[ -n "$CF_ACCESS_AUD" ]] && set_env ANTSEED_CF_ACCESS_AUD "$CF_ACCESS_AUD"
   # The wallet passphrase has a file of its own that both services load: the
   # buyer holds the wallets but has no use for the gateway's other secrets.
-  if [[ -n "$PASSPHRASE" ]]; then
+  if [[ -n "$PASSPHRASE" && "$PASSPHRASE_STORED" != 1 ]]; then
     (umask 077 && printf "ANTSEED_PASSPHRASE='%s'\n" "$PASSPHRASE" >"$WALLET_ENV_FILE")
     chmod 0600 "$WALLET_ENV_FILE"
   fi
@@ -631,7 +672,11 @@ print_plan() {
     *) note "Exposure: none beyond $HOST:$PORT" ;;
   esac
   if [[ -n "$X402_FACILITATOR" ]]; then note "x402 top-ups through $X402_FACILITATOR"; fi
-  if [[ -n "$PASSPHRASE" ]]; then note "Wallet keys: new ones encrypted at rest with ANTSEED_PASSPHRASE (a copy in $WALLET_ENV_FILE, 0600)"; fi
+  if [[ "$PASSPHRASE_STORED" == 1 ]]; then
+    note "Wallet keys: new ones encrypted at rest with ANTSEED_PASSPHRASE (already in $WALLET_ENV_FILE, unchanged)"
+  elif [[ -n "$PASSPHRASE" ]]; then
+    note "Wallet keys: new ones encrypted at rest with ANTSEED_PASSPHRASE (a copy in $WALLET_ENV_FILE, 0600)"
+  fi
   if [[ -n "$IMPORT_BUNDLE" ]]; then
     note "Import: $IMPORT_BUNDLE into $DATA_DIR before the services start (keys, members, wallets, usage)"
     note "        password from ${IMPORT_PASSWORD_FILE:-a prompt on the terminal}; console sessions end, API keys keep working"
