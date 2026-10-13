@@ -11,7 +11,7 @@
 #   curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
 #
 # Re-running it upgrades the CLI and rewrites the services. Wallets and keys in
-# /var/lib/antseed are never touched. Docs: https://antseed.com/docs/guides/gateway-server
+# /var/lib/antseed are never touched. Docs: https://antseed.com/docs/gateway/server
 
 set -euo pipefail
 

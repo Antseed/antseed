@@ -98,7 +98,7 @@ antseed metrics serve --role seller --host 0.0.0.0 --port 9108
 antseed metrics serve --role buyer --host 127.0.0.1 --port 9108
 ```
 
-See [Metrics](apps/website/docs/guides/metrics.md) for endpoint details, metric names, labels, and operational notes.
+See [Metrics](apps/website/docs/provide/metrics.md) for endpoint details, metric names, labels, and operational notes.
 
 ## Development
 

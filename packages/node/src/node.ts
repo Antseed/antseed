@@ -195,7 +195,7 @@ export interface NodePaymentsConfig {
   enabled?: boolean;
   /** Payment method used for settlement. Default: "crypto" */
   paymentMethod?: PaymentMethod;
-  /** Platform fee rate in [0,1]. Default: 0.05 */
+  /** @deprecated Ignored. The protocol fee is set on-chain (`PLATFORM_FEE_BPS` on AntseedChannels). */
   platformFeeRate?: number;
   /** Idle time before calling settle() to collect earnings (channel stays open). Default: 10 min. */
   settlementIdleMs?: number;

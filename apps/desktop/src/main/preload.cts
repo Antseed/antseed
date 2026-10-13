@@ -632,6 +632,8 @@ const api = {
   publicTunnelStart: (settings?: { provider?: 'cloudflare' | 'ngrok' }) => ipcRenderer.invoke('public-tunnel:start', settings),
   publicTunnelStop: () => ipcRenderer.invoke('public-tunnel:stop'),
   publicTunnelGetApiKey: () => ipcRenderer.invoke('public-tunnel:get-api-key'),
+  publicTunnelGetConsoleStatus: () => ipcRenderer.invoke('public-tunnel:get-console-status'),
+  publicTunnelClaimConsole: () => ipcRenderer.invoke('public-tunnel:claim-console'),
 
   /* Floating always-on-top pill window */
   vprFloatOpen(data: unknown): Promise<{ ok: boolean }> {

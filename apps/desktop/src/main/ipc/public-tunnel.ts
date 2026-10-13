@@ -1,12 +1,13 @@
 import { randomBytes } from 'node:crypto';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
-import { ipcMain } from 'electron';
+import { ipcMain, shell } from 'electron';
 import type { ProcessManager } from '../runtime/process-manager.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { resolveConnectDataDir } from '../runtime/process-manager.js';
 import { loadPublicTunnelSettings, savePublicTunnelSettings, type TunnelProvider } from '../public-tunnel/store.js';
 import { createPublicTunnelLifecycle, type PublicTunnelStatus } from '../public-tunnel/lifecycle.js';
+import { createTunnelConsole, parseTunnelLocation } from '../public-tunnel/console.js';
 
 const STATUS_ATTEMPTS = 60;
 const STATUS_INTERVAL_MS = 250;
@@ -76,6 +77,22 @@ export function registerPublicTunnelIpc(deps: { processManager: ProcessManager }
     resolveBuyerPort: resolveBuyerProxyPort,
     waitForReady: () => waitForBaseUrl(processManager),
   });
+  const tunnelConsole = createTunnelConsole({
+    readLocation: async () => {
+      if (!processManager.getState().some((state) => state.mode === 'tunnel' && state.running)) return null;
+      try {
+        return parseTunnelLocation(JSON.parse(await readFile(statePath(), 'utf8')));
+      } catch {
+        return null;
+      }
+    },
+    dataDir: resolveConnectDataDir,
+    fetch: (url) => fetch(url, { signal: AbortSignal.timeout(3000) }),
+    runCli: async (args) => (await processManager.runCliCommand(args, 'tunnel', { logStdout: false })).stdout,
+    openExternal: (url) => shell.openExternal(url),
+  });
+  ipcMain.handle('public-tunnel:get-console-status', () => tunnelConsole.status());
+  ipcMain.handle('public-tunnel:claim-console', () => tunnelConsole.claim());
   ipcMain.handle('public-tunnel:get-status', () => readStatus(processManager));
   ipcMain.handle('public-tunnel:configure', async (_event, input: unknown) => {
     if (!input || typeof input !== 'object') return { ok: false, error: 'Tunnel settings are required.' };

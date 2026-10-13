@@ -94,7 +94,7 @@ function ConnectAgents() {
       </div>
       <Reveal className={styles.connectAny} delay={120}>
         <span>Any OpenAI-compatible agent works too. Point it at <code>http://localhost:8377/v1</code>.</span>
-        <Link to="/docs/guides/agents" className={styles.setupLink}>
+        <Link to="/docs/agents" className={styles.setupLink}>
           Read the agent guide
           <ArrowRight size={16} />
         </Link>
@@ -166,7 +166,7 @@ function PointAtLocalhost() {
       points={AGENT_POINTS}
       blocks={AGENT_TERMINAL_BLOCKS}
       ctaLabel="Read the agent guide"
-      ctaTo="/docs/guides/agents"
+      ctaTo="/docs/agents"
     />
   );
 }
@@ -214,11 +214,11 @@ const AGENT_FAQ = [
   },
   {
     q: 'Which agents work with Antseed?',
-    a: 'Anything that speaks the OpenAI or Anthropic API: Hermes, OpenClaw, Claude Code, Codex, OpenCode, Pi, or your own. Hermes and OpenClaw have maintained setup skills; Claude Code, Codex, and OpenCode also have CLI wrappers (<code>antseed claude</code>, <code>antseed codex</code>, <code>antseed opencode</code>). Any other agent uses its custom provider settings with the base URL and key above. <a href="/docs/guides/agents">Read the agent guide →</a>',
+    a: 'Anything that speaks the OpenAI or Anthropic API: Hermes, OpenClaw, Claude Code, Codex, OpenCode, Pi, or your own. Hermes and OpenClaw have maintained setup skills; Claude Code, Codex, and OpenCode also have CLI wrappers (<code>antseed claude</code>, <code>antseed codex</code>, <code>antseed opencode</code>). Any other agent uses its custom provider settings with the base URL and key above. <a href="/docs/agents">Read the agent guide →</a>',
   },
   {
     q: 'My agent runs on a server. Can it still use Antseed?',
-    a: "Yes. The simplest way is to install the CLI on that server and start the endpoint next to the agent, so it talks to <code>localhost:8377</code> as usual. If the agent must reach an endpoint on a different machine, publish an authenticated endpoint from the AI VPN's Agents view, using ngrok or Cloudflare, and swap in the URL and key it shows. <a href=\"/docs/guides/public-tunnels\">Public HTTPS tunnels guide →</a> <a href=\"/docs/faq\">More questions in the FAQ →</a>",
+    a: "Yes. The simplest way is to install the CLI on that server and start the endpoint next to the agent, so it talks to <code>localhost:8377</code> as usual. If the agent must reach an endpoint on a different machine, publish an authenticated endpoint from the AI VPN's Agents view, using ngrok or Cloudflare, and swap in the URL and key it shows. <a href=\"/docs/tunnels\">Public HTTPS tunnels guide →</a> <a href=\"/docs/faq\">More questions in the FAQ →</a>",
   },
 ];
 
@@ -234,7 +234,7 @@ function AgentPrivacy() {
       }}
       privateCard={{
         text: 'Require TEE verification when you start its endpoint and the agent only talks to verified providers. Its prompts and tool calls run in a secure enclave, hidden even from the provider.',
-        to: '/docs/guides/verify-tee',
+        to: '/docs/verify-tee',
       }}
     />
   );

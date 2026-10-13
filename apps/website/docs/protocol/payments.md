@@ -1,233 +1,179 @@
 ---
-sidebar_position: 5
 slug: /payments
-title: Payments
+title: Payments and metering
+sidebar_label: Payments
+description: How buyers pay sellers through USDC payment channels on Base, how usage is metered and signed, and how free usage, top-ups, fees, and deposit sweeps work.
 hide_title: true
 ---
 
-# Payments
+# Payments and metering
 
-Buyers pre-deposit USDC into the on-chain AntseedDeposits contract. Each session follows a Reserve-Serve-Settle lifecycle where credits are locked via AntseedChannels (which holds no USDC itself), requests flow freely over the P2P transport, and settlement happens when the seller calls `settle()` or `close()`.
+Buyers keep a USDC balance in the `AntseedDeposits` contract on Base. To pay a seller, the buyer opens a payment channel in `AntseedChannels` (which holds no USDC itself), then signs a running total after each request. The seller submits the latest signature on-chain to get paid. Zero-priced services use a separate `AntseedFreeUsage` channel that records usage but never moves funds.
 
-Two EIP-712 signed messages drive the flow: **ReserveAuth** (buyer authorizes a session budget) and **SpendingAuth** (buyer authorizes cumulative spend per request).
+Buyers do not need to hold crypto beforehand: deposits can be funded by card or with USDC (see [Funding](/docs/gateway/funding)). Buyers never pay gas; every on-chain step is sent by the seller, the buyer's authorized operator, or a relayer.
 
-## Session Lifecycle
+| Contract | Role |
+|---|---|
+| `AntseedDeposits` | Holds buyer USDC, locks it for channels, pays sellers and the protocol fee |
+| `AntseedChannels` | Paid channel lifecycle and signature checks; holds no USDC |
+| `AntseedFreeUsage` | Zero-price channels with buyer-signed usage records; holds no funds |
+| `AntseedDepositRelay` | Gasless sweep of USDC from a buyer wallet into Deposits |
+
+Addresses for every chain are on [Contract addresses](/docs/contracts).
+
+## Channel lifecycle
 
 ```text title="reserve → serve → settle"
 Buyer                          Seller                         Chain
   │                              │                              │
-  ├── ReserveAuth ──────────────>│                              │
-  │   (EIP-712: channelId,       │                              │
-  │    maxAmount, deadline)      │                              │
-  │                              ├── reserve(buyerSig) ────────>│
-  │                              │   Deposits.lockForChannel()  │
-  │                              │<──── reserveConfirmed ───────┤
+  ├── ReserveAuth + SpendingAuth>│                              │
+  │   (channelId, maxAmount,     ├── reserve(buyerSig) ────────>│
+  │    deadline)                 │   Deposits.lockForChannel()  │
+  │<── AuthAck ──────────────────┤<──── confirmed ──────────────┤
   │                              │                              │
-  │   ┌──────────────────────────┤                              │
-  │   │ SERVE PHASE              │                              │
-  │   │                          │                              │
-  │   ├── HTTP Request ─────────>│                              │
-  │   │<── HTTP Response ────────┤                              │
-  │   ├── SpendingAuth ─────────>│  EIP-712: channelId,         │
-  │   │   (cumulativeAmount,     │  cumulativeAmount,           │
-  │   │    metadataHash)         │  metadataHash                │
-  │   │         ... N requests   │                              │
-  │   └──────────────────────────┘                              │
+  ├── HTTP request ─────────────>│                              │
+  │<── HTTP response ────────────┤                              │
+  │<── NeedAuth (cost, usage) ───┤                              │
+  ├── SpendingAuth ─────────────>│  cumulativeAmount,           │
+  │      ... N requests          │  metadataHash                │
   │                              │                              │
-  │  === SETTLE / CLOSE ======== │                              │
-  │                              │                              │
-  │                              ├── settle(SpendingAuth) ─────>│
-  │                              │   or close(SpendingAuth)     │
-  │                              │   Deposits.chargeAndCredit   │
-  │                              │   EarningsToSeller()         │
-  │                              │<──── confirmed ──────────────┤
-  │                              │                              │
+  │                              ├── settle() or close() ──────>│
+  │                              │   Deposits.chargeAndCredit-  │
+  │                              │   Payouts()                  │
 ```
 
-The seller calls `settle()` with the latest SpendingAuth to charge the buyer for cumulative usage while keeping the session open, or `close()` to finalize and release remaining funds. If the seller disappears, the buyer calls `requestClose()` to initiate timeout. After a 15-minute grace period, the buyer calls `withdraw()` to release locked funds.
+1. On the first request the seller answers HTTP 402 with its terms. The buyer signs a **ReserveAuth** for the channel and an initial **SpendingAuth**.
+2. The seller calls `reserve()`, which locks `maxAmount` of the buyer's deposit. A new channel can reserve at most `FIRST_SIGN_CAP` (1 USDC).
+3. After each served request the seller reports the request's cost and token usage. The buyer checks it and signs a new SpendingAuth for the higher cumulative total.
+4. The seller calls `settle()` to collect the signed amount while keeping the channel open, or `close()` to collect and release the rest of the reservation back to the buyer's available balance.
 
-## EIP-712 Signed Messages
+The wire messages for each step are listed in [Transport](/docs/transport#message-types).
 
-Two EIP-712 typed data messages drive the payment flow. Both share the same domain:
+## EIP-712 signatures
+
+Both signed messages share one domain:
 
 ```text title="EIP-712 domain"
 name:               "AntseedChannels"
-version:            "7"
+version:            "1"
 chainId:            <deployment chain>
-verifyingContract:  <channels contract address>
+verifyingContract:  <AntseedChannels address>
 ```
 
-### ReserveAuth
-
-Signed by the buyer to authorize a session budget. One signature per session.
+**ReserveAuth** authorizes a reservation. It is signed when a channel opens and again for every top-up.
 
 | Field | Type | Description |
 |---|---|---|
 | `channelId` | `bytes32` | `keccak256(abi.encode(buyer, seller, salt))` |
-| `maxAmount` | `uint128` | Maximum USDC (6 decimals) the seller may lock |
-| `deadline` | `uint256` | Unix timestamp after which this auth expires |
+| `maxAmount` | `uint128` | Reservation ceiling in USDC base units (6 decimals) |
+| `deadline` | `uint256` | Unix time after which the authorization is invalid |
 
-### SpendingAuth
-
-Signed by the buyer on each request to authorize cumulative spending.
+**SpendingAuth** authorizes cumulative spend on a channel.
 
 | Field | Type | Description |
 |---|---|---|
-| `channelId` | `bytes32` | Same channel identifier as the ReserveAuth |
-| `cumulativeAmount` | `uint256` | Total USDC authorized so far (monotonically increasing) |
-| `metadataHash` | `bytes32` | Hash of request metadata (input/output token counts, model, etc.) |
+| `channelId` | `bytes32` | The channel |
+| `cumulativeAmount` | `uint256` | Total USDC authorized so far; only ever increases |
+| `metadataHash` | `bytes32` | `keccak256` of the ABI-encoded usage metadata below |
 
-The seller submits the latest SpendingAuth to `settle()` or `close()` on-chain. The contract verifies the buyer's signature and charges the cumulative amount from the locked deposit.
+The contract verifies the buyer's signature over all three fields, so the usage metadata is as binding as the amount.
 
-## Session Budget and Budget Exhaustion
+## How billing works
 
-The `maxAmount` in the ReserveAuth caps total USDC the seller can charge in a session. As the buyer signs SpendingAuths with increasing `cumulativeAmount`, the budget is consumed.
+There are no separate usage receipts. Billing is the seller's report of each request plus the buyer's signed running total.
 
-When the budget is exhausted, the seller settles the current session (calling `close()`) and returns HTTP 402 to the buyer, triggering a new negotiation cycle (new ReserveAuth, new session).
+1. **The seller reports usage.** After a request, the seller sends a NeedAuth message with the request's cost and the usage the upstream provider reported: input, cached input, fresh input, and output tokens, the service name, and, for image and video services, the delivered units.
+2. **The buyer verifies.** The buyer parses the usage from the response it received and recomputes the cost from the seller's published prices. It signs only when the seller's claim is within its tolerance of that estimate, and refuses to sign a positive unit count that matches no published price.
+3. **The buyer signs.** The new SpendingAuth covers the cumulative amount and the cumulative usage metadata.
 
-## Settlement
+Token cost uses the seller's per-service prices in USD per million tokens:
 
-### Active Settlement
-
-The seller calls `settle()` with the latest buyer-signed SpendingAuth at any time during the session. This charges the buyer's locked deposit for the cumulative amount and credits the seller's earnings, while keeping the session open for further requests.
-
-To finalize, the seller calls `close()` with the final SpendingAuth. This charges the cumulative amount, credits the seller, and releases any remaining locked deposit back to the buyer's available balance.
-
-### Timeout
-
-If the seller disappears, the buyer calls `requestClose()` on AntseedChannels. This marks the session for timeout. After a 15-minute grace period, the buyer calls `withdraw()` to release the locked funds back to the buyer's deposit.
-
-### Token-to-USDC Conversion
-
-Sellers publish per-model pricing in USD per million tokens (input, cached input, and output rates separately). The conversion from token consumption to USDC happens at the seller's published rate at the time of the request:
-
-```text title="cost calculation"
-requestCostUSD  = (freshInputTokens * inputUsdPerMillion + cachedInputTokens * cachedInputUsdPerMillion + outputTokens * outputUsdPerMillion) / 1_000_000
-totalCostUSDC   = sum(requestCosts) * 1_000_000  (6-decimal USDC)
+```text title="token cost"
+costUSD = (freshInputTokens × inputUsdPerMillion
+         + cachedInputTokens × cachedInputUsdPerMillion
+         + outputTokens × outputUsdPerMillion) / 1,000,000
 ```
 
-`cachedInputUsdPerMillion` defaults to `inputUsdPerMillion` when not set by the seller.
+`cachedInputUsdPerMillion` defaults to `inputUsdPerMillion` when the seller does not set it. Image and video services add a per-unit charge (`output_images`, `video_generations`, or `video_seconds`) from the billing model in their metadata; see [Media billing](/docs/provide/media). Each paid video gets its own one-off channel bound to that request.
 
-### Image Unit-to-USDC Conversion
+### SpendingAuth metadata
 
-Image services can publish a versioned `output_images` billing model per service and API protocol. The request context captures matching fields such as model, size, quality, and resolution. Final cost uses the number of non-empty images actually delivered:
+The signed metadata is `abi.encode` of these fields (metadata version 4):
 
-```text title="image cost calculation"
-unitCostUSD   = deliveredOutputImages * matchedComponent.priceUsd
-totalCostUSDC = (tokenCostUSD + unitCostUSD) * 1_000_000
-```
+| Field | Meaning |
+|---|---|
+| `version` | Metadata format version (4) |
+| `cumulativeInputTokens` | Total input tokens on the channel |
+| `cumulativeOutputTokens` | Total output tokens; each delivered image also adds a flat 1,290-token equivalent |
+| `cumulativeRequestCount` | Requests served |
+| `cumulativeOutputImages` | Images delivered |
+| `cumulativeVideoGenerations` | Videos delivered |
+| `cumulativeVideoSeconds` | Video seconds delivered |
+| `services[]` | Per service (keyed by `keccak256` of the service name): amount, input, cached input, output tokens, requests, images, video generations and seconds |
 
-The buyer independently recomputes token and unit costs before signing the next cumulative SpendingAuth. A positive delivered unit count with no matching component is never silently priced at zero; payment authorization is refused.
+When a channel settles, the metadata is forwarded to the `AntseedStats` contract, which aggregates token and request counters per seller (see [Reputation](/docs/reputation#on-chain-stats)).
 
-### Video Payments {#video-payments}
+## Top-ups and exhausted channels
 
-Video services publish a versioned `video_generations` or `video_seconds` billing model per service for the `venice-video` or `fal-video` protocol. The request context captures `model` and `resolution` for matching. The price is fixed when the job is created and charged once, when the finished video is delivered:
+A channel's reservation can grow. When the buyer's remaining headroom runs low, it signs a new ReserveAuth with a higher `maxAmount`, and the seller calls `topUp()`. `topUp()` settles the latest SpendingAuth first and succeeds only once the settled amount reaches `TOP_UP_SETTLED_THRESHOLD_BPS` of the current reservation. The source default is 8500 (85%); the value is owner-configurable and is 6500 (65%) on Base mainnet. Until a top-up lands, the seller cannot accept a cumulative amount above the current reservation.
 
-```text title="video cost calculation"
-unitCostUSD   = matchedComponent.priceUsd * (unit == video_seconds ? requestedDurationSeconds : 1)
-totalCostUSDC = unitCostUSD * 1_000_000
-```
+If the buyer has not signed for work already served, the seller answers the next request with HTTP 402 and a PaymentRequired message carrying the cumulative amount needed to catch up. If that amount exceeds the channel's on-chain reservation, the channel is exhausted (`channel_exhausted`) and the buyer opens a new one.
 
-`video_seconds` requires an explicit requested duration, and a request with no matching component is refused.
+## Closing a channel
 
-Each paid video gets its own one-off channel, bound to the create's `requestId`. Above `FIRST_SIGN_CAP`, the channel opens at the cap and `topUp()` raises it to the price after settling `ceil(cap × TOP_UP_SETTLED_THRESHOLD_BPS / 10000)`, which counts toward the price. See the [native video spec](https://github.com/AntSeed/antseed/blob/main/docs/protocol/spec/10-native-video.md).
+| Path | Who calls | What happens |
+|---|---|---|
+| `settle()` | Seller | Collects the latest signed amount; the channel stays open. Sellers settle after a channel has been idle (10 minutes by default). |
+| `close()` | Seller | Final settlement; the unspent reservation returns to the buyer's available balance. Sellers close idle channels after 12 hours by default. |
+| Cooperative close | Buyer asks, seller calls `close()` | The buyer sends CloseChannelRequest, optionally with its latest SpendingAuth; the seller closes at the higher of its own and the attached amount. Requires the seller capability `payments.cooperative-close.v1`. |
+| `requestClose()` then `withdraw()` | Buyer's authorized operator | For a seller that disappeared. The seller can still settle during a 15-minute grace period; after it, `withdraw()` releases the unsettled reservation. |
 
-## Wallet
+From the CLI, see `antseed buyer channels` in the [command reference](/docs/commands).
 
-Each node's identity is a secp256k1 private key. The EVM address derived from this key serves as both the PeerId on the network and the on-chain wallet address. Set it via `ANTSEED_IDENTITY_HEX` env var (recommended for production) rather than the plaintext `identity.key` file.
+## Protocol fee
 
-```text title="identity = wallet"
-secp256k1 private key (32 bytes)
-  → EVM address (20 bytes) = PeerId
-```
+Each settlement charges a protocol fee on the newly settled amount: `fee = delta × PLATFORM_FEE_BPS / 10000`, rounded down in USDC base units. `AntseedDeposits.chargeAndCreditPayouts()` sends the fee to the protocol reserve configured in `AntseedRegistry` and the rest to the seller. If no reserve is configured, the fee is waived.
 
-There is no derivation step or two-key system. One secp256k1 key signs everything — protocol messages (using EIP-191 `personal_sign` with domain tags like `"antseed-data-v1:"` and `"antseed-msg-v1:"`), EIP-712 payment messages (ReserveAuth, SpendingAuth), and on-chain transactions. Verification uses `ecrecover`.
+| Setting | Value |
+|---|---|
+| `PLATFORM_FEE_BPS` on Base mainnet | 400 (4%) |
+| Contract source default | 200 (2%) |
+| Maximum the owner can set (`MAX_PLATFORM_FEE_BPS`) | 1000 (10%) |
 
-### Funding
+The fee is owner-configurable up to the maximum; read `PLATFORM_FEE_BPS()` on the Channels contract for the active value.
 
-The AntseedDeposits contract's `deposit(address buyer, uint256 amount)` allows any address to fund a buyer's deposit — USDC is pulled from `msg.sender` and credited to the specified buyer. This decouples the funding source from the node identity — a team treasury, a hardware wallet, or another contract can fund the node without exposing the node's private key.
+## Free usage
 
-USDC on Base. 6 decimal places. All on-chain amounts are in USDC atomic units (1 USDC = 1,000,000).
+Services priced at zero use `AntseedFreeUsage` instead of a paid channel. No deposit is needed and no funds move.
 
-## Smart Contracts
+1. The buyer signs a `FreeUsageOpen(channelId, deadline)` authorization and sends it to the seller, which calls `open()` on-chain.
+2. After each request the seller asks for a usage signature (NeedFreeUsageAuth). The buyer signs `FreeUsageAuth(channelId, sequence, metadataHash, deadline)` over its cumulative token and request counts.
+3. The seller periodically submits the latest record with `record()` (every 15 minutes by default) and finally `close()`.
 
-The recognized-usage protocol starts **September 10, 2026 at 09:54:21 UTC
-(epoch 22)**. Its contracts separate USDC settlement from ANTS eligibility,
-accounting, and rewards:
+Both signatures use the EIP-712 domain `name: "AntseedFreeUsage"`, `version: "1"`. Free-usage metadata (version 1) carries cumulative input tokens, output tokens, request count, and per-service totals. Sellers can cap free requests per buyer address and per IP over a sliding window (24 hours by default); see [Provider configuration](/docs/provide/config).
 
-```text title="contract architecture"
-AntseedRegistry               Central address book
-AntseedDeposits               Buyer deposits and seller payouts in USDC
-AntseedChannels               Signed payment channels; holds no USDC
-ANTSToken                     ANTS token; mint authority is the emissions gate
-AntseedEmissionsGate          Emission schedule and reward allocations
-AntseedSellerRegistry         Seller eligibility and ERC-8004 agent lookup
-AntseedSellerPools            Locked ANTS positions and epoch pool power
-AntseedUsageAccounting        Recognized buyer/seller usage points
-AntseedPointsPolicyRegistry   Ordered usage-point policies
-AntseedWashTradingPointsPolicy  Filters usage by historically flagged sellers
-AntseedSellerPoolsRewards     Staker rewards
-AntseedUsageRewards           Buyer and seller/operator rewards
-AntseedPositionInit           Starter-position grants
-```
+## Deposits
 
-Looking for the pre-migration contracts or older rewards?
-See [Legacy emissions and claims](./legacy-emissions.md).
+`deposit(buyer, amount)` lets any address fund a buyer's balance: USDC is pulled from the caller and credited to the buyer. A team treasury or another contract can fund a node without holding the node's key.
 
-The source contract initializes `PLATFORM_FEE_BPS` to 200 (2%). The Channels owner
-can change it through `setPlatformFeeBps`, up to the source-defined maximum of
-1000 basis points (10%). Read the deployed contract for the active setting;
-source defaults do not establish the current onchain fee. Each settlement charges
-the fee on the newly settled delta, using integer division in USDC base units.
-Deposits sends the fee to the configured Protocol Reserve and the remainder to
-the seller. If no reserve address is configured, Deposits waives the fee.
+- **Authorized operator.** Each buyer account has an operator, set once by a buyer-signed EIP-712 `SetOperator` message and transferable by the current operator. Only the operator can withdraw available (unreserved) USDC, which is sent to the operator, and only the operator can call `requestClose()` and `withdraw()` on channels.
+- **Limits.** The first deposit must be at least `MIN_BUYER_DEPOSIT` (1 USDC). A buyer's balance is capped by a credit limit that grows with the number of distinct sellers paid and days since the first channel, up to `MAX_CREDIT_LIMIT`. The contract source defaults are a 10 USDC base limit and a 50 USDC maximum; both are owner-configurable, and on Base mainnet both are 500 USDC.
 
-### Emissions
+All amounts are USDC with 6 decimals (1 USDC = 1,000,000 base units).
 
-ANTS rewards combine recognized service usage with seller-pool stake. From
-**epoch 22**, allocation ceilings are 40% for seller-pool rewards, 20% for
-buyer and seller/operator usage rewards, 15% for the reserve, 15% for the team,
-and 10% for verification. Pool and usage allocations vary dynamically with
-eligibility and utilization; the ceilings are not guaranteed payouts.
+### Gasless deposit sweeps
 
-USDC settlement and reward eligibility are separate. A seller without enough
-pool power, or usage filtered by a points policy, can still settle payment
-without earning recognized-usage rewards. Historical wash flags zero both
-buyer and seller points for future records involving the flagged seller.
+USDC sent to a buyer's own wallet address can be moved into Deposits without the buyer paying gas. The buyer signs one EIP-3009 `receiveWithAuthorization` addressed to `AntseedDepositRelay` and broadcasts it to connected peers (SweepRequest). Any relayer, by default a seller node, submits it; the relay pulls the USDC, credits `amount − FEE` to the buyer's deposit, and pays the fixed `FEE` to the relayer. The fee is immutable in the deployed relay (0.05 USDC on Base mainnet), and the buyer's wallet never receives funds back from the relay.
 
-See [Recognized Usage and ANTS Rewards](./recognized-usage.md) for staking,
-policies, claims, and the complete contract inventory. For rewards earned
-before the start date, use [Legacy emissions and claims](./legacy-emissions.md).
+## Identity and wallet
 
-Deposits holds buyer USDC; Channels holds no USDC. Seller pools hold ANTS stake.
+A node's identity is one secp256k1 key. Its EVM address is both the peer ID and the address that signs ReserveAuth, SpendingAuth, and free-usage records. Protocol messages are signed with EIP-191 `personal_sign` using domain prefixes such as `antseed-msg-v1:`. Key storage and passphrases are covered in [Security](/docs/security#key-storage) and [Wallet keys](/docs/gateway/wallet-keys).
 
-Identity uses the deployed [ERC-8004](https://eips.ethereum.org/EIPS/eip-8004) IdentityRegistry on Base.
-
-## Supported Chains
+## Supported chains
 
 | Chain | Chain ID | Status |
 |---|---|---|
 | `base-mainnet` | 8453 | Production (default) |
 | `base-sepolia` | 84532 | Testnet |
 
-Contract addresses are built into the CLI for each chain — no manual configuration needed. The default chain is `base-mainnet`.
-
-### Base Mainnet Contract Addresses
-
-Protocol addresses from the **September 10, 2026** start date are below.
-See the [full rewards inventory](./recognized-usage.md#mainnet-contracts) or
-[pre-migration addresses](./legacy-emissions.md#legacy-contract-addresses).
-
-| Contract | Address |
-|---|---|
-| USDC (Circle) | `0x833589fCD6eDb6E08f4c7C32D4f71b54bdA02913` |
-| AntseedRegistry | `0xf33fC901BFa97326379A369401F4490E231B69B0` |
-| AntseedDeposits | `0x0F7a3a8f4Da01637d1202bb5443fcF7F88F99fD2` |
-| AntseedChannels | `0xBA66d3b4fbCf472F6F11D6F9F96aaCE96516F09d` |
-| AntseedSellerRegistry | `0x99c533BCc6Ca646E543dbA835Fdbb9C2ee02Cb60` |
-| AntseedStats | `0x15649ff076BFa5e37e24EE3154a00503149954Fd` |
-| AntseedUsageAccounting | `0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9` |
-| ANTSToken | `0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263` |
-| ERC-8004 IdentityRegistry | `0x8004A169FB4a3325136EB29fA0ceB6D2e539a432` |
-
-All contracts verified on [BaseScan](https://basescan.org).
+Contract addresses are built into the CLI for each chain. ANTS rewards are accounted separately from USDC settlement; see [Recognized usage and ANTS rewards](/docs/recognized-usage).

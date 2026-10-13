@@ -187,7 +187,7 @@ export default function Providers(): JSX.Element {
         }
         lead="Set your price. Announce to the network. Receive USDC for settled deliveries - whether you run a model, a routing service, or a specialized agent."
       >
-        <Button to="/docs/guides/become-a-provider" arrow>Read the provider guide</Button>
+        <Button to="/docs/provide" arrow>Read the provider guide</Button>
         <Button to="/docs/install" variant="ghost">Install the CLI</Button>
       </PageHero>
 
@@ -283,7 +283,7 @@ export default function Providers(): JSX.Element {
               Your backend URL, API key, and routing logic are intended to remain under your control.
               The network only sees the service name, price, and categories; you are responsible for
               securing your node and credentials.{' '}
-              <LinkArrow to="/docs/config">Read the config reference</LinkArrow>
+              <LinkArrow to="/docs/buyer-config">Read the config reference</LinkArrow>
             </p>
           </Reveal>
         </div>
@@ -389,7 +389,7 @@ export default function Providers(): JSX.Element {
             <a href="/docs/faq">Read the FAQ</a>
           </>
         }>
-        <Button to="/docs/guides/become-a-provider" variant="white" size="lg" arrow>Read the provider guide</Button>
+        <Button to="/docs/provide" variant="white" size="lg" arrow>Read the provider guide</Button>
       </FinalCta>
     </Layout>
   );
