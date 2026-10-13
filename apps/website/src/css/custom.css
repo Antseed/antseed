@@ -39,7 +39,7 @@
   --as-white: #FFFFFF;             /* page background */
   --as-card: #F4F5F4;              /* raised card surface */
   --as-ink: #001E12;               /* dark green ink — always dark: buttons, dark sections */
-  --as-heading: #001E12;           /* heading/ink text — flips light in dark mode */
+  --as-heading: #001E12;           /* heading/ink text */
 
   /* SIGNAL — the brand green. one green, three jobs */
   --as-green: #10B981;             /* primary — actions, accents, the ant */
@@ -212,101 +212,6 @@ html[data-theme='light'],
   --ifm-navbar-link-hover-color: #001E12;
 }
 
-html[data-theme='dark'] {
-  /* Dark mode — the ink surfaces from the dark sections of the design */
-  --as-heading: #FFFEFB;
-  --as-card: #03251A;
-  --as-green: #10B981;
-  --as-green-bright: #3DC799;
-  --as-green-deep: #0A6F4D;
-  --as-soil-0: #02130D;
-  --as-soil-1: #001E12;
-  --as-soil-2: #03251A;
-  --as-soil-3: #053827;
-  --as-text: #FFFEFB;
-  --as-text-2: #B9CCC2;
-  --as-text-3: #6E837A;
-  --as-line: rgba(198, 240, 226, 0.1);
-  --as-line-strong: rgba(198, 240, 226, 0.18);
-  --as-green-glow: rgba(16, 185, 129, 0.45);
-  --as-green-dim: rgba(16, 185, 129, 0.1);
-  --as-surface-tint: rgba(255, 255, 255, 0.02);
-  --as-clay: #D79627;
-  --as-clay-dim: rgba(215, 150, 39, 0.14);
-  --as-risk: #ff6b6b;
-  --as-risk-deep: #ff4b4b;
-  --as-risk-dim: rgba(255, 107, 107, 0.11);
-  --as-logo-ink: #FFFEFB;
-  --as-page-bg: #001E12;
-  --as-dotgrid: radial-gradient(rgba(198, 240, 226, 0.08) 1px, transparent 1px);
-  --as-code-block-bg: #02130D;
-  --as-code-title-bg: #03251A;
-  --as-code-text: #DCF7EE;
-  --as-inline-code-text: #6BD5B1;
-  --as-inline-code-bg: rgba(16, 185, 129, 0.1);
-  --as-scrollbar-track: #001E12;
-  --as-scrollbar-thumb: #053827;
-  --as-scrollbar-thumb-hover: #064A34;
-  --as-selection-bg: rgba(16, 185, 129, 0.32);
-  --as-selection-text: #FFFEFB;
-  --ifm-scrollbar-track-background-color: var(--as-scrollbar-track);
-  --ifm-scrollbar-thumb-background-color: var(--as-scrollbar-thumb);
-  --ifm-scrollbar-thumb-hover-background-color: var(--as-scrollbar-thumb-hover);
-
-  --ifm-color-primary: #10B981;
-  --ifm-color-primary-dark: #0D9467;
-  --ifm-color-primary-darker: #0A6F4D;
-  --ifm-color-primary-darkest: #064A34;
-  --ifm-color-primary-light: #3DC799;
-  --ifm-color-primary-lighter: #6BD5B1;
-  --ifm-color-primary-lightest: #98E2CA;
-  --ifm-color-warning: var(--as-risk);
-  --ifm-color-warning-dark: var(--as-risk-deep);
-  --ifm-color-warning-darker: #e13d3d;
-  --ifm-color-warning-darkest: #bd2d2d;
-  --ifm-color-warning-light: #ff8585;
-  --ifm-color-warning-lighter: #ff9d9d;
-  --ifm-color-warning-lightest: #ffd0d0;
-  --ifm-color-warning-contrast-background: rgba(255, 107, 107, 0.1);
-  --ifm-color-warning-contrast-foreground: #ffd6d6;
-
-  --ifm-navbar-height: 68px;
-  --ifm-background-color: #001E12;
-  --ifm-background-surface-color: #03251A;
-  --ifm-navbar-background-color: transparent;
-  --ifm-footer-background-color: #001E12;
-
-  --ifm-font-family-base: var(--as-font-ui);
-  --ifm-font-family-monospace: var(--as-font-data);
-  --ifm-heading-font-family: var(--as-font-display);
-
-  --ifm-code-background: #03251A;
-  --ifm-code-border-radius: 4px;
-  --ifm-code-padding-horizontal: 6px;
-  --ifm-code-padding-vertical: 2px;
-  --ifm-code-font-size: 12px;
-
-  --ifm-color-emphasis-300: #053827;
-  --ifm-font-color-base: #DCF7EE;
-  --ifm-font-color-secondary: #B9CCC2;
-  --ifm-heading-color: #FFFEFB;
-  --ifm-heading-font-weight: 500;
-  --ifm-link-color: #3DC799;
-  --ifm-link-hover-color: #6BD5B1;
-  --ifm-menu-color: #B9CCC2;
-  --ifm-menu-color-active: #3DC799;
-  --ifm-menu-color-background-hover: rgba(16, 185, 129, 0.06);
-  --ifm-menu-color-background-active: rgba(16, 185, 129, 0.1);
-  --ifm-navbar-link-color: #DCF7EE;
-  --ifm-navbar-link-hover-color: #FFFEFB;
-
-  --ifm-hr-border-color: rgba(198, 240, 226, 0.08);
-  --ifm-toc-border-color: rgba(198, 240, 226, 0.08);
-  --ifm-table-border-color: rgba(198, 240, 226, 0.05);
-
-  --docusaurus-highlighted-code-line-bg: rgba(16, 185, 129, 0.08);
-}
-
 /* =============================================
    Motion — page transitions
    Each route renders its own Layout, so .main-wrapper remounts on
@@ -416,12 +321,6 @@ nav.navbar {
   box-shadow: 0 2px 8px rgba(17, 23, 20, 0.08);
 }
 
-html[data-theme='dark'] .navbar__inner {
-  background: rgba(3, 37, 26, 0.88);
-  border-color: rgba(198, 240, 226, 0.12);
-  box-shadow: 0 10px 32px -14px rgba(0, 0, 0, 0.5);
-}
-
 .navbar__items {
   min-width: 0;
 }
@@ -485,10 +384,6 @@ html[data-theme='dark'] .navbar__inner {
   background-size: 16px;
 }
 
-html[data-theme='dark'] .header-docs-link::before {
-  filter: brightness(0) invert(1);
-}
-
 /* Pricing ↗ style external marker */
 .header-pricing-link::after {
   content: ' ↗';
@@ -503,39 +398,49 @@ html[data-theme='dark'] .header-docs-link::before {
   display: none;
 }
 
-/* Download AI VPN — the brand-green pill, per the Figma navbar. */
-.navbar__items--right .header-download-link {
-  background: var(--as-green);
-  color: #FFFFFF !important;
-  border: 1px solid var(--as-green);
+/* Navbar CTAs — "Desktop app" (outlined) and "Set up gateway" (filled ink),
+   the gateway being the path we lead with. */
+.navbar__items--right .header-download-link,
+.navbar__items--right .header-gateway-link {
   border-radius: 999px;
   padding: 4px 16px;
-  margin-left: 12px;
   font-size: 14px;
   font-weight: 600;
   opacity: 1;
+  white-space: nowrap;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.navbar__items--right .header-download-link {
+  margin-left: 12px;
+  background: transparent;
+  border: 1px solid var(--as-gray-3);
+  color: var(--as-heading) !important;
 }
 
 .navbar__items--right .header-download-link:hover,
 .navbar__items--right .header-download-link:focus-visible {
-  background: var(--as-primary-6);
-  border-color: var(--as-primary-6);
+  border-color: var(--as-heading);
+  color: var(--as-heading) !important;
+}
+
+.navbar__items--right .header-gateway-link {
+  margin-left: 8px;
+  background: var(--as-ink);
+  border: 1px solid var(--as-ink);
   color: #FFFFFF !important;
 }
 
-.navbar__items--right .header-download-link:active {
+.navbar__items--right .header-gateway-link:hover,
+.navbar__items--right .header-gateway-link:focus-visible {
+  background: var(--as-void-cta);
+  border-color: var(--as-void-cta);
+  color: #FFFFFF !important;
+}
+
+.navbar__items--right .header-download-link:active,
+.navbar__items--right .header-gateway-link:active {
   transform: scale(0.98);
-}
-
-html[data-theme='dark'] .navbar__items--right .header-download-link {
-  color: var(--as-ink) !important;
-}
-
-html[data-theme='dark'] .navbar__items--right .header-download-link:hover {
-  background: var(--as-primary-4);
-  border-color: var(--as-primary-4);
-  color: var(--as-ink) !important;
 }
 
 /* Social icon links — SVG background icons, tinted to ink */
@@ -562,12 +467,6 @@ html[data-theme='dark'] .navbar__items--right .header-download-link:hover {
 .header-x-link:hover,
 .header-telegram-link:hover {
   opacity: 1;
-}
-
-html[data-theme='dark'] .header-github-link,
-html[data-theme='dark'] .header-x-link,
-html[data-theme='dark'] .header-telegram-link {
-  filter: brightness(0) invert(1);
 }
 
 .navbar__items--right .clean-btn {
@@ -670,11 +569,6 @@ html[data-theme='dark'] .header-telegram-link {
 html[data-theme='light'] .custom-footer-link:hover,
 html[data-theme='light'] .custom-footer-link:focus-visible {
   color: var(--as-green) !important;
-}
-
-html[data-theme='dark'] .custom-footer-link:hover,
-html[data-theme='dark'] .custom-footer-link:focus-visible {
-  color: #e6edf3 !important;
 }
 
 .custom-footer-social {
@@ -1329,8 +1223,6 @@ pre code,
    ============================================= */
 /* Responsive rules */
 
-
-
 /* =============================================
    Blog — warm theme adjustments
    ============================================= */
@@ -1400,16 +1292,9 @@ html:has(.homepage-wrapper) {
 
 /* =============================================
    Blog — Antseed brand page redesign
-   Content/SEO untouched. Dark-first soil surface,
+   Content/SEO untouched. Soil surface,
    readable cards, compact metadata, mobile-safe.
    ============================================= */
-html[data-theme='dark'] .blog-wrapper,
-html[data-theme='dark'] .blog-wrapper .main-wrapper,
-html[data-theme='dark'] .blog-list-page .main-wrapper,
-html[data-theme='dark'] .blog-post-page .main-wrapper,
-html[data-theme='dark'] main[class*='blog'] {
-  background: var(--as-page-bg) !important;
-}
 html[data-theme='light'] .blog-wrapper,
 html[data-theme='light'] .blog-wrapper .main-wrapper,
 html[data-theme='light'] .blog-list-page .main-wrapper,
@@ -2089,10 +1974,6 @@ html[data-theme='light'] .blog-wrapper .pagination-nav__link:hover {
   color: var(--as-text-2);
 }
 
-html[data-theme='dark'] .usecase:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
 /* mobile sidebar: rows stack as plain menu entries */
 .navbar-sidebar .usecase {
   padding: 8px 12px;
@@ -2105,5 +1986,7 @@ html[data-theme='dark'] .usecase:hover {
   .navbar__brand { margin-right: 12px; }
   .navbar__items .navbar__item.navbar__link,
   .navbar__items .navbar__item.dropdown > .navbar__link { padding-inline: 8px; }
-  .navbar__items--right .header-download-link { padding-inline: 14px; }
+  .navbar__items--right .header-download-link,
+  .navbar__items--right .header-gateway-link { padding-inline: 14px; }
+  .navbar__items .navbar__link { white-space: nowrap; }
 }

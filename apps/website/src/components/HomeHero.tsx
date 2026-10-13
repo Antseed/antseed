@@ -77,17 +77,11 @@ export function CountUp({value, duration = 1100}: {value: string; duration?: num
    ============================================================ */
 const ANT_H = 800;
 const ANT_W = Math.round((15.2738 / 18) * ANT_H);
-const DOT_LIGHT = '213,217,215';
-const DOT_DARK = '197,208,203';
+const DOT_COLOR = '213,217,215';
 const SPARKLE_RGB = [16, 185, 129] as const;
 const SAMPLE_OFFSETS = [-4, 0, 4];
 
 const parseRgb = (s: string) => s.split(',').map(Number);
-
-const isDarkTheme = () =>
-  document.documentElement.dataset.theme === 'dark' ||
-  (document.documentElement.dataset.theme !== 'light' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches);
 
 interface HeroDot {
   x: number;
@@ -105,6 +99,10 @@ export function HeroDotCanvas({
   shutdownRef,
   originRef,
   compact = false,
+  selfClock = false,
+  antScale: antScaleProp = 1,
+  antScaleSmall,
+  antLift = 120,
 }: {
   frameRef: MutableRefObject<number>;
   /** 0 while the demo loops; otherwise the manual power-off's virtual frame. */
@@ -114,10 +112,39 @@ export function HeroDotCanvas({
       drawn smaller and centred on the demo instead of riding 120px above it
       (which clipped its head at the hero's top edge). */
   compact?: boolean;
+  /** No HeroDemo on the page to drive frameRef: advance it here, on the same
+      30 fps loop, only while the canvas is drawing (it pauses off-screen). */
+  selfClock?: boolean;
+  /** Ant size and how far its centre sits above the origin (non-compact). */
+  antScale?: number;
+  /** Ant size at phone widths (≤640px); defaults to antScale. */
+  antScaleSmall?: number;
+  antLift?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Building the dot grid and drawing it is the heaviest script on the page,
+  // so it starts only after the page has loaded and the browser is idle:
+  // it never competes with the first paint or with the page becoming usable.
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    let idle = 0;
+    let timer = 0;
+    const start = () => {
+      if (typeof window.requestIdleCallback === 'function') idle = window.requestIdleCallback(() => setReady(true), {timeout: 1500});
+      else timer = window.setTimeout(() => setReady(true), 200);
+    };
+    if (document.readyState === 'complete') start();
+    else window.addEventListener('load', start, {once: true});
+    return () => {
+      window.removeEventListener('load', start);
+      if (idle) window.cancelIdleCallback(idle);
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return undefined;
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const ctx = canvas.getContext('2d', {alpha: true});
@@ -126,13 +153,8 @@ export function HeroDotCanvas({
     if (!host) return undefined;
 
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let color = DOT_LIGHT;
-    let baseRgb = parseRgb(color);
-    const applyTheme = () => {
-      color = isDarkTheme() ? DOT_DARK : DOT_LIGHT;
-      baseRgb = parseRgb(color);
-    };
-    applyTheme();
+    const color = DOT_COLOR;
+    const baseRgb = parseRgb(color);
     let disposed = false;
     let width = 0;
     let height = 0;
@@ -183,8 +205,8 @@ export function HeroDotCanvas({
         originY = origin.top - rect.top + 0.375 * origin.height;
       }
       // Ant placement — scaled and centred on the demo in the split hero.
-      let antScale = compact ? 0.5 : 1;
-      let antCenterY = originY - 120;
+      let antScale = compact ? 0.5 : width <= 640 ? antScaleSmall ?? antScaleProp : antScaleProp;
+      let antCenterY = originY - antLift;
       if (compact && origin) {
         // Size the ant to the demo box (card + "Finding best seller" pill) so
         // its top and bottom line up with the box, and centre it behind it.
@@ -343,7 +365,9 @@ export function HeroDotCanvas({
     // The frame clock lives in HeroDemo (frameRef), so pausing the draw loop
     // while the hero is scrolled out of view costs nothing in sync.
     let raf = 0;
+    const clockStart = performance.now();
     const loop = () => {
+      if (selfClock) frameRef.current = ((performance.now() - clockStart) / 1000) * 30;
       drawFrame(frameRef.current % DEMO_TOTAL_FRAMES, shutdownRef.current);
       raf = requestAnimationFrame(loop);
     };
@@ -366,17 +390,14 @@ export function HeroDotCanvas({
 
     const resize = new ResizeObserver(layout);
     resize.observe(host);
-    const themeWatch = new MutationObserver(applyTheme);
-    themeWatch.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
 
     return () => {
       disposed = true;
       stopLoop();
       visibility?.disconnect();
       resize.disconnect();
-      themeWatch.disconnect();
     };
-  }, [frameRef, shutdownRef, originRef, compact]);
+  }, [ready, frameRef, shutdownRef, originRef, compact, selfClock, antScaleProp, antScaleSmall, antLift]);
 
   return <canvas ref={canvasRef} className={styles.heroCanvas} aria-hidden="true" />;
 }
@@ -384,7 +405,7 @@ export function HeroDotCanvas({
 /* ============================================================
    HERO
    ============================================================ */
-function DownloadCta({
+export function DownloadCta({
   caption,
   size = 'lg',
   versionsLink = true,
@@ -592,7 +613,7 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
 const HERO_MODELS_STAT = {value: '700+', label: 'Models', accent: true};
 
 /** Tokens / revenue / providers / models, streamed from Antscan. */
-export function HeroStatsRow() {
+export function HeroStatsRow({className}: {className?: string} = {}) {
   const stats = useNetworkStats();
   const heroStats: {value: string; label: string; accent?: boolean}[] = [
     {value: stats.tokens, label: 'Tokens processed'},
@@ -601,7 +622,7 @@ export function HeroStatsRow() {
     HERO_MODELS_STAT,
   ];
   return (
-    <dl className={styles.statsRow}>
+    <dl className={className ? `${styles.statsRow} ${className}` : styles.statsRow}>
       {heroStats.map((s) => (
         <div key={s.label} className={styles.stat}>
           <dd className={`${styles.statValue} ${s.accent ? styles.statAccent : ''}`}>

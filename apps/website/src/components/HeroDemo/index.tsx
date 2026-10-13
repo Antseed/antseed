@@ -1283,8 +1283,22 @@ export function HeroDemo({
     }
     setInteractive(true);
     let raf = 0;
+    // Stop rendering while scrolled out of view; the clock keeps running, so
+    // the loop picks up where it would have been.
+    let visible = true;
+    const visibility =
+      typeof IntersectionObserver === 'undefined' || !hostRef.current
+        ? undefined
+        : new IntersectionObserver(([entry]) => {
+            visible = entry.isIntersecting;
+            if (visible && !raf) raf = requestAnimationFrame(loop);
+          });
     originRef.current = performance.now();
     const loop = (now: number) => {
+      if (!visible) {
+        raf = 0;
+        return;
+      }
       if (modeRef.current === 'running') {
         const total = mobileRef.current ? MOBILE_TOTAL_FRAMES : DEMO_TOTAL_FRAMES;
         const t = (((now - originRef.current) / 1000) * DEMO_FPS) % total;
@@ -1313,7 +1327,11 @@ export function HeroDemo({
       raf = requestAnimationFrame(loop);
     };
     raf = requestAnimationFrame(loop);
-    return () => cancelAnimationFrame(raf);
+    if (visibility && hostRef.current) visibility.observe(hostRef.current);
+    return () => {
+      visibility?.disconnect();
+      cancelAnimationFrame(raf);
+    };
   }, [frameRef, shutdownRef]);
 
   return (

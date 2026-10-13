@@ -157,6 +157,10 @@ const config: Config = {
   ],
 
   headTags: [
+    // The General Sans stylesheet comes from api.fontshare.com and its font
+    // files from cdn.fontshare.com: open both connections up front.
+    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://api.fontshare.com'}},
+    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://cdn.fontshare.com', crossorigin: 'anonymous'}},
     // Second Search Console owner. A site can carry several verification tags,
     // one per Google account, and removing one un-verifies that account — so
     // this is additive, not a replacement for the token in themeConfig.metadata.
@@ -308,26 +312,15 @@ const config: Config = {
           className: 'header-github-link',
         },
         {
-          href: 'https://x.com/antseed',
-          'aria-label': 'X',
-          position: 'right',
-          className: 'header-x-link',
-        },
-        {
-          href: 'https://t.me/antseed',
-          'aria-label': 'Telegram',
-          position: 'right',
-          className: 'header-telegram-link',
-        },
-        {
           // Custom item (src/theme/NavbarItem/DownloadNavbarItem.tsx): links
           // straight to the installer for the visitor's OS/arch, falling back
           // to the releases page when detection fails.
           type: 'custom-download',
-          label: 'Download the AI VPN',
+          label: 'Desktop app',
           position: 'right',
           className: 'header-download-link',
         },
+        {to: '/docs/gateway', label: 'Set up gateway', position: 'right', className: 'header-gateway-link'},
       ],
     },
     prism: {
