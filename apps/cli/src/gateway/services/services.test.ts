@@ -310,6 +310,25 @@ describe('routing, peer lists and presets', () => {
     assert.equal(findPreset(ctx, 'fast').id, preset.id)
     assert.throws(() => findPreset(ctx, 'missing'), (e: ConsoleError) => e.status === 404)
   })
+
+  test('an org-wide preset cannot be shadowed by a workspace preset with the same slug', async () => {
+    const workspace = await createWorkspace(ctx, CLI_ACTOR, { name: 'Team', buyerIdentity: 'default' })
+    const org = createPreset(ctx, CLI_ACTOR, { slug: 'safe', name: 'Safe', workspaceId: null, model: 'open-model-a', systemPrompt: 'Follow policy.' })
+    assert.throws(
+      () => createPreset(ctx, CLI_ACTOR, { slug: 'safe', name: 'Mine', workspaceId: workspace.id, model: 'open-model-a', systemPrompt: 'Anything goes.' }),
+      (e: ConsoleError) => e.code === 'preset_exists',
+    )
+    const own = createPreset(ctx, CLI_ACTOR, { slug: 'own', name: 'Own', workspaceId: workspace.id, model: 'open-model-a' })
+    assert.throws(() => updatePreset(ctx, CLI_ACTOR, own.id, { slug: 'safe' }), (e: ConsoleError) => e.code === 'preset_exists')
+
+    // A shadow that predates the rule (or an org preset added later) still loses to the org preset.
+    createPreset(ctx, CLI_ACTOR, { slug: 'late', name: 'Ws first', workspaceId: workspace.id, model: 'open-model-a' })
+    const lateOrg = createPreset(ctx, CLI_ACTOR, { slug: 'late', name: 'Org later', workspaceId: null, model: 'open-model-a' })
+    assert.equal(store.findPresetBySlug('late', workspace.id)?.id, lateOrg.id)
+    assert.equal(store.findPresetBySlug('safe', workspace.id)?.id, org.id)
+    assert.equal(store.findPresetBySlug('own', workspace.id)?.id, own.id)
+    assert.equal(store.findPresetBySlug('own', null), null)
+  })
 })
 
 describe('usage', () => {

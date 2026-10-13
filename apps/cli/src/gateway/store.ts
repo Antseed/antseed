@@ -1522,11 +1522,15 @@ export class GatewayStore {
     return row ? toPreset(row) : null
   }
 
-  /** A workspace's own preset wins over an org-wide one with the same slug. */
+  /**
+   * An org-wide preset wins over a workspace's own with the same slug, so a
+   * workspace admin cannot replace an org-mandated preset (and its system
+   * prompt) for their workspace.
+   */
   findPresetBySlug(slug: string, workspaceId: string | null): PresetRecord | null {
     const row = this._stmt(`
       SELECT * FROM presets WHERE slug = ? AND (workspace_id IS NULL OR workspace_id = ?)
-      ORDER BY workspace_id IS NULL LIMIT 1
+      ORDER BY workspace_id IS NOT NULL LIMIT 1
     `).get(slug, workspaceId) as Record<string, unknown> | undefined
     return row ? toPreset(row) : null
   }
