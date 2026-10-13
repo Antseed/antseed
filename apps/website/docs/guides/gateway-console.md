@@ -118,7 +118,7 @@ If the gateway is published through Cloudflare (a [Cloudflare Tunnel](/docs/guid
 
    or pass `--cf-access-team-domain` and `--cf-access-aud` to the server installer.
 
-Set `ANTSEED_TRUST_CLOUDFLARE_HEADERS=1` too (the installer does this with `--cf-access-team-domain`) so rate limits and the audit log use the client address Cloudflare reports in `CF-Connecting-IP`; only set it when every request reaches the gateway through Cloudflare.
+Set `ANTSEED_TRUST_CLOUDFLARE_HEADERS=1` too (the installer does this only for a Cloudflare Tunnel) so rate limits and the audit log use the client address Cloudflare reports in `CF-Connecting-IP`; only set it when every request reaches the gateway through Cloudflare.
 
 The gateway verifies the `Cf-Access-Jwt-Assertion` header against your team's signing keys and maps the email in it to a member: an active member with that email, an invited one (who joins), or, with `ANTSEED_OIDC_ALLOWED_DOMAINS`, a new member from an allowed domain. Leave `/v1` outside the Access application, so API clients keep using their keys.
 
