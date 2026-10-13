@@ -454,7 +454,7 @@ test('GET chain lists contracts and never leaks the configured RPC URL', async (
   assert.equal(chain.chainId, 8453)
   assert.equal(chain.name, 'base-mainnet')
   assert.equal(chain.explorerUrl, 'https://basescan.org')
-  assert.ok(!chain.rpcUrl.includes('SECRET'), chain.rpcUrl)
+  assert.ok(chain.rpcUrl && !chain.rpcUrl.includes('SECRET'), String(chain.rpcUrl))
   assert.equal(chain.contracts['deposits'], CHAIN.depositsContractAddress)
   assert.equal(chain.contracts['channels'], CHAIN.channelsContractAddress)
   assert.equal(chain.contracts['usdc'], CHAIN.usdcContractAddress)
@@ -462,11 +462,10 @@ test('GET chain lists contracts and never leaks the configured RPC URL', async (
   assert.equal(chain.contracts['explorerApiUrl'], undefined)
 })
 
-test('GET chain never passes on a keyed RPC URL for an unknown chain', () => {
+test('GET chain never passes on a configured RPC URL for an unknown chain', () => {
   const custom = { chainId: 'custom-chain', evmChainId: 999_999, rpcUrl: 'https://rpc.example.test/v2/SECRET', fallbackRpcUrls: ['https://public-rpc.example.test'] }
-  assert.equal(chainInfo(custom as AntsChainConfig).rpcUrl, 'https://public-rpc.example.test')
-  assert.equal(chainInfo({ ...custom, fallbackRpcUrls: [] } as AntsChainConfig).rpcUrl, '')
-  assert.equal(chainInfo({ ...custom, rpcUrl: 'http://127.0.0.1:8545', fallbackRpcUrls: [] } as AntsChainConfig).rpcUrl, 'http://127.0.0.1:8545')
+  assert.equal(chainInfo(custom as AntsChainConfig).rpcUrl, null)
+  assert.equal(chainInfo({ ...custom, rpcUrl: 'http://10.0.0.5:8545', fallbackRpcUrls: [] } as AntsChainConfig).rpcUrl, null)
 })
 
 // ── Operator authorization ───────────────────────────────────────────────

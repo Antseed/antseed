@@ -455,7 +455,8 @@ export interface Rewards {
 export interface ChainInfo {
   chainId: number
   name: string
-  rpcUrl: string
+  /** The chain's public default RPC; null for a chain without one (never the operator's configured URL). */
+  rpcUrl: string | null
   explorerUrl: string | null
   contracts: Record<string, string>
 }
