@@ -1,15 +1,19 @@
 ---
 slug: deploy-your-own-antseed-gateway
-title: "Deploy Your Own Antseed Gateway"
+title: "Introducing Antseed Gateway Console"
 authors: [antseed]
 tags: [API keys, gateway, self-hosting, teams, buyers, x402, product]
-description: "Run your own OpenAI-compatible Antseed endpoint on a server with one command. Give every person or app their own API key with spend limits, a separate wallet if you want one, and usage they can check themselves."
-keywords: [antseed gateway, deploy ai gateway, self-hosted ai api gateway, openai compatible gateway, shared ai api keys, ai api spend limits, team ai budget, x402 top up]
-image: /img/blog/deploy-your-own-antseed-gateway/header.png
+description: "Give your agents, apps, and team access to the Antseed market through your own AI gateway. Manage workspaces, API keys, models, budgets, and usage from the Console."
+keywords: [antseed gateway console, ai gateway dashboard, antseed gateway, deploy ai gateway, self-hosted ai api gateway, openai compatible gateway, shared ai api keys, ai api spend limits, team ai budget, x402 top up]
+image: /img/blog/deploy-your-own-antseed-gateway/console-hero.png
 date: 2026-10-07
+last_update:
+  date: 2026-10-13
 ---
 
-![Deploy your own AI gateway with Antseed: API keys and spend limits for teammates, agents, and users](/img/blog/deploy-your-own-antseed-gateway/header.png)
+![Introducing Antseed Gateway Console, with an overview of spending and usage](/img/blog/deploy-your-own-antseed-gateway/console-hero.png)
+
+*Updated October 13, 2026.*
 
 You can now run your own Antseed gateway: an OpenAI-compatible API endpoint, on your own server, that many people can use at once.
 
@@ -19,6 +23,22 @@ Each teammate, agent, or app gets their own API key, with its own usage history 
 
 Use it to give your team access under one budget, hand a friend a key without handing over your balance, or offer Antseed access to the people who use your product.
 
+## Manage your gateway through the Console
+
+The Antseed Gateway Console gives you a browser interface for managing your gateway. Create workspaces, invite teammates, issue API keys, set budgets, and review usage in one place.
+
+![Antseed Gateway Console overview showing gateway status, wallet balance, spending by model, and top API keys](/img/blog/deploy-your-own-antseed-gateway/console-overview.jpg)
+
+*Console overview with demo data. Navigation items marked Preview are design previews.*
+
+Each workspace has its own wallet. Set budgets for a workspace, a member, or an individual key, and choose which models and providers their requests can use. Members can create their own keys within the access and budgets you allow.
+
+![Console API keys list showing separate keys, owners, spending limits, routing policies, and usage](/img/blog/deploy-your-own-antseed-gateway/console-api-keys.jpg)
+
+*API keys in a demo workspace, with separate limits and routing settings.*
+
+The [Gateway Console guide](/docs/gateway/) covers sign-in, workspaces, members, budgets, and routing policies. The CLI commands below remain available for managing your gateway from the terminal.
+
 ## Deploy it with one command
 
 On a Linux server, one command installs the Antseed buyer and the gateway as services that restart on failure and start on boot. It sets up HTTPS on your own domain and creates your first key:
@@ -27,9 +47,11 @@ On a Linux server, one command installs the Antseed buyer and the gateway as ser
 curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
 ```
 
-When it finishes, it prints your base URL, such as `https://llm.example.com/v1`, the first API key, and the wallet address to fund for paid models. Point the DNS record at the server first; the installer gets a TLS certificate for the domain automatically.
+When it finishes, it prints your base URL, such as `https://llm.example.com/v1`, the first API key, the wallet address to fund for paid models, and, when run in a terminal, a one-time Console setup link. Point the DNS record at the server first; the installer gets a TLS certificate for the domain automatically.
 
-No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](/docs/gateway/server) covers the options.
+Open the setup link and register a passkey or sign in with a wallet to become the owner. You can then invite your team, create workspaces and keys, and set budgets from the browser. The link expires after one hour; run `sudo antseed gateway console-link` on the server to get a new one, or to get the link after an unattended install. After setup, open `/console` on your gateway domain.
+
+No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](/docs/gateway/server/) covers the options.
 
 ## A key for everyone you share with
 
@@ -41,7 +63,7 @@ antseed gateway key create --label "Alice" --monthly-limit 20
 
 The secret is printed once. Only a hash of it is stored.
 
-Every key works with the routes described in [Using the API](/docs/api), sent as `Authorization: Bearer <key>`. All keys run through a single `antseed buyer start`, so you don't need a separate buyer for each person.
+Every key works with the routes described in [Using the API](/docs/api/), sent as `Authorization: Bearer <key>`. All keys run through a single `antseed buyer start`, so you don't need a separate buyer for each person.
 
 You can list your keys, see requests, tokens and spend for each one, change limits, and revoke a key at any time. Changes apply immediately, even while the gateway is running.
 
@@ -112,10 +134,10 @@ antseed gateway start                  # http://127.0.0.1:8379/v1
 antseed gateway start --host 0.0.0.0   # serve other machines on your network
 ```
 
-To reach people outside your network from your own machine, use a [public HTTPS tunnel](/docs/tunnels). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
+To reach people outside your network from your own machine, use a [public HTTPS tunnel](/docs/tunnels/). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
 
 ## Get started
 
-Deploy a gateway on a server with the [installer](/docs/gateway/server), or run one locally with the [Antseed CLI](/docs/install). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
+Deploy a gateway on a server with the [installer](/docs/gateway/server/), or run one locally with the [Antseed CLI](/docs/install/). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
 
-The [Shared Gateway API Keys guide](/docs/gateway/api) covers limits, identities, top-ups, and where the gateway stores its data.
+The [Shared Gateway API Keys guide](/docs/gateway/api/) covers limits, identities, top-ups, and where the gateway stores its data.
