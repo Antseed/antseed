@@ -421,7 +421,7 @@ Funding stays with the buyer commands. A workspace pays from its buyer identity 
 ## Security notes
 
 - API keys, management tokens, invite and setup links, and sessions are stored only as SHA-256 hashes.
-- Session cookies are `HttpOnly`, `SameSite=Strict` and `Secure` (except on plain `http://localhost`), and state-changing browser requests need a custom header, so other sites cannot act on a signed-in user's behalf.
+- Session cookies are `HttpOnly`, `SameSite=Strict` and `Secure` whenever the console is reached over https, and state-changing browser requests need a custom header, so other sites cannot act on a signed-in user's behalf.
 - Sign-in endpoints are rate limited per client and per account.
 - Setup links are printed only by `antseed gateway console-link`, never in service logs, and expire after one hour.
 - Authorizing a withdrawal (operator) wallet needs an owner with a fresh sign-in, and the wallet must be one of the owner's own sign-in methods, added at least 24 hours earlier. Once set, only that wallet can change it.
