@@ -190,7 +190,13 @@ export interface UpdateKeyInput extends PolicyConfirmations {
   ownerMemberId?: string | null
 }
 
-/** Changes a key. The admin layer, top-ups and ownership are the admins'; an owner edits their layer and may only shorten the expiry. */
+/**
+ * Changes a key. The admin layer, top-ups and ownership are the admins'; an
+ * owner edits their layer and may only shorten the expiry. A new owner must
+ * be an active member of the key's workspace, and changing the owner resets
+ * the secret (and ends the key's console sessions) so it is never spent
+ * against the new owner's budget by whoever held it before.
+ */
 export function updateKey(ctx: ServiceContext, actor: Actor, id: string, input: UpdateKeyInput, options: { as: KeyActingAs } = { as: 'admin' }): ApiKeyRecord {
   const { store } = ctx
   const key = requireKeyRecord(store, id)
@@ -203,8 +209,13 @@ export function updateKey(ctx: ServiceContext, actor: Actor, id: string, input: 
   if (input.ownerMemberId !== undefined) {
     if (!admin) throw forbidden('Only workspace admins can change a key\'s owner')
     ownerMemberId = input.ownerMemberId
-    if (ownerMemberId && !store.memberWorkspaceRoles(ownerMemberId).has(key.workspaceId)) throw badRequest('The key owner must belong to the workspace')
+    if (ownerMemberId && ownerMemberId !== key.ownerMemberId) {
+      const owner = store.getMember(ownerMemberId)
+      if (!owner || owner.status !== 'active') throw badRequest('The key owner must be an active member')
+      if (!store.memberWorkspaceRoles(ownerMemberId).has(key.workspaceId)) throw badRequest('The key owner must belong to the workspace')
+    }
   }
+  const ownerChanged = ownerMemberId !== undefined && ownerMemberId !== key.ownerMemberId
   if (!admin && input.limits !== undefined) throw forbidden('Only workspace admins can change a key\'s limits; set ownerLimits instead')
   if (!admin && input.routingPolicy !== undefined) throw forbidden('Only workspace admins can change a key\'s routing policy; set ownerRoutingPolicy instead')
   const { limits, routingPolicy, ownerLimits, ownerRoutingPolicy, expiresAt } = input
@@ -233,10 +244,19 @@ export function updateKey(ctx: ServiceContext, actor: Actor, id: string, input: 
     ...(topupEnabled !== undefined ? { topupEnabled } : {}),
     ...(ownerMemberId !== undefined ? { ownerMemberId } : {}),
   })
-  recordAudit(ctx, actor, 'key.update', keyTarget(updated), {
-    changes: changedFields(key, updated, ['label', 'limits', 'routingPolicy', 'ownerLimits', 'ownerRoutingPolicy', 'topupEnabled', 'expiresAt', 'ownerMemberId']),
+  // Whoever held the secret must not keep spending as the new owner: the old
+  // secret stops working and nobody is handed the new one; the new owner
+  // rotates the key to get a secret of their own.
+  let result = updated
+  if (ownerChanged && updated.status === 'active') {
+    result = store.rotateKey(key.id).key
+    ctx.sessions?.revokeKeySessions(key.id)
+  }
+  recordAudit(ctx, actor, 'key.update', keyTarget(result), {
+    changes: changedFields(key, result, ['label', 'limits', 'routingPolicy', 'ownerLimits', 'ownerRoutingPolicy', 'topupEnabled', 'expiresAt', 'ownerMemberId']),
+    ...(ownerChanged && updated.status === 'active' ? { secretReset: true } : {}),
   })
-  return updated
+  return result
 }
 
 /** A new secret for the same key id (usage, limits and policy stay); ends the key's console sessions. */

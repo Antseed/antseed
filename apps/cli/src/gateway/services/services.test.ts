@@ -157,6 +157,36 @@ describe('keys', () => {
     updateKey(ctx, CLI_ACTOR, key.id, { ownerRoutingPolicy: { allowedPeerIds: [PEER_B] }, confirmEmpty: true, acceptNarrowed: true })
     assert.deepEqual(store.getKey(key.id)!.ownerRoutingPolicy, { allowedPeerIds: [PEER_B] })
   })
+
+  test('a new owner must be an active workspace member, and changing the owner resets the secret', async () => {
+    const workspace = await createWorkspace(ctx, CLI_ACTOR, { name: 'Team', buyerIdentity: 'default' })
+    const admin = activeMember('Ada', [{ workspaceId: workspace.id, role: 'admin' }])
+    const bob = activeMember('Bob', [{ workspaceId: workspace.id, role: 'member' }])
+    const outsider = activeMember('Out')
+    const gone = activeMember('Gone', [{ workspaceId: workspace.id, role: 'member' }])
+    disableMember(ctx, CLI_ACTOR, gone.id)
+    const { key, secret } = createKey(ctx, CLI_ACTOR, { label: 'mine', workspaceId: workspace.id }, { as: 'admin', self: admin.id })
+    assert.equal(key.ownerMemberId, admin.id)
+
+    await rejectsWithCode(() => updateKey(ctx, CLI_ACTOR, key.id, { ownerMemberId: outsider.id }), 'invalid_request')
+    await rejectsWithCode(() => updateKey(ctx, CLI_ACTOR, key.id, { ownerMemberId: gone.id }), 'invalid_request')
+    await rejectsWithCode(() => updateKey(ctx, CLI_ACTOR, key.id, { ownerMemberId: 'mem_missing' }), 'invalid_request')
+    assert.equal(store.findKeyBySecret(secret)?.id, key.id)
+
+    // Re-sending the same owner is not a change.
+    updateKey(ctx, CLI_ACTOR, key.id, { ownerMemberId: admin.id, label: 'still mine' })
+    assert.equal(store.findKeyBySecret(secret)?.id, key.id)
+    assert.deepEqual(revoked.keys, [])
+
+    const moved = updateKey(ctx, CLI_ACTOR, key.id, { ownerMemberId: bob.id })
+    assert.equal(moved.ownerMemberId, bob.id)
+    assert.equal(store.findKeyBySecret(secret), null, 'the old holder can no longer spend as Bob')
+    assert.deepEqual(revoked.keys, [key.id])
+    assert.equal(lastAudit().details['secretReset'], true)
+    // Bob gets a working secret by rotating his key.
+    const { secret: bobs } = rotateKey(ctx, CLI_ACTOR, key.id)
+    assert.equal(store.findKeyBySecret(bobs)?.id, key.id)
+  })
 })
 
 describe('members', () => {
