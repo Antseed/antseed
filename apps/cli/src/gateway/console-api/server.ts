@@ -16,8 +16,22 @@ const MAX_CONSOLE_BODY_BYTES = 1024 * 1024
 const SAFE_METHODS = new Set(['GET', 'HEAD', 'OPTIONS'])
 
 /**
- * Wallet connections (WalletConnect relays, RPCs, Coinbase) need https: and
- * wss: for connect-src, and some wallet SDKs use https: iframes.
+ * The console itself only calls its own API; the https:/wss: sources are for
+ * browser wallet connections, deliberately not a host list:
+ * - connect-src: the chain RPC is gateway configuration (`rpcUrl`, any public
+ *   endpoint) with the @antseed/wallet-config Base fallbacks, and the wallet
+ *   SDKs RainbowKit bundles talk to their own services (WalletConnect relay,
+ *   pulse and RPC on *.walletconnect.org/.com and api.web3modal.org, Coinbase
+ *   keys/rpc/analytics on *.coinbase.com, MetaMask SDK socket and analytics on
+ *   *.metamask.io), which move between SDK releases.
+ * - img-src: the WalletConnect modal loads wallet logos from its explorer API.
+ *   Chat markdown never loads remote images (see the console's streamdown
+ *   rehype config), so this does not widen what seller output can fetch.
+ * - frame-src: the card checkout (Antseed Pay, `ANTSEED_PAY_URL`, configurable)
+ *   and the iframes the WalletConnect core and MetaMask SDK create.
+ * An allowlist would break wallet connections silently whenever an SDK or the
+ * configured RPC changes; script-src stays 'self', which is what keeps
+ * injected markup from running.
  */
 export const CONSOLE_CSP = [
   "default-src 'self'",
