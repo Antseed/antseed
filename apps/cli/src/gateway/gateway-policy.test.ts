@@ -33,6 +33,11 @@ async function fakeBuyer(options: { costUsdc?: number } = {}) {
     req.on('end', () => {
       captured.push({ url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks).toString('utf8') })
       const requestId = `req-${++counter}`
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'good-model', aliases: [] }, { id: 'other', aliases: ['other-model'] }, { id: 'GOOD', aliases: ['good-model-v2'] }] }))
+        return
+      }
       const tag = req.headers[SPEND_ATTRIBUTION_HEADER] as string | undefined
       if (tag && options.costUsdc) {
         feed.track(requestId, tag)
@@ -155,6 +160,23 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
     assert.equal((await ctx.send(secret, '/v1/messages', { model: 'other-model' })).status, 403)
     assert.equal((await ctx.send(secret, '/v1/responses', {})).status, 403, 'no model under an allow list')
     assert.equal(ctx.buyer.captured.length, 2)
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('/v1/models lists only the models the key may use, even when the buyer is not sent the policy', async () => {
+  const ctx = await setup({ controlSecret: null })
+  try {
+    const listModels = async (secret: string) => {
+      const response = await fetch(`http://127.0.0.1:${ctx.port}/v1/models`, { headers: { authorization: `Bearer ${secret}` } })
+      assert.equal(response.status, 200)
+      return ((await response.json()) as { data: Array<{ id: string }> }).data.map((entry) => entry.id)
+    }
+    const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model', 'good-model-v2'] } })
+    assert.deepEqual(await listModels(limited.secret), ['good-model', 'GOOD'])
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    assert.deepEqual(await listModels(open.secret), ['good-model', 'other', 'GOOD'])
   } finally {
     await ctx.close()
   }

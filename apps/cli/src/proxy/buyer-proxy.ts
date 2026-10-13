@@ -2997,13 +2997,17 @@ export class BuyerProxy {
    * `x-antseed-request-id` response header keeps the port-reuse probe in
    * `buyer start` recognizing this as an AntSeed proxy.
    */
-  private async _handleNetworkModels(res: ServerResponse, rawPath: string): Promise<void> {
+  private async _handleNetworkModels(res: ServerResponse, rawPath: string, requestPolicy: RoutingPolicy | null): Promise<void> {
     const url = new URL(rawPath, 'http://localhost')
     const responseHeaders = { 'content-type': 'application/json', 'x-antseed-request-id': randomUUID() }
     const peers = await this._getPeers()
+    const peerById = new Map<string, PeerInfo>(peers.map((peer) => [peer.peerId, peer]))
     const models = buildNetworkModels(peers, this._now(), {
       routingPreferences: this._routingPreferences,
       peerHealth: this._peerHealth,
+      ...(requestPolicy
+        ? { offerFilter: (offer: NetworkServiceOffer) => this._policyAllowsOffer(requestPolicy, peerById.get(offer.peerId), offer) }
+        : {}),
     })
 
     const modelIdRaw = url.pathname.replace(/^\/v1\/models\/?/i, '')
@@ -3051,6 +3055,18 @@ export class BuyerProxy {
     res.end(JSON.stringify({ object: 'list', data }))
   }
 
+  /**
+   * Whether a request under the gateway's policy could use this offer, by
+   * the checks that judge a pinned `peer@model`: the model allow list, the
+   * seller-level policy, a strict model route and the buyer's hard limits.
+   */
+  private _policyAllowsOffer(requestPolicy: RoutingPolicy, peer: PeerInfo | undefined, offer: NetworkServiceOffer): boolean {
+    if (!peer || !policyAllowsModel(this._effectivePolicy(requestPolicy), offer.serviceId)) return false
+    const facts = this._policyFacts(peer, offer)
+    return pinnedPeerExclusionReasons(requestPolicy, facts, offer.serviceId).length === 0
+      && policyExclusionReasons(this._buyerHardPolicy(), facts).length === 0
+  }
+
   private async _handleRequest(req: IncomingMessage, res: ServerResponse): Promise<void> {
     const method = req.method ?? 'GET'
     const path = req.url ?? '/'
@@ -3077,14 +3093,6 @@ export class BuyerProxy {
       res.writeHead(404, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ error: { message: 'Not found', type: 'invalid_request_error' } }))
       return
-    }
-
-    // `/v1/models` is answered locally from the discovered-peer cache: one
-    // entry per model across the whole network, with the peers serving it.
-    // Routed to a single pinned seller it would only cover that seller's
-    // services — and would require a pin just to browse the network.
-    if (method === 'GET' && normalizedPath.startsWith('/v1/models')) {
-      return this._handleNetworkModels(res, path)
     }
 
     // Collect request body
@@ -3147,6 +3155,14 @@ export class BuyerProxy {
       return
     }
     const requestPolicy = requestPolicyResult.kind === 'policy' ? requestPolicyResult.policy : null
+    // `/v1/models` is answered locally from the discovered-peer cache: one
+    // entry per model across the whole network, with the peers serving it.
+    // Routed to a single pinned seller it would only cover that seller's
+    // services — and would require a pin just to browse the network. Under a
+    // gateway policy it lists only what the policy lets the caller use.
+    if (method === 'GET' && normalizedPath.startsWith('/v1/models')) {
+      return this._handleNetworkModels(res, path, requestPolicy)
+    }
     // Node already answered curl's `Expect: 100-continue` for large bodies;
     // forwarded, it makes the seller's fetch fail.
     delete headers['expect']

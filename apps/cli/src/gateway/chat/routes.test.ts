@@ -177,6 +177,30 @@ test('an API-key session chats as that key, with its own history', async () => {
   }
 })
 
+test('the chat models list is cached per chat key, since each key\'s policy narrows it', async () => {
+  const { dir, store, cleanup } = tempDataDir()
+  const workspace = store.ensureWorkspaceForIdentity(DEFAULT_BUYER_IDENTITY)
+  const { key } = store.createKey({ label: 'laptop', workspaceId: workspace.id, ownerMemberId: null, limits: { daily: null, monthly: null, total: null }, expiresAt: null })
+  const member = addActiveMember(store, 'Dana', { workspaces: [{ workspaceId: workspace.id, role: 'member' }] })
+  const auth = new FakeConsoleAuth()
+  auth.as('laptop', { kind: 'key', keyId: key.id, sessionId: 's-key' })
+  auth.as('dana', memberPrincipal(store, member.id))
+  const upstream = await fakeGateway((keyId, control) => control === 'test-secret' && store.getKey(keyId)?.status === 'active')
+  const server = await startConsole(testDeps(store, dir), auth, [chatRouteRegistrar({ gatewayPort: () => upstream.port })])
+  try {
+    for (const who of ['dana', 'laptop', 'dana', 'laptop']) {
+      assert.equal((await call(server.port, 'GET', `/console/api/chat/models?workspace=${workspace.id}`, { who })).status, 200)
+    }
+    const listings = upstream.requests.filter((request) => request.path === '/v1/models')
+    assert.equal(listings.length, 2)
+    assert.equal(new Set(listings.map((request) => request.auth)).size, 2)
+  } finally {
+    await server.close()
+    await upstream.close()
+    cleanup()
+  }
+})
+
 test('an org admin chats in a workspace they do not belong to with an unowned key in their name', async () => {
   const { dir, store, cleanup } = tempDataDir()
   const workspace = store.ensureWorkspaceForIdentity(DEFAULT_BUYER_IDENTITY)

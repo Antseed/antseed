@@ -75,7 +75,8 @@ interface Chatter {
 
 export function chatRouteRegistrar(options: ChatRouteOptions) {
   return (router: ConsoleRouter, deps: ConsoleDeps): void => {
-    let modelsCache: { at: number; models: ChatModel[] } | null = null
+    /** Per chat key: the listing follows the key's routing policy. */
+    const modelsCache = new Map<string, { at: number; models: ChatModel[] }>()
     /** Peer id → display name, from the models list, to name the peer that answered. */
     const peerNames = new Map<string, string>()
 
@@ -139,12 +140,14 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
 
     router.add('GET', '/chat/models', async (request): Promise<ChatModel[]> => {
       const caller = chatter(request, request.query.get('workspace'))
-      if (modelsCache && deps.now() - modelsCache.at < MODELS_TTL_MS) return modelsCache.models
+      const cached = modelsCache.get(caller.keyId)
+      if (cached && deps.now() - cached.at < MODELS_TTL_MS) return cached.models
       const response = await fetch(`${gatewayBase()}/models`, { headers: asKey(caller.keyId), signal: AbortSignal.timeout(15_000) })
         .catch((error: unknown) => { throw new ConsoleError(502, 'models_unavailable', `Models could not be listed: ${String(error)}`) })
       if (!response.ok) throw new ConsoleError(502, 'models_unavailable', `The gateway answered ${response.status} listing models`)
       const models = mapChatModels(await response.json())
-      modelsCache = { at: deps.now(), models }
+      for (const [keyId, entry] of modelsCache) if (deps.now() - entry.at >= MODELS_TTL_MS) modelsCache.delete(keyId)
+      modelsCache.set(caller.keyId, { at: deps.now(), models })
       for (const model of models) for (const peer of model.peers) if (peer.name) peerNames.set(peer.peerId, peer.name)
       return models
     }, allow)
@@ -199,7 +202,7 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
       const messages: UIMessage[] = at >= 0 ? [...stored.slice(0, at), incoming] : [...stored, incoming]
 
       // A model (or pinned peer) that cannot call tools gets a plain chat: some sellers reject tool definitions.
-      const known = modelsCache?.models.find((entry) => entry.id === model)
+      const known = modelsCache.get(caller.keyId)?.models.find((entry) => entry.id === model)
       const pinned = pinnedPeerId ? known?.peers.find((peer) => peer.peerId === pinnedPeerId) : undefined
       const canUseTools = known ? (pinned ? pinned.toolUse : known.toolUse) : true
       const tools = canUseTools

@@ -112,6 +112,11 @@ interface ForwardedRequest {
   body: Buffer
   /** The routing policy and the secret that vouches for it; empty without a policy. */
   policyHeaders: Record<string, string>
+  /**
+   * For `GET /v1/models` under a model allow list: the policy the listing is
+   * narrowed to here, since without a control secret the buyer never sees it.
+   */
+  modelListPolicy: RoutingPolicy | null
 }
 
 export interface GatewayServerOptions {
@@ -291,6 +296,7 @@ export class GatewayServer {
       startedAt: Date.now(),
       body,
       policyHeaders: policy.headers,
+      modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
     }
     try {
       this._options.store.startRequest({
@@ -384,7 +390,7 @@ export class GatewayServer {
     context: KeyContext,
     preset: PresetRecord | null,
     model: string | null,
-  ): { allowed: false } | { allowed: true; headers: Record<string, string> } {
+  ): { allowed: false } | { allowed: true; headers: Record<string, string>; policy: RoutingPolicy } {
     const { policy } = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace })
     if ((route.paid || model) && !policyAllowsModel(policy, model)) {
       sendError(res, 403, 'permission_error', 'model_not_allowed', model
@@ -393,7 +399,7 @@ export class GatewayServer {
       return { allowed: false }
     }
     const routed = meaningfulPolicy(policy)
-    if (isEmptyPolicy(routed)) return { allowed: true, headers: {} }
+    if (isEmptyPolicy(routed)) return { allowed: true, headers: {}, policy }
     const controlSecret = this._options.controlSecret ?? null
     const sellersRestricted = restrictsSellers(routed)
     if (!controlSecret && sellersRestricted) {
@@ -404,8 +410,8 @@ export class GatewayServer {
       sendError(res, 503, 'api_error', 'buyer_policy_unsupported', "The buyer does not apply this API key's routing policy; upgrade it or check the gateway control secret")
       return { allowed: false }
     }
-    if (!controlSecret) return { allowed: true, headers: {} }
-    return { allowed: true, headers: { [ROUTING_POLICY_HEADER]: encodePolicyHeader(routed), [GATEWAY_CONTROL_HEADER]: controlSecret } }
+    if (!controlSecret) return { allowed: true, headers: {}, policy }
+    return { allowed: true, headers: { [ROUTING_POLICY_HEADER]: encodePolicyHeader(routed), [GATEWAY_CONTROL_HEADER]: controlSecret }, policy }
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
@@ -498,11 +504,23 @@ export class GatewayServer {
           if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
         }
         responseHeaders.connection = 'close'
+        upstreamRes.once('error', () => finish!(status, buyerRequestId))
+        res.once('close', () => finish!(status, buyerRequestId))
+        const modelListPolicy = request.modelListPolicy
+        if (modelListPolicy && status === 200) {
+          const chunks: Buffer[] = []
+          upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+          upstreamRes.once('end', () => {
+            const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
+            res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
+            res.end(listing)
+            finish!(status, buyerRequestId)
+          })
+          return
+        }
         res.writeHead(status, responseHeaders)
         upstreamRes.pipe(res)
         upstreamRes.once('end', () => finish!(status, buyerRequestId))
-        upstreamRes.once('error', () => finish!(status, buyerRequestId))
-        res.once('close', () => finish!(status, buyerRequestId))
       })
 
       upstream.on('error', (error) => {
@@ -914,6 +932,22 @@ function firstHeader(value: string | string[] | undefined): string {
 
 function normalizeSource(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+}
+
+/** A `/v1/models` listing without the models the policy does not allow (matched by id or alias). */
+function filterModelList(body: Buffer, policy: RoutingPolicy): Buffer {
+  let listing: { data?: unknown }
+  try {
+    listing = JSON.parse(body.toString('utf8')) as { data?: unknown }
+  } catch {
+    return body
+  }
+  if (!listing || !Array.isArray(listing.data)) return body
+  listing.data = listing.data.filter((entry: { id?: unknown; aliases?: unknown }) => {
+    const names = [entry?.id, ...(Array.isArray(entry?.aliases) ? entry.aliases : [])]
+    return names.some((name) => typeof name === 'string' && policyAllowsModel(policy, name))
+  })
+  return Buffer.from(JSON.stringify(listing), 'utf8')
 }
 
 function canonicalizeRoute(method: string, path: string): CanonicalRoute | null {

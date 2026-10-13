@@ -91,6 +91,23 @@ test('an authenticated policy filters automatic routing and both headers are str
   assert.equal(h.dispatched[0]?.headers[ROUTING_POLICY_HEADER], undefined)
 })
 
+test('/v1/models under a gateway policy lists only the models and sellers the policy allows', async (t) => {
+  const h = await startHarness(t, [cheap, pricey])
+  const list = async (headers: Record<string, string> = {}) => {
+    const res = await fetch(`${h.url}/v1/models`, { headers })
+    assert.equal(res.status, 200)
+    const body = await res.json() as { data: Array<{ id: string; peers: Array<{ peerId: string }> }> }
+    return body.data.map((model) => [model.id, model.peers.map((peer) => peer.peerId).sort()])
+  }
+  assert.deepEqual(await list(), [['gpt-5', [cheap.peerId, pricey.peerId]]])
+  assert.deepEqual(await list(withPolicy({ blockedPeerIds: [pricey.peerId] })), [['gpt-5', [cheap.peerId]]])
+  assert.deepEqual(await list(withPolicy({ maxInputUsdPerMillion: 5 })), [['gpt-5', [cheap.peerId]]])
+  assert.deepEqual(await list(withPolicy({ allowedModels: ['other-model'] })), [])
+  assert.deepEqual(await list(withPolicy({ modelRoutes: { 'gpt-5': { peerIds: [pricey.peerId], strict: true } } })), [['gpt-5', [pricey.peerId]]])
+  const forged = await fetch(`${h.url}/v1/models`, { headers: { [GATEWAY_CONTROL_HEADER]: 'nope', [ROUTING_POLICY_HEADER]: encodePolicyHeader({ allowedModels: [] }) } })
+  assert.equal(forged.status, 401)
+})
+
 test('sort modes change which seller is tried first', async (t) => {
   const h = await startHarness(t, [cheap, pricey])
   await chat(h, withPolicy({ sort: 'trust' }))
