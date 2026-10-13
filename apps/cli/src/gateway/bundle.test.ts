@@ -179,6 +179,12 @@ test('import refuses a data dir that already holds a gateway or wallet, and --fo
     await assert.rejects(importGatewayBundle(options), /already holds a gateway or wallet \(identity.key\).*--force/)
     assert.equal(readFileSync(join(f.server, 'identity.key'), 'utf8'), '33'.repeat(32))
 
+    // A bad console URL fails before anything is moved aside.
+    await assert.rejects(importGatewayBundle({ ...options, force: true, publicUrl: 'not a url' }), /not a valid console URL/)
+    assert.equal(readFileSync(join(f.server, 'identity.key'), 'utf8'), '33'.repeat(32))
+    assert.ok(!existsSync(join(f.server, 'gateway')), 'nothing was restored')
+    assert.deepEqual(readdirSync(join(f.root, 'server')).filter((name) => name.includes('.backup-')), [], 'no backup was made')
+
     const result = await importGatewayBundle({ ...options, force: true, port: 9000 })
     assert.equal(result.backups.length, 1)
     assert.equal(readFileSync(join(result.backups[0]!, 'identity.key'), 'utf8'), '33'.repeat(32), 'the old data is kept')

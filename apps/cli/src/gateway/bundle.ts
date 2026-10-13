@@ -528,6 +528,15 @@ function invalidateSessions(store: GatewayStore): number {
   return sessions
 }
 
+/** The hostname of a URL, or null when it does not parse. */
+function urlHost(url: string): string | null {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return null
+  }
+}
+
 export async function importGatewayBundle(options: ImportOptions): Promise<ImportResult> {
   const now = options.now ?? Date.now
   const dataDir = resolve(options.dataDir)
@@ -551,6 +560,15 @@ export async function importGatewayBundle(options: ImportOptions): Promise<Impor
     if (!paths.includes(MANIFEST) || !paths.includes(GATEWAY_DB)) throw new BundleError('The bundle is incomplete (no manifest or gateway database).')
     const manifest = JSON.parse(readFileSync(join(root, MANIFEST), 'utf8')) as BundleManifest
     if (manifest.format !== 'antseed-gateway-bundle' || manifest.version !== 1) throw new BundleError('Unsupported bundle version; update @antseed/cli.')
+    if (!Array.isArray(manifest.files)) throw new BundleError('The bundle manifest is damaged.')
+    // Everything that can fail is worked out before the data dir is touched.
+    const saved = readConsoleLocationFrom(join(root, ...GATEWAY_DB.split('/'))) ?? manifest.consoleLocation
+    const previousOrigin = saved ? (saved.publicUrl ?? `http://localhost:${saved.port}`) : null
+    const location: ConsoleLocation = { publicUrl: options.publicUrl ?? null, port: options.port ?? saved?.port ?? 8379 }
+    const newOrigin = location.publicUrl ?? `http://localhost:${location.port}`
+    const newHost = urlHost(newOrigin)
+    if (newHost === null) throw new Error(`"${newOrigin}" is not a valid console URL.`)
+    const previousHost = previousOrigin ? urlHost(previousOrigin) : null
 
     const suffix = `backup-${timestamp(now())}`
     if (inUse.length > 0 && existsSync(dataDir)) {
@@ -580,16 +598,10 @@ export async function importGatewayBundle(options: ImportOptions): Promise<Impor
 
     const store = new GatewayStore(dataDir, now)
     let sessionsCleared = 0
-    let previousOrigin: string | null = null
-    let newOrigin: string
     let passkeys = 0
     try {
       sessionsCleared = invalidateSessions(store)
-      const saved = readConsoleLocation(store) ?? manifest.consoleLocation
-      previousOrigin = saved ? (saved.publicUrl ?? `http://localhost:${saved.port}`) : null
-      const location: ConsoleLocation = { publicUrl: options.publicUrl ?? null, port: options.port ?? saved?.port ?? 8379 }
       store.setSetting(CONSOLE_LOCATION_SETTING, location)
-      newOrigin = location.publicUrl ?? `http://localhost:${location.port}`
       passkeys = countPasskeys(store)
       store.recordAudit({
         actor: { kind: 'cli', id: null },
@@ -600,13 +612,12 @@ export async function importGatewayBundle(options: ImportOptions): Promise<Impor
       store.close()
     }
     const summary = await summarizeDataDir(dataDir)
-    const hostOf = (origin: string | null) => (origin ? new URL(origin).hostname : null)
     return {
       manifest,
       backups,
       summary,
       sessionsCleared,
-      passkeysStranded: passkeys > 0 && hostOf(previousOrigin) !== hostOf(newOrigin),
+      passkeysStranded: passkeys > 0 && previousHost !== newHost,
       previousOrigin,
       newOrigin,
     }
