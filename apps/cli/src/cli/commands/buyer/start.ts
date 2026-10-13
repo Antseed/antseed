@@ -19,7 +19,7 @@ import { BUYER_RESTART_EXIT_CODE, BuyerProxy, type DepositWatcherAbsenceReason }
 import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
-import { sharedChainProvider } from '../../../proxy/chain-rpc.js'
+import { redact, sharedChainProvider } from '../../../proxy/chain-rpc.js'
 import { resolveBaseRpcUrlOverride } from '../../payment-utils.js'
 import { BuyerIdentityLoader } from '../../../buyer-identities/loader.js'
 import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '../../../plugins/verifier.js'
@@ -338,7 +338,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       if (settlementEnabled && settlementEnv !== true) {
         const rpcUp = await isRpcReachable(chainConfig.rpcUrl)
         if (!rpcUp) {
-          console.log(chalk.yellow(`Chain RPC not answering at ${chainConfig.rpcUrl} — payments stay enabled; on-chain reads resume automatically once it is reachable.`))
+          console.log(chalk.yellow(`Chain RPC not answering at ${redact(chainConfig.rpcUrl)} — payments stay enabled; on-chain reads resume automatically once it is reachable.`))
           console.log(chalk.dim('Set ANTSEED_ENABLE_SETTLEMENT=false to run without payments.'))
         }
       }
