@@ -17,6 +17,23 @@ export interface PassphrasePrompt {
   ask(question: string): Promise<string>
 }
 
+/**
+ * Set by `gateway start` on the buyer it runs: the wallet passphrase comes on
+ * stdin, so it is never in that process's environment.
+ */
+export const PASSPHRASE_STDIN_ENV = 'ANTSEED_PASSPHRASE_STDIN'
+
+/** Reads a passphrase handed on over stdin (see PASSPHRASE_STDIN_ENV) and uses it for this process. */
+async function takePassphraseFromStdin(): Promise<void> {
+  if (process.env[PASSPHRASE_STDIN_ENV] !== '1') return
+  delete process.env[PASSPHRASE_STDIN_ENV]
+  const chunks: Buffer[] = []
+  for await (const chunk of process.stdin) chunks.push(Buffer.isBuffer(chunk) ? chunk : Buffer.from(chunk as string))
+  const passphrase = Buffer.concat(chunks).toString('utf8').split(/\r?\n/, 1)[0] ?? ''
+  if (!passphrase) throw new Error(`${PASSPHRASE_STDIN_ENV} is set but no passphrase came on stdin.`)
+  setIdentityPassphrase(passphrase)
+}
+
 const terminal: PassphrasePrompt = {
   get available() { return process.stdin.isTTY === true },
   ask: (question) => promptHidden(question),
@@ -25,7 +42,7 @@ const terminal: PassphrasePrompt = {
 /**
  * The wallet passphrase: ANTSEED_PASSPHRASE / ANTSEED_PASSPHRASE_FILE, else
  * asked on the terminal and used for the rest of this process like the
- * variable (child processes get it the same way; it is never written).
+ * variable (a buyer the gateway starts gets it on stdin; it is never written).
  * Null when neither is set and stdin is not a terminal. `confirm` asks twice
  * and requires the length for a new passphrase, for encrypting keys with it.
  */
@@ -79,6 +96,7 @@ export async function verifiedWalletPassphrase(
   dataDir: string,
   options: { confirmNew?: boolean; prompt?: PassphrasePrompt } = {},
 ): Promise<string | null> {
+  await takePassphraseFromStdin()
   const encrypted = await firstEncryptedKey(dataDir)
   const configured = resolveIdentityPassphrase()
   if (configured) {

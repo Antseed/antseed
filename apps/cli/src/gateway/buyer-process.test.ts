@@ -1,10 +1,14 @@
 import assert from 'node:assert/strict'
 import { EventEmitter } from 'node:events'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { PassThrough } from 'node:stream'
 import { test } from 'node:test'
 import type { ChildProcess } from 'node:child_process'
+import { FileIdentityStore } from '@antseed/node'
 import { BUYER_RESTART_EXIT_CODE } from '../proxy/buyer-proxy.js'
-import { GatewayBuyer } from './buyer-process.js'
+import { GatewayBuyer, spawnCliBuyer } from './buyer-process.js'
 
 class FakeChild extends EventEmitter {
   stdout = new PassThrough()
@@ -85,4 +89,30 @@ test('stop terminates the buyer and does not restart it', async () => {
   assert.deepEqual(children[0]!.killed, ['SIGTERM'])
   await waitForRestart()
   assert.equal(children.length, 1)
+})
+
+test('hands the wallet passphrase to the buyer on stdin, not in its environment', async () => {
+  const dir = mkdtempSync(join(tmpdir(), 'antseed-buyer-process-'))
+  try {
+    const passphrase = 'correct horse battery'
+    await new FileIdentityStore(dir, { passphrase }).save('66'.repeat(32))
+    // Stands in for the CLI: what `buyer start` does with the passphrase first.
+    const script = join(dir, 'buyer.mjs')
+    writeFileSync(script, [
+      `const { walletPassphraseForStart } = await import(${JSON.stringify(new URL('../cli/wallet-passphrase.js', import.meta.url).href)})`,
+      `const inEnv = Object.entries(process.env).some(([, value]) => value?.includes(${JSON.stringify(passphrase)}))`,
+      `const unlocked = await walletPassphraseForStart(process.argv[process.argv.indexOf('--data-dir') + 1])`,
+      `console.log(JSON.stringify({ inEnv, unlocked }))`,
+    ].join('\n'))
+    process.env['ANTSEED_PASSPHRASE'] = passphrase
+    const child = spawnCliBuyer(['--data-dir', dir], [script])
+    let output = ''
+    child.stdout!.on('data', (chunk) => { output += chunk })
+    child.stderr!.on('data', (chunk) => { output += chunk })
+    const code = await new Promise((resolve) => child.once('exit', resolve))
+    assert.equal(code, 0, output)
+    assert.deepEqual(JSON.parse(output), { inEnv: false, unlocked: passphrase })
+  } finally {
+    rmSync(dir, { recursive: true, force: true })
+  }
 })

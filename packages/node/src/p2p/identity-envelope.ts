@@ -123,7 +123,12 @@ export async function decryptIdentityKey(text: string, passphrase: string): Prom
   return plain.toString('hex');
 }
 
-/** Taken from the environment once and removed from it, so child processes do not inherit it by accident. */
+/**
+ * Taken from the environment once and removed from process.env, so child
+ * processes started later do not inherit it by accident. This does not erase
+ * it from the environment the OS recorded at exec (e.g. /proc/<pid>/environ,
+ * readable by the same user and root): ANTSEED_PASSPHRASE_FILE avoids that.
+ */
 let _envPassphrase: string | undefined;
 
 function takeEnvPassphrase(): string | undefined {
@@ -159,15 +164,16 @@ export function resolveIdentityPassphrase(): string | null {
 /**
  * Uses a passphrase obtained another way (asked on a terminal) for the rest
  * of this process, exactly like one taken from ANTSEED_PASSPHRASE: it is
- * handed on to child processes by identityPassphraseEnv() and never written.
+ * returned by identityPassphraseEnv() and never written.
  */
 export function setIdentityPassphrase(passphrase: string): void {
   _envPassphrase = passphrase;
 }
 
 /**
- * Environment to add when starting a child process that must unlock
- * identities too: the passphrase this process took out of its environment.
+ * The passphrase this process took out of its environment (or was given),
+ * as `{ ANTSEED_PASSPHRASE: … }`, for handing on to a child process that must
+ * unlock identities too; prefer a channel other than the child's environment.
  * ANTSEED_PASSPHRASE_FILE stays in the environment and is inherited as is.
  */
 export function identityPassphraseEnv(): Record<string, string> {

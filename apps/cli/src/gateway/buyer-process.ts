@@ -1,6 +1,7 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
-import { identityPassphraseEnv } from '@antseed/node'
+import { identityPassphraseEnv, PASSPHRASE_ENV } from '@antseed/node'
+import { PASSPHRASE_STDIN_ENV } from '../cli/wallet-passphrase.js'
 import { BUYER_RESTART_EXIT_CODE } from '../proxy/buyer-proxy.js'
 
 /** A buyer that exits sooner than this after starting counts as failing to start. */
@@ -20,16 +21,29 @@ export interface GatewayBuyerOptions {
   spawnBuyer?: (args: string[]) => ChildProcess
 }
 
-function spawnCliBuyer(args: string[]): ChildProcess {
-  return spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...args], {
-    // The gateway restarts the buyer when it exits, so it may accept the console's restart requests.
-    // ANTSEED_PASSPHRASE is handed on explicitly: this process removed it from its environment when it read it.
-    env: { ...process.env, ...identityPassphraseEnv(), ANTSEED_SUPERVISED: '1' },
-    stdio: ['ignore', 'pipe', 'pipe'],
+/** Starts the CLI as a supervised buyer child; `cli` is how to run the CLI (tests replace it). */
+export function spawnCliBuyer(args: string[], cli: string[] = [...process.execArgv, process.argv[1]!]): ChildProcess {
+  // The wallet passphrase (from ANTSEED_PASSPHRASE, or typed on the terminal) goes to the
+  // buyer over its stdin, not in its environment, where the OS keeps it readable for as
+  // long as the process runs. ANTSEED_PASSPHRASE_FILE is inherited and read by the buyer itself.
+  const passphrase = identityPassphraseEnv()[PASSPHRASE_ENV]
+  const env: NodeJS.ProcessEnv = { ...process.env, ANTSEED_SUPERVISED: '1' }
+  delete env[PASSPHRASE_ENV]
+  if (passphrase) env[PASSPHRASE_STDIN_ENV] = '1'
+  const child = spawn(process.execPath, [...cli, ...args], {
+    // ANTSEED_SUPERVISED: the gateway restarts the buyer when it exits, so it may accept the console's restart requests.
+    env,
+    stdio: [passphrase ? 'pipe' : 'ignore', 'pipe', 'pipe'],
     // Its own process group: Ctrl+C reaches the gateway, which then stops the buyer
     // after itself, instead of the buyer exiting first and being restarted.
     detached: process.platform !== 'win32',
   })
+  if (passphrase && child.stdin) {
+    // A buyer that exits before reading it closes the pipe; its exit is handled below.
+    child.stdin.on('error', () => {})
+    child.stdin.end(`${passphrase}\n`)
+  }
+  return child
 }
 
 /**
@@ -55,7 +69,7 @@ export class GatewayBuyer {
       'buyer', 'start', '--port', String(buyerPort),
     ]
     const startedAt = Date.now()
-    const child = (this._options.spawnBuyer ?? spawnCliBuyer)(args)
+    const child = this._options.spawnBuyer ? this._options.spawnBuyer(args) : spawnCliBuyer(args)
     this._child = child
     for (const stream of [child.stdout, child.stderr]) {
       if (stream) createInterface({ input: stream }).on('line', (line) => { process.stderr.write(`[buyer] ${line}\n`) })
