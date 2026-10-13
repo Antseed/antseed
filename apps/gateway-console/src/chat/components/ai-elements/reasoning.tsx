@@ -6,9 +6,8 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/chat/components/ui/collapsible";
+import { streamdownPlugins, streamdownRehypePlugins } from "@/chat/lib/streamdown";
 import { cn } from "@/chat/lib/utils";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
 import {
@@ -202,9 +201,6 @@ export type ReasoningContentProps = ComponentProps<
   children: string;
 };
 
-// Mermaid and CJK plugins dropped to keep the console bundle small (the gateway serves it).
-const streamdownPlugins = { code, math };
-
 export const ReasoningContent = memo(
   ({ className, children, ...props }: ReasoningContentProps) => (
     <CollapsibleContent
@@ -215,7 +211,7 @@ export const ReasoningContent = memo(
       )}
       {...props}
     >
-      <Streamdown plugins={streamdownPlugins}>{children}</Streamdown>
+      <Streamdown plugins={streamdownPlugins} rehypePlugins={streamdownRehypePlugins}>{children}</Streamdown>
     </CollapsibleContent>
   )
 );

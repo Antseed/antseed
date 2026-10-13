@@ -11,9 +11,8 @@ import {
   TooltipProvider,
   TooltipTrigger,
 } from "@/chat/components/ui/tooltip";
+import { streamdownPlugins, streamdownRehypePlugins } from "@/chat/lib/streamdown";
 import { cn } from "@/chat/lib/utils";
-import { code } from "@streamdown/code";
-import { math } from "@streamdown/math";
 import type { UIMessage } from "ai";
 import { ChevronLeftIcon, ChevronRightIcon } from "lucide-react";
 import type { ComponentProps, HTMLAttributes, ReactElement } from "react";
@@ -319,9 +318,6 @@ export const MessageBranchPage = ({
 
 export type MessageResponseProps = ComponentProps<typeof Streamdown>;
 
-// Mermaid and CJK plugins dropped to keep the console bundle small (the gateway serves it).
-const streamdownPlugins = { code, math };
-
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
     <Streamdown
@@ -330,6 +326,7 @@ export const MessageResponse = memo(
         className
       )}
       plugins={streamdownPlugins}
+      rehypePlugins={streamdownRehypePlugins}
       {...props}
     />
   ),
