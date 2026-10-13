@@ -5,7 +5,10 @@ import { defaultRehypePlugins, type StreamdownProps } from 'streamdown'
 type RehypePlugins = NonNullable<StreamdownProps['rehypePlugins']>
 type RehypePlugin = Extract<RehypePlugins[number], (...args: never[]) => unknown>
 
-// Mermaid and CJK plugins dropped to keep the console bundle small (the gateway serves it).
+// Mermaid and CJK plugins dropped to keep the console bundle small (the gateway serves it):
+// the mermaid library is never bundled and mermaid fences render as code. The build still
+// emits `mermaid-*` assets, but those are Shiki's mermaid grammar (highlighting) and
+// Streamdown's own shared chunk, which Rollup names after its lazy Mermaid wrapper.
 export const streamdownPlugins = { code, math }
 
 const [harden, hardenOptions] = defaultRehypePlugins['harden'] as [RehypePlugin, object]
