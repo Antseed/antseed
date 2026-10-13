@@ -1,5 +1,6 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
+import { loadConfig } from '../../../config/loader.js'
 import { gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
 import { detectExposure, detectHostFacts } from '../../../gateway/exposure.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
@@ -16,7 +17,7 @@ import { registerGatewayPeerListCommands } from './peer-list.js'
 import { registerGatewayPresetCommands } from './preset.js'
 import { registerGatewayRoutingCommands } from './routing.js'
 import { registerGatewayPeersCommand, registerGatewaySettingsCommands } from './settings.js'
-import { DEFAULT_GATEWAY_PORT, topupConfig } from './shared.js'
+import { DEFAULT_GATEWAY_PORT, startGatewayBuyer, topupConfig } from './shared.js'
 import { registerGatewayWorkspaceCommands } from './workspace.js'
 
 /**
@@ -42,7 +43,8 @@ export function registerGatewayCommands(program: Command): void {
     .description('Run the API-key gateway and its console locally (use `antseed tunnel start` to publish it)')
     .option('--port <number>', 'gateway listen port', parsePositiveInteger, DEFAULT_GATEWAY_PORT)
     .option('--host <host>', 'listen address; use 0.0.0.0 to serve your LAN', '127.0.0.1')
-    .option('--buyer-port <number>', 'port of the running buyer (default: buyer.proxyPort from config)', parsePositiveInteger)
+    .option('--buyer-port <number>', 'port of the buyer (default: buyer.proxyPort from config)', parsePositiveInteger)
+    .option('--no-buyer', 'do not start a buyer; use one you run yourself on the buyer port')
     .option('--public-url <url>', 'origin the console is reached at, e.g. https://llm.example.com (env: ANTSEED_GATEWAY_PUBLIC_URL); needed for passkeys and single sign-on off this machine')
     .option('--no-console', 'serve only the API, without the /console management console')
     .option('--x402-facilitator <url>', 'accept x402 top-ups of key wallets, settled by this facilitator: a URL, "cdp" or "payai" (env: ANTSEED_X402_FACILITATOR_URL)')
@@ -52,6 +54,7 @@ export function registerGatewayCommands(program: Command): void {
       port: number
       host: string
       buyerPort?: number
+      buyer: boolean
       publicUrl?: string
       console: boolean
       x402Facilitator?: string
@@ -62,18 +65,26 @@ export function registerGatewayCommands(program: Command): void {
       const globalOptions = getGlobalOptions(gateway)
       const publicUrl = normalizePublicUrl(options.publicUrl ?? process.env['ANTSEED_GATEWAY_PUBLIC_URL'])
       const log = (message: string): void => { process.stderr.write(`[gateway] ${message}\n`) }
-      const runtime = await startGatewayRuntime({
-        dataDir: globalOptions.dataDir,
-        configPath: globalOptions.config,
-        listenPort: options.port,
-        listenHost: options.host,
-        ...(options.buyerPort ? { buyerPort: options.buyerPort } : {}),
-        ...(topup ? { topup } : {}),
-        ...(options.console
-          ? { createConsole: gatewayConsole({ dataDir: globalOptions.dataDir, configPath: globalOptions.config, publicUrl, log }) }
-          : {}),
-        onLog: log,
-      })
+      const buyerPort = options.buyerPort ?? (await loadConfig(globalOptions.config)).buyer.proxyPort
+      const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
+      let runtime: GatewayRuntime
+      try {
+        runtime = await startGatewayRuntime({
+          dataDir: globalOptions.dataDir,
+          configPath: globalOptions.config,
+          listenPort: options.port,
+          listenHost: options.host,
+          buyerPort,
+          ...(topup ? { topup } : {}),
+          ...(options.console
+            ? { createConsole: gatewayConsole({ dataDir: globalOptions.dataDir, configPath: globalOptions.config, publicUrl, log }) }
+            : {}),
+          onLog: log,
+        })
+      } catch (error) {
+        await buyer?.stop()
+        throw error
+      }
       console.log(chalk.green(`API-key gateway listening on http://${options.host}:${runtime.port}/v1`))
       console.log(chalk.dim(`${runtime.store.countActiveKeys()} active key(s). Manage them in the console or with \`antseed gateway key …\`.`))
       printConsoleInfo(runtime, `${publicUrl ?? `http://localhost:${runtime.port}`}/console`)

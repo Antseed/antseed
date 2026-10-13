@@ -171,7 +171,7 @@ async function main() {
 
   let buyer = startCli('buyer', ['buyer', 'start', '--port', String(buyerPort), '--no-verifier'], env)
   if (await waitFor(`http://127.0.0.1:${buyerPort}/_antseed/buyer-identities`, (status) => status === 200, 90_000) !== 200) throw new Error(`buyer did not start:\n${buyer.output()}`)
-  const gateway = startCli('gateway', ['gateway', 'start', '--port', String(gatewayPort), '--buyer-port', String(buyerPort)], env)
+  const gateway = startCli('gateway', ['gateway', 'start', '--no-buyer', '--port', String(gatewayPort), '--buyer-port', String(buyerPort)], env)
   if (await waitFor(`${base}/v1/models`, (status) => status === 401, 30_000) !== 401) throw new Error(`gateway did not start:\n${gateway.output()}`)
 
   // Claim the console as an owner signing in with a wallet.

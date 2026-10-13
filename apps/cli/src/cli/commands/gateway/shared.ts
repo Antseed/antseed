@@ -6,11 +6,15 @@ import { GatewayStore, type ApiKeyRecord, type MemberRecord, type WorkspaceRecor
 import type { GatewayTopupConfig } from '../../../gateway/runtime.js'
 import { AuthDb } from '../../../gateway/auth/db.js'
 import { loadConfig } from '../../../config/loader.js'
+import { portInUse } from '../../../gateway/bundle.js'
 import { loadOrCreateControlSecret, runningGatewayBuyerPort } from '../../../gateway/buyer-control.js'
+import { probeBuyerPolicySupport } from '../../../gateway/buyer-policy-probe.js'
+import { GatewayBuyer } from '../../../gateway/buyer-process.js'
 import { defaultBuyerClient, type BuyerClient } from '../../../gateway/console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../../../gateway/console-api/router.js'
 import { CLI_ACTOR, PolicyProblemError, type Actor, type ServiceContext } from '../../../gateway/services/context.js'
 import { liveBuyerAddresses } from '../../../gateway/services/wallet-address.js'
+import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 
@@ -259,4 +263,41 @@ export function limitsUsd(limits: BudgetLimits): Record<BudgetPeriod, string | n
 
 export function formatTime(ms: number | null): string {
   return ms === null ? '-' : new Date(ms).toISOString().replace('T', ' ').slice(0, 16)
+}
+
+const BUYER_START_WAIT_MS = 60_000
+
+/**
+ * Starts a buyer for the gateway on `buyerPort` and stops it when the
+ * gateway stops (`gateway start`, `tunnel start`), unless one is already running there (started by hand, a
+ * service or the desktop app), which the gateway then uses.
+ */
+export async function startGatewayBuyer(
+  buyerPort: number,
+  globalOptions: { dataDir: string; config: string; verbose: boolean },
+  log: (message: string) => void,
+): Promise<GatewayBuyer | null> {
+  if (await portInUse(buyerPort)) {
+    log(`using the buyer already running on port ${buyerPort}`)
+    return null
+  }
+  log(`starting a buyer on port ${buyerPort} (run your own with --no-buyer)`)
+  const buyer = new GatewayBuyer({
+    buyerPort,
+    dataDir: globalOptions.dataDir,
+    configPath: globalOptions.config,
+    verbose: globalOptions.verbose,
+    onLog: log,
+  })
+  buyer.start()
+  // Shutdown runs last-registered first, so the gateway stops before its buyer.
+  setupShutdownHandler(() => buyer.stop())
+  // Serve once the buyer answers the gateway, so the first requests do not
+  // fail; a slow start (a long peer lookup) only delays the gateway so long.
+  const probe = { buyerPort, secret: loadOrCreateControlSecret(globalOptions.dataDir) }
+  const deadline = Date.now() + BUYER_START_WAIT_MS
+  while (Date.now() < deadline && await probeBuyerPolicySupport(probe) === 'unknown') {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  return buyer
 }

@@ -116,7 +116,7 @@ export default function MigratePage() {
           </Step>
           <Step n={5} title="Stop the gateway on this computer">
             <p>
-              Press Ctrl+C where <code>antseed gateway start</code> and <code>antseed buyer start</code> run (or quit the desktop app's gateway),
+              Press Ctrl+C where <code>antseed gateway start</code> runs, which also stops the buyer it started (stop a buyer you run yourself too, or quit the desktop app's gateway),
               then delete the bundle on both machines. Never run both gateways: two buyers paying from the same wallet conflict.
             </p>
             <CodeBlock code={commands.stop} label="Both machines" />

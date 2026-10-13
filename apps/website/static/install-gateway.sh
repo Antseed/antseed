@@ -476,9 +476,9 @@ EOF
 
   local exec_start
   if [[ "$MODE" == cloudflare ]]; then
-    exec_start="$PREFIX/cli/bin/antseed tunnel start --provider cloudflare --buyer-port $BUYER_PORT --gateway-port $PORT"
+    exec_start="$PREFIX/cli/bin/antseed tunnel start --no-buyer --provider cloudflare --buyer-port $BUYER_PORT --gateway-port $PORT"
   else
-    exec_start="$PREFIX/cli/bin/antseed gateway start --host $HOST --port $PORT --buyer-port $BUYER_PORT"
+    exec_start="$PREFIX/cli/bin/antseed gateway start --no-buyer --host $HOST --port $PORT --buyer-port $BUYER_PORT"
     [[ -n "$CONSOLE_ORIGIN" ]] && exec_start+=" --public-url $CONSOLE_ORIGIN"
   fi
   cat >/etc/systemd/system/antseed-gateway.service <<EOF

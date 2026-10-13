@@ -121,7 +121,7 @@ async function main() {
   const buyerUp = await waitFor(`http://127.0.0.1:${buyerPort}/_antseed/buyer-identities`, (status) => status === 200, 90_000)
   check('buyer starts', buyerUp === 200, buyerUp ? '' : 'not reachable within 90 s; continuing (policy checks do not need it)', { optional: true })
 
-  startCli('gateway', ['gateway', 'start', '--port', String(gatewayPort), '--buyer-port', String(buyerPort)])
+  startCli('gateway', ['gateway', 'start', '--no-buyer', '--port', String(gatewayPort), '--buyer-port', String(buyerPort)])
   const gatewayUp = await waitFor(`${base}/v1/models`, (status) => status === 401, 30_000)
   check('gateway answers 401 without a key', gatewayUp === 401)
   if (gatewayUp !== 401) throw new Error('gateway did not start')

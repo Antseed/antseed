@@ -131,7 +131,7 @@ Spend counting has two known gaps, both small:
 
 ## Run the gateway
 
-The gateway forwards every key to your running buyer, so start that first (`antseed buyer start`, or the AI VPN). Then run the gateway locally, or on your LAN:
+The gateway forwards every key to a buyer. `antseed gateway start` starts one on `buyer.proxyPort` and stops it when the gateway stops; if a buyer already runs on that port (`antseed buyer start`, or the AI VPN), the gateway uses it instead. Run the gateway locally, or on your LAN:
 
 ```bash
 antseed gateway start                    # http://127.0.0.1:8379/v1
@@ -142,7 +142,7 @@ To run the buyer and gateway as always-on services on a Linux server, with HTTPS
 
 Publicly, use a tunnel. `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it. For an existing tunnel, the `ANTSEED_TUNNEL_API_KEY` it was started with is kept as an unlimited key on the default identity. Start the tunnel without `ANTSEED_TUNNEL_API_KEY` to revoke that key.
 
-If your buyer doesn't listen on `buyer.proxyPort`, point the gateway at it with `--buyer-port`. The gateway sets `x-antseed-buyer-identity` from the key itself; a value sent by the client is ignored.
+To use a buyer on another port, pass `--buyer-port`. To run the buyer yourself (for example as its own service), pass `--no-buyer`: the gateway then never starts one. The gateway sets `x-antseed-buyer-identity` from the key itself; a value sent by the client is ignored.
 
 ## Key holders: check usage
 
