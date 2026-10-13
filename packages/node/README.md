@@ -135,7 +135,6 @@ interface NodeConfig {
   payments?: {
     enabled?: boolean;
     paymentMethod?: 'crypto';
-    platformFeeRate?: number;
     settlementIdleMs?: number;
     defaultSessionAmountUSDC?: string;
     sellerWalletAddress?: string;
@@ -257,7 +256,6 @@ const node = new AntseedNode({
   payments: {
     enabled: true,
     paymentMethod: 'crypto',
-    platformFeeRate: 0.05,
     defaultSessionAmountUSDC: '1',
     sellerWalletAddress: '0xSeller...',
     paymentConfig: {

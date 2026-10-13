@@ -41,7 +41,7 @@ const DEFAULT_CONFIG: Record<string, unknown> = {
     disableMetadataV2Services: false,
   },
   network: { bootstrapNodes: [] },
-  payments: { preferredMethod: 'crypto', platformFeeRate: 0.05 },
+  payments: { preferredMethod: 'crypto' },
   providers: [],
   plugins: [],
 };
