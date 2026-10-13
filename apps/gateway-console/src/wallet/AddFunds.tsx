@@ -212,7 +212,7 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
     <Modal isOpen={checkout !== null} onClose={() => setCheckout(null)} size="md" title="Secure checkout"
       bodyClassName="gc-checkout"
       subtitle={checkout && (
-        <>{checkout.provider === 'stripe' ? 'Card checkout by Stripe (US only).' : 'Card checkout by Crossmint.'} Closes by itself once the funds arrive.{' '}
+        <>{checkout.provider === 'stripe' ? 'Card checkout by Outerfound, powered by Stripe (US only).' : 'Card checkout by Crossmint.'} Closes by itself once the funds arrive.{' '}
           <a className="gc-link" href={checkout.url} target="_blank" rel="noopener noreferrer" onClick={() => setCheckout(null)}>Open in a new tab</a></>
       )}>
       {checkout && (
