@@ -1,6 +1,7 @@
 import type * as http from 'node:http'
 import { createReadStream, existsSync, statSync } from 'node:fs'
 import { extname, join, normalize, sep } from 'node:path'
+import { pipeline } from 'node:stream'
 import { consoleDistDir } from '@antseed/gateway-console'
 import { errorMessage } from '../errors.js'
 import { PolicyProblemError } from '../services/context.js'
@@ -243,7 +244,13 @@ export function createConsoleApi(
       res.end()
       return
     }
-    createReadStream(file).pipe(res)
+    // A read error after the headers went out can only cut the response short (pipeline
+    // destroys it); it must not crash the gateway. A browser going away is not worth a log line.
+    pipeline(createReadStream(file), res, (error) => {
+      if (error && (error as NodeJS.ErrnoException).code !== 'ERR_STREAM_PREMATURE_CLOSE') {
+        deps.log(`console: could not serve ${file}: ${errorMessage(error)}`)
+      }
+    })
   }
 
   function handleStatic(req: http.IncomingMessage, res: http.ServerResponse, url: URL): void {
