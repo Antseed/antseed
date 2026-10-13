@@ -128,6 +128,15 @@ step() { printf '%s==>%s %s\n' "$C_GREEN" "$C_RESET" "$*"; }
 note() { printf '    %s\n' "$*"; }
 
 cleanup() { if [[ -n "$TMP_DIR" ]]; then rm -rf "$TMP_DIR"; fi; }
+
+# --verbose traces every command (set -x); secrets are handled with tracing
+# paused so they never reach the terminal or a captured log.
+xtrace_resume() { if [[ "$VERBOSE" == 1 ]]; then set -x; fi; }
+quiet_x() {
+  { set +x; } 2>/dev/null
+  "$@"
+  xtrace_resume
+}
 abort() { printf '\n' >&2; die "interrupted; re-run the installer to finish. Nothing in $SERVICE_HOME was removed."; }
 
 parse_args() {
@@ -326,7 +335,9 @@ import_bundle() {
   if [[ -n "$IMPORT_PASSWORD_FILE" ]]; then
     install -m 0600 -o "$SERVICE_USER" -g "$SERVICE_USER" "$IMPORT_PASSWORD_FILE" "$dir/password"
   else
+    { set +x; } 2>/dev/null
     (umask 077 && printf '%s\n' "$IMPORT_PASSWORD" >"$dir/password")
+    xtrace_resume
     chown "$SERVICE_USER:$SERVICE_USER" "$dir/password"
   fi
   IMPORT_PASSWORD=""
@@ -647,7 +658,7 @@ main() {
   fi
   if [[ "$DRY_RUN" == 1 ]]; then print_plan; return; fi
   ask_import_password
-  if [[ "$VERBOSE" == 1 ]]; then set -x; fi
+  xtrace_resume
   trap cleanup EXIT
   trap abort INT TERM
 
@@ -655,7 +666,7 @@ main() {
   install_cli
   create_user
   install_wrapper
-  write_env_file
+  quiet_x write_env_file
   write_units
   if [[ -n "$IMPORT_BUNDLE" ]]; then import_bundle; fi
 
