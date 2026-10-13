@@ -490,7 +490,7 @@ export default function Chat() {
       void queryClient.invalidateQueries({ queryKey: qk.chatThreads(workspace.id) })
     }
     if (status === 'ready' && messages.length > 0) {
-      queryClient.setQueryData(qk.chatThread(workspace.id, chatId), undefined)
+      queryClient.removeQueries({ queryKey: qk.chatThread(workspace.id, chatId), exact: true })
       void queryClient.invalidateQueries({ queryKey: qk.chatContext(workspace.id) })
       void queryClient.invalidateQueries({ queryKey: ['chat-route-preview', workspace.id] })
     }
