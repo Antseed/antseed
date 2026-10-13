@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- Website: the homepage "Tokens processed" stat now counts free-tier tokens as well as paid ones, from Antscan's new `/api/totals` endpoint, matching the explorer. It falls back to paid tokens only if that endpoint is unavailable.
+
 ### Documentation
 
 - Website: refresh the existing gateway announcement with the Gateway Console title and hero, a Console section with demo screenshots, and browser setup instructions while preserving the original URL and gateway guide.
