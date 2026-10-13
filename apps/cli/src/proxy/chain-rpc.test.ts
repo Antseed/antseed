@@ -49,6 +49,22 @@ test('without Multicall3 the calls are sent one by one', async (t) => {
   assert.equal(rpc.byMethod['eth_call'], 5)
 })
 
+test('only allow-listed reads are batched: anything else keeps its own eth_call and msg.sender', async (t) => {
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const provider = new ChainRpcProvider([rpc.url], 8453)
+  t.after(() => provider.destroy())
+  const token = new Contract(USDC, [...ERC20, 'function allowance(address owner, address spender) view returns (uint256)'], provider)
+  await Promise.all([
+    ...addresses.slice(0, 2).map((address) => token.getFunction('balanceOf').staticCall(address)),
+    token.getFunction('allowance').staticCall(addresses[0], addresses[1]),
+    token.getFunction('allowance').staticCall(addresses[1], addresses[2]),
+  ])
+  // One aggregate3 for the two balanceOf reads, one eth_call per allowance.
+  assert.deepEqual(rpc.byMethod, { eth_getCode: 1, eth_call: 3 })
+  assert.equal(rpc.batchedCalls, 2)
+})
+
 test('a reverting call inside a batch fails alone, as a CALL_EXCEPTION', async (t) => {
   const multicall = new Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)'])
   const word = (value: bigint) => '0x' + value.toString(16).padStart(64, '0')

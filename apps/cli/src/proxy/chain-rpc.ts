@@ -7,7 +7,8 @@
  * - Identical reads in flight at once share one request.
  * - `eth_call`s issued together (a `Promise.all` of contract reads, one
  *   tick of the deposit watcher for N wallets) are folded into a single
- *   Multicall3 `aggregate3` call.
+ *   Multicall3 `aggregate3` call, for an allow-list of caller-independent
+ *   views (`BATCHABLE_SELECTORS`).
  * - Chain constants (`eth_chainId`, deployed contract code) are remembered.
  * - An endpoint that answers 429 / JSON-RPC -32005 / 5xx / a network error
  *   is skipped for an exponentially growing, jittered period and the call
@@ -75,6 +76,29 @@ const COALESCED_METHODS = new Set(['eth_call', 'eth_getCode', 'eth_getBalance', 
 const MULTICALL = new Interface([
   'function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)',
 ])
+/**
+ * The reads folded into Multicall3 batches (as declared in the USDC,
+ * AntseedDeposits and DepositRelay ABIs the buyer and gateway use). Inside
+ * `aggregate3` a call runs with `msg.sender` = Multicall3, so only views whose
+ * answer does not depend on the caller belong here; any other `eth_call` is
+ * sent on its own.
+ */
+const BATCHABLE_SELECTORS = (() => {
+  const reads = new Interface([
+    'function balanceOf(address owner) view returns (uint256)',
+    'function name() view returns (string)',
+    'function version() view returns (string)',
+    'function DOMAIN_SEPARATOR() view returns (bytes32)',
+    'function getBuyerBalance(address buyer) view returns (uint256 available, uint256 reserved, uint256 lastActivityAt)',
+    'function getBuyerCreditLimit(address buyer) view returns (uint256)',
+    'function getOperator(address buyer) view returns (address)',
+    'function getOperatorNonce(address buyer) view returns (uint256)',
+    'function FEE() view returns (uint256)',
+  ])
+  const selectors = new Set<string>()
+  reads.forEachFunction((fragment) => selectors.add(fragment.selector))
+  return selectors
+})()
 
 interface Endpoint {
   url: string
@@ -190,6 +214,8 @@ export class ChainRpcProvider extends JsonRpcProvider {
     const [tx, block] = payload.params as [Record<string, unknown> | undefined, unknown]
     if (!tx || typeof tx !== 'object' || (block !== undefined && block !== 'latest')) return false
     if (typeof tx['to'] !== 'string' || tx['to'].toLowerCase() === this.multicallAddress.toLowerCase()) return false
+    const data = tx['data'] ?? tx['input']
+    if (typeof data !== 'string' || !BATCHABLE_SELECTORS.has(data.slice(0, 10).toLowerCase())) return false
     return Object.keys(tx).every((field) => field === 'to' || field === 'data' || field === 'input')
   }
 
@@ -409,7 +435,12 @@ export interface ChainRpcTarget {
 
 const shared = new Map<string, ChainRpcProvider>()
 
-/** The process's provider for a chain and endpoint list; built once, reused by every reader. */
+/**
+ * The process's provider for a chain and endpoint list; built once, reused by every reader.
+ * Batched reads run inside Multicall3, with `msg.sender` = Multicall3 rather
+ * than the zero address or a `from`: a read whose answer depends on the caller
+ * must not be added to `BATCHABLE_SELECTORS`.
+ */
 export function sharedChainProvider(chain: ChainRpcTarget, options?: ChainRpcOptions): ChainRpcProvider {
   const urls = [chain.rpcUrl, ...(chain.fallbackRpcUrls ?? [])]
   const key = `${chain.evmChainId}|${urls.join('|')}`
