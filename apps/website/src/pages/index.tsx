@@ -122,7 +122,7 @@ const PILLARS: {title: string; body: ReactNode}[] = [
     body: (
       <>
         One local endpoint, OpenAI and Anthropic compatible.{' '}
-        <Link to="/docs/guides/using-the-api">Read the API guide<ArrowRight size={14} /></Link>
+        <Link to="/docs/api">Read the API guide<ArrowRight size={14} /></Link>
       </>
     ),
   },

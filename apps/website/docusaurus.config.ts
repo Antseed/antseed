@@ -113,6 +113,28 @@ const config: Config = {
       {
         redirects: [
           {from: '/lightpaper', to: '/docs/lightpaper'},
+          // Docs restructure: the apps, CLI and older posts link to these.
+          {from: '/docs/guides/gateway-console', to: '/docs/gateway'},
+          {from: '/docs/guides/gateway-server', to: '/docs/gateway/server'},
+          {from: '/docs/guides/gateway-api-keys', to: '/docs/gateway/api'},
+          {from: '/docs/guides/vpr', to: '/docs/desktop'},
+          {from: '/docs/guides/verify-tee', to: '/docs/verify-tee'},
+          {from: '/docs/guides/using-the-api', to: '/docs/api'},
+          {from: '/docs/pricing', to: '/docs/api/routing'},
+          {from: '/docs/guides/agents', to: '/docs/agents'},
+          {from: '/docs/guides/public-tunnels', to: '/docs/tunnels'},
+          {from: '/docs/config', to: '/docs/buyer-config'},
+          {from: '/docs/guides/become-a-provider', to: '/docs/provide'},
+          {from: '/docs/guides/tee-provider', to: '/docs/provide/tee'},
+          {from: '/docs/guides/payments', to: '/docs/provide/payments'},
+          {from: '/docs/guides/staking', to: '/docs/provide/staking'},
+          {from: '/docs/guides/metrics', to: '/docs/provide/metrics'},
+          {from: '/docs/guides/metadata-v12-upgrade', to: '/docs/metadata-v12-upgrade'},
+          {from: '/docs/create-plugin', to: '/docs/provider-api'},
+          {from: '/docs/metering', to: '/docs/payments'},
+          {from: '/docs/protocol/legacy-emissions', to: '/docs/legacy-emissions'},
+          {from: '/docs/protocol/recognized-usage', to: '/docs/recognized-usage'},
+          {from: '/docs/protocol/reward-policies', to: '/docs/reward-policies'},
           // /connect was renamed to /integrations — keep old links working.
           {from: '/connect', to: '/integrations'},
           ...integrationEntries.map((i) => ({

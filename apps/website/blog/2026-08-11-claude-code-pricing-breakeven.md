@@ -134,7 +134,7 @@ Do not take our request shape. Take yours.
 1. Pull your actual token counts from the `usage` block Anthropic returns on every response. You want `input_tokens`, `output_tokens`, and `cache_read_input_tokens` separately.
 2. Compute your own input-to-output ratio. If it is far below 6.32:1 you are doing something unusual and the output rate matters more for you than it does for most.
 3. Multiply by the published rates in the first table. That is your monthly bill at first-party pricing.
-4. Compare against live market rates with `curl -s https://network.antseed.com/stats`, or the [Antseed pricing schema documentation](/docs/pricing) if you want the field definitions.
+4. Compare against live market rates with `curl -s https://network.antseed.com/stats`, or the [Antseed pricing schema documentation](/docs/api/routing) if you want the field definitions.
 
 If you decide the numbers justify moving, [pointing Claude Code at a different backend](/integrations/claude-code) is a base URL change and takes about two minutes. If you want the broader argument for why routing through an open market beats routing through one company's gateway, we made it in our [comparison against OpenRouter](/vs/openrouter).
 

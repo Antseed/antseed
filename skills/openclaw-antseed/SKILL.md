@@ -201,6 +201,6 @@ If the proxy returns models from across the network, the connection is working. 
 ## References
 
 - Antseed integration page: `https://antseed.com/integrations/openclaw/`
-- Antseed public tunnel guide: `https://antseed.com/docs/guides/public-tunnels`
+- Antseed public tunnel guide: `https://antseed.com/docs/tunnels`
 - OpenClaw model-provider documentation: `https://docs.openclaw.ai/concepts/model-providers`
 - OpenClaw source: `https://github.com/openclaw/openclaw`

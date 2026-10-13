@@ -38,7 +38,7 @@ export function SellSection() {
                 </ul>
                 <div className={styles.buttonRowLeft}>
                   <Button to="/providers" className={styles.sellDarkBtn}>Become a provider</Button>
-                  <Button to="/docs/guides/become-a-provider" variant="ghost" arrow className={styles.sellGhostBtn}>
+                  <Button to="/docs/provide" variant="ghost" arrow className={styles.sellGhostBtn}>
                     Read the provider guide
                   </Button>
                 </div>

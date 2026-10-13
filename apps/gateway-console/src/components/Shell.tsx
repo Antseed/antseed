@@ -14,7 +14,7 @@ import { ExposureBanner } from './ExposureBanner'
 import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
 
-const DOCS_URL = 'https://antseed.com/docs/guides/gateway-console'
+const DOCS_URL = 'https://antseed.com/docs/gateway'
 
 /** `/console/migrate`: reached from the reachability banner, not the nav. */
 const MigratePage = lazy(() => import('../pages/Migrate'))

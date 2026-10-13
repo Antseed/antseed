@@ -56,7 +56,7 @@ The easiest way to begin is with the AI VPN:
 3. Choose a provider yourself, or let automatic routing select one using your price and trust preferences.
 4. Try the built-in chat or connect a supported app. Start with an available free model, or add credits for paid usage.
 
-You can set maximum token prices and a minimum trust score for automatic routing. You pay for the inference you use, without an Antseed subscription. The [AI VPN guide](/docs/guides/vpr/) walks through these settings and connecting your apps.
+You can set maximum token prices and a minimum trust score for automatic routing. You pay for the inference you use, without an Antseed subscription. The [AI VPN guide](/docs/desktop/) walks through these settings and connecting your apps.
 
 If you prefer the terminal, use the CLI to install Antseed, start your buyer, and send your first request:
 
@@ -89,13 +89,13 @@ antseed buyer deposit
 # Shows your funding address + QR code; incoming USDC deposits automatically
 ```
 
-Your tools connect to a local endpoint at `http://localhost:8377`, which handles discovery, routing, and payments. The [API setup guide](/docs/guides/using-the-api/) covers configuration and connecting your tools.
+Your tools connect to a local endpoint at `http://localhost:8377`, which handles discovery, routing, and payments. The [API setup guide](/docs/api/) covers configuration and connecting your tools.
 
 Privacy is also part of choosing a provider. Antseed does not require a central account or email, and traffic between peers is encrypted. A standard provider still processes the prompt you send it. For providers advertising TEE support, your buyer can check hardware attestation evidence locally. What that evidence covers matters when choosing where to send sensitive requests. [Read how TEE verification works](/blog/dont-trust-the-tee-label/).
 
 **If you provide inference, you can join as a seller.** You might run an open model on your own machine, have a fine-tuned model for a particular task, or operate a professional inference service with confidential computing.
 
-You choose what to offer and how much to charge. Antseed provides discovery, connections to buyers, and payment settlement. Providers receive USDC for paid requests and can earn additional ANTS rewards from qualifying activity. [Become a provider](/docs/guides/become-a-provider/).
+You choose what to offer and how much to charge. Antseed provides discovery, connections to buyers, and payment settlement. Providers receive USDC for paid requests and can earn additional ANTS rewards from qualifying activity. [Become a provider](/docs/provide/).
 
 If you already use Ollama, llama.cpp, or another server with an OpenAI-compatible API, the local LLM plugin connects your running model to Antseed:
 
@@ -121,7 +121,7 @@ Staking rewards vary. Withdrawing before the lock expires can burn part of your 
 antseed ants
 ```
 
-The [staking guide](/docs/guides/staking/) covers claiming rewards, staking, and managing your positions.
+The [staking guide](/docs/provide/staking/) covers claiming rewards, staking, and managing your positions.
 
 We established the [Antseed Foundation](/blog/announcing-antseed-non-profit-foundation/) to support the network's development and independence. This raise helps us continue that work with the people using and providing AI.
 

@@ -393,7 +393,7 @@ See [Reward Policies](../website/docs/protocol/reward-policies.md) for how usage
 points are adjusted and historical wash-trading evidence affects rewards.
 
 Looking for pre-migration USDC staking or rewards? See
-[Legacy emissions and claims](../website/docs/protocol/legacy-emissions.md).
+[Legacy emissions and claims](../website/docs/archive/legacy-emissions.md).
 The setup commands below use that legacy USDC interface; they do not create
 ANTS pool positions.
 
@@ -462,7 +462,7 @@ operator, so they are claimable here only when the node wallet is its own
 operator. Loop-proof artifacts come from the `antseed-loop-proof` host
 (`kind: antseed-wash-trading-seller-proof`); submission is resumable, so a
 partially authenticated proof can be re-submitted with the same file.
-The [staking guide](../website/docs/guides/staking.md) walks through the
+The [staking guide](../website/docs/provide/staking.md) walks through the
 dashboard tabs and how to read the pool table.
 
 ### Legacy USDC Provider Setup (Pre-Migration)
@@ -634,7 +634,7 @@ Endpoints:
 /readyz
 ```
 
-See [Metrics](../../apps/website/docs/guides/metrics.md) for metric names, labels, and operational notes.
+See [Metrics](../../apps/website/docs/provide/metrics.md) for metric names, labels, and operational notes.
 
 ## Development
 
