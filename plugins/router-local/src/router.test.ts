@@ -181,6 +181,37 @@ describe('LocalRouter', () => {
     expect(router.allowsPeerForPolicy(makeRequest(), lowRepAllowedPrice)).toBe(false);
     expect(router.allowsPeerForPolicy(makeRequest(), highRepAllowedPrice)).toBe(true);
     expect(router.allowsPeerForPolicy(makeRequest(), highRepOverpriced)).toBe(false);
+
+    expect(router.explainPolicyRejection(makeRequest(), lowRepAllowedPrice)).toMatch(/^reputation \d+ below buyer minimum/);
+    expect(router.explainPolicyRejection(makeRequest(), highRepAllowedPrice)).toBeNull();
+    expect(router.explainPolicyRejection(makeRequest(), highRepOverpriced)).toMatch(/^output price \$100 over buyer cap \$/);
+  });
+
+  it('explains a rejection exactly when allowsPeerForPolicy rejects', () => {
+    const router = new LocalRouter({
+      minReputation: 40,
+      maxPricing: { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 20, cachedInputUsdPerMillion: 2 } },
+    });
+    const priced = (input: number, output: number, cachedInput?: number): Partial<PeerInfo> => ({
+      providerPricing: {
+        anthropic: { defaults: { inputUsdPerMillion: input, outputUsdPerMillion: output, ...(cachedInput !== undefined ? { cachedInputUsdPerMillion: cachedInput } : {}) } },
+      },
+    });
+    const peers: PeerInfo[] = [
+      withEstablishedHistory(makePeer(priced(5, 5))),
+      withEstablishedHistory(makePeer(priced(11, 5))),
+      withEstablishedHistory(makePeer(priced(5, 21))),
+      withEstablishedHistory(makePeer(priced(5, 5, 3))),
+      withEstablishedHistory(makePeer(priced(5, 5, 1))),
+      makePeer({ ...priced(5, 5), reputationScore: 1 }),
+      withEstablishedHistory(makePeer({ providers: ['openai'], providerPricing: {} })),
+    ];
+    for (const service of [undefined, 'claude-sonnet']) {
+      for (const peer of peers) {
+        const allowed = router.allowsPeerForPolicy(makeRequest(service), peer);
+        expect(router.explainPolicyRejection(makeRequest(service), peer) === null).toBe(allowed);
+      }
+    }
   });
 
   it('uses service-specific seller offer pricing when request service is present', () => {

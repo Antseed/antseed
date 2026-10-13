@@ -42,7 +42,10 @@ export interface DepositWatchEvent {
 }
 
 /**
- * active — a deposit flow is on screen (desktop view or `antseed deposit`).
+ * active — a deposit flow is on screen (desktop view, gateway console or
+ *   `antseed deposit`). The gateway console re-requests it as a heartbeat and
+ *   without one for `DEPOSIT_WATCH_ACTIVE_TTL_MS` it falls back to background
+ *   on its own; other callers keep it until they demote it.
  * background — the flow closed; card/Fun deliveries can land minutes later,
  *   so keep a slow poll until the linger window passes with an empty wallet.
  * idle — the daemon's resting cadence (auto-sweep on): watch forever, cheaply.
@@ -96,11 +99,25 @@ export interface DepositWatcherDeps {
   onEvent?: (event: DepositWatchEvent) => void
   /** Resting cadence once the background linger expires; null stops instead. */
   idleIntervalMs?: number | null
+  /**
+   * Shared poll loop for many watchers (the buyer daemon's wallets): one
+   * batched balance read per tick instead of a timer and a read per wallet.
+   * Without it the watcher polls on its own timer (one-shot commands).
+   */
+  scheduler?: DepositWatchScheduler
+}
+
+/** What a shared poll loop needs from a watcher; `DepositWatchHub` implements the other side. */
+export interface DepositWatchScheduler {
+  /** Poll the watcher every `intervalMs` (replacing an earlier registration); null unregisters. */
+  schedule(watcher: DepositWatcher, intervalMs: number | null, options?: { pollNow?: boolean }): void
 }
 
 export const DEPOSIT_WATCH_ACTIVE_INTERVAL_MS = 2_000
 export const DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS = 15_000
 export const DEPOSIT_WATCH_IDLE_INTERVAL_MS = 30_000
+/** A gateway console's active watch lapses to background unless promoted again within this window. */
+export const DEPOSIT_WATCH_ACTIVE_TTL_MS = 5 * 60_000
 // How long the background watch keeps polling an empty wallet before falling
 // back to idle (or stopping). Any activity re-arms it.
 const DEPOSIT_WATCH_LINGER_MS = 30 * 60_000
@@ -126,6 +143,13 @@ function sleep(ms: number): Promise<void> {
 export class DepositWatcher {
   private readonly _deps: DepositWatcherDeps
   private _timer: NodeJS.Timeout | null = null
+  /**
+   * The two kinds of active hold: the gateway console's heartbeat (a TTL that
+   * runs out) and the desktop's / `antseed deposit`'s (held until demoted).
+   * The watch stays active while either holds.
+   */
+  private _activeExpiry: NodeJS.Timeout | null = null
+  private _heldUntilDemoted = false
   private _mode: DepositWatchMode = 'off'
   private _lingerDeadline = 0
   private _lastBalance = 0n
@@ -140,6 +164,14 @@ export class DepositWatcher {
     this._deps = deps
   }
 
+  get address(): string {
+    return this._deps.address
+  }
+
+  get mode(): DepositWatchMode {
+    return this._mode
+  }
+
   status(): DepositWatcherStatus {
     return {
       mode: this._mode,
@@ -150,50 +182,93 @@ export class DepositWatcher {
     }
   }
 
-  /** A deposit flow is on screen: poll fast, sweep existing funds promptly. */
-  promote(): void {
-    this._setMode('active', DEPOSIT_WATCH_ACTIVE_INTERVAL_MS)
-    void this._poll()
+  /**
+   * A deposit flow is on screen: poll fast, sweep existing funds promptly.
+   * With `ttlMs` (the gateway console) it lapses to background unless
+   * promoted again, so a page that closed without demoting does not keep the
+   * fast poll forever; without it, it stays active until demoted.
+   */
+  promote(ttlMs: number | null = null): void {
+    if (this._stopped) return
+    this._setMode('active', DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, { pollNow: true })
+    if (ttlMs === null) {
+      this._heldUntilDemoted = true
+      return
+    }
+    this._clearActiveExpiry()
+    this._activeExpiry = setTimeout(() => {
+      this._activeExpiry = null
+      if (this._mode === 'active' && !this._heldUntilDemoted) this._toBackground()
+    }, ttlMs)
+    this._activeExpiry.unref?.()
   }
 
   /**
    * The deposit flow closed: don't stop — deliveries (card/Fun purchases) can
    * land minutes later. Keep polling at the background cadence; once the
    * linger window passes with an empty wallet, fall back to the idle cadence
-   * (or stop when idle polling is disabled).
+   * (or stop when idle polling is disabled). Releases only the hold taken
+   * without a TTL: a gateway console's heartbeat keeps the watch active.
    */
   demote(): void {
-    this._lingerDeadline = Date.now() + DEPOSIT_WATCH_LINGER_MS
-    this._setMode('background', DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS)
+    this._heldUntilDemoted = false
+    if (this._mode === 'active' && this._activeExpiry) return
+    this._toBackground()
   }
 
   /** Start the daemon's resting watch (auto-sweep). */
   startIdle(): void {
-    this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS)
-    void this._poll()
+    this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS, { pollNow: true })
   }
 
   stop(): void {
     this._stopped = true
-    this._clearTimer()
-    this._mode = 'off'
+    this._rest()
   }
 
-  private _setMode(mode: Exclude<DepositWatchMode, 'off'>, intervalMs: number): void {
+  private _toBackground(): void {
+    this._clearActiveExpiry()
+    this._lingerDeadline = Date.now() + DEPOSIT_WATCH_LINGER_MS
+    this._setMode('background', DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS)
+  }
+
+  /** Stop polling until promoted again (auto-sweep off: nothing to watch once the flow is over). */
+  private _rest(): void {
+    this._clearTimer()
+    this._clearActiveExpiry()
+    this._heldUntilDemoted = false
+    this._mode = 'off'
+    this._deps.scheduler?.schedule(this, null)
+  }
+
+  /** Poll every `intervalMs`; `pollNow` also polls right away (debounced by a shared loop). */
+  private _setMode(mode: Exclude<DepositWatchMode, 'off'>, intervalMs: number, options: { pollNow?: boolean } = {}): void {
     if (this._stopped) return
     this._clearTimer()
     this._mode = mode
+    if (this._deps.scheduler) {
+      this._deps.scheduler.schedule(this, intervalMs, options)
+      return
+    }
     this._timer = setInterval(() => { void this._poll() }, intervalMs)
     // A busy interval must never pile up sweeps; the in-flight guard makes
     // overlapping polls harmless, so unref keeps the timer from holding the
     // process open in one-shot commands.
     this._timer.unref?.()
+    if (options.pollNow) void this._poll()
   }
 
   private _clearTimer(): void {
     if (this._timer) {
       clearInterval(this._timer)
       this._timer = null
+    }
+  }
+
+  private _clearActiveExpiry(): void {
+    if (this._activeExpiry) {
+      clearTimeout(this._activeExpiry)
+      this._activeExpiry = null
     }
   }
 
@@ -210,11 +285,17 @@ export class DepositWatcher {
     } catch {
       return // transient RPC failure — try again next tick
     }
+    this.applyBalance(balance)
+  }
+
+  /** One observed hot-wallet balance (from this watcher's own read or a shared loop's batch). */
+  applyBalance(balance: bigint): void {
+    if (this._stopped) return
     if (this._mode === 'background') {
       if (balance > 0n || this._sweepInFlight) {
         this._lingerDeadline = Date.now() + DEPOSIT_WATCH_LINGER_MS
       } else if (Date.now() > this._lingerDeadline) {
-        if (this._deps.idleIntervalMs === null) this.stop()
+        if (this._deps.idleIntervalMs === null) this._rest()
         else this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS)
         return
       }

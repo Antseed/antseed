@@ -17,6 +17,8 @@ Use it to:
 
 Keys work with the local gateway (`antseed gateway start`) and with [public HTTPS tunnels](/docs/guides/public-tunnels) (`antseed tunnel start`).
 
+Everything on this page can also be done in the browser: the gateway serves a [management console](/docs/guides/gateway-console) at `/console`, where teammates sign in, work in workspaces with their own wallets and budgets, and create their own keys. The commands below work alongside it on the same data.
+
 ## Buyer identities
 
 A buyer identity is a wallet the buyer can pay from. Every buyer has the `default` identity, the wallet in your `--data-dir`. You can add more:
@@ -48,13 +50,13 @@ To fund an identity, send USDC on Base to its wallet address. While the buyer ru
 antseed --data-dir ~/.antseed/buyer-identities/team-a buyer deposit --no-watch
 ```
 
-Any local client can pay as an identity by sending a header to the buyer:
+A local client picks the identity that pays by sending a header to the buyer:
 
 ```http
 x-antseed-buyer-identity: team-a
 ```
 
-Without the header, requests use `default`. The buyer strips the header before forwarding the request to a seller. `antseed buyer identity remove <name>` stops using an identity and moves its key to `buyer-identities/.archived/` instead of deleting it, since the wallet may still hold credits.
+Without the header, requests use `default`. The buyer strips the header before forwarding the request to a seller. Once a gateway control secret exists (the gateway creates `gateway/buyer-control.secret` in the data dir, or `ANTSEED_GATEWAY_CONTROL_SECRET` is set), the buyer accepts an identity other than `default` only together with that secret in `x-antseed-gateway-auth` and otherwise answers `401 gateway_auth_required`, so clients pay as an identity through a gateway API key. `antseed buyer identity remove <name>` stops using an identity and moves its key to `buyer-identities/.archived/` instead of deleting it, since the wallet may still hold credits.
 
 ## Create keys
 
@@ -68,7 +70,12 @@ antseed gateway key create --label "Alice" --new-identity \
 
 # Key paid by an existing identity
 antseed gateway key create --label "Bob" --identity team-a --monthly-limit 10
+
+# Key in a console workspace, paid by that workspace's wallet
+antseed gateway key create --label "CI" --workspace Research --weekly-limit 5
 ```
+
+`--workspace` takes a workspace id or name (`antseed gateway workspace list`); `antseed gateway workspace create --name <name>` creates one with its own wallet. A key made with `--identity` or `--new-identity` lands in the workspace that pays with that identity, which is created if there is none.
 
 The secret (`antseed_…`) is printed once. Only a hash of it is stored.
 
@@ -77,11 +84,13 @@ Manage keys with:
 ```bash
 antseed gateway key list            # active keys with spend today / this month / total
 antseed gateway key show <id>       # requests, tokens and spend for one key
-antseed gateway key limits <id> --daily-limit 5 --total-limit none
+antseed gateway key limits <id> --daily-limit 5 --weekly-limit 20 --total-limit none
+antseed gateway key rotate <id>     # new secret, same key id, limits and usage
 antseed gateway key revoke <id>
+antseed gateway key policy set <id> --allow-model qwen3-coder --sort price   # which models and sellers it may use
 ```
 
-Key and limit changes apply immediately, even while the gateway is running.
+Key and limit changes apply immediately, even while the gateway is running. `antseed gateway usage`, `antseed gateway logs` and `antseed gateway export` report usage across keys; the [console's CLI reference](/docs/guides/gateway-console#cli-reference) lists every command.
 
 ## Spend limits
 
@@ -90,6 +99,7 @@ Limits are in USD and count the USDC actually paid to sellers for a key's reques
 | Option | Period |
 |---|---|
 | `--daily-limit` | UTC calendar day |
+| `--weekly-limit` | UTC week, starting Monday |
 | `--monthly-limit` | UTC calendar month |
 | `--total-limit` | Lifetime of the key |
 
@@ -108,6 +118,8 @@ When a limit is reached, the gateway answers `402 Payment Required`:
 }
 ```
 
+In the console, workspaces and members can have budgets too. A request then needs room at every level, and the error's `limit.level` says which one ran out (`key`, `member` or `workspace`); see [Budgets](/docs/guides/gateway-console#budgets).
+
 A key with limits fails closed. If its buyer isn't reachable or doesn't report spend, the gateway answers `503` with `spend_tracking_unavailable` instead of serving requests it can't count. Keys without limits are not affected.
 
 Spend counting has two known gaps, both small:
@@ -119,7 +131,7 @@ Spend counting has two known gaps, both small:
 
 ## Run the gateway
 
-The gateway forwards every key to your running buyer, so start that first (`antseed buyer start`, or the AI VPN). Then run the gateway locally, or on your LAN:
+The gateway forwards every key to a buyer. `antseed gateway start` starts one on `buyer.proxyPort` and stops it when the gateway stops; if a buyer already runs on that port (`antseed buyer start`, or the AI VPN), the gateway uses it instead. Run the gateway locally, or on your LAN:
 
 ```bash
 antseed gateway start                    # http://127.0.0.1:8379/v1
@@ -130,7 +142,7 @@ To run the buyer and gateway as always-on services on a Linux server, with HTTPS
 
 Publicly, use a tunnel. `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it. For an existing tunnel, the `ANTSEED_TUNNEL_API_KEY` it was started with is kept as an unlimited key on the default identity. Start the tunnel without `ANTSEED_TUNNEL_API_KEY` to revoke that key.
 
-If your buyer doesn't listen on `buyer.proxyPort`, point the gateway at it with `--buyer-port`. The gateway sets `x-antseed-buyer-identity` from the key itself; a value sent by the client is ignored.
+To use a buyer on another port, pass `--buyer-port`. To run the buyer yourself (for example as its own service), pass `--no-buyer`: the gateway then never starts one. The gateway sets `x-antseed-buyer-identity` from the key itself; a value sent by the client is ignored.
 
 ## Key holders: check usage
 

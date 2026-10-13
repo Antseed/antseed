@@ -90,7 +90,7 @@ export class LocalRouter implements Router {
       }
 
       const max = this._resolveBuyerMaxPrice(provider, requestedService);
-      if (this._offerExceedsMaxPrice(offer, max)) {
+      if (this._maxPriceRejection(offer, max) !== null) {
         continue;
       }
 
@@ -134,22 +134,33 @@ export class LocalRouter implements Router {
   }
 
   allowsPeerForPricing(req: SerializedHttpRequest, peer: PeerInfo): boolean {
-    const requestedService = this._extractRequestedService(req);
-    const provider = this._selectProviderForPeer(peer, requestedService);
-    if (!provider) return false;
-
-    const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
-    if (!offer) return false;
-
-    const max = this._resolveBuyerMaxPrice(provider, requestedService);
-    return !this._offerExceedsMaxPrice(offer, max);
+    return this._pricingRejection(req, peer) === null;
   }
 
   allowsPeerForPolicy(req: SerializedHttpRequest, peer: PeerInfo): boolean {
-    if (this._effectiveReputation(peer) < this._minReputation) {
-      return false;
+    return this.explainPolicyRejection(req, peer) === null;
+  }
+
+  /**
+   * Human-readable reason `allowsPeerForPolicy` rejects this peer, or null
+   * when it is allowed. Used by route previews.
+   */
+  explainPolicyRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const reputation = this._effectiveReputation(peer);
+    if (reputation < this._minReputation) {
+      return `reputation ${Math.round(reputation)} below buyer minimum ${this._minReputation}`;
     }
-    return this.allowsPeerForPricing(req, peer);
+    return this._pricingRejection(req, peer);
+  }
+
+  /** Why `allowsPeerForPricing` rejects this peer, or null when it is allowed. */
+  private _pricingRejection(req: SerializedHttpRequest, peer: PeerInfo): string | null {
+    const requestedService = this._extractRequestedService(req);
+    const provider = this._selectProviderForPeer(peer, requestedService);
+    if (!provider) return 'no provider for this model';
+    const offer = this._resolvePeerOfferPrice(peer, provider, requestedService);
+    if (!offer) return 'no valid price advertised';
+    return this._maxPriceRejection(offer, this._resolveBuyerMaxPrice(provider, requestedService));
   }
 
   private _effectiveReputation(p: PeerInfo): number {
@@ -267,10 +278,24 @@ export class LocalRouter implements Router {
     );
   }
 
-  private _offerExceedsMaxPrice(offer: TokenPricingUsdPerMillion, max: TokenPricingUsdPerMillion): boolean {
+  /** Which of the offer's prices exceeds the buyer's cap, or null when none does. */
+  private _maxPriceRejection(offer: TokenPricingUsdPerMillion, max: TokenPricingUsdPerMillion): string | null {
     const maxCachedInput = max.cachedInputUsdPerMillion ?? max.inputUsdPerMillion;
-    return offer.inputUsdPerMillion > max.inputUsdPerMillion
-      || offer.outputUsdPerMillion > max.outputUsdPerMillion
-      || (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput);
+    if (offer.inputUsdPerMillion > max.inputUsdPerMillion) {
+      return `input price ${formatUsd(offer.inputUsdPerMillion)} over buyer cap ${formatUsd(max.inputUsdPerMillion)}`;
+    }
+    if (offer.outputUsdPerMillion > max.outputUsdPerMillion) {
+      return `output price ${formatUsd(offer.outputUsdPerMillion)} over buyer cap ${formatUsd(max.outputUsdPerMillion)}`;
+    }
+    if (offer.cachedInputUsdPerMillion != null && offer.cachedInputUsdPerMillion > maxCachedInput) {
+      return `cached input price ${formatUsd(offer.cachedInputUsdPerMillion)} over buyer cap ${formatUsd(maxCachedInput)}`;
+    }
+    return null;
   }
+}
+
+/** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
+function formatUsd(value: number): string {
+  if (value > 0 && value < 0.01) return `$${value.toLocaleString('en-US', { maximumSignificantDigits: 2 })}`;
+  return `$${Math.round(value * 10_000) / 10_000}`;
 }

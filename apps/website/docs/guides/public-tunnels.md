@@ -145,7 +145,7 @@ Other paths return `404 Not Found`. Requests without the exact bearer key return
 
 ## CLI setup
 
-For a headless machine, start the buyer proxy first and run the tunnel as a separate CLI process.
+On a headless machine, `antseed tunnel start` starts a buyer on the buyer port (`--buyer-port`, default 8377) and stops it with the tunnel. If a buyer already runs there (`antseed buyer start`, or the AI VPN), the tunnel uses it instead. Pass `--no-buyer` to run the buyer yourself.
 
 On a Linux server, the [gateway installer](/docs/guides/gateway-server) sets this up as systemd services: pass `--cloudflare-token` and `--public-url`.
 
@@ -198,6 +198,6 @@ Use `antseed tunnel status` from another terminal to inspect the active public U
 
 ### `502 Antseed buyer proxy is unavailable`
 
-The public tunnel is running, but the local buyer proxy is not accepting requests on its configured port. Start the AI VPN router or `antseed buyer start`, then retry.
+The public tunnel is running, but the local buyer proxy is not accepting requests on its configured port. If the tunnel started the buyer, its `[buyer]` output says why it stopped; otherwise start the AI VPN router or `antseed buyer start`, then retry.
 
 For local-only integrations that do not need a public endpoint, see [Using the API](/docs/guides/using-the-api).

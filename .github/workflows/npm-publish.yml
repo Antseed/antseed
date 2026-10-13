@@ -78,6 +78,7 @@ jobs:
         run: >
           pnpm --filter './packages/*' --filter './plugins/*'
           --filter @antseed/cli --filter @antseed/network-stats
-          --filter @antseed/payments --filter @antseed/ants --filter @antseed/relay
+          --filter @antseed/payments --filter @antseed/ants --filter @antseed/gateway-console
+          --filter @antseed/relay
           publish --access public --no-git-checks
           ${{ inputs.dry_run && '--dry-run' || '' }}

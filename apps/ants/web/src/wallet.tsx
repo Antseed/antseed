@@ -3,6 +3,7 @@ import { WagmiProvider, useAccount, useWalletClient } from 'wagmi';
 import { getDefaultConfig, RainbowKitProvider, ConnectButton, darkTheme } from '@rainbow-me/rainbowkit';
 import { QueryClient, QueryClientProvider } from '@tanstack/react-query';
 import { defineChain, http } from 'viem';
+import { ANTSEED_RAINBOWKIT_DARK, ANTSEED_WALLETCONNECT_PROJECT_ID } from '@antseed/wallet-config';
 import { ApiError, request, type DashboardConfig } from './api';
 import { invalidateAll } from './data';
 import { useJobs } from './jobs';
@@ -15,12 +16,12 @@ import '@rainbow-me/rainbowkit/styles.css';
 
 const queries = new QueryClient();
 /** Match the dashboard's signal colour; the connect button sits on the dark top bar in both themes. */
-const walletTheme = darkTheme({ accentColor: '#1fd87a', accentColorForeground: '#06281a', borderRadius: 'small', fontStack: 'system' });
+const walletTheme = darkTheme(ANTSEED_RAINBOWKIT_DARK);
 // The workspace also contains React 19; wagmi declarations resolve that peer. Runtime is deduped by Vite.
 const WalletRoot = WagmiProvider as unknown as ComponentType<{ config: ReturnType<typeof getDefaultConfig>; children: ReactNode }>;
 export function WalletProvider({ config, children }: { config: DashboardConfig; children: ReactNode }) {
   const wagmi = useMemo(() => getDefaultConfig({
-    appName: 'AntSeed Staking', projectId: '9a1851410cb5589bc351a6dabf17140e',
+    appName: 'AntSeed Staking', projectId: ANTSEED_WALLETCONNECT_PROJECT_ID,
     chains: [defineChain({ id: config.evmChainId, name: config.chainId, nativeCurrency: { name: 'Ether', symbol: 'ETH', decimals: 18 },
       rpcUrls: { default: { http: [config.walletRpcUrl ?? (config.evmChainId === 8453 ? 'https://mainnet.base.org' : config.evmChainId === 84532 ? 'https://sepolia.base.org' : 'http://127.0.0.1:8545')] } } })],
     transports: { [config.evmChainId]: http() },

@@ -32,6 +32,8 @@ antseed buyer start --no-verifier
 - `--require-verifier` — a failed **or missing** verification becomes a hard block for that seller. Automatic model routing may try another eligible seller; a pinned peer is never silently swapped and returns `502` on failure.
 - `--no-verifier` — disables verification. Combining it with either other flag is rejected as contradictory.
 
+To keep the policy across restarts, set it in the config file instead: `"buyer": { "verifier": { "prefer": ["antseed-verifier"], "require": true } }` (or `"enabled": false`). The gateway console's **Settings → Buyer** page and `antseed gateway settings set-buyer --require-verifier on` write the same fields. Any of the flags above replaces the config's policy for that run.
+
 The startup banner confirms the active policy, e.g. `Verifier: antseed-verifier (required)`.
 
 ## Finding TEE sellers

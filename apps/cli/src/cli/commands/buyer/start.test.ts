@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict';
 import { createServer, type RequestListener } from 'node:http';
+import { PassThrough } from 'node:stream';
 import test from 'node:test';
 import { createDefaultConfig } from '../../../config/defaults.js';
 import { resolveEffectiveBuyerConfig } from '../../../config/effective.js';
@@ -7,7 +8,9 @@ import {
   buildBuyerRuntimeOverridesFromFlags,
   buildBuyerBootstrapEntries,
   buildRouterRuntimeEnvFromBuyerConfig,
+  ignoreBrokenPipes,
   isCompatibleBuyerProxy,
+  isSupervisedProcess,
   resolveBuyerRouterName,
 } from './start.js';
 
@@ -127,4 +130,20 @@ test('buyer start recognizes current proxies by AntSeed response header', async 
   }, async (port) => {
     assert.equal(await isCompatibleBuyerProxy(port), true);
   });
+});
+
+test('buyer restart is only offered with the explicit ANTSEED_SUPERVISED=1 opt-in', () => {
+  assert.equal(isSupervisedProcess({}), false);
+  // A desktop terminal running as a systemd user unit hands INVOCATION_ID to its shells: not a supervisor.
+  assert.equal(isSupervisedProcess({ INVOCATION_ID: '0123456789abcdef0123456789abcdef' }), false);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: '1' }), true);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: ' 1 ' }), true);
+  assert.equal(isSupervisedProcess({ ANTSEED_SUPERVISED: 'true' }), false);
+});
+
+test('a broken output pipe does not crash the buyer; other stream errors still throw', () => {
+  const stream = new PassThrough();
+  ignoreBrokenPipes([stream]);
+  stream.emit('error', Object.assign(new Error('write EPIPE'), { code: 'EPIPE' }));
+  assert.throws(() => stream.emit('error', Object.assign(new Error('boom'), { code: 'EIO' })), /boom/);
 });
