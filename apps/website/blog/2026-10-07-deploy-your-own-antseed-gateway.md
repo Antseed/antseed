@@ -37,7 +37,7 @@ Each workspace has its own wallet. Set budgets for a workspace, a member, or an 
 
 *API keys in a demo workspace, with separate limits and routing settings.*
 
-The [Gateway Console guide](https://antseed.com/docs/gateway/) covers sign-in, workspaces, members, budgets, and routing policies. The CLI commands below remain available for managing your gateway from the terminal.
+The [Gateway Console guide](/docs/gateway/) covers sign-in, workspaces, members, budgets, and routing policies. The CLI commands below remain available for managing your gateway from the terminal.
 
 ## Deploy it with one command
 
@@ -51,7 +51,7 @@ When it finishes, it prints your base URL, such as `https://llm.example.com/v1`,
 
 Open the setup link and register a passkey or sign in with a wallet to become the owner. You can then invite your team, create workspaces and keys, and set budgets from the browser. The link expires after one hour; run `sudo antseed gateway console-link` on the server to get a new one, or to get the link after an unattended install. After setup, open `/console` on your gateway domain.
 
-No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](https://antseed.com/docs/gateway/server/) covers the options.
+No domain? The installer can publish the gateway through a Cloudflare Tunnel instead, with no open ports, or keep it private to the server. [Run a Gateway on a Server](/docs/gateway/server/) covers the options.
 
 ## A key for everyone you share with
 
@@ -63,7 +63,7 @@ antseed gateway key create --label "Alice" --monthly-limit 20
 
 The secret is printed once. Only a hash of it is stored.
 
-Every key works with the routes described in [Using the API](https://antseed.com/docs/api/), sent as `Authorization: Bearer <key>`. All keys run through a single `antseed buyer start`, so you don't need a separate buyer for each person.
+Every key works with the routes described in [Using the API](/docs/api/), sent as `Authorization: Bearer <key>`. All keys run through a single `antseed buyer start`, so you don't need a separate buyer for each person.
 
 You can list your keys, see requests, tokens and spend for each one, change limits, and revoke a key at any time. Changes apply immediately, even while the gateway is running.
 
@@ -134,10 +134,10 @@ antseed gateway start                  # http://127.0.0.1:8379/v1
 antseed gateway start --host 0.0.0.0   # serve other machines on your network
 ```
 
-To reach people outside your network from your own machine, use a [public HTTPS tunnel](https://antseed.com/docs/tunnels/). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
+To reach people outside your network from your own machine, use a [public HTTPS tunnel](/docs/tunnels/). `antseed tunnel start` runs the same gateway behind Cloudflare Tunnel or ngrok, and every active key works through it.
 
 ## Get started
 
-Deploy a gateway on a server with the [installer](https://antseed.com/docs/gateway/server/), or run one locally with the [Antseed CLI](https://antseed.com/docs/install/). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
+Deploy a gateway on a server with the [installer](/docs/gateway/server/), or run one locally with the [Antseed CLI](/docs/install/). Then point any OpenAI-compatible client at your gateway's base URL with one of your keys.
 
-The [Shared Gateway API Keys guide](https://antseed.com/docs/gateway/api/) covers limits, identities, top-ups, and where the gateway stores its data.
+The [Shared Gateway API Keys guide](/docs/gateway/api/) covers limits, identities, top-ups, and where the gateway stores its data.
