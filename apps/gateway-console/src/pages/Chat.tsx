@@ -17,7 +17,6 @@ import { useConsoleMutation } from '../lib/mutations'
 import { formatRelative, formatTokens, formatUsd, shortId } from '../lib/format'
 import { href, linkHandler } from '../lib/router'
 import { Button } from '@/chat/components/ui/button'
-import { TooltipProvider } from '@/chat/components/ui/tooltip'
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from '@/chat/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/chat/components/ai-elements/message'
 import {
@@ -550,142 +549,140 @@ export default function Chat() {
   ]
 
   return (
-    <TooltipProvider>
-      <div ref={fillRef} className="gc-chat gc-chat-page flex gap-4">
-        <aside className="hidden w-60 shrink-0 flex-col gap-2 md:flex" aria-label="Conversations">
-          <Button variant="outline" size="sm" className="justify-start gap-2" onClick={newChat} disabled={messages.length === 0 && !busy}>
-            <MessageSquarePlusIcon className="size-3.5" /> New chat
-          </Button>
-          <div className="min-h-0 flex-1 overflow-y-auto">
-            {(threads.data ?? []).length === 0
-              ? <p className="px-2 py-3 text-muted-foreground text-xs">{threads.isLoading ? 'Loading…' : 'Your conversations show up here.'}</p>
-              : (threads.data ?? []).map((thread) => (
-                <div key={thread.id} className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${thread.id === chatId ? 'bg-muted' : 'hover:bg-muted/60'}`}>
-                  <button type="button" className="min-w-0 flex-1 text-left" onClick={() => open(thread.id)} title={thread.title}>
-                    <span className="block truncate">{thread.title}</span>
-                    <span className="block truncate text-muted-foreground text-xs">{formatRelative(thread.updatedAt)}{thread.model ? ` · ${thread.model}` : ''}{thread.peerId ? ` · ${shortId(thread.peerId)}` : ''}</span>
-                  </button>
-                  <button type="button" className="rounded p-1 text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
-                    aria-label={`Delete "${thread.title}"`} onClick={() => remove.mutate(thread.id)}>
-                    <Trash2Icon className="size-3.5" />
-                  </button>
-                </div>
-              ))}
-          </div>
-        </aside>
-        <div className="flex min-w-0 flex-1 flex-col gap-3">
-        <div className="flex flex-wrap items-center gap-2">
-          <h1 className="mr-auto font-semibold text-xl">Chat</h1>
-          <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null); setGoneModel(null) }} />
-          <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded} />
-          <Button variant="ghost" size="sm" className="md:hidden" onClick={newChat} disabled={messages.length === 0 && !busy}>
-            <MessageSquarePlusIcon className="size-3.5" /> New
-          </Button>
+    <div ref={fillRef} className="gc-chat gc-chat-page flex gap-4">
+      <aside className="hidden w-60 shrink-0 flex-col gap-2 md:flex" aria-label="Conversations">
+        <Button variant="outline" size="sm" className="justify-start gap-2" onClick={newChat} disabled={messages.length === 0 && !busy}>
+          <MessageSquarePlusIcon className="size-3.5" /> New chat
+        </Button>
+        <div className="min-h-0 flex-1 overflow-y-auto">
+          {(threads.data ?? []).length === 0
+            ? <p className="px-2 py-3 text-muted-foreground text-xs">{threads.isLoading ? 'Loading…' : 'Your conversations show up here.'}</p>
+            : (threads.data ?? []).map((thread) => (
+              <div key={thread.id} className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${thread.id === chatId ? 'bg-muted' : 'hover:bg-muted/60'}`}>
+                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => open(thread.id)} title={thread.title}>
+                  <span className="block truncate">{thread.title}</span>
+                  <span className="block truncate text-muted-foreground text-xs">{formatRelative(thread.updatedAt)}{thread.model ? ` · ${thread.model}` : ''}{thread.peerId ? ` · ${shortId(thread.peerId)}` : ''}</span>
+                </button>
+                <button type="button" className="rounded p-1 text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
+                  aria-label={`Delete "${thread.title}"`} onClick={() => remove.mutate(thread.id)}>
+                  <Trash2Icon className="size-3.5" />
+                </button>
+              </div>
+            ))}
         </div>
+      </aside>
+      <div className="flex min-w-0 flex-1 flex-col gap-3">
+      <div className="flex flex-wrap items-center gap-2">
+        <h1 className="mr-auto font-semibold text-xl">Chat</h1>
+        <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null); setGoneModel(null) }} />
+        <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded} />
+        <Button variant="ghost" size="sm" className="md:hidden" onClick={newChat} disabled={messages.length === 0 && !busy}>
+          <MessageSquarePlusIcon className="size-3.5" /> New
+        </Button>
+      </div>
+      <p className="text-muted-foreground text-xs">
+        {peerId && model
+          ? <>Every turn goes to <span className="font-medium text-foreground">{peerLabel(model.peers.find((p) => p.peerId === peerId) ?? { peerId, name: null })}</span>. Each answer shows the peer that served it.</>
+          : <>The gateway routes each turn to the best offer for {model?.name ?? 'the model'}; each answer shows the seller that served it, and you can pin one to always use it.</>}
+        {' '}Tools run on the gateway.
+      </p>
+      {goneModel && model && (
         <p className="text-muted-foreground text-xs">
-          {peerId && model
-            ? <>Every turn goes to <span className="font-medium text-foreground">{peerLabel(model.peers.find((p) => p.peerId === peerId) ?? { peerId, name: null })}</span>. Each answer shows the peer that served it.</>
-            : <>The gateway routes each turn to the best offer for {model?.name ?? 'the model'}; each answer shows the seller that served it, and you can pin one to always use it.</>}
-          {' '}Tools run on the gateway.
+          <Notice>No seller offers {goneModel} right now (sellers stop offering a model while they are busy), so the chat switched to {model.name}.</Notice>
         </p>
-        {goneModel && model && (
-          <p className="text-muted-foreground text-xs">
-            <Notice>No seller offers {goneModel} right now (sellers stop offering a model while they are busy), so the chat switched to {model.name}.</Notice>
-          </p>
-        )}
-        {peerId && model && !model.peers.some((peer) => peer.peerId === peerId) && (
-          <p className="text-muted-foreground text-xs">
-            <Notice>
-              {shortId(peerId)} no longer offers {model.name} (sellers stop offering a model while they are busy).{' '}
-              <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => setPeerId(null)}>Use Auto</button> or pick another seller.
-            </Notice>
-          </p>
-        )}
-        {!peerId && <p className="text-muted-foreground text-xs">{autoSummary(autoPick(preview.data), model, preview.isLoading, unfunded)}</p>}
+      )}
+      {peerId && model && !model.peers.some((peer) => peer.peerId === peerId) && (
         <p className="text-muted-foreground text-xs">
-          <PaidBy apiKey={context.data?.key} workspaceName={context.data?.workspaceName ?? workspace.name} chatCost={chatCost} />
+          <Notice>
+            {shortId(peerId)} no longer offers {model.name} (sellers stop offering a model while they are busy).{' '}
+            <button type="button" className="font-medium text-foreground underline underline-offset-2" onClick={() => setPeerId(null)}>Use Auto</button> or pick another seller.
+          </Notice>
         </p>
+      )}
+      {!peerId && <p className="text-muted-foreground text-xs">{autoSummary(autoPick(preview.data), model, preview.isLoading, unfunded)}</p>}
+      <p className="text-muted-foreground text-xs">
+        <PaidBy apiKey={context.data?.key} workspaceName={context.data?.workspaceName ?? workspace.name} chatCost={chatCost} />
+      </p>
 
-        <Conversation className="gc-chat-conversation rounded-xl border bg-card">
-          <ConversationContent>
-            {messages.length === 0
-              ? (
-                <ConversationEmptyState>
-                  <div className="flex max-w-2xl flex-col items-center gap-2 text-center">
-                    <h3 className="font-medium text-base">Ask anything</h3>
-                    <p className="text-muted-foreground text-sm">The agent can search and read the web and keep files in this chat's scratch space on the gateway.</p>
-                    <div className="mt-3 flex flex-wrap justify-center gap-2">
-                      {suggestions.map((text) => <Suggestion key={text} suggestion={text} onClick={(value) => send({ text: value, files: [] })} />)}
-                    </div>
+      <Conversation className="gc-chat-conversation rounded-xl border bg-card">
+        <ConversationContent>
+          {messages.length === 0
+            ? (
+              <ConversationEmptyState>
+                <div className="flex max-w-2xl flex-col items-center gap-2 text-center">
+                  <h3 className="font-medium text-base">Ask anything</h3>
+                  <p className="text-muted-foreground text-sm">The agent can search and read the web and keep files in this chat's scratch space on the gateway.</p>
+                  <div className="mt-3 flex flex-wrap justify-center gap-2">
+                    {suggestions.map((text) => <Suggestion key={text} suggestion={text} onClick={(value) => send({ text: value })} />)}
                   </div>
-                </ConversationEmptyState>
+                </div>
+              </ConversationEmptyState>
+            )
+            : messages.map((message, index) => {
+              const streaming = busy && index === messages.length - 1
+              return (
+                <Message key={message.id} from={message.role}>
+                  <MessageAuthor message={message} streaming={streaming} initials={initials(me.member.label)} />
+                  <MessageContent>
+                    {message.parts.map((part, partIndex) => {
+                      const key = `${message.id}-${partIndex}`
+                      if (part.type === 'text') return <MessageResponse key={key}>{part.text}</MessageResponse>
+                      if (part.type === 'reasoning') {
+                        return (
+                          <Reasoning key={key} isStreaming={streaming && partIndex === message.parts.length - 1}>
+                            <ReasoningTrigger />
+                            <ReasoningContent>{part.text}</ReasoningContent>
+                          </Reasoning>
+                        )
+                      }
+                      if (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) return <ToolCall key={key} part={part as ToolPart} />
+                      return null
+                    })}
+                  </MessageContent>
+                  {message.role === 'assistant' && <AnswerUsage metadata={message.metadata} />}
+                </Message>
               )
-              : messages.map((message, index) => {
-                const streaming = busy && index === messages.length - 1
-                return (
-                  <Message key={message.id} from={message.role}>
-                    <MessageAuthor message={message} streaming={streaming} initials={initials(me.member.label)} />
-                    <MessageContent>
-                      {message.parts.map((part, partIndex) => {
-                        const key = `${message.id}-${partIndex}`
-                        if (part.type === 'text') return <MessageResponse key={key}>{part.text}</MessageResponse>
-                        if (part.type === 'reasoning') {
-                          return (
-                            <Reasoning key={key} isStreaming={streaming && partIndex === message.parts.length - 1}>
-                              <ReasoningTrigger />
-                              <ReasoningContent>{part.text}</ReasoningContent>
-                            </Reasoning>
-                          )
-                        }
-                        if (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) return <ToolCall key={key} part={part as ToolPart} />
-                        return null
-                      })}
-                    </MessageContent>
-                    {message.role === 'assistant' && <AnswerUsage metadata={message.metadata} />}
-                  </Message>
+            })}
+          {error && (
+            <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
+              {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
+                ? (
+                  <>
+                    <span className="font-medium">No free seller took this, and paid ones need funds.</span>{' '}
+                    No free seller offers {model?.name ?? 'this model'} right now (free sellers stop offering a model while they are busy),
+                    and the {workspace.name} wallet has no deposits for a paid one.{' '}
+                    <a className="font-medium underline underline-offset-2" href={href('wallet')} onClick={linkHandler('wallet')}>Add funds</a>, or pick a model marked <Pill tone="free">Free</Pill>.
+                  </>
                 )
-              })}
-            {error && (
-              <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
-                {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
+                : /model_not_found|not served by this peer/i.test(error.message)
                   ? (
                     <>
-                      <span className="font-medium">No free seller took this, and paid ones need funds.</span>{' '}
-                      No free seller offers {model?.name ?? 'this model'} right now (free sellers stop offering a model while they are busy),
-                      and the {workspace.name} wallet has no deposits for a paid one.{' '}
-                      <a className="font-medium underline underline-offset-2" href={href('wallet')} onClick={linkHandler('wallet')}>Add funds</a>, or pick a model marked <Pill tone="free">Free</Pill>.
+                      <span className="font-medium">The seller stopped offering {model?.name ?? 'this model'}.</span>{' '}
+                      Sellers drop a model while they are busy, and the list had not caught up yet. Send again{peerId ? <> after switching to <button type="button" className="font-medium underline underline-offset-2" onClick={() => setPeerId(null)}>Auto</button></> : ''} to use another seller.
                     </>
                   )
-                  : /model_not_found|not served by this peer/i.test(error.message)
-                    ? (
-                      <>
-                        <span className="font-medium">The seller stopped offering {model?.name ?? 'this model'}.</span>{' '}
-                        Sellers drop a model while they are busy, and the list had not caught up yet. Send again{peerId ? <> after switching to <button type="button" className="font-medium underline underline-offset-2" onClick={() => setPeerId(null)}>Auto</button></> : ''} to use another seller.
-                      </>
-                    )
-                    : <><span className="font-medium">The request failed.</span> {error.message}</>}
-              </div>
-            )}
-          </ConversationContent>
-          <ConversationScrollButton />
-        </Conversation>
+                  : <><span className="font-medium">The request failed.</span> {error.message}</>}
+            </div>
+          )}
+        </ConversationContent>
+        <ConversationScrollButton />
+      </Conversation>
 
-        <PromptInput onSubmit={send}>
-          <PromptInputBody>
-            <PromptInputTextarea placeholder={model ? `Message ${model.name}…` : 'Loading models…'} />
-          </PromptInputBody>
-          <PromptInputFooter>
-            <PromptInputTools>
-              <span className="px-2 text-muted-foreground text-xs">
-                {model ? (model.toolUse ? 'Web search, web pages and scratch files' : 'This model cannot use tools; plain chat') : ''}
-                {model?.toolUse && isOrgAdmin(viewer) ? ', plus a shell (admins)' : ''}
-              </span>
-            </PromptInputTools>
-            <PromptInputSubmit status={status} onStop={stop} disabled={!modelId} />
-          </PromptInputFooter>
-        </PromptInput>
-        </div>
+      <PromptInput onSubmit={send}>
+        <PromptInputBody>
+          <PromptInputTextarea placeholder={model ? `Message ${model.name}…` : 'Loading models…'} />
+        </PromptInputBody>
+        <PromptInputFooter>
+          <PromptInputTools>
+            <span className="px-2 text-muted-foreground text-xs">
+              {model ? (model.toolUse ? 'Web search, web pages and scratch files' : 'This model cannot use tools; plain chat') : ''}
+              {model?.toolUse && isOrgAdmin(viewer) ? ', plus a shell (admins)' : ''}
+            </span>
+          </PromptInputTools>
+          <PromptInputSubmit status={status} onStop={stop} disabled={!modelId} />
+        </PromptInputFooter>
+      </PromptInput>
       </div>
-    </TooltipProvider>
+    </div>
   )
 }
