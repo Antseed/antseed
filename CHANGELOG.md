@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Documentation
+
+- Website: refresh the existing gateway announcement with the Gateway Console title and hero, a Console section with demo screenshots, and browser setup instructions while preserving the original URL and gateway guide.
+
 ### Added
 
 - Website: `curl -fsSL https://antseed.com/install.sh | bash` sets up a gateway in one line. On Linux with systemd it runs the server installer through `sudo`, passing options through (`bash -s -- --domain <host>`); on macOS it installs the CLI with npm (and Node.js through Homebrew if needed), starts `antseed gateway start` in the background and opens the console's one-time setup link.
