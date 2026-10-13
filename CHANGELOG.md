@@ -52,6 +52,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI buyer (security): paying as a buyer identity other than the default (the `x-antseed-buyer-identity` header, or `identity` on `POST /_antseed/channels/close`) now requires the gateway control secret (`x-antseed-gateway-auth`) once one exists, so a local client can no longer spend from a workspace wallet by naming it; requests without the secret get `401 gateway_auth_required`. The gateway sends the secret with every request it forwards for a non-default identity. A buyer with no control secret (no gateway on its data dir) keeps accepting identities from loopback callers, and the default identity needs no secret.
 - Buyer: automatic routing moves on to the next seller when one answers `model_not_found` (it stopped offering the model, often while busy, and the cached seller list had not caught up), instead of returning that seller's error. This applies to every request, including those without a gateway routing policy. Pinned requests still get the seller's answer.
 - Buyer: a seller that answers with an error no longer becomes the chat's remembered route, so the next turn is routed afresh instead of going back to it. This applies to every request, including those without a gateway routing policy.
 - CLI buyer: for requests carrying a gateway routing policy, automatic routing also moves on after a `402` for lack of deposits and then tries only free sellers. Other requests keep the `402`.

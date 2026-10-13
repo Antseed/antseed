@@ -50,13 +50,13 @@ To fund an identity, send USDC on Base to its wallet address. While the buyer ru
 antseed --data-dir ~/.antseed/buyer-identities/team-a buyer deposit --no-watch
 ```
 
-Any local client can pay as an identity by sending a header to the buyer:
+A local client picks the identity that pays by sending a header to the buyer:
 
 ```http
 x-antseed-buyer-identity: team-a
 ```
 
-Without the header, requests use `default`. The buyer strips the header before forwarding the request to a seller. `antseed buyer identity remove <name>` stops using an identity and moves its key to `buyer-identities/.archived/` instead of deleting it, since the wallet may still hold credits.
+Without the header, requests use `default`. The buyer strips the header before forwarding the request to a seller. Once a gateway control secret exists (the gateway creates `gateway/buyer-control.secret` in the data dir, or `ANTSEED_GATEWAY_CONTROL_SECRET` is set), the buyer accepts an identity other than `default` only together with that secret in `x-antseed-gateway-auth` and otherwise answers `401 gateway_auth_required`, so clients pay as an identity through a gateway API key. `antseed buyer identity remove <name>` stops using an identity and moves its key to `buyer-identities/.archived/` instead of deleting it, since the wallet may still hold credits.
 
 ## Create keys
 

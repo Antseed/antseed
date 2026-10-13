@@ -972,6 +972,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
   res.end(JSON.stringify(body))
 }
 
+/** A requested buyer identity name as stored ('' when none is named). */
+function buyerIdentityName(value: string | undefined): string {
+  return value?.trim().toLowerCase() ?? ''
+}
+
 function sendUnknownBuyerIdentity(res: ServerResponse): void {
   sendJson(res, 404, { ok: false, error: 'Unknown buyer identity' })
 }
@@ -1180,13 +1185,26 @@ export class BuyerProxy {
    * (or can be) loaded, undefined when no stored identity has that name.
    */
   private async _resolveBuyerIdentity(header: string | undefined): Promise<string | null | undefined> {
-    const name = header?.trim().toLowerCase() ?? ''
+    const name = buyerIdentityName(header)
     if (!name || name === DEFAULT_BUYER_IDENTITY) return null
     const loaded = await this._buyerIdentities.ensure(name).catch((err: unknown) => {
       log(`Buyer identity "${name}" failed to load: ${err instanceof Error ? err.message : String(err)}`)
       return false
     })
     return loaded ? name : undefined
+  }
+
+  /**
+   * Whether a request may act as this buyer identity. The default wallet is
+   * always allowed; any other is a workspace wallet, so once a control secret
+   * exists only the gateway may name it (loopback callers otherwise, as for
+   * the attributed-spend feed).
+   */
+  private _mayUseBuyerIdentity(req: IncomingMessage, value: string | undefined): boolean {
+    const name = buyerIdentityName(value)
+    if (!name || name === DEFAULT_BUYER_IDENTITY) return true
+    if (!isLoopbackAddress(req.socket?.remoteAddress)) return false
+    return this._readControlSecret() === null || this._isGatewayAuthenticated(req.headers)
   }
 
   /**
@@ -2885,6 +2903,11 @@ export class BuyerProxy {
         res.end(JSON.stringify({ ok: false, error: 'Missing peerId' }))
         return
       }
+      // Closing hands the seller the identity's latest spending authorization.
+      if (!this._mayUseBuyerIdentity(req, identityParam)) {
+        sendJson(res, 401, { ok: false, error: 'gateway_auth_required' })
+        return
+      }
       try {
         const identity = await this._resolveBuyerIdentity(identityParam)
         if (identity === undefined) throw new Error('Unknown buyer identity')
@@ -3177,6 +3200,18 @@ export class BuyerProxy {
     delete headers[SPEND_ATTRIBUTION_HEADER]
     // The paying identity rides on the internal headers through routing, like
     // a peer pin, and is stripped when the request is built for the seller.
+    if (!this._mayUseBuyerIdentity(req, headers[BUYER_IDENTITY_HEADER])) {
+      log('Request rejected: buyer identity named without the gateway control secret')
+      sendJson(res, 401, {
+        error: {
+          type: 'authentication_error',
+          code: 'gateway_auth_required',
+          message: `Paying as a buyer identity other than the default requires ${GATEWAY_CONTROL_HEADER}.`,
+          param: GATEWAY_CONTROL_HEADER,
+        },
+      })
+      return
+    }
     const buyerIdentity = await this._resolveBuyerIdentity(headers[BUYER_IDENTITY_HEADER])
     if (buyerIdentity === undefined) {
       res.writeHead(400, { 'content-type': 'application/json' })

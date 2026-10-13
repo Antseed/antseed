@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
+import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_FILE,
@@ -32,7 +33,7 @@ function makePeer(seed: string, opts: { input: number; output: number; trust: nu
 interface Harness {
   proxy: BuyerProxy
   url: string
-  dispatched: Array<{ peerId: string; headers: Record<string, string> }>
+  dispatched: Array<{ peerId: string; headers: Record<string, string>; buyerIdentity?: string }>
 }
 
 async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<BuyerProxyConfig> = {}, withSecret = true): Promise<Harness> {
@@ -51,8 +52,8 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
   const node = {
     router: { allowsPeerForPolicy: () => true, onResult: () => {} },
     buyerIdentities: () => [{ name: 'default', address: '0x' + '1'.repeat(40) }],
-    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest) => {
-      dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string }) => {
+      dispatched.push({ peerId: peer.peerId, headers: request.headers, buyerIdentity: options?.buyerIdentity })
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
@@ -389,6 +390,37 @@ test('deposit watcher status and mode are addressable per identity', async (t) =
   assert.equal(missing['watcher'], false)
   assert.equal(missing['reason'], 'identity-not-watched')
   assert.equal((await fetch(`${h.url}/_antseed/deposits/status?identity=nobody`)).status, 404)
+})
+
+test('paying as a non-default buyer identity requires the gateway control secret once one exists', async (t) => {
+  const h = await startHarness(t, [cheap])
+  ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
+  const identity = { [BUYER_IDENTITY_HEADER]: 'Team-A' }
+
+  const refused = await chat(h, identity)
+  assert.equal(refused.status, 401)
+  assert.equal(((await refused.json()) as any).error.code, 'gateway_auth_required')
+  assert.equal((await chat(h, { ...identity, [GATEWAY_CONTROL_HEADER]: 'wrong' })).status, 401)
+  assert.equal(h.dispatched.length, 0)
+
+  assert.equal((await chat(h, { ...identity, [GATEWAY_CONTROL_HEADER]: SECRET })).status, 200)
+  assert.equal(h.dispatched[0]?.buyerIdentity, 'team-a')
+  assert.equal(h.dispatched[0]?.headers[BUYER_IDENTITY_HEADER], undefined)
+
+  // The default wallet needs no secret, named or not.
+  assert.equal((await chat(h, { [BUYER_IDENTITY_HEADER]: 'default' })).status, 200)
+  assert.equal((await chat(h)).status, 200)
+  assert.equal(h.dispatched[2]?.buyerIdentity, undefined)
+
+  const close = await fetch(`${h.url}/_antseed/channels/close`, { method: 'POST', body: JSON.stringify({ peerId: cheap.peerId, identity: 'team-a' }) })
+  assert.equal(close.status, 401)
+})
+
+test('without a control secret a loopback caller may still pay as a non-default buyer identity', async (t) => {
+  const h = await startHarness(t, [cheap], {}, false)
+  ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
+  assert.equal((await chat(h, { [BUYER_IDENTITY_HEADER]: 'team-a' })).status, 200)
+  assert.equal(h.dispatched[0]?.buyerIdentity, 'team-a')
 })
 
 test('verification snapshot accepts the gateway control secret', async (t) => {

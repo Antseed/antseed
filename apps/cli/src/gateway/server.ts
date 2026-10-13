@@ -482,7 +482,12 @@ export class GatewayServer {
       headers['content-length'] = String(body.length)
       headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)
       headers[SPEND_ATTRIBUTION_HEADER] = tag
-      if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
+      if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
+        headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
+        // The buyer lets only its gateway pay from a non-default wallet.
+        const controlSecret = this._options.controlSecret
+        if (controlSecret) headers[GATEWAY_CONTROL_HEADER] = controlSecret
+      }
 
       const upstream = http.request({
         hostname: '127.0.0.1',

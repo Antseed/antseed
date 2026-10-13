@@ -303,6 +303,20 @@ test('requests under /console go to the console handler before API-key auth', as
   }
 })
 
+test('a non-default buyer identity always goes to the buyer with the control secret', async () => {
+  const ctx = await setup()
+  try {
+    const team = ctx.store.createKey({ label: 'team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(team.secret, '/v1/chat/completions', { model: 'm' })).status, 200)
+    const headers = ctx.buyer.captured[0]!.headers
+    assert.equal(headers[BUYER_IDENTITY_HEADER], 'team-a')
+    assert.equal(headers[GATEWAY_CONTROL_HEADER], 'control-secret')
+    assert.equal(headers[ROUTING_POLICY_HEADER], undefined)
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('a policy that changes nothing is not sent, so the request routes as with no policy at all', async () => {
   const ctx = await setup()
   try {
