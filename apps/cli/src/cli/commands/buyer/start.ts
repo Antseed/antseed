@@ -11,6 +11,7 @@ import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelay
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
+import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
@@ -247,6 +248,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         console.error(chalk.red('Error: --peer must be a 40-character hex peer ID (EVM address).'))
         process.exit(1)
       }
+
+      // Before any spinner: an encrypted wallet key with no passphrase configured is asked for on a terminal.
+      await walletPassphraseForStart(globalOpts.dataDir)
 
       const runtimeOverrides = buildBuyerRuntimeOverridesFromFlags({
         port: options.port as number | undefined,

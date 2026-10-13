@@ -83,6 +83,7 @@ export {
   identityEnvelopeAddress,
   isIdentityEnvelope,
   resolveIdentityPassphrase,
+  setIdentityPassphrase,
   identityPassphraseEnv,
   type ScryptParams,
 } from './p2p/identity-envelope.js';

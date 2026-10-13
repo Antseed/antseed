@@ -2,13 +2,14 @@ import { InvalidArgumentError, type Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import {
+  assertNewIdentityPassphrase,
   DEFAULT_BUYER_IDENTITY,
   DepositsClient,
   FileIdentityStore,
+  MIN_PASSPHRASE_LENGTH,
   PASSPHRASE_ENV,
   PASSPHRASE_FILE_ENV,
   resolveChainConfig,
-  resolveIdentityPassphrase,
 } from '@antseed/node'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
@@ -20,6 +21,7 @@ import {
   readDefaultWallet,
   storedWalletKeys,
 } from '../../../buyer-identities/store.js'
+import { anyKeyEncrypted, walletPassphrase, type PassphrasePrompt } from '../../wallet-passphrase.js'
 
 function formatUsdc(baseUnits: bigint): string {
   return (Number(baseUnits) / 1_000_000).toFixed(2)
@@ -32,7 +34,8 @@ async function walletKeysFor(dataDir: string, name: string | undefined, all: boo
   return keys
 }
 
-export function registerBuyerIdentityCommands(buyerCmd: Command): void {
+/** `prompt` replaces the terminal prompt for the passphrase, for tests. */
+export function registerBuyerIdentityCommands(buyerCmd: Command, prompt?: PassphrasePrompt): void {
   const identity = buyerCmd
     .command('identity')
     .description('Extra buyer wallets one running buyer can pay as (select per request with x-antseed-buyer-identity)')
@@ -129,19 +132,22 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
     })
 
   identity.command('protect')
-    .description(`Encrypt stored wallet keys with the passphrase in ${PASSPHRASE_ENV} (or the first line of ${PASSPHRASE_FILE_ENV})`)
+    .description(`Encrypt stored wallet keys with the passphrase in ${PASSPHRASE_ENV} (or the first line of ${PASSPHRASE_FILE_ENV}), asked on the terminal when neither is set; at least ${MIN_PASSPHRASE_LENGTH} characters`)
     .argument('[name]', `identity to protect (default: ${DEFAULT_BUYER_IDENTITY})`)
     .option('--all', 'every wallet key in the data dir, archived ones included', false)
     .action(async (name: string | undefined, options: { all: boolean }) => {
       const { dataDir } = getGlobalOptions(buyerCmd)
-      if (!resolveIdentityPassphrase()) {
+      const keys = await walletKeysFor(dataDir, name, options.all)
+      const passphrase = await walletPassphrase({ confirm: true, ...(prompt ? { prompt } : {}) })
+      if (!passphrase) {
         throw new Error(`Set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to the passphrase that should protect the keys.`)
       }
-      for (const key of await walletKeysFor(dataDir, name, options.all)) {
+      assertNewIdentityPassphrase(passphrase)
+      for (const key of keys) {
         const changed = await key.store.protect()
         console.log(changed ? chalk.green(`Encrypted ${key.name}`) : chalk.dim(`${key.name} is already encrypted`))
       }
-      console.log(chalk.dim(`Every process that uses these wallets (buyer, gateway) now needs ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV}. Keep the passphrase safe: without it the keys cannot be recovered.`))
+      console.log(chalk.dim(`Every process that uses these wallets (buyer, gateway) now needs ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV}, or asks for the passphrase when started on a terminal. Keep the passphrase safe: without it the keys cannot be recovered.`))
     })
 
   identity.command('unprotect')
@@ -152,7 +158,9 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
     .action(async (name: string | undefined, options: { all: boolean; yes: boolean }) => {
       const { dataDir } = getGlobalOptions(buyerCmd)
       if (!options.yes) throw new Error('This writes the private keys to disk unencrypted; pass --yes to confirm.')
-      for (const key of await walletKeysFor(dataDir, name, options.all)) {
+      const keys = await walletKeysFor(dataDir, name, options.all)
+      if (await anyKeyEncrypted(keys)) await walletPassphrase(prompt ? { prompt } : {})
+      for (const key of keys) {
         const changed = await key.store.unprotect()
         console.log(changed ? chalk.yellow(`Decrypted ${key.name}`) : chalk.dim(`${key.name} is not encrypted`))
       }

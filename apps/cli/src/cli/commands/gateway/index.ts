@@ -1,11 +1,11 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
-import { resolveIdentityPassphrase } from '@antseed/node'
 import { loadConfig } from '../../../config/loader.js'
 import { gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
 import { detectExposure, detectHostFacts, unencryptedWalletWarning } from '../../../gateway/exposure.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
 import { setupShutdownHandler } from '../../shutdown.js'
+import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { registerGatewayActivityCommands } from './activity.js'
@@ -66,8 +66,9 @@ export function registerGatewayCommands(program: Command): void {
       const globalOptions = getGlobalOptions(gateway)
       const publicUrl = normalizePublicUrl(options.publicUrl ?? process.env['ANTSEED_GATEWAY_PUBLIC_URL'])
       const log = (message: string): void => { process.stderr.write(`[gateway] ${message}\n`) }
-      // Read up front so an unreadable ANTSEED_PASSPHRASE_FILE stops the start before anything runs.
-      const passphraseSet = resolveIdentityPassphrase() !== null
+      // Read (or asked on the terminal for encrypted keys) up front, so an unreadable
+      // ANTSEED_PASSPHRASE_FILE stops the start before anything runs; the buyer it starts inherits it.
+      const passphraseSet = await walletPassphraseForStart(globalOptions.dataDir) !== null
       const buyerPort = options.buyerPort ?? (await loadConfig(globalOptions.config)).buyer.proxyPort
       const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
       let runtime: GatewayRuntime

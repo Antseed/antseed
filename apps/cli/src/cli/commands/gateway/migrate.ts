@@ -14,6 +14,7 @@ import {
 } from '../../../gateway/bundle.js'
 import { normalizePublicUrl, readConsoleLocation } from '../../../gateway/console-location.js'
 import { GatewayStore } from '../../../gateway/store.js'
+import { promptHidden } from '../../prompt-hidden.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { DEFAULT_GATEWAY_PORT, gatewayCliRuntime, printJson } from './shared.js'
@@ -24,42 +25,13 @@ export function readPasswordFile(path: string): string {
   return raw.split(/\r?\n/)[0] ?? ''
 }
 
-/** Asks on the terminal without echoing. */
-export function promptHidden(question: string): Promise<string> {
-  const input = process.stdin
-  if (!input.isTTY) return Promise.reject(new Error('No terminal to ask for the password on; pass --password-file <file>.'))
-  return new Promise((resolve, reject) => {
-    process.stderr.write(question)
-    let value = ''
-    const wasRaw = input.isRaw
-    input.setRawMode(true)
-    input.resume()
-    input.setEncoding('utf8')
-    const finish = (error?: Error) => {
-      input.setRawMode(wasRaw)
-      input.pause()
-      input.removeListener('data', onData)
-      process.stderr.write('\n')
-      if (error) reject(error)
-      else resolve(value)
-    }
-    const onData = (chunk: string) => {
-      for (const char of chunk) {
-        if (char === '\r' || char === '\n' || char === '\u0004') return finish()
-        if (char === '\u0003') return finish(new Error('Cancelled.'))
-        if (char === '\u007f' || char === '\b') value = value.slice(0, -1)
-        else if (char >= ' ') value += char
-      }
-    }
-    input.on('data', onData)
-  })
-}
+const NO_TERMINAL = 'No terminal to ask for the password on; pass --password-file <file>.'
 
 async function exportPassword(passwordFile: string | undefined): Promise<string> {
   if (passwordFile) return readPasswordFile(passwordFile)
-  const first = await promptHidden(`Bundle password (at least ${MIN_PASSWORD_LENGTH} characters): `)
+  const first = await promptHidden(`Bundle password (at least ${MIN_PASSWORD_LENGTH} characters): `, NO_TERMINAL)
   if (first.length < MIN_PASSWORD_LENGTH) throw new Error(`Use a password of at least ${MIN_PASSWORD_LENGTH} characters.`)
-  const second = await promptHidden('Repeat the password: ')
+  const second = await promptHidden('Repeat the password: ', NO_TERMINAL)
   if (first !== second) throw new Error('The passwords do not match.')
   return first
 }
@@ -150,7 +122,7 @@ export function registerGatewayMigrateCommands(gateway: Command): void {
           throw new Error(`Something is listening on port ${port} (a running buyer or gateway?). Stop it first, e.g. sudo systemctl stop antseed-gateway antseed-buyer.`)
         }
       }
-      const password = options.passwordFile ? readPasswordFile(options.passwordFile) : await promptHidden('Bundle password: ')
+      const password = options.passwordFile ? readPasswordFile(options.passwordFile) : await promptHidden('Bundle password: ', NO_TERMINAL)
       let result
       try {
         result = await importGatewayBundle({

@@ -44,10 +44,16 @@ export function deriveScryptKey(password: string, salt: Buffer, params: ScryptPa
   });
 }
 
-/** Throws unless the passphrase is long enough to encrypt a key with, counted as scrypt sees it (NFKC, untrimmed). */
-export function assertNewIdentityPassphrase(passphrase: string): void {
+/**
+ * Throws unless the passphrase is long enough to encrypt a key with, counted
+ * as scrypt sees it (NFKC, untrimmed). `source` names where it came from.
+ */
+export function assertNewIdentityPassphrase(
+  passphrase: string,
+  source = `The passphrase in ${PASSPHRASE_ENV} (or ${PASSPHRASE_FILE_ENV})`,
+): void {
   if ([...passphrase.normalize('NFKC')].length < MIN_PASSPHRASE_LENGTH) {
-    throw new Error(`The passphrase in ${PASSPHRASE_ENV} (or ${PASSPHRASE_FILE_ENV}) is too short to encrypt wallet keys with: use at least ${MIN_PASSPHRASE_LENGTH} characters.`);
+    throw new Error(`${source} is too short to encrypt wallet keys with: use at least ${MIN_PASSPHRASE_LENGTH} characters.`);
   }
 }
 
@@ -148,6 +154,15 @@ export function resolveIdentityPassphrase(): string | null {
   const passphrase = content.split(/\r?\n/, 1)[0] ?? '';
   if (!passphrase) throw new Error(`${PASSPHRASE_FILE_ENV} (${file}) is empty.`);
   return passphrase;
+}
+
+/**
+ * Uses a passphrase obtained another way (asked on a terminal) for the rest
+ * of this process, exactly like one taken from ANTSEED_PASSPHRASE: it is
+ * handed on to child processes by identityPassphraseEnv() and never written.
+ */
+export function setIdentityPassphrase(passphrase: string): void {
+  _envPassphrase = passphrase;
 }
 
 /**

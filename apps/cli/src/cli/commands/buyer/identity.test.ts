@@ -4,7 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { afterEach, beforeEach, describe } from 'node:test'
 import { Command } from 'commander'
-import { identityFromPrivateKeyHex } from '@antseed/node'
+import { FileIdentityStore, identityFromPrivateKeyHex, identityPassphraseEnv } from '@antseed/node'
 import {
   archiveBuyerIdentity,
   createBuyerIdentity,
@@ -12,6 +12,7 @@ import {
   loadBuyerIdentity,
   storedDefaultIdentityAddress,
 } from '../../../buyer-identities/store.js'
+import type { PassphrasePrompt } from '../../wallet-passphrase.js'
 import { registerBuyerIdentityCommands } from './identity.js'
 
 // The passphrase comes from a file here: unlike ANTSEED_PASSPHRASE, which the
@@ -129,5 +130,51 @@ describe('buyer identity protect / unprotect', () => {
     assert.ok(isEncrypted(keyFile('buyer-identities', 'team-a')))
     assert.ok(!isEncrypted(keyFile()))
     await assert.rejects(run('protect', 'team-a', '--all'), /not both/)
+  })
+})
+
+// Last: a passphrase asked on the terminal stays set for the rest of the process.
+describe('buyer identity protect asks on the terminal when no passphrase is set', () => {
+  function fakePrompt(answers: string[], available = true): PassphrasePrompt & { questions: string[] } {
+    const questions: string[] = []
+    return { available, questions, ask: async (question) => { questions.push(question); return answers.shift() ?? '' } }
+  }
+
+  async function runWith(prompt: PassphrasePrompt, ...args: string[]): Promise<void> {
+    const program = new Command()
+    program.exitOverride().option('--data-dir <path>')
+    registerBuyerIdentityCommands(program.command('buyer'), prompt)
+    await program.parseAsync(['node', 'antseed', '--data-dir', dataDir, 'buyer', 'identity', ...args])
+  }
+
+  test('without a terminal it fails as before and asks nothing', async () => {
+    writeFileSync(keyFile(), '88'.repeat(32), { mode: 0o600 })
+    const prompt = fakePrompt(['correct horse battery'], false)
+    await assert.rejects(runWith(prompt, 'protect'), /Set ANTSEED_PASSPHRASE/)
+    assert.deepEqual(prompt.questions, [])
+    assert.ok(!isEncrypted(keyFile()))
+  })
+
+  test('a short or mistyped passphrase leaves the key as it was', async () => {
+    writeFileSync(keyFile(), '88'.repeat(32), { mode: 0o600 })
+    const short = fakePrompt(['too short'])
+    await assert.rejects(runWith(short, 'protect'), /at least 12 characters/)
+    assert.equal(short.questions.length, 1)
+    await assert.rejects(runWith(fakePrompt(['correct horse battery', 'correct horse batery']), 'protect'), /do not match/)
+    assert.ok(!isEncrypted(keyFile()))
+  })
+
+  test('asks twice, encrypts, and keeps the passphrase for this process only', async () => {
+    const hex = '99'.repeat(32)
+    writeFileSync(keyFile(), hex, { mode: 0o600 })
+    const prompt = fakePrompt(['correct horse battery', 'correct horse battery'])
+    await runWith(prompt, 'protect')
+    assert.equal(prompt.questions.length, 2)
+    assert.ok(isEncrypted(keyFile()))
+    assert.ok(!readFileSync(keyFile(), 'utf8').includes('correct horse battery'))
+    assert.equal(process.env['ANTSEED_PASSPHRASE'], undefined)
+    // Handed to a buyer the gateway starts, the same way as a passphrase from the environment.
+    assert.deepEqual(identityPassphraseEnv(), { ANTSEED_PASSPHRASE: 'correct horse battery' })
+    assert.equal(await new FileIdentityStore(dataDir).load(), hex)
   })
 })
