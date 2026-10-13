@@ -59,6 +59,8 @@ Other options:
 
 Every option can also be set in the environment, which suits cloud-init and other automation: `ANTSEED_GATEWAY_DOMAIN`, `ANTSEED_GATEWAY_HOST`, `ANTSEED_GATEWAY_PORT`, `ANTSEED_GATEWAY_KEY_LABEL`, `ANTSEED_CLI_VERSION`, `ANTSEED_X402_FACILITATOR_URL`, `CLOUDFLARED_TUNNEL_TOKEN`, `ANTSEED_GATEWAY_PUBLIC_URL` (or `ANTSEED_TUNNEL_PUBLIC_URL`), `ANTSEED_OIDC_ISSUER`, `ANTSEED_OIDC_CLIENT_ID`, `ANTSEED_OIDC_CLIENT_SECRET`, `ANTSEED_OIDC_ALLOWED_DOMAINS`, `ANTSEED_CF_ACCESS_TEAM_DOMAIN` and `ANTSEED_CF_ACCESS_AUD`. Run the script with `--help` for the full list.
 
+To keep wallet keys encrypted at rest, pass a passphrase of at least 12 characters, without single quotes or line breaks, as `ANTSEED_PASSPHRASE` (`sudo ANTSEED_PASSPHRASE='…' bash -s -- …`). The script writes it to `/etc/antseed/wallet.env` (root, 0600), which both services and the `antseed` wrapper load. Anyone who can read that file can unlock the keys; to keep the passphrase off the server's disk, leave it out here and give the services `ANTSEED_PASSPHRASE_FILE` or `ANTSEED_PASSPHRASE` from your secrets manager instead. Losing it makes the wallets unrecoverable. See [Protecting wallet keys](/docs/guides/gateway-console#protecting-wallet-keys).
+
 The script validates every option before it changes anything. It finishes by checking that the gateway answers.
 
 ## After installing

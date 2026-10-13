@@ -422,7 +422,7 @@ Funding stays with the buyer commands. A workspace pays from its buyer identity 
 
 ## Protecting wallet keys
 
-Wallet keys (`identity.key` in the data dir and in each `buyer-identities/<name>/`) are stored unencrypted by default, readable only by their owner. Set `ANTSEED_PASSPHRASE` (or `ANTSEED_PASSPHRASE_FILE`, a file whose first line is the passphrase) for the buyer and the gateway, and every new wallet key, including the ones the console creates for workspaces, is written encrypted with it (scrypt + AES-256-GCM). Keys that already exist stay as they are until you encrypt them:
+Wallet keys (`identity.key` in the data dir and in each `buyer-identities/<name>/`) are stored unencrypted by default, readable only by their owner. Give the buyer and the gateway a passphrase, and every new wallet key, including the ones the console creates for workspaces, is written encrypted with it (scrypt + AES-256-GCM). Keys that already exist stay as they are until you encrypt them:
 
 ```bash
 export ANTSEED_PASSPHRASE='a long passphrase'
@@ -431,7 +431,48 @@ antseed buyer identity list              # the Key column shows "data dir, encry
 antseed buyer identity unprotect --all --yes   # back to plaintext
 ```
 
-Without the passphrase an encrypted key cannot be read, and the buyer refuses to start rather than create another wallet; a wrong passphrase is refused too. Keep the passphrase somewhere safe: it is the only way to recover the keys. `antseed gateway start` warns when wallet keys are stored unencrypted. `antseed gateway export` copies encrypted keys as they are, so the server needs the same passphrase. The [server installer](/docs/guides/gateway-server) takes `ANTSEED_PASSPHRASE` from its environment and keeps a copy in `/etc/antseed/wallet.env` (0600), which both services load.
+Without the passphrase an encrypted key cannot be read, and the buyer refuses to start rather than create another wallet; a wrong passphrase is refused too. `antseed gateway start` warns when wallet keys are stored unencrypted. `antseed gateway export` copies encrypted keys as they are, so the server needs the same passphrase.
+
+### Supplying the passphrase
+
+- **`ANTSEED_PASSPHRASE`.** The process reads it once at start and removes it from its own environment, so it is not inherited by anything it runs; the gateway hands it only to the buyer it starts.
+- **`ANTSEED_PASSPHRASE_FILE`.** The path of a file whose first line is the passphrase. You choose where it lives and who can read it, for example a tmpfs or a mount your secrets manager provides.
+- **The [server installer](/docs/guides/gateway-server).** `curl … | sudo ANTSEED_PASSPHRASE='…' bash -s -- …` writes `/etc/antseed/wallet.env` (owned by root, mode 0600) containing exactly `ANTSEED_PASSPHRASE='…'`. Both services and the `antseed` wrapper, which runs as root, load it.
+- **The terminal.** When neither variable is set and an encrypted key is found, `antseed buyer start` and `antseed gateway start` ask for the passphrase on the terminal, without echoing it, and the gateway passes it to the buyer it starts. `antseed buyer identity protect` asks twice, `unprotect` once. The answer is never stored, and nothing is asked when there is no terminal (a service, a pipe, cloud-init): the command fails as it would without the passphrase.
+
+### Rules
+
+- A passphrase that encrypts keys must be at least 12 characters. Keys encrypted earlier with a shorter one still open.
+- The installer rejects a passphrase containing a single quote or a line break.
+- The passphrase is normalised (Unicode NFKC) before use, so the same text typed on different systems gives the same key. Leading and trailing spaces count.
+- A wrong passphrase fails the AES-GCM authentication check and the key is refused. There is no fallback to plaintext.
+- There is no reset. If you lose the passphrase, the encrypted wallets and any funds in them cannot be recovered.
+
+### What the file looks like
+
+An encrypted `identity.key` is one line of JSON, shown here formatted, with made-up values:
+
+```json
+{
+  "v": 1,
+  "address": "0x000000000000000000000000000000000000dEaD",
+  "kdf": { "name": "scrypt", "N": 131072, "r": 8, "p": 1, "salt": "ZXhhbXBsZS1zYWx0LTE2Yg==" },
+  "cipher": "aes-256-gcm",
+  "iv": "ZXhhbXBsZS1pdjEy",
+  "ct": "ZXhhbXBsZS1jaXBoZXJ0ZXh0LTMyLWJ5dGVzLWxvbmc=",
+  "tag": "ZXhhbXBsZS10YWctMTZieQ=="
+}
+```
+
+The wallet address is kept in clear so listings work without the passphrase, and it is bound to the ciphertext as authenticated data, so swapping it breaks the check. An unencrypted key is just the private key as 64 hex characters:
+
+```text
+0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef
+```
+
+### What it protects
+
+Encryption protects the keys in a copy of the data dir, a backup, the `.backup-<time>` directory an installer `--import-force` leaves behind, or a bundle whose password leaked. It does not protect against root on the host, or anyone who can read `wallet.env`. To keep the two apart, point `ANTSEED_PASSPHRASE_FILE` at a mount that is only present at boot, or inject `ANTSEED_PASSPHRASE` from a secrets manager, and do not pass it to the installer.
 
 ## Security notes
 

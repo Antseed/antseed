@@ -91,7 +91,7 @@ antseed seller start
 
 Buyer runtime state lives in the data directory, not just in the config file. By default that directory is `~/.antseed`, which contains `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`.
 
-To keep `identity.key` (and every `buyer-identities/<name>/identity.key`) encrypted at rest, set `ANTSEED_PASSPHRASE`, or `ANTSEED_PASSPHRASE_FILE` to a file whose first line is the passphrase. New keys are then written encrypted; `antseed buyer identity protect --all` encrypts existing ones and `antseed buyer identity unprotect --all --yes` reverses it. An encrypted key cannot be read without the passphrase. `ANTSEED_IDENTITY_HEX` still overrides the default key.
+To keep `identity.key` (and every `buyer-identities/<name>/identity.key`) encrypted at rest, set `ANTSEED_PASSPHRASE`, or `ANTSEED_PASSPHRASE_FILE` to a file whose first line is the passphrase (at least 12 characters to encrypt keys with). New keys are then written encrypted; `antseed buyer identity protect --all` encrypts existing ones and `antseed buyer identity unprotect --all --yes` reverses it. An encrypted key cannot be read without the passphrase. When neither variable is set, `buyer start`, `gateway start`, `buyer identity protect` and `unprotect` ask for it on the terminal when they need it, hidden and never stored; without a terminal they fail instead. `ANTSEED_IDENTITY_HEX` still overrides the default key.
 
 Use a separate data directory for each independent buyer node, service integration, test run, or concurrent process:
 
