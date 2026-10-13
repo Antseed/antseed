@@ -66,7 +66,7 @@ export function registerWorkspaceRoutes(router: ConsoleRouter, deps: ConsoleDeps
     const id = params['id']!
     requireWorkspaceAccess(store, principal, id, 'admin')
     const input = asObject(body)
-    if (input['buyerIdentity'] === undefined && (input['limits'] !== undefined || input['orgRoutingPolicy'] !== undefined)) requireOrgAdmin(principal, store)
+    if (input['limits'] !== undefined || input['orgRoutingPolicy'] !== undefined) requireOrgAdmin(principal, store)
     const workspace = updateWorkspace(deps, requestActor(deps, request), id, {
       ...(input['buyerIdentity'] !== undefined ? { buyerIdentity: input['buyerIdentity'] } : {}),
       ...(input['name'] !== undefined ? { name: requiredString(input, 'name', 100) } : {}),

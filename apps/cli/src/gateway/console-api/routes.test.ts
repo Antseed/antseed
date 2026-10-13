@@ -119,6 +119,7 @@ test('workspaces: visibility, creation with a new wallet, budgets and membership
     await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { memberA: 403, memberB: 403, wsAdmin: 200 }, { name: 'Alpha 2' })
     await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { wsAdmin: 403, admin: 200 }, { limits: { daily: '1' } })
     await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { admin: 400 }, { buyerIdentity: 'other' })
+    await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { wsAdmin: 403 }, { buyerIdentity: 'other', orgRoutingPolicy: null })
 
     await expectStatuses(as, 'GET', `/workspaces/${org.wsA.id}/members`, { memberA: 200, memberB: 403 })
     await expectStatuses(as, 'PUT', `/workspaces/${org.wsA.id}/members/${org.memberB.id}`, { memberA: 403, wsAdmin: 204 }, { role: 'member' })
