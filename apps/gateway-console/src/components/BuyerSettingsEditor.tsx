@@ -166,15 +166,28 @@ export function BuyerSettingsEditor({ buyer }: { buyer: Buyer }) {
   const toast = useToast()
   const peers = usePeers()
   const lists = usePeerLists()
-  const initial = useMemo(() => draftOf(buyer), [buyer])
-  const [draft, setDraft] = useState<Draft>(initial)
-  // A save (or another admin's) brings new settings: start from them.
-  useEffect(() => { setDraft(initial) }, [initial])
+  const incoming = useMemo(() => draftOf(buyer), [buyer])
+  const [draft, setDraft] = useState<Draft>(incoming)
+  // The saved settings the draft started from; newer ones arriving while there are edits are a conflict.
+  const [base, setBase] = useState<Draft>(incoming)
+  const [conflict, setConflict] = useState<Draft | null>(null)
   const [confirming, setConfirming] = useState(false)
   const [restartNeeded, setRestartNeeded] = useState(false)
   const set = <K extends keyof Draft>(key: K, value: Draft[K]) => setDraft((current) => ({ ...current, [key]: value }))
+  const reload = (next: Draft) => {
+    setDraft(next)
+    setBase(next)
+    setConflict(null)
+  }
   const errors = draftErrors(draft)
-  const changed = changedKeys(initial, draft)
+  const changed = changedKeys(base, draft)
+  useEffect(() => {
+    if (changedKeys(base, incoming).length === 0) return
+    if (changed.length === 0 || changedKeys(incoming, draft).length === 0) reload(incoming)
+    else setConflict(incoming)
+    // Only a change of the saved settings should trigger this.
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [incoming])
   const restarts = changed.some((key) => !LIVE_KEYS.includes(key))
   const overridden = (path: string): ReactNode => (isOverridden(buyer.overrides, path) ? <OverrideNote /> : undefined)
   const hint = (path: string, text?: string): ReactNode => overridden(path) ?? text
@@ -184,6 +197,7 @@ export function BuyerSettingsEditor({ buyer }: { buyer: Buyer }) {
     onSuccess: (data) => {
       const { restartRequired, ...settings } = data
       queryClient.setQueryData(qk.settings, settings)
+      reload(draftOf(settings.buyer))
       void queryClient.invalidateQueries({ queryKey: qk.buyerLimits })
       setConfirming(false)
       setRestartNeeded(restartRequired === true)
@@ -296,12 +310,21 @@ export function BuyerSettingsEditor({ buyer }: { buyer: Buyer }) {
           Saved, but this buyer was not restarted automatically. Restart it (for example <code>systemctl restart antseed-buyer</code>, or stop and start <code>antseed buyer start</code>) to use the new settings.
         </Alert>
       )}
+      {conflict && (
+        <Alert tone="warning" title="Changed elsewhere"
+          action={<div className="gc-inline gc-inline--wrap">
+            <Button size="sm" variant="outline" onClick={() => reload(conflict)}>Reload</Button>
+            <Button size="sm" variant="ghost" onClick={() => { setBase(conflict); setConflict(null) }}>Keep editing</Button>
+          </div>}>
+          Someone saved the buyer settings while you were editing them. Reload to see their version (your edits are dropped), or keep editing and save to replace it.
+        </Alert>
+      )}
       {!confirming && save.error ? <ErrorAlert error={save.error} title="Could not save" /> : null}
       <div className="gc-actions">
         <span className="gc-fineprint gc-actions__note">
           {changed.length === 0 ? 'No changes.' : restarts ? 'Saving restarts the buyer.' : 'Applies at once, without a restart.'}
         </span>
-        <Button variant="ghost" disabled={changed.length === 0 || save.isPending} onClick={() => setDraft(initial)}>Reset</Button>
+        <Button variant="ghost" disabled={changed.length === 0 || save.isPending} onClick={() => reload(conflict ?? base)}>Reset</Button>
         <Button disabled={changed.length === 0 || Object.keys(errors).length > 0 || save.isPending}
           onClick={() => (restarts ? setConfirming(true) : save.mutate())}>{save.isPending ? 'Saving…' : 'Save'}</Button>
       </div>
