@@ -65,6 +65,21 @@ test('only allow-listed reads are batched: anything else keeps its own eth_call 
   assert.equal(rpc.batchedCalls, 2)
 })
 
+test('buyer reward reads are batched', async (t) => {
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const provider = new ChainRpcProvider([rpc.url], 8453)
+  t.after(() => provider.destroy())
+  const rewards = new Contract(USDC, ['function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)', 'function currentEpoch() view returns (uint256)'], provider)
+  await Promise.all([
+    rewards.getFunction('pendingBuyerReward').staticCall(addresses[0], 3),
+    rewards.getFunction('pendingBuyerReward').staticCall(addresses[0], 4),
+    rewards.getFunction('currentEpoch').staticCall(),
+  ])
+  assert.deepEqual(rpc.byMethod, { eth_getCode: 1, eth_call: 1 })
+  assert.equal(rpc.batchedCalls, 3)
+})
+
 test('a reverting call inside a batch fails alone, as a CALL_EXCEPTION', async (t) => {
   const multicall = new Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)'])
   const word = (value: bigint) => '0x' + value.toString(16).padStart(64, '0')

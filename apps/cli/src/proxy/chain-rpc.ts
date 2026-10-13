@@ -78,7 +78,9 @@ const MULTICALL = new Interface([
 ])
 /**
  * The reads folded into Multicall3 batches (as declared in the USDC,
- * AntseedDeposits and DepositRelay ABIs the buyer and gateway use). Inside
+ * AntseedDeposits and DepositRelay ABIs the buyer and gateway use, and the
+ * registry, emissions and usage-rewards reads behind the console's buyer
+ * rewards). Inside
  * `aggregate3` a call runs with `msg.sender` = Multicall3, so only views whose
  * answer does not depend on the caller belong here; any other `eth_call` is
  * sent on its own.
@@ -94,6 +96,20 @@ const BATCHABLE_SELECTORS = (() => {
     'function getOperator(address buyer) view returns (address)',
     'function getOperatorNonce(address buyer) view returns (uint256)',
     'function FEE() view returns (uint256)',
+    // Buyer rewards (`createRewardsReader`): protocol pointers and epoch configuration...
+    'function emissions() view returns (address)',
+    'function staking() view returns (address)',
+    'function currentEpoch() view returns (uint256)',
+    'function effectiveEpoch() view returns (uint256)',
+    'function genesis() view returns (uint256)',
+    'function epochDuration() view returns (uint256)',
+    'function EPOCH_DURATION() view returns (uint256)',
+    'function currentEmissionRate() view returns (uint256)',
+    'function sellerRewardsPool() view returns (address)',
+    // ...and the buyer's own rewards, which name the buyer.
+    'function buyerEpochClaimed(address buyer, uint256 epoch) view returns (bool)',
+    'function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)',
+    'function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)',
   ])
   const selectors = new Set<string>()
   reads.forEachFunction((fragment) => selectors.add(fragment.selector))
