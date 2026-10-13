@@ -7,7 +7,8 @@ import {AllVersionsLink} from '../lib/AllVersionsLink';
 import {useMobileGetStarted} from '../lib/useMobileGetStarted';
 import {useNetworkStats} from '../lib/useNetworkStats';
 import {SkillChip} from './SkillChip';
-import {Button, ArrowRight} from './ui';
+import {CommandChip} from './CommandChip';
+import {Button, ArrowRight, LinkArrow} from './ui';
 import {DEMO_BEATS as BEATS, DEMO_TOTAL_FRAMES} from './HeroDemo';
 
 /**
@@ -421,15 +422,16 @@ function DownloadCta({
   );
 }
 
-/* Hero use switch — three ways in. The desktop app is the default; the CLI
-   path reuses the commands documented in docs/guides/using-the-api.md and
-   the agent path installs skills/join-buyer (also served at /skill.md). */
+/* Hero use switch — three ways in. The desktop app is the default; the
+   gateway path is the one-line installer (static/install.sh, documented in
+   docs/start/quickstart.md) and the agent path installs skills/join-buyer
+   (also served at /skill.md). */
 export type HeroUse = 'app' | 'cli' | 'agent';
 
 const HERO_USES: {id: HeroUse; label: string}[] = [
-  {id: 'app', label: 'Download the AI VPN'},
-  {id: 'cli', label: 'Install the CLI'},
-  {id: 'agent', label: 'Install the skill'},
+  {id: 'app', label: 'Download AI VPN'},
+  {id: 'cli', label: 'Setup API Gateway'},
+  {id: 'agent', label: 'Install Skill'},
 ];
 
 function useCopy(text: string) {
@@ -456,26 +458,23 @@ function readUseParam(): HeroUse | null {
   return v === 'cli' || v === 'agent' || v === 'app' ? v : null;
 }
 
+export const GATEWAY_INSTALL_COMMAND = 'curl -fsSL https://antseed.com/install.sh | bash';
 const CLI_ALL = [
-  'npm install -g @antseed/cli',
-  'antseed buyer start',
-  "curl localhost:8377/v1/chat/completions -H 'content-type: application/json' -d '{\"model\": \"deepseek-v4-flash\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'",
-  'antseed buyer deposit',
+  GATEWAY_INSTALL_COMMAND,
+  "curl localhost:8379/v1/chat/completions -H \"authorization: Bearer $ANTSEED_API_KEY\" -H 'content-type: application/json' -d '{\"model\": \"deepseek-v4-flash\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'",
 ].join('\n');
-const CLI_ACTIVITY = ['Proxy listening on localhost:8377', 'Works with any OpenAI-compatible app', 'Antseed routes each request to a provider'];
+const CLI_ACTIVITY = ['Gateway listening on localhost:8379', 'Keys, budgets and logs in the console', 'Antseed routes each request to a provider'];
 type CliTok = {cls: 'c'|'g'|'p'|'b'|'y'|'o'|'w'; text: string};
 const CLI_LINES: CliTok[][] = [
-  [{cls:'c',text:'# Install the CLI'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'npm'},{cls:'b',text:' install'},{cls:'y',text:' -g'},{cls:'o',text:' @antseed/cli'}],
-  [{cls:'c',text:'# Start your local endpoint'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'antseed'},{cls:'b',text:' buyer start'}],
-  [{cls:'w',text:'→ listening on localhost:8377'}],
+  [{cls:'c',text:'# Set up the gateway'}],
+  [{cls:'g',text:'$ '},{cls:'p',text:'curl'},{cls:'y',text:' -fsSL'},{cls:'o',text:' https://antseed.com/install.sh'},{cls:'w',text:' | '},{cls:'p',text:'bash'}],
+  [{cls:'w',text:'→ console: localhost:8379/console'}],
+  [{cls:'c',text:'# Claim the console, add funds, create a key'}],
   [{cls:'c',text:'# Call it like any OpenAI API'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'curl'},{cls:'b',text:' localhost:8377/v1/chat/completions'},{cls:'w',text:' \\'}],
+  [{cls:'g',text:'$ '},{cls:'p',text:'curl'},{cls:'b',text:' localhost:8379/v1/chat/completions'},{cls:'w',text:' \\'}],
+  [{cls:'y',text:'    -H'},{cls:'o',text:' "authorization: Bearer $ANTSEED_API_KEY"'},{cls:'w',text:' \\'}],
   [{cls:'y',text:'    -H'},{cls:'o',text:" 'content-type: application/json'"},{cls:'w',text:' \\'}],
   [{cls:'y',text:'    -d'},{cls:'o',text:' \'{"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "Hello"}]}\''}],
-  [{cls:'c',text:'# Fund it for paid models (free ones need nothing)'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'antseed'},{cls:'b',text:' buyer deposit'}],
 ];
 
 export function HeroCliVisual({active = true}: {active?: boolean}) {
@@ -492,7 +491,7 @@ export function HeroCliVisual({active = true}: {active?: boolean}) {
     <div className={`${ag.card} ${!active ? ag.paused : ''}`}>
       <div className={ag.top}>
         <span><i /> Running on localhost.</span>
-        <small>:8377</small>
+        <small>:8379</small>
       </div>
       <div className={`${ag.scene} ${cli.scene}`}>
         <div className={cli.terminal}>
@@ -502,7 +501,7 @@ export function HeroCliVisual({active = true}: {active?: boolean}) {
               <i style={{background: '#F59E0B'}} />
               <i style={{background: '#676663'}} />
             </span>
-            <span className={cli.barTitle}>Antseed CLI</span>
+            <span className={cli.barTitle}>Antseed gateway</span>
             <button type="button" className={cli.copy} onClick={all.copy} aria-live="polite">
               {all.copied ? 'Copied' : 'Copy commands'}
             </button>
@@ -573,8 +572,8 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
           <DownloadCta caption="No signup required" />
         </HeroCtaPane>
         <HeroCtaPane id="cli" use={use}>
-          <Button to="/docs/install" size="lg" arrow>Install the CLI</Button>
-          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Mac, Windows, Linux, or your server. No account.</span>
+          <CommandChip command={GATEWAY_INSTALL_COMMAND} />
+          <span className={styles.useNote}><LinkArrow to="/docs/quickstart">Read the docs</LinkArrow></span>
         </HeroCtaPane>
         <HeroCtaPane id="agent" use={use}>
           <SkillChip />
