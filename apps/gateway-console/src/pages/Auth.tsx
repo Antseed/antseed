@@ -34,10 +34,11 @@ const AUTH_ERRORS: Record<string, string> = {
   oidc_unavailable: 'The single sign-on provider could not be reached. Try again later.',
   reauth_required: 'Linking a sign-in provider needs a fresh sign-in. Go back to the console, confirm it is you under Your sign-in methods, then link it again.',
   access_reauth_required: 'Your Cloudflare Access sign-in is more than 5 minutes old. Sign out of Cloudflare Access, sign in again, then link the provider again.',
+  credential_exists: 'This single sign-on account is already linked to another member.',
 }
 
 /** Errors from linking a provider to a signed-in account: the session is still valid, so offer the way back. */
-const LINK_ERRORS = new Set(['reauth_required', 'access_reauth_required'])
+const LINK_ERRORS = new Set(['reauth_required', 'access_reauth_required', 'credential_exists'])
 
 function authErrorText(error: unknown): string {
   if (isApiError(error) && AUTH_ERRORS[error.code]) return AUTH_ERRORS[error.code]!

@@ -86,7 +86,7 @@ export interface ConsoleAuthService extends ConsoleAuth {
   requireFreshSignIn(request: ConsoleRequest, principal: Principal | null): Promise<void>
 }
 
-type LoginError = 'not_invited' | 'not_linked' | 'disabled' | 'invalid_enrollment'
+type LoginError = 'not_invited' | 'not_linked' | 'disabled' | 'invalid_enrollment' | 'credential_exists'
 
 export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = {}): ConsoleAuthService {
   const { store } = deps
@@ -272,6 +272,8 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
     if (bindCredential) {
       const credential = db.findOidc(identity.issuer, identity.subject)
       if (credential) {
+        // Linking or enrolling an account another member already signs in with must not switch to that member.
+        if (enrollmentMemberId && credential.member_id !== enrollmentMemberId) return { error: 'credential_exists' }
         const member = store.getMember(credential.member_id)
         if (!member) return { error: 'not_invited' }
         if (member.status !== 'active') return { error: 'disabled' }
