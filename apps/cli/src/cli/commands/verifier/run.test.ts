@@ -32,12 +32,12 @@ function command(): Command {
   return program
 }
 
-test('verifier exposes run, reference, status, submit, and rewards workflows', () => {
+test('verifier exposes run, reference, status, submit, rewards, and check workflows', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')
   assert.ok(verifier)
   assert.deepEqual(
     verifier.commands.map((entry) => entry.name()).sort(),
-    ['reference', 'rewards', 'run', 'status', 'submit'],
+    ['check', 'reference', 'rewards', 'run', 'status', 'submit'],
   )
 })
 

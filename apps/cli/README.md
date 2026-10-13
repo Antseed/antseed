@@ -655,6 +655,25 @@ verdicts from sellers' counts (`--dry-run` lists them, `--no-expire` skips this)
 `verifier rewards --epochs <list>` shows the
 credits earned per epoch and claims the auditor share once an epoch is final.
 
+## Checking Other Endpoints
+
+`verifier check` reuses the latest published audit for a model to check any
+OpenAI- or Anthropic-compatible endpoint, such as another network or a provider's
+own API:
+
+```bash
+VERIFY_API_KEY=... antseed verifier check meta-llama/llama-3.3-70b-instruct \
+  --base-url https://api.example.com/v1 --target-model their-model-id
+```
+
+It finds the newest `ModelAudited` event for the model on-chain, downloads its
+evidence from IPFS, checks the evidence against the on-chain hash, and audits the
+endpoint with the largest KBF reference the audit published. Pass
+`--audit ipfs://<cid>` to use a specific audit without a chain lookup. Use
+`--protocol anthropic` for Messages-API endpoints. Exit codes are 0 for `SAME`,
+2 for `DIFF`, and 3 for `UNDETERMINED`. Results stay local and are never
+submitted on-chain.
+
 ## Model Audits With Reference Enrollment
 
 Audits normally use existing reference banks and do not make reference-building

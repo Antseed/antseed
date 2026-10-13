@@ -23,6 +23,11 @@ VERIFY_API_KEY=... npx antseed-verify \
 | `DIFF` | Significantly more mismatches than the genuine model makes | 2 |
 | `UNDETERMINED` | Too many batches failed to judge (coverage below 80%) | 3 |
 
+To reuse the probes of a published Antseed model audit, pass `--audit ipfs://<cid>`
+instead of `--reference`. The verifier checks the audit evidence against its hash and
+uses the largest KBF reference the audit published. `antseed verifier check <model>`
+(in `@antseed/cli`) finds the latest on-chain audit for you.
+
 Use `--protocol anthropic` for Messages-API endpoints, `--out audit.json` to keep the
 raw request and response bytes, and `--json` for machine-readable output.
 
@@ -33,13 +38,16 @@ with `antseed verifier reference` (in `@antseed/cli`).
 ## Library
 
 ```ts
-import { auditEndpoint, loadReference, OpenAIChatEndpoint } from '@antseed/model-verifier'
+import { auditEndpoint, loadReference, OpenAIChatEndpoint, resolveAuditReference } from '@antseed/model-verifier'
 
 const result = await auditEndpoint({
   endpoint: new OpenAIChatEndpoint({ baseUrl, apiKey }),
   reference: await loadReference('ipfs://<cid>'),
 })
 console.log(result.evaluation.verdict)
+
+// Or reuse the reference of a published Antseed audit:
+const { reference } = await resolveAuditReference('ipfs://<audit-cid>')
 ```
 
 Any transport can be audited by implementing `ModelEndpoint`, so anyone can re-check

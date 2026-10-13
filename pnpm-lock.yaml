@@ -105,6 +105,9 @@ importers:
       '@antseed/fingerprints':
         specifier: workspace:*
         version: link:../../packages/fingerprints
+      '@antseed/model-verifier':
+        specifier: workspace:*
+        version: link:../../packages/model-verifier
       '@antseed/node':
         specifier: workspace:*
         version: link:../../packages/node

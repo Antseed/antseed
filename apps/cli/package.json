@@ -29,6 +29,7 @@
     "@antseed/api-adapter": "workspace:*",
     "@antseed/connected-apps": "workspace:*",
     "@antseed/fingerprints": "workspace:*",
+    "@antseed/model-verifier": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",

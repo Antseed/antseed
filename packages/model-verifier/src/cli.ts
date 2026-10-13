@@ -5,15 +5,18 @@ import { auditEndpoint } from './audit.js'
 import { AnthropicMessagesEndpoint } from './endpoints/anthropic-messages.js'
 import { OpenAIChatEndpoint } from './endpoints/openai-chat.js'
 import type { ModelEndpoint } from './endpoint.js'
+import { resolveAuditReference } from './publication.js'
 import { loadReference } from './reference.js'
+import { auditSummaryJson, formatAuditSummary, verdictExitCode } from './report.js'
 
-const USAGE = `Usage: antseed-verify --base-url <url> --reference <file|url|ipfs://cid> [options]
+const USAGE = `Usage: antseed-verify --base-url <url> (--reference <file|url|ipfs://cid> | --audit <ipfs://cid>) [options]
 
 Checks whether the model behind an endpoint matches a published KBF model reference.
 
 Options:
   --base-url <url>        Endpoint base URL including the version, e.g. https://openrouter.ai/api/v1
   --reference <source>    KBF reference JSON (path, https URL or ipfs:// URI)
+  --audit <ipfs://cid>    Published Antseed model audit; reuses its largest KBF reference
   --model <id>            Model id to request (default: the reference's upstream model)
   --protocol <name>       openai (default) or anthropic
   --api-key-env <name>    Environment variable holding the API key (default: VERIFY_API_KEY)
@@ -32,6 +35,7 @@ async function main(): Promise<number> {
     options: {
       'base-url': { type: 'string' },
       reference: { type: 'string' },
+      audit: { type: 'string' },
       model: { type: 'string' },
       protocol: { type: 'string', default: 'openai' },
       'api-key-env': { type: 'string', default: 'VERIFY_API_KEY' },
@@ -44,12 +48,15 @@ async function main(): Promise<number> {
       help: { type: 'boolean', short: 'h', default: false },
     },
   })
-  if (values.help || !values['base-url'] || !values.reference) {
+  if (values.help || !values['base-url'] || !values.reference === !values.audit) {
     console.log(USAGE)
     return values.help ? 0 : 1
   }
 
-  const reference = await loadReference(values.reference, { trustImported: values['trust-imported'] })
+  const loadOptions = { trustImported: values['trust-imported'] }
+  const reference = values.audit
+    ? (await resolveAuditReference(values.audit, loadOptions)).reference
+    : await loadReference(values.reference!, loadOptions)
   const endpoint = createEndpoint({
     protocol: values.protocol ?? 'openai',
     baseUrl: values['base-url'],
@@ -69,32 +76,9 @@ async function main(): Promise<number> {
   if (!values.json) process.stderr.write('\n')
   if (values.out) await writeFile(values.out, `${JSON.stringify(result, null, 2)}\n`)
 
-  const { evaluation } = result
-  if (values.json) {
-    console.log(JSON.stringify({
-      verdict: evaluation.verdict,
-      reason: evaluation.verdictReason,
-      target: result.target,
-      referenceId: result.referenceId,
-      referenceModel: result.referenceModel,
-      stats: evaluation.stats,
-      probes: result.probeIds.length,
-      statisticalPower: result.statisticalPower,
-    }, null, 2))
-  } else {
-    const { stats } = evaluation
-    console.log(`Target     ${result.target.model} @ ${result.target.endpoint}`)
-    console.log(`Reference  ${result.referenceModel} (${result.referenceId})`)
-    console.log(`Probes     ${result.probeIds.length} (power ${result.statisticalPower.toFixed(3)})`)
-    if (stats.targetTotal !== null) {
-      console.log(`Mismatches ${stats.targetHamming}/${stats.targetTotal} (reference honest-error bound ${formatRate(stats.p0Cp99)})`)
-    }
-    if (stats.pValueBinomial !== null) console.log(`p-value    ${stats.pValueBinomial.toExponential(3)}`)
-    console.log(`Verdict    ${evaluation.verdict}${evaluation.verdictReason ? ` — ${evaluation.verdictReason}` : ''}`)
-  }
-  if (evaluation.verdict === 'SAME') return 0
-  if (evaluation.verdict === 'DIFF') return 2
-  return 3
+  if (values.json) console.log(JSON.stringify(auditSummaryJson(result), null, 2))
+  else for (const line of formatAuditSummary(result)) console.log(line)
+  return verdictExitCode(result)
 }
 
 function createEndpoint(input: {
@@ -123,10 +107,6 @@ function parsePositiveInteger(value: string, flag: string): number {
   const parsed = Number(value)
   if (!Number.isSafeInteger(parsed) || parsed <= 0) throw new Error(`${flag} must be a positive integer`)
   return parsed
-}
-
-function formatRate(rate: number | null): string {
-  return rate === null ? 'n/a' : `${(rate * 100).toFixed(1)}%`
 }
 
 main().then(
