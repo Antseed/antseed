@@ -42,6 +42,16 @@ function requireKeyAccess(deps: ConsoleDeps, p: Principal | null, id: string, ne
 }
 
 /**
+ * Member budgets only reach keys with an owner, so a key without one is the
+ * org admins' (and management tokens') to make; a workspace admin's keys
+ * belong to someone in the workspace.
+ */
+function requireOwnerlessAllowed(deps: ConsoleDeps, p: Principal | null, ownerMemberId: string | null | undefined): void {
+  if (ownerMemberId !== null || isOrgAdmin(deps.store, p)) return
+  throw new ConsoleError(403, 'forbidden', 'Only organization admins can have keys without an owner')
+}
+
+/**
  * API keys (business rules in `services/keys.ts`). Members create, rotate
  * and revoke their own keys in workspaces they belong to, up to their
  * `maxKeys`; workspace admins manage every key in their workspace and may
@@ -69,10 +79,12 @@ export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): voi
     requireWorkspaceAccess(store, principal, workspaceId)
     const admin = workspaceRole(store, principal, workspaceId) === 'admin'
     const self = principal?.kind === 'member' ? principal.memberId : null
+    const ownerMemberId = input['ownerMemberId'] !== undefined ? optionalString(input, 'ownerMemberId') ?? null : undefined
+    requireOwnerlessAllowed(deps, principal, ownerMemberId)
     const { key, secret } = createKey(deps, requestActor(deps, request), {
       label,
       workspaceId,
-      ...(input['ownerMemberId'] !== undefined ? { ownerMemberId: optionalString(input, 'ownerMemberId') ?? null } : {}),
+      ...(ownerMemberId !== undefined ? { ownerMemberId } : {}),
       ...(input['topupEnabled'] !== undefined ? { topupEnabled: optionalBoolean(input, 'topupEnabled') } : {}),
       ...(input['limits'] !== undefined ? { limits: fullLimitsFromWire(input['limits']) } : {}),
       ...(input['routingPolicy'] !== undefined ? { routingPolicy: policyFromWire(input['routingPolicy']) } : {}),
@@ -88,11 +100,13 @@ export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): voi
     const { principal, params, body } = request
     const input = asObject(body)
     const { key, access } = requireKeyAccess(deps, principal, params['id']!, 'owner')
+    const ownerMemberId = input['ownerMemberId'] !== undefined ? optionalString(input, 'ownerMemberId') ?? null : undefined
+    if (access === 'admin' && key.ownerMemberId !== null) requireOwnerlessAllowed(deps, principal, ownerMemberId)
     const updated = updateKey(deps, requestActor(deps, request), key.id, {
       ...(input['workspaceId'] !== undefined ? { workspaceId: input['workspaceId'] } : {}),
       ...(input['label'] !== undefined ? { label: requiredString(input, 'label') } : {}),
       ...(input['topupEnabled'] !== undefined ? { topupEnabled: optionalBoolean(input, 'topupEnabled') } : {}),
-      ...(input['ownerMemberId'] !== undefined ? { ownerMemberId: optionalString(input, 'ownerMemberId') ?? null } : {}),
+      ...(ownerMemberId !== undefined ? { ownerMemberId } : {}),
       ...(input['limits'] !== undefined ? { limits: limitsFromWire(input['limits']) } : {}),
       ...(input['routingPolicy'] !== undefined ? { routingPolicy: policyFromWire(input['routingPolicy']) } : {}),
       ...(input['ownerLimits'] !== undefined ? { ownerLimits: limitsFromWire(input['ownerLimits']) } : {}),

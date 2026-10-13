@@ -23,7 +23,7 @@ function seed(store: GatewayStore, auth: FakeConsoleAuth) {
   auth.as('owner', memberPrincipal(store, owner.id))
   auth.as('wsAdmin', memberPrincipal(store, wsAdmin.id))
   auth.as('member', memberPrincipal(store, member.id))
-  return { ws, member, key, any, onlyC }
+  return { ws, wsAdmin, member, key, any, onlyC }
 }
 
 async function harness() {
@@ -126,6 +126,32 @@ test('a member creating a key sets its owner layer; admins set both layers', asy
     const dto = (ok.body as { key: { limits: { daily: string }; ownerLimits: { daily: string } } }).key
     assert.equal(dto.limits.daily, '2.000000')
     assert.equal(dto.ownerLimits.daily, '1.000000')
+  } finally {
+    await h.close()
+  }
+})
+
+test('only org admins create keys without an owner or clear a key\'s owner', async () => {
+  const h = await harness()
+  try {
+    const keyOf = (res: { body: unknown }) => h.store.getKey((res.body as { key: { id: string } }).key.id)!
+
+    const ownerless = await h.as('wsAdmin', 'POST', '/keys', { label: 'Ops', workspaceId: h.org.ws.id, ownerMemberId: null })
+    assert.equal(ownerless.status, 403)
+    assert.equal((ownerless.body as ErrorBody).error.code, 'forbidden')
+    const defaulted = await h.as('wsAdmin', 'POST', '/keys', { label: 'Ops', workspaceId: h.org.ws.id })
+    assert.equal(defaulted.status, 201)
+    assert.equal(keyOf(defaulted).ownerMemberId, h.org.wsAdmin.id, 'a workspace admin owns the keys they create')
+
+    const cleared = await h.as('wsAdmin', 'PATCH', `/keys/${h.org.key.id}`, { ownerMemberId: null })
+    assert.equal(cleared.status, 403)
+    assert.equal(h.store.getKey(h.org.key.id)!.ownerMemberId, h.org.member.id)
+
+    const byOrgAdmin = await h.as('owner', 'POST', '/keys', { label: 'Ops', workspaceId: h.org.ws.id, ownerMemberId: null })
+    assert.equal(byOrgAdmin.status, 201)
+    assert.equal(keyOf(byOrgAdmin).ownerMemberId, null)
+    assert.equal((await h.as('owner', 'PATCH', `/keys/${h.org.key.id}`, { ownerMemberId: null })).status, 200)
+    assert.equal(h.store.getKey(h.org.key.id)!.ownerMemberId, null)
   } finally {
     await h.close()
   }
