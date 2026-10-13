@@ -13,7 +13,7 @@ import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, applyPreset, extractEndUser, presetSlug, sniffMultipartModel } from './request-shaping.js'
+import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug } from './request-shaping.js'
 import { ResponseUsageReader } from './response-usage.js'
 import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
@@ -260,7 +260,9 @@ export class GatewayServer {
     if (!body) return sendBodyTooLarge(res)
     const contentType = req.headers['content-type']
     let parsed = parseJsonBody(body, contentType)
-    let model = requestModel(parsed, body, contentType)
+    // What the buyer routes by (`service ?? model`), so the allow list and
+    // the request log see the model that is actually bought.
+    let model = effectiveRequestModel(parsed, body, contentType)
 
     // `model: "@preset/<slug>"` runs the workspace's (or org's) preset.
     const slug = presetSlug(model)
@@ -793,12 +795,6 @@ function parseJsonBody(body: Buffer, contentType: string | undefined): Record<st
 
 function jsonObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
-}
-
-/** The request's `model`: the JSON body's field, else a multipart form's. */
-function requestModel(parsed: Record<string, unknown> | null, body: Buffer, contentType: string | undefined): string | null {
-  if (!parsed) return sniffMultipartModel(body, contentType)
-  return typeof parsed['model'] === 'string' ? parsed['model'] : null
 }
 
 /**

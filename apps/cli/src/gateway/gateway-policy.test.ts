@@ -165,6 +165,32 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
   }
 })
 
+test('allowedModels and the request log use the model the buyer routes by (service before model)', async () => {
+  const ctx = await setup()
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const smuggled = await ctx.send(secret, '/v1/chat/completions', { model: 'good-model', service: 'other-model' })
+    assert.equal(smuggled.status, 403, 'an allowed model cannot carry a disallowed service')
+    assert.equal(smuggled.body.error.code, 'model_not_allowed')
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'good-model', service: '' })).status, 403, 'a blank service routes nowhere the allow list knows')
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { service: ' good-model ' })).status, 200)
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'other-model', service: 'good-model' })).status, 200)
+    assert.equal(ctx.buyer.captured.length, 2)
+    assert.deepEqual(ctx.store.listRequests({ keyId: key.id }).map((row) => row.model), ['good-model', 'good-model'])
+
+    // A preset's model is what is bought: a client `service` cannot route around it.
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    ctx.store.createPreset({ slug: 'p', name: 'P', workspaceId: null, model: 'good-model', routingPolicy: null, systemPrompt: null, params: {} })
+    assert.equal((await ctx.send(open.secret, '/v1/chat/completions', { model: 'x', service: '@preset/p' })).status, 200)
+    const forwarded = JSON.parse(ctx.buyer.captured[2]!.body)
+    assert.equal(forwarded.model, 'good-model')
+    assert.equal(forwarded.service, undefined)
+    assert.equal(ctx.store.listRequests({ keyId: open.key.id })[0]!.model, 'good-model')
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('/v1/models lists only the models the key may use, even when the buyer is not sent the policy', async () => {
   const ctx = await setup({ controlSecret: null })
   try {
