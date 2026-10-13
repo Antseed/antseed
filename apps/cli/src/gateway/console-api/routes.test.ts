@@ -138,6 +138,32 @@ test('workspaces: visibility, creation with a new wallet, budgets and membership
   }
 })
 
+test('workspace admins cannot remove or demote someone above them in the org', async () => {
+  const h = await harness()
+  const { org, as, store } = h
+  try {
+    store.setWorkspaceMember(org.wsA.id, org.admin.id, 'admin')
+    store.setWorkspaceMember(org.wsA.id, org.owner.id, 'admin')
+    const orgAdminKey = store.createKey({ label: 'Admin key', workspaceId: org.wsA.id, ownerMemberId: org.admin.id, limits: NO_LIMITS, expiresAt: null })
+    const path = (id: string) => `/workspaces/${org.wsA.id}/members/${id}`
+
+    await expectStatuses(as, 'PUT', path(org.admin.id), { wsAdmin: 403 }, { role: 'member' })
+    await expectStatuses(as, 'DELETE', path(org.admin.id), { wsAdmin: 403 })
+    await expectStatuses(as, 'DELETE', path(org.owner.id), { wsAdmin: 403, admin: 403, writer: 403 })
+    assert.equal(store.memberWorkspaceRoles(org.admin.id).get(org.wsA.id), 'admin')
+    assert.equal(store.getKey(orgAdminKey.key.id)!.status, 'active')
+    // Promoting is fine, and peers or those below are theirs to manage.
+    await expectStatuses(as, 'PUT', path(org.memberA.id), { wsAdmin: 204 }, { role: 'admin' })
+    await expectStatuses(as, 'PUT', path(org.memberA.id), { wsAdmin: 204 }, { role: 'member' })
+    await expectStatuses(as, 'PUT', path(org.owner.id), { admin: 204 }, { role: 'admin' })
+    await expectStatuses(as, 'PUT', path(org.admin.id), { admin: 204, writer: 204 }, { role: 'member' })
+    await expectStatuses(as, 'DELETE', path(org.admin.id), { owner: 204 })
+    assert.equal(store.getKey(orgAdminKey.key.id)!.status, 'revoked')
+  } finally {
+    await h.close()
+  }
+})
+
 test('keys: self-service within maxKeys, admin powers, rotation and key sessions', async () => {
   const h = await harness()
   const { org, as } = h

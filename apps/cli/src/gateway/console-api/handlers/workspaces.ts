@@ -8,7 +8,7 @@ import {
 } from '../../services/workspaces.js'
 import { activeMember, requestActor, requireOrgAdmin, requireWorkspaceAccess, visibleWorkspaceIds, workspaceRole } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
-import { respond, type ConsoleRouter } from '../router.js'
+import { respond, type ConsoleRouter, type Principal } from '../router.js'
 import {
   asObject,
   confirmations,
@@ -21,15 +21,23 @@ import {
   requiredString,
   workspaceDto,
 } from '../serialize.js'
-import type { WorkspaceRole } from '../types.js'
+import type { OrgRole, WorkspaceRole } from '../types.js'
 import { defaultBuyerClient } from './network-buyer.js'
+
+/** The caller's org role for membership changes; a management token counts as an org admin. */
+function callerOrgRole(deps: ConsoleDeps, p: Principal | null): OrgRole {
+  if (p?.kind === 'token') return 'admin'
+  if (p?.kind === 'member') return deps.store.getMember(p.memberId)?.orgRole ?? 'member'
+  return 'member'
+}
 
 /**
  * Workspaces and their members (business rules in `services/workspaces.ts`).
  * Anyone sees the workspaces they belong to (org admins all of them). Org
  * admins create and delete workspaces and set their budgets and
  * `orgRoutingPolicy`; workspace admins rename them, set the workspace's own
- * `routingPolicy` (which can only narrow the org's) and manage their members.
+ * `routingPolicy` (which can only narrow the org's) and manage their members,
+ * except that nobody removes or demotes someone above them in the org.
  */
 export function registerWorkspaceRoutes(router: ConsoleRouter, deps: ConsoleDeps): void {
   const { store } = deps
@@ -98,14 +106,16 @@ export function registerWorkspaceRoutes(router: ConsoleRouter, deps: ConsoleDeps
   router.add('PUT', '/workspaces/:id/members/:memberId', async (request) => {
     const { principal, params, body } = request
     requireWorkspaceAccess(store, principal, params['id']!, 'admin')
-    setWorkspaceMember(deps, requestActor(deps, request), params['id']!, params['memberId']!, asObject(body)['role'] as WorkspaceRole)
+    setWorkspaceMember(deps, requestActor(deps, request), params['id']!, params['memberId']!, asObject(body)['role'] as WorkspaceRole, {
+      callerOrgRole: callerOrgRole(deps, principal),
+    })
     return respond(204)
   })
 
   router.add('DELETE', '/workspaces/:id/members/:memberId', async (request) => {
     const { principal, params } = request
     requireWorkspaceAccess(store, principal, params['id']!, 'admin')
-    removeWorkspaceMember(deps, requestActor(deps, request), params['id']!, params['memberId']!)
+    removeWorkspaceMember(deps, requestActor(deps, request), params['id']!, params['memberId']!, { callerOrgRole: callerOrgRole(deps, principal) })
     return respond(204)
   })
 }

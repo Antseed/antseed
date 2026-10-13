@@ -7,7 +7,7 @@ import { badRequest, notFound } from '../console-api/serialize.js'
 import { NO_BUDGET_LIMITS, type BudgetLimits } from '../limits.js'
 import { parseUsdToUsdc } from '../money.js'
 import { checkPolicyInput, policyInputProblem } from '../policy-resolver.js'
-import type { WorkspaceRecord, WorkspaceRole } from '../store.js'
+import type { OrgRole, WorkspaceRecord, WorkspaceRole } from '../store.js'
 import { buyerAddressBook, resolveIdentityAddress, syncWalletCache, type BuyerAddressBook, type ResolvedWalletAddress } from './wallet-address.js'
 import { changedFields, recordAudit, requiredText, throwIfProblem, type Actor, type PolicyConfirmations, type ServiceContext } from './context.js'
 
@@ -221,8 +221,33 @@ export async function deleteWorkspace(ctx: ServiceContext, actor: Actor, id: str
   return workspace
 }
 
+const ORG_RANK: Record<OrgRole, number> = { member: 0, admin: 1, owner: 2 }
+
+/**
+ * Who is changing workspace membership: `callerOrgRole` is the caller's org
+ * role (a management token counts as an org admin). Without it (the CLI) the
+ * caller is not limited.
+ */
+export interface WorkspaceMemberOptions {
+  callerOrgRole?: OrgRole
+}
+
+/** A workspace admin cannot remove or demote someone who outranks them in the org. */
+function requireNotOutranked(target: { orgRole: OrgRole }, options: WorkspaceMemberOptions, what: string): void {
+  const caller = options.callerOrgRole
+  if (caller === undefined || ORG_RANK[target.orgRole] <= ORG_RANK[caller]) return
+  throw new ConsoleError(403, 'forbidden', `You cannot ${what} an organization ${target.orgRole}`)
+}
+
 /** Adds a member to a workspace or changes their role there. */
-export function setWorkspaceMember(ctx: ServiceContext, actor: Actor, workspaceId: string, memberId: string, role: WorkspaceRole): void {
+export function setWorkspaceMember(
+  ctx: ServiceContext,
+  actor: Actor,
+  workspaceId: string,
+  memberId: string,
+  role: WorkspaceRole,
+  options: WorkspaceMemberOptions = {},
+): void {
   const { store } = ctx
   requireWorkspaceRecord(ctx, workspaceId)
   const member = store.getMember(memberId)
@@ -230,13 +255,22 @@ export function setWorkspaceMember(ctx: ServiceContext, actor: Actor, workspaceI
   if (member.status === 'disabled') throw new ConsoleError(409, 'member_disabled', 'This member is disabled')
   if (role !== 'admin' && role !== 'member') throw badRequest('role must be admin or member')
   const previous = store.memberWorkspaceRoles(member.id).get(workspaceId) ?? null
+  if (previous === 'admin' && role === 'member') requireNotOutranked(member, options, 'demote')
   store.setWorkspaceMember(workspaceId, member.id, role)
   recordAudit(ctx, actor, 'workspace.member.set', { kind: 'member', id: member.id, label: member.label }, { workspaceId, before: previous, after: role })
 }
 
 /** Removes a member from a workspace; their keys there are revoked with the membership. */
-export function removeWorkspaceMember(ctx: ServiceContext, actor: Actor, workspaceId: string, memberId: string): { revokedKeys: string[] } {
+export function removeWorkspaceMember(
+  ctx: ServiceContext,
+  actor: Actor,
+  workspaceId: string,
+  memberId: string,
+  options: WorkspaceMemberOptions = {},
+): { revokedKeys: string[] } {
   const { store } = ctx
+  const member = store.getMember(memberId)
+  if (member) requireNotOutranked(member, options, 'remove')
   if (!store.removeWorkspaceMember(workspaceId, memberId)) throw notFound('Workspace member')
   const revokedKeys: string[] = []
   for (const key of store.listKeys({ workspaceId, ownerMemberId: memberId })) {
