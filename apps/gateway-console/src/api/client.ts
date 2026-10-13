@@ -43,7 +43,7 @@ export const ERROR_COPY: Record<string, string> = {
 }
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof ConsoleApiError && ERROR_COPY[error.code]) return ERROR_COPY[error.code]!
+  if (error instanceof ConsoleApiError && Object.hasOwn(ERROR_COPY, error.code)) return ERROR_COPY[error.code]!
   if (error instanceof Error) return error.message
   return typeof error === 'string' ? error : 'Something went wrong.'
 }

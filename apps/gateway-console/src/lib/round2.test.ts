@@ -176,6 +176,7 @@ describe('OTLP header re-entry and error copy', () => {
     expect(errorMessage(new ConsoleApiError(409, 'last_credential', 'x'))).toContain('only sign-in method')
     expect(errorMessage(new ConsoleApiError(403, 'session_required', 'x'))).toContain('Management tokens cannot')
     expect(errorMessage(new ConsoleApiError(403, 'reauth_other_credential', 'x'))).toContain('different passkey or wallet')
+    expect(errorMessage(new ConsoleApiError(400, 'constructor', 'the server said'))).toBe('the server said')
     expect(errorMessage(new ConsoleApiError(403, 'access_reauth_required', 'x'))).toContain('Cloudflare Access')
   })
 })

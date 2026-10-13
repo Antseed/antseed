@@ -40,9 +40,13 @@ const AUTH_ERRORS: Record<string, string> = {
 /** Errors from linking a provider to a signed-in account: the session is still valid, so offer the way back. */
 const LINK_ERRORS = new Set(['reauth_required', 'access_reauth_required', 'credential_exists'])
 
+/** Codes come from the query string, so only the table's own keys count (not `constructor` and friends). */
+function authErrorCopy(code: string): string | undefined {
+  return Object.hasOwn(AUTH_ERRORS, code) ? AUTH_ERRORS[code] : undefined
+}
+
 function authErrorText(error: unknown): string {
-  if (isApiError(error) && AUTH_ERRORS[error.code]) return AUTH_ERRORS[error.code]!
-  return errorMessage(error)
+  return (isApiError(error) && authErrorCopy(error.code)) || errorMessage(error)
 }
 
 function AuthLayout({ title, subtitle, children }: { title: ReactNode; subtitle?: ReactNode; children: ReactNode }) {
@@ -162,7 +166,7 @@ export function LoginPage() {
         <Alert tone="danger" action={LINK_ERRORS.has(errorCode)
           ? <Button size="sm" variant="outline" onClick={() => navigate('overview?account=1', { replace: true })}>Back to the console</Button>
           : undefined}>
-          {AUTH_ERRORS[errorCode] ?? 'Sign-in did not complete. Try again.'}
+          {authErrorCopy(errorCode) ?? 'Sign-in did not complete. Try again.'}
         </Alert>
       )}
       {config.isLoading && <div className="gc-stack"><Skeleton height={34} /><Skeleton height={34} /></div>}
