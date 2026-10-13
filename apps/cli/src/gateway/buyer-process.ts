@@ -1,5 +1,6 @@
 import { spawn, type ChildProcess } from 'node:child_process'
 import { createInterface } from 'node:readline'
+import { identityPassphraseEnv } from '@antseed/node'
 import { BUYER_RESTART_EXIT_CODE } from '../proxy/buyer-proxy.js'
 
 /** A buyer that exits sooner than this after starting counts as failing to start. */
@@ -22,7 +23,8 @@ export interface GatewayBuyerOptions {
 function spawnCliBuyer(args: string[]): ChildProcess {
   return spawn(process.execPath, [...process.execArgv, process.argv[1]!, ...args], {
     // The gateway restarts the buyer when it exits, so it may accept the console's restart requests.
-    env: { ...process.env, ANTSEED_SUPERVISED: '1' },
+    // ANTSEED_PASSPHRASE is handed on explicitly: this process removed it from its environment when it read it.
+    env: { ...process.env, ...identityPassphraseEnv(), ANTSEED_SUPERVISED: '1' },
     stdio: ['ignore', 'pipe', 'pipe'],
     // Its own process group: Ctrl+C reaches the gateway, which then stops the buyer
     // after itself, instead of the buyer exiting first and being restarted.

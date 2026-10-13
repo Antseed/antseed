@@ -6,7 +6,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { Worker } from 'node:worker_threads'
 import Database from 'better-sqlite3'
-import { identityFromPrivateKeyHex } from '@antseed/node'
+import { FileIdentityStore, identityFromPrivateKeyHex } from '@antseed/node'
 import { AuthDb } from './auth/db.js'
 import { allowedBundlePath, BUNDLE_MAGIC, BundleError, exportGatewayBundle, importGatewayBundle } from './bundle.js'
 import { CONSOLE_LOCATION_SETTING, readConsoleLocation } from './console-location.js'
@@ -206,6 +206,25 @@ test('export refuses weak passwords, missing gateway data and app-encrypted wall
     rmSync(join(f.source.dataDir, 'identity.key'))
     writeFileSync(join(f.source.dataDir, 'identity.enc'), 'opaque')
     await assert.rejects(exportFixture(f), /encrypted by the Antseed desktop app/)
+  } finally {
+    f.cleanup()
+  }
+})
+
+test('passphrase-encrypted wallet keys travel encrypted and are not decrypted on import', async () => {
+  const f = fixture()
+  try {
+    const dirs = [f.source.dataDir, join(f.source.dataDir, 'buyer-identities', 'ws-alpha')]
+    for (const dir of dirs) await new FileIdentityStore(dir, { passphrase: 'wallet passphrase' }).protect()
+    const encrypted = dirs.map((dir) => readFileSync(join(dir, 'identity.key'), 'utf8'))
+
+    // Neither side has the passphrase.
+    await exportFixture(f)
+    const result = await importGatewayBundle({ bundleFile: f.bundle, dataDir: f.server, configPath: f.serverConfig, password: PASSWORD })
+    assert.equal(readFileSync(join(f.server, 'identity.key'), 'utf8'), encrypted[0])
+    assert.equal(readFileSync(join(f.server, 'buyer-identities', 'ws-alpha', 'identity.key'), 'utf8'), encrypted[1])
+    assert.equal(result.summary.wallets.find((wallet) => wallet.name === 'default')?.address, identityFromPrivateKeyHex(DEFAULT_KEY).wallet.address)
+    assert.equal(result.summary.workspaces.find((ws) => ws.name === 'Alpha')?.address, identityFromPrivateKeyHex(ALPHA_KEY).wallet.address)
   } finally {
     f.cleanup()
   }

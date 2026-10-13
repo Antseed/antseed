@@ -19,6 +19,7 @@ PREFIX=/opt/antseed
 SERVICE_USER=antseed
 SERVICE_HOME=/var/lib/antseed
 ENV_FILE=/etc/antseed/gateway.env
+WALLET_ENV_FILE=/etc/antseed/wallet.env
 WRAPPER=/usr/local/bin/antseed
 WRAPPER_MARKER='# antseed-gateway-wrapper'
 NODE_MAJOR=24
@@ -43,6 +44,7 @@ IMPORT_BUNDLE="${ANTSEED_GATEWAY_IMPORT:-}"
 IMPORT_PASSWORD_FILE="${ANTSEED_GATEWAY_IMPORT_PASSWORD_FILE:-}"
 IMPORT_FORCE="${ANTSEED_GATEWAY_IMPORT_FORCE:-0}"
 IMPORT_PASSWORD=""
+PASSPHRASE="${ANTSEED_PASSPHRASE:-}"
 DATA_DIR="$SERVICE_HOME/.antseed"
 DRY_RUN="${ANTSEED_INSTALL_DRY_RUN:-0}"
 VERBOSE="${ANTSEED_INSTALL_VERBOSE:-0}"
@@ -85,6 +87,12 @@ Console sign-in with your own identity provider (optional; needs an https URL):
   --cf-access-aud <tag>        Cloudflare Access application audience (AUD) tag.
   --cli-version <version>      @antseed/cli version or dist-tag to install (default: latest).
 
+Wallet keys (optional; environment only, never a flag):
+  ANTSEED_PASSPHRASE           Keeps wallet keys encrypted at rest. A copy of the passphrase lives
+                               in /etc/antseed/wallet.env (0600, root), which both services load.
+                               Keys that already exist stay as they are until you run
+                               `sudo antseed buyer identity protect --all`.
+
 Moving a gateway from another machine:
   --import <bundle>            Restore a bundle made with `antseed gateway export` (keys, members,
                                workspaces, wallets, usage) before the services start, instead of
@@ -106,6 +114,7 @@ Environment variables (same as the flags):
   ANTSEED_GATEWAY_IMPORT, ANTSEED_GATEWAY_IMPORT_PASSWORD_FILE, ANTSEED_GATEWAY_IMPORT_FORCE=1,
   ANTSEED_INSTALL_DRY_RUN=1, ANTSEED_INSTALL_VERBOSE=1, NO_COLOR=1
   CDP_API_KEY_ID, CDP_API_KEY_SECRET (for --x402-facilitator cdp)
+  ANTSEED_PASSPHRASE (wallet keys encrypted at rest; see above)
 
 Examples:
   curl -fsSL --proto '=https' --tlsv1.2 https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com
@@ -191,7 +200,7 @@ uninstall() {
   fi
   if [[ -f "$WRAPPER" ]] && grep -q "$WRAPPER_MARKER" "$WRAPPER"; then rm -f "$WRAPPER"; fi
   rm -rf "$PREFIX"
-  step "Done. Wallets, keys and usage history are still in $SERVICE_HOME and $ENV_FILE."
+  step "Done. Wallets, keys and usage history are still in $SERVICE_HOME, $ENV_FILE and $WALLET_ENV_FILE."
   note "They hold USDC credits: back them up before deleting them."
 }
 
@@ -240,6 +249,8 @@ validate() {
   check_value "--x402-facilitator" "$X402_FACILITATOR"
   check_value "CDP_API_KEY_ID" "${CDP_API_KEY_ID:-}"
   check_value "CDP_API_KEY_SECRET" "${CDP_API_KEY_SECRET:-}"
+  # Written single-quoted, so spaces are fine.
+  [[ "$PASSPHRASE" != *"'"* && "$PASSPHRASE" != *$'\n'* ]] || die "ANTSEED_PASSPHRASE must not contain single quotes or line breaks"
   if [[ "$X402_FACILITATOR" == cdp && -z "${CDP_API_KEY_SECRET:-}" ]] \
     && ! grep -qs '^CDP_API_KEY_SECRET=' "$ENV_FILE"; then
     die "--x402-facilitator cdp needs CDP_API_KEY_ID and CDP_API_KEY_SECRET in the environment (sudo CDP_API_KEY_ID=... CDP_API_KEY_SECRET=... bash ...) or in $ENV_FILE"
@@ -410,6 +421,8 @@ $WRAPPER_MARKER
 export PATH="$PREFIX/node/bin:\$PATH"
 if [ "\$(id -un)" = "$SERVICE_USER" ]; then exec "$PREFIX/cli/bin/antseed" "\$@"; fi
 if [ "\$(id -u)" = 0 ]; then
+  # Wallet keys encrypted at rest need the passphrase the services are given.
+  if [ -r "$WALLET_ENV_FILE" ]; then set -a; . "$WALLET_ENV_FILE"; set +a; fi
   exec runuser -u "$SERVICE_USER" -- env HOME="$SERVICE_HOME" PATH="\$PATH" "$PREFIX/cli/bin/antseed" "\$@"
 fi
 exec sudo -u "$SERVICE_USER" env HOME="$SERVICE_HOME" PATH="\$PATH" "$PREFIX/cli/bin/antseed" "\$@"
@@ -446,6 +459,12 @@ write_env_file() {
   [[ -n "$OIDC_ALLOWED_DOMAINS" ]] && set_env ANTSEED_OIDC_ALLOWED_DOMAINS "$OIDC_ALLOWED_DOMAINS"
   [[ -n "$CF_ACCESS_TEAM_DOMAIN" ]] && set_env ANTSEED_CF_ACCESS_TEAM_DOMAIN "$CF_ACCESS_TEAM_DOMAIN"
   [[ -n "$CF_ACCESS_AUD" ]] && set_env ANTSEED_CF_ACCESS_AUD "$CF_ACCESS_AUD"
+  # The wallet passphrase has a file of its own that both services load: the
+  # buyer holds the wallets but has no use for the gateway's other secrets.
+  if [[ -n "$PASSPHRASE" ]]; then
+    (umask 077 && printf "ANTSEED_PASSPHRASE='%s'\n" "$PASSPHRASE" >"$WALLET_ENV_FILE")
+    chmod 0600 "$WALLET_ENV_FILE"
+  fi
   return 0
 }
 
@@ -458,6 +477,7 @@ write_units() {
   local common
   common="User=$SERVICE_USER
 Group=$SERVICE_USER
+EnvironmentFile=-$WALLET_ENV_FILE
 Environment=HOME=$SERVICE_HOME
 Environment=PATH=$PREFIX/node/bin:/usr/local/bin:/usr/bin:/bin
 Restart=always
@@ -610,6 +630,7 @@ print_plan() {
     *) note "Exposure: none beyond $HOST:$PORT" ;;
   esac
   if [[ -n "$X402_FACILITATOR" ]]; then note "x402 top-ups through $X402_FACILITATOR"; fi
+  if [[ -n "$PASSPHRASE" ]]; then note "Wallet keys: new ones encrypted at rest with ANTSEED_PASSPHRASE (a copy in $WALLET_ENV_FILE, 0600)"; fi
   if [[ -n "$IMPORT_BUNDLE" ]]; then
     note "Import: $IMPORT_BUNDLE into $DATA_DIR before the services start (keys, members, wallets, usage)"
     note "        password from ${IMPORT_PASSWORD_FILE:-a prompt on the terminal}; console sessions end, API keys keep working"

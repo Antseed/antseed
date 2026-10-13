@@ -1,8 +1,9 @@
 import type { Command } from 'commander'
 import chalk from 'chalk'
+import { resolveIdentityPassphrase } from '@antseed/node'
 import { loadConfig } from '../../../config/loader.js'
 import { gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
-import { detectExposure, detectHostFacts } from '../../../gateway/exposure.js'
+import { detectExposure, detectHostFacts, unencryptedWalletWarning } from '../../../gateway/exposure.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
@@ -65,6 +66,8 @@ export function registerGatewayCommands(program: Command): void {
       const globalOptions = getGlobalOptions(gateway)
       const publicUrl = normalizePublicUrl(options.publicUrl ?? process.env['ANTSEED_GATEWAY_PUBLIC_URL'])
       const log = (message: string): void => { process.stderr.write(`[gateway] ${message}\n`) }
+      // Read up front so an unreadable ANTSEED_PASSPHRASE_FILE stops the start before anything runs.
+      const passphraseSet = resolveIdentityPassphrase() !== null
       const buyerPort = options.buyerPort ?? (await loadConfig(globalOptions.config)).buyer.proxyPort
       const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
       let runtime: GatewayRuntime
@@ -104,6 +107,8 @@ export function registerGatewayCommands(program: Command): void {
       } else if (exposure.mode === 'lan') {
         console.log(chalk.dim('No public URL: only your network can reach this gateway, over plain HTTP. To serve a team, move it to a server: antseed gateway export --out antseed-gateway.bundle'))
       }
+      const walletWarning = await unencryptedWalletWarning(globalOptions.dataDir, passphraseSet)
+      if (walletWarning) console.log(chalk.yellow(walletWarning))
       setupShutdownHandler(async () => {
         await runtime.stop()
         console.log(chalk.dim('API-key gateway stopped.'))
