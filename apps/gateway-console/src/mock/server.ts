@@ -713,7 +713,8 @@ const routes: Array<[string, string, Handler]> = [
     const admin = workspaceRole(member, params['id']!) === 'admin'
     return Object.entries(db.workspaceMembers[params['id']!] ?? {}).map(([memberId, role]) => {
       const entry = db.members.find((m) => m.id === memberId)!
-      return { member: admin ? entry : { ...entry, credentials: [] }, role }
+      // Like the gateway: plain members see who is in the workspace, not emails, budgets or policies.
+      return { member: admin ? entry : { id: entry.id, label: entry.label, orgRole: entry.orgRole, status: entry.status }, role }
     })
   }],
   ['PUT', '/workspaces/:id/members/:memberId', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); (db.workspaceMembers[params['id']!] ??= {})[params['memberId']!] = body.role }],

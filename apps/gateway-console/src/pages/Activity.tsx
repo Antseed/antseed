@@ -10,7 +10,7 @@ import { EmptyState, PageHeader, Panel, QueryView, Segmented, SelectField, StatT
 import { formatNumber, formatTokens, formatUsd, usdcToNumber } from '../lib/format'
 import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
 import { qk, useKeys, useWorkspaceMembers } from '../lib/queries'
-import { rangeFrom, RANGES, type RangeId, type SeriesMetric } from '../lib/usage'
+import { groupLabel, rangeFrom, RANGES, type RangeId, type SeriesMetric } from '../lib/usage'
 
 const GROUPS: Array<{ value: UsageGroupBy; label: string; admin?: boolean; org?: boolean }> = [
   { value: 'model', label: 'Model' },
@@ -80,7 +80,7 @@ export default function Activity() {
               initialSort={{ key: 'spent', direction: 'desc' }}
               empty={<EmptyState icon={<Icon.activity size={18} />} title="No usage in this range" body="Requests made with this workspace's keys show up here." />}
               columns={[
-                { key: 'label', header: GROUPS.find((group) => group.value === groupBy)?.label ?? 'Group', render: (row) => <span className="gc-ellipsis" title={row.group}>{row.label || row.group}</span>, sortValue: (row) => row.label || row.group },
+                { key: 'label', header: GROUPS.find((group) => group.value === groupBy)?.label ?? 'Group', render: (row) => <span className="gc-ellipsis" title={groupLabel(row)}>{groupLabel(row)}</span>, sortValue: (row) => groupLabel(row) },
                 { key: 'requests', header: 'Requests', align: 'right', render: (row) => formatNumber(row.requests), sortValue: (row) => row.requests },
                 { key: 'failed', header: 'Failed', align: 'right', secondary: true, render: (row) => formatNumber(row.failedRequests), sortValue: (row) => row.failedRequests },
                 { key: 'input', header: 'Input', align: 'right', secondary: true, render: (row) => formatTokens(row.inputTokens), sortValue: (row) => row.inputTokens },

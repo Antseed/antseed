@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { UsageReport } from '../api/types'
 import {
-  COST_PENDING_MS, OTHER_SERIES, bucketReports, chartGrouping, columnRequests, costStatus, groupStart, rangeBuckets, stackSeries, tokenSeries,
+  COST_PENDING_MS, OTHERS_GROUP, OTHER_SERIES, bucketReports, chartGrouping, columnRequests, costStatus, groupLabel, groupStart, rangeBuckets, stackSeries, tokenSeries,
 } from './usage'
 
 const NOW = Date.UTC(2026, 9, 8, 15, 30)
@@ -132,5 +132,14 @@ describe('costStatus', () => {
   })
   it('has nothing to show for a failed request', () => {
     expect(costStatus({ ...base, spent: null }, NOW)).toBeNull()
+  })
+})
+
+describe('groupLabel', () => {
+  it('names the folded end users by count', () => {
+    expect(groupLabel({ group: OTHERS_GROUP, label: '', others: 12 })).toBe('12 other users')
+    expect(groupLabel({ group: OTHERS_GROUP, label: '', others: 1 })).toBe('1 other user')
+    expect(groupLabel({ group: 'alice', label: '' })).toBe('alice')
+    expect(groupLabel({ group: 'k1', label: 'CI key' })).toBe('CI key')
   })
 })

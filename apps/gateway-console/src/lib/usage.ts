@@ -13,6 +13,16 @@ function dayKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
 }
 
+/** The gateway folds the end users past its top ones into this group; `others` counts them. */
+export const OTHERS_GROUP = '\u0000others'
+
+/** A usage group's display name. */
+export function groupLabel(group: { group: string; label: string; others?: number }): string {
+  if (group.group !== OTHERS_GROUP) return group.label || group.group
+  if (group.others === undefined) return 'Other users'
+  return `${group.others} other ${group.others === 1 ? 'user' : 'users'}`
+}
+
 /** Daily spend points from a `groupBy=day` report, with zero-filled gaps across [from, to]. */
 export function dailySeries(report: UsageReport | undefined, from: number, to: number): Array<{ label: string; value: number; sub: string }> {
   const byDay = new Map<string, { spent: number; requests: number }>()
@@ -94,7 +104,7 @@ export function stackSeries(reports: Array<Pick<UsageReport, 'groups'> | undefin
   const totals = new Map<string, { label: string; total: number }>()
   for (const report of reports) {
     for (const group of report?.groups ?? []) {
-      const entry = totals.get(group.group) ?? { label: group.label || group.group, total: 0 }
+      const entry = totals.get(group.group) ?? { label: groupLabel(group), total: 0 }
       entry.total += metricValue(group, metric)
       totals.set(group.group, entry)
     }

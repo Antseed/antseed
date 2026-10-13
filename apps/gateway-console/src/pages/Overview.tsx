@@ -12,7 +12,7 @@ import { isWorkspaceAdmin } from '../lib/nav'
 import { budgetWarnings, runway } from '../lib/budget'
 import { qk, useKeys, useStatus, useWallet, useWorkspace } from '../lib/queries'
 import { GetStarted } from '../components/GetStarted'
-import type { SeriesMetric } from '../lib/usage'
+import { groupLabel, type SeriesMetric } from '../lib/usage'
 
 const PERIODS: Array<{ period: Exclude<LimitPeriod, 'total'>; label: string }> = [
   { period: 'daily', label: 'Today' },
@@ -209,7 +209,7 @@ function TopList({ report, loading, error, empty }: { report?: UsageReport; load
   if (loading) return <LoadingRows rows={4} height={22} />
   if (error) return <ErrorAlert error={error} />
   const items = (report?.groups ?? [])
-    .map((group) => ({ label: group.label || group.group, value: usdcToNumber(group.spent), sub: `${formatNumber(group.requests)} requests` }))
+    .map((group) => ({ label: groupLabel(group), value: usdcToNumber(group.spent), sub: `${formatNumber(group.requests)} requests` }))
     .filter((item) => item.value > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)
