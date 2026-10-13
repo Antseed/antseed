@@ -4,7 +4,7 @@ import { optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from
 import type { ApiKeyRecord, GatewayStore, KeyUsageSummary, MemberRecord, WorkspaceRecord } from '../store.js'
 import type { ConsoleDeps } from './deps.js'
 import { ConsoleError } from './router.js'
-import type { ApiKey, Member, SpendLimits, Workspace, WorkspaceSummary } from './types.js'
+import type { ApiKey, Member, MemberSummary, SpendLimits, Workspace, WorkspaceSummary } from './types.js'
 
 export function badRequest(message: string, code = 'invalid_request'): ConsoleError {
   return new ConsoleError(400, code, message)
@@ -138,6 +138,10 @@ export function memberDto(deps: ConsoleDeps, member: MemberRecord): Member {
     maxKeys: member.maxKeys,
     createdAt: member.createdAt,
   }
+}
+
+export function memberSummaryDto(member: MemberRecord): MemberSummary {
+  return { id: member.id, label: member.label, orgRole: member.orgRole, status: member.status }
 }
 
 /** Usage for `apiKeyDto`, for many keys at once: this month's spend is since the start of `now`'s month. */

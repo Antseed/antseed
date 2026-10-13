@@ -15,6 +15,7 @@ import {
   fullLimitsFromWire,
   limitsFromWire,
   memberDto,
+  memberSummaryDto,
   notFound,
   policyFromWire,
   requiredString,
@@ -86,12 +87,12 @@ export function registerWorkspaceRoutes(router: ConsoleRouter, deps: ConsoleDeps
 
   router.add('GET', '/workspaces/:id/members', async ({ principal, params }) => {
     requireWorkspaceAccess(store, principal, params['id']!)
-    // Sign-in methods are for admins; plain members see who is in the workspace.
+    // Contact details, budgets and sign-in methods are for admins; plain members see who is in the workspace.
     const admin = workspaceRole(store, principal, params['id']!) === 'admin'
-    return store.workspaceMembers(params['id']!).map(({ member, role }) => {
-      const dto = memberDto(deps, member)
-      return { member: admin ? dto : { ...dto, credentials: [] }, role }
-    })
+    return store.workspaceMembers(params['id']!).map(({ member, role }) => ({
+      member: admin ? memberDto(deps, member) : memberSummaryDto(member),
+      role,
+    }))
   })
 
   router.add('PUT', '/workspaces/:id/members/:memberId', async (request) => {

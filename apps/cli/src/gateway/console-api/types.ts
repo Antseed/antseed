@@ -99,6 +99,9 @@ export interface Member {
   createdAt: number
 }
 
+/** What a plain workspace member sees of the others in their workspace. */
+export type MemberSummary = Pick<Member, 'id' | 'label' | 'orgRole' | 'status'>
+
 // GET    /members                       → Member[]                (org admins)
 // POST   /invites                       InviteInput               → Invite
 // GET    /invites                       → Invite[]
@@ -163,7 +166,7 @@ export interface Workspace extends WorkspaceSummary {
 // GET    /workspaces/:id                → Workspace
 // PATCH  /workspaces/:id                Partial<WorkspaceInput> → Workspace
 // DELETE /workspaces/:id                → 204 (refused while it has active keys or a balance)
-// GET    /workspaces/:id/members        → Array<{ member: Member; role: WorkspaceRole }>
+// GET    /workspaces/:id/members        → Array<{ member: Member; role: WorkspaceRole }> (MemberSummary for plain members)
 // PUT    /workspaces/:id/members/:memberId  { role } → 204
 // DELETE /workspaces/:id/members/:memberId  → 204
 export interface WorkspaceInput {

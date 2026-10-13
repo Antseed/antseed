@@ -188,12 +188,13 @@ test('workspace policies: org admins set orgRoutingPolicy, workspace admins thei
   }
 })
 
-test('workspace member list shows sign-in methods to workspace admins only', async () => {
+test('workspace member list shows emails, budgets, policies and sign-in methods to workspace admins only', async () => {
   const h = await harness()
   try {
     type Row = { member: { credentials: unknown[] } }
     const asMember = (await h.as('memberA', 'GET', `/workspaces/${h.org.wsA.id}/members`)).body as Row[]
-    assert.ok(asMember.length >= 2 && asMember.every((row) => row.member.credentials.length === 0))
+    assert.ok(asMember.length >= 2)
+    for (const row of asMember) assert.deepEqual(Object.keys(row.member).sort(), ['id', 'label', 'orgRole', 'status'])
     const asAdmin = (await h.as('wsAdmin', 'GET', `/workspaces/${h.org.wsA.id}/members`)).body as Row[]
     assert.ok(asAdmin.every((row) => row.member.credentials.length === 1))
   } finally {
