@@ -134,6 +134,19 @@ describe('FileIdentityStore with a passphrase', () => {
     expect(await fs.readFile(file, 'utf8')).toBe(KEY);
     expect((await fs.readdir(dir)).filter((name) => name.endsWith('.tmp'))).toEqual([]);
   });
+
+  it('tells whether a passphrase unlocks the key, without loading it', async () => {
+    const dir = await tmpDir();
+    const store = new FileIdentityStore(dir, { passphrase: null });
+    expect(await store.unlocksWith(PW)).toBeNull();
+    await fs.writeFile(path.join(dir, 'identity.key'), KEY);
+    expect(await store.unlocksWith(PW)).toBeNull();
+    await fs.writeFile(path.join(dir, 'identity.key'), await encryptIdentityKey(KEY, PW, FAST));
+    expect(await store.unlocksWith('correct horse batery')).toBe(false);
+    expect(await store.unlocksWith(PW)).toBe(true);
+    await fs.writeFile(path.join(dir, 'identity.key'), '{"v":2}');
+    await expect(store.unlocksWith(PW)).rejects.toThrow(/does not support|damaged/);
+  });
 });
 
 describe('passphrase from the environment', () => {

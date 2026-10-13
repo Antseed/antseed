@@ -119,6 +119,26 @@ export class FileIdentityStore implements IdentityStore {
     return identityFromPrivateKeyHex(this.validHex(stored)).wallet.address;
   }
 
+  /**
+   * Whether this passphrase unlocks the encrypted key file; null when the
+   * file is missing or plaintext. Throws when the file is unreadable or damaged.
+   */
+  async unlocksWith(passphrase: string): Promise<boolean | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null || !isIdentityEnvelope(stored)) return null;
+    const cached = decryptedKeys.get(stored);
+    if (cached?.passphrase === passphrase) return true;
+    let hexKey: string;
+    try {
+      hexKey = await decryptIdentityKey(stored, passphrase);
+    } catch (error) {
+      if ((error as Error).message.startsWith("Wrong passphrase")) return false;
+      throw error;
+    }
+    decryptedKeys.set(stored, { passphrase, hexKey });
+    return true;
+  }
+
   /** Encrypts a plaintext key file in place; false when it already is encrypted. */
   async protect(): Promise<boolean> {
     const passphrase = this.passphrase();

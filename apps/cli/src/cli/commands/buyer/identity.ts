@@ -21,7 +21,7 @@ import {
   readDefaultWallet,
   storedWalletKeys,
 } from '../../../buyer-identities/store.js'
-import { anyKeyEncrypted, walletPassphrase, type PassphrasePrompt } from '../../wallet-passphrase.js'
+import { anyKeyEncrypted, verifiedWalletPassphrase, walletPassphrase, type PassphrasePrompt } from '../../wallet-passphrase.js'
 
 function formatUsdc(baseUnits: bigint): string {
   return (Number(baseUnits) / 1_000_000).toFixed(2)
@@ -138,7 +138,8 @@ export function registerBuyerIdentityCommands(buyerCmd: Command, prompt?: Passph
     .action(async (name: string | undefined, options: { all: boolean }) => {
       const { dataDir } = getGlobalOptions(buyerCmd)
       const keys = await walletKeysFor(dataDir, name, options.all)
-      const passphrase = await walletPassphrase({ confirm: true, ...(prompt ? { prompt } : {}) })
+      // Checked against the keys already encrypted, so the data dir never holds keys under two passphrases.
+      const passphrase = await verifiedWalletPassphrase(dataDir, { confirmNew: true, ...(prompt ? { prompt } : {}) })
       if (!passphrase) {
         throw new Error(`Set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to the passphrase that should protect the keys.`)
       }

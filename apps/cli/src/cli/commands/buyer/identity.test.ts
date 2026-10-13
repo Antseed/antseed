@@ -131,6 +131,19 @@ describe('buyer identity protect / unprotect', () => {
     assert.ok(!isEncrypted(keyFile()))
     await assert.rejects(run('protect', 'team-a', '--all'), /not both/)
   })
+
+  test('protect refuses a passphrase that does not open the keys already encrypted', async () => {
+    writeFileSync(keyFile(), '7a'.repeat(32), { mode: 0o600 })
+    await createBuyerIdentity(dataDir, 'team-a')
+    usePassphrase('correct horse battery')
+    await run('protect', 'team-a')
+    usePassphrase('correct horse batery!')
+    await assert.rejects(run('protect'), /does not unlock the encrypted wallet key "team-a"/)
+    assert.ok(!isEncrypted(keyFile()))
+    usePassphrase('correct horse battery')
+    await run('protect')
+    assert.ok(isEncrypted(keyFile()))
+  })
 })
 
 // Last: a passphrase asked on the terminal stays set for the rest of the process.

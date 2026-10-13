@@ -2,6 +2,8 @@ import {
   assertNewIdentityPassphrase,
   type FileIdentityStore,
   MIN_PASSPHRASE_LENGTH,
+  PASSPHRASE_ENV,
+  PASSPHRASE_FILE_ENV,
   resolveIdentityPassphrase,
   setIdentityPassphrase,
 } from '@antseed/node'
@@ -53,14 +55,62 @@ export async function anyKeyEncrypted(keys: Array<{ store: FileIdentityStore }>)
   return false
 }
 
+/** Wrong answers on the terminal before giving up. */
+const MAX_ATTEMPTS = 3
+
+/** The first stored wallet key in the data dir that is encrypted, if any. */
+async function firstEncryptedKey(dataDir: string): Promise<{ name: string; store: FileIdentityStore } | null> {
+  for (const key of await storedWalletKeys(dataDir)) {
+    if (await key.store.format().catch(() => null) === 'encrypted') return key
+  }
+  return null
+}
+
+/**
+ * The wallet passphrase, checked against the data dir's encrypted wallet
+ * keys before anything uses it: every key it encrypts later (a new buyer
+ * identity, a gateway workspace) must open with the same passphrase as those
+ * already encrypted. A configured one that does not open them throws; one
+ * typed on the terminal is asked again. With no encrypted key there is
+ * nothing to check against: `confirmNew` then asks for a new passphrase
+ * twice, otherwise only a configured one is returned.
+ */
+export async function verifiedWalletPassphrase(
+  dataDir: string,
+  options: { confirmNew?: boolean; prompt?: PassphrasePrompt } = {},
+): Promise<string | null> {
+  const encrypted = await firstEncryptedKey(dataDir)
+  const configured = resolveIdentityPassphrase()
+  if (configured) {
+    if (encrypted && !(await encrypted.store.unlocksWith(configured))) {
+      throw new Error(
+        `The passphrase in ${PASSPHRASE_ENV} (or ${PASSPHRASE_FILE_ENV}) does not unlock the encrypted wallet key "${encrypted.name}" in ${dataDir}. ` +
+        'Set it to the passphrase those keys were encrypted with.',
+      )
+    }
+    return configured
+  }
+  if (!encrypted) return options.confirmNew ? walletPassphrase({ confirm: true, ...(options.prompt ? { prompt: options.prompt } : {}) }) : null
+  const prompt = options.prompt ?? terminal
+  if (!prompt.available) return null
+  for (let attempt = 1; attempt <= MAX_ATTEMPTS; attempt++) {
+    const passphrase = await prompt.ask('Wallet passphrase: ')
+    if (!passphrase) return null
+    if (await encrypted.store.unlocksWith(passphrase)) {
+      setIdentityPassphrase(passphrase)
+      return passphrase
+    }
+    if (attempt < MAX_ATTEMPTS) process.stderr.write('Wrong passphrase, try again.\n')
+  }
+  throw new Error(`Wrong passphrase: it does not unlock the encrypted wallet key "${encrypted.name}" in ${dataDir}.`)
+}
+
 /**
  * For `buyer start` / `gateway start`: the configured passphrase, or, when a
  * stored wallet key is encrypted and none is configured, one asked on the
- * terminal. Null otherwise; loading an encrypted key then fails as before.
+ * terminal; either is checked against the encrypted keys first. Null
+ * otherwise; loading an encrypted key then fails as before.
  */
-export async function walletPassphraseForStart(dataDir: string, prompt?: PassphrasePrompt): Promise<string | null> {
-  const configured = resolveIdentityPassphrase()
-  if (configured) return configured
-  if (!(await anyKeyEncrypted(await storedWalletKeys(dataDir)))) return null
-  return walletPassphrase(prompt ? { prompt } : {})
+export function walletPassphraseForStart(dataDir: string, prompt?: PassphrasePrompt): Promise<string | null> {
+  return verifiedWalletPassphrase(dataDir, prompt ? { prompt } : {})
 }
