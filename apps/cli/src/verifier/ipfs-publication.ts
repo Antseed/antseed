@@ -1,6 +1,6 @@
 import { File } from 'node:buffer'
-import { readdir, readFile } from 'node:fs/promises'
-import { basename, dirname, extname, isAbsolute, join, relative, resolve, sep } from 'node:path'
+import { readFile } from 'node:fs/promises'
+import { basename, extname, isAbsolute, relative, resolve, sep } from 'node:path'
 import { canonicalJsonStringify, sha256Hex } from '@antseed/fingerprints'
 import { safeServiceSlug } from './slug.js'
 
@@ -47,11 +47,6 @@ interface PinataResponse {
   }
 }
 
-interface VerificationPublicationArchive {
-  path: string
-  files: Array<{ path: string; size: number; sha256: string }>
-}
-
 interface PinataUploadDependencies {
   endpoint?: string
   fetchImpl?: typeof fetch
@@ -66,7 +61,8 @@ class PinataUploadError extends Error {
 
 /**
  * Packages one model audit's evidence for public pinning: the canonical evidence document,
- * the exported KBF references, and every referenced seller evidence pack (with signed exchanges).
+ * the exported KBF references, and each referenced seller's hash-committed `evidence.json`,
+ * which already embeds every signed exchange. The per-batch `exchanges/` copies are not published.
  * Paths mirror the evidence directory so the document's relative links resolve inside the CID.
  */
 export async function prepareAuditPublication(input: {
@@ -86,13 +82,9 @@ export async function prepareAuditPublication(input: {
   addPublicationFile(files, publicationPath(input.evidencePath), input.evidenceBytes)
   for (const path of [...input.referencePaths].sort()) addPublicationFile(files, publicationPath(path), await readFile(path))
   for (const evidencePath of [...new Set(input.auditEvidencePaths)].sort()) {
-    for (const path of await listFinalizedFiles(dirname(evidencePath))) {
-      addPublicationFile(files, publicationPath(path), await readFile(path))
-    }
+    addPublicationFile(files, publicationPath(evidencePath), await readFile(evidencePath))
   }
 
-  const sourceFileCount = files.size
-  const archives = compactExchangeFiles(files)
   const evidenceFiles = [...files.values()].sort((left, right) => left.path.localeCompare(right.path))
   const publicationIndex = {
     version: 1,
@@ -107,17 +99,15 @@ export async function prepareAuditPublication(input: {
       exactSignedPreimages: true,
       onChainEvidenceUri: true,
     },
-    sourceFileCount,
     fileCount: evidenceFiles.length,
     totalBytes: evidenceFiles.reduce((total, file) => total + file.size, 0),
-    archives,
     files: evidenceFiles.map((file) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
   }
   addPublicationFile(files, 'publication.json', Buffer.from(canonicalJsonStringify(publicationIndex), 'utf8'))
   const allFiles = [...files.values()].sort((left, right) => left.path.localeCompare(right.path))
   if (allFiles.length > PINATA_MAX_MULTIPART_FILES) {
     throw new Error(
-      `verification publication contains ${allFiles.length} upload files after exchange compaction; `
+      `verification publication contains ${allFiles.length} upload files; `
       + `Pinata allows at most ${PINATA_MAX_MULTIPART_FILES}`,
     )
   }
@@ -132,46 +122,6 @@ export async function prepareAuditPublication(input: {
     fileCount: allFiles.length,
     totalBytes: allFiles.reduce((total, file) => total + file.size, 0),
   }
-}
-
-function compactExchangeFiles(
-  files: Map<string, VerificationPublicationFile>,
-): VerificationPublicationArchive[] {
-  if (files.size + 1 <= PINATA_MAX_MULTIPART_FILES) return []
-  const groups = new Map<string, VerificationPublicationFile[]>()
-  for (const file of files.values()) {
-    const match = /^(.*\/sellers\/[^/]+)\/exchanges\/[^/]+\.json$/.exec(file.path)
-    if (!match) continue
-    const archivePath = `${match[1]}/exchanges.bundle.json`
-    const group = groups.get(archivePath) ?? []
-    group.push(file)
-    groups.set(archivePath, group)
-  }
-
-  const archives = [...groups.entries()]
-    .sort(([left], [right]) => left.localeCompare(right))
-    .map(([archivePath, exchangeFiles]) => {
-      const sortedFiles = exchangeFiles.sort((left, right) => left.path.localeCompare(right.path))
-      for (const file of sortedFiles) files.delete(file.path)
-      const archive = {
-        version: 1,
-        kind: 'antseed-verifier-ipfs-file-archive',
-        encoding: 'base64',
-        files: sortedFiles.map((file) => ({
-          path: file.path,
-          size: file.size,
-          sha256: file.sha256,
-          mediaType: mediaType(file.path),
-          bytesBase64: Buffer.from(file.bytes).toString('base64'),
-        })),
-      }
-      addPublicationFile(files, archivePath, Buffer.from(canonicalJsonStringify(archive), 'utf8'))
-      return {
-        path: archivePath,
-        files: sortedFiles.map((file) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
-      }
-    })
-  return archives
 }
 
 export async function publishVerificationToPinata(
@@ -283,31 +233,6 @@ async function pinataErrorDetail(response: Response, jwt: string): Promise<strin
     .replace(/\s+/g, ' ')
     .trim()
     .slice(0, 500)
-}
-
-async function listFinalizedFiles(directory: string): Promise<string[]> {
-  const files: string[] = []
-  const walk = async (current: string): Promise<void> => {
-    const entries = await readdir(current, { withFileTypes: true })
-    for (const entry of entries.sort((left, right) => left.name.localeCompare(right.name))) {
-      if (isOperationalEvidenceEntry(entry.name)) continue
-      const path = join(current, entry.name)
-      if (entry.isSymbolicLink()) throw new Error(`refusing symlink in verifier evidence: ${path}`)
-      if (entry.isDirectory()) await walk(path)
-      else if (entry.isFile()) files.push(path)
-    }
-  }
-  await walk(directory)
-  return files.sort()
-}
-
-function isOperationalEvidenceEntry(name: string): boolean {
-  return name === '.checkpoints'
-    || name === 'status.json'
-    || name === 'events.jsonl'
-    || name === 'submissions'
-    || name.endsWith('.lock')
-    || name.includes('.tmp-')
 }
 
 function portablePath(evidenceRoot: string, path: string): string {

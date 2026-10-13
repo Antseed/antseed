@@ -10,7 +10,7 @@ import {
   type PreparedVerificationPublication,
 } from './ipfs-publication.js'
 
-test('builds a portable agent report package and excludes operational files', async () => {
+test('publishes only hash-committed seller evidence, without exchange copies or operational files', async () => {
   const evidenceDir = await mkdtemp(join(tmpdir(), 'antseed-ipfs-package-'))
   try {
     const runId = 'run-7'
@@ -52,27 +52,12 @@ test('builds a portable agent report package and excludes operational files', as
     assert.ok(paths.includes(`reports/${runId}/1.evidence.json`))
     assert.ok(paths.includes(`reports/${runId}/references/${'ab'.repeat(32)}.json`))
     assert.ok(paths.includes(`${sellerPath}/evidence.json`))
-    assert.ok(paths.includes(`${sellerPath}/manifest.json`))
-    const exchangeArchivePath = `${sellerPath}/exchanges.bundle.json`
-    assert.ok(paths.includes(exchangeArchivePath))
-    assert.equal(paths.some((path) => path.includes('/exchanges/')), false)
-    assert.ok(paths.length <= 150)
+    assert.equal(paths.some((path) => path.endsWith('manifest.json')), false)
+    assert.equal(paths.some((path) => path.includes('/exchanges')), false)
     assert.equal(paths.some((path) => path.includes('.checkpoints')), false)
     assert.equal(paths.some((path) => path.endsWith('status.json')), false)
     assert.equal(paths.some((path) => path.includes('.tmp-')), false)
-
-    const exchangeArchive = JSON.parse(Buffer.from(
-      publication.files.find((file) => file.path === exchangeArchivePath)!.bytes,
-    ).toString('utf8')) as {
-      kind: string
-      files: Array<{ path: string; sha256: string; bytesBase64: string }>
-    }
-    assert.equal(exchangeArchive.kind, 'antseed-verifier-ipfs-file-archive')
-    assert.equal(exchangeArchive.files.length, 151)
-    assert.deepEqual(
-      Buffer.from(exchangeArchive.files[0]!.bytesBase64, 'base64'),
-      Buffer.from(JSON.stringify({ raw: true, index: 0 })),
-    )
+    assert.equal(paths.length, 4)
 
     const repeated = await prepare()
     assert.deepEqual(
@@ -84,16 +69,12 @@ test('builds a portable agent report package and excludes operational files', as
       model: string
       evidenceHash: string
       evidencePath: string
-      sourceFileCount: number
-      archives: Array<{ path: string; files: Array<{ path: string; sha256: string }> }>
       files: Array<{ path: string; sha256: string }>
     }
     assert.equal(index.model, 'model-a')
     assert.equal(index.evidenceHash, `0x${'11'.repeat(32)}`)
     assert.equal(index.evidencePath, `reports/${runId}/1.evidence.json`)
-    assert.ok(index.sourceFileCount > publication.fileCount)
-    assert.equal(index.archives.length, 1)
-    assert.equal(index.archives[0]!.files.length, 151)
+    assert.equal(index.files.length, 3)
     assert.equal(index.files.some((file) => file.path === 'publication.json'), false)
   } finally {
     await rm(evidenceDir, { recursive: true, force: true })

@@ -26,6 +26,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI: `antseed verifier submit --publish-ipfs` publishes only each seller's hash-committed `evidence.json`, which already embeds every signed exchange, instead of also publishing the per-batch `exchanges/` copies and evidence pack manifests. Published audit packages are about 40% smaller.
 - Contracts: verification status and points automatically exclude expired SAME/DIFF verdicts, so selective cleanup cannot retain expired bonuses or penalties. Pending DIFF votes have a fixed confirmation window, and audits reject agent ID zero. Verification tracks at most 512 definitive services per agent and reclaims expired slots automatically.
 - CLI buyer and provider-core: the `Expect` request header is no longer forwarded to sellers or upstream providers. curl adds `Expect: 100-continue` to bodies over 1 MiB, and Node's `fetch` rejects it, so large requests from curl failed with 502 "fetch failed".
 - Skills: `antseed-videos` now sends the create request with `-H 'Expect:'`, because curl's automatic `Expect: 100-continue` on bodies over 1 MiB made every seller return 502 "fetch failed". Frames are sent as the original files; they are re-encoded as JPEG only after a create is rejected for size.
