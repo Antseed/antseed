@@ -1070,6 +1070,13 @@ export class GatewayStore {
     `).run(content.requestBody ?? null, content.responseBody ?? null, tag)
   }
 
+  /** Forgets every stored request and response body; for when content logging is turned off. */
+  clearRequestContent(): number {
+    return this._stmt(`
+      UPDATE gateway_requests SET request_body = NULL, response_body = NULL WHERE request_body IS NOT NULL OR response_body IS NOT NULL
+    `).run().changes
+  }
+
   /**
    * Drops request-log rows started before `before`, `chunkSize` rows per
    * transaction so a large backlog never holds the write lock for long. Their

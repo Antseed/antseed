@@ -559,9 +559,12 @@ export function setObservabilitySettings(
     throw new ConsoleError(403, 'session_required', 'Only an org admin signed in to the console can change the export endpoint or content logging; management tokens cannot')
   }
   ctx.store.setSetting(OBSERVABILITY_SETTING, settings)
+  // Turning content logging off also forgets what it kept.
+  const clearedBodies = current.logContent && !settings.logContent ? ctx.store.clearRequestContent() : 0
   recordAudit(ctx, actor, 'settings.observability.update', { kind: 'settings', id: 'observability', label: 'Observability' }, {
     ...(endpointChanged ? { previousOtlpEndpoint: current.otlpEndpoint } : {}),
     ...(logContentChanged ? { previousLogContent: current.logContent } : {}),
+    ...(clearedBodies ? { clearedBodies } : {}),
     otlpEndpoint: settings.otlpEndpoint,
     // Header names only: values may be credentials.
     otlpHeaders: Object.keys(settings.otlpHeaders),
