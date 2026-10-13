@@ -608,10 +608,11 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   /** Setup and invite links: each hands out an enrollment for registering a first sign-in method. */
   function registerClaimRoutes(router: ConsoleRouter): void {
     router.add('POST', '/auth/setup', signInFailures('setup', async ({ raw, body }) => {
-      const limited = limit(raw, 'setup')
-      if (limited) return limited
       const input = objectBody(body)
       const token = stringField(input, 'token')
+      // Per token, so guessing elsewhere can't lock the owner's link out.
+      const limited = limit(raw, `setup:${sha256Hex(token)}`)
+      if (limited) return limited
       if (!setupClaimable()) throw new ConsoleError(409, 'setup_complete', 'This console has already been claimed.')
       if (!db.consumeSetupToken(token)) throw new ConsoleError(400, 'invalid_token', 'This setup link is invalid, used or expired. Ask the gateway operator for a new one.')
       const owner = pendingSetupOwner() ?? store.createOwner({

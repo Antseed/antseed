@@ -293,6 +293,18 @@ describe('console auth: rate limits and cookies', () => {
     assert.equal((await proxied.request('POST', '/auth/api-key', { key: 'antseed_guess_z' })).status, 401)
   })
 
+  it('limits setup attempts per token, not across every client', async () => {
+    harness = await startHarness()
+    const link = harness.auth.createSetupLink()
+    const token = link.slice(link.indexOf('#') + 1)
+    const guesser = harness.browser(undefined, { 'x-forwarded-for': '198.51.100.7' })
+    let last
+    for (let attempt = 0; attempt < 11; attempt += 1) last = await guesser.request('POST', '/auth/setup', { token: 'guess' })
+    assert.equal(last!.status, 429)
+    const owner = harness.browser(undefined, { 'x-forwarded-for': '203.0.113.9' })
+    assert.equal((await owner.request('POST', '/auth/setup', { token })).status, 200)
+  })
+
   it('marks cookies Secure behind https and off-loopback hosts', async () => {
     harness = await startHarness({ publicUrl: 'https://gateway.example.test' })
     const key = harness.store.addKey()
