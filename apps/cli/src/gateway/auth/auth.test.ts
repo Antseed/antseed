@@ -315,16 +315,16 @@ describe('console auth: rate limits and cookies', () => {
     assert.equal((await owner.request('POST', '/auth/setup', { token })).status, 200)
   })
 
-  it('marks cookies Secure behind https and off-loopback hosts', async () => {
+  it('marks cookies Secure over https only, so plain-http LAN sign-in works', async () => {
     harness = await startHarness({ publicUrl: 'https://gateway.example.test' })
     const key = harness.store.addKey()
     const proxied = harness.browser('gateway.example.test', { 'x-forwarded-proto': 'https' })
     await proxied.request('POST', '/auth/api-key', { key: key.secret })
     assert.match(proxied.lastSetCookies[0]!, /; Secure/)
 
-    const publicHost = harness.browser('gateway.example.test')
-    await publicHost.request('POST', '/auth/api-key', { key: key.secret })
-    assert.match(publicHost.lastSetCookies[0]!, /; Secure/)
+    const lan = harness.browser('192.168.1.20:8379')
+    await lan.request('POST', '/auth/api-key', { key: key.secret })
+    assert.doesNotMatch(lan.lastSetCookies[0]!, /Secure/)
 
     const local = harness.browser(`127.0.0.1:${harness.port}`)
     await local.request('POST', '/auth/api-key', { key: key.secret })

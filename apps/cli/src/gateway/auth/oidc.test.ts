@@ -113,7 +113,8 @@ describe('console auth: OIDC', () => {
   it('binds an invited member by verified email, then signs in by subject', async () => {
     issuer = await startFakeIssuer()
     harness = await startHarness({ publicUrl: PUBLIC_URL, env: oidcEnv({ ANTSEED_OIDC_LABEL: 'Acme SSO' }) })
-    const browser = harness.browser('gateway.example.test')
+    // Through the https proxy the public URL points at.
+    const browser = harness.browser('gateway.example.test', { 'x-forwarded-proto': 'https' })
     assert.deepEqual((await browser.request('GET', '/auth/config')).body.oidc, { label: 'Acme SSO' })
 
     const { member } = harness.store.invite({ label: 'Ravi', email: 'ravi@acme.example' })
