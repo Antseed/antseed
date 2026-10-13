@@ -222,6 +222,16 @@ describe('console auth: API keys, tokens and sessions', () => {
     assert.equal(await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` })), null)
   })
 
+  it('never falls back to the session cookie when a bearer header is sent', async () => {
+    harness = await startHarness()
+    const browser = harness.browser()
+    await claimOwner(harness, browser)
+    assert.equal((await browser.request('GET', '/auth/me')).status, 200)
+    for (const authorization of ['Bearer not-a-management-token', 'Bearer antseed_admin_unknown']) {
+      assert.equal((await browser.request('GET', '/auth/me', undefined, { authorization })).status, 401, authorization)
+    }
+  })
+
   it('expires idle and old sessions, rotates on login and logs out', async () => {
     harness = await startHarness()
     const browser = harness.browser()

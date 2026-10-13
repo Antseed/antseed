@@ -207,8 +207,11 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   async function authenticate(req: http.IncomingMessage): Promise<Principal | null> {
-    const bearer = parseBearerToken(headerValue(req, 'authorization') ?? undefined)
-    if (bearer?.startsWith(ADMIN_TOKEN_PREFIX)) {
+    const authorization = headerValue(req, 'authorization') ?? undefined
+    if (authorization?.startsWith('Bearer ')) {
+      // Bearer requests skip the CSRF header check, so they never fall back to the session cookie.
+      const bearer = parseBearerToken(authorization)
+      if (!bearer?.startsWith(ADMIN_TOKEN_PREFIX)) return null
       const token = store.findAdminTokenBySecret(bearer)
       if (!token || token.revokedAt !== null) return null
       if (typeof token.expiresAt === 'number' && token.expiresAt <= deps.now()) return null
