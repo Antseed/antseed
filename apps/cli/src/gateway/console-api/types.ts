@@ -286,11 +286,15 @@ export interface UsageReport {
   from: number
   to: number
   totals: UsageTotals
-  groups: Array<{ group: string; label: string; splits?: UsageSplit[] } & UsageTotals>
+  groups: Array<UsageSplit & { splits?: UsageSplit[] }>
 }
 
-/** One part of a usage group when the report was split (`splitBy`). */
-export type UsageSplit = { group: string; label: string } & UsageTotals
+/**
+ * One part of a usage group when the report was split (`splitBy`). By end
+ * user, the users past the largest 100 come as one group with `others` set
+ * to how many it folds.
+ */
+export type UsageSplit = { group: string; label: string; others?: number } & UsageTotals
 
 export interface UsageTotals {
   requests: number

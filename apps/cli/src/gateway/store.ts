@@ -305,8 +305,20 @@ export interface RequestError {
 
 export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'workspace' | 'user'
 
-/** A usage group, split further by a second grouping when one was asked for. */
-export type UsageGroupRow = { group: string | null; splits?: Array<{ group: string | null } & UsageTotalsRow> } & UsageTotalsRow
+/**
+ * A usage group, split further by a second grouping when one was asked for.
+ * `others` marks the row that folds the end users past the largest
+ * `MAX_USER_GROUPS` (its count of them); its group is `OTHER_USERS_GROUP`.
+ */
+export type UsageGroupRow = { group: string | null; others?: number; splits?: UsageSplitRow[] } & UsageTotalsRow
+export type UsageSplitRow = { group: string | null; others?: number } & UsageTotalsRow
+
+/**
+ * End users are whatever a key holder sends, so a report by user keeps the
+ * largest ones and folds the rest into one row.
+ */
+export const MAX_USER_GROUPS = 100
+export const OTHER_USERS_GROUP = '\u0000others'
 
 /** Token counts a response reported about itself (`inputTokens` includes cached input). */
 export interface ResponseTokenCounts {
@@ -1313,11 +1325,11 @@ export class GatewayStore {
     const list: UsageGroupRow[] = [...groups].map(([group, entry]) => ({
       group,
       ...entry.totals,
-      ...(splitBy ? { splits: [...entry.splits].map(([split, part]) => ({ group: split, ...part })).sort(bySize) } : {}),
+      ...(splitBy ? { splits: capUserGroups(splitBy, [...entry.splits].map(([split, part]) => ({ group: split, ...part })).sort(bySize)) } : {}),
     }))
     if (isTimeGrouping(groupBy)) list.sort((a, b) => String(a.group).localeCompare(String(b.group)))
     else list.sort(bySize)
-    return { totals, groups: list }
+    return { totals, groups: capUserGroups(groupBy, list) }
   }
 
   // ── Ledger ──────────────────────────────────────────────────────────────
@@ -1770,6 +1782,17 @@ function groupExpression(groupBy: UsageGroupBy | null, columns: ScopeColumns): s
 /** Groupings whose groups are UTC time buckets (listed oldest first). */
 export function isTimeGrouping(groupBy: UsageGroupBy): boolean {
   return groupBy === 'day' || groupBy === 'hour'
+}
+
+/** Groups by end user past the largest `MAX_USER_GROUPS` (rows come sorted largest first), folded into one. */
+function capUserGroups<Row extends UsageSplitRow>(groupBy: UsageGroupBy, rows: Row[]): Row[] {
+  if (groupBy !== 'user' || rows.length <= MAX_USER_GROUPS) return rows
+  const rest = rows.slice(MAX_USER_GROUPS)
+  const other = { group: OTHER_USERS_GROUP, others: rest.length, ...emptyUsageTotals() }
+  for (const row of rest) {
+    for (const field of Object.keys(emptyUsageTotals()) as Array<keyof UsageTotalsRow>) other[field] += row[field]
+  }
+  return [...rows.slice(0, MAX_USER_GROUPS), other as Row]
 }
 
 function emptyUsageTotals(): UsageTotalsRow {

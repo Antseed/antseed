@@ -7,7 +7,7 @@ import { join } from 'node:path'
 import { test } from 'node:test'
 import { hashApiKey } from './keys.js'
 import { MIGRATIONS } from './store-migrations.js'
-import { GatewayStore } from './store.js'
+import { GatewayStore, MAX_USER_GROUPS, OTHER_USERS_GROUP } from './store.js'
 
 const NO_LIMITS = { daily: null, weekly: null, monthly: null, total: null }
 
@@ -229,6 +229,30 @@ test('requests still in flight are not failures; pruning in chunks keeps request
     assert.deepEqual(summaries.get(key.id), { requests: 7, spentUsdc: 500, spentSinceUsdc: 200 })
     assert.deepEqual(summaries.get(idle.id), { requests: 0, spentUsdc: 0, spentSinceUsdc: 0 })
     assert.equal(store.usageReport({ keyIds: [] }, null).totals.requests, 0, 'rollups honour the visibility scope')
+  } finally {
+    store.close()
+    cleanup()
+  }
+})
+
+test('a report by end user keeps the largest users and folds the rest into one row', () => {
+  const { dir, cleanup } = tempDir()
+  const store = new GatewayStore(dir)
+  try {
+    const { key } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const users = MAX_USER_GROUPS + 5
+    for (let index = 0; index < users; index += 1) {
+      start(store, `gw_${index}`, key.id, Date.now(), { endUser: `user-${index}` })
+      store.recordLedgerEntry({ kind: 'spend', keyId: key.id, buyerIdentity: 'default', amountUsdc: 1_000 + index, externalRef: `r${index}`, requestTag: `gw_${index}`, createdAt: Date.now() })
+    }
+    const report = store.usageReport({}, 'user', 'model')
+    assert.equal(report.groups.length, MAX_USER_GROUPS + 1)
+    assert.equal(report.groups[0]!.group, `user-${users - 1}`, 'largest spender first')
+    const other = report.groups.at(-1)!
+    assert.deepEqual([other.group, other.others, other.requests, other.spentUsdc], [OTHER_USERS_GROUP, 5, 5, 1_000 * 5 + 0 + 1 + 2 + 3 + 4])
+    assert.equal(report.groups.reduce((sum, group) => sum + group.requests, 0), users, 'nothing is dropped')
+    assert.equal(report.totals.requests, users)
+    assert.equal(store.usageReport({}, 'model', 'user').groups[0]!.splits!.length, MAX_USER_GROUPS + 1, 'splits by user are capped too')
   } finally {
     store.close()
     cleanup()
