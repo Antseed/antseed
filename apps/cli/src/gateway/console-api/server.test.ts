@@ -47,6 +47,7 @@ test('console API: principals, CSRF, read tokens, body limits and JSON errors', 
     assert.equal((await call(server.port, 'GET', '/console/api/echo/a', { who: 'keyholder' })).status, 403, 'key sessions only where allowed')
     assert.equal((await call(server.port, 'GET', '/console/api/key-only', { who: 'keyholder' })).status, 200)
     assert.equal((await call(server.port, 'GET', '/console/api/nope', { who: 'admin' })).status, 404)
+    assert.equal((await call(server.port, 'GET', '/console/api/echo/%E0%A4%A', { who: 'admin' })).status, 404, 'a malformed escape is no route')
 
     const noCsrf = await call(server.port, 'POST', '/console/api/echo', { who: 'admin', body: { a: 1 }, csrf: false })
     assert.equal(noCsrf.status, 403)

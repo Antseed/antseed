@@ -84,7 +84,13 @@ export class ConsoleRouter {
         const part = pattern[index]!
         const segment = segments[index]!
         if (part.startsWith(':')) {
-          params[part.slice(1)] = decodeURIComponent(segment)
+          const value = decodeSegment(segment)
+          // A malformed escape (`%E0%A4%A`) names nothing: no match, so a 404 rather than a URIError.
+          if (value === null) {
+            ok = false
+            break
+          }
+          params[part.slice(1)] = value
         } else if (part !== segment) {
           ok = false
           break
@@ -115,4 +121,12 @@ export interface ConsoleAuth {
   revokeKeySessions(keyId: string): void
   /** Current principal as the console's `/auth/me` shape. */
   me(principal: Principal): Promise<MeResponse>
+}
+
+function decodeSegment(segment: string): string | null {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return null
+  }
 }
