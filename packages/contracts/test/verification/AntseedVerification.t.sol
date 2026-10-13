@@ -10,6 +10,20 @@ import {MockERC8004Registry} from "../mocks/MockERC8004Registry.sol";
 import {MockVerificationEmissionsGate} from "../mocks/MockVerificationEmissionsGate.sol";
 import {MockVerificationSellerPools} from "../mocks/MockVerificationSellerPools.sol";
 
+/// @dev Mirrors AntseedUsageAccounting after M001: `registry.emissions()` resolves here, and the
+///      gate is only reachable through `emissionsGate()`.
+contract UsageAccountingFront {
+    address public immutable emissionsGate;
+
+    constructor(address gate) {
+        emissionsGate = gate;
+    }
+
+    function currentEpoch() external view returns (uint256) {
+        return MockVerificationEmissionsGate(emissionsGate).currentEpoch();
+    }
+}
+
 contract AntseedVerificationTest is Test {
     uint256 private constant EPOCH = 5;
     bytes32 private constant MODEL_A = keccak256("model-a");
@@ -398,6 +412,21 @@ contract AntseedVerificationTest is Test {
         assertEq(_claim(auditorB), 300 ether);
         assertEq(_claim(auditorA), 0, "second claim pays nothing");
         assertEq(gate.minted(auditorA), 600 ether);
+    }
+
+    function test_usesTheGateBehindUsageAccounting() public {
+        registry.setEmissions(address(new UsageAccountingFront(address(gate))));
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 1);
+        assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 900 ether);
+
+        vm.prank(auditorA);
+        vm.expectRevert(AntseedVerification.EpochChanged.selector);
+        verification.submitModelAudit(EPOCH + 1, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
+
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(auditorA), 900 ether);
+        assertEq(gate.minted(auditorA), 900 ether);
     }
 
     function test_undeterminedAuditEarnsCredit() public {

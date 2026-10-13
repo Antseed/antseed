@@ -10,6 +10,10 @@ import {IAntseedSellerPools} from "../interfaces/IAntseedSellerPools.sol";
 import {IAntseedVerification} from "../interfaces/IAntseedVerification.sol";
 import {IERC8004Registry} from "../interfaces/IERC8004Registry.sol";
 
+interface IEmissionsGateSource {
+    function emissionsGate() external view returns (address);
+}
+
 /// @notice Records model-verification audits from approved auditors, one model per submission.
 ///
 ///         Status: each (agent, service) keeps its latest definitive verdict with its own expiry.
@@ -347,8 +351,8 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
 
     /// @dev Without a live gate there is no epoch to check against and nothing is credited.
     function _currentEpoch() private view returns (bool ok, uint256 epoch) {
-        address gate = registry.emissions();
-        if (gate.code.length == 0) return (false, 0);
+        address gate = _gateAddress();
+        if (gate == address(0)) return (false, 0);
         try IAntseedEmissionsGate(gate).currentEpoch() returns (uint256 current) {
             return (true, current);
         } catch {
@@ -376,9 +380,21 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     }
 
     function _emissionsGate() private view returns (IAntseedEmissionsGate) {
-        address gate = registry.emissions();
-        if (gate.code.length == 0) revert InvalidAddress();
+        address gate = _gateAddress();
+        if (gate == address(0)) revert InvalidAddress();
         return IAntseedEmissionsGate(gate);
+    }
+
+    /// @dev The emissions gate behind `registry.emissions()`. After M001 the registry points at
+    ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
+    ///      entry is the gate itself. Zero when there is no contract.
+    function _gateAddress() private view returns (address) {
+        address emissions = registry.emissions();
+        if (emissions.code.length == 0) return address(0);
+        try IEmissionsGateSource(emissions).emissionsGate() returns (address gate) {
+            if (gate.code.length != 0) return gate;
+        } catch {}
+        return emissions;
     }
 
     function _setSellerPools(address sellerPools_) private {

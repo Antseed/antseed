@@ -124,6 +124,10 @@ const EMISSIONS_GATE_EPOCH_ABI = [
   'function epochDuration() external view returns (uint256)',
 ] as const;
 
+const EMISSIONS_GATE_SOURCE_ABI = [
+  'function emissionsGate() external view returns (address)',
+] as const;
+
 const ANTSEED_REGISTRY_ABI = [
   'function identityRegistry() external view returns (address)',
   'function emissions() external view returns (address)',
@@ -233,10 +237,21 @@ export class VerifierClient extends BaseEvmClient {
     return Boolean(await this._contract().getFunction('usedEvidence')(evidenceHash));
   }
 
-  /** The emissions gate the contract checks `expectedEpoch` against (`registry.emissions()`). */
+  /**
+   * The emissions gate the contract checks `expectedEpoch` against: the gate behind
+   * `registry.emissions()` (usage accounting's `emissionsGate()` after M001), else that entry itself.
+   */
   async emissionsGate(): Promise<string> {
     const registry = new Contract(await this.registry(), ANTSEED_REGISTRY_ABI, this._provider);
-    return getAddress(String(await registry.getFunction('emissions')()));
+    const emissions = getAddress(String(await registry.getFunction('emissions')()));
+    try {
+      const source = new Contract(emissions, EMISSIONS_GATE_SOURCE_ABI, this._provider);
+      const gate = getAddress(String(await source.getFunction('emissionsGate')()));
+      if ((await this._provider.getCode(gate)) !== '0x') return gate;
+    } catch {
+      // `emissions` is the gate itself.
+    }
+    return emissions;
   }
 
   /** The current epoch exactly as `submitModelAudit` checks it. */

@@ -338,7 +338,11 @@ export function registerVerifierRunCommand(verifier: Command): void {
               ? [resumeCandidate.service.toLowerCase(), ...configuredServices]
               : configuredServices
             const eligibility = classifyVerificationTargetServices(peer, services, targetPolicy)
-            if (eligibility.eligible) return [{ peer, service: eligibility.service, resumeCandidate }]
+            if (eligibility.eligible) {
+              const resumable = resumeCandidate
+                && resumeCandidate.service.toLowerCase() === eligibility.service.toLowerCase()
+              return [{ peer, service: eligibility.service, resumeCandidate: resumable ? resumeCandidate : undefined }]
+            }
             if (eligibility.code !== 'model_not_advertised') {
               const policySkip = eligibility.code !== 'missing_response_auth'
               skipped.push({
