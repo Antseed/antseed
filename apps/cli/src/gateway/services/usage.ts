@@ -97,6 +97,7 @@ export function requestDto(row: RequestLogRow): RequestLogEntry {
     outputTokens: row.outputTokens,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
+    ...(row.servedFree ? { servedFree: true } : {}),
     ...(row.costPending ? { costPending: true } : {}),
   }
 }

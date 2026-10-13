@@ -10,7 +10,7 @@ import { join } from 'node:path'
 import { after, before, test } from 'node:test'
 import { Wallet, verifyMessage } from 'ethers'
 import { buyerIdentityAddress, loadDefaultBuyerIdentity } from '../../buyer-identities/store.js'
-import { exportGatewayBundle } from '../bundle.js'
+import { exportGatewayBundle, summarizeDataDir } from '../bundle.js'
 import { ConsoleRouter } from '../console-api/router.js'
 import { call, fakeDeps, fakeRequireWorkspaceAccess, memberPrincipal, rejectsWith } from '../console-api/handlers/network-test-helpers.js'
 import { registerWalletRoutes } from '../console-api/handlers/wallet.js'
@@ -110,5 +110,19 @@ test('the export bundle carries the env key and refuses a key the buyer does not
     )
   } finally {
     rmSync(outDir, { recursive: true, force: true })
+  }
+})
+
+test('the summary of another data dir (an imported bundle) shows its own identity.key, not the env key', async () => {
+  const otherDir = mkdtempSync(join(tmpdir(), 'antseed-wallet-env-other-'))
+  try {
+    writeFileSync(join(otherDir, 'identity.key'), '99'.repeat(32))
+    const summary = await summarizeDataDir(otherDir)
+    assert.equal(summary.wallets.find((wallet) => wallet.name === 'default')?.address, OTHER_WALLET)
+    // The live dir still reports the wallet the buyer pays from.
+    const live = await summarizeDataDir(otherDir, { identitySource: dataDir })
+    assert.equal(live.wallets.find((wallet) => wallet.name === 'default')?.address, ENV_WALLET)
+  } finally {
+    rmSync(otherDir, { recursive: true, force: true })
   }
 })

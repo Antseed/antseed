@@ -1,6 +1,6 @@
 import { randomUUID } from 'node:crypto'
 import type { AttributedSpendEvent } from '../proxy/spend-attribution.js'
-import { BUDGET_PERIODS, findLimitBreach, hasSpendLimits, type BudgetLevel, type BudgetLimits, type BudgetPeriod, type LimitBreach, type SpendLimits } from './limits.js'
+import { BUDGET_PERIODS, cappedPeriods, findLimitBreach, hasSpendLimits, type BudgetLevel, type BudgetLimits, type LimitBreach, type SpendLimits } from './limits.js'
 import { parseBaseUnits } from './money.js'
 import type { ApiKeyRecord, BudgetScope, GatewayStore, MemberRecord, WorkspaceRecord } from './store.js'
 
@@ -34,6 +34,14 @@ export interface GatewayAccountingOptions {
   holdUsdc: number
   settleGraceMs?: number
   now?: () => number
+}
+
+/** One level whose caps a key's request is admitted against. */
+type BudgetCheck = {
+  level: BudgetLevel
+  limits: SpendLimits | BudgetLimits
+  scope: BudgetScope
+  held: () => number
 }
 
 type Hold = {
@@ -90,9 +98,17 @@ export class GatewayAccounting {
 
   /** Whether any level above or at the key caps spend (so admission depends on the spend feed). */
   hasBudgets(key: ApiKeyRecord, context: KeyContext = this._context(key)): boolean {
-    if (hasSpendLimits(effectiveKeyLimits(key))) return true
-    if (context.member && hasSpendLimits(context.member.limits)) return true
-    return Boolean(context.workspace && hasSpendLimits(context.workspace.limits))
+    return this._budgetChecks(key, context).some(({ limits }) => hasSpendLimits(limits))
+  }
+
+  /** The key (the lower of its admin and owner caps), the member who owns it and its workspace. */
+  private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext): BudgetCheck[] {
+    const checks: BudgetCheck[] = [
+      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id) },
+    ]
+    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id) })
+    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id) })
+    return checks
   }
 
   private _context(key: ApiKeyRecord): KeyContext {
@@ -112,13 +128,7 @@ export class GatewayAccounting {
    */
   admit(key: ApiKeyRecord, context: KeyContext = this._context(key)): Admission {
     const now = this._now()
-    const { member, workspace } = context
-    const levels: Array<{ level: BudgetLevel; limits: SpendLimits | BudgetLimits; scope: BudgetScope; held: () => number }> = [
-      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id) },
-    ]
-    if (member) levels.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id) })
-    if (workspace) levels.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id) })
-    for (const { level, limits, scope, held } of levels) {
+    for (const { level, limits, scope, held } of this._budgetChecks(key, context)) {
       const periods = cappedPeriods(limits)
       if (periods.length === 0) continue
       const breach = findLimitBreach(limits, this._store.spendByPeriod(scope, now, periods), held(), now)
@@ -201,8 +211,4 @@ function lowerCap(a: number | null, b: number | null): number | null {
   if (a === null) return b
   if (b === null) return a
   return Math.min(a, b)
-}
-
-function cappedPeriods(limits: SpendLimits | BudgetLimits): BudgetPeriod[] {
-  return BUDGET_PERIODS.filter((period) => (limits[period] ?? null) !== null)
 }

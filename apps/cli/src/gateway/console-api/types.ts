@@ -321,10 +321,12 @@ export interface RequestLogEntry {
   /** Error code and message from a failed response (gateway, buyer or seller). */
   errorCode: string | null
   errorMessage: string | null
+  /** Served by a free seller (all its advertised prices zero): the cost is $0 and no spend is reported. */
+  servedFree?: boolean
   /**
-   * A model request that did not fail and has no spend recorded yet: the
-   * buyer reports spend a moment after the response. If it stays pending
-   * for minutes the spend was not recorded (a free seller, or lost).
+   * A model request that did not fail, was not served free and has no spend
+   * recorded yet: the buyer reports spend a moment after the response. If it
+   * stays pending for minutes the spend was not recorded (lost).
    * Token counts meanwhile come from the response's own usage.
    */
   costPending?: boolean

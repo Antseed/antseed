@@ -5,7 +5,7 @@ import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
-import { newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
+import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
@@ -62,6 +62,12 @@ const MAX_ERROR_MESSAGE_CHARS = 500
 const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
+/** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */
+const SPEND_FEED_UNAVAILABLE_MESSAGES: Record<Exclude<SpendFeedState, 'reporting'>, string> = {
+  unsupported: 'The buyer for this API key does not report spend; upgrade it to enforce spend limits',
+  unauthorized: `The buyer for this API key does not report spend to this gateway; ${SPEND_FEED_UNAUTHORIZED_HINT}`,
+  unreachable: 'The buyer for this API key is not reachable',
+}
 const KEY_INFO_PATH = '/v1/key'
 const TOPUP_PATH = '/v1/key/topup'
 
@@ -98,7 +104,7 @@ interface ForwardedRequest {
   path: string
   /** The canonical path, query included, sent to the buyer. */
   buyerPath: string
-  /** `buyerPath` without the query, as recorded and exported. */
+  /** `buyerPath` without the query (the route's prefix), as recorded and exported. */
   requestPath: string
   model: string | null
   endUser: string | null
@@ -279,7 +285,7 @@ export class GatewayServer {
       method,
       path,
       buyerPath: route.path,
-      requestPath: route.path.split('?')[0]!,
+      requestPath: route.prefix,
       model: model ? model.slice(0, 200) : null,
       endUser: extractEndUser(parsed, firstHeader(req.headers[END_USER_HEADER]) || undefined),
       startedAt: Date.now(),
@@ -311,11 +317,7 @@ export class GatewayServer {
   /** The request's active API key and who it is accounted to; answers 401 itself otherwise. */
   private _authenticate(req: http.IncomingMessage, res: http.ServerResponse, requestLine: string): { key: ApiKeyRecord; context: KeyContext } | null {
     const store = this._options.store
-    const internalKeyId = firstHeader(req.headers[GATEWAY_INTERNAL_KEY_HEADER])
-    const secret = internalKeyId ? null : parseBearerToken(req.headers.authorization)
-    const key = internalKeyId
-      ? (this._internalCaller(req) ? store.getKey(internalKeyId) : null)
-      : secret ? store.findKeyBySecret(secret) : null
+    const key = this._requestKey(req)
     if (!key || key.status !== 'active') {
       this._log(`gateway rejected authentication: ${requestLine}`)
       if (key) sendUnauthorized(res, 'key_revoked', 'API key has been revoked')
@@ -335,6 +337,19 @@ export class GatewayServer {
     return { key, context: { member, workspace: store.getWorkspace(key.workspaceId) } }
   }
 
+  /**
+   * The key a request names: by id for the gateway's own components (see
+   * GATEWAY_INTERNAL_KEY_HEADER), else by its Bearer secret. The id header is
+   * only honored from an internal caller; from anyone else it is ignored, so
+   * it can neither stand in for a key nor block a valid Bearer one.
+   */
+  private _requestKey(req: http.IncomingMessage): ApiKeyRecord | null {
+    const internalKeyId = firstHeader(req.headers[GATEWAY_INTERNAL_KEY_HEADER])
+    if (internalKeyId && this._internalCaller(req)) return this._options.store.getKey(internalKeyId)
+    const secret = parseBearerToken(req.headers.authorization)
+    return secret ? this._options.store.findKeyBySecret(secret) : null
+  }
+
   /** A request from the gateway process itself: loopback, carrying the control secret. */
   private _internalCaller(req: http.IncomingMessage): boolean {
     const expected = this._options.controlSecret
@@ -351,12 +366,7 @@ export class GatewayServer {
     await this._options.refreshSpendFeed()
     const state = this._options.spendFeedState()
     if (state === 'reporting') return true
-    const message = state === 'unsupported'
-      ? 'The buyer for this API key does not report spend; upgrade it to enforce spend limits'
-      : state === 'unauthorized'
-        ? `The buyer for this API key does not report spend to this gateway; ${SPEND_FEED_UNAUTHORIZED_HINT}`
-        : 'The buyer for this API key is not reachable'
-    sendError(res, 503, 'api_error', 'spend_tracking_unavailable', message)
+    sendError(res, 503, 'api_error', 'spend_tracking_unavailable', SPEND_FEED_UNAVAILABLE_MESSAGES[state])
     return false
   }
 
@@ -429,6 +439,7 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let reportedLatency: number | null = null
+      let servedFree = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
@@ -444,7 +455,7 @@ export class GatewayServer {
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser })
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser, servedFree })
           const usage = usageReader?.result() ?? null
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
@@ -478,6 +489,7 @@ export class GatewayServer {
         const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
         sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
         reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
+        servedFree = freeSellerPricing(upstreamRes.headers)
         if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
         if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
         else if (request.model !== null) usageReader = readUsage(upstreamRes, (message) => this._log(message))
@@ -653,8 +665,10 @@ export class GatewayServer {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
     const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    // The caps admission enforces: the lower of the admins' and the owner's.
+    const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
-      const limit = key.limits[period]
+      const limit = caps[period]
       return [period, {
         limit_usd: optionalUsdcToDecimalString(limit),
         spent_usd: usdcToDecimalString(spent[period]),
@@ -818,10 +832,41 @@ function readUsage(stream: http.IncomingMessage, log: (message: string) => void)
 }
 
 /** The buyer's own latency measurement, when it sent a usable one. */
+/**
+ * Whether the seller's advertised prices (the buyer's pricing headers) are
+ * all zero: a free seller, for which the buyer never reports spend. Unknown
+ * input or output prices are not free.
+ */
+function freeSellerPricing(headers: http.IncomingHttpHeaders): boolean {
+  const price = (name: string): number | null => {
+    const value = firstHeader(headers[name])
+    const amount = Number(value)
+    return value && Number.isFinite(amount) ? amount : null
+  }
+  const cached = price('x-antseed-cached-input-usd-per-million')
+  return price('x-antseed-input-usd-per-million') === 0 && price('x-antseed-output-usd-per-million') === 0 && (cached === null || cached === 0)
+}
+
 function latencyHeader(value: string): number | null {
   const latency = Number(value)
   return value && Number.isFinite(latency) && latency >= 0 ? Math.floor(latency) : null
 }
+
+/**
+ * Client headers never forwarded: the gateway sets its own `host` and
+ * `content-length`, and the key (never the client) decides who pays, how
+ * spend is tagged and which sellers may serve.
+ */
+const STRIPPED_HEADERS = new Set([
+  'host',
+  'content-length',
+  SPEND_ATTRIBUTION_HEADER,
+  BUYER_IDENTITY_HEADER,
+  ROUTING_POLICY_HEADER,
+  GATEWAY_CONTROL_HEADER,
+  GATEWAY_INTERNAL_KEY_HEADER,
+  END_USER_HEADER,
+])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */
 function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
@@ -830,10 +875,7 @@ function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttp
     const normalized = name.toLowerCase()
     // The client's key authenticated it to this gateway; its other
     // credentials are never needed downstream (see credential-headers.ts).
-    if (normalized === 'host' || isClientCredentialHeader(normalized)) continue
-    // The key decides who pays, how spend is tagged and which sellers may serve, never the client.
-    if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
-    if (normalized === ROUTING_POLICY_HEADER || normalized === GATEWAY_CONTROL_HEADER || normalized === GATEWAY_INTERNAL_KEY_HEADER || normalized === END_USER_HEADER) continue
+    if (isClientCredentialHeader(normalized) || STRIPPED_HEADERS.has(normalized)) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
     headers[name] = value
   }

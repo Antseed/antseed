@@ -6,6 +6,7 @@ import {
   orderByPolicy,
   pinnedPeerExclusionReasons,
   policyExclusionReasons,
+  preferenceExclusionReasons,
   rankingPreferences,
   secretsMatch,
   type PolicyPeerFacts,
@@ -59,6 +60,25 @@ test('policyExclusionReasons explains every exclusion in plain words', () => {
   assert.deepEqual(
     policyExclusionReasons({ requireVerified: true }, facts({ unverifiedReason: 'not verified (no supported verifier)' })),
     ['not verified (no supported verifier)'],
+  )
+})
+
+test('a halved trust score says why, and sub-cent prices keep their digits', () => {
+  const penalty = 'halved from 80: no cached-input price listed'
+  assert.deepEqual(
+    policyExclusionReasons({ minTrustScore: 50 }, facts({ trustScore: 40, trustPenalty: penalty })),
+    [`trust 40 (${penalty}) below 50`],
+  )
+  const prefs = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 50, allowedPeerIds: [], blockedPeerIds: [] }
+  assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 40, penalty), [`trust 40 (${penalty}) below buyer minimum 50`])
+  assert.deepEqual(preferenceExclusionReasons(prefs, id('a'), 40), ['trust 40 below buyer minimum 50'])
+  assert.deepEqual(
+    policyExclusionReasons({ maxInputUsdPerMillion: 0.0001 }, facts({ inputUsdPerMillion: 0.0003 })),
+    ['input price $0.0003 over cap $0.0001'],
+  )
+  assert.deepEqual(
+    policyExclusionReasons({ maxInputUsdPerMillion: 0.00001 }, facts({ inputUsdPerMillion: 0.00003 })),
+    ['input price $0.00003 over cap $0.00001'],
   )
 })
 

@@ -53,8 +53,7 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE api_keys ADD COLUMN topup_enabled INTEGER NOT NULL DEFAULT 0;
   `,
-  // v3 (not shipped yet, so console schema changes still go here rather
-  // than into a v4), the console: organization (workspaces, members, invites, presets,
+  // v3, the console: organization (workspaces, members, invites, presets,
   // peer lists, management tokens, settings, audit log). Every existing key
   // moves into a workspace paying with the key's identity, so nothing
   // changes wallet. Keys get an owner layer (limits and policy the key's
@@ -293,5 +292,9 @@ export const MIGRATIONS: readonly string[] = [
     updated_at INTEGER NOT NULL
   );
   CREATE INDEX chat_threads_owner ON chat_threads(owner_kind, owner_id, workspace_id, updated_at);
+  `,
+  // Requests a free seller served: the buyer reports no spend for them, so their cost is known ($0), not pending.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN served_free INTEGER NOT NULL DEFAULT 0;
   `,
 ]

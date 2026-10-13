@@ -5,6 +5,7 @@ import { resolvePolicy } from '../../../gateway/policy-resolver.js'
 import { previewRoute, type PreviewTarget } from '../../../gateway/services/network.js'
 import { gatewayDefaultPolicy, setGatewayDefaultPolicy } from '../../../gateway/services/routing.js'
 import type { GatewayStore } from '../../../gateway/store.js'
+import { formatUsdPerMillion } from '../network/pricing-format.js'
 import { printResolved } from './key.js'
 import { addConfirmOptions, addPolicyOptions, describePolicy, policyFromOptions } from './policy-options.js'
 import { addBuyerPortOption, printJson, requireKey, requireMember, requireWorkspace, withGateway } from './shared.js'
@@ -107,8 +108,8 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
           candidate.rank === null ? (candidate.eligible ? '-' : chalk.red('x')) : String(candidate.rank),
           candidate.peerId,
           candidate.displayName ?? '-',
-          candidate.inputUsdPerMillion ?? '-',
-          candidate.outputUsdPerMillion ?? '-',
+          formatUsdPerMillion(candidate.inputUsdPerMillion),
+          formatUsdPerMillion(candidate.outputUsdPerMillion),
           candidate.trustScore ?? '-',
           candidate.reasons.join('; ') || '-',
         ])

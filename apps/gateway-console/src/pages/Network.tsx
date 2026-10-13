@@ -5,8 +5,8 @@ import { copyModelIdItem, useCopy } from '../components/copy-actions'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { PeerListsPanel } from '../components/PeerLists'
 import { Badge, EmptyState, PageHeader, Panel, QueryView, SelectField, Switch } from '../components/ui'
-import { formatLatency, formatNumber, formatPricePerMillion, shortId } from '../lib/format'
-import { filterPeers, inputPrice, isFreePeer, outputPrice, type PeerFilter } from '../lib/peers'
+import { formatLatency, formatNumber, formatPriceRange, shortId } from '../lib/format'
+import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
 import { hasReputationData } from '../lib/policy-match'
 import { modelsFromPeers, usePeers } from '../lib/queries'
 import { Icon } from '../components/icons'
@@ -81,8 +81,8 @@ function NetworkList() {
                   </div>
                 ) },
                 { key: 'models', header: 'Models', secondary: true, optional: true, render: (peer) => <span className="gc-muted">{peer.services.length}</span> },
-                { key: 'input', header: 'Input $/M', align: 'right', sortValue: (peer) => inputPrice(peer, filter.model), render: (peer) => formatPricePerMillion(inputPrice(peer, filter.model)) },
-                { key: 'output', header: 'Output $/M', align: 'right', secondary: true, sortValue: (peer) => outputPrice(peer, filter.model), render: (peer) => formatPricePerMillion(outputPrice(peer, filter.model)) },
+                { key: 'input', header: 'Input $/M', align: 'right', sortValue: (peer) => inputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'inputUsdPerMillion', filter.model)) },
+                { key: 'output', header: 'Output $/M', align: 'right', secondary: true, sortValue: (peer) => outputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'outputUsdPerMillion', filter.model)) },
                 { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => peer.trustScore, render: (peer) => score(peer.trustScore) },
                 ...(showReputation ? [{ key: 'reputation', header: 'Reputation', align: 'right' as const, secondary: true, optional: true, sortValue: (peer: Peer) => peer.reputationScore, render: (peer: Peer) => score(peer.reputationScore) }] : []),
                 { key: 'latency', header: 'Latency', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.latencyMsP50, render: (peer) => formatLatency(peer.latencyMsP50) },

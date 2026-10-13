@@ -149,7 +149,6 @@ export function registerPaymentsIpc(): void {
 
       const amount = Number(opts?.amountUsdc);
       const hasAmount = Number.isFinite(amount) && amount > 0;
-      const amountStr = hasAmount ? String(amount) : '';
       if (provider.id === 'peer-pay') {
         if (!hasAmount) return { ok: false, error: 'Enter an amount before opening Peer Pay' };
         const checkoutUrl = await createPeerPayCheckout({
@@ -161,6 +160,7 @@ export function registerPaymentsIpc(): void {
         openCheckoutPopup(checkoutUrl, getMainWindow());
         return { ok: true };
       }
+      const amountStr = hasAmount ? String(amount) : '';
       let parsed: URL;
       try {
         parsed = resolveCardProviderUrl(provider.url, identity.wallet.address, amountStr);

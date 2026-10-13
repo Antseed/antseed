@@ -79,10 +79,10 @@ export function registerGatewayCommands(program: Command): void {
       printConsoleInfo(runtime, `${publicUrl ?? `http://localhost:${runtime.port}`}/console`)
       if (topup) console.log(chalk.dim(`x402 top-ups: POST /v1/key/topup, settled by ${topup.facilitatorUrl}`))
       const exposure = detectExposure({ publicUrl, listenHost: options.host, host: detectHostFacts() })
-      if (exposure.mode !== 'public') {
-        console.log(chalk.dim(exposure.mode === 'local'
-          ? 'Only this computer can reach this gateway. To serve a team, move it to a server: antseed gateway export --out antseed-gateway.bundle'
-          : 'No public URL: only your network can reach this gateway, over plain HTTP. To serve a team, move it to a server: antseed gateway export --out antseed-gateway.bundle'))
+      if (exposure.mode === 'local') {
+        console.log(chalk.dim('Only this computer can reach this gateway. To serve a team, move it to a server: antseed gateway export --out antseed-gateway.bundle'))
+      } else if (exposure.mode === 'lan') {
+        console.log(chalk.dim('No public URL: only your network can reach this gateway, over plain HTTP. To serve a team, move it to a server: antseed gateway export --out antseed-gateway.bundle'))
       }
       setupShutdownHandler(async () => {
         await runtime.stop()

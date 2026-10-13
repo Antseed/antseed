@@ -118,7 +118,7 @@ To change buyer settings (routing preferences, price caps, verification, payment
 
 ### Chain RPC and rate limits
 
-The buyer and the gateway read balances, deposits, operator settings, rewards and seller stats from Base through a JSON-RPC endpoint, by default a public one that rate limits per IP address. They keep the request rate low: one shared RPC client per process, concurrent reads folded into Multicall3 calls, short-lived caches, one deposit watcher loop for all workspace wallets (every 6 s while a wallet page is open, every 30 s to 60 s otherwise), on-chain seller stats refreshed every 10 minutes, and backoff when an endpoint throttles. When the endpoint is busy anyway, the console shows the last known values with a note instead of an error.
+The buyer and the gateway read balances, deposits, operator settings, rewards and seller stats from Base through a JSON-RPC endpoint, by default a public one that rate limits per IP address. They keep the request rate low: one shared RPC client for the gateway's reads, concurrent reads folded into Multicall3 calls, short-lived caches, one deposit watcher loop for all workspace wallets (every 2 s while a wallet page is open, every 15 s to 30 s otherwise), and backoff when an endpoint throttles. When the endpoint is busy anyway, the console shows the last known values with a note instead of an error.
 
 For a busy gateway, or many workspaces, use your own RPC endpoint (any Base provider). Set `ANTSEED_BASE_RPC_URL` for both services:
 

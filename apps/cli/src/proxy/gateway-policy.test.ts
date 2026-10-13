@@ -37,7 +37,12 @@ interface Harness {
 
 async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<BuyerProxyConfig> = {}, withSecret = true): Promise<Harness> {
   const dataDir = await mkdtemp(join(tmpdir(), 'antseed-gateway-policy-'))
-  t.after(() => rm(dataDir, { recursive: true, force: true }))
+  let proxy: BuyerProxy | undefined
+  // Conversation writes land in the data dir: let them finish before removing it.
+  t.after(async () => {
+    await (proxy as any)?._conversations.flush()
+    await rm(dataDir, { recursive: true, force: true })
+  })
   if (withSecret) {
     await mkdir(join(dataDir, 'gateway'), { recursive: true })
     await writeFile(join(dataDir, GATEWAY_CONTROL_SECRET_FILE), `${SECRET}\n`, { mode: 0o600 })
@@ -51,7 +56,7 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
-  const proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
+  proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -484,6 +489,13 @@ test('the attributed-spend feed is readable only with the gateway control secret
   assert.equal(((await res.json()) as any).ok, true)
 })
 
+test('without a control secret the attributed-spend feed stays readable and unacknowledged', async (t) => {
+  const h = await startHarness(t, [cheap], {}, false)
+  const res = await fetch(`${h.url}/_antseed/attributed-spend?after=0`, { headers: { [GATEWAY_CONTROL_HEADER]: 'from-another-data-dir' } })
+  assert.equal(res.status, 200)
+  assert.equal(((await res.json()) as any).ok, true)
+})
+
 test('latency is measured per seller and model', async (t) => {
   const h = await startHarness(t, [cheap])
   ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'gpt-5', 100)
@@ -494,7 +506,7 @@ test('latency is measured per seller and model', async (t) => {
   assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'other'), null)
 })
 
-test('automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
+test('gateway-policy automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
   const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
   const free = makePeer('e', { input: 0, output: 0, trust: 70 })
   const other = makePeer('b', { input: 2, output: 2, trust: 90 })
@@ -510,7 +522,8 @@ test('automatic routing falls back to a free seller when a paid one cannot be fu
       body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
     }
   }
-  const res = await chat(h, { 'x-antseed-chat-session-id': 'thread-1' })
+  const gatewayPolicy = withPolicy({ sort: 'trust' })
+  const res = await chat(h, { ...gatewayPolicy, 'x-antseed-chat-session-id': 'thread-1' })
   assert.equal(res.status, 200)
   // The paid seller refused; the other paid one is skipped; the free one answered.
   assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, free.peerId])
@@ -520,7 +533,66 @@ test('automatic routing falls back to a free seller when a paid one cannot be fu
   // With no free seller left, the buyer's 402 reaches the client and no route is remembered.
   const h2 = await startHarness(t, [paid])
   ;(h2.proxy as any)._node.sendRequest = (h.proxy as any)._node.sendRequest
-  const refused = await chat(h2, { 'x-antseed-chat-session-id': 'thread-2' })
+  const refused = await chat(h2, { ...gatewayPolicy, 'x-antseed-chat-session-id': 'thread-2' })
   assert.equal(refused.status, 402)
   assert.equal((h2.proxy as any)._conversations.get('antseed-chat:thread-2')?.pinnedModel ?? null, null)
+})
+
+test('without a gateway policy a 402 reaches the client from the first seller, as before', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const res = await chat(h)
+  assert.equal(res.status, 402)
+  assert.equal(h.dispatched.length, 1)
+})
+
+test('model_not_found moves to the next seller with or without a gateway policy', async (t) => {
+  const stale = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const serving = makePeer('b', { input: 2, output: 2, trust: 90 })
+  const h = await startHarness(t, [stale, serving])
+  ;(h.proxy as any)._refreshPeersNow = async () => {}
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    const notServed = peer.peerId === stale.peerId
+    return {
+      requestId: request.requestId,
+      statusCode: notServed ? 400 : 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify(notServed
+        ? { error: { message: 'Service "gpt-5" is not served by this peer.', type: 'invalid_request_error', code: 'model_not_found' } }
+        : {})),
+    }
+  }
+  const viaGateway = await chat(h, withPolicy({ sort: 'trust' }))
+  assert.equal(viaGateway.status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [stale.peerId, serving.peerId])
+
+  h.dispatched.length = 0
+  const plain = await chat(h)
+  assert.equal(plain.status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [stale.peerId, serving.peerId])
+})
+
+test('a seller that answers with an error does not become the chat\'s route', async (t) => {
+  const h = await startHarness(t, [cheap])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    return {
+      requestId: request.requestId, statusCode: 400,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"error":{"message":"bad request","type":"invalid_request_error"}}'),
+    }
+  }
+  const res = await chat(h, { 'x-antseed-chat-session-id': 'thread-err' })
+  assert.equal(res.status, 400)
+  assert.equal((h.proxy as any)._conversations.get('antseed-chat:thread-err')?.pinnedModel ?? null, null)
 })

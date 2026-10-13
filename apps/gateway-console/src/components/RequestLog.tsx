@@ -20,12 +20,13 @@ function statusBadge(status: number | null) {
   return <Badge tone="danger">{status}</Badge>
 }
 
-/** Cost of a request; "pending" until the buyer reports its spend, "not recorded" if it never does. */
+/** Cost of a request; "free" from a free seller, "pending" until the buyer reports its spend, "not recorded" if it never does. */
 function Cost({ entry }: { entry: RequestLogEntry }) {
   const status = costStatus(entry, Date.now())
+  if (status === 'free') return <span className="gc-muted" title="Served by a free seller: $0">Free</span>
   if (status === 'pending') return <span className="gc-muted" title="The buyer reports spend a moment after the response">pending</span>
   if (status === 'not-recorded') {
-    return <span className="gc-muted" title="No spend was reported for this request: a free seller, or spend the buyer lost">not recorded</span>
+    return <span className="gc-muted" title="No spend was reported for this request: the buyer lost it">not recorded</span>
   }
   return <>{formatUsd(entry.spent)}</>
 }

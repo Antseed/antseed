@@ -148,14 +148,13 @@ export function registerBuyerSetAuthorizedWalletCommand(buyerCmd: Command): void
         const { makeDepositsDomain, signSetOperator } = await import('@antseed/node');
         const config = await loadConfig(globalOpts.config);
         const crypto = requireCryptoConfig(config);
-        const context = authorizing;
-        console.log(chalk.dim(`Buyer: ${context.address}`));
+        console.log(chalk.dim(`Buyer: ${authorizing.address}`));
         console.log(chalk.dim(`Chain: ${crypto.evmChainId} | Deposits: ${crypto.depositsContractAddress}`));
         console.log(chalk.yellow('The buyer wallet will control withdrawals and future authorization transfers.'));
         console.log(chalk.dim('The buyer wallet must have ETH on this chain to pay gas.'));
         spinner = ora('Authorizing buyer wallet...').start();
         const txHash = await setSelfAuthorizedWallet({
-          context,
+          context: authorizing,
           client: createDepositsClient(config),
           evmChainId: crypto.evmChainId,
           depositsContractAddress: crypto.depositsContractAddress,

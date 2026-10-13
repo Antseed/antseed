@@ -126,6 +126,10 @@ describe('costStatus', () => {
     expect(costStatus({ ...base, spent: null, costPending: true }, NOW - 1000 + COST_PENDING_MS)).toBe('not-recorded')
     expect(costStatus({ startedAt: NOW - COST_PENDING_MS * 2, finishedAt: null, spent: null, costPending: true }, NOW)).toBe('not-recorded')
   })
+  it('reads as free when a free seller served it, never pending', () => {
+    expect(costStatus({ ...base, spent: null, servedFree: true }, NOW)).toBe('free')
+    expect(costStatus({ ...base, spent: null, servedFree: true }, NOW + COST_PENDING_MS * 2)).toBe('free')
+  })
   it('has nothing to show for a failed request', () => {
     expect(costStatus({ ...base, spent: null }, NOW)).toBeNull()
   })

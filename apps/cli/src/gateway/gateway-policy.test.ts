@@ -337,6 +337,12 @@ test('the gateway itself can call /v1 as a key by id with the control secret; no
     assert.equal(forwarded.headers[GATEWAY_INTERNAL_KEY_HEADER], undefined)
     // Accounted to that key like any request with it.
     assert.equal(ctx.store.getKey(key.id)!.lastUsedAt !== null, true)
+    // From anyone else the header is ignored: a valid Bearer key still works and is the key used.
+    const { secret: clientSecret, key: clientKey } = ctx.store.createKey({ label: 'client', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(clientSecret, '/v1/chat/completions', body, asKey)).status, 200)
+    assert.equal((await ctx.send(clientSecret, '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'nope' })).status, 200)
+    assert.equal(ctx.store.listRequests({ keyId: clientKey.id }).length, 2)
+    assert.equal(ctx.buyer.captured.at(-1)!.headers[GATEWAY_INTERNAL_KEY_HEADER], undefined)
     // A revoked key stops working this way too.
     ctx.store.revokeKey(key.id)
     assert.equal((await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'control-secret' })).status, 401)

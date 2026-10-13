@@ -102,15 +102,17 @@ export function seed() {
     const startedAt = now - index * 37 * 60_000
     const input = 400 + ((index * 131) % 6000)
     const output = 50 + ((index * 71) % 1500)
-    // The newest request still waits for its spend; one an hour or so old never got any.
+    // The newest request still waits for its spend; one an hour or so old never got any; a few were served free.
     const costPending = index === 0 || index === 2
+    const servedFree = !failed && index % 13 === 4
     return {
       tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 900 + (index % 9) * 120, keyId: k.id, keyLabel: k.label,
       workspaceId: k.workspaceId, memberId: k.ownerMemberId, endUser: index % 4 === 0 ? `user-${index % 7}` : null, method: 'POST',
       path: index % 3 === 0 ? '/v1/messages' : '/v1/chat/completions', model: models[index % models.length]!, status: failed ? 502 : 200,
-      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90, spent: failed || costPending ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
+      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90, spent: failed || costPending || servedFree ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
       inputTokens: input, cachedInputTokens: index % 5 === 0 ? Math.floor(input / 2) : 0, outputTokens: failed ? 0 : output,
       ...(costPending ? { costPending: true } : {}),
+      ...(servedFree ? { servedFree: true } : {}),
       errorCode: failed ? 'seller_unavailable' : null,
       errorMessage: failed ? 'No seller accepted the request in time (fake seller timed out).' : null,
       requestBody: index % 6 === 0 ? JSON.stringify({ model: models[index % models.length], messages: [{ role: 'user', content: 'Summarise this fake ticket.' }] }) : null,

@@ -23,6 +23,16 @@ export interface ResolveEffectiveConfigInput {
   buyerOverrides?: BuyerRuntimeOverrides;
 }
 
+/** Env vars that override buyer settings; read by `resolveEffectiveBuyerConfig`, reported by `buyerSettingOverrides`. */
+const BUYER_ENV = {
+  minPeerReputation: 'ANTSEED_BUYER_MIN_REPUTATION',
+  maxInputUsdPerMillion: 'ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION',
+  maxOutputUsdPerMillion: 'ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION',
+  metadataFetchTimeoutMs: 'ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS',
+  maxStreamDurationMs: 'ANTSEED_BUYER_MAX_STREAM_DURATION_MS',
+  disableMetadataV2Services: 'ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES',
+} as const;
+
 function parseEnvNumber(env: NodeJS.ProcessEnv, key: string): number | undefined {
   const raw = env[key];
   if (raw === undefined) return undefined;
@@ -107,20 +117,20 @@ export function resolveEffectiveBuyerConfig(input: ResolveEffectiveConfigInput):
   const env = input.env ?? process.env;
   const buyer = structuredClone(input.config.buyer);
 
-  const envMinReputation = parseEnvNumber(env, 'ANTSEED_BUYER_MIN_REPUTATION');
-  const envMaxInputUsdPerMillion = parseEnvNumber(env, 'ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION');
-  const envMaxOutputUsdPerMillion = parseEnvNumber(env, 'ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION');
-  const envMetadataFetchTimeoutKey = 'ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS';
+  const envMinReputation = parseEnvNumber(env, BUYER_ENV.minPeerReputation);
+  const envMaxInputUsdPerMillion = parseEnvNumber(env, BUYER_ENV.maxInputUsdPerMillion);
+  const envMaxOutputUsdPerMillion = parseEnvNumber(env, BUYER_ENV.maxOutputUsdPerMillion);
+  const envMetadataFetchTimeoutKey = BUYER_ENV.metadataFetchTimeoutMs;
   const envMetadataFetchTimeoutMs = parseEnvNumber(env, envMetadataFetchTimeoutKey);
   if (env[envMetadataFetchTimeoutKey] !== undefined && envMetadataFetchTimeoutMs === undefined) {
     throw new Error(`${envMetadataFetchTimeoutKey} must be a finite number`);
   }
-  const envMaxStreamDurationKey = 'ANTSEED_BUYER_MAX_STREAM_DURATION_MS';
+  const envMaxStreamDurationKey = BUYER_ENV.maxStreamDurationMs;
   const envMaxStreamDurationMs = parseEnvNumber(env, envMaxStreamDurationKey);
   if (env[envMaxStreamDurationKey] !== undefined && envMaxStreamDurationMs === undefined) {
     throw new Error(`${envMaxStreamDurationKey} must be a finite number`);
   }
-  const envDisableMetadataV2Services = parseEnvBoolean(env, 'ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES');
+  const envDisableMetadataV2Services = parseEnvBoolean(env, BUYER_ENV.disableMetadataV2Services);
 
   if (envMinReputation !== undefined) {
     buyer.minPeerReputation = envMinReputation;
@@ -184,12 +194,13 @@ export function buyerSettingOverrides(input: {
   const paths = new Set<string>();
   const set = (path: string, active: boolean): void => { if (active) paths.add(path); };
   set('proxyPort', overrides.proxyPort !== undefined);
-  set('minPeerReputation', overrides.minPeerReputation !== undefined || env['ANTSEED_BUYER_MIN_REPUTATION'] !== undefined);
-  set('maxPricing.inputUsdPerMillion', overrides.maxInputUsdPerMillion !== undefined || env['ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION'] !== undefined);
-  set('maxPricing.outputUsdPerMillion', overrides.maxOutputUsdPerMillion !== undefined || env['ANTSEED_BUYER_MAX_OUTPUT_USD_PER_MILLION'] !== undefined);
-  set('network.metadataFetchTimeoutMs', overrides.metadataFetchTimeoutMs !== undefined || env['ANTSEED_BUYER_METADATA_FETCH_TIMEOUT_MS'] !== undefined);
-  set('network.maxStreamDurationMs', env['ANTSEED_BUYER_MAX_STREAM_DURATION_MS'] !== undefined);
-  set('network.disableMetadataV2Services', overrides.disableMetadataV2Services !== undefined || env['ANTSEED_BUYER_DISABLE_METADATA_V2_SERVICES'] !== undefined);
+  const fromEnv = (setting: keyof typeof BUYER_ENV): boolean => env[BUYER_ENV[setting]] !== undefined;
+  set('minPeerReputation', overrides.minPeerReputation !== undefined || fromEnv('minPeerReputation'));
+  set('maxPricing.inputUsdPerMillion', overrides.maxInputUsdPerMillion !== undefined || fromEnv('maxInputUsdPerMillion'));
+  set('maxPricing.outputUsdPerMillion', overrides.maxOutputUsdPerMillion !== undefined || fromEnv('maxOutputUsdPerMillion'));
+  set('network.metadataFetchTimeoutMs', overrides.metadataFetchTimeoutMs !== undefined || fromEnv('metadataFetchTimeoutMs'));
+  set('network.maxStreamDurationMs', fromEnv('maxStreamDurationMs'));
+  set('network.disableMetadataV2Services', overrides.disableMetadataV2Services !== undefined || fromEnv('disableMetadataV2Services'));
   set('payments.rpcUrl', Boolean(env['ANTSEED_BASE_RPC_URL']?.trim()));
   set('verifier', input.verifierFlags === true);
   return [...paths];

@@ -11,21 +11,12 @@ import {
   type TransactionResponse,
 } from 'ethers';
 
-// How long the fallback provider waits on one endpoint before also asking the
-// next: a stall starts a duplicate request on another public endpoint, so it
-// must sit above a slow-but-healthy answer rather than at a typical one.
-const FALLBACK_STALL_TIMEOUT_MS = 4_000;
+const FALLBACK_STALL_TIMEOUT_MS = 750;
 const JSON_RPC_REQUEST_TIMEOUT_MS = 10_000;
 
 function createJsonRpcProvider(url: string, network?: Network, opts?: object): JsonRpcProvider {
   const request = new FetchRequest(url);
   request.timeout = JSON_RPC_REQUEST_TIMEOUT_MS;
-  // ethers retries a 429 up to 12 times with its own backoff: against a
-  // public endpoint that is throttling per IP, that is the opposite of what
-  // the rest of the stack does (fail fast, back off, serve cached values).
-  // One attempt per endpoint; failover is the fallback provider's job.
-  request.retryFunc = async () => false;
-  request.setThrottleParams({ maxAttempts: 1 });
   return new JsonRpcProvider(request, network, opts);
 }
 

@@ -10,7 +10,7 @@ import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import Database from 'better-sqlite3'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
-import { buyerIdentityAddress, listBuyerIdentities, loadDefaultBuyerIdentity } from '../buyer-identities/store.js'
+import { buyerIdentityAddress, listBuyerIdentities, loadDefaultBuyerIdentity, storedDefaultIdentityAddress } from '../buyer-identities/store.js'
 import { sameAddress, type BuyerAddressBook } from './services/wallet-address.js'
 import { CONSOLE_LOCATION_SETTING, readConsoleLocation, type ConsoleLocation } from './console-location.js'
 import { clearRecoveryTokens } from './console-recovery.js'
@@ -623,8 +623,11 @@ function countPasskeys(store: GatewayStore): number {
 
 /**
  * Workspaces, keys, members and wallet addresses of a data dir; never a
- * secret. `identitySource` reads wallet keys from another dir (the live one
- * during export, whose `keyFrom` wallets resolve there).
+ * secret. `identitySource` reads wallet keys from another dir: the live one
+ * during export, whose `keyFrom` wallets resolve there and whose default
+ * wallet is the buyer's (ANTSEED_IDENTITY_HEX first, as the bundle carries
+ * it). Without it, the default wallet is the dir's own identity.key, not a
+ * key this process took from its environment.
  */
 export async function summarizeDataDir(dataDir: string, options: { identitySource?: string } = {}): Promise<BundleSummary> {
   const identityDir = options.identitySource ?? dataDir
@@ -632,7 +635,9 @@ export async function summarizeDataDir(dataDir: string, options: { identitySourc
   try {
     const wallets: BundleSummary['wallets'] = []
     const addressOf = new Map<string, string | null>()
-    const defaultAddress = await buyerIdentityAddress(identityDir, DEFAULT_BUYER_IDENTITY).catch(() => null)
+    const defaultAddress = options.identitySource
+      ? await buyerIdentityAddress(options.identitySource, DEFAULT_BUYER_IDENTITY)
+      : await storedDefaultIdentityAddress(dataDir)
     addressOf.set(DEFAULT_BUYER_IDENTITY, defaultAddress)
     wallets.push({ name: DEFAULT_BUYER_IDENTITY, address: defaultAddress, ...(defaultAddress ? {} : { note: 'created on first buyer start' }) })
     for (const identity of await listBuyerIdentities(identityDir)) {

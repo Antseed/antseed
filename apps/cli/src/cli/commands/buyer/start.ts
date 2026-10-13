@@ -7,7 +7,7 @@ import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { AntseedNode, DepositRelayClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
+import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
 import { OFFICIAL_BOOTSTRAP_NODES, parseBootstrapList, toBootstrapConfig } from '@antseed/node/discovery'
 import { setupShutdownHandler } from '../../shutdown.js'
@@ -423,9 +423,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         process.exit(1)
       }
 
-      // Every chain read this process makes for its wallets (balances, deposit
-      // watchers, the startup balance line) shares one rate-aware provider and
-      // one cache; see proxy/chain-rpc.ts.
+      // The gateway's chain reads for workspace wallets (balances, their deposit
+      // watchers) share one rate-aware provider and one cache; see
+      // proxy/chain-rpc.ts. The default wallet keeps its own clients.
       const chainReader = paymentsConfig?.enabled
         ? new CachedBuyerChainReader({
             provider: sharedChainProvider(chainConfig),
@@ -433,12 +433,19 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
             usdcAddress: chainConfig.usdcContractAddress,
           })
         : null
+      const newDepositsClient = (): DepositsClient => new DepositsClient({
+        rpcUrl: chainConfig.rpcUrl,
+        ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
+        contractAddress: chainConfig.depositsContractAddress,
+        usdcAddress: chainConfig.usdcContractAddress,
+        evmChainId: chainConfig.evmChainId,
+      })
 
-      if (chainReader) {
+      if (paymentsConfig?.enabled) {
         try {
           const identity = node.identity!
           const address = identity.wallet.address
-          const account = await chainReader.getBuyerBalance(address)
+          const account = await newDepositsClient().getBuyerBalance(address)
           console.log(chalk.dim(`Wallet: ${address}`))
           const availUsdc = Number(account.available) / 1_000_000
           console.log(chalk.dim(`Deposits available: ${availUsdc.toFixed(6)} USDC`))
@@ -453,15 +460,19 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // `buyer.verifier` in the config, unless a verifier flag is given: the flags then decide alone.
       const verifierFlags = command.getOptionValueSource('verifier') === 'cli'
         || options.verifiers !== undefined || options.requireVerifier !== undefined
-      const configuredVerifier = effectiveBuyerConfig.verifier ?? {}
+      let verifierInput: Parameters<typeof resolveVerifierPolicy>[0]
+      if (verifierFlags) {
+        verifierInput = { verifier: options.verifier, verifiers: options.verifiers, requireVerifier: options.requireVerifier }
+      } else {
+        const configuredVerifier = effectiveBuyerConfig.verifier ?? {}
+        verifierInput = {
+          verifier: configuredVerifier.enabled,
+          ...(configuredVerifier.prefer?.length ? { verifiers: configuredVerifier.prefer.join(',') } : {}),
+          requireVerifier: configuredVerifier.require,
+        }
+      }
       try {
-        verifierPolicy = resolveVerifierPolicy(verifierFlags
-          ? { verifier: options.verifier, verifiers: options.verifiers, requireVerifier: options.requireVerifier }
-          : {
-              verifier: configuredVerifier.enabled,
-              ...(configuredVerifier.prefer?.length ? { verifiers: configuredVerifier.prefer.join(',') } : {}),
-              requireVerifier: configuredVerifier.require,
-            })
+        verifierPolicy = resolveVerifierPolicy(verifierInput)
       } catch (err) {
         console.error(chalk.red((err as Error).message))
         process.exit(1)
@@ -486,14 +497,14 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       // Extra buyer identities pay through this same node. Each gets its own
       // deposit watcher once watchers can run (see below).
-      let createDepositWatcher: ((identity: Identity) => DepositWatcher) | null = null
+      let createDepositWatcher: ((identity: Identity, shared?: boolean) => DepositWatcher) | null = null
       const identityWatchers: DepositWatcher[] = []
       const buyerIdentities = new BuyerIdentityLoader(node, globalOpts.dataDir, (name, identity) => {
         console.log(chalk.dim(`Buyer identity ${name} loaded (${identity.wallet.address})`))
         if (!createDepositWatcher) return
         // Every identity (workspace wallet) gets its own watcher so the gateway
         // can read and promote it via /_antseed/deposits/*?identity=<name>.
-        const watcher = createDepositWatcher(identity)
+        const watcher = createDepositWatcher(identity, true)
         if (effectiveBuyerConfig.autoSweep !== false) watcher.startIdle()
         identityWatchers.push(watcher)
         proxy.setIdentityDepositWatcher(name, watcher)
@@ -514,7 +525,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         configPath: globalOpts.config,
         routingPreferences: effectiveBuyerConfig.routingPreferences,
         minPeerReputation: effectiveBuyerConfig.minPeerReputation,
-        buyerOverrides: runtimeOverrides,
         settingOverrides: buyerSettingOverrides({ buyerOverrides: runtimeOverrides, verifierFlags }),
         backgroundRefreshIntervalMs: effectiveBuyerConfig.peerRefreshIntervalMs,
         ...(verifierPolicy ? { verifier: verifierPolicy } : {}),
@@ -573,8 +583,9 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
         proxy.setDepositWatcher(null, watcherAbsence)
       }
       if (ownsProxyListener && chainReader && depositRelayAddress) {
-        // One poll loop for every wallet: each tick is a single batched read
-        // of all due wallets' USDC balances, shared with the balance cache.
+        // One poll loop for the workspace wallets: each tick is a single
+        // batched read of all due wallets' USDC balances, shared with the
+        // balance cache. The default wallet polls on its own timer.
         const reader = chainReader
         depositWatchHub = new DepositWatchHub({
           // A wallet whose balance was read a moment ago (the console's
@@ -582,21 +593,23 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           readBalances: (addresses) => reader.usdcBalancesForWatch(addresses, DEPOSIT_WATCH_ACTIVE_INTERVAL_MS / 2),
         })
         const hub = depositWatchHub
-        const relayClient = constantRelayReads(new DepositRelayClient({
+        const newRelayClient = (): DepositRelayClient => new DepositRelayClient({
           rpcUrl: chainConfig.rpcUrl,
           ...(chainConfig.fallbackRpcUrls ? { fallbackRpcUrls: chainConfig.fallbackRpcUrls } : {}),
           contractAddress: depositRelayAddress,
           evmChainId: chainConfig.evmChainId,
-        }).withProvider(sharedChainProvider(chainConfig)))
-        createDepositWatcher = (identity) => new DepositWatcher({
+        })
+        const sharedRelayClient = constantRelayReads(newRelayClient().withProvider(sharedChainProvider(chainConfig)))
+        createDepositWatcher = (identity, shared = false) => new DepositWatcher({
           wallet: identity.wallet,
           address: identity.wallet.address,
-          depositsClient: reader.reads,
-          relayClient,
-          scheduler: hub,
-          // Without auto-sweep a wallet is watched only while a deposit flow
-          // is open (and its linger window), never at a resting cadence.
-          ...(effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
+          ...(shared
+            ? { depositsClient: reader.reads, relayClient: sharedRelayClient, scheduler: hub }
+            : { depositsClient: newDepositsClient(), relayClient: newRelayClient() }),
+          // Without auto-sweep a workspace wallet is watched only while a
+          // deposit flow is open (and its linger window), never at a resting
+          // cadence. The default wallet keeps its earlier behavior.
+          ...(shared && effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
           onEvent: (event) => {
             if (event.phase === 'credited') proxy.invalidateBalances(identity.wallet.address)
           },

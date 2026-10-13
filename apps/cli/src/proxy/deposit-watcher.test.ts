@@ -237,7 +237,7 @@ test('deposit watcher status exposes mode transitions and the last event', async
   assert.equal(watcher.status().address.length, 42)
 })
 
-test('active mode lapses to background without a heartbeat, and a heartbeat keeps it active', async (t) => {
+test('a gateway active watch lapses to background without a heartbeat, and a heartbeat keeps it active', async (t) => {
   const chain: FakeChain = {
     walletBalance: 0n,
     depositsAvailable: 0n,
@@ -250,21 +250,21 @@ test('active mode lapses to background without a heartbeat, and a heartbeat keep
   t.after(async () => { watcher.stop(); await cleanup() })
   t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_000_000 })
 
-  watcher.promote()
+  watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
   t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS - 1)
   assert.equal(watcher.status().mode, 'active')
   // A console heartbeat every ~60 s re-arms the window.
   for (let i = 0; i < 10; i++) {
     t.mock.timers.tick(60_000)
-    watcher.promote()
+    watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
   }
   t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS - 1)
   assert.equal(watcher.status().mode, 'active')
   t.mock.timers.tick(1)
   assert.equal(watcher.status().mode, 'background')
 
-  // An explicit demote cancels the pending lapse; promote(null) never lapses.
-  watcher.promote(null)
+  // Without a TTL (desktop, `antseed deposit`) active never lapses.
+  watcher.promote()
   t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS * 3)
   assert.equal(watcher.status().mode, 'active')
 })

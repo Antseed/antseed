@@ -28,13 +28,17 @@ export const BASE_PUBLIC_RPC_URLS: readonly string[] = [
 const USDC_DECIMALS = 6
 
 /**
- * A dollar amount as USDC base units (6 decimals), exactly (no float
- * rounding); null when it is not a positive number with at most 6 decimals.
+ * A dollar amount as USDC base units (6 decimals), computed on the digits (no
+ * float error). Extra decimals round half up to the nearest base unit, as the
+ * desktop's QR code always did; null when it is not a positive number.
  */
 export function usdcAmountToBaseUnits(amount: string): bigint | null {
-  const match = /^(\d*)(?:\.(\d{0,6}))?$/.exec(amount.trim())
+  const match = /^(\d*)(?:\.(\d*))?$/.exec(amount.trim())
   if (!match || (!match[1] && !match[2])) return null
-  const units = BigInt(match[1] || '0') * 10n ** BigInt(USDC_DECIMALS) + BigInt((match[2] ?? '').padEnd(USDC_DECIMALS, '0'))
+  const decimals = match[2] ?? ''
+  const fraction = BigInt(decimals.slice(0, USDC_DECIMALS).padEnd(USDC_DECIMALS, '0'))
+  const roundUp = decimals.length > USDC_DECIMALS && decimals[USDC_DECIMALS]! >= '5' ? 1n : 0n
+  const units = BigInt(match[1] || '0') * 10n ** BigInt(USDC_DECIMALS) + fraction + roundUp
   return units > 0n ? units : null
 }
 

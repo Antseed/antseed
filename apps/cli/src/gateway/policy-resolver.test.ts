@@ -5,7 +5,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { GATEWAY_CONTROL_HEADER, GATEWAY_CONTROL_SECRET_ENV, ROUTING_POLICY_HEADER, decodePolicyHeader, modelServiceId, policyAllowsModel } from '../routing-policy/policy.js'
-import { buyerFetch, loadOrCreateControlSecret } from './buyer-control.js'
+import { buyerFetch, loadOrCreateControlSecret, recordGatewayBuyerPort, runningGatewayBuyerPort } from './buyer-control.js'
 import { OtlpExporter, tracesUrl } from './observability.js'
 import { GATEWAY_ROUTING_SETTING, checkPolicyInput, isEmptyPolicy, policyInputProblem, resolvePolicy } from './policy-resolver.js'
 import { applyPreset, extractEndUser, sniffMultipartModel } from './request-shaping.js'
@@ -110,6 +110,19 @@ test('the control secret is created once with mode 0600 and the env var override
   } finally {
     if (previous === undefined) delete process.env[GATEWAY_CONTROL_SECRET_ENV]
     else process.env[GATEWAY_CONTROL_SECRET_ENV] = previous
+    rmSync(dir, { recursive: true, force: true })
+  }
+})
+
+test('a running gateway records its buyer port for the CLI and clears it on stop', () => {
+  const dir = mkdtempSync(join(tmpdir(), 'antseed-buyer-port-'))
+  try {
+    assert.equal(runningGatewayBuyerPort(dir), null)
+    const clear = recordGatewayBuyerPort(dir, 28377)
+    assert.equal(runningGatewayBuyerPort(dir), 28377)
+    clear()
+    assert.equal(runningGatewayBuyerPort(dir), null)
+  } finally {
     rmSync(dir, { recursive: true, force: true })
   }
 })

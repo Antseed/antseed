@@ -132,15 +132,13 @@ function applyTrust(peer: PeerInfo): void {
 }
 
 /** How long an on-chain trust read of a peer is reused before it is read again. */
-export const ON_CHAIN_STATS_TTL_MS = 10 * 60_000;
+export const ON_CHAIN_STATS_TTL_MS = 120_000;
 /**
  * How long "no agent id" is remembered: short, so a seller that registers
  * shows up with its trust score within a couple of minutes.
  */
 export const ON_CHAIN_STATS_MISS_TTL_MS = 2 * 60_000;
 const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
-/** Concurrent seller-address resolutions (each may be an eth_call) per enrichment pass. */
-const SELLER_RESOLVE_CONCURRENCY = 8;
 
 function sellerContractOf(p: PeerInfo): string | null {
   return p.metadata?.sellerContract?.toLowerCase().replace(/^0x/, '') ?? null;
@@ -1160,29 +1158,25 @@ export class AntseedNode extends EventEmitter {
     }
     const stale: Array<{ peer: PeerInfo; address: string }> = [];
     // Resolving a seller contract's operator is an eth_call per peer (cached
-    // by the resolver); a wildcard lookup must not fan hundreds of them out
-    // at once against a public RPC, so at most a few run concurrently.
-    let nextToResolve = 0;
-    await Promise.all(Array.from({ length: Math.min(SELLER_RESOLVE_CONCURRENCY, toResolve.length) }, async () => {
-      while (nextToResolve < toResolve.length) {
-        const p = toResolve[nextToResolve++]!;
-        try {
-          const address = resolver
-            ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
-            : peerIdToAddress(p.peerId);
-          stale.push({ peer: p, address });
-        } catch {
-          // Unresolvable seller address: leave the previous snapshot in place.
-        }
+    // by the resolver), so they run one at a time.
+    for (const p of toResolve) {
+      try {
+        const address = resolver
+          ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
+          : peerIdToAddress(p.peerId);
+        stale.push({ peer: p, address });
+      } catch {
+        // Unresolvable seller address: leave the previous snapshot in place.
       }
-    }));
+    }
     if (stale.length === 0) {
       this._applyTrust(peers, peersWithCompleteStats);
       return;
     }
     let signals: Map<string, TrustSignals>;
+    let unregistered: Set<string>;
     try {
-      signals = await client.read([...new Set(stale.map((entry) => entry.address))]);
+      ({ signals, unregistered } = await client.readWithMisses([...new Set(stale.map((entry) => entry.address))]));
     } catch (err) {
       debugWarn(`[Node] On-chain trust signal read failed: ${err instanceof Error ? err.message : err}`);
       this._applyTrust(peers, peersWithCompleteStats);
@@ -1192,12 +1186,21 @@ export class AntseedNode extends EventEmitter {
     this._pruneOnChainStatsCache(fetchedAt);
     for (const { peer: p, address } of stale) {
       const read = signals.get(address);
-      // A peer without an agent id (or a failed batch entry) keeps its
-      // previous complete snapshot, or stays unenriched when newly discovered.
-      this._onChainStatsCache.set(p.peerId, { signals: read ?? null, fetchedAt, sellerContract: sellerContractOf(p) });
-      if (!read) continue;
-      applyTrustSignals(p, read, fetchedAt);
-      peersWithCompleteStats.add(p);
+      if (read) {
+        this._onChainStatsCache.set(p.peerId, { signals: read, fetchedAt, sellerContract: sellerContractOf(p) });
+        applyTrustSignals(p, read, fetchedAt);
+        peersWithCompleteStats.add(p);
+      } else if (unregistered.has(address)) {
+        this._onChainStatsCache.set(p.peerId, { signals: null, fetchedAt, sellerContract: sellerContractOf(p) });
+      } else {
+        // The read failed (e.g. a throttled call): nothing is cached, so the
+        // next pass retries it, and a previous snapshot is still shown.
+        const previous = this._onChainStatsCache.get(p.peerId);
+        if (previous?.signals && previous.sellerContract === sellerContractOf(p)) {
+          applyTrustSignals(p, previous.signals, previous.fetchedAt);
+          peersWithCompleteStats.add(p);
+        }
+      }
     }
     this._applyTrust(peers, peersWithCompleteStats);
   }

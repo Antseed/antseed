@@ -24,8 +24,6 @@ import {
 import { daemonDepositsStatus, daemonSetWatchMode } from './daemon.js'
 
 const DAEMON_STATUS_POLL_MS = 1_000
-// The daemon drops `active` after 5 minutes without a re-request.
-const DAEMON_ACTIVE_HEARTBEAT_MS = 60_000
 const BALANCE_CHECK_INTERVAL_MS = 5_000
 const MAX_PEERS_TO_CONNECT = 4
 const PAYMENTS_PORT = 3118
@@ -207,7 +205,6 @@ async function watchViaDaemon(ctx: WatchContext, port: number): Promise<void> {
     process.exit(0)
   }
 
-  let lastActiveAt = Date.now()
   let lastSeq = 0
   const initial = await daemonDepositsStatus(port)
   if (initial?.status?.lastEvent) lastSeq = initial.status.lastEvent.seq
@@ -215,10 +212,6 @@ async function watchViaDaemon(ctx: WatchContext, port: number): Promise<void> {
 
   for (;;) {
     await sleep(DAEMON_STATUS_POLL_MS)
-    if (!demoted && Date.now() - lastActiveAt >= DAEMON_ACTIVE_HEARTBEAT_MS) {
-      lastActiveAt = Date.now()
-      void daemonSetWatchMode(port, 'active').catch(() => {})
-    }
     const current = await daemonDepositsStatus(port)
     if (!current) {
       spinner.text = 'Lost contact with the buyer connection — waiting for it to come back...'
@@ -296,8 +289,7 @@ async function watchStandalone(
     void (node ? node.stop().catch(() => {}) : Promise.resolve()).then(() => process.exit(0))
   })
 
-  // This process owns the watcher and stops it on exit: no heartbeat needed.
-  watcher.promote(null)
+  watcher.promote()
   let lastBalanceCheckAt = 0
   let externalMessage: string | null = null
   while (!credited && !externalMessage) {

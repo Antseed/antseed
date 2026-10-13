@@ -248,6 +248,8 @@ export interface RequestOutcome {
   sellerPeerId?: string | null
   latencyMs?: number | null
   endUser?: string | null
+  /** Served by a free seller (all advertised prices zero): no spend will be reported. */
+  servedFree?: boolean
 }
 
 export interface KeyUsageStats {
@@ -336,9 +338,11 @@ export interface RequestLogRow {
   outputTokens: number
   errorCode: string | null
   errorMessage: string | null
+  /** Served by a free seller: its cost is $0 with no spend to wait for. */
+  servedFree: boolean
   /**
-   * A model request that did not fail but has no spend recorded yet (the
-   * buyer reports it a moment after the response, or never for a free seller).
+   * A model request that did not fail and was not served free, but has no
+   * spend recorded yet (the buyer reports it a moment after the response).
    */
   costPending: boolean
 }
@@ -377,12 +381,8 @@ type KeyRow = {
   last_used_at: number | null
 }
 
-type LimitColumns = {
-  daily_limit_usdc: number | null
-  weekly_limit_usdc: number | null
-  monthly_limit_usdc: number | null
-  total_limit_usdc: number | null
-}
+/** A row's cap columns (`daily_limit_usdc`, …), optionally prefixed (`owner_daily_limit_usdc`, …). */
+type LimitColumns<Prefix extends string = ''> = Record<`${Prefix}${BudgetPeriod}_limit_usdc`, number | null>
 
 type WorkspaceRow = LimitColumns & {
   id: string
@@ -459,12 +459,13 @@ function parseJson<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function rowLimits(row: LimitColumns): BudgetLimits {
+function rowLimits<Prefix extends string = ''>(row: LimitColumns<Prefix>, prefix = '' as Prefix): BudgetLimits {
+  const limit = (period: BudgetPeriod) => row[`${prefix}${period}_limit_usdc` as `${Prefix}${BudgetPeriod}_limit_usdc`]
   return {
-    daily: row.daily_limit_usdc,
-    weekly: row.weekly_limit_usdc,
-    monthly: row.monthly_limit_usdc,
-    total: row.total_limit_usdc,
+    daily: limit('daily'),
+    weekly: limit('weekly'),
+    monthly: limit('monthly'),
+    total: limit('total'),
   }
 }
 
@@ -493,22 +494,6 @@ export class GatewayStore {
     this._db.pragma('foreign_keys = ON')
     for (const path of [file, `${file}-wal`, `${file}-shm`]) restrictMode(path, 0o600)
     this._migrate()
-    this._repairDraftSchema()
-  }
-
-  /**
-   * Databases that ran an earlier draft of the unshipped v3 migration lack
-   * the columns added to it since; add them. Drop once v3 ships.
-   */
-  private _repairDraftSchema(): void {
-    const columns = new Set((this._db.prepare('PRAGMA table_info(gateway_requests)').all() as Array<{ name: string }>).map((column) => column.name))
-    const missing = ['usage_input_tokens', 'usage_cached_input_tokens', 'usage_output_tokens'].filter((column) => !columns.has(column))
-    if (missing.length === 0) return
-    this._db.transaction(() => {
-      // Re-read under the write lock: another process may have added them.
-      const now = new Set((this._db.prepare('PRAGMA table_info(gateway_requests)').all() as Array<{ name: string }>).map((column) => column.name))
-      for (const column of missing) if (!now.has(column)) this._db.exec(`ALTER TABLE gateway_requests ADD COLUMN ${column} INTEGER`)
-    }).immediate()
   }
 
   /**
@@ -1063,8 +1048,8 @@ export class GatewayStore {
   recordRequestOutcome(tag: string, outcome: RequestOutcome): void {
     this._stmt(`
       UPDATE gateway_requests SET seller_peer_id = COALESCE(?, seller_peer_id), latency_ms = COALESCE(?, latency_ms),
-        end_user = COALESCE(?, end_user) WHERE tag = ?
-    `).run(outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.endUser ?? null, tag)
+        end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?) WHERE tag = ?
+    `).run(outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag)
   }
 
   /**
@@ -1191,7 +1176,7 @@ export class GatewayStore {
       WITH page AS (
         SELECT r.tag, r.started_at, r.finished_at, r.key_id, k.label AS key_label, COALESCE(r.workspace_id, k.workspace_id) AS ws_id,
           r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.error_code, r.error_message,
-          r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
+          r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
           ${withBodies ? ', r.request_body, r.response_body' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
         ${whereClause(where)}
@@ -1211,6 +1196,7 @@ export class GatewayStore {
       // Ledger tokens when the spend reported any, else what the response said.
       const ledgerTokens = (row['in_tokens'] as number) + (row['cached_tokens'] as number) + (row['out_tokens'] as number) > 0
       const status = row['status'] as number | null
+      const servedFree = row['served_free'] === 1
       return {
       tag: row['tag'] as string,
       startedAt: row['started_at'] as number,
@@ -1232,7 +1218,8 @@ export class GatewayStore {
       outputTokens: ledgerTokens ? row['out_tokens'] as number : (row['usage_output_tokens'] as number | null) ?? 0,
       errorCode: row['error_code'] as string | null,
       errorMessage: row['error_message'] as string | null,
-      costPending: row['spent'] === null && row['model'] !== null && (status === null || status < 400),
+      servedFree,
+      costPending: row['spent'] === null && !servedFree && row['model'] !== null && (status === null || status < 400),
       ...(withBodies ? { requestBody: row['request_body'] as string | null, responseBody: row['response_body'] as string | null } : {}),
       }
     })
@@ -1266,9 +1253,7 @@ export class GatewayStore {
       FROM ledger_entries l ${whereClause(led.where)} GROUP BY g, s
     `).all(...led.params) as Array<{ g: string | null; s: string | null; spent: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
     const fallback = scopeSql(filter, REQUEST_COLUMNS)
-    fallback.where.push('r.usage_input_tokens IS NOT NULL', `NOT EXISTS (
-      SELECT 1 FROM ledger_entries t WHERE t.request_tag = r.tag AND t.kind = 'spend' AND t.input_tokens + t.cached_input_tokens + t.output_tokens > 0
-    )`)
+    fallback.where.push(REPORTED_TOKENS_ONLY_SQL)
     const responseRows = this._stmt(`
       SELECT ${select(REQUEST_COLUMNS)}, SUM(r.usage_input_tokens) AS input_tokens, COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
@@ -1405,14 +1390,22 @@ export class GatewayStore {
              COALESCE(SUM(output_tokens), 0) AS output_tokens
       FROM ledger_entries WHERE key_id = ? AND created_at >= ?
     `).get(keyId, since) as { spent: number; credited: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
+    // As in the usage report, requests without metered tokens count the response's own.
+    const reported = this._stmt(`
+      SELECT COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
+             COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
+      FROM gateway_requests r
+      WHERE r.key_id = ? AND r.started_at >= ? AND ${REPORTED_TOKENS_ONLY_SQL}
+    `).get(keyId, since) as { input_tokens: number; cached_input_tokens: number; output_tokens: number }
     return {
       requests: requests.requests + rolled.requests,
       failedRequests: requests.failed + rolled.failed,
       spentUsdc: ledger.spent,
       creditedUsdc: ledger.credited,
-      inputTokens: ledger.input_tokens,
-      cachedInputTokens: ledger.cached_input_tokens,
-      outputTokens: ledger.output_tokens,
+      inputTokens: ledger.input_tokens + reported.input_tokens,
+      cachedInputTokens: ledger.cached_input_tokens + reported.cached_input_tokens,
+      outputTokens: ledger.output_tokens + reported.output_tokens,
     }
   }
 
@@ -1687,6 +1680,13 @@ const MAX_ERROR_CODE = 100
 const MAX_ERROR_MESSAGE = 500
 /** A failed request: finished with an error status. One still in flight is not a failure. */
 const FAILED_SQL = '(r.finished_at IS NOT NULL AND (r.status IS NULL OR r.status >= 400))'
+/**
+ * A request whose tokens come only from its response: its spend recorded no
+ * token counts (free sellers record none), so the response's own count is used.
+ */
+const REPORTED_TOKENS_ONLY_SQL = `(r.usage_input_tokens IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM ledger_entries t WHERE t.request_tag = r.tag AND t.kind = 'spend' AND t.input_tokens + t.cached_input_tokens + t.output_tokens > 0
+))`
 
 /** WHERE clauses shared by request-log, rollup and ledger queries. */
 function scopeSql(filter: UsageFilter, columns: ScopeColumns): { where: string[]; params: unknown[] } {
@@ -1747,12 +1747,7 @@ function toKey(row: KeyRow): ApiKeyRecord {
     status: row.status,
     limits: rowLimits(row),
     routingPolicy: parsePolicy(row.routing_policy),
-    ownerLimits: {
-      daily: row.owner_daily_limit_usdc,
-      weekly: row.owner_weekly_limit_usdc,
-      monthly: row.owner_monthly_limit_usdc,
-      total: row.owner_total_limit_usdc,
-    },
+    ownerLimits: rowLimits(row, 'owner_'),
     ownerRoutingPolicy: parsePolicy(row.owner_routing_policy),
     topupEnabled: row.topup_enabled === 1,
     expiresAt: row.expires_at,

@@ -212,8 +212,23 @@ export async function loadBuyerSigningIdentity(dataDir: string, name: string): P
 
 /** Wallet address of any identity, default included (honouring ANTSEED_IDENTITY_HEX); null when unknown or unreadable. */
 export async function buyerIdentityAddress(dataDir: string, name: string): Promise<string | null> {
-  if (name === DEFAULT_BUYER_IDENTITY) return (await loadDefaultBuyerIdentity(dataDir).catch(() => null))?.identity?.wallet.address ?? null
-  return (await loadBuyerIdentity(dataDir, name).catch(() => null))?.wallet.address ?? null
+  return (await loadBuyerSigningIdentity(dataDir, name).catch(() => null))?.wallet.address ?? null
+}
+
+/**
+ * The address of the default wallet stored in a data dir (its identity.key),
+ * never ANTSEED_IDENTITY_HEX: for a data dir that is not the one this
+ * process's buyer runs on, such as a freshly imported bundle. The node's
+ * loader keeps the variable's key for the whole process whatever dir it is
+ * asked about. Null when there is no readable key.
+ */
+export async function storedDefaultIdentityAddress(dataDir: string): Promise<string | null> {
+  try {
+    const hex = await new FileIdentityStore(dataDir).load()
+    return hex?.length === 64 ? identityFromPrivateKeyHex(hex).wallet.address : null
+  } catch {
+    return null
+  }
 }
 
 /** Move an identity aside; its key is kept because the wallet may still hold funds. */

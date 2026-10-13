@@ -164,7 +164,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
       let publicUrl = parsePublicUrl(configuredPublicUrl, provider)
       // The console's origin: the tunnel's hostname unless ANTSEED_GATEWAY_PUBLIC_URL overrides it.
       // A random ngrok URL is only known later; the console then goes by the request's Host.
-      const consolePublicUrl = normalizePublicUrl(process.env['ANTSEED_GATEWAY_PUBLIC_URL']) ?? (publicUrl ? publicUrl.origin : null)
+      const consolePublicUrl = normalizePublicUrl(process.env['ANTSEED_GATEWAY_PUBLIC_URL']) ?? (publicUrl?.origin ?? null)
       const log = (message: string): void => { process.stderr.write(`[tunnel] ${message}\n`) }
 
       const topup = topupConfig()

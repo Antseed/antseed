@@ -85,7 +85,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       x402Enabled: context.x402Enabled,
       trustCloudflareHeaders: options.trustCloudflareHeaders === true,
     }
-    const deps: ConsoleDeps = { ...base, ...(context.listenHost ? { listenHost: context.listenHost } : {}) }
+    const deps: ConsoleDeps = { ...base, listenHost: context.listenHost }
     const auth = createConsoleAuth(base, {
       ...(options.env ? { env: options.env } : {}),
       presentMember: (member, credentials) => memberDto({ ...deps, memberCredentials: () => credentials }, member as MemberRecord),
@@ -108,7 +108,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       listening(port) {
         gatewayPort = port
         auth.setGatewayPort(port)
-        store.setSetting(CONSOLE_LOCATION_SETTING, { publicUrl: options.publicUrl, port, host: context.listenHost ?? '127.0.0.1' } satisfies ConsoleLocation)
+        store.setSetting(CONSOLE_LOCATION_SETTING, { publicUrl: options.publicUrl, port, host: context.listenHost } satisfies ConsoleLocation)
       },
       setupLink() {
         return auth.authConfig().setupRequired ? auth.createSetupLink() : null

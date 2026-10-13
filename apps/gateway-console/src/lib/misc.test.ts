@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChainInfo, Peer, UsageReport } from '../api/types'
 import { contractAddress, explorerTxUrl, isSetAddress, sameAddress, ZERO_ADDRESS } from './chain'
 import { headersToText, textToHeaders } from './headers'
-import { filterPeers, inputPrice, isFreePeer } from './peers'
+import { filterPeers, inputPrice, isFreePeer, priceRange } from './peers'
 import { isValidSlug, parseParams, slugify } from './presets'
 import { parseLocation } from './router'
 import { gatewayBaseUrl, keySnippets } from './snippets'
@@ -63,6 +63,12 @@ describe('peers', () => {
     expect(inputPrice(peers[0]!)).toBe(1)
     expect(inputPrice(peers[0]!, 'm1')).toBe(2)
     expect(isFreePeer(peers[1]!)).toBe(true)
+  })
+  it('spans a seller\'s prices across its models', () => {
+    const mixed = peer('0xfa1e03', { services: [svc('m1', 0), svc('m2', 3)] })
+    expect(priceRange(mixed, 'inputUsdPerMillion')).toEqual({ min: 0, max: 3 })
+    expect(priceRange(mixed, 'outputUsdPerMillion', 'm1')).toEqual({ min: 0, max: 0 })
+    expect(priceRange(peer('0xfa1e04', {}), 'inputUsdPerMillion')).toBeNull()
   })
   it('filters', () => {
     const base = { search: '', model: '', tee: false, verified: false, free: false }

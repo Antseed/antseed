@@ -36,14 +36,19 @@ export interface LimitBreach {
   level?: BudgetLevel
 }
 
-export const NO_BUDGET_LIMITS: BudgetLimits = Object.freeze({ daily: null, weekly: null, monthly: null, total: null }) as BudgetLimits
+export const NO_BUDGET_LIMITS: Readonly<BudgetLimits> = Object.freeze({ daily: null, weekly: null, monthly: null, total: null })
 
 export function fullLimits(limits: SpendLimits | BudgetLimits): BudgetLimits {
   return { daily: limits.daily, weekly: limits.weekly ?? null, monthly: limits.monthly, total: limits.total }
 }
 
+/** The periods that have a cap. */
+export function cappedPeriods(limits: SpendLimits | BudgetLimits): BudgetPeriod[] {
+  return BUDGET_PERIODS.filter((period) => (limits[period] ?? null) !== null)
+}
+
 export function hasSpendLimits(limits: SpendLimits | BudgetLimits): boolean {
-  return BUDGET_PERIODS.some((period) => (limits[period] ?? null) !== null)
+  return cappedPeriods(limits).length > 0
 }
 
 /** Periods are calendar-aligned in UTC so every operator and key holder sees the same boundary. */

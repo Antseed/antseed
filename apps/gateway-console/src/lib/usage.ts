@@ -196,13 +196,17 @@ export function columnRequests(columns: Array<{ groups: Array<Pick<UsageTotals, 
 export const COST_PENDING_MS = 10 * 60 * 1000
 
 /**
- * How a request's cost reads: its spend; `pending` while a model request
- * waits for the buyer to report spend; `not recorded` once it waited
- * `COST_PENDING_MS` (a free seller, or spend the buyer lost); null when
- * there is nothing to show (failed requests).
+ * How a request's cost reads: its spend; `free` when a free seller served
+ * it (no spend is ever reported); `pending` while a model request waits for
+ * the buyer to report spend; `not recorded` once it waited `COST_PENDING_MS`
+ * (spend the buyer lost); null when there is nothing to show (failed requests).
  */
-export function costStatus(entry: Pick<RequestLogEntry, 'spent' | 'costPending' | 'startedAt' | 'finishedAt'>, now: number): 'spent' | 'pending' | 'not-recorded' | null {
+export function costStatus(
+  entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt'>,
+  now: number,
+): 'spent' | 'free' | 'pending' | 'not-recorded' | null {
   if (entry.spent !== null) return 'spent'
+  if (entry.servedFree) return 'free'
   if (!entry.costPending) return null
   return now - (entry.finishedAt ?? entry.startedAt) < COST_PENDING_MS ? 'pending' : 'not-recorded'
 }

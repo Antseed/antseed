@@ -4,7 +4,7 @@ import { resolveBaseRpcUrlOverride } from '../cli/payment-utils.js'
 import { sharedChainProvider } from '../proxy/chain-rpc.js'
 import { loadConfig } from '../config/loader.js'
 import { GatewayAccounting } from './accounting.js'
-import { loadOrCreateControlSecret } from './buyer-control.js'
+import { loadOrCreateControlSecret, recordGatewayBuyerPort } from './buyer-control.js'
 import { BuyerPolicyProbe } from './buyer-policy-probe.js'
 import { parseBaseUnits, parseUsdToUsdc } from './money.js'
 import { GatewayServer, type GatewayServerOptions, type GatewayTopupOptions } from './server.js'
@@ -67,8 +67,8 @@ export interface GatewayConsoleContext {
   controlSecret: string
   spendFeedState: () => string
   x402Enabled: boolean
-  /** The address the gateway listens on (`--host`), for judging who can reach it. */
-  listenHost?: string
+  /** The address the gateway listens on (`--host`, else loopback), for judging who can reach it. */
+  listenHost: string
 }
 
 export interface GatewayRuntime {
@@ -171,13 +171,14 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
       maxUsdc: parseUsdToUsdc(options.topup.maxUsd ?? DEFAULT_TOPUP_MAX_USD),
     }
     : null
+  const listenHost = options.listenHost ?? '127.0.0.1'
   const consoleHandler = options.createConsole?.({
     store,
     buyerPort,
     controlSecret,
     spendFeedState: () => spendFeed.state,
     x402Enabled: Boolean(topup),
-    listenHost: options.listenHost ?? '127.0.0.1',
+    listenHost,
   }) ?? null
   const server = new GatewayServer({
     console: consoleHandler,
@@ -191,7 +192,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     spendFeedState: () => spendFeed.state,
     refreshSpendFeed: () => spendFeed.pollOnce(),
     listenPort: options.listenPort,
-    listenHost: options.listenHost,
+    listenHost,
     onLog: options.onLog,
   })
 
@@ -204,6 +205,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     store.close()
     throw error
   }
+  const clearBuyerPortRecord = recordGatewayBuyerPort(options.dataDir, buyerPort)
   spendFeed.start()
   await policyProbe.start()
   consoleHandler?.listening?.(port)
@@ -214,6 +216,7 @@ export async function startGatewayRuntime(options: GatewayRuntimeOptions): Promi
     console: consoleHandler,
     stop: async () => {
       policyProbe.stop()
+      clearBuyerPortRecord()
       await server.stop()
       await spendFeed.stop()
       accounting.dispose()

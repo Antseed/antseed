@@ -89,6 +89,8 @@ export interface PolicyPeerFacts {
   peerId: string
   /** Buyer trust score, 0–100 (null when unscored). */
   trustScore: number | null
+  /** Why `trustScore` is below the seller's own score (a ranking penalty), named in trust exclusions. */
+  trustPenalty?: string | null
   /** Reputation used by the buyer's `minPeerReputation`, 0–100 (null when unknown). */
   reputation: number | null
   inputUsdPerMillion: number | null
@@ -102,9 +104,15 @@ export interface PolicyPeerFacts {
   teeCapable: boolean
 }
 
+/** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
 function formatUsd(value: number): string {
-  const rounded = Math.round(value * 10_000) / 10_000
-  return `$${rounded}`
+  if (value > 0 && value < 0.01) return `$${value.toLocaleString('en-US', { maximumSignificantDigits: 2 })}`
+  return `$${Math.round(value * 10_000) / 10_000}`
+}
+
+/** "trust 40", or "trust 40 (halved from 80: …)" when a penalty lowered it. */
+function trustLabel(trust: number, penalty: string | null | undefined): string {
+  return penalty ? `trust ${Math.round(trust)} (${penalty})` : `trust ${Math.round(trust)}`
 }
 
 function idIn(list: string[] | undefined, peerId: string): boolean {
@@ -120,7 +128,7 @@ export function policyExclusionReasons(policy: RoutingPolicy, facts: PolicyPeerF
   }
   if (policy.minTrustScore !== undefined && policy.minTrustScore > 0) {
     if (facts.trustScore === null) reasons.push(`trust unknown, minimum ${policy.minTrustScore}`)
-    else if (facts.trustScore < policy.minTrustScore) reasons.push(`trust ${Math.round(facts.trustScore)} below ${policy.minTrustScore}`)
+    else if (facts.trustScore < policy.minTrustScore) reasons.push(`${trustLabel(facts.trustScore, facts.trustPenalty)} below ${policy.minTrustScore}`)
   }
   if (policy.minReputation !== undefined && policy.minReputation > 0) {
     if (facts.reputation === null) reasons.push(`reputation unknown, minimum ${policy.minReputation}`)
@@ -164,13 +172,14 @@ export function preferenceExclusionReasons(
   prefs: ModelRoutingPreferences,
   peerId: string,
   effectiveTrust: number | null,
+  trustPenalty: string | null = null,
 ): string[] {
   const reasons: string[] = []
   if (idIn(prefs.blockedPeerIds, peerId)) reasons.push('blocked by buyer config')
   else if (prefs.allowedPeerIds.length > 0 && !idIn(prefs.allowedPeerIds, peerId)) reasons.push('not in buyer allow list')
   if (prefs.minTrustScore > 0) {
     if (effectiveTrust === null) reasons.push(`trust unknown, buyer minimum ${prefs.minTrustScore}`)
-    else if (effectiveTrust < prefs.minTrustScore) reasons.push(`trust ${Math.round(effectiveTrust)} below buyer minimum ${prefs.minTrustScore}`)
+    else if (effectiveTrust < prefs.minTrustScore) reasons.push(`${trustLabel(effectiveTrust, trustPenalty)} below buyer minimum ${prefs.minTrustScore}`)
   }
   return reasons
 }

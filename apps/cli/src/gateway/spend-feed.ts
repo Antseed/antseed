@@ -119,9 +119,9 @@ export class SpendFeedPoller {
   }
 
   private _setState(state: SpendFeedState): void {
-    if (this._state !== state) {
-      this._options.onLog?.(state === 'unauthorized' ? `spend feed: unauthorized (${SPEND_FEED_UNAUTHORIZED_HINT})` : `spend feed: ${state}`)
-    }
+    if (this._state === state) return
     this._state = state
+    const hint = state === 'unauthorized' ? ` (${SPEND_FEED_UNAUTHORIZED_HINT})` : ''
+    this._options.onLog?.(`spend feed: ${state}${hint}`)
   }
 }

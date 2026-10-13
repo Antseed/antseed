@@ -43,8 +43,9 @@ export interface DepositWatchEvent {
 
 /**
  * active — a deposit flow is on screen (desktop view, gateway console or
- *   `antseed deposit`). Callers re-request it as a heartbeat; without one for
- *   `DEPOSIT_WATCH_ACTIVE_TTL_MS` it falls back to background on its own.
+ *   `antseed deposit`). The gateway console re-requests it as a heartbeat and
+ *   without one for `DEPOSIT_WATCH_ACTIVE_TTL_MS` it falls back to background
+ *   on its own; other callers keep it until they demote it.
  * background — the flow closed; card/Fun deliveries can land minutes later,
  *   so keep a slow poll until the linger window passes with an empty wallet.
  * idle — the daemon's resting cadence (auto-sweep on): watch forever, cheaply.
@@ -112,19 +113,17 @@ export interface DepositWatchScheduler {
   schedule(watcher: DepositWatcher, intervalMs: number | null, options?: { pollNow?: boolean }): void
 }
 
-// Every tick is a chain read; the shared loop batches all wallets due in a
-// tick into one Multicall3 call, and these cadences keep a public RPC happy.
-export const DEPOSIT_WATCH_ACTIVE_INTERVAL_MS = 6_000
-export const DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS = 30_000
-export const DEPOSIT_WATCH_IDLE_INTERVAL_MS = 60_000
-/** Active mode lapses to background unless promoted again within this window. */
+export const DEPOSIT_WATCH_ACTIVE_INTERVAL_MS = 2_000
+export const DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS = 15_000
+export const DEPOSIT_WATCH_IDLE_INTERVAL_MS = 30_000
+/** A gateway console's active watch lapses to background unless promoted again within this window. */
 export const DEPOSIT_WATCH_ACTIVE_TTL_MS = 5 * 60_000
 // How long the background watch keeps polling an empty wallet before falling
 // back to idle (or stopping). Any activity re-arms it.
 const DEPOSIT_WATCH_LINGER_MS = 30 * 60_000
 const SWEEP_AUTH_VALIDITY_SECS = 3_600
 const SWEEP_CONFIRM_TIMEOUT_MS = 120_000
-const SWEEP_POLL_INTERVAL_MS = 2_000
+const SWEEP_POLL_INTERVAL_MS = 1_000
 // After a failed/incomplete sweep the funds stay in the wallet; retry on the
 // watcher tick once this cooldown passes instead of hammering the network.
 const SWEEP_RETRY_COOLDOWN_MS = 60_000
@@ -179,13 +178,13 @@ export class DepositWatcher {
 
   /**
    * A deposit flow is on screen: poll fast, sweep existing funds promptly.
-   * Lapses to background after `ttlMs` unless promoted again (a page that
-   * closed without demoting must not keep the fast poll forever); null keeps
-   * it active until demoted, for an in-process flow that owns the watcher.
+   * With `ttlMs` (the gateway console) it lapses to background unless
+   * promoted again, so a page that closed without demoting does not keep the
+   * fast poll forever; without it, it stays active until demoted.
    */
-  promote(ttlMs: number | null = DEPOSIT_WATCH_ACTIVE_TTL_MS): void {
+  promote(ttlMs: number | null = null): void {
     if (this._stopped) return
-    this._setMode('active', DEPOSIT_WATCH_ACTIVE_INTERVAL_MS)
+    this._setMode('active', DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, { pollNow: true })
     if (ttlMs !== null) {
       this._activeExpiry = setTimeout(() => {
         this._activeExpiry = null
@@ -193,8 +192,6 @@ export class DepositWatcher {
       }, ttlMs)
       this._activeExpiry.unref?.()
     }
-    if (this._deps.scheduler) this._deps.scheduler.schedule(this, DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, { pollNow: true })
-    else void this._poll()
   }
 
   /**
@@ -210,16 +207,12 @@ export class DepositWatcher {
 
   /** Start the daemon's resting watch (auto-sweep). */
   startIdle(): void {
-    this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS)
-    if (this._deps.scheduler) this._deps.scheduler.schedule(this, this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS, { pollNow: true })
-    else void this._poll()
+    this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS, { pollNow: true })
   }
 
   stop(): void {
     this._stopped = true
-    this._clearTimer()
-    this._mode = 'off'
-    this._deps.scheduler?.schedule(this, null)
+    this._rest()
   }
 
   /** Stop polling until promoted again (auto-sweep off: nothing to watch once the flow is over). */
@@ -229,12 +222,13 @@ export class DepositWatcher {
     this._deps.scheduler?.schedule(this, null)
   }
 
-  private _setMode(mode: Exclude<DepositWatchMode, 'off'>, intervalMs: number): void {
+  /** Poll every `intervalMs`; `pollNow` also polls right away (debounced by a shared loop). */
+  private _setMode(mode: Exclude<DepositWatchMode, 'off'>, intervalMs: number, options: { pollNow?: boolean } = {}): void {
     if (this._stopped) return
     this._clearTimer()
     this._mode = mode
     if (this._deps.scheduler) {
-      this._deps.scheduler.schedule(this, intervalMs)
+      this._deps.scheduler.schedule(this, intervalMs, options)
       return
     }
     this._timer = setInterval(() => { void this._poll() }, intervalMs)
@@ -242,6 +236,7 @@ export class DepositWatcher {
     // overlapping polls harmless, so unref keeps the timer from holding the
     // process open in one-shot commands.
     this._timer.unref?.()
+    if (options.pollNow) void this._poll()
   }
 
   private _clearTimer(): void {
@@ -484,15 +479,12 @@ export class DepositWatcher {
         }
       }
 
-      // Issued together so a batching provider sends them as one request.
-      const [authorizationUsed, current] = await Promise.all([
-        relayClient.isAuthorizationUsed(this._deps.usdcAddress, address, authNonce).catch(() => false),
-        depositsClient.getBuyerBalance(address).catch(() => null),
-      ])
+      const authorizationUsed = await relayClient.isAuthorizationUsed(this._deps.usdcAddress, address, authNonce).catch(() => false)
       if (authorizationUsed) {
         return { credited: expectedNet, ...(txHash ? { txHash } : {}) }
       }
 
+      const current = await depositsClient.getBuyerBalance(address).catch(() => null)
       if (current && current.available + current.reserved >= initialTotal + expectedNet) {
         return { credited: current.available + current.reserved - initialTotal, ...(txHash ? { txHash } : {}) }
       }
