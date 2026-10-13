@@ -1,216 +1,37 @@
-import {useEffect, useRef, useState, type ReactNode, type JSX} from 'react';
+import type {JSX} from 'react';
 import Head from '@docusaurus/Head';
-import Link from '@docusaurus/Link';
 import Layout from '@theme/Layout';
 import styles from './index.module.css';
-import {PickModelArt} from '../components/StepArt';
-import {PricingBlock} from '../components/PricingBlock';
-import {StepsBlock} from '../components/StepsBlock';
-import {WhoItsFor} from '../components/WhoItsFor';
-import {PrivacyPanel} from '../components/PrivacyPanel';
-import {Faq, Reveal, SectionHeader, ArrowRight} from '../components/ui';
-import {HeroDemo} from '../components/HeroDemo';
-import {HeroDotCanvas, HeroStatsRow, HeroUseCta, HeroUseSwitch, HeroCliVisual, type HeroUse} from '../components/HomeHero';
-import {HeroAgentMarket} from '../components/HeroAgentMarket';
-import {LogoMarquee} from '../components/LogoMarquee';
-import {OwnedByNoOne} from '../components/NetworkPanel';
+import {Faq, Reveal} from '../components/ui';
+import {LaunchHero} from '../components/home/LaunchHero';
+import {ProductsShowcase} from '../components/home/ProductsShowcase';
+import {WhatYouGet} from '../components/home/WhatYouGet';
+import {NetworkSection} from '../components/home/NetworkSection';
 import {SellSection} from '../components/SellSection';
 import {HOME_FAQ} from '../components/homeFaq';
-import {FinalCtaBand} from '../components/FinalCtaBand';
 import {faqJsonLd} from '../lib/faqJsonLd';
 
-/* Split hero: copy on the left and the AI VPN demo (compact scene) on the
-   right on wide viewports, collapsing to stacked under 997px. */
-function Hero() {
-  const [use, setUse] = useState<HeroUse>('app');
-  const [visualHeight, setVisualHeight] = useState(0);
-  const demoRef = useRef<HTMLDivElement>(null);
-  const frameRef = useRef(0);
-  const shutdownRef = useRef(0);
-
-  useEffect(() => {
-    const host = demoRef.current;
-    if (!host) return;
-    // Reserve the tallest view, including the agent's command drawer, for all
-    // three tabs. Changing tabs must never move the headline or stats.
-    const panels = Array.from(host.querySelectorAll<HTMLElement>('[data-view] > div'));
-    const update = () => setVisualHeight(Math.ceil(Math.max(
-      host.clientWidth * 800 / 660,
-      ...panels.map(panel => {
-        const drawer = panel.querySelector<HTMLElement>('[data-agent-install]');
-        return Math.max(panel.scrollHeight, drawer ? drawer.offsetTop + drawer.offsetHeight : 0) + 8;
-      }),
-    )));
-    const observer = new ResizeObserver(update);
-    panels.forEach(panel => observer.observe(panel));
-    observer.observe(host);
-    update();
-    return () => observer.disconnect();
-  }, []);
-
-  const visuals: {view: HeroUse; content: ReactNode}[] = [
-    {view: 'app', content: <HeroDemo frameRef={frameRef} shutdownRef={shutdownRef} compact />},
-    {view: 'cli', content: <HeroCliVisual active={use === 'cli'} />},
-    {view: 'agent', content: <HeroAgentMarket active={use === 'agent'} />},
-  ];
-
-  return (
-    <header className={`${styles.hero} ${styles.heroSplit}`}>
-      <HeroDotCanvas frameRef={frameRef} shutdownRef={shutdownRef} originRef={demoRef} compact />
-      <div className={`${styles.heroInner} ${styles.heroSplitInner}`}>
-        <div className={styles.heroCopy}>
-          <HeroUseSwitch use={use} setUse={setUse} />
-          <h1 className={styles.heroTitle}>
-            Run your agents
-            <br className={styles.heroTitleBreak} />
-            {' '}on your terms
-          </h1>
-          <p className={styles.heroSubStatic}>
-            Save on every AI model. No usage limits, no middleman, always&nbsp;anonymous.
-          </p>
-          <HeroUseCta use={use} setUse={setUse} showSwitch={false} />
-        </div>
-        <div className={`${styles.demoFrame} ${styles.demoFrameSplit} ${styles.heroVisualStack}`} ref={demoRef}
-          style={{minHeight: visualHeight || undefined}} id="hero-use-visual" role="tabpanel" aria-labelledby={`hero-tab-${use}`}>
-          {visuals.map(({view, content}) => {
-            const active = use === view;
-            return (
-              <div key={view} className={`${styles.heroVisualLayer} ${active ? styles.heroVisualActive : ''}`} data-view={view} inert={!active} aria-hidden={!active}>
-                {content}
-              </div>
-            );
-          })}
-        </div>
-        <HeroStatsRow />
-      </div>
-    </header>
-  );
-}
-
 /* ============================================================
-   PRICING — the same models, a fraction of the price
+   FAQ — fair questions. The gateway question leads on the homepage
+   only; HOME_FAQ itself is shared with /network.
    ============================================================ */
-function PricingSection() {
-  return (
-    <PricingBlock
-      title="The top AI models,"
-      accent="at a fraction of the cost."
-      lead="It's an open market, so competition between providers pushes prices down."
-    />
-  );
-}
-
-/* ============================================================
-   PRIVATE BY DESIGN — the Anonymous / Private cards, shared with /privacy.
-   ============================================================ */
-function PrivateByDesign() {
-  return <PrivacyPanel title="Private by design." />;
-}
-
-/* ============================================================
-   PILLARS — the five things Antseed is, one line each. Replaces the
-   localhost terminal on the homepage; the audience pages carry the
-   long versions.
-   ============================================================ */
-const PILLARS: {title: string; body: ReactNode}[] = [
+const FAQ_ITEMS = [
   {
-    title: 'Every model, lower prices',
-    body: 'Free and frontier models, routed to the cheapest verified provider.',
+    q: 'What is the difference between the gateway and the AI VPN?',
+    a: 'Use the gateway to manage shared access: run your own endpoint on a server and give each agent, app, or teammate their own API key, with budgets and the models and providers you choose. Use the AI VPN to connect the tools on your computer, without deploying a server. Both reach the same market. <a href="/docs/gateway/">Read the gateway docs →</a>',
   },
-  {
-    title: 'Nothing changes in your tools',
-    body: (
-      <>
-        One local endpoint, OpenAI and Anthropic compatible.{' '}
-        <Link to="/docs/api">Read the API guide<ArrowRight size={14} /></Link>
-      </>
-    ),
-  },
-  {
-    title: 'No account',
-    body: 'Nobody knows who you are. A TEE provider cannot even read your prompt.',
-  },
-  {
-    title: 'No usage limits',
-    body: 'Pay per request. Never a cap, never a window.',
-  },
-  {
-    title: 'Owned by no one',
-    body: 'Peer to peer, open source, settled in USDC on Base.',
-  },
+  ...HOME_FAQ,
 ];
 
-function PillarsSection() {
-  return (
-    <section className={`${styles.section} ${styles.sectionTinted}`}>
-      <div className={styles.sectionInner}>
-        <Reveal>
-          <SectionHeader title="What you get." />
-        </Reveal>
-        <div className={styles.pillars}>
-          {PILLARS.map((p, i) => (
-            <Reveal key={p.title} className={styles.pillar} delay={i * 60}>
-              <h3>{p.title}</h3>
-              <p>{p.body}</p>
-            </Reveal>
-          ))}
-        </div>
-      </div>
-    </section>
-  );
-}
-
-/* ============================================================
-   3 STEPS
-   ============================================================ */
-const STEPS = [
-  {
-    num: '1',
-    title: 'Download the AI VPN',
-    body: 'Run it on Mac, Windows, or Linux. No account needed. Prefer a terminal? Install the CLI instead.',
-    illo: <img src="/img/home/illo-easy-setup.svg" alt="" aria-hidden="true" />,
-  },
-  {
-    num: '2',
-    title: 'Connect your favorite app',
-    body: 'Point Claude Code, Codex, Hermes, OpenClaw or any tool you already use at one local address.',
-    illo: <img src="/img/home/illo-tools-unchanged.svg" alt="" aria-hidden="true" />,
-  },
-  {
-    num: '3',
-    title: 'Pick your model',
-    body: 'Choose free or frontier models, from more than 700 models. Route to the cheapest verified provider or pin the one you want.',
-    illo: <PickModelArt />,
-  },
-];
-
-function StepsSection() {
-  return (
-    <StepsBlock
-      title="Think of it as a VPN for AI."
-      lead={
-        <>
-          You install it, point your tools at it, and from then on you&apos;ve got full access to the
-          open market.
-        </>
-      }
-      steps={STEPS}
-    />
-  );
-}
-
-/* ============================================================
-   FAQ — fair questions
-   ============================================================ */
 function FAQSection() {
   return (
     <section className={`${styles.section} ${styles.sectionTinted}`}>
       <div className={styles.sectionInner}>
         <Reveal>
-          <h2 className={styles.faqTitle}>Frequently asked questions</h2>
+          <h2 className={`${styles.faqTitle} ${styles.faqTitleStrong}`}>Frequently asked questions</h2>
         </Reveal>
         <Reveal delay={90}>
-          <Faq items={HOME_FAQ} />
+          <Faq items={FAQ_ITEMS} />
         </Reveal>
       </div>
     </section>
@@ -220,7 +41,7 @@ function FAQSection() {
 /* ============================================================
    PAGE
    ============================================================ */
-const FAQ_LD = faqJsonLd(HOME_FAQ);
+const FAQ_LD = faqJsonLd(FAQ_ITEMS);
 
 // Standalone Organization entity. The SoftwareApplication block in
 // docusaurus.config.ts references the org as `creator`; this declares it in
@@ -242,7 +63,7 @@ const ORG_LD = {
 
 const HOME_TITLE = 'Antseed | The Open Market for AI Inference';
 const HOME_DESCRIPTION =
-  'Run your agents on your terms. Save on every AI model. No usage limits, no middleman, always anonymous.';
+  'Give your agents, apps, and team access to 700+ AI models at lower prices, with built-in privacy and full control.';
 
 export default function Home(): JSX.Element {
   return (
@@ -266,19 +87,12 @@ export default function Home(): JSX.Element {
         <script type="application/ld+json">{JSON.stringify(FAQ_LD)}</script>
       </Head>
 
-      <Hero />
-      <LogoMarquee />
-      <PricingSection />
-      <StepsSection />
-      <PillarsSection />
-      <WhoItsFor />
-      <OwnedByNoOne />
-      <PrivateByDesign />
-      <div className={styles.stepsSellWrap}>
-        <SellSection />
-      </div>
+      <LaunchHero />
+      <ProductsShowcase />
+      <WhatYouGet />
+      <SellSection />
+      <NetworkSection />
       <FAQSection />
-      <FinalCtaBand />
     </Layout>
   );
 }

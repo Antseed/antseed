@@ -15,14 +15,14 @@ export function SellSection() {
   const stats = useNetworkStats();
   return (
     <section className={styles.sellSection}>
-      <img className={styles.sellAnt} src="/img/home/ant-v-dots.png" alt="" aria-hidden="true" />
+      <img className={styles.sellAnt} src="/img/home/ant-v-dots.png" alt="" aria-hidden="true" loading="lazy" decoding="async" />
       <div className={styles.sectionInner}>
         <div className={styles.sellCardWrap}>
-          <img className={styles.sellAntMobile} src="/img/home/ant-v-dots.png" alt="" aria-hidden="true" />
+          <img className={styles.sellAntMobile} src="/img/home/ant-v-dots.png" alt="" aria-hidden="true" loading="lazy" decoding="async" />
           <Reveal className={styles.sellCard}>
             <div className={styles.sellGrid}>
               <div className={styles.sellCopy}>
-                <h2 className={styles.sellTitle}>Anyone can<br />become a provider.</h2>
+                <h2 className={styles.sellTitle}>Anyone can<br />become a provider</h2>
                 <p className={styles.sellLead}>
                   List what you have, set your price, and get on the market in minutes. When a request
                   comes your way, you serve it and the payment goes to your wallet.
