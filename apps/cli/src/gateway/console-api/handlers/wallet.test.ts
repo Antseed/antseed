@@ -171,10 +171,11 @@ test('card link signature recovers to the workspace wallet', async () => {
 test('card amount bounds', () => {
   assert.equal(cardAmountString('10.50'), '10.5')
   assert.equal(cardAmountString(1), '1')
-  assert.equal(cardAmountString(10_000), '10000')
+  assert.equal(cardAmountString(200), '200')
+  assert.equal(cardAmountString('199.99'), '199.99')
   assert.equal(cardAmountString('12.34'), '12.34')
   assert.equal(cardAmountString('12.340'), '12.34')
-  for (const bad of [0, -5, 0.5, 10_001, 'abc', '', null, undefined, Number.NaN, Number.POSITIVE_INFINITY, 10.1234567, '10.125']) {
+  for (const bad of [0, -5, 0.5, 200.01, 201, 10_000, 'abc', '', null, undefined, Number.NaN, Number.POSITIVE_INFINITY, 10.1234567, '10.125']) {
     assert.throws(() => cardAmountString(bad), Error, String(bad))
   }
 })

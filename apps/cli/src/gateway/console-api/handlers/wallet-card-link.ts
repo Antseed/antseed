@@ -10,9 +10,9 @@ export type CardProvider = AntseedPayIntegration
 
 export const CARD_PROVIDERS: readonly CardProvider[] = ANTSEED_PAY_INTEGRATIONS
 export { DEFAULT_ANTSEED_PAY_URL }
-/** Deposits take at least 1 USDC on a first deposit; the upper bound only catches typos. */
+/** Deposits take at least 1 USDC on a first deposit; the pay page refuses links above $200. */
 const CARD_MIN_USD = 1
-const CARD_MAX_USD = 10_000
+const CARD_MAX_USD = 200
 /** The pay page's link amount format: whole dollars or up to 2 decimals ("20", "12.5"). */
 const CARD_AMOUNT_RE = /^\d+(\.\d{1,2})?$/
 

@@ -24,6 +24,8 @@ const WalletFunding = lazy(() => import('./WalletFunding'))
 
 /** The desktop's presets: small first top-ups, any amount in the field. */
 const AMOUNT_PRESETS = ['5', '10', '25']
+/** The pay page refuses card links above this amount. */
+const CARD_MAX_USD = 200
 /** Hosted provider for USDC from other chains; it credits the buyer address it is given. */
 const MERIDIAN_URL = 'https://antseed.mrdn.finance/'
 
@@ -138,6 +140,7 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   /** Signs the funding link on the gateway and opens the pay page in the checkout dialog. */
   async function openCard(provider: CardProvider) {
     if (!amountOk) { setNotice('Enter an amount of at least $1.'); return }
+    if (value > CARD_MAX_USD) { setNotice(`Card deposits are limited to $${CARD_MAX_USD}. Send more as USDC instead.`); return }
     setOpening(provider)
     setNotice(null)
     try {
