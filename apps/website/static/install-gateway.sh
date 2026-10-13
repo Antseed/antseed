@@ -683,7 +683,7 @@ main() {
 
   if [[ "$MODE" == caddy ]]; then install_caddy; fi
   verify_gateway
-  console_link
+  quiet_x console_link
 
   case "$MODE" in
     caddy) BASE_URL="https://$DOMAIN/v1" ;;
@@ -702,10 +702,14 @@ main() {
   fi
   if [[ -n "$WALLET" ]]; then note "Wallet:    $WALLET  (send USDC on Base to fund paid models)"; fi
   if [[ -n "$CONSOLE_URL" ]]; then note "Console:   $CONSOLE_URL"; fi
-  if [[ -n "$SETUP_LINK" ]]; then
+  # The link claims the console, so keep it out of cloud-init and CI logs.
+  if [[ -n "$SETUP_LINK" && -t 1 ]]; then
     note "Setup:     $SETUP_LINK"
     note "           (open it to claim the console as its owner; single use, valid 1 h;"
     note "            a new one: antseed gateway console-link)"
+  elif [[ -n "$SETUP_LINK" ]]; then
+    note "Setup:     run on this server: antseed gateway console-link"
+    note "           (prints the single-use link that claims the console as its owner)"
   elif [[ -n "$CONSOLE_URL" ]]; then
     note "           (already claimed; invite people: antseed gateway member invite --label <name>)"
   fi
