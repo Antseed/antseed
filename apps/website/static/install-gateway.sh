@@ -441,6 +441,8 @@ write_env_file() {
   [[ -n "$OIDC_ALLOWED_DOMAINS" ]] && set_env ANTSEED_OIDC_ALLOWED_DOMAINS "$OIDC_ALLOWED_DOMAINS"
   [[ -n "$CF_ACCESS_TEAM_DOMAIN" ]] && set_env ANTSEED_CF_ACCESS_TEAM_DOMAIN "$CF_ACCESS_TEAM_DOMAIN"
   [[ -n "$CF_ACCESS_AUD" ]] && set_env ANTSEED_CF_ACCESS_AUD "$CF_ACCESS_AUD"
+  # Access means requests arrive through Cloudflare: its CF-Connecting-IP is the client address.
+  [[ -n "$CF_ACCESS_TEAM_DOMAIN" ]] && set_env ANTSEED_TRUST_CLOUDFLARE_HEADERS 1
   return 0
 }
 

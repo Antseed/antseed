@@ -77,7 +77,16 @@ export function registerGatewayCommands(program: Command): void {
           buyerPort,
           ...(topup ? { topup } : {}),
           ...(options.console
-            ? { createConsole: gatewayConsole({ dataDir: globalOptions.dataDir, configPath: globalOptions.config, publicUrl, log }) }
+            ? {
+                createConsole: gatewayConsole({
+                  dataDir: globalOptions.dataDir,
+                  configPath: globalOptions.config,
+                  publicUrl,
+                  log,
+                  // Only when every request reaches the gateway through Cloudflare, which sets CF-Connecting-IP.
+                  trustCloudflareHeaders: process.env['ANTSEED_TRUST_CLOUDFLARE_HEADERS'] === '1',
+                }),
+              }
             : {}),
           onLog: log,
         })
