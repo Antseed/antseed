@@ -82,6 +82,8 @@ export interface ConsoleAuthService extends ConsoleAuth {
   deleteCredential(memberId: string, credentialId: string, keepSessionId?: string | null): boolean
   /** A short-lived ticket for registering a sign-in method for `memberId` (recovery links). */
   createEnrollment(memberId: string): string
+  /** Refuses (403 `reauth_required`) unless the member's sign-in is recent; for sensitive changes to their own account. */
+  requireFreshSignIn(request: ConsoleRequest, principal: Principal | null): Promise<void>
 }
 
 type LoginError = 'not_invited' | 'not_linked' | 'disabled' | 'invalid_enrollment'
@@ -469,9 +471,9 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   /**
-   * Adding a sign-in method from an existing session needs a recent sign-in
-   * (FRESH_SIGN_IN_MS), so a stolen session cookie can't plant its own
-   * credential. Sessions confirm through `/auth/reauth/*`; Cloudflare Access
+   * Adding or removing a sign-in method from an existing session needs a
+   * recent sign-in (FRESH_SIGN_IN_MS), so a stolen session cookie can't plant
+   * its own credential or lock the member out. Sessions confirm through `/auth/reauth/*`; Cloudflare Access
    * principals have no session row, so their Access token must be fresh.
    */
   async function requireFreshSignIn(request: ConsoleRequest, principal: Principal | null): Promise<void> {
@@ -494,7 +496,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
     }
     const signIn = sessionSignIn(store.database, principal.sessionId)
     if (!signIn || now - signIn.authenticatedAt > FRESH_SIGN_IN_MS) {
-      throw new ConsoleError(403, 'reauth_required', 'Confirm it\'s you (passkey or wallet) before adding a sign-in method, then retry.')
+      throw new ConsoleError(403, 'reauth_required', 'Confirm it\'s you (passkey or wallet) before changing your sign-in methods, then retry.')
     }
   }
 
@@ -975,6 +977,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (deleted) db.deleteMemberSessionsExcept(memberId, keepSessionId)
       return deleted
     },
+    requireFreshSignIn,
     createEnrollment(memberId) {
       return db.createEnrollment(memberId)
     },

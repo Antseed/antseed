@@ -20,8 +20,9 @@ type Credential = Member['credentials'][number]
 /**
  * The signed-in member's own sign-in methods: add a passkey, a wallet or the
  * organization's identity provider, and remove ones they no longer use.
- * Adding one needs a recent sign-in (403 `reauth_required`): the modal asks
- * the member to confirm with an existing passkey or wallet, then to add again.
+ * Adding or removing one needs a recent sign-in (403 `reauth_required`): the
+ * modal asks the member to confirm with an existing passkey or wallet, then to
+ * try again.
  * `startWith="wallet"` opens straight into adding a wallet (e.g. linking the
  * workspace's authorized wallet); mount it fresh for that.
  */
@@ -93,6 +94,11 @@ export function AccountModal({ isOpen, onClose, startWith, intro, onCredentialAd
   const remove = useConsoleMutation({
     mutationFn: (credential: Credential) => api.members.removeCredential(me.member.id, credential.id),
     onSuccess: () => setRemoving(null),
+    onError: (cause) => {
+      if (!isApiError(cause, 'reauth_required')) return
+      setRemoving(null)
+      setReauth('needed')
+    },
     invalidate: [qk.me],
   })
 
@@ -114,7 +120,7 @@ export function AccountModal({ isOpen, onClose, startWith, intro, onCredentialAd
                     <span className="gc-muted"> · added {formatRelative(credential.createdAt)} · last used {formatRelative(credential.lastUsedAt)}</span>
                   </span>
                   <Button variant="ghost" size="sm" disabled={last} title={last ? 'Add another sign-in method first' : undefined}
-                    onClick={() => setRemoving(credential)}>Remove</Button>
+                    onClick={() => { remove.reset(); setRemoving(credential) }}>Remove</Button>
                 </li>
               ))}
             </ul>
@@ -125,7 +131,7 @@ export function AccountModal({ isOpen, onClose, startWith, intro, onCredentialAd
         {reauth === 'needed' && (
           <Alert tone="info" title="Confirm it is you">
             <div className="gc-stack gc-stack--tight">
-              <span>Adding a sign-in method needs a recent sign-in. Confirm with one you already have, then add the new one.</span>
+              <span>Changing your sign-in methods needs a recent sign-in. Confirm with one you already have, then try again.</span>
               <div className="gc-inline gc-inline--wrap">
                 {hasPasskey && <Button size="sm" disabled={busy} onClick={() => void confirmWithPasskey()}>Confirm with a passkey</Button>}
                 {hasWallet && walletOpen !== 'confirm' && <Button size="sm" variant="outline" onClick={() => setWalletOpen('confirm')}>Confirm with a wallet</Button>}
@@ -139,7 +145,7 @@ export function AccountModal({ isOpen, onClose, startWith, intro, onCredentialAd
             </div>
           </Alert>
         )}
-        {reauth === 'done' && <Alert tone="success">Confirmed. Add the new sign-in method now.</Alert>}
+        {reauth === 'done' && <Alert tone="success">Confirmed. Add or remove the sign-in method now.</Alert>}
 
         {config.data && (
           <section className="gc-stack gc-stack--tight">

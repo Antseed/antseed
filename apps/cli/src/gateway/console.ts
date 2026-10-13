@@ -20,11 +20,11 @@ export { CONSOLE_LOCATION_SETTING, consoleBaseUrl, normalizePublicUrl, readConso
 /**
  * `DELETE /members/:id/credentials/:credentialId`: org admins manage
  * anyone's sign-in methods (an owner's only another owner), and a member
- * their own. A member's last one stays, which would lock them out, unless an
- * org owner removes it from another member. Every removal is audited and
+ * their own (after a fresh sign-in). A member's last one stays, which would
+ * lock them out, unless an org owner removes it from another member. Every removal is audited and
  * ends the member's other sessions (all of them when someone else removed it).
  */
-function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredential' | 'credentialsFor'>): ConsoleRegistrar {
+function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredential' | 'credentialsFor' | 'requireFreshSignIn'>): ConsoleRegistrar {
   return (router: ConsoleRouter, deps: ConsoleDeps) => {
     router.add('DELETE', '/members/:id/credentials/:credentialId', async (request) => {
       const { principal, params } = request
@@ -33,6 +33,8 @@ function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredenti
       let callerIsOwner = false
       if (self) {
         activeMember(deps.store, principal)
+        // Like adding one: a stolen session must not strip the member's other sign-in methods.
+        await auth.requireFreshSignIn(request, principal)
       } else {
         requireOrgAdmin(principal, deps.store)
         callerIsOwner = activeMember(deps.store, principal)?.orgRole === 'owner'

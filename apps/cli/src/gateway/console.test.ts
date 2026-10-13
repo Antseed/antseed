@@ -4,6 +4,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test, { after, before, describe } from 'node:test'
 import { Wallet } from 'ethers'
+import { FRESH_SIGN_IN_MS } from './auth/db.js'
 import { CONSOLE_LOCATION_SETTING, consoleBaseUrl, gatewayConsole, normalizePublicUrl, readConsoleLocation } from './console.js'
 import { startGatewayRuntime, type GatewayRuntime } from './runtime.js'
 
@@ -115,6 +116,14 @@ describe('gateway console wiring', () => {
     const linked = await signInWithWallet(second)
     assert.equal(linked.status, 200)
     assert.equal(linked.body.me.member.credentials.length, 2)
+
+    // Removing one of your own needs a recent sign-in.
+    runtime.store.database.prepare('UPDATE auth_sessions SET authenticated_at = ? WHERE member_id = ?').run(Date.now() - FRESH_SIGN_IN_MS - 1000, memberId)
+    const stale = await api('DELETE', `/members/${memberId}/credentials/${only!.id}`)
+    assert.equal(stale.status, 403)
+    assert.equal(stale.body.error.code, 'reauth_required')
+    const nonce = await api('POST', '/auth/reauth/wallet/nonce', { address: second.address })
+    assert.equal((await api('POST', '/auth/reauth/wallet/verify', { message: nonce.body.message, signature: await second.signMessage(nonce.body.message) })).status, 200)
 
     const removed = await api('DELETE', `/members/${memberId}/credentials/${only!.id}`)
     assert.equal(removed.status, 204)
