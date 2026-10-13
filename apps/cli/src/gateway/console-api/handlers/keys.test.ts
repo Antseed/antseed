@@ -156,3 +156,29 @@ test('only org admins create keys without an owner or clear a key\'s owner', asy
     await h.close()
   }
 })
+
+test('a workspace admin can see but not rotate, uncap or revoke a key without an owner', async () => {
+  const h = await harness()
+  try {
+    const { key } = h.store.createKey({ label: 'Ops', workspaceId: h.org.ws.id, ownerMemberId: null, limits: { ...NO_LIMITS, daily: 1_000_000 }, expiresAt: null })
+    const path = `/keys/${key.id}`
+    const listed = await h.as('wsAdmin', 'GET', `/keys?workspace=${h.org.ws.id}`)
+    assert.ok((listed.body as Array<{ id: string }>).some((dto) => dto.id === key.id), 'still visible to the workspace admin')
+
+    const rotate = await h.as('wsAdmin', 'POST', `${path}/rotate`)
+    assert.equal(rotate.status, 403)
+    assert.equal((rotate.body as ErrorBody).error.code, 'forbidden')
+    assert.equal((rotate.body as { secret?: string }).secret, undefined)
+    assert.equal((await h.as('wsAdmin', 'PATCH', path, { limits: { daily: null } })).status, 403)
+    assert.equal(h.store.getKey(key.id)!.limits.daily, 1_000_000)
+    assert.equal((await h.as('wsAdmin', 'POST', `${path}/revoke`)).status, 403)
+    assert.equal(h.store.getKey(key.id)!.status, 'active')
+
+    assert.equal((await h.as('owner', 'PATCH', path, { limits: { daily: null } })).status, 200)
+    assert.equal((await h.as('owner', 'POST', `${path}/rotate`)).status, 200)
+    // Keys with an owner stay the workspace admin's to manage.
+    assert.equal((await h.as('wsAdmin', 'POST', `/keys/${h.org.key.id}/rotate`)).status, 200)
+  } finally {
+    await h.close()
+  }
+})

@@ -167,7 +167,7 @@ test('keys: self-service within maxKeys, admin powers, rotation and key sessions
     await expectStatuses(as, 'PATCH', `/keys/${key.id}`, { memberB: 404, keyholder: 403, memberA: 200 }, { label: 'Laptop 2' })
     await expectStatuses(as, 'PATCH', `/keys/${key.id}`, { memberA: 403 }, { topupEnabled: true })
     await expectStatuses(as, 'PATCH', `/keys/${key.id}`, { memberA: 400 }, { workspaceId: org.wsB.id })
-    await expectStatuses(as, 'PATCH', `/keys/${org.keyOther.key.id}`, { memberA: 404, wsAdmin: 200 }, { routingPolicy: { allowedModels: ['m'] } })
+    await expectStatuses(as, 'PATCH', `/keys/${org.keyOther.key.id}`, { memberA: 404, wsAdmin: 403, admin: 200 }, { routingPolicy: { allowedModels: ['m'] } })
 
     const rotated = await as('memberA', 'POST', `/keys/${key.id}/rotate`)
     assert.equal(rotated.status, 200)
@@ -177,8 +177,8 @@ test('keys: self-service within maxKeys, admin powers, rotation and key sessions
     assert.equal(h.store.findKeyBySecret(next.secret)?.id, key.id)
     assert.ok(h.auth.revokedKeys.includes(key.id))
 
-    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/revoke`, { memberA: 404, keyholder: 403, wsAdmin: 200 })
-    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/rotate`, { wsAdmin: 409 })
+    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/revoke`, { memberA: 404, keyholder: 403, wsAdmin: 403, admin: 200 })
+    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/rotate`, { admin: 409 })
   } finally {
     await h.close()
   }
