@@ -836,6 +836,14 @@ export class GatewayStore {
     return row?.token_hash ?? null
   }
 
+  /** Why an invite token is not usable: already used, expired, or unknown (also for a live one). */
+  inviteState(tokenHash: string, now: number): 'used' | 'expired' | 'unknown' {
+    const row = this._stmt('SELECT used_at, expires_at FROM invites WHERE token_hash = ?').get(tokenHash) as { used_at: number | null; expires_at: number } | undefined
+    if (!row) return 'unknown'
+    if (row.used_at !== null) return 'used'
+    return row.expires_at <= now ? 'expired' : 'unknown'
+  }
+
   /** Marks the invite used and its member active; null when the token is unknown, used or expired. */
   consumeInvite(tokenHash: string, now: number): MemberRecord | null {
     return this._db.transaction(() => {

@@ -8,7 +8,7 @@ import { registerWalletRoutes } from './console-api/handlers/wallet.js'
 import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.js'
 import { apiKeyDto, memberDto } from './console-api/serialize.js'
 import { createConsoleApi, type ConsoleRegistrar } from './console-api/server.js'
-import { registerRecoveryRoutes } from './console-recovery.js'
+import { recoveryRouteRegistrar } from './console-recovery.js'
 import { chatRouteRegistrar } from './chat/routes.js'
 import { removeCredential, requireMemberRecord } from './services/members.js'
 import type { GatewayConsoleContext, GatewayConsoleHandle } from './runtime.js'
@@ -99,7 +99,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       registerWalletRoutes,
       registerNetworkRoutes,
       registerCredentialRoutes(auth),
-      registerRecoveryRoutes,
+      recoveryRouteRegistrar((memberId) => auth.createEnrollment(memberId)),
       chatRouteRegistrar({ gatewayPort: () => gatewayPort, braveApiKey: (options.env ?? process.env)['ANTSEED_BRAVE_API_KEY']?.trim() || null }),
     ], options.distDir ? { distDir: options.distDir } : {})
 

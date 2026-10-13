@@ -20,6 +20,7 @@ export class FakeStore implements AuthStore {
   readonly roles = new Map<string, Map<string, WorkspaceRole>>()
   readonly invites = new Map<string, { memberId: string; expiresAt: number; used: boolean }>()
   readonly keys = new Map<string, AuthKey & { secret: string }>()
+  readonly adminTokens = new Map<string, { id: string; scope: 'admin' | 'read'; revokedAt: number | null; lastUsedAt: number | null }>()
   readonly workspaces: WorkspaceSummary[] = [
     { id: 'ws_default', name: 'Default', isDefault: true },
     { id: 'ws_research', name: 'Research', isDefault: false },
@@ -103,6 +104,21 @@ export class FakeStore implements AuthStore {
     invite.used = true
     this.setStatus(invite.memberId, 'active')
     return this.getMember(invite.memberId)
+  }
+
+  inviteState(tokenHash: string, now: number): 'used' | 'expired' | 'unknown' {
+    const invite = this.invites.get(tokenHash)
+    if (!invite) return 'unknown'
+    if (invite.used) return 'used'
+    return invite.expiresAt <= now ? 'expired' : 'unknown'
+  }
+
+  findAdminTokenBySecret(secret: string): { id: string; scope: 'admin' | 'read'; revokedAt: number | null } | null {
+    return this.adminTokens.get(secret) ?? null
+  }
+
+  touchAdminToken(id: string): void {
+    for (const token of this.adminTokens.values()) if (token.id === id) token.lastUsedAt = this._now()
   }
 
   findKeyBySecret(secret: string): AuthKey | null {

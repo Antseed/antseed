@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import { Wallet } from 'ethers'
 import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './db.js'
-import { sha256, SoftwarePasskey, startHarness, type Browser, type Harness } from './test-helpers.js'
+import { SoftwarePasskey, startHarness, type Browser, type Harness } from './test-helpers.js'
 
 let harness: Harness
 afterEach(async () => {
@@ -205,21 +205,20 @@ describe('console auth: API keys, tokens and sessions', () => {
     assert.equal((await other.request('GET', '/auth/me')).status, 401)
   })
 
-  it('authenticates management tokens from the admin_tokens table, if it exists', async () => {
+  it('authenticates management tokens through the store', async () => {
     harness = await startHarness()
     const browser = harness.browser()
     const secret = 'antseed_admin_' + 'a'.repeat(43)
     assert.equal(await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` })), null)
 
-    harness.store.database.exec('CREATE TABLE admin_tokens (id TEXT PRIMARY KEY, label TEXT, token_hash TEXT UNIQUE, scope TEXT, created_at INTEGER, last_used_at INTEGER, revoked_at INTEGER)')
-    harness.store.database.prepare('INSERT INTO admin_tokens VALUES (?, ?, ?, ?, ?, NULL, NULL)').run('adm_1', 'CI', sha256(secret), 'read', 1)
+    harness.store.adminTokens.set(secret, { id: 'adm_1', scope: 'read', revokedAt: null, lastUsedAt: null })
     const principal = await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` }))
     assert.deepEqual(principal, { kind: 'token', tokenId: 'adm_1', scope: 'read' })
-    assert.notEqual(harness.store.database.prepare('SELECT last_used_at FROM admin_tokens').pluck().get(), null)
+    assert.notEqual(harness.store.adminTokens.get(secret)!.lastUsedAt, null)
     // Tokens have no /auth/me profile.
     assert.equal((await browser.request('GET', '/auth/me', undefined, { authorization: `Bearer ${secret}` })).status, 403)
 
-    harness.store.database.prepare('UPDATE admin_tokens SET revoked_at = 2').run()
+    harness.store.adminTokens.get(secret)!.revokedAt = 2
     assert.equal(await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` })), null)
   })
 

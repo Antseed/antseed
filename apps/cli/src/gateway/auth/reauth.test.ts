@@ -1,7 +1,7 @@
 import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import { Wallet, type HDNodeWallet } from 'ethers'
-import { sessionAuthenticatedAt } from './db.js'
+import { sessionSignIn } from './db.js'
 import { enrollWallet, reauthWallet, sessionId, SoftwarePasskey, startHarness, type Browser, type Harness } from './test-helpers.js'
 
 let harness: Harness
@@ -35,7 +35,7 @@ describe('console auth: re-authentication', () => {
     const passkey = new SoftwarePasskey()
     const { member, browser } = await enroll(harness, 'Owner', { passkey }, 'owner')
     const before = sessionId(browser)
-    const signedInAt = sessionAuthenticatedAt(harness.store.database, before)!
+    const signedInAt = sessionSignIn(harness.store.database, before)!.authenticatedAt
 
     harness.clock.now += 30 * MINUTE
     const options = await browser.request('POST', '/auth/reauth/passkey/options', {})
@@ -45,7 +45,7 @@ describe('console auth: re-authentication', () => {
     assert.equal(result.body.me.member.id, member.id)
     assert.equal(browser.lastSetCookies.length, 0, 'no new session cookie')
     assert.equal(sessionId(browser), before)
-    assert.equal(sessionAuthenticatedAt(harness.store.database, before), signedInAt + 30 * MINUTE)
+    assert.equal(sessionSignIn(harness.store.database, before)?.authenticatedAt, signedInAt + 30 * MINUTE)
   })
 
   it('refuses another member\'s passkey and leaves the session untouched', async () => {
@@ -55,7 +55,7 @@ describe('console auth: re-authentication', () => {
     const { browser } = await enroll(harness, 'Owner', { passkey: ownPasskey }, 'owner')
     const { member: other } = await enroll(harness, 'Other', { passkey: otherPasskey })
     const session = sessionId(browser)
-    const signedInAt = sessionAuthenticatedAt(harness.store.database, session)
+    const signedInAt = sessionSignIn(harness.store.database, session)?.authenticatedAt
 
     harness.clock.now += 30 * MINUTE
     const refused = await reauthPasskey(browser, otherPasskey)
@@ -63,7 +63,7 @@ describe('console auth: re-authentication', () => {
     assert.equal(refused.body.error.code, 'reauth_wrong_member')
     assert.equal(browser.lastSetCookies.length, 0)
     assert.equal(sessionId(browser), session)
-    assert.equal(sessionAuthenticatedAt(harness.store.database, session), signedInAt)
+    assert.equal(sessionSignIn(harness.store.database, session)?.authenticatedAt, signedInAt)
     const me = await browser.request('GET', '/auth/me')
     assert.notEqual(me.body.me.member.id, other.id, 'still signed in as the owner')
 
@@ -81,14 +81,14 @@ describe('console auth: re-authentication', () => {
     const { browser } = await enroll(harness, 'Owner', { wallet: ownWallet }, 'owner')
     await enroll(harness, 'Other', { wallet: otherWallet })
     const session = sessionId(browser)
-    const signedInAt = sessionAuthenticatedAt(harness.store.database, session)!
+    const signedInAt = sessionSignIn(harness.store.database, session)!.authenticatedAt
 
     harness.clock.now += 10 * MINUTE
     for (const wallet of [otherWallet, Wallet.createRandom()]) {
       const refused = await reauthWallet(browser, wallet)
       assert.equal(refused.status, 403)
       assert.equal(refused.body.error.code, 'reauth_wrong_member')
-      assert.equal(sessionAuthenticatedAt(harness.store.database, session), signedInAt)
+      assert.equal(sessionSignIn(harness.store.database, session)?.authenticatedAt, signedInAt)
     }
 
     // A signature by a wallet other than the one the nonce was issued to.
@@ -99,7 +99,7 @@ describe('console auth: re-authentication', () => {
     const ok = await reauthWallet(browser, ownWallet)
     assert.equal(ok.status, 200, JSON.stringify(ok.body))
     assert.equal(sessionId(browser), session)
-    assert.equal(sessionAuthenticatedAt(harness.store.database, session), signedInAt + 10 * MINUTE)
+    assert.equal(sessionSignIn(harness.store.database, session)?.authenticatedAt, signedInAt + 10 * MINUTE)
   })
 
   it('needs a member session', async () => {

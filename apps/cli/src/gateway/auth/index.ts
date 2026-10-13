@@ -80,6 +80,8 @@ export interface ConsoleAuthService extends ConsoleAuth {
    * and ends the member's sessions, except `keepSessionId` (the caller's own).
    */
   deleteCredential(memberId: string, credentialId: string, keepSessionId?: string | null): boolean
+  /** A short-lived ticket for registering a sign-in method for `memberId` (recovery links). */
+  createEnrollment(memberId: string): string
 }
 
 type LoginError = 'not_invited' | 'not_linked' | 'disabled' | 'invalid_enrollment'
@@ -207,20 +209,16 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   async function authenticate(req: http.IncomingMessage): Promise<Principal | null> {
     const bearer = parseBearerToken(headerValue(req, 'authorization') ?? undefined)
     if (bearer?.startsWith(ADMIN_TOKEN_PREFIX)) {
-      if (store.findAdminTokenBySecret) {
-        const token = store.findAdminTokenBySecret(bearer)
-        if (!token || token.revokedAt !== null) return null
-        if (typeof token.expiresAt === 'number' && token.expiresAt <= deps.now()) return null
-        // A token is only as good as its creator's role (null: created from the CLI).
-        if (token.createdBy) {
-          const creator = store.getMember(token.createdBy)
-          if (!creator || creator.status !== 'active' || (creator.orgRole !== 'owner' && creator.orgRole !== 'admin')) return null
-        }
-        store.touchAdminToken?.(token.id)
-        return { kind: 'token', tokenId: token.id, scope: token.scope }
+      const token = store.findAdminTokenBySecret(bearer)
+      if (!token || token.revokedAt !== null) return null
+      if (typeof token.expiresAt === 'number' && token.expiresAt <= deps.now()) return null
+      // A token is only as good as its creator's role (null: created from the CLI).
+      if (token.createdBy) {
+        const creator = store.getMember(token.createdBy)
+        if (!creator || creator.status !== 'active' || (creator.orgRole !== 'owner' && creator.orgRole !== 'admin')) return null
       }
-      const token = db.findAdminToken(bearer)
-      return token ? { kind: 'token', tokenId: token.id, scope: token.scope } : null
+      store.touchAdminToken?.(token.id)
+      return { kind: 'token', tokenId: token.id, scope: token.scope }
     }
 
     const cookie = readCookie(req, SESSION_COOKIE)
@@ -420,18 +418,6 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   // ── Helpers for routes ──────────────────────────────────────────────────
-
-  /** Why an invite token did not work, read from the gateway store's invites table when there is one. */
-  function inviteState(tokenHash: string): 'used' | 'expired' | 'unknown' {
-    try {
-      const row = store.database.prepare('SELECT used_at, expires_at FROM invites WHERE token_hash = ?').get(tokenHash) as { used_at: number | null; expires_at: number } | undefined
-      if (!row) return 'unknown'
-      if (row.used_at !== null) return 'used'
-      return row.expires_at <= deps.now() ? 'expired' : 'unknown'
-    } catch {
-      return 'unknown'
-    }
-  }
 
   function rpFor(req: http.IncomingMessage): { origin: string; hostname: string; host: string } {
     const rp = requestOrigin(req, publicUrl)
@@ -645,7 +631,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (limited) return limited
       const member = store.consumeInvite(tokenHash, deps.now())
       if (!member) {
-        const state = inviteState(tokenHash)
+        const state = store.inviteState(tokenHash, deps.now())
         if (state === 'used') throw new ConsoleError(400, 'invite_used', 'This invite link was already used.')
         if (state === 'expired') throw new ConsoleError(400, 'invite_expired', 'This invite link has expired.')
         throw new ConsoleError(400, 'invalid_token', 'This invite link is invalid.')
@@ -984,6 +970,9 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       const deleted = db.deleteCredential(memberId, credentialId)
       if (deleted) db.deleteMemberSessionsExcept(memberId, keepSessionId)
       return deleted
+    },
+    createEnrollment(memberId) {
+      return db.createEnrollment(memberId)
     },
     setGatewayPort(port) {
       gatewayPort = port

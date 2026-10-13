@@ -54,6 +54,8 @@ export interface AuthStore {
   consumeInvite(tokenHash: string, now: number): AuthMember | null
   /** Token hash of the member's live invite; an invited member signs in by SSO only while it lasts. */
   liveInviteHash(memberId: string, now: number): string | null
+  /** Why an invite token is not usable: already used, expired, or unknown (also for a live one). */
+  inviteState(tokenHash: string, now: number): 'used' | 'expired' | 'unknown'
   findKeyBySecret(secret: string): AuthKey | null
   getKey(id: string): AuthKey | null
   getWorkspace?(id: string): WorkspaceSummary | null
@@ -71,11 +73,10 @@ export interface AuthStore {
     createdBy: string | null
   }): { token: string }
   /**
-   * Management tokens; when absent auth reads the `admin_tokens` table
-   * directly. A token past `expiresAt`, or whose creator is no longer an
-   * active owner/admin, is refused.
+   * Management tokens. A token past `expiresAt`, or whose creator is no
+   * longer an active owner/admin, is refused.
    */
-  findAdminTokenBySecret?(secret: string): { id: string; scope: 'admin' | 'read'; revokedAt: number | null; expiresAt?: number | null; createdBy?: string | null } | null
+  findAdminTokenBySecret(secret: string): { id: string; scope: 'admin' | 'read'; revokedAt: number | null; expiresAt?: number | null; createdBy?: string | null } | null
   touchAdminToken?(id: string): void
   /** Audit log (sign-ins, failed sign-ins, setup); skipped when absent. */
   recordAudit?(input: {

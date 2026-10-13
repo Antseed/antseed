@@ -433,59 +433,6 @@ export class AuthDb {
     this._db.prepare('DELETE FROM auth_enrollments WHERE token_hash = ?').run(hash)
     return row.expires_at > this._now() ? row.member_id : null
   }
-
-  // ── Management tokens (table owned by gateway-core) ─────────────────────
-
-  private _adminColumns: Set<string> | null = null
-
-  /** Looks up `admin_tokens` structurally; null when the table doesn't exist yet or the token is unknown/revoked. */
-  findAdminToken(secret: string): { id: string; scope: 'admin' | 'read' } | null {
-    if (!this._adminColumns) {
-      const exists = this._db.prepare("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'admin_tokens'").get()
-      if (!exists) return null
-      const columns = this._db.prepare('PRAGMA table_info(admin_tokens)').all() as Array<{ name: string }>
-      this._adminColumns = new Set(columns.map((column) => column.name))
-    }
-    const columns = this._adminColumns
-    if (!columns.has('token_hash')) return null
-    const row = this._db.prepare('SELECT * FROM admin_tokens WHERE token_hash = ?').get(sha256Hex(secret)) as Record<string, unknown> | undefined
-    if (!row) return null
-    if (columns.has('revoked_at') && row.revoked_at !== null) return null
-    if (columns.has('revoked') && Number(row.revoked) !== 0) return null
-    if (columns.has('status') && row.status !== 'active') return null
-    if (columns.has('expires_at') && typeof row.expires_at === 'number' && row.expires_at <= this._now()) return null
-    if (columns.has('created_by') && typeof row.created_by === 'string' && !creatorIsAdmin(this._db, row.created_by)) return null
-    const scope = row.scope === 'admin' ? 'admin' : 'read'
-    if (columns.has('last_used_at')) {
-      this._db.prepare('UPDATE admin_tokens SET last_used_at = ? WHERE id = ?').run(this._now(), row.id)
-    }
-    return { id: String(row.id), scope }
-  }
-}
-
-/** Whether a member is still an active owner or admin (management tokens die with the role). */
-function creatorIsAdmin(db: Database.Database, memberId: string): boolean {
-  try {
-    const row = db.prepare('SELECT org_role, status FROM members WHERE id = ?').get(memberId) as { org_role: string; status: string } | undefined
-    return Boolean(row && row.status === 'active' && (row.org_role === 'owner' || row.org_role === 'admin'))
-  } catch {
-    return false
-  }
-}
-
-/**
- * When the sign-in behind a console session happened; null for unknown
- * sessions (or Cloudflare Access principals, which have no session row).
- * Reads auth's table directly so route modules need no auth object.
- */
-export function sessionAuthenticatedAt(db: Database.Database, sessionId: string): number | null {
-  try {
-    const row = db.prepare('SELECT authenticated_at, created_at FROM auth_sessions WHERE id = ?').get(sessionId) as
-      { authenticated_at: number | null; created_at: number } | undefined
-    return row ? row.authenticated_at ?? row.created_at : null
-  } catch {
-    return null
-  }
 }
 
 /** The sign-in behind a console session: when it happened and with which credential (null: unknown, e.g. older sessions). */
