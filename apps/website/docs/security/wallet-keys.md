@@ -108,4 +108,3 @@ It does not protect against root on the host, or anyone who can read `wallet.env
 
 The desktop app (AI VPN) protects its default wallet differently: it encrypts the key with Electron's safe storage, whose key is held by the operating system's keychain, and stores it as `identity.enc`. `ANTSEED_PASSPHRASE` doesn't apply to it, and the CLI can't read it: a CLI command that finds `identity.enc` in its data dir refuses to create a second wallet there. To use that wallet from the CLI or move it to a gateway server, export its private key from the desktop app and save it as `identity.key`, or give the CLI a different `--data-dir`. See [Desktop app](/docs/desktop).
 
-Next: [Management API and observability](/docs/gateway/management-api).

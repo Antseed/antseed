@@ -75,4 +75,4 @@ antseed gateway audit --action key --limit 50
 
 Management tokens can read it through `GET /console/api/audit`. See [Management API and observability](/docs/gateway/management-api).
 
-Next: [Protecting wallet keys](/docs/gateway/wallet-keys).
+Next: [Management API and observability](/docs/gateway/management-api).

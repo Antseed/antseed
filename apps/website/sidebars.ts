@@ -32,7 +32,6 @@ const sidebars: SidebarsConfig = {
         'gateway/routing',
         'gateway/api',
         'gateway/activity',
-        'gateway/wallet-keys',
         'gateway/management-api',
         'gateway/troubleshooting',
       ],
@@ -45,7 +44,6 @@ const sidebars: SidebarsConfig = {
       collapsed: true,
       items: [
         'desktop/desktop',
-        'desktop/verify-tee',
       ],
     },
     {
@@ -60,6 +58,17 @@ const sidebars: SidebarsConfig = {
         'connect/agents',
         'connect/tunnels',
         'connect/buyer-config',
+      ],
+    },
+    {
+      type: 'category',
+      label: 'Security & Privacy',
+      className: 'sidebar-icon sidebar-icon--security',
+      collapsible: true,
+      collapsed: true,
+      items: [
+        'security/verify-tee',
+        'security/wallet-keys',
       ],
     },
     {
