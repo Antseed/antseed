@@ -6,6 +6,7 @@ import {Test} from "forge-std/Test.sol";
 import {AntseedRegistry} from "../../core/AntseedRegistry.sol";
 import {IAntseedVerification} from "../../interfaces/IAntseedVerification.sol";
 import {AntseedVerification} from "../../verification/AntseedVerification.sol";
+import {AntseedVerificationPointsPolicy} from "../../policies/AntseedVerificationPointsPolicy.sol";
 import {MockERC8004Registry} from "../mocks/MockERC8004Registry.sol";
 import {MockVerificationEmissionsGate} from "../mocks/MockVerificationEmissionsGate.sol";
 import {MockVerificationSellerPools} from "../mocks/MockVerificationSellerPools.sol";
@@ -21,6 +22,14 @@ contract UsageAccountingFront {
 
     function currentEpoch() external view returns (uint256) {
         return MockVerificationEmissionsGate(emissionsGate).currentEpoch();
+    }
+}
+
+contract VerificationPointsAccounting {
+    address public immutable sellerPools;
+
+    constructor(address pools) {
+        sellerPools = pools;
     }
 }
 
@@ -90,6 +99,149 @@ contract AntseedVerificationTest is Test {
         assertEq(service.expiresAt, 0);
         assertFalse(verification.isVerified(agentId));
         assertEq(_expire(agentId, SERVICE_A), 0, "expiring twice is a no-op");
+    }
+
+    function test_statusAndPointsIgnoreExpiredSameWithoutCleanup() public {
+        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(_sellerPoints(policy), 110);
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0);
+        assertFalse(verification.isVerified(agentId));
+        assertEq(_sellerPoints(policy), 100);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(SAME), "record remains");
+        assertEq(_expire(agentId, SERVICE_A), 1);
+        assertEq(_sellerPoints(policy), 100, "cleanup does not change points");
+    }
+
+    function test_selectiveDiffCleanupCannotRetainExpiredSameBonus() public {
+        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        assertEq(_sellerPoints(policy), 100);
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        assertEq(_sellerPoints(policy), 100);
+        vm.prank(seller);
+        verification.expire(_serviceKeys(agentId, SERVICE_B));
+        IAntseedVerification.AgentStatus memory status = verification.agentStatus(agentId);
+        assertEq(status.verifiedCount, 0);
+        assertEq(status.diffCount, 0);
+        assertFalse(verification.isVerified(agentId));
+        assertEq(_sellerPoints(policy), 100, "expired SAME cannot supply a bonus");
+        assertEq(_expire(agentId, SERVICE_A), 1);
+        assertEq(_sellerPoints(policy), 100);
+    }
+
+    function test_selectiveSameCleanupCannotRetainExpiredDiffPenalty() public {
+        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        _expire(agentId, SERVICE_A);
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+        assertEq(_sellerPoints(policy), 100, "expired DIFF cannot supply a penalty");
+    }
+
+    function test_expiredDiffDoesNotBlockFreshSameOrPenalizePoints() public {
+        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        vm.warp(vm.getBlockTimestamp() + 7 days);
+        assertTrue(verification.isVerified(agentId));
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 1);
+        assertEq(_sellerPoints(policy), 110);
+        assertEq(_expire(agentId, SERVICE_A), 1);
+        assertEq(_sellerPoints(policy), 110);
+    }
+
+    function test_auditEventsOnlyCountUnexpiredServices() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        vm.expectEmit(true, false, false, true, address(verification));
+        emit AntseedVerification.AgentStatusChanged(agentId, 0, 1);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0);
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+    }
+
+    function test_clearExpiredStatusesDoesNotUnderflowLiveCounts() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        verification.clearServiceStatus(agentId, SERVICE_A);
+        verification.clearServiceStatus(agentId, SERVICE_B);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0);
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertTrue(verification.isVerified(agentId));
+        verification.clearServiceStatus(agentId, SERVICE_A);
+        assertFalse(verification.isVerified(agentId));
+    }
+
+    function test_countedServiceCapAllowsRefreshAndVerdictChanges() public {
+        _fillCountedServices();
+        assertEq(verification.agentStatus(agentId).verifiedCount, 512);
+        vm.expectRevert(AntseedVerification.TooManyServices.selector);
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(513)), SAME);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 511);
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 512);
+        vm.expectRevert(AntseedVerification.TooManyServices.selector);
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(513)), SAME);
+    }
+
+    function test_countedServiceCapReclaimsExpiredSlots() public {
+        _fillCountedServices();
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0);
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(513)), SAME);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 1);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(514)), SAME);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 2);
+        assertTrue(verification.isVerified(agentId));
+    }
+
+    function test_modelChangeAndOwnerClearFreeTrackedSlots() public {
+        _fillCountedServices();
+        _audit(auditorA, MODEL_B, agentId, SERVICE_A, UNDETERMINED);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 511);
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(513)), SAME);
+        verification.clearServiceStatus(agentId, SERVICE_B);
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(514)), DIFF);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 511);
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, bytes32(uint256(515)), DIFF);
+        assertEq(verification.serviceStatus(agentId, bytes32(uint256(515))).diffVotes, 1);
+        vm.expectRevert(AntseedVerification.TooManyServices.selector);
+        _audit(auditorB, MODEL_A, agentId, bytes32(uint256(515)), DIFF);
+        assertEq(verification.serviceStatus(agentId, bytes32(uint256(515))).diffVotes, 1);
+    }
+
+    function test_coldStatusAndPointsReadsAreBoundedAtCapacity() public {
+        _fillCountedServices();
+        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        vm.warp(vm.getBlockTimestamp() + 1 days);
+        vm.cool(address(verification));
+        uint256 gasBefore = gasleft();
+        IAntseedVerification.AgentStatus memory status = verification.agentStatus(agentId);
+        uint256 readGas = gasBefore - gasleft();
+        assertEq(status.verifiedCount, 512);
+        assertLt(readGas, 5_000_000, "bounded cold status read");
+        emit log_named_uint("cold agentStatus gas", readGas);
+        vm.cool(address(verification));
+        gasBefore = gasleft();
+        uint256 points = _sellerPoints(policy);
+        readGas = gasBefore - gasleft();
+        assertEq(points, 150);
+        assertLt(readGas, 5_000_000, "bounded cold points read");
+        emit log_named_uint("cold verification points gas", readGas);
     }
 
     function test_eachServiceExpiresIndependently() public {
@@ -200,6 +352,134 @@ contract AntseedVerificationTest is Test {
         assertFalse(verification.isVerified(agentId));
     }
 
+    function test_pendingDiffVotesExpireAtDeadlineAndAuditorsCanVoteAgain() public {
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        uint32 round = verification.serviceStatus(agentId, SERVICE_A).round;
+        vm.warp(block.timestamp + 14 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(uint8(service.verdict), uint8(NONE));
+        assertEq(service.diffVotes, 1, "stale vote does not complete quorum");
+        assertEq(service.round, round + 1);
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+    }
+
+    function test_repeatedDiffDoesNotExtendConfirmationWindow() public {
+        verification.setDiffConfirmations(2);
+        uint256 startedAt = vm.getBlockTimestamp();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(startedAt + 10 days);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).diffVotes, 1);
+        vm.warp(startedAt + 14 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).diffVotes, 1);
+    }
+
+    function test_undeterminedDoesNotExtendConfirmationWindow() public {
+        verification.setDiffConfirmations(2);
+        uint256 startedAt = vm.getBlockTimestamp();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(startedAt + 10 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).diffVotes, 1);
+        vm.warp(startedAt + 14 days);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).diffVotes, 1);
+    }
+
+    function test_undeterminedClearsExpiredPendingDiffVotes() public {
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(block.timestamp + 365 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(service.diffVotes, 0);
+        assertEq(service.round, 1);
+        assertEq(uint8(service.verdict), uint8(NONE));
+        assertEq(uint8(service.lastResult), uint8(UNDETERMINED));
+        assertEq(service.undeterminedStreak, 1);
+    }
+
+    function test_confirmationWindowSnapshotsValidity() public {
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        verification.setValidity(30 days);
+        vm.warp(block.timestamp + 14 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).diffVotes, 1);
+
+        verification.setValidity(1 days);
+        vm.warp(block.timestamp + 2 days);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+    }
+
+    function test_confirmationWindowsAreIndependentPerService() public {
+        verification.setDiffConfirmations(2);
+        uint256 startedAt = vm.getBlockTimestamp();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(startedAt + 7 days);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        vm.warp(startedAt + 14 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorB, MODEL_B, agentId, SERVICE_B, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(NONE));
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_B).verdict), uint8(DIFF));
+        assertEq(verification.agentStatus(agentId).diffCount, 1);
+    }
+
+    function test_sameStartsNextPendingDiffRoundWithFreshDeadline() public {
+        verification.setDiffConfirmations(2);
+        uint256 startedAt = vm.getBlockTimestamp();
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(startedAt + 10 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(startedAt + 15 days);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, DIFF);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
+    }
+
+    function test_pendingDiffExpiryPreservesUnexpiredSameVerdict() public {
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        uint64 expiresAt = verification.serviceStatus(agentId, SERVICE_A).expiresAt;
+        verification.setValidity(2 days);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(block.timestamp + 2 days);
+        _audit(auditorC, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(service.diffVotes, 0);
+        assertEq(uint8(service.verdict), uint8(SAME));
+        assertEq(service.expiresAt, expiresAt);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 1);
+        assertTrue(verification.isVerified(agentId));
+    }
+
+    function testFuzz_pendingDiffConfirmationWindowBoundary(uint64 elapsed) public {
+        elapsed = uint64(bound(elapsed, 0, 14 days + 1));
+        verification.setDiffConfirmations(2);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        vm.warp(block.timestamp + elapsed);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, DIFF);
+        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        if (elapsed < 14 days) {
+            assertEq(uint8(service.verdict), uint8(DIFF));
+            assertEq(service.diffVotes, 0);
+        } else {
+            assertEq(uint8(service.verdict), uint8(NONE));
+            assertEq(service.diffVotes, 1);
+        }
+    }
+
     function test_sameDiscardsPendingDiffVotes() public {
         verification.setDiffConfirmations(2);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
@@ -289,6 +569,44 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.agentStatus(other).diffCount, 1);
     }
 
+    function test_batchStatusEventsAccumulateWithinAgentAndResetBetweenAgents() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_B, DIFF);
+        uint256 other = _register(address(0x5E2), 100);
+        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](4);
+        results[0] = _result(agentId, SERVICE_A, DIFF);
+        results[1] = _result(agentId, SERVICE_B, SAME);
+        results[2] = _result(other, SERVICE_A, SAME);
+        results[3] = _result(other, SERVICE_B, DIFF);
+
+        vm.expectEmit(true, false, false, true, address(verification));
+        emit AntseedVerification.AgentStatusChanged(agentId, 0, 2);
+        vm.expectEmit(true, false, false, true, address(verification));
+        emit AntseedVerification.AgentStatusChanged(agentId, 1, 1);
+        vm.expectEmit(true, false, false, true, address(verification));
+        emit AntseedVerification.AgentStatusChanged(other, 1, 0);
+        vm.expectEmit(true, false, false, true, address(verification));
+        emit AntseedVerification.AgentStatusChanged(other, 1, 1);
+        vm.prank(auditorB);
+        verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
+    }
+
+    function test_expiryPreservesLatestResultAndUndeterminedStreak() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
+        vm.warp(vm.getBlockTimestamp() + 14 days);
+        assertEq(_expire(agentId, SERVICE_A), 1);
+        IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(uint8(service.verdict), uint8(NONE));
+        assertEq(uint8(service.lastResult), uint8(UNDETERMINED));
+        assertEq(service.undeterminedStreak, 1);
+        assertEq(service.modelHash, MODEL_A);
+        verification.clearServiceStatus(agentId, SERVICE_A);
+        service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(uint8(service.lastResult), uint8(NONE));
+        assertEq(service.undeterminedStreak, 0);
+    }
+
     // ── access and validation ────────────────────────────────────────
 
     function test_rejectsUnapprovedAuditor() public {
@@ -309,6 +627,35 @@ contract AntseedVerificationTest is Test {
     function test_rejectsUnknownAgent() public {
         vm.expectRevert(AntseedVerification.UnknownAgent.selector);
         _audit(auditorA, MODEL_A, 999, SERVICE_A, SAME);
+    }
+
+    function testFuzz_rejectsZeroAgent(uint8 verdictSeed) public {
+        IAntseedVerification.Verdict verdict = IAntseedVerification.Verdict(bound(verdictSeed, 1, 3));
+        vm.expectRevert(AntseedVerification.UnknownAgent.selector);
+        _audit(auditorA, MODEL_A, 0, SERVICE_A, verdict);
+        assertFalse(verification.isVerified(0));
+        assertEq(verification.agentStatus(0).verifiedCount, 0);
+        assertEq(verification.agentStatus(0).diffCount, 0);
+    }
+
+    function test_rejectsZeroAgentBeforeValidAgentWithoutConsumingEvidence() public {
+        bytes32 evidence = keccak256("zero-agent-evidence");
+        IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](2);
+        results[0] = _result(0, SERVICE_A, SAME);
+        results[1] = _result(agentId, SERVICE_A, SAME);
+        vm.prank(auditorA);
+        vm.expectRevert(AntseedVerification.UnknownAgent.selector);
+        verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", results);
+
+        assertFalse(verification.usedEvidence(evidence));
+        assertFalse(verification.isVerified(0));
+        assertFalse(verification.isVerified(agentId));
+        assertEq(verification.epochCredits(EPOCH), 0);
+
+        vm.prank(auditorA);
+        verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", _single(agentId, SERVICE_A, SAME));
+        assertTrue(verification.isVerified(agentId));
+        assertEq(verification.epochCredits(EPOCH), 1);
     }
 
     function test_rejectsStaleEpoch() public {
@@ -512,6 +859,42 @@ contract AntseedVerificationTest is Test {
 
     // ── invariants ───────────────────────────────────────────────────
 
+    function testFuzz_liveCountsMatchUnexpiredServicesAfterMutations(uint8[24] calldata steps) public {
+        AntseedVerificationPointsPolicy policy = _pointsPolicy();
+        verification.setDiffConfirmations(2);
+        bytes32[3] memory services = [SERVICE_A, SERVICE_B, bytes32(uint256(3))];
+        for (uint256 i = 0; i < steps.length; i++) {
+            uint8 step = steps[i];
+            bytes32 service = services[(step >> 3) % 3];
+            vm.warp(vm.getBlockTimestamp() + uint256(step % 5) * 5 days);
+            if (step % 5 == 0) verification.clearServiceStatus(agentId, service);
+            else if (step % 5 == 1) _expire(agentId, service);
+            else {
+                IAntseedVerification.Verdict verdict = step % 3 == 0 ? SAME : step % 3 == 1 ? DIFF : UNDETERMINED;
+                _audit(
+                    (step & 1) == 0 ? auditorA : auditorB,
+                    (step & 2) == 0 ? MODEL_A : MODEL_B,
+                    agentId,
+                    service,
+                    verdict
+                );
+            }
+            uint256 verified;
+            uint256 diffs;
+            for (uint256 j = 0; j < services.length; j++) {
+                IAntseedVerification.ServiceStatus memory status = verification.serviceStatus(agentId, services[j]);
+                if (status.expiresAt <= vm.getBlockTimestamp()) continue;
+                if (status.verdict == SAME) verified += 1;
+                else if (status.verdict == DIFF) diffs += 1;
+            }
+            IAntseedVerification.AgentStatus memory agent = verification.agentStatus(agentId);
+            assertEq(agent.verifiedCount, verified);
+            assertEq(agent.diffCount, diffs);
+            assertEq(verification.isVerified(agentId), verified > 0 && diffs == 0);
+            assertEq(_sellerPoints(policy), 100 + 10 * verified - 10 * diffs);
+        }
+    }
+
     function testFuzz_countersMatchServiceStatuses(uint8[24] calldata steps) public {
         verification.setDiffConfirmations(2);
         address[3] memory auditors = [auditorA, auditorB, auditorC];
@@ -573,6 +956,43 @@ contract AntseedVerificationTest is Test {
     {
         vm.prank(auditor);
         verification.submitModelAudit(EPOCH, model, _evidence(), "ipfs://cid", _single(id, service, verdict));
+    }
+
+    function _fillCountedServices() private {
+        for (uint256 batch = 0; batch < 2; batch++) {
+            IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](256);
+            for (uint256 i = 0; i < results.length; i++) {
+                results[i] = _result(agentId, bytes32(batch * 256 + i + 1), SAME);
+            }
+            bytes32 evidence = _evidence();
+            vm.prank(auditorA);
+            uint256 gasBefore = gasleft();
+            verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", results);
+            uint256 auditGas = gasBefore - gasleft();
+            assertLt(auditGas, 40_000_000, "bounded 256-result audit");
+            emit log_named_uint("256-result audit gas", auditGas);
+        }
+    }
+
+    function _pointsPolicy() private returns (AntseedVerificationPointsPolicy policy) {
+        pools.setSeller(seller, agentId);
+        policy = new AntseedVerificationPointsPolicy(
+            address(verification), address(new VerificationPointsAccounting(address(pools))), 1_000, address(this)
+        );
+        policy.setPenaltyBps(1_000);
+    }
+
+    function _sellerPoints(AntseedVerificationPointsPolicy policy) private view returns (uint256 points) {
+        (points,) = policy.points(bytes32(0), address(0x123), seller, 100, 100);
+    }
+
+    function _serviceKeys(uint256 id, bytes32 service)
+        private
+        pure
+        returns (IAntseedVerification.ServiceKey[] memory keys)
+    {
+        keys = new IAntseedVerification.ServiceKey[](1);
+        keys[0] = IAntseedVerification.ServiceKey(id, service);
     }
 
     function _expire(uint256 id, bytes32 service) private returns (uint256) {

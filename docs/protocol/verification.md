@@ -33,29 +33,41 @@ Status is kept per `(agentId, serviceHash)`:
   owner-settable). It discards pending DIFF votes.
 - `DIFF` is a vote. The service is marked DIFF once `diffConfirmations` distinct
   auditors (owner-settable, default 1) report it, also until `now + validity`. A DIFF
-  affects that service only.
+  affects that service only. Pending votes must reach quorum within a fixed window:
+  the first pending DIFF sets the deadline to `now + validity`. Later votes and
+  UNDETERMINED results do not extend it. At or after the deadline, the next audit
+  discards the old votes before processing its result; auditors can vote again in
+  the new round. Changing `validity` affects new windows, not existing deadlines.
 - Repeating the current verdict refreshes its expiry.
-- `UNDETERMINED` changes no verdict, DIFF vote, or expiry. It is recorded so routing
+- `UNDETERMINED` changes no verdict or verdict expiry and adds no DIFF vote. Like
+  every new audit, it first clears expired pending votes. It is recorded so routing
   can see it: `serviceStatus` returns `lastResult`, `lastAuditedAt`, and
   `undeterminedStreak` (consecutive UNDETERMINED results since the last SAME or DIFF).
 - A result for a different `modelHash` resets the service first, so an old verdict
   never carries over to a new model.
 
-`agentStatus(agentId)` returns `(verifiedCount, diffCount)`: the agent's services
-currently counted as SAME and DIFF. `isVerified(agentId)` is true while at least one
-service is counted SAME and none is counted DIFF.
+`agentStatus(agentId)` returns `(verifiedCount, diffCount)`: the agent's **unexpired**
+SAME and DIFF services. `isVerified(agentId)` is true while at least one unexpired
+service is SAME and none is DIFF. Reads exclude expired verdicts automatically;
+calling `expire` for only some services cannot change verification or points.
+
+An agent can have at most 512 stored definitive services, bounding the reads used
+by the points policy. Pending or UNDETERMINED-only services do not consume a slot.
+New definitive services automatically reclaim an expired slot at capacity; if all
+512 slots are unexpired, adding another service reverts with `TooManyServices`.
 
 Expiry is per service. Once a service's `expiresAt` passes, anyone can call
-`expire([(agentId, serviceHash), ...])` to drop its verdict from the agent's counts
-(it becomes NONE; `lastResult` is kept). Until then the expired verdict is still
-counted. A new audit of the service expires it first, and `antseed verifier submit`
-clears every expired verdict it finds after submitting (`--no-expire` skips this).
+`expire([(agentId, serviceHash), ...])` to clean up its stored verdict
+(it becomes NONE; `lastResult` is kept). Cleanup is optional for correctness: the
+expired verdict is already excluded from agent status and points. A new audit of
+the service expires it first, and `antseed verifier submit` clears every expired
+verdict it finds after submitting (`--no-expire` skips this).
 
 The owner can `clearServiceStatus(agentId, serviceHash)` to remediate a wrong result.
 
 ## Points
 
-`AntseedVerificationPointsPolicy` scales a seller's points by its counted SAME and DIFF
+`AntseedVerificationPointsPolicy` scales a seller's points by its unexpired SAME and DIFF
 services:
 `sellerPoints × max(0, 1 + min(verifiedCount × bonusBps, 5_000) / 10_000 − diffCount × penaltyBps / 10_000)`.
 Each verified model adds `bonusBps` (`100` = +1%, capped at +50% in total); each DIFF

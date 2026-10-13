@@ -7,8 +7,10 @@ import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 /// @notice Model-verification audits submitted by approved auditors, one model per submission.
 /// @dev Status is kept per (agent, service). SAME and DIFF set the service's verdict until
 ///      `expiresAt`; UNDETERMINED is recorded as the latest result for routing but leaves the
-///      verdict unchanged. Once expired, anyone may call `expire` to drop the verdict from the
-///      agent's counts. Auditors
+///      verdict unchanged. Pending DIFF votes have a fixed confirmation window starting with
+///      the first vote; expired votes are discarded before the next audit. Once expired,
+///      anyone may call `expire` to clean up its stored verdict; agent counts already
+///      exclude expired verdicts. Auditors
 ///      earn one credit per model audit, whatever the results, up to an owner-set number per model
 ///      and epoch (default 1), and are paid from the
 ///      verification emission bucket in proportion to their credits.
@@ -32,8 +34,10 @@ interface IAntseedVerification {
 
     /// @param modelHash Model the service was last audited as.
     /// @param verdict Current definitive status (NONE, SAME, or DIFF). A DIFF only lands once
-    ///        `diffConfirmations` auditors agree. Counted in the agent's status until `expire`.
-    /// @param diffVotes Distinct auditors that reported DIFF since the service last changed.
+    ///        `diffConfirmations` auditors agree within the confirmation window. Counted in
+    ///        the agent's status only while unexpired.
+    /// @param diffVotes Distinct auditors in the current pending round. Expired votes stay
+    ///        recorded until the next audit discards them.
     /// @param round Bumped whenever pending DIFF votes are discarded.
     /// @param updatedAt When `verdict` last changed.
     /// @param lastResult Latest submitted result for this service, including UNDETERMINED.
@@ -57,9 +61,9 @@ interface IAntseedVerification {
         bytes32 serviceHash;
     }
 
-    /// @param verifiedCount Services whose current status is SAME.
-    /// @param diffCount Services whose current status is DIFF.
-    /// @dev Expired services stay counted until someone calls `expire` for them.
+    /// @param verifiedCount Unexpired services whose current status is SAME.
+    /// @param diffCount Unexpired services whose current status is DIFF.
+    /// @dev Expired verdicts never contribute, regardless of whether `expire` has been called.
     struct AgentStatus {
         uint16 verifiedCount;
         uint16 diffCount;
@@ -85,11 +89,11 @@ interface IAntseedVerification {
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);
 
-    /// @notice True while the agent has a counted SAME service and no counted DIFF service.
+    /// @notice True while the agent has an unexpired SAME service and no unexpired DIFF service.
     function isVerified(uint256 agentId) external view returns (bool);
 
-    /// @notice Drops expired SAME/DIFF verdicts from their agents' counts. Callable by anyone;
-    ///         unexpired or already-cleared services are skipped.
+    /// @notice Cleans up stored expired SAME/DIFF verdicts, which are already excluded from
+    ///         agent counts. Callable by anyone; unexpired or already-cleared services are skipped.
     /// @return expired Number of services expired by this call.
     function expire(ServiceKey[] calldata services) external returns (uint256 expired);
 
