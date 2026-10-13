@@ -295,7 +295,7 @@ test('a config reload keeps the startup min reputation, which the router plugin 
 
 test('restart requires gateway auth, answers 202 and then runs the shutdown hook', async (t) => {
   let restarts = 0
-  const h = await startHarness(t, [cheap], { onRestartRequested: () => { restarts += 1 } })
+  const h = await startHarness(t, [cheap], { onRestartRequested: () => { restarts += 1 }, minRestartIntervalMs: 0 })
   const denied = await fetch(`${h.url}/_antseed/restart`, { method: 'POST' })
   assert.equal(denied.status, 401)
   assert.equal(restarts, 0)
@@ -303,6 +303,17 @@ test('restart requires gateway auth, answers 202 and then runs the shutdown hook
   assert.equal(accepted.status, 202)
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(restarts, 1)
+})
+
+test('a restart is refused with 429 until the minimum interval since the buyer started has passed', async (t) => {
+  let restarts = 0
+  const h = await startHarness(t, [cheap], { onRestartRequested: () => { restarts += 1 } })
+  const refused = await fetch(`${h.url}/_antseed/restart`, { method: 'POST', headers: { [GATEWAY_CONTROL_HEADER]: SECRET } })
+  assert.equal(refused.status, 429)
+  assert.equal(((await refused.json()) as any).error, 'restart_too_soon')
+  assert.ok(Number(refused.headers.get('retry-after')) > 0)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(restarts, 0)
 })
 
 test('balances reads chain state per identity and caches it', async (t) => {

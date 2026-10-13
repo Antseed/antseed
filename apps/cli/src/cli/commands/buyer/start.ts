@@ -25,6 +25,9 @@ import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
 
+/** How long a graceful shutdown may take before the process exits anyway. */
+const SHUTDOWN_DEADLINE_MS = 15_000
+
 interface LocalSeederInfo {
   dhtPort: number
   signalingPort: number
@@ -526,9 +529,20 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
 
       // One graceful shutdown path for signals and for a gateway-requested
       // restart (`POST /_antseed/restart`, which then exits with code 75).
+      // A hung stop (node.stop() waiting on the network) must still end the
+      // process: the port is already closed, and a supervisor restarts only
+      // a process that exits.
       let shutdownPromise: Promise<void> | null = null
-      let shutdown: () => Promise<void> = async () => {}
-      const runShutdown = (): Promise<void> => (shutdownPromise ??= shutdown())
+      const runShutdown = (exitCodeOnTimeout = 1): Promise<void> => {
+        if (!shutdownPromise) {
+          setTimeout(() => {
+            console.error(chalk.red(`Shutdown did not finish within ${SHUTDOWN_DEADLINE_MS / 1000} s; exiting.`))
+            process.exit(exitCodeOnTimeout)
+          }, SHUTDOWN_DEADLINE_MS).unref()
+          shutdownPromise = shutdown()
+        }
+        return shutdownPromise
+      }
 
       const proxy = new BuyerProxy({
         buyerIdentities,
@@ -547,7 +561,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           ? {
               onRestartRequested: async () => {
                 try {
-                  await runShutdown()
+                  await runShutdown(BUYER_RESTART_EXIT_CODE)
                 } finally {
                   process.exit(BUYER_RESTART_EXIT_CODE)
                 }
@@ -556,6 +570,19 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           : {}),
       })
       let ownsProxyListener = false
+      let depositWatcher: DepositWatcher | null = null
+      let depositWatchHub: DepositWatchHub | null = null
+      // Set before the proxy listens: a restart can be requested from then on,
+      // and stops whatever has started by the time it runs.
+      const shutdown = async (): Promise<void> => {
+        nodeSpinner.start('Shutting down...')
+        depositWatcher?.stop()
+        for (const watcher of identityWatchers) watcher.stop()
+        depositWatchHub?.stop()
+        if (ownsProxyListener) await proxy.stop()
+        await node.stop()
+        nodeSpinner.succeed('Disconnected. All channels finalized.')
+      }
 
       try {
         await proxy.start()
@@ -582,8 +609,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       // the deposits balance gaslessly via the relayer network. Skipped when
       // another daemon owns the proxy port — it already runs a watcher, and a
       // second signer against the same wallet would race it.
-      let depositWatcher: DepositWatcher | null = null
-      let depositWatchHub: DepositWatchHub | null = null
       const depositRelayAddress = cryptoOverrides?.depositRelayAddress || chainConfig.depositRelayAddress
       let watcherAbsence: DepositWatcherAbsenceReason | null = null
       if (!ownsProxyListener) {
@@ -675,15 +700,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       console.log(chalk.dim('Filter debug logs: antseed buyer start --log-filter ProxyMux'))
       console.log('')
 
-      shutdown = async () => {
-        nodeSpinner.start('Shutting down...')
-        depositWatcher?.stop()
-        for (const watcher of identityWatchers) watcher.stop()
-        depositWatchHub?.stop()
-        if (ownsProxyListener) await proxy.stop()
-        await node.stop()
-        nodeSpinner.succeed('Disconnected. All channels finalized.')
-      }
-      setupShutdownHandler(runShutdown)
+      setupShutdownHandler(() => runShutdown())
     })
 }

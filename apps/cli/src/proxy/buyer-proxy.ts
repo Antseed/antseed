@@ -211,6 +211,11 @@ export interface BuyerProxyConfig {
    */
   onRestartRequested?: () => void | Promise<void>
   /**
+   * `POST /_antseed/restart` is refused (429) this soon after the proxy
+   * started, so restart requests cannot keep the buyer bouncing. Default 30 s.
+   */
+  minRestartIntervalMs?: number
+  /**
    * Settings this buyer took from the environment or `buyer start` flags
    * rather than the config file (see `buyerSettingOverrides`), reported to
    * the gateway so its settings page can say a config edit will not apply.
@@ -243,6 +248,7 @@ export interface BuyerBalances {
 
 /** Exit code `POST /_antseed/restart` ends the process with, so a supervisor restarts it. */
 export const BUYER_RESTART_EXIT_CODE = 75
+const MIN_RESTART_INTERVAL_MS = 30_000
 const BALANCE_CACHE_TTL_MS = 15_000
 /** A balance up to this much past its TTL is answered at once while it refreshes. */
 const BALANCE_REVALIDATE_MS = 45_000
@@ -1071,11 +1077,14 @@ export class BuyerProxy {
   private readonly _restartHandler: (() => void | Promise<void>) | null
   private readonly _settingOverrides: string[]
   private _restartRequested = false
+  /** A restarted buyer is a new process, so its start is the last accepted restart. */
+  private readonly _restartAllowedAt: number
 
   constructor(config: BuyerProxyConfig) {
     this._minPeerReputation = config.minPeerReputation ?? null
     this._balanceReader = config.balanceReader ?? null
     this._restartHandler = config.onRestartRequested ?? null
+    this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
     this._node = config.node
     this._verifier = config.verifier
@@ -1685,6 +1694,12 @@ export class BuyerProxy {
     const restartHandler = this._restartHandler
     if (!restartHandler) {
       sendJson(res, 503, { ok: false, error: 'restart_unsupported' })
+      return
+    }
+    const waitMs = this._restartAllowedAt - Date.now()
+    if (!this._restartRequested && waitMs > 0) {
+      res.setHeader('retry-after', String(Math.ceil(waitMs / 1000)))
+      sendJson(res, 429, { ok: false, error: 'restart_too_soon' })
       return
     }
     if (!this._restartRequested) {
