@@ -68,6 +68,19 @@ export function isSupervisedProcess(env: NodeJS.ProcessEnv = process.env): boole
   return env['ANTSEED_SUPERVISED']?.trim() === '1'
 }
 
+/**
+ * Keeps the buyer running when whoever reads its output is gone (a gateway
+ * that spawned it and was SIGKILLed): writes to the dead pipe fail with EPIPE,
+ * which would otherwise crash the process. Other stream errors still throw.
+ */
+export function ignoreBrokenPipes(streams: NodeJS.EventEmitter[] = [process.stdout, process.stderr]): void {
+  for (const stream of streams) {
+    stream.on('error', (err: NodeJS.ErrnoException) => {
+      if (err.code !== 'EPIPE') throw err
+    })
+  }
+}
+
 export function resolveBuyerRouterName(options: { router?: string }): string {
   return (options.router as string | undefined) ?? 'local'
 }
@@ -217,6 +230,7 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
     .option('--require-verifier', 'refuse to route unless a verifier SDK verifies the seller (default: verify but route anyway)')
     .option('--no-verifier', 'disable seller verification entirely')
     .action(async (options, command: Command) => {
+      ignoreBrokenPipes()
       const globalOpts = getGlobalOptions(buyerCmd)
       const config = await loadConfig(globalOpts.config)
       const logFilter = typeof options.logFilter === 'string' ? options.logFilter.trim() : ''
