@@ -1,19 +1,20 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.24;
 
+import {IAntseedEmissionsGate} from "./IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 
 /// @notice Model-verification audits submitted by approved auditors, one model per submission.
-/// @dev Status is kept per (agent, service). SAME and DIFF set the service's verdict until
-///      `expiresAt`; UNDETERMINED is recorded as the latest result for routing but leaves the
-///      verdict unchanged. Pending DIFF votes have a fixed confirmation window starting with
-///      the first vote; expired votes are discarded before the next audit. Once expired,
-///      anyone may call `expire` to clean up its stored verdict; agent counts already
-///      exclude expired verdicts. Auditors
-///      earn one credit per model audit, whatever the results, up to an owner-set number per model
-///      and epoch (default 1), and are paid from the
-///      verification emission bucket in proportion to their credits.
+/// @dev Status is kept per (agent, service). SAME and DIFF set the service's verdict and record
+///      the emissions epoch it was given in; the verdict counts while
+///      `currentEpoch < epoch + validityEpochs`, and drops out on its own afterwards.
+///      UNDETERMINED is recorded as the latest result for routing but leaves the verdict and its
+///      epoch unchanged. A single approved auditor's SAME or DIFF sets the verdict; auditors
+///      double-check DIFF results off-chain before submitting them. Auditors earn one credit per model audit, whatever the results, up to an
+///      owner-set number per model and epoch (default 1), once the owner sets `rewardsStartEpoch`,
+///      and are paid from the verification emission bucket in proportion to their credits, capped
+///      at `maxAuditorShareBps` of the epoch's budget per auditor.
 interface IAntseedVerification {
     enum Verdict {
         NONE,
@@ -33,50 +34,43 @@ interface IAntseedVerification {
     }
 
     /// @param modelHash Model the service was last audited as.
-    /// @param verdict Current definitive status (NONE, SAME, or DIFF). A DIFF only lands once
-    ///        `diffConfirmations` auditors agree within the confirmation window. Counted in
-    ///        the agent's status only while unexpired.
-    /// @param diffVotes Distinct auditors in the current pending round. Expired votes stay
-    ///        recorded until the next audit discards them.
-    /// @param round Bumped whenever pending DIFF votes are discarded.
-    /// @param updatedAt When `verdict` last changed.
+    /// @param verdict Latest definitive status (NONE, SAME, or DIFF). Counted in the agent's
+    ///        status only while `currentEpoch < epoch + validityEpochs`.
+    /// @param updatedAt When the live verdict last changed.
     /// @param lastResult Latest submitted result for this service, including UNDETERMINED.
     /// @param undeterminedStreak Consecutive UNDETERMINED results since the last SAME or DIFF.
     /// @param lastAuditedAt When `lastResult` was submitted.
-    /// @param expiresAt When `verdict` stops applying; refreshed by every SAME or DIFF result.
+    /// @param epoch Emissions epoch `verdict` was given in; every SAME or DIFF result moves it to
+    ///        the current epoch. Zero while `verdict` is NONE.
     struct ServiceStatus {
         bytes32 modelHash;
         Verdict verdict;
-        uint16 diffVotes;
-        uint32 round;
         uint64 updatedAt;
         Verdict lastResult;
         uint16 undeterminedStreak;
         uint64 lastAuditedAt;
-        uint64 expiresAt;
+        uint64 epoch;
     }
 
-    struct ServiceKey {
-        uint256 agentId;
-        bytes32 serviceHash;
-    }
-
-    /// @param verifiedCount Unexpired services whose current status is SAME.
-    /// @param diffCount Unexpired services whose current status is DIFF.
-    /// @dev Expired verdicts never contribute, regardless of whether `expire` has been called.
+    /// @param verifiedCount Services whose live verdict is SAME.
+    /// @param diffCount Services whose live verdict is DIFF.
     struct AgentStatus {
         uint16 verifiedCount;
         uint16 diffCount;
     }
 
     function registry() external view returns (IAntseedRegistry);
+    /// @notice Emissions gate pinned at deployment; every epoch the contract uses comes from it.
+    function emissionsGate() external view returns (IAntseedEmissionsGate);
+    /// @notice Epochs a SAME or DIFF verdict counts for, including the one it was given in.
+    function validityEpochs() external view returns (uint8);
     function sellerPools() external view returns (IAntseedSellerPools);
     function approvedAuditors(address auditor) external view returns (bool);
     function setAuditor(address auditor, bool approved) external;
 
     /// @notice Records one auditor's results for every seller audited as `modelHash`.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
-    ///      emissions epoch, `evidenceHash` is unused, and `results` is non-empty, bounded, and
+    ///      epoch of the pinned emissions gate, `evidenceHash` is unused, and `results` is non-empty, bounded, and
     ///      strictly ordered by (agentId, serviceHash).
     function submitModelAudit(
         uint256 expectedEpoch,
@@ -89,13 +83,13 @@ interface IAntseedVerification {
     function serviceStatus(uint256 agentId, bytes32 serviceHash) external view returns (ServiceStatus memory);
     function agentStatus(uint256 agentId) external view returns (AgentStatus memory);
 
-    /// @notice True while the agent has an unexpired SAME service and no unexpired DIFF service.
+    /// @notice True while the agent has a live SAME service and no live DIFF service.
     function isVerified(uint256 agentId) external view returns (bool);
 
-    /// @notice Cleans up stored expired SAME/DIFF verdicts, which are already excluded from
-    ///         agent counts. Callable by anyone; unexpired or already-cleared services are skipped.
-    /// @return expired Number of services expired by this call.
-    function expire(ServiceKey[] calldata services) external returns (uint256 expired);
+    /// @notice Most of an epoch's verification budget one auditor can claim, in bps of 10,000.
+    function maxAuditorShareBps() external view returns (uint16);
+    /// @notice First epoch whose audits earn credits; `type(uint256).max` while rewards are off.
+    function rewardsStartEpoch() external view returns (uint256);
 
     /// @notice Claims the caller's auditor share of the verification emission bucket.
     function claimAuditorRewards(uint256[] calldata epochs) external returns (uint256 total);

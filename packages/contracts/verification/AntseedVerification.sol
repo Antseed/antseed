@@ -3,7 +3,6 @@ pragma solidity ^0.8.24;
 
 import {Ownable} from "@openzeppelin/contracts/access/Ownable.sol";
 import {Ownable2Step} from "@openzeppelin/contracts/access/Ownable2Step.sol";
-import {EnumerableSet} from "@openzeppelin/contracts/utils/structs/EnumerableSet.sol";
 
 import {IAntseedEmissionsGate} from "../interfaces/IAntseedEmissionsGate.sol";
 import {IAntseedRegistry} from "../interfaces/IAntseedRegistry.sol";
@@ -17,57 +16,69 @@ interface IEmissionsGateSource {
 
 /// @notice Records model-verification audits from approved auditors, one model per submission.
 ///
-///         Status: each (agent, service) keeps its latest definitive verdict with its own expiry.
-///         A SAME verifies that service until `now + validity`. A DIFF only lands once
-///         `diffConfirmations` distinct auditors report it within a fixed `validity` window
-///         from the first pending vote; until then the service keeps its status.
-///         A SAME discards pending DIFF votes. Repeating the current verdict refreshes its expiry.
-///         An UNDETERMINED result is recorded as the service's latest result (with a streak
-///         counter for routing) but changes no verdict or expiry and adds no vote. Expired
-///         pending DIFF votes are discarded before any new result. Each agent counts its
-///         unexpired SAME and DIFF services. Expired verdicts never affect verification or
-///         points; anyone can call `expire` to clean up their stored records.
+///         Status: each (agent, service) keeps its latest definitive verdict and the emissions
+///         epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
+///         (default 2: through the epoch after the audit). A SAME verifies that service and a
+///         DIFF marks it as not serving the audited model; the latest SAME or DIFF wins and moves
+///         the verdict to the current epoch. Auditors double-check a DIFF off-chain before
+///         submitting it. An UNDETERMINED result is recorded as the service's latest result
+///         (with a streak counter for routing) but changes no verdict or epoch.
+///         Each agent keeps per-epoch SAME and DIFF counters, so its status sums only the last
+///         `validityEpochs` epochs and older verdicts drop out without any cleanup.
 ///
-///         Rewards: an auditor earns one credit per model audit, whatever the results, up to
-///         `maxCreditsPerModelPerEpoch` per model and `maxCreditsPerAuditorPerEpoch` overall, provided
-///         the audit covers at least one agent with staked pool power. Once the epoch is final an auditor claims
-///         `budget * credits / totalCredits` from the verification emission bucket.
+///         Epochs come from the emissions gate pinned at deployment; audits revert without it.
+///
+///         Rewards: from `rewardsStartEpoch` on (off until the owner sets it), an auditor earns one
+///         credit per model audit, whatever the results, up to `maxCreditsPerModelPerEpoch` per
+///         model and `maxCreditsPerAuditorPerEpoch` overall, provided the audit covers at least one
+///         agent with staked pool power. Once the epoch is final an auditor claims
+///         `min(budget * credits / totalCredits, budget * maxAuditorShareBps / BPS)` from the
+///         verification emission bucket, using the share cap in force when the epoch's first
+///         credit was earned. Budget above the cap is never minted.
 contract AntseedVerification is IAntseedVerification, Ownable2Step {
-    using EnumerableSet for EnumerableSet.Bytes32Set;
-
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
-    uint256 public constant MAX_COUNTED_SERVICES_PER_AGENT = 512;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
+    uint8 public constant MAX_VALIDITY_EPOCHS = 4;
+    uint256 public constant BPS = 10_000;
+
+    struct EpochCounts {
+        uint32 same;
+        uint32 diff;
+    }
 
     IAntseedRegistry public immutable override registry;
+    IAntseedEmissionsGate public immutable override emissionsGate;
     IAntseedSellerPools public override sellerPools;
-    uint64 public validity = 14 days;
-    uint16 public diffConfirmations = 1;
+    uint8 public override validityEpochs = 2;
     uint32 public maxCreditsPerAuditorPerEpoch = 100;
     uint32 public maxCreditsPerModelPerEpoch = 1;
+    /// @notice Most of an epoch's verification budget one auditor can claim, in bps (default 20%).
+    uint16 public override maxAuditorShareBps = 2_000;
+    /// @notice First epoch whose audits earn credits; `type(uint256).max` keeps rewards off.
+    uint256 public override rewardsStartEpoch = type(uint256).max;
 
     mapping(address auditor => bool approved) public override approvedAuditors;
     mapping(bytes32 evidenceHash => bool used) public usedEvidence;
 
-    mapping(uint256 agentId => EnumerableSet.Bytes32Set services) private _countedServices;
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
-    mapping(uint256 agentId => mapping(bytes32 serviceHash => mapping(uint32 round => mapping(address auditor => bool))))
-        private _diffVoted;
-    // Only read while diffVotes > 0; the first pending vote of each round overwrites it.
-    mapping(uint256 agentId => mapping(bytes32 serviceHash => uint64 deadline)) private _diffVoteExpiresAt;
+    // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
+    mapping(uint256 agentId => mapping(uint256 epoch => EpochCounts counts)) private _epochCounts;
 
     mapping(uint256 epoch => uint256 credits) public epochCredits;
     mapping(uint256 epoch => mapping(address auditor => uint256 credits)) public auditorEpochCredits;
     mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => uint256 credits))) public
         modelCredits;
     mapping(uint256 epoch => mapping(address auditor => bool claimed)) public auditorEpochClaimed;
+    /// @notice `maxAuditorShareBps` saved when the epoch earned its first credit; 0 before that.
+    mapping(uint256 epoch => uint16 shareBps) public epochMaxAuditorShareBps;
 
     event AuditorSet(address indexed auditor, bool approved);
     event SellerPoolsSet(address sellerPools);
-    event ValiditySet(uint64 validity);
-    event DiffConfirmationsSet(uint16 diffConfirmations);
+    event ValidityEpochsSet(uint8 validityEpochs);
     event MaxCreditsPerAuditorPerEpochSet(uint32 maxCredits);
     event MaxCreditsPerModelPerEpochSet(uint32 maxCredits);
+    event MaxAuditorShareBpsSet(uint16 shareBps);
+    event RewardsStartEpochSet(uint256 epoch);
     event ModelAudited(
         bytes32 indexed modelHash,
         address indexed auditor,
@@ -83,7 +94,6 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         uint256 indexed agentId, bytes32 indexed serviceHash, bytes32 modelHash, Verdict previous, Verdict current
     );
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
-    event ServiceExpired(uint256 indexed agentId, bytes32 indexed serviceHash, Verdict verdict);
     event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash);
     event AuditorRewardClaimed(uint256 indexed epoch, address indexed auditor, uint256 amount);
 
@@ -93,15 +103,25 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     error InvalidEvidenceUri();
     error EvidenceAlreadyUsed();
     error InvalidResults();
-    error TooManyServices();
     error UnknownAgent();
     error SelfAudit();
     error EpochChanged();
     error EpochNotFinalized();
 
+    /// @dev Pins the emissions gate behind `registry.emissions()`. After M001 the registry points at
+    ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
+    ///      entry is the gate itself. Verdict epochs only make sense against one gate, so a new
+    ///      gate needs a new verification deployment.
     constructor(address registry_, address sellerPools_) Ownable(msg.sender) {
         if (registry_.code.length == 0) revert InvalidAddress();
         registry = IAntseedRegistry(registry_);
+        address emissions = IAntseedRegistry(registry_).emissions();
+        if (emissions.code.length == 0) revert InvalidAddress();
+        address gate = emissions;
+        try IEmissionsGateSource(emissions).emissionsGate() returns (address source) {
+            if (source.code.length != 0) gate = source;
+        } catch {}
+        emissionsGate = IAntseedEmissionsGate(gate);
         _setSellerPools(sellerPools_);
     }
 
@@ -119,17 +139,12 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         _setSellerPools(sellerPools_);
     }
 
-    function setValidity(uint64 validity_) external onlyOwner {
-        if (validity_ == 0) revert InvalidValue();
-        validity = validity_;
-        emit ValiditySet(validity_);
-    }
-
-    /// @notice Distinct auditors that must report DIFF on a service before it is marked DIFF.
-    function setDiffConfirmations(uint16 confirmations) external onlyOwner {
-        if (confirmations == 0) revert InvalidValue();
-        diffConfirmations = confirmations;
-        emit DiffConfirmationsSet(confirmations);
+    /// @notice Epochs a verdict counts for, including the one it was given in. Applies to
+    ///         existing verdicts immediately.
+    function setValidityEpochs(uint8 epochs) external onlyOwner {
+        if (epochs == 0 || epochs > MAX_VALIDITY_EPOCHS) revert InvalidValue();
+        validityEpochs = epochs;
+        emit ValidityEpochsSet(epochs);
     }
 
     function setMaxCreditsPerAuditorPerEpoch(uint32 maxCredits) external onlyOwner {
@@ -145,10 +160,26 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         emit MaxCreditsPerModelPerEpochSet(maxCredits);
     }
 
-    /// @notice Remediation for a wrong service result: resets it and discards pending DIFF votes.
+    /// @notice Caps one auditor's claim per epoch so a compromised auditor cannot take the whole
+    ///         bucket. Applies to epochs that earn their first credit after the change.
+    function setMaxAuditorShareBps(uint16 shareBps) external onlyOwner {
+        if (shareBps == 0 || shareBps > BPS) revert InvalidValue();
+        maxAuditorShareBps = shareBps;
+        emit MaxAuditorShareBpsSet(shareBps);
+    }
+
+    /// @notice Audits earn credits from this epoch on. Set it to the epoch rewards launch so
+    ///         audits made before launch never claim past budgets; `type(uint256).max` turns
+    ///         new credits off again. Credits already earned stay claimable.
+    function setRewardsStartEpoch(uint256 epoch) external onlyOwner {
+        rewardsStartEpoch = epoch;
+        emit RewardsStartEpochSet(epoch);
+    }
+
+    /// @notice Remediation for a wrong service result: resets its verdict and latest result.
     function clearServiceStatus(uint256 agentId, bytes32 serviceHash) external onlyOwner {
         ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
-        _resetService(agentId, serviceHash, service, agentStatus(agentId));
+        _resetService(agentId, serviceHash, service, emissionsGate.currentEpoch());
         service.lastResult = Verdict.NONE;
         service.undeterminedStreak = 0;
     }
@@ -171,12 +202,11 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         uint256 count = results.length;
         if (count == 0 || count > MAX_RESULTS_PER_AUDIT) revert InvalidResults();
 
-        (bool hasEpoch, uint256 epoch) = _currentEpoch();
-        if (hasEpoch && epoch != expectedEpoch) revert EpochChanged();
+        uint256 epoch = emissionsGate.currentEpoch();
+        if (epoch != expectedEpoch) revert EpochChanged();
         usedEvidence[evidenceHash] = true;
 
         bool staked;
-        AgentStatus memory agent;
         uint256 previousAgent;
         bytes32 previousService;
         for (uint256 i = 0; i < count; i++) {
@@ -187,17 +217,16 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
             ) revert InvalidResults();
             if (i == 0 || result.agentId != previousAgent) {
                 if (msg.sender == _agentOwner(result.agentId)) revert SelfAudit();
-                if (hasEpoch && !staked) staked = _hasPoolPower(result.agentId, epoch);
-                agent = agentStatus(result.agentId);
+                if (!staked) staked = _hasPoolPower(result.agentId, epoch);
                 previousAgent = result.agentId;
             }
             previousService = result.serviceHash;
             emit ServiceAudited(result.agentId, result.serviceHash, msg.sender, modelHash, result.verdict);
-            _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, agent);
+            _applyResult(result.agentId, result.serviceHash, modelHash, result.verdict, epoch);
         }
 
         emit ModelAudited(modelHash, msg.sender, expectedEpoch, evidenceHash, evidenceUri, count);
-        if (staked) _creditAudit(epoch, modelHash);
+        if (staked && epoch >= rewardsStartEpoch) _creditAudit(epoch, modelHash);
     }
 
     function serviceStatus(uint256 agentId, bytes32 serviceHash)
@@ -209,33 +238,13 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         return _serviceStatus[agentId][serviceHash];
     }
 
-    function agentStatus(uint256 agentId) public view override returns (AgentStatus memory status) {
-        EnumerableSet.Bytes32Set storage services = _countedServices[agentId];
-        uint256 count = services.length();
-        for (uint256 i = 0; i < count; i++) {
-            ServiceStatus storage service = _serviceStatus[agentId][services.at(i)];
-            if (block.timestamp >= service.expiresAt) continue;
-            if (service.verdict == Verdict.SAME) status.verifiedCount += 1;
-            else if (service.verdict == Verdict.DIFF) status.diffCount += 1;
-        }
+    function agentStatus(uint256 agentId) public view override returns (AgentStatus memory) {
+        return _agentStatusAt(agentId, emissionsGate.currentEpoch());
     }
 
     function isVerified(uint256 agentId) external view override returns (bool) {
         AgentStatus memory agent = agentStatus(agentId);
         return agent.verifiedCount > 0 && agent.diffCount == 0;
-    }
-
-    function expire(ServiceKey[] calldata services) external override returns (uint256 expired) {
-        AgentStatus memory agent;
-        uint256 previousAgent;
-        for (uint256 i = 0; i < services.length; i++) {
-            uint256 agentId = services[i].agentId;
-            if (i == 0 || agentId != previousAgent) {
-                agent = agentStatus(agentId);
-                previousAgent = agentId;
-            }
-            if (_expireIfStale(agentId, services[i].serviceHash, agent)) expired += 1;
-        }
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -246,7 +255,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     ///         Epochs with nothing to claim, or whose bucket has no budget yet, are skipped
     ///         and stay claimable.
     function claimAuditorRewards(uint256[] calldata epochs) external override returns (uint256 total) {
-        IAntseedEmissionsGate gate = _emissionsGate();
+        IAntseedEmissionsGate gate = emissionsGate;
         uint256 current = gate.currentEpoch();
         for (uint256 i = 0; i < epochs.length; i++) {
             uint256 epoch = epochs[i];
@@ -261,24 +270,19 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     }
 
     function pendingAuditorReward(address auditor, uint256 epoch) external view override returns (uint256) {
-        return _pendingReward(_emissionsGate(), auditor, epoch);
+        return _pendingReward(emissionsGate, auditor, epoch);
     }
 
     // ═══════════════════════════════════════════════════════════════════
     //                        INTERNAL
     // ═══════════════════════════════════════════════════════════════════
 
-    /// @dev Reuse live counts in memory for each agent's audit batch; no persistent counter cache.
-    function _applyResult(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, AgentStatus memory agent)
+    function _applyResult(uint256 agentId, bytes32 serviceHash, bytes32 modelHash, Verdict verdict, uint256 epoch)
         private
     {
-        _expireIfStale(agentId, serviceHash, agent);
         ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
-        if (service.diffVotes != 0 && block.timestamp >= _diffVoteExpiresAt[agentId][serviceHash]) {
-            _discardDiffVotes(service);
-        }
         if (service.modelHash != modelHash) {
-            if (service.modelHash != bytes32(0)) _resetService(agentId, serviceHash, service, agent);
+            if (service.modelHash != bytes32(0)) _resetService(agentId, serviceHash, service, epoch);
             service.modelHash = modelHash;
             service.undeterminedStreak = 0;
         }
@@ -290,86 +294,68 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         }
         service.undeterminedStreak = 0;
 
-        Verdict previous = service.verdict;
-        if (verdict == Verdict.SAME) {
-            _discardDiffVotes(service);
-        } else if (previous != Verdict.DIFF) {
-            mapping(address => bool) storage voted = _diffVoted[agentId][serviceHash][service.round];
-            if (voted[msg.sender]) return;
-            voted[msg.sender] = true;
-            service.diffVotes += 1;
-            if (service.diffVotes < diffConfirmations) {
-                if (service.diffVotes == 1) {
-                    _diffVoteExpiresAt[agentId][serviceHash] = uint64(block.timestamp) + validity;
-                }
-                return;
-            }
-            _discardDiffVotes(service);
-        }
-
-        service.expiresAt = uint64(block.timestamp) + validity;
-        if (previous == verdict) return;
-        if (previous == Verdict.NONE) _trackService(agentId, serviceHash, agent);
-        if (previous == Verdict.SAME) agent.verifiedCount -= 1;
-        else if (previous == Verdict.DIFF) agent.diffCount -= 1;
-        if (verdict == Verdict.SAME) agent.verifiedCount += 1;
-        else agent.diffCount += 1;
+        Verdict previous = _liveVerdict(service, epoch);
+        if (service.verdict == verdict && service.epoch == epoch) return;
+        _uncount(agentId, service);
+        EpochCounts storage counts = _epochCounts[agentId][epoch];
+        if (verdict == Verdict.SAME) counts.same += 1;
+        else counts.diff += 1;
         service.verdict = verdict;
+        service.epoch = uint64(epoch);
+        if (previous == verdict) return;
         service.updatedAt = uint64(block.timestamp);
-        _emitServiceChange(agentId, serviceHash, service, previous, agent);
+        _emitServiceChange(agentId, serviceHash, service, previous, epoch);
     }
 
-    function _resetService(uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, AgentStatus memory agent)
+    function _resetService(uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, uint256 epoch)
         private
     {
-        Verdict previous = service.verdict;
-        if (block.timestamp < service.expiresAt) {
-            if (previous == Verdict.SAME) agent.verifiedCount -= 1;
-            if (previous == Verdict.DIFF) agent.diffCount -= 1;
-        }
-        _countedServices[agentId].remove(serviceHash);
-        _discardDiffVotes(service);
+        Verdict previous = _liveVerdict(service, epoch);
+        _uncount(agentId, service);
         service.verdict = Verdict.NONE;
+        service.epoch = 0;
         service.updatedAt = uint64(block.timestamp);
-        service.expiresAt = 0;
-        if (previous != Verdict.NONE) {
-            _emitServiceChange(agentId, serviceHash, service, previous, agent);
+        if (previous != Verdict.NONE) _emitServiceChange(agentId, serviceHash, service, previous, epoch);
+    }
+
+    /// @dev Removes the service's stored verdict from the counter of the epoch it was given in.
+    function _uncount(uint256 agentId, ServiceStatus storage service) private {
+        Verdict stored = service.verdict;
+        if (stored == Verdict.NONE) return;
+        EpochCounts storage counts = _epochCounts[agentId][service.epoch];
+        if (stored == Verdict.SAME) counts.same -= 1;
+        else counts.diff -= 1;
+    }
+
+    function _liveVerdict(ServiceStatus storage service, uint256 epoch) private view returns (Verdict) {
+        Verdict stored = service.verdict;
+        if (stored == Verdict.NONE || !_isLive(service.epoch, epoch)) return Verdict.NONE;
+        return stored;
+    }
+
+    function _isLive(uint256 givenEpoch, uint256 epoch) private view returns (bool) {
+        return epoch < givenEpoch + validityEpochs;
+    }
+
+    /// @dev Sums the counters of the epochs whose verdicts are still live, saturating at uint16.
+    function _agentStatusAt(uint256 agentId, uint256 epoch) private view returns (AgentStatus memory status) {
+        uint256 same;
+        uint256 diff;
+        uint256 window = validityEpochs;
+        for (uint256 i = 0; i < window && i <= epoch; i++) {
+            EpochCounts storage counts = _epochCounts[agentId][epoch - i];
+            same += counts.same;
+            diff += counts.diff;
         }
-    }
-
-    /// @dev Cleans up an expired verdict and pending DIFF votes; live counts already exclude it.
-    ///      The latest result and model stay recorded.
-    function _expireIfStale(uint256 agentId, bytes32 serviceHash, AgentStatus memory agent) private returns (bool) {
-        ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
-        Verdict previous = service.verdict;
-        if (previous == Verdict.NONE || block.timestamp < service.expiresAt) return false;
-        emit ServiceExpired(agentId, serviceHash, previous);
-        _resetService(agentId, serviceHash, service, agent);
-        return true;
-    }
-
-    /// @dev Bound settlement reads. At capacity, reclaim an expired entry before adding one.
-    function _trackService(uint256 agentId, bytes32 serviceHash, AgentStatus memory agent) private {
-        EnumerableSet.Bytes32Set storage services = _countedServices[agentId];
-        if (services.length() == MAX_COUNTED_SERVICES_PER_AGENT) {
-            for (uint256 i = 0; i < MAX_COUNTED_SERVICES_PER_AGENT; i++) {
-                if (_expireIfStale(agentId, services.at(i), agent)) break;
-            }
-            if (services.length() == MAX_COUNTED_SERVICES_PER_AGENT) revert TooManyServices();
-        }
-        services.add(serviceHash);
-    }
-
-    function _discardDiffVotes(ServiceStatus storage service) private {
-        if (service.diffVotes == 0) return;
-        service.diffVotes = 0;
-        service.round += 1;
+        status.verifiedCount = uint16(same > type(uint16).max ? type(uint16).max : same);
+        status.diffCount = uint16(diff > type(uint16).max ? type(uint16).max : diff);
     }
 
     function _emitServiceChange(
-        uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, Verdict previous, AgentStatus memory agent
+        uint256 agentId, bytes32 serviceHash, ServiceStatus storage service, Verdict previous, uint256 epoch
     ) private {
         emit ServiceStatusChanged(agentId, serviceHash, service.modelHash, previous, service.verdict);
+        AgentStatus memory agent = _agentStatusAt(agentId, epoch);
         emit AgentStatusChanged(agentId, agent.verifiedCount, agent.diffCount);
     }
 
@@ -377,21 +363,11 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     function _creditAudit(uint256 epoch, bytes32 modelHash) private {
         if (modelCredits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
         if (auditorEpochCredits[epoch][msg.sender] >= maxCreditsPerAuditorPerEpoch) return;
+        if (epochCredits[epoch] == 0) epochMaxAuditorShareBps[epoch] = maxAuditorShareBps;
         modelCredits[epoch][msg.sender][modelHash] += 1;
         auditorEpochCredits[epoch][msg.sender] += 1;
         epochCredits[epoch] += 1;
         emit AuditCredited(epoch, msg.sender, modelHash);
-    }
-
-    /// @dev Without a live gate there is no epoch to check against and nothing is credited.
-    function _currentEpoch() private view returns (bool ok, uint256 epoch) {
-        address gate = _gateAddress();
-        if (gate == address(0)) return (false, 0);
-        try IAntseedEmissionsGate(gate).currentEpoch() returns (uint256 current) {
-            return (true, current);
-        } catch {
-            return (false, 0);
-        }
     }
 
     /// @dev Failing pools never block an audit; they only withhold the credit.
@@ -410,25 +386,10 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     {
         uint256 credits = auditorEpochCredits[epoch][auditor];
         if (credits == 0 || auditorEpochClaimed[epoch][auditor]) return 0;
-        return (gate.controllerEpochBudget(address(this), epoch) * credits) / epochCredits[epoch];
-    }
-
-    function _emissionsGate() private view returns (IAntseedEmissionsGate) {
-        address gate = _gateAddress();
-        if (gate == address(0)) revert InvalidAddress();
-        return IAntseedEmissionsGate(gate);
-    }
-
-    /// @dev The emissions gate behind `registry.emissions()`. After M001 the registry points at
-    ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
-    ///      entry is the gate itself. Zero when there is no contract.
-    function _gateAddress() private view returns (address) {
-        address emissions = registry.emissions();
-        if (emissions.code.length == 0) return address(0);
-        try IEmissionsGateSource(emissions).emissionsGate() returns (address gate) {
-            if (gate.code.length != 0) return gate;
-        } catch {}
-        return emissions;
+        uint256 budget = gate.controllerEpochBudget(address(this), epoch);
+        uint256 reward = (budget * credits) / epochCredits[epoch];
+        uint256 cap = (budget * epochMaxAuditorShareBps[epoch]) / BPS;
+        return reward < cap ? reward : cap;
     }
 
     function _setSellerPools(address sellerPools_) private {

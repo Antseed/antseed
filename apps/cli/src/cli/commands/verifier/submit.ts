@@ -3,7 +3,7 @@ import { createInterface } from 'node:readline/promises'
 import chalk from 'chalk'
 import Table from 'cli-table3'
 import type { Command } from 'commander'
-import { getAddress, type AbstractSigner } from 'ethers'
+import { getAddress } from 'ethers'
 import type { VerifierClient } from '@antseed/node/payments'
 import { loadConfig } from '../../../config/loader.js'
 import {
@@ -32,7 +32,6 @@ interface SubmitOptions {
   dryRun?: boolean
   yes?: boolean
   rpcUrl?: string
-  expire?: boolean
 }
 
 interface PendingModelAudit {
@@ -76,7 +75,6 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
     .option('--dry-run', 'preview the audits without publishing or broadcasting')
     .option('--yes', 'submit without an interactive confirmation prompt')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
-    .option('--no-expire', 'skip clearing expired SAME/DIFF verdicts after submitting')
     .action(async (options: SubmitOptions, command: Command) => {
       const globalOptions = getGlobalOptions(command)
       const config = await loadConfig(globalOptions.config)
@@ -151,17 +149,12 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         + 'Credits also require at least one audited seller with staked pool power.',
       ))
       const toSubmit = pending.filter((entry) => !entry.alreadySubmitted)
-      const expireStale = async () => {
-        if (options.expire !== false) await expireStaleServices(verifierClient, wallet, Boolean(options.dryRun))
-      }
       if (options.dryRun) {
-        await expireStale()
         console.log(chalk.dim('Dry run complete; nothing was published or sent.'))
         return
       }
       if (toSubmit.length === 0) {
         console.log(chalk.dim('Nothing to submit.'))
-        await expireStale()
         return
       }
       if (options.publishIpfs) {
@@ -236,28 +229,8 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       console.log(`  Submitted: ${submitted}; recovered: ${recovered}; already submitted: ${pending.length - toSubmit.length}; failed: ${failed}`)
       console.log(`  Credits this epoch: ${after.auditor} of ${after.total} total`)
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
-      await expireStale()
       if (failed > 0) process.exitCode = 1
     })
-}
-
-/**
- * Drops expired SAME/DIFF verdicts from sellers' counts so the points policy stops applying
- * them. Housekeeping only: failures are reported and never fail the submission.
- */
-async function expireStaleServices(client: VerifierClient, wallet: AbstractSigner, dryRun: boolean): Promise<void> {
-  try {
-    const expired = await client.findExpiredServices()
-    if (expired.length === 0) return
-    if (dryRun) {
-      console.log(chalk.dim(`${expired.length} expired verdict(s) would be cleared.`))
-      return
-    }
-    const hashes = await client.expireServices(wallet, expired)
-    console.log(chalk.dim(`Cleared ${expired.length} expired verdict(s) in ${hashes.length} transaction(s).`))
-  } catch (error) {
-    console.warn(chalk.yellow(`Could not clear expired verdicts (continuing): ${asError(error).message}`))
-  }
 }
 
 /** Keeps evidence an earlier attempt wrote, so a retry submits the same evidence hash. */

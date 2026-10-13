@@ -8,7 +8,7 @@ import { dirname, join, resolve } from 'node:path'
 import { setTimeout as sleep } from 'node:timers/promises'
 import { fileURLToPath } from 'node:url'
 import test from 'node:test'
-import { Wallet } from 'ethers'
+import { Wallet, getAddress } from 'ethers'
 import { VERIFIER_VERDICT, VerifierClient, modelHash } from '@antseed/node/payments'
 import {
   FIXTURE_CONFIG,
@@ -66,13 +66,14 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     const identityRegistryAddress = deployContract(rpcUrl, 'test/mocks/MockERC8004Registry.sol:MockERC8004Registry')
     const gateAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationEmissionsGate.sol:MockVerificationEmissionsGate')
     const poolsAddress = deployContract(rpcUrl, 'test/mocks/MockVerificationSellerPools.sol:MockVerificationSellerPools')
+    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
+    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
+    // The constructor pins the gate behind `registry.emissions()`, so wire the registry first.
     const verificationAddress = deployContract(
       rpcUrl,
       'verification/AntseedVerification.sol:AntseedVerification',
       [registryAddress, poolsAddress],
     )
-    castSend(rpcUrl, registryAddress, 'setIdentityRegistry(address)', [identityRegistryAddress])
-    castSend(rpcUrl, registryAddress, 'setEmissions(address)', [gateAddress])
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH)])
     castSend(rpcUrl, gateAddress, 'setSchedule(uint256,uint256)', [String(GENESIS), String(EPOCH_DURATION)])
     const auditor = new Wallet(`0x${AUDITOR_PRIVATE_KEY}`)
@@ -164,21 +165,18 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.equal(undetermined.undeterminedStreak, 1)
     assert.deepEqual(await client.auditCredits(auditor.address, AUDIT_EPOCH), { auditor: 2n, total: 2n })
 
-    assert.deepEqual(await client.findExpiredServices(), [])
-    assert.ok((await client.serviceStatus(1n, 'model-a')).expiresAt > 0n)
+    assert.equal(await client.emissionsGate(), getAddress(gateAddress))
+    assert.equal(await client.validityEpochs(), 2)
+    assert.equal((await client.serviceStatus(1n, 'model-a')).epoch, BigInt(AUDIT_EPOCH))
+    assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 2, diffCount: 0 })
+    assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 1 })
 
-    runCommand('cast', ['rpc', '--rpc-url', rpcUrl, 'evm_increaseTime', String(14 * 24 * 60 * 60)], repoRoot)
-    runCommand('cast', ['rpc', '--rpc-url', rpcUrl, 'evm_mine'], repoRoot)
-    const later = new VerifierClient({ rpcUrl, contractAddress: verificationAddress, evmChainId: 31_337, deploymentBlock: 0 })
-    const expired = await later.findExpiredServices()
-    assert.equal(expired.length, 3, 'agent 1 (2 SAME) and agent 2 (DIFF); UNDETERMINED and self-audits never counted')
-    const housekeeping = submit(approved, ['--yes'])
-    assert.equal(housekeeping.status, 0, housekeeping.output)
-    assert.match(housekeeping.output, /Cleared 3 expired verdict\(s\) in 1 transaction\(s\)/)
-    assert.deepEqual(await client.findExpiredServices(), [])
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])
+    assert.equal(await client.isVerified(1n), true, 'still counts in the next epoch')
+    castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 2)])
     assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 0 })
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 })
-    assert.equal(await client.isVerified(1n), false)
+    assert.equal(await client.isVerified(1n), false, 'verdicts expire without any cleanup transaction')
     assert.equal((await client.serviceStatus(1n, 'model-a')).lastResult, VERIFIER_VERDICT.SAME, 'latest result kept')
 
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])

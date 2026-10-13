@@ -45,7 +45,7 @@ test('verifier submit and rewards expose the auditor controls', () => {
   const verifier = command().commands.find((entry) => entry.name() === 'verifier')!
   const options = (name: string) => verifier.commands.find((entry) => entry.name() === name)!
     .options.map((option) => option.long)
-  assert.deepEqual(options('submit'), ['--run-id', '--publish-ipfs', '--dry-run', '--yes', '--rpc-url', '--no-expire'])
+  assert.deepEqual(options('submit'), ['--run-id', '--publish-ipfs', '--dry-run', '--yes', '--rpc-url'])
   assert.deepEqual(options('rewards'), ['--epochs', '--claim', '--yes', '--auditor', '--rpc-url'])
 })
 

@@ -79,14 +79,6 @@ export interface ModelAuditedEvent {
   transactionHash: string;
 }
 
-export interface ServiceKey {
-  agentId: bigint;
-  serviceHash: string;
-}
-
-/** Max services per `expire` transaction sent by `expireServices`. */
-export const MAX_SERVICES_PER_EXPIRE = 100;
-
 export interface AuditorCredits {
   auditor: bigint;
   total: bigint;
@@ -95,10 +87,9 @@ export interface AuditorCredits {
 export const VERIFICATION_ABI = [
   'function setAuditor(address auditor, bool approved) external',
   'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
-  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint16 diffVotes,uint32 round,uint64 updatedAt,uint8 lastResult,uint16 undeterminedStreak,uint64 lastAuditedAt,uint64 expiresAt))',
+  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint8 lastResult,uint16 undeterminedStreak,uint64 lastAuditedAt,uint64 epoch))',
   'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount))',
   'function isVerified(uint256 agentId) external view returns (bool)',
-  'function expire((uint256 agentId,bytes32 serviceHash)[] services) external returns (uint256)',
   'function usedEvidence(bytes32 evidenceHash) external view returns (bool)',
   'function claimAuditorRewards(uint256[] epochs) external returns (uint256)',
   'function pendingAuditorReward(address auditor,uint256 epoch) external view returns (uint256)',
@@ -107,8 +98,8 @@ export const VERIFICATION_ABI = [
   'function modelCredits(uint256 epoch,address auditor,bytes32 modelHash) external view returns (uint256)',
   'function maxCreditsPerAuditorPerEpoch() external view returns (uint32)',
   'function maxCreditsPerModelPerEpoch() external view returns (uint32)',
-  'function diffConfirmations() external view returns (uint16)',
-  'function validity() external view returns (uint64)',
+  'function validityEpochs() external view returns (uint8)',
+  'function emissionsGate() external view returns (address)',
   'function registry() external view returns (address)',
   'function sellerPools() external view returns (address)',
   'function approvedAuditors(address auditor) external view returns (bool)',
@@ -122,10 +113,6 @@ const EMISSIONS_GATE_EPOCH_ABI = [
   'function currentEpoch() external view returns (uint256)',
   'function genesis() external view returns (uint256)',
   'function epochDuration() external view returns (uint256)',
-] as const;
-
-const EMISSIONS_GATE_SOURCE_ABI = [
-  'function emissionsGate() external view returns (address)',
 ] as const;
 
 const ANTSEED_REGISTRY_ABI = [
@@ -159,13 +146,12 @@ export function sortServiceResults(results: readonly ServiceResultInput[]): Serv
 export interface VerifierServiceStatus {
   modelHash: string;
   verdict: VerifierVerdict;
-  diffVotes: number;
   lastResult: VerifierVerdict;
   undeterminedStreak: number;
   updatedAt: bigint;
   lastAuditedAt: bigint;
-  /** When the SAME/DIFF verdict stops applying; 0 when there is none. */
-  expiresAt: bigint;
+  /** Emissions epoch the SAME/DIFF verdict was given in; it counts while `currentEpoch < epoch + validityEpochs`. 0 when there is none. */
+  epoch: bigint;
 }
 
 export class VerifierClient extends BaseEvmClient {
@@ -237,21 +223,13 @@ export class VerifierClient extends BaseEvmClient {
     return Boolean(await this._contract().getFunction('usedEvidence')(evidenceHash));
   }
 
-  /**
-   * The emissions gate the contract checks `expectedEpoch` against: the gate behind
-   * `registry.emissions()` (usage accounting's `emissionsGate()` after M001), else that entry itself.
-   */
+  /** The emissions gate pinned by the contract at deployment; `expectedEpoch` is checked against it. */
   async emissionsGate(): Promise<string> {
-    const registry = new Contract(await this.registry(), ANTSEED_REGISTRY_ABI, this._provider);
-    const emissions = getAddress(String(await registry.getFunction('emissions')()));
-    try {
-      const source = new Contract(emissions, EMISSIONS_GATE_SOURCE_ABI, this._provider);
-      const gate = getAddress(String(await source.getFunction('emissionsGate')()));
-      if ((await this._provider.getCode(gate)) !== '0x') return gate;
-    } catch {
-      // `emissions` is the gate itself.
-    }
-    return emissions;
+    return getAddress(String(await this._contract().getFunction('emissionsGate')()));
+  }
+
+  async validityEpochs(): Promise<number> {
+    return Number(await this._contract().getFunction('validityEpochs')());
   }
 
   /** The current epoch exactly as `submitModelAudit` checks it. */
@@ -270,7 +248,7 @@ export class VerifierClient extends BaseEvmClient {
     return Boolean(await this._contract().getFunction('isVerified')(BigInt(agentId)));
   }
 
-  /** Counted SAME and DIFF services; expired ones stay counted until `expire` is called. */
+  /** SAME and DIFF services whose verdicts are still within `validityEpochs`. */
   async agentStatus(agentId: number | bigint): Promise<{ verifiedCount: number; diffCount: number }> {
     const status = await this._contract().getFunction('agentStatus')(BigInt(agentId));
     return {
@@ -288,59 +266,12 @@ export class VerifierClient extends BaseEvmClient {
     return {
       modelHash: String(status.modelHash ?? status[0]),
       verdict: Number(status.verdict ?? status[1]) as VerifierVerdict,
-      diffVotes: Number(status.diffVotes ?? status[2]),
-      updatedAt: BigInt(status.updatedAt ?? status[4]),
-      lastResult: Number(status.lastResult ?? status[5]) as VerifierVerdict,
-      undeterminedStreak: Number(status.undeterminedStreak ?? status[6]),
-      lastAuditedAt: BigInt(status.lastAuditedAt ?? status[7]),
-      expiresAt: BigInt(status.expiresAt ?? status[8]),
+      updatedAt: BigInt(status.updatedAt ?? status[2]),
+      lastResult: Number(status.lastResult ?? status[3]) as VerifierVerdict,
+      undeterminedStreak: Number(status.undeterminedStreak ?? status[4]),
+      lastAuditedAt: BigInt(status.lastAuditedAt ?? status[5]),
+      epoch: BigInt(status.epoch ?? status[6]),
     };
-  }
-
-  /**
-   * Services whose SAME or DIFF verdict has expired but is still counted, found from
-   * `ServiceStatusChanged` events and checked against the latest block's timestamp.
-   */
-  async findExpiredServices(fromBlock?: number, toBlock: number | 'latest' = 'latest'): Promise<ServiceKey[]> {
-    const contract = this._contract();
-    const filterFactory = contract.filters.ServiceStatusChanged;
-    if (!filterFactory) throw new Error('ServiceStatusChanged event is missing from verification ABI');
-    const logs = await this._queryEvents(contract, filterFactory(), fromBlock, toBlock);
-    const candidates = new Map<string, ServiceKey>();
-    for (const log of logs) {
-      if (!(log instanceof EventLog)) continue;
-      const current = Number(log.args.current ?? log.args[4]);
-      if (current !== VERIFIER_VERDICT.SAME && current !== VERIFIER_VERDICT.DIFF) continue;
-      const key = { agentId: BigInt(log.args.agentId ?? log.args[0]), serviceHash: String(log.args.serviceHash ?? log.args[1]) };
-      candidates.set(`${key.agentId}:${key.serviceHash.toLowerCase()}`, key);
-    }
-    const block = await this._provider.getBlock('latest');
-    if (!block) throw new Error('latest block is unavailable');
-    const now = BigInt(block.timestamp);
-    const expired: ServiceKey[] = [];
-    for (const key of candidates.values()) {
-      const status = await this.serviceStatusByHash(key.agentId, key.serviceHash);
-      const counted = status.verdict === VERIFIER_VERDICT.SAME || status.verdict === VERIFIER_VERDICT.DIFF;
-      if (counted && status.expiresAt <= now) expired.push(key);
-    }
-    return expired.sort((a, b) => (a.agentId === b.agentId
-      ? (BigInt(a.serviceHash) < BigInt(b.serviceHash) ? -1 : 1)
-      : (a.agentId < b.agentId ? -1 : 1)));
-  }
-
-  /** Drops expired verdicts from their agents' counts, in batches; returns the transaction hashes. */
-  async expireServices(signer: AbstractSigner, services: readonly ServiceKey[]): Promise<string[]> {
-    const hashes: string[] = [];
-    for (let start = 0; start < services.length; start += MAX_SERVICES_PER_EXPIRE) {
-      const batch = services.slice(start, start + MAX_SERVICES_PER_EXPIRE);
-      hashes.push(await this._execWrite(
-        signer,
-        VERIFICATION_ABI,
-        'expire',
-        batch.map((service) => [service.agentId, service.serviceHash]),
-      ));
-    }
-    return hashes;
   }
 
   async approvedAuditor(auditor: string): Promise<boolean> {

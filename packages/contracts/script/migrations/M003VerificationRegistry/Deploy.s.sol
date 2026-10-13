@@ -9,6 +9,7 @@ import { AntseedVerification } from "../../../verification/AntseedVerification.s
 interface IM003UsageAccounting {
     function sellerPools() external view returns (address);
     function pointsPolicy() external view returns (address);
+    function emissionsGate() external view returns (address);
 }
 
 contract M003DeployVerificationRegistry is Script {
@@ -68,6 +69,10 @@ contract M003DeployVerificationRegistry is Script {
         }
         require(address(verification.registry()) == config.registry, "M003: wrong registry");
         require(address(verification.sellerPools()) == config.sellerPools, "M003: wrong seller pools");
+        require(
+            address(verification.emissionsGate()) == IM003UsageAccounting(config.usageAccounting).emissionsGate(),
+            "M003: wrong emissions gate"
+        );
         require(verification.owner() == config.owner, "M003: wrong owner");
         require(verification.pendingOwner() == address(0), "M003: pending ownership transfer");
         require(address(policy.verification()) == address(verification), "M003: wrong policy verification");
@@ -99,6 +104,14 @@ contract M003DeployVerificationRegistry is Script {
         require(
             IM003UsageAccounting(config.usageAccounting).sellerPools() == config.sellerPools,
             "M003: wrong usage accounting seller pools"
+        );
+        require(
+            IAntseedRegistry(config.registry).emissions() == config.usageAccounting,
+            "M003: registry emissions is not usage accounting"
+        );
+        require(
+            IM003UsageAccounting(config.usageAccounting).emissionsGate().code.length > 0,
+            "M003: missing emissions gate"
         );
         require(config.pointsPolicyRegistry.code.length > 0, "M003: missing points policy registry");
         require(

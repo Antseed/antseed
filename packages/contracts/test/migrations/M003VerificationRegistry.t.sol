@@ -6,6 +6,7 @@ import { AntseedVerification } from "../../verification/AntseedVerification.sol"
 import { AntseedPointsPolicyRegistry } from "../../policies/AntseedPointsPolicyRegistry.sol";
 import { AntseedVerificationPointsPolicy } from "../../policies/AntseedVerificationPointsPolicy.sol";
 import { MockERC8004Registry } from "../mocks/MockERC8004Registry.sol";
+import { MockVerificationEmissionsGate } from "../mocks/MockVerificationEmissionsGate.sol";
 import { MockVerificationSellerPools } from "../mocks/MockVerificationSellerPools.sol";
 import { IAntseedVerification } from "../../interfaces/IAntseedVerification.sol";
 import { M003DeployVerificationRegistry } from "../../script/migrations/M003VerificationRegistry/Deploy.s.sol";
@@ -13,10 +14,12 @@ import { M003DeployVerificationRegistry } from "../../script/migrations/M003Veri
 contract M003UsageAccounting {
     address public sellerPools;
     address public pointsPolicy;
+    address public emissionsGate;
 
-    constructor(address sellerPools_, address pointsPolicy_) {
+    constructor(address sellerPools_, address pointsPolicy_, address emissionsGate_) {
         sellerPools = sellerPools_;
         pointsPolicy = pointsPolicy_;
+        emissionsGate = emissionsGate_;
     }
 }
 
@@ -25,6 +28,7 @@ contract M003VerificationRegistryTest is Test {
     AntseedRegistry private registry;
     MockERC8004Registry private identity;
     MockVerificationSellerPools private pools;
+    MockVerificationEmissionsGate private gate;
     AntseedPointsPolicyRegistry private pointsPolicyRegistry;
     M003UsageAccounting private accounting;
     address private owner = address(0xA11CE);
@@ -35,11 +39,12 @@ contract M003VerificationRegistryTest is Test {
         identity = new MockERC8004Registry();
         pools = new MockVerificationSellerPools();
         registry.setIdentityRegistry(address(identity));
-        registry.setEmissions(address(0xE111));
+        gate = new MockVerificationEmissionsGate();
+        pointsPolicyRegistry = new AntseedPointsPolicyRegistry(owner);
+        accounting = new M003UsageAccounting(address(pools), address(pointsPolicyRegistry), address(gate));
+        registry.setEmissions(address(accounting));
         registry.setStaking(address(0x5111));
         registry.transferOwnership(owner);
-        pointsPolicyRegistry = new AntseedPointsPolicyRegistry(owner);
-        accounting = new M003UsageAccounting(address(pools), address(pointsPolicyRegistry));
         script = new M003DeployVerificationRegistry();
         vm.deal(owner, 10 ether);
     }
@@ -86,7 +91,8 @@ contract M003VerificationRegistryTest is Test {
         assertEq(address(againPolicy), address(policy));
         assertEq(pointsPolicyRegistry.policyCount(), 1);
         assertEq(vm.getNonce(owner), nonce);
-        assertEq(registry.emissions(), address(0xE111));
+        assertEq(registry.emissions(), address(accounting));
+        assertEq(address(again.emissionsGate()), address(gate));
         assertEq(registry.staking(), address(0x5111));
     }
 
@@ -208,8 +214,15 @@ contract M003VerificationRegistryTest is Test {
 
     function test_rejectsWrongUsageAccountingOrPointsRegistry() public {
         M003DeployVerificationRegistry.Config memory settings = config();
-        settings.usageAccounting = address(new M003UsageAccounting(address(0xBEEF), address(pointsPolicyRegistry)));
+        settings.usageAccounting =
+            address(new M003UsageAccounting(address(0xBEEF), address(pointsPolicyRegistry), address(gate)));
         vm.expectRevert("M003: wrong usage accounting seller pools");
+        script.runWith(settings);
+
+        settings = config();
+        settings.usageAccounting =
+            address(new M003UsageAccounting(address(pools), address(pointsPolicyRegistry), address(gate)));
+        vm.expectRevert("M003: registry emissions is not usage accounting");
         script.runWith(settings);
 
         settings = config();
@@ -240,6 +253,12 @@ contract M003VerificationRegistryTest is Test {
         vm.prank(auditor);
         verification.submitModelAudit(0, keccak256("model"), keccak256("evidence"), "", results);
         (uint256 sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
+        assertEq(sellerPoints, 1_000_000, "points policy is off until the owner sets a start epoch");
+
+        uint256 epoch = gate.currentEpoch();
+        vm.prank(owner);
+        policy.setPointsStartEpoch(epoch);
+        (sellerPoints,) = pointsPolicyRegistry.points(bytes32(0), address(0xB0), seller, 1_000_000);
         assertEq(sellerPoints, 1_010_000);
     }
 }

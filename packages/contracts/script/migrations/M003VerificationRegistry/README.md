@@ -9,22 +9,37 @@ protocol registry pointers. M002 is not a prerequisite.
 
 After M003:
 
-- **Points boost starts at 0.** Every settlement runs through the new policy, but with
-  the default `bonusBps = 0` no seller's points change, so sellers have time to adjust.
-  Turn it on later with `setBonusBps` (e.g. 100 = +1% per verified model, capped at
-  +50% in total) and `setPenaltyBps` (uncapped, per DIFF model; starts at 0). A DIFF
+- **Points policy starts off.** Every settlement runs through the new policy, but no
+  seller's points change until the policy owner calls `setPointsStartEpoch(epoch)`
+  (default `type(uint256).max` = off; setting it back to that turns it off again), so
+  sellers have time to adjust. The epoch comes from the verification contract's pinned
+  emissions gate. Tune it with `setBonusBps` (e.g. 100 = +1% per verified model, capped
+  at +50% in total) and `setPenaltyBps` (uncapped, per DIFF model; starts at 0). A DIFF
   only affects its own model.
   Removing the policy from the registry also turns it off without a redeploy.
-- **Auditor rewards stay off.** Audit credits accrue from the first audit, but claims
-  pay nothing until the emissions-gate owner hands the verification bucket to the
-  contract: `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
-  Unclaimed epochs stay claimable after the handoff, up to each epoch's bucket budget.
+- **Auditor rewards stay off.** Audits record status but earn no credits until the
+  verification owner calls `setRewardsStartEpoch(epoch)`. To launch rewards:
+  1. The emissions-gate owner hands the verification bucket to the contract:
+     `gate.setMinterController(keccak256("antseed.emissions.verification.v1"), verification)`.
+  2. The verification owner calls `setRewardsStartEpoch` with the launch epoch. Audits
+     from that epoch on earn credits; earlier audits never claim past budgets.
+  Each auditor can claim at most `maxAuditorShareBps` of an epoch's verification budget
+  (default 2,000 = 20%, owner-settable from 1 to 10,000). The cap in force when an epoch
+  earns its first credit applies to that whole epoch, and budget above it is never minted.
+- **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
+  epochs including the one it was given in (default 2; owner-settable from 1 to 4), and
+  then drops out on its own. A single auditor's SAME or DIFF sets the verdict; auditors
+  double-check DIFF results off-chain before submitting.
+- **The emissions gate is pinned.** The constructor reads the gate behind
+  `registry.emissions()` (usage accounting's `emissionsGate()`) and keeps it for life,
+  so verdict epochs never mix gates. A new gate needs a new verification deployment.
 
 ## Configuration
 
 - Use the canonical network `current.json` registry, identity registry, seller pools,
   usage accounting, and points policy registry. The usage accounting contract must
-  point at both the seller pools and the points policy registry.
+  point at the seller pools, the points policy registry, and a deployed emissions gate,
+  and `registry.emissions()` must be the usage accounting contract.
 - The live protocol registry owner signs deployment and becomes the owner of both
   new contracts directly. It must also own the points policy registry, since it
   registers the policy. Supply `--signer verificationOwner=<spec>` using the existing

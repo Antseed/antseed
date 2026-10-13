@@ -27,7 +27,8 @@ export interface AuditAssignment {
  * - Rank candidates per auditor by keccak256(auditor, epoch, model) and take the k lowest, so each
  *   auditor gets a different, evenly rotating slice and covers every model over a rotation period.
  * - Pick k from a replication factor r (k = ceil(r * candidates / auditors)) so every model has at
- *   least r auditors per epoch; r should be at least `diffConfirmations` on AntseedVerification.
+ *   least r auditors per epoch. A single DIFF counts on-chain, so each auditor double-checks its own
+ *   DIFF results before submitting (see `model-run.ts`).
  */
 export function assignAuditModels(input: AuditAssignmentInput): AuditAssignment {
   const epoch = input.epoch.trim()
