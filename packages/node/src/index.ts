@@ -68,9 +68,22 @@ export {
   type Identity,
   type IdentityStore,
   FileIdentityStore,
+  type FileIdentityStoreOptions,
   hexToBytes,
   bytesToHex,
 } from './p2p/identity.js';
+export {
+  PASSPHRASE_ENV,
+  PASSPHRASE_FILE_ENV,
+  deriveScryptKey,
+  encryptIdentityKey,
+  decryptIdentityKey,
+  identityEnvelopeAddress,
+  isIdentityEnvelope,
+  resolveIdentityPassphrase,
+  identityPassphraseEnv,
+  type ScryptParams,
+} from './p2p/identity-envelope.js';
 export { DHTNode, DEFAULT_DHT_CONFIG } from './discovery/dht-node.js';
 export { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH } from './discovery/metadata-validator.js';
 export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';

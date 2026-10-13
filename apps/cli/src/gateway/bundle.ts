@@ -1,4 +1,4 @@
-import { createCipheriv, createDecipheriv, createHash, randomBytes, scrypt as scryptCallback, type ScryptOptions } from 'node:crypto'
+import { createCipheriv, createDecipheriv, createHash, randomBytes } from 'node:crypto'
 import {
   chmodSync, closeSync, copyFileSync, createReadStream, createWriteStream, existsSync, fstatSync, lstatSync, mkdirSync, openSync,
   readdirSync, readFileSync, readSync, renameSync, rmSync, statSync, writeSync,
@@ -9,7 +9,7 @@ import { PassThrough, type Writable } from 'node:stream'
 import { pipeline } from 'node:stream/promises'
 import { createGunzip, createGzip } from 'node:zlib'
 import Database from 'better-sqlite3'
-import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
+import { DEFAULT_BUYER_IDENTITY, deriveScryptKey } from '@antseed/node'
 import { buyerIdentityAddress, listBuyerIdentities, loadDefaultBuyerIdentity, storedDefaultIdentityAddress } from '../buyer-identities/store.js'
 import { sameAddress, type BuyerAddressBook } from './services/wallet-address.js'
 import { CONSOLE_LOCATION_SETTING, readConsoleLocation, type ConsoleLocation } from './console-location.js'
@@ -30,7 +30,6 @@ import { GatewayStore } from './store.js'
 export const BUNDLE_MAGIC = 'ANTSEED-GATEWAY-BUNDLE 1\n'
 const CONTAINER_MAGIC = Buffer.from('AGWB\x01', 'binary')
 const TAG_BYTES = 16
-const KEY_BYTES = 32
 const MAX_HEADER_BYTES = 4096
 export const MIN_PASSWORD_LENGTH = 10
 const SCRYPT_DEFAULT = { N: 2 ** 17, r: 8, p: 1 }
@@ -74,13 +73,6 @@ export interface BundleSummary {
 /** Owner-only modes for everything restored or written. */
 const FILE_MODE = 0o600
 const DIR_MODE = 0o700
-
-function scrypt(password: string, salt: Buffer, params: { N: number; r: number; p: number }): Promise<Buffer> {
-  const options: ScryptOptions = { ...params, maxmem: 256 * params.N * params.r + 1024 * 1024 }
-  return new Promise((resolvePromise, reject) => {
-    scryptCallback(password.normalize('NFKC'), salt, KEY_BYTES, options, (error, key) => (error ? reject(error) : resolvePromise(key)))
-  })
-}
 
 function sha256File(path: string): string {
   const hash = createHash('sha256')
@@ -299,7 +291,7 @@ export async function exportGatewayBundle(options: ExportOptions): Promise<Expor
     const iv = randomBytes(12)
     const header: BundleHeader = { kdf: 'scrypt', ...params, salt: salt.toString('base64'), cipher: 'aes-256-gcm', iv: iv.toString('base64'), compression: 'gzip' }
     const headerBytes = Buffer.from(`${BUNDLE_MAGIC}${JSON.stringify(header)}\n`, 'utf8')
-    const key = await scrypt(password, salt, params)
+    const key = await deriveScryptKey(password, salt, params)
     const cipher = createCipheriv('aes-256-gcm', key, iv)
     cipher.setAAD(headerBytes)
 
@@ -421,7 +413,7 @@ function parseHeader(file: string): { header: BundleHeader; headerBytes: Buffer;
 /** Decrypts into `target` (0600); throws BundleError on a wrong password or any tampering. */
 async function decryptTo(file: string, password: string, target: string): Promise<void> {
   const { header, headerBytes, size } = parseHeader(file)
-  const key = await scrypt(password, Buffer.from(header.salt, 'base64'), header)
+  const key = await deriveScryptKey(password, Buffer.from(header.salt, 'base64'), header)
   const tag = Buffer.alloc(TAG_BYTES)
   const fd = openSync(file, 'r')
   try {
