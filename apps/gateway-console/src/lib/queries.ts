@@ -36,6 +36,7 @@ export const qk = {
   chatThreads: (workspaceId: string) => ['chat-threads', workspaceId] as const,
   chatThread: (workspaceId: string, threadId: string) => ['chat-thread', workspaceId, threadId] as const,
   peers: ['peers'] as const,
+  models: ['models'] as const,
   peerLists: ['peer-lists'] as const,
   gatewayPolicy: ['routing', 'gateway'] as const,
   buyerLimits: ['routing', 'buyer-limits'] as const,
@@ -57,6 +58,11 @@ export function useWorkspace(workspaceId: string, enabled = true) {
 
 export function usePeers(enabled = true) {
   return useQuery({ queryKey: qk.peers, queryFn: api.network.peers, staleTime: 30_000, enabled })
+}
+
+/** Every model on the network, with the sellers offering it. */
+export function useModels() {
+  return useQuery({ queryKey: qk.models, queryFn: api.network.models, staleTime: 30_000 })
 }
 
 export function usePeerLists(enabled = true) {

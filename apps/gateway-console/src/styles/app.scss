@@ -112,7 +112,10 @@
   --gc-font: 'Geist', 'Geist Variable', Inter, ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', sans-serif;
   --gc-mono: 'Geist Mono', ui-monospace, 'SF Mono', 'JetBrains Mono', Menlo, Consolas, monospace;
   --gc-rail-w: 13.5rem;
-  --gc-topbar-h: 3.5rem;
+  /* The sticky header: the top bar row, plus the endpoint strip on narrow screens. */
+  --gc-topbar-row: 3.5rem;
+  --gc-topbar-strip: 0rem;
+  --gc-topbar-h: calc(var(--gc-topbar-row) + var(--gc-topbar-strip));
   --gc-max: 88rem;
 }
 
@@ -210,10 +213,29 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   border-bottom: 1px solid var(--as-border);
 }
 .gc-topbar__inner {
-  display: flex; align-items: center; gap: 0.625rem; height: 100%;
+  display: flex; align-items: center; gap: 0.625rem; height: var(--gc-topbar-row);
   max-width: var(--gc-max); margin: 0 auto; padding: 0 1.5rem;
 }
 .gc-topbar__menu { display: none; }
+/* The endpoint under the top bar row, only where the row has no room for it. */
+.gc-topbar__strip {
+  display: none; align-items: center; height: var(--gc-topbar-strip); padding: 0 0.75rem;
+  border-top: 1px solid var(--as-border);
+}
+
+/* The gateway's API base URL, always in the header. */
+.gc-endpoint {
+  display: inline-flex; align-items: center; gap: 0.4375rem; min-width: 0; max-width: 26rem;
+  padding: 0.125rem 0.125rem 0.125rem 0.5rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-md);
+  color: var(--as-text-secondary); font-size: 0.75rem;
+}
+.gc-endpoint__label { flex: 0 0 auto; color: var(--as-text-muted); font-weight: 500; letter-spacing: 0.02em; }
+.gc-endpoint__url {
+  min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap;
+  color: var(--as-text-primary); font-size: 0.75rem;
+}
+.gc-endpoint__copy.as-icon-button { flex: 0 0 auto; width: 1.5rem; height: 1.5rem; border-color: transparent; }
+.gc-topbar__strip .gc-endpoint { max-width: 100%; border: 0; padding-left: 0; }
 .gc-topbar__spacer { flex: 1; }
 .gc-topbar__sep { color: var(--as-border-strong); font-size: 1.25rem; font-weight: 300; margin: 0 0.125rem; }
 .gc-topbar__icon { border-color: transparent; width: 2rem; height: 2rem;
@@ -315,6 +337,32 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 /* ── Page building blocks ── */
 .gc-page { display: flex; flex-direction: column; gap: 1.75rem; }
 
+/* The Models and Providers detail drawer: the request log's drawer, with room for sections. */
+.gc-side-panel {
+  .as-drawer__title { overflow-wrap: anywhere; }
+  .as-drawer__body { gap: 1.5rem; }
+}
+.gc-panel-section { display: flex; flex-direction: column; gap: 0.625rem; min-width: 0; }
+.gc-panel-section__head { display: flex; align-items: center; justify-content: space-between; gap: 0.75rem; flex-wrap: wrap; min-height: 2rem; }
+.gc-panel-section__title { margin: 0; font-size: 0.875rem; font-weight: 600; color: var(--as-text-primary); }
+.gc-panel-section__actions { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
+.gc-panel-actions { display: flex; flex-wrap: wrap; gap: 0.5rem; }
+.gc-panel-figures { gap: 0.875rem 1rem; }
+.gc-panel-rows { list-style: none; margin: 0; padding: 0; border: 1px solid var(--as-border); border-radius: var(--as-radius-md); }
+.gc-panel-row {
+  display: flex; align-items: flex-start; gap: 0.75rem; padding: 0.625rem 0.75rem;
+  & + & { border-top: 1px solid var(--as-border); }
+}
+.gc-panel-row--on { background: var(--as-bg-muted); }
+.gc-panel-row__main { flex: 1; min-width: 0; }
+.gc-panel-row__title { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font-weight: 550; }
+.gc-panel-row__meta {
+  display: flex; flex-wrap: wrap; gap: 0.125rem 0.75rem; margin-top: 0.125rem;
+  color: var(--as-text-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums;
+  code { overflow-wrap: anywhere; }
+}
+.gc-panel-row__actions { display: flex; align-items: center; gap: 0.25rem; flex: 0 0 auto; }
+
 .gc-grid { display: grid; gap: 0.875rem; }
 .gc-grid--2 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 1.75rem 1.25rem; }
 .gc-grid--3 { grid-template-columns: repeat(3, minmax(0, 1fr)); }
@@ -370,6 +418,17 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-summary-row__text { min-width: 0; display: flex; flex-direction: column; gap: 0.125rem; }
 
 /* Badges */
+/* Name over id in a table cell: each line a block, never side by side. */
+.gc-cell-lines { min-width: 0; > .gc-ellipsis { display: block; } }
+.gc-copy-id.as-icon-button { flex: 0 0 auto; border-color: transparent; color: var(--as-text-muted);
+  &:hover:not(:disabled) { color: var(--as-text-primary); }
+}
+/* Verified domain and GitHub links: small, muted, underlined on hover. */
+.gc-verified-links { display: inline-flex; flex-wrap: wrap; align-items: center; gap: 0.125rem 0.5rem; min-width: 0; }
+.gc-verified-link {
+  color: var(--as-text-secondary); font-size: 0.75rem; text-decoration: none; overflow-wrap: anywhere;
+  &:hover { color: var(--as-text-primary); text-decoration: underline; }
+}
 .gc-badges { display: flex; gap: 0.25rem; flex-wrap: wrap; margin-top: 0.25rem; &:empty { display: none; } }
 .gc-badges .as-badge { font-size: 0.6875rem; }
 
@@ -553,6 +612,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .gc-body { grid-template-columns: minmax(0, 1fr); padding: 0 1rem; }
   .gc-rail { display: none; }
   .gc-topbar__menu { display: inline-flex; }
+  :root { --gc-topbar-strip: 2.25rem; }
+  .gc-topbar__strip { display: flex; }
+  .gc-endpoint--inline { display: none; }
   .gc-topbar__inner { padding: 0 0.75rem 0 0.5rem; gap: 0.375rem; }
   .gc-topbar__link { display: none; }
   .gc-main { padding: 1.5rem 0 3rem; }
@@ -575,6 +637,7 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .gc-topbar__sep { display: none; }
 }
 .gc-keyholder .gc-topbar__inner { max-width: 67rem; }
+@media (max-width: 1100px) { .gc-endpoint--inline { max-width: 17rem; } }
 
 .gc-peer-id { gap: 0.25rem; white-space: nowrap; }
 

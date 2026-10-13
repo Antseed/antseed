@@ -29,7 +29,7 @@ function fakeApi() {
   }
 }
 
-describe('Network Allow/Block keeps the rest of the policy (regression: policy wipe)', () => {
+describe('Providers Allow/Block keeps the rest of the policy (regression: policy wipe)', () => {
   it('reproduces the old bug: a policy cached under the workspace key read back as a workspace', () => {
     // Before the fix Routing cached only `routingPolicy` under ['workspaces', id] while the
     // peer dialog read `.routingPolicy` from the same key: undefined, so the action wiped everything.

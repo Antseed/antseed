@@ -1,8 +1,8 @@
 import { loadConfig } from '../../config/loader.js'
 import { isRoutingPolicy, policyAllowsModel, type RoutingPolicy } from '../../routing-policy/policy.js'
 import { buyerJson, optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
-import { enrichCandidates, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
-import type { BuyerLimits, Peer, RoutePreview } from '../console-api/types.js'
+import { enrichCandidates, mapNetworkModels, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
+import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../console-api/types.js'
 import { resolvePolicy, type PolicyTarget } from '../policy-resolver.js'
 import type { GatewayStore } from '../store.js'
 
@@ -23,6 +23,20 @@ export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, 
   ])
   const stats = store.peerStats(now - DAY_MS) as PeerStat[]
   return mapPeers({ peers, health, verification, stats, now })
+}
+
+/**
+ * Every model on the network, as the buyer's own `GET /v1/models` lists it
+ * without a routing policy (like `listNetworkPeers`), with each offer's
+ * verification, trust and latency from the peer list. The peer list is
+ * enrichment only: when it fails the models still answer.
+ */
+export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient, now: number): Promise<NetworkModel[]> {
+  const [models, peers] = await Promise.all([
+    buyerJson(buyer, '/v1/models'),
+    listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
+  ])
+  return mapNetworkModels(models, peers)
 }
 
 /**

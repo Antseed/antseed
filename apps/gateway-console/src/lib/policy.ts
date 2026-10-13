@@ -305,7 +305,7 @@ export function templatePolicy(id: TemplateId, ownPeerIds: string[] = []): Routi
 export type PeerAction = 'allow' | 'block' | 'prefer' | 'clear'
 
 /**
- * Applies a Network-page row action to a scope's policy:
+ * Applies a Providers-page row action to a scope's policy:
  * allow adds the seller to the allow list (creating one restricts the scope to it),
  * block adds it to the block list, prefer puts it first in the model's fallback chain,
  * clear removes it everywhere. Never mutates the input.

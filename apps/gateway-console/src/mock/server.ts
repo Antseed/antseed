@@ -19,7 +19,7 @@ import { MASKED_VALUE } from '../lib/headers'
 import { tighterLimits } from '../lib/key-layers'
 import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
-import { fakeAddress, seed } from './data'
+import { fakeAddress, mockNetworkModels, seed } from './data'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
@@ -800,6 +800,7 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/chain', () => db.chain],
 
   ['GET', '/peers', () => db.peers],
+  ['GET', '/models', () => mockNetworkModels(db.peers)],
   ['GET', '/route-preview', ({ query }) => preview(query)],
   ['GET', '/routing', () => { currentMember(); return db.gatewayPolicy }],
   ['GET', '/routing/buyer-limits', () => buyerLimits()],

@@ -19,7 +19,7 @@ export function KeySecretModal({ result, onClose }: { result: { key: ApiKey; sec
           <SecretReveal secret={result.secret} />
           <div>
             <div className="as-field__label">Use it</div>
-            <p className="gc-muted">Base URL <code>{baseUrl}/v1</code>. Replace <code>&lt;model&gt;</code> with a model from the Network page.</p>
+            <p className="gc-muted">Base URL <code>{baseUrl}/v1</code>. Replace <code>&lt;model&gt;</code> with a model from the Models page.</p>
           </div>
           <Tabs value={tab} onChange={setTab} tabs={snippets.map((entry) => ({ id: entry.id, label: entry.label }))} />
           {snippet && <CodeBlock code={snippet.code} />}

@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { connectTabs, curlSnippet as modelCurl, keySnippets, modelSnippets, pinnedModelId, serviceApiFormat } from './snippets'
+import { apiCallTabs, connectTabs, curlSnippet as modelCurl, gatewayApiUrl, gatewayBaseUrl, keySnippets, modelCallFormat, modelSnippets, pinnedModelId, serviceApiFormat } from './snippets'
 
 const PEER = `0xFA1E${'0'.repeat(32)}0004`
 const BASE = 'https://gw.example.test'
@@ -108,5 +108,46 @@ describe('connectTabs', () => {
   it('the key dialog still embeds the new secret', () => {
     expect(keySnippets(BASE, 'as_secret')[0]!.code).toContain('Bearer as_secret')
     expect(keySnippets(BASE, 'as_secret')[1]!.code).toContain("apiKey: 'as_secret'")
+  })
+})
+
+describe('gateway endpoint', () => {
+  it('is the public URL, else the console origin, plus /v1', () => {
+    expect(gatewayApiUrl(gatewayBaseUrl('https://gw.example.test/', 'http://localhost:8479'))).toBe('https://gw.example.test/v1')
+    expect(gatewayApiUrl(gatewayBaseUrl(null, 'http://localhost:8479'))).toBe('http://localhost:8479/v1')
+  })
+})
+
+describe('model API calls', () => {
+  const offer = (protocols: string[], provider = 'openai') => ({ provider, protocols })
+  it('picks the API by model type and the pinned seller', () => {
+    expect(modelCallFormat('text')).toBe('openai-chat-completions')
+    expect(modelCallFormat('text', offer(['anthropic-messages'], 'x'))).toBe('anthropic-messages')
+    expect(modelCallFormat('text', offer(['openai-responses']))).toBe('openai-responses')
+    expect(modelCallFormat('image')).toBe('openai-images')
+    expect(modelCallFormat('image', offer(['openai-chat-completions']))).toBe('openai-images')
+    expect(modelCallFormat('video')).toBeNull()
+    expect(modelCallFormat('decision', offer(['typesafe-systemone']))).toBeNull()
+  })
+  it('recognizes image sellers', () => {
+    expect(serviceApiFormat({ provider: 'fal', apiProtocols: ['openai-images'] })).toBe('openai-images')
+  })
+  it('curl, Python and JavaScript for a text model, with the key from the environment', () => {
+    const tabs = apiCallTabs(BASE, 'open-model-a', 'openai-chat-completions')
+    expect(tabs.map((tab) => tab.id)).toEqual(['curl', 'openai-python', 'openai-js'])
+    expect(tabs[0]!.code).toContain(`curl ${BASE}/v1/chat/completions`)
+    expect(tabs[0]!.code).toContain('"model":"open-model-a"')
+    expect(tabs.every((tab) => tab.code.includes('ANTSEED_API_KEY'))).toBe(true)
+    expect(apiCallTabs(BASE, 'm', 'anthropic-messages').map((tab) => tab.id)).toContain('anthropic')
+  })
+  it('the images API for image models', () => {
+    const tabs = apiCallTabs(BASE, 'flux-schnell', 'openai-images')
+    expect(tabs[0]!.code).toContain(`${BASE}/v1/images/generations`)
+    expect(tabs[0]!.code).toContain('"model":"flux-schnell","prompt":')
+    expect(tabs[1]!.code).toContain('client.images.generate(model="flux-schnell"')
+    expect(tabs[2]!.code).toContain('client.images.generate({')
+  })
+  it('a pinned image model gets no coding-tool tabs', () => {
+    expect(connectTabs(BASE, PEER, 'flux-schnell', 'openai-images', null).map((tab) => tab.id)).toEqual(['curl', 'openai-python', 'openai-js'])
   })
 })

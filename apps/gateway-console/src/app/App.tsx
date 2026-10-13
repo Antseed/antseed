@@ -5,7 +5,7 @@ import { isApiError } from '../api'
 import type { Me } from '../api/types'
 import { Shell } from '../components/Shell'
 import { ErrorAlert, LoadingRows } from '../components/ui'
-import { canOpen, viewerFor, type PageId, NAV_ITEMS } from '../lib/nav'
+import { canOpen, movedPagePath, viewerFor, type PageId, NAV_ITEMS } from '../lib/nav'
 import { useMe } from '../lib/queries'
 import { navigate, useLocation } from '../lib/router'
 import { EnrollPage, LoginPage } from '../pages/Auth'
@@ -21,7 +21,8 @@ const pages: Record<PageId, ComponentType> = {
   workspaces: lazy(() => import('../pages/Workspaces')),
   wallet: lazy(() => import('../pages/Wallet')),
   rewards: lazy(() => import('../pages/Rewards')),
-  network: lazy(() => import('../pages/Network')),
+  providers: lazy(() => import('../pages/Providers')),
+  models: lazy(() => import('../pages/Models')),
   routing: lazy(() => import('../pages/Routing')),
   presets: lazy(() => import('../pages/Presets')),
   audit: lazy(() => import('../pages/Audit')),
@@ -63,6 +64,10 @@ function MemberConsole({ me, page }: { me: Me; page: string }) {
   const workspace = pickWorkspace(me, workspaceId)
   const queryClientInstance = useQueryClient()
   const location = useLocation()
+  const moved = movedPagePath(location.page, location.rest)
+  useEffect(() => {
+    if (moved) navigate(moved, { replace: true })
+  }, [moved])
 
   const value = useMemo<ConsoleContextValue | null>(() => {
     if (!workspace) return null
@@ -80,6 +85,7 @@ function MemberConsole({ me, page }: { me: Me; page: string }) {
     }
   }, [me, workspace, queryClientInstance])
 
+  if (moved) return <div className="gc-centered"><LoadingRows rows={3} /></div>
   if (!value) {
     return <div className="gc-centered"><Alert tone="warning" title="No workspace">You are not a member of any workspace yet. Ask an admin to add you.</Alert></div>
   }
@@ -89,7 +95,8 @@ function MemberConsole({ me, page }: { me: Me; page: string }) {
   return (
     <ConsoleContext.Provider value={value}>
       <Shell page={pageId}>
-        <PageErrorBoundary key={[location.page, ...location.rest].join('/')}>
+        {/* Keyed by page only: opening an item in a side panel keeps the list's state. */}
+        <PageErrorBoundary key={location.page}>
           <Suspense fallback={<LoadingRows rows={6} />}>
             {allowed ? <Page /> : <Alert tone="warning" title="Not available">Your role cannot open this page.</Alert>}
           </Suspense>

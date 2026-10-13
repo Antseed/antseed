@@ -11,6 +11,7 @@ import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
 import { AntDots } from './AntDots'
 import { ExposureBanner } from './ExposureBanner'
+import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
 
 const DOCS_URL = 'https://antseed.com/docs/guides/gateway-console'
@@ -197,10 +198,12 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
             <span className="gc-topbar__sep" aria-hidden="true">/</span>
             <WorkspaceSwitcher />
             <div className="gc-topbar__spacer" />
+            <GatewayEndpoint className="gc-endpoint--inline" />
             <a className="gc-topbar__link" href={DOCS_URL} target="_blank" rel="noreferrer">Docs</a>
             <ThemeToggle />
             <AccountMenu onAccount={() => setAccountOpen(true)} onTour={() => startTour(viewer, me.member.id)} onSignOut={() => void logout()} />
           </div>
+          <div className="gc-topbar__strip"><GatewayEndpoint /></div>
         </header>
         <div className="gc-body">
           <aside className="gc-rail"><Nav current={current} /><AntDots /></aside>

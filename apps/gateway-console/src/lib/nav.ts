@@ -2,7 +2,7 @@ import type { MeResponse, OrgRole, WorkspaceRole } from '../api/types'
 
 export type PageId =
   | 'overview' | 'chat' | 'activity' | 'logs' | 'keys' | 'members' | 'workspaces' | 'wallet'
-  | 'rewards' | 'network' | 'routing' | 'presets' | 'audit' | 'settings'
+  | 'rewards' | 'providers' | 'models' | 'routing' | 'presets' | 'audit' | 'settings'
 
 export interface Viewer {
   orgRole: OrgRole
@@ -29,7 +29,8 @@ export const NAV_ITEMS: Array<{ id: PageId; label: string; group: string; access
   { id: 'presets', label: 'Presets', group: 'Workspace', access: 'member' },
   { id: 'wallet', label: 'Wallet & Funding', group: 'Money', access: 'workspaceAdmin' },
   { id: 'rewards', label: 'Rewards', group: 'Money', access: 'workspaceAdmin' },
-  { id: 'network', label: 'Network', group: 'Routing', access: 'member' },
+  { id: 'providers', label: 'Providers', group: 'Routing', access: 'member' },
+  { id: 'models', label: 'Models', group: 'Routing', access: 'member' },
   { id: 'routing', label: 'Routing', group: 'Routing', access: 'workspaceAdmin' },
   { id: 'members', label: 'Members', group: 'Organization', access: 'workspaceAdmin' },
   { id: 'workspaces', label: 'Workspaces', group: 'Organization', access: 'workspaceAdmin' },
@@ -57,3 +58,23 @@ export function viewerFor(me: MeResponse, workspaceId: string | null): Viewer | 
 }
 
 export const ROLE_LABELS: Record<OrgRole, string> = { owner: 'Owner', admin: 'Admin', member: 'Member' }
+
+/** Pages whose list opens an item in a side panel at `<page>/<id>`. */
+export type PanelPage = 'providers' | 'models'
+
+/** The path of a panel page with `id` open (URI-encoded, so ids with `/` stay one segment), or the bare list. */
+export function panelPath(page: PanelPage, id: string | null): string {
+  return id ? `${page}/${encodeURIComponent(id)}` : page
+}
+
+/** The id a panel page has open: the rest of the path, rejoined (old links may carry an unencoded `/`). */
+export function panelSelection(rest: readonly string[]): string | null {
+  const id = rest.join('/')
+  return id === '' ? null : id
+}
+
+/** Where an old console path now lives: `network[/<peerId>]` became `providers[/<peerId>]`; null if not moved. */
+export function movedPagePath(page: string, rest: readonly string[]): string | null {
+  if (page === 'network') return panelPath('providers', panelSelection(rest))
+  return null
+}

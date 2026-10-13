@@ -549,6 +549,7 @@ export interface ChatModel {
 // ── Network & routing ───────────────────────────────────────────────────
 
 // GET  /peers                     → Peer[]
+// GET  /models                    → NetworkModel[]   (the buyer's `/v1/models`, unfiltered)
 // GET  /route-preview?model=&workspace=&key=&member=&preset=   → RoutePreview
 // GET  /routing/buyer-limits      → BuyerLimits
 // GET  /routing                   → RoutingPolicy   (gateway default)
@@ -558,6 +559,15 @@ export interface ChatModel {
 //   `usedBy: string[]`) when a policy that allows only this list's sellers
 //   would be left with none; resend with `confirmEmpty: true` (PATCH body) or
 //   `?confirmEmpty=true` (DELETE).
+/** A seller ownership claim the buyer verified, as a display-safe link. */
+export interface PeerVerificationLink {
+  kind: 'domain' | 'github'
+  /** `example.com`, `@user` or `@user/repo`. */
+  label: string
+  /** `https://<domain>` or `https://github.com/<user>[/<repo>]`. */
+  href: string
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -574,6 +584,8 @@ export interface Peer {
   trustScore: number | null
   reputationScore: number | null
   verified: boolean
+  /** Verified domain and GitHub claims; empty when none checked out. */
+  verificationLinks: PeerVerificationLink[]
   tee: boolean
   stakeAnts: string | null
   usageShareBps: number | null
@@ -583,6 +595,59 @@ export interface Peer {
   /** Measured by this gateway over its recent requests. */
   latencyMsP50: number | null
   requests24h: number
+}
+
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
+
+/** A feature at least one seller of the model advertises. */
+export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
+
+/** One seller's offer of a network model. */
+export interface NetworkModelOffer {
+  peerId: string
+  displayName: string | null
+  /** The seller's own name for the model; pin it as `<peerId>@<serviceId>`. */
+  serviceId: string
+  provider: string
+  /** Wire APIs the seller serves the model on. */
+  protocols: string[]
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  cachedInputUsdPerMillion: number | null
+  /** Image models: price per image, cheapest to dearest; null when not advertised. */
+  usdPerImage: { min: number; max: number } | null
+  contextLength: number | null
+  free: boolean
+  /** The reputation routing ranks this offer by (0-100); null when unscored. */
+  reputationScore: number | null
+  trustScore: number | null
+  verified: boolean
+  /** The seller's verified domain and GitHub claims. */
+  verificationLinks: PeerVerificationLink[]
+  tee: boolean
+  /** Measured by this gateway over its recent requests. */
+  latencyMsP50: number | null
+}
+
+/** A model on the network, merged across the sellers that offer it (aliases included). */
+export interface NetworkModel {
+  id: string
+  name: string
+  aliases: string[]
+  type: NetworkModelType
+  /** Largest context window a seller advertises; null when none does. */
+  contextLength: number | null
+  capabilities: NetworkModelCapability[]
+  sellers: number
+  /** Cheapest to dearest across offers, USD per million tokens; null when no offer advertises one. */
+  inputUsdPerMillion: { min: number; max: number } | null
+  outputUsdPerMillion: { min: number; max: number } | null
+  /** At least one offer is free. */
+  free: boolean
+  teeSellers: number
+  verifiedSellers: number
+  /** In the buyer's routing order. */
+  offers: NetworkModelOffer[]
 }
 
 /**

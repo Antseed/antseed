@@ -1,5 +1,5 @@
 import type {
-  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
+  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
 } from '../api/types'
 
 /** Obvious fake peer ids for the mock: 0xfa1e…0001 etc. */
@@ -64,6 +64,10 @@ export function seed() {
     trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,
     verified: index === 2 || index === 0,
+    // Obvious fake identities on example domains.
+    verificationLinks: index === 0
+      ? [{ kind: 'domain' as const, label: 'alpha.example.com', href: 'https://alpha.example.com' }, { kind: 'github' as const, label: '@fake-alpha', href: 'https://github.com/fake-alpha' }]
+      : index === 2 ? [{ kind: 'github' as const, label: '@fake-gamma/tee-node', href: 'https://github.com/fake-gamma/tee-node' }] : [],
     tee: index === 2,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
@@ -162,4 +166,53 @@ export function seed() {
     }
   })
   return { audit, members, workspaces, workspaceMembers, keys, peers, peerLists, presets, invites, adminTokens, channels, requests, gatewayPolicy, settings, chain, authConfig }
+}
+
+const range = (values: Array<number | null>) => {
+  const known = values.filter((value): value is number => value !== null)
+  return known.length ? { min: Math.min(...known), max: Math.max(...known) } : null
+}
+
+/** `GET /models` for the mock: the sellers' text models, plus an image and a video model. */
+export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
+  const offers = new Map<string, NetworkModelOffer[]>()
+  for (const peer of peers) {
+    for (const service of peer.services) {
+      const free = service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0
+      const list = offers.get(service.service) ?? []
+      list.push({
+        peerId: peer.peerId, displayName: peer.displayName, serviceId: service.service, provider: service.provider,
+        protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
+        outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
+        contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
+        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+      })
+      offers.set(service.service, list)
+    }
+  }
+  const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
+    peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
+    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
+    reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+  })), type]
+  const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
+    ...[...offers].map(([id, list]): [string, NetworkModelOffer[], NetworkModel['type']] => [id, list, 'text']),
+    media('flux-schnell', 'image', 0.003),
+    media('wan-2.2', 'video', 0.4),
+  ]
+  return entries.map(([id, list, type]) => {
+    const ranked = [...list].sort((a, b) => (b.reputationScore ?? -1) - (a.reputationScore ?? -1))
+    return {
+      id, name: id, aliases: id.includes('.') ? [id.replace(/\./g, '-')] : [], type,
+      contextLength: range(ranked.map((offer) => offer.contextLength))?.max ?? null,
+      capabilities: type === 'text' ? (id.includes('qwen3-coder') || id.includes('kimi') ? ['toolUse', 'structuredOutput'] : ['toolUse']) : [],
+      sellers: ranked.length,
+      inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
+      outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
+      free: ranked.some((offer) => offer.free),
+      teeSellers: ranked.filter((offer) => offer.tee).length,
+      verifiedSellers: ranked.filter((offer) => offer.verified).length,
+      offers: ranked,
+    }
+  })
 }

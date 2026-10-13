@@ -3,6 +3,7 @@ import { BarChart, Button } from '@antseed/ui'
 import { api } from '../api'
 import type { LimitPeriod } from '../api/types'
 import { RequestLog } from '../components/RequestLog'
+import { GatewayEndpoint } from '../components/GatewayEndpoint'
 import { Brand, ThemeToggle, useSignOut } from '../components/Shell'
 import { Badge, DetailList, PageHeader, Panel, QueryView, StatTile } from '../components/ui'
 import { Icon } from '../components/icons'
@@ -37,9 +38,11 @@ export default function KeyHolder() {
         <div className="gc-topbar__inner">
           <Brand to={null} tagged />
           <div className="gc-topbar__spacer" />
+          <GatewayEndpoint className="gc-endpoint--inline" />
           <ThemeToggle />
           <Button variant="outline" size="sm" leadingIcon={<Icon.logout size={14} />} onClick={() => void signOut()}>Sign out</Button>
         </div>
+        <div className="gc-topbar__strip"><GatewayEndpoint /></div>
       </header>
       <main className="gc-main" id="gc-main">
         {key && (

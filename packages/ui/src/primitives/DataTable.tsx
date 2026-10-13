@@ -14,6 +14,11 @@ export interface DataTableColumn<T> {
   /** Hide on medium screens too (below 1280px); for nice-to-have detail. */
   optional?: boolean;
   width?: string;
+  /**
+   * Content beside the cell's own (to its right), outside the row's open
+   * button, so it may hold its own buttons (e.g. copy an id).
+   */
+  after?: (row: T) => ReactNode;
 }
 
 function cellClass<T>(column: DataTableColumn<T>): string | undefined {
@@ -48,6 +53,8 @@ export interface DataTableProps<T> {
   empty?: ReactNode;
   label: string;
   initialSort?: Sort;
+  /** `rowKey` of the row shown as open (e.g. in a side panel); marked with `aria-current`. */
+  selectedKey?: string | null;
 }
 
 /**
@@ -55,7 +62,7 @@ export interface DataTableProps<T> {
  * rows are reachable by keyboard) and a click anywhere on the row opens it.
  * Row actions go in a kebab menu (`actions`) so they never widen the table.
  */
-export function DataTable<T>({ rows, columns, rowKey, onRowClick, rowLabel, actions, empty, label, initialSort }: DataTableProps<T>) {
+export function DataTable<T>({ rows, columns, rowKey, onRowClick, rowLabel, actions, empty, label, initialSort, selectedKey }: DataTableProps<T>) {
   const [sort, setSort] = useState<Sort | null>(initialSort ?? null);
   const sorted = useMemo(() => {
     if (!sort) return rows;
@@ -101,17 +108,25 @@ export function DataTable<T>({ rows, columns, rowKey, onRowClick, rowLabel, acti
           </tr>
         </thead>
         <tbody>
-          {sorted.map((row) => (
-            <tr key={rowKey(row)} className={onRowClick ? 'as-table__row--click' : undefined}
+          {sorted.map((row) => {
+            const key = rowKey(row);
+            const selected = selectedKey != null && key === selectedKey;
+            const rowClass = [onRowClick ? 'as-table__row--click' : null, selected ? 'as-table__row--selected' : null].filter(Boolean).join(' ');
+            return (
+            <tr key={key} className={rowClass || undefined} aria-current={selected ? 'true' : undefined}
               onClick={onRowClick ? () => onRowClick(row) : undefined}>
               {columns.map((column, index) => (
                 <td key={column.key} className={cellClass(column)}>
-                  {index === 0 && onRowClick ? (
-                    <button type="button" className="as-table__open" aria-label={rowLabel ? `Open ${rowLabel(row)}` : undefined}
-                      onClick={(event) => { event.stopPropagation(); onRowClick(row); }}>
-                      {column.render(row)}
-                    </button>
-                  ) : column.render(row)}
+                  {(() => {
+                    const content = index === 0 && onRowClick ? (
+                      <button type="button" className="as-table__open" aria-label={rowLabel ? `Open ${rowLabel(row)}` : undefined}
+                        onClick={(event) => { event.stopPropagation(); onRowClick(row); }}>
+                        {column.render(row)}
+                      </button>
+                    ) : column.render(row);
+                    if (!column.after) return content;
+                    return <div className="as-table__lead">{content}{column.after(row)}</div>;
+                  })()}
                 </td>
               ))}
               {actions && (
@@ -120,7 +135,8 @@ export function DataTable<T>({ rows, columns, rowKey, onRowClick, rowLabel, acti
                 </td>
               )}
             </tr>
-          ))}
+            );
+          })}
         </tbody>
       </table>
     </div>

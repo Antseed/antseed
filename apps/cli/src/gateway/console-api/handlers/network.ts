@@ -1,10 +1,10 @@
 /** Sellers the buyer knows about, and which of them a request would route to. */
 import { resolvePolicy } from '../../policy-resolver.js'
-import { buyerLimits, listNetworkPeers, previewRoute, type PreviewTarget } from '../../services/network.js'
+import { buyerLimits, listNetworkModels, listNetworkPeers, previewRoute, type PreviewTarget } from '../../services/network.js'
 import { canSeeWorkspace, requireOrgAdmin } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
-import type { BuyerLimits, Peer, RoutePreview } from '../types.js'
+import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../types.js'
 import { defaultBuyerClient, type BuyerClient } from './network-buyer.js'
 
 /** Seams for tests; production uses the defaults. */
@@ -27,6 +27,8 @@ export function registerNetworkRoutes(router: ConsoleRouter, deps: ConsoleDeps, 
   const resolve = overrides.resolvePolicy ?? resolvePolicy
 
   router.add('GET', '/peers', async (): Promise<Peer[]> => listNetworkPeers(deps.store, buyer, deps.now()))
+  /** Every model on the network with the sellers offering it; unfiltered, like `/peers`. */
+  router.add('GET', '/models', async (): Promise<NetworkModel[]> => listNetworkModels(deps.store, buyer, deps.now()))
 
   /** Checks the caller may see the policy of every level it names. */
   const previewTarget = (request: ConsoleRequest): PreviewTarget => {

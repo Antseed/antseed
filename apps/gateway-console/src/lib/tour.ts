@@ -52,9 +52,9 @@ export function tourSteps(viewer: Viewer): TourStep[] {
       title: 'Routing policies',
       description: 'Choose which sellers may serve: allow or block sellers, minimum trust, price caps, TEE only, fallback chains. Policies go from the buyer settings to the gateway default, workspaces, members, keys and presets, and each level can only narrow the one above. The route preview shows which sellers a request would use.',
     }),
-    ...page('network', {
-      title: 'The network',
-      description: 'Every seller this gateway sees, with prices, trust and the latency it measured. Allow, block or prefer a seller from here.',
+    ...page('providers', {
+      title: 'Providers',
+      description: 'Every provider (seller) on the network this gateway sees, with prices, trust and the latency it measured. Open one to copy its models and an API call, or allow, block or prefer it.',
     }),
     ...page('activity', {
       title: 'Usage and logs',

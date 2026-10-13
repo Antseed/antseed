@@ -1,4 +1,5 @@
-import { copyText, useToast } from '@antseed/ui'
+import { copyText, IconButton, useToast } from '@antseed/ui'
+import { Icon } from './icons'
 import { useStatus } from '../lib/queries'
 import { gatewayBaseUrl, pinnedModelId } from '../lib/snippets'
 
@@ -21,3 +22,18 @@ export function useCopy() {
 export function copyModelIdItem(copy: (value: string) => Promise<void>, peerId: string, model: string) {
   return { label: 'Copy model id', onSelect: () => void copy(pinnedModelId(peerId, model)) }
 }
+
+/**
+ * A small copy icon for an id inside a clickable row: copies with the same
+ * toast as the row menus, without opening the row.
+ */
+export function CopyIdButton({ value, label }: { value: string; label: string }) {
+  const copy = useCopy()
+  return (
+    <IconButton label={label} size="sm" className="gc-copy-id"
+      onClick={(event) => { event.stopPropagation(); void copy(value) }}>
+      <Icon.copy size={13} />
+    </IconButton>
+  )
+}
+

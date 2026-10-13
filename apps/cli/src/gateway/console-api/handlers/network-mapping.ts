@@ -1,7 +1,8 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
+import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
-import type { Peer, RoutePreview } from '../types.js'
+import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, Peer, RoutePreview } from '../types.js'
 
 type Row = Record<string, unknown>
 
@@ -118,6 +119,7 @@ export function mapPeers(input: {
       // else the seller-reported one; null when the buyer knows neither.
       reputationScore: num(row['onChainReputationScore']) ?? num(trust['score']) ?? num(row['reputationScore']),
       verified,
+      verificationLinks: collectPeerVerificationLinks(row),
       tee,
       stakeAnts: stake === null ? null : String(stake),
       usageShareBps: num(row['onChainUsageShareBps']),
@@ -150,6 +152,83 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       inputUsdPerMillion: num(row['inputUsdPerMillion']),
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
+    }]
+  })
+}
+
+const MODEL_TYPES: readonly NetworkModelType[] = ['text', 'image', 'decision', 'video']
+
+function range(values: Array<number | null>): { min: number; max: number } | null {
+  const known = values.filter((value): value is number => value !== null)
+  return known.length ? { min: Math.min(...known), max: Math.max(...known) } : null
+}
+
+function strings(value: unknown): string[] {
+  return Array.isArray(value) ? value.filter((item): item is string => typeof item === 'string') : []
+}
+
+/**
+ * The buyer's `/v1/models` (one entry per model, each seller's offer under
+ * `peers`) for the console, with verification, trust and this gateway's
+ * latency filled from the console's own peer list.
+ */
+export function mapNetworkModels(body: unknown, peers: readonly Peer[]): NetworkModel[] {
+  const known = new Map(peers.map((peer) => [peerKey(peer.peerId), peer]))
+  return rows(asRecord(body)['data']).flatMap((row): NetworkModel[] => {
+    const id = str(row['id'])
+    if (!id) return []
+    const offers = rows(row['peers']).flatMap((offer): NetworkModelOffer[] => {
+      const peerId = str(offer['peerId'])
+      if (!peerId) return []
+      const peer = known.get(peerKey(peerId))
+      const capabilities = asRecord(offer['capabilities'])
+      const input = num(offer['inputUsdPerMillion'])
+      const output = num(offer['outputUsdPerMillion'])
+      const minImage = num(offer['minImageUsdPerImage'])
+      const maxImage = num(offer['maxImageUsdPerImage']) ?? minImage
+      const tokenPriced = input !== null || output !== null
+      return [{
+        peerId,
+        displayName: str(offer['displayName']) ?? peer?.displayName ?? null,
+        serviceId: str(offer['serviceId']) ?? id,
+        provider: str(offer['provider']) ?? '',
+        protocols: [...new Set([str(offer['protocol']), ...strings(offer['protocols'])].filter((value): value is string => value !== null))],
+        inputUsdPerMillion: input,
+        outputUsdPerMillion: output,
+        cachedInputUsdPerMillion: num(offer['cachedInputUsdPerMillion']),
+        usdPerImage: minImage !== null && maxImage !== null ? { min: Math.min(minImage, maxImage), max: Math.max(minImage, maxImage) } : null,
+        contextLength: num(capabilities['contextWindow']),
+        // Free when every advertised price is zero, and at least one is advertised.
+        free: (tokenPriced || minImage !== null) && (input ?? 0) === 0 && (output ?? 0) === 0 && (maxImage ?? 0) === 0,
+        reputationScore: num(offer['effectiveReputationScore']) ?? num(offer['reputationScore']),
+        trustScore: peer?.trustScore ?? num(offer['onChainReputationScore']),
+        verified: peer?.verified ?? false,
+        verificationLinks: peer?.verificationLinks ?? [],
+        tee: strings(offer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID) || (peer?.tee ?? false),
+        latencyMsP50: peer?.latencyMsP50 ?? null,
+      }]
+    })
+    const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))
+    const capabilities: NetworkModelCapability[] = []
+    if (capabilityRows.some((caps) => caps['toolUse'] === true)) capabilities.push('toolUse')
+    if (capabilityRows.some((caps) => caps['reasoning'] === true)) capabilities.push('reasoning')
+    if (capabilityRows.some((caps) => caps['structuredOutput'] === true)) capabilities.push('structuredOutput')
+    if (capabilityRows.some((caps) => strings(caps['inputs']).includes('image'))) capabilities.push('vision')
+    const type = MODEL_TYPES.find((value) => value === row['type']) ?? 'text'
+    return [{
+      id,
+      name: str(row['name']) ?? id,
+      aliases: strings(row['aliases']).filter((alias) => alias !== id),
+      type,
+      contextLength: range(offers.map((offer) => offer.contextLength))?.max ?? num(row['context_length']),
+      capabilities,
+      sellers: new Set(offers.map((offer) => peerKey(offer.peerId))).size,
+      inputUsdPerMillion: range(offers.map((offer) => offer.inputUsdPerMillion)),
+      outputUsdPerMillion: range(offers.map((offer) => offer.outputUsdPerMillion)),
+      free: offers.some((offer) => offer.free),
+      teeSellers: offers.filter((offer) => offer.tee).length,
+      verifiedSellers: offers.filter((offer) => offer.verified).length,
+      offers,
     }]
   })
 }

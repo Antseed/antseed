@@ -4,7 +4,8 @@ export interface PeerFilter {
   search: string
   model: string
   tee: boolean
-  verified: boolean
+  /** Only providers with a verified domain or GitHub. */
+  linked: boolean
   free: boolean
 }
 
@@ -45,7 +46,7 @@ export function filterPeers(peers: readonly Peer[], filter: PeerFilter): Peer[] 
       && !peer.services.some((service) => service.service.toLowerCase().includes(needle))) return false
     if (filter.model && !peer.services.some((service) => service.service === filter.model)) return false
     if (filter.tee && !peer.tee) return false
-    if (filter.verified && !peer.verified) return false
+    if (filter.linked && !peer.verificationLinks?.length) return false
     if (filter.free && !isFreePeer(peer, filter.model)) return false
     return true
   })

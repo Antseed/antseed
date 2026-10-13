@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, Peer, PeerList, Preset,
+  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -234,6 +234,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
     },
     network: {
       peers: () => get<Peer[]>('/peers'),
+      /** Every model on the network, unfiltered, with the sellers offering it. */
+      models: () => get<NetworkModel[]>('/models'),
       routePreview: (query: { model: string; workspace?: string; key?: string; member?: string; preset?: string }) => get<RoutePreview>('/route-preview', query),
       gatewayPolicy: () => get<RoutingPolicy>('/routing'),
       buyerLimits: () => get<BuyerLimits>('/routing/buyer-limits'),

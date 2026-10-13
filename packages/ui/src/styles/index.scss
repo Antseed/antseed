@@ -1175,6 +1175,10 @@ body {
   cursor: pointer;
 }
 
+/* The row open in a side panel. */
+.as-table tbody tr.as-table__row--selected td { background: var(--as-bg-muted); }
+.as-table tbody tr.as-table__row--selected td:first-child { box-shadow: inset 2px 0 0 var(--as-text-primary); }
+
 .as-table__sort {
   all: unset;
   cursor: pointer;
@@ -1204,6 +1208,15 @@ body {
 
 .as-table__actions .as-icon-button {
   border-color: transparent;
+}
+
+.as-table__lead {
+  display: flex;
+  align-items: flex-start;
+  gap: 0.25rem;
+  min-width: 0;
+
+  > .as-table__open { min-width: 0; }
 }
 
 .as-table__open {
