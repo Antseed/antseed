@@ -1,9 +1,11 @@
 import assert from 'node:assert/strict'
 import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { createServer } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
-import { chatTools, htmlToText, isPrivateAddress, parseDuckDuckGo } from './tools.js'
+import { chatTools, fetchPinned, htmlToText, isPrivateAddress, parseDuckDuckGo } from './tools.js'
 import { mapChatModels } from './routes.js'
 
 const dirs: string[] = []
@@ -23,10 +25,36 @@ async function run(tools: ReturnType<typeof chatTools>, name: string, input: unk
 }
 
 test('private and local addresses are never fetched', () => {
-  for (const address of ['127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::1', 'fd00::1', 'fe80::1', '::ffff:127.0.0.1']) {
+  for (const address of [
+    '127.0.0.1', '10.1.2.3', '172.16.0.1', '192.168.1.1', '169.254.169.254', '100.64.0.1', '0.0.0.0', '::', '::1', 'fd00::1', 'fe80::1',
+    // IPv4-mapped (dotted and the hex form WHATWG URL produces), IPv4-compatible and NAT64 forms of private IPv4.
+    '::ffff:127.0.0.1', '::ffff:7f00:1', '::ffff:a00:1', '0:0:0:0:0:ffff:a9fe:a9fe', '::7f00:1', '64:ff9b::7f00:1', '64:ff9b::a9fe:a9fe', '64:ff9b:1::1',
+  ]) {
     assert.equal(isPrivateAddress(address), true, address)
   }
-  for (const address of ['93.184.216.34', '1.1.1.1', '2606:4700:4700::1111']) assert.equal(isPrivateAddress(address), false, address)
+  for (const address of ['93.184.216.34', '1.1.1.1', '2606:4700:4700::1111', '::ffff:808:808', '64:ff9b::808:808']) assert.equal(isPrivateAddress(address), false, address)
+})
+
+test('web_fetch refuses IPv6 literals that embed a private IPv4 address', async () => {
+  const fetchImpl = (async () => new Response('reached')) as typeof fetch
+  const tools = chatTools({ sandboxDir: await sandbox(), allowShell: false, fetchImpl, resolveHost: async () => ['93.184.216.34'] })
+  for (const url of ['http://[::ffff:127.0.0.1]:8377/', 'http://[::ffff:7f00:1]/', 'http://[::ffff:a00:1]/', 'http://[64:ff9b::127.0.0.1]/']) {
+    await assert.rejects(run(tools, 'web_fetch', { url }), /private or local/, url)
+  }
+})
+
+test('the pinned fetch connects to the checked address, never re-resolving the host', async () => {
+  const server = createServer((req, res) => res.end(`host=${req.headers.host}`))
+  await new Promise<void>((resolveListen) => server.listen(0, '127.0.0.1', resolveListen))
+  try {
+    const { port } = server.address() as AddressInfo
+    // `.invalid` never resolves in DNS, so a response proves the connection used the pinned address.
+    const response = await fetchPinned(new URL(`http://pinned.invalid:${port}/`), ['127.0.0.1'], { headers: { accept: 'text/plain' } })
+    assert.equal(response.status, 200)
+    assert.equal(await response.text(), `host=pinned.invalid:${port}`)
+  } finally {
+    server.close()
+  }
 })
 
 test('web_fetch refuses local targets, including a public page that redirects to one', async () => {

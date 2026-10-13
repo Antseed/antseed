@@ -12,8 +12,11 @@
 import { spawn } from 'node:child_process'
 import { lookup } from 'node:dns/promises'
 import { mkdir, readdir, readFile, realpath, stat, writeFile } from 'node:fs/promises'
-import { isIP } from 'node:net'
+import { request as httpRequest } from 'node:http'
+import { request as httpsRequest } from 'node:https'
+import { BlockList, isIP, type LookupFunction } from 'node:net'
 import { dirname, join, relative, resolve, sep } from 'node:path'
+import { Readable } from 'node:stream'
 import { tool, type ToolSet } from 'ai'
 import { z } from 'zod'
 
@@ -33,6 +36,7 @@ export interface ChatToolOptions {
   allowShell: boolean
   /** Brave Search API key; DuckDuckGo's HTML results without one. */
   braveApiKey?: string | null
+  /** Replaces all outbound HTTP (tests); web_fetch then does not pin its connection to the checked addresses. */
   fetchImpl?: typeof fetch
   /** Resolves a host name to its addresses; DNS by default (tests inject). */
   resolveHost?: (host: string) => Promise<string[]>
@@ -40,12 +44,13 @@ export interface ChatToolOptions {
 
 export function chatTools(options: ChatToolOptions): ToolSet {
   const fetchImpl = options.fetchImpl ?? fetch
+  const fetchPageImpl: PinnedFetch = options.fetchImpl ? (url, _addresses, init) => fetchImpl(url, init) : fetchPinned
   const resolveHost = options.resolveHost ?? (async (host: string) => (await lookup(host, { all: true })).map((entry) => entry.address))
   const tools: ToolSet = {
     web_fetch: tool({
       description: 'Fetch a public web page (http or https) and return its readable text. Use it to read pages found with web_search or given by the user.',
       inputSchema: z.object({ url: z.string().describe('Absolute http(s) URL') }),
-      execute: async ({ url }) => fetchPage(url, fetchImpl, resolveHost),
+      execute: async ({ url }) => fetchPage(url, fetchPageImpl, resolveHost),
     }),
     web_search: tool({
       description: 'Search the web. Returns titles, URLs and snippets; read a result with web_fetch.',
@@ -80,25 +85,41 @@ export function chatTools(options: ChatToolOptions): ToolSet {
 
 // ── Web ─────────────────────────────────────────────────────────────────
 
-/** Loopback, private, link-local, CGNAT and other non-public ranges: never fetched (the buyer and gateway listen on loopback). */
+const PRIVATE_IPV4: ReadonlyArray<[string, number]> = [
+  ['0.0.0.0', 8], ['10.0.0.0', 8], ['100.64.0.0', 10], ['127.0.0.0', 8], ['169.254.0.0', 16],
+  ['172.16.0.0', 12], ['192.168.0.0', 16], ['198.18.0.0', 15], ['224.0.0.0', 3],
+]
+// Unspecified, loopback and IPv4-compatible; local-use NAT64; unique-local; link-local; site-local; multicast.
+const PRIVATE_IPV6: ReadonlyArray<[string, number]> = [
+  ['::', 96], ['64:ff9b:1::', 48], ['fc00::', 7], ['fe80::', 10], ['fec0::', 10], ['ff00::', 8],
+]
+
+/**
+ * Loopback, private, link-local, CGNAT and other non-public ranges: never fetched (the buyer and gateway listen on loopback).
+ * A BlockList matches the IPv4 ranges in their IPv4-mapped IPv6 forms too (WHATWG URL writes
+ * `[::ffff:127.0.0.1]` as `[::ffff:7f00:1]`); their NAT64 (`64:ff9b::/96`) forms are added explicitly.
+ */
+const PRIVATE_ADDRESSES = (() => {
+  const list = new BlockList()
+  for (const [network, prefix] of PRIVATE_IPV4) {
+    list.addSubnet(network, prefix, 'ipv4')
+    list.addSubnet(`64:ff9b::${network}`, 96 + prefix, 'ipv6')
+  }
+  for (const [network, prefix] of PRIVATE_IPV6) list.addSubnet(network, prefix, 'ipv6')
+  return list
+})()
+
 export function isPrivateAddress(address: string): boolean {
   const version = isIP(address)
-  if (version === 4) {
-    const [a, b] = address.split('.').map(Number) as [number, number]
-    return a === 0 || a === 10 || a === 127 || (a === 100 && b >= 64 && b <= 127) || (a === 169 && b === 254)
-      || (a === 172 && b >= 16 && b <= 31) || (a === 192 && b === 168) || (a === 198 && (b === 18 || b === 19)) || a >= 224
-  }
-  if (version === 6) {
-    const lower = address.toLowerCase()
-    if (lower === '::' || lower === '::1') return true
-    const mapped = /^::ffff:(\d+\.\d+\.\d+\.\d+)$/.exec(lower)
-    if (mapped) return isPrivateAddress(mapped[1]!)
-    return /^(fc|fd|fe8|fe9|fea|feb|ff)/.test(lower)
-  }
-  return true
+  if (version === 0) return true
+  return PRIVATE_ADDRESSES.check(address, version === 4 ? 'ipv4' : 'ipv6')
 }
 
-async function assertPublicUrl(raw: string, resolveHost: (host: string) => Promise<string[]>): Promise<URL> {
+type HostResolver = (host: string) => Promise<string[]>
+/** GETs `url` connecting only to `addresses`, which were checked to be public; redirects are not followed. */
+type PinnedFetch = (url: URL, addresses: string[], init: RequestInit) => Promise<Response>
+
+async function assertPublicUrl(raw: string, resolveHost: HostResolver): Promise<{ url: URL; addresses: string[] }> {
   let url: URL
   try { url = new URL(raw) } catch { throw new Error(`Not a valid URL: ${raw}`) }
   if (url.protocol !== 'http:' && url.protocol !== 'https:') throw new Error('Only http and https URLs can be fetched.')
@@ -106,13 +127,14 @@ async function assertPublicUrl(raw: string, resolveHost: (host: string) => Promi
   const addresses = isIP(host) ? [host] : await resolveHost(host).catch(() => [])
   if (addresses.length === 0) throw new Error(`Could not resolve ${host}.`)
   if (addresses.some(isPrivateAddress)) throw new Error(`${host} is a private or local address; only public web pages can be fetched.`)
-  return url
+  return { url, addresses }
 }
 
-async function fetchPage(raw: string, fetchImpl: typeof fetch, resolveHost: (host: string) => Promise<string[]>) {
-  let url = await assertPublicUrl(raw, resolveHost)
+async function fetchPage(raw: string, fetchPinnedImpl: PinnedFetch, resolveHost: HostResolver) {
+  let { url, addresses } = await assertPublicUrl(raw, resolveHost)
   for (let hop = 0; hop <= MAX_REDIRECTS; hop += 1) {
-    const response = await fetchImpl(url, {
+    // Connect to the addresses just checked: re-resolving the host could answer with a private one (DNS rebinding).
+    const response = await fetchPinnedImpl(url, addresses, {
       redirect: 'manual',
       headers: { 'user-agent': USER_AGENT, accept: 'text/html,text/plain,application/json;q=0.9,*/*;q=0.5' },
       signal: AbortSignal.timeout(FETCH_TIMEOUT_MS),
@@ -120,7 +142,7 @@ async function fetchPage(raw: string, fetchImpl: typeof fetch, resolveHost: (hos
     const location = response.headers.get('location')
     if (response.status >= 300 && response.status < 400 && location) {
       // Every hop is checked again: a public page must not redirect into the gateway's network.
-      url = await assertPublicUrl(new URL(location, url).toString(), resolveHost)
+      ;({ url, addresses } = await assertPublicUrl(new URL(location, url).toString(), resolveHost))
       continue
     }
     const type = response.headers.get('content-type') ?? ''
@@ -129,6 +151,32 @@ async function fetchPage(raw: string, fetchImpl: typeof fetch, resolveHost: (hos
     return { url: url.toString(), status: response.status, contentType: type, text: truncate(text, MAX_TOOL_TEXT) }
   }
   throw new Error(`Too many redirects from ${raw}.`)
+}
+
+/** node:http(s) GET whose DNS lookup answers with `addresses`; TLS still verifies the certificate for the URL's host name. */
+export function fetchPinned(url: URL, addresses: string[], init: RequestInit): Promise<Response> {
+  const pinned = addresses.map((address) => ({ address, family: isIP(address) }))
+  const lookup: LookupFunction = (_host, options, callback) => {
+    if (options.all) callback(null, pinned)
+    else callback(null, pinned[0]!.address, pinned[0]!.family)
+  }
+  const request = url.protocol === 'https:' ? httpsRequest : httpRequest
+  const headers = init.headers as Record<string, string> | undefined
+  return new Promise((resolvePromise, reject) => {
+    const req = request(url, { method: 'GET', headers, lookup, signal: init.signal ?? undefined }, (res) => {
+      const responseHeaders = new Headers()
+      for (const [name, value] of Object.entries(res.headers)) {
+        for (const item of Array.isArray(value) ? value : [value ?? '']) responseHeaders.append(name, item)
+      }
+      const status = res.statusCode ?? 502
+      let body: ReadableStream<Uint8Array> | null = null
+      if (status === 204 || status === 205 || status === 304) res.resume()
+      else body = Readable.toWeb(res) as ReadableStream<Uint8Array>
+      resolvePromise(new Response(body, { status, statusText: res.statusMessage, headers: responseHeaders }))
+    })
+    req.on('error', reject)
+    req.end()
+  })
 }
 
 async function readCapped(response: Response, maxBytes: number): Promise<string> {
