@@ -220,6 +220,25 @@ check_value() {
   [[ "$value" =~ ^[^[:space:]\"\'\\]*$ ]] || die "$name must not contain spaces, quotes or backslashes"
 }
 
+# Characters as the CLI counts them: code points after NFKC normalisation.
+# Without Node.js yet, count UTF-8 code points (bytes that do not continue a
+# character), whatever the locale; main checks again once Node is installed.
+passphrase_length() {
+  local node="$PREFIX/node/bin/node"
+  if [[ -x "$node" ]] && ANTSEED_PASSPHRASE="$PASSPHRASE" "$node" \
+    -e 'console.log([...process.env.ANTSEED_PASSPHRASE.normalize("NFKC")].length)' 2>/dev/null; then
+    return 0
+  fi
+  printf '%s' "$PASSPHRASE" | LC_ALL=C tr -d '\200-\277' | wc -c | tr -d ' '
+}
+
+check_passphrase_length() {
+  [[ -n "$PASSPHRASE" ]] || return 0
+  local length
+  length="$(passphrase_length)"
+  [[ "$length" =~ ^[0-9]+$ && "$length" -ge 12 ]] || die "ANTSEED_PASSPHRASE must be at least 12 characters"
+}
+
 # Validate everything before changing the system.
 validate() {
   MODE=local
@@ -258,7 +277,7 @@ validate() {
   check_value "CDP_API_KEY_SECRET" "${CDP_API_KEY_SECRET:-}"
   # Written single-quoted, so spaces are fine.
   [[ "$PASSPHRASE" != *"'"* && "$PASSPHRASE" != *$'\n'* ]] || die "ANTSEED_PASSPHRASE must not contain single quotes or line breaks"
-  [[ -z "$PASSPHRASE" || ${#PASSPHRASE} -ge 12 ]] || die "ANTSEED_PASSPHRASE must be at least 12 characters"
+  check_passphrase_length
   if [[ "$X402_FACILITATOR" == cdp && -z "${CDP_API_KEY_SECRET:-}" ]] \
     && ! grep -qs '^CDP_API_KEY_SECRET=' "$ENV_FILE"; then
     die "--x402-facilitator cdp needs CDP_API_KEY_ID and CDP_API_KEY_SECRET in the environment (sudo CDP_API_KEY_ID=... CDP_API_KEY_SECRET=... bash ...) or in $ENV_FILE"
@@ -735,6 +754,7 @@ main() {
   trap abort INT TERM
 
   install_node
+  quiet_x check_passphrase_length
   install_cli
   create_user
   install_wrapper
