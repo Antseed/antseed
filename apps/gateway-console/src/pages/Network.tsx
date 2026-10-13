@@ -35,7 +35,7 @@ const Seller = lazy(() => import('./Seller'))
 
 export default function Network() {
   const location = useLocation()
-  const sellerId = location.rest[0] ? decodeURIComponent(location.rest[0]) : null
+  const sellerId = location.rest[0] ?? null
   if (sellerId) return <Suspense fallback={<LoadingRows rows={6} />}><Seller peerId={sellerId} /></Suspense>
   return <NetworkList />
 }
@@ -63,7 +63,7 @@ function NetworkList() {
       <Panel flush>
         <QueryView query={peers} rows={8}>
           {(list) => (
-            <DataTable<Peer> label="Sellers" rows={filterPeers(list, filter)} rowKey={(peer) => peer.peerId} onRowClick={(peer) => navigate(`network/${peer.peerId}`)}
+            <DataTable<Peer> label="Sellers" rows={filterPeers(list, filter)} rowKey={(peer) => peer.peerId} onRowClick={(peer) => navigate(`network/${encodeURIComponent(peer.peerId)}`)}
               rowLabel={(peer) => peer.displayName ?? shortId(peer.peerId, 8, 4)}
               actions={(peer) => [
                 filter.model !== '' && copyModelIdItem(copy, peer.peerId, filter.model),

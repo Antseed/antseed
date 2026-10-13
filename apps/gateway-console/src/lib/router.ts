@@ -5,14 +5,24 @@ const BASE_PATH = '/console'
 export interface Location {
   /** Path below the console base, without leading slash: '', 'keys', 'setup'. */
   page: string
+  /** The remaining path segments, URI-decoded. */
   rest: string[]
   query: URLSearchParams
   hash: string
 }
 
+/** A malformed `%` sequence stays as typed rather than throwing out of render. */
+function decodeSegment(segment: string): string {
+  try {
+    return decodeURIComponent(segment)
+  } catch {
+    return segment
+  }
+}
+
 export function parseLocation(pathname: string, search = '', hash = ''): Location {
   const below = pathname.startsWith(BASE_PATH) ? pathname.slice(BASE_PATH.length) : pathname
-  const segments = below.split('/').filter(Boolean)
+  const segments = below.split('/').filter(Boolean).map(decodeSegment)
   return { page: segments[0] ?? '', rest: segments.slice(1), query: new URLSearchParams(search), hash: hash.replace(/^#/, '') }
 }
 

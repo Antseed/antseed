@@ -93,6 +93,10 @@ describe('routing and snippets', () => {
     expect(parseLocation('/console/').page).toBe('')
     expect(parseLocation('/console/setup').page).toBe('setup')
   })
+  it('decodes path segments and keeps malformed ones as typed', () => {
+    expect(parseLocation('/console/network/a%2Fb%20c').rest).toEqual(['a/b c'])
+    expect(parseLocation('/console/network/%E0%A4%A').rest).toEqual(['%E0%A4%A'])
+  })
   it('builds snippets against the gateway URL', () => {
     expect(gatewayBaseUrl('https://gw.example.com/', 'http://localhost')).toBe('https://gw.example.com')
     expect(gatewayBaseUrl(null, 'http://127.0.0.1:8379')).toBe('http://127.0.0.1:8379')

@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useMemo, useState, type ComponentType } from 'react'
+import { Component, lazy, Suspense, useEffect, useMemo, useState, type ComponentType, type ReactNode } from 'react'
 import { QueryClient, QueryClientProvider, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, ToastProvider } from '@antseed/ui'
 import { isApiError } from '../api'
@@ -40,6 +40,20 @@ const queryClient = new QueryClient({
   },
 })
 
+/** Keeps a page that throws while rendering from blanking the whole console. */
+class PageErrorBoundary extends Component<{ children: ReactNode }, { failed: boolean; error?: unknown }> {
+  override state: { failed: boolean; error?: unknown } = { failed: false }
+
+  static getDerivedStateFromError(error: unknown) {
+    return { failed: true, error }
+  }
+
+  override render() {
+    if (!this.state.failed) return this.props.children
+    return <ErrorAlert error={this.state.error} title="This page failed to load" onRetry={() => this.setState({ failed: false, error: undefined })} />
+  }
+}
+
 function isPageId(value: string): value is PageId {
   return NAV_ITEMS.some((item) => item.id === value)
 }
@@ -48,6 +62,7 @@ function MemberConsole({ me, page }: { me: Me; page: string }) {
   const [workspaceId, setWorkspaceId] = useState<string | null>(() => pickWorkspace(me, rememberedWorkspace())?.id ?? null)
   const workspace = pickWorkspace(me, workspaceId)
   const queryClientInstance = useQueryClient()
+  const location = useLocation()
 
   const value = useMemo<ConsoleContextValue | null>(() => {
     if (!workspace) return null
@@ -74,9 +89,11 @@ function MemberConsole({ me, page }: { me: Me; page: string }) {
   return (
     <ConsoleContext.Provider value={value}>
       <Shell page={pageId}>
-        <Suspense fallback={<LoadingRows rows={6} />}>
-          {allowed ? <Page /> : <Alert tone="warning" title="Not available">Your role cannot open this page.</Alert>}
-        </Suspense>
+        <PageErrorBoundary key={[location.page, ...location.rest].join('/')}>
+          <Suspense fallback={<LoadingRows rows={6} />}>
+            {allowed ? <Page /> : <Alert tone="warning" title="Not available">Your role cannot open this page.</Alert>}
+          </Suspense>
+        </PageErrorBoundary>
       </Shell>
     </ConsoleContext.Provider>
   )
