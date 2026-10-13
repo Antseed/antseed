@@ -301,6 +301,8 @@ test('peer lists, presets, routing default, settings and status', async () => {
     const put = await as('writer', 'PUT', '/routing', { blockedPeerIds: ['0xEE'], sort: 'price' })
     assert.equal(put.status, 200)
     assert.deepEqual((await as('memberA', 'GET', '/routing')).body, { blockedPeerIds: ['ee'], sort: 'price' })
+    assert.equal((await as('writer', 'PUT', '/routing', 5)).status, 400, 'a non-object body does not clear the policy')
+    assert.deepEqual((await as('memberA', 'GET', '/routing')).body, { blockedPeerIds: ['ee'], sort: 'price' })
 
     await expectStatuses(as, 'GET', '/settings', { memberA: 403, keyholder: 403, admin: 200, reader: 200 })
     const settings = (await as('admin', 'GET', '/settings')).body as { observability: { logContent: boolean }; auth: { setupRequired: boolean } }
