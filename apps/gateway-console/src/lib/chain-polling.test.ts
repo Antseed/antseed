@@ -22,7 +22,7 @@ describe('startVisiblePolling', () => {
   it('never polls faster than 30 s', () => {
     const refresh = vi.fn()
     const doc = fakeDoc()
-    const stop = startVisiblePolling(refresh, 5_000, doc as unknown as Document)
+    const stop = startVisiblePolling(refresh, 5_000, { doc: doc as unknown as Document })
     vi.advanceTimersByTime(CHAIN_POLL_MS - 1)
     expect(refresh).not.toHaveBeenCalled()
     vi.advanceTimersByTime(1)
@@ -32,10 +32,20 @@ describe('startVisiblePolling', () => {
     stop()
   })
 
+  it('polls faster when given a lower minimum', () => {
+    const refresh = vi.fn()
+    const stop = startVisiblePolling(refresh, 4_000, { minIntervalMs: 4_000, doc: fakeDoc() as unknown as Document })
+    vi.advanceTimersByTime(4_000)
+    expect(refresh).toHaveBeenCalledTimes(1)
+    vi.advanceTimersByTime(8_000)
+    expect(refresh).toHaveBeenCalledTimes(3)
+    stop()
+  })
+
   it('pauses while the tab is hidden and refreshes once on return', () => {
     const refresh = vi.fn()
     const doc = fakeDoc()
-    const stop = startVisiblePolling(refresh, CHAIN_POLL_MS, doc as unknown as Document)
+    const stop = startVisiblePolling(refresh, CHAIN_POLL_MS, { doc: doc as unknown as Document })
     doc.set('hidden')
     vi.advanceTimersByTime(10 * CHAIN_POLL_MS)
     expect(refresh).not.toHaveBeenCalled()
@@ -51,7 +61,7 @@ describe('startVisiblePolling', () => {
 
   it('does not start polling in a tab opened in the background', () => {
     const refresh = vi.fn()
-    const stop = startVisiblePolling(refresh, CHAIN_POLL_MS, fakeDoc('hidden') as unknown as Document)
+    const stop = startVisiblePolling(refresh, CHAIN_POLL_MS, { doc: fakeDoc('hidden') as unknown as Document })
     vi.advanceTimersByTime(5 * CHAIN_POLL_MS)
     expect(refresh).not.toHaveBeenCalled()
     stop()

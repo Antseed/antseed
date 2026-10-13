@@ -110,9 +110,10 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   useDepositWatchHeartbeat(workspaceId)
   // Only events after the dialog opened count; an old "credited" is not news.
   const baseline = useRef(wallet.deposit.event?.seq ?? 0)
-  // The status line follows the watcher: every 4 s while USDC is on its way, every 8 s otherwise (visible tab only; the gateway answers from caches).
+  // The status line follows the watcher: every 4 s while USDC is on its way, every 8 s otherwise (visible tab only).
+  // The gateway answers from caches, so this may poll below the 30 s chain floor.
   const inFlight = wallet.deposit.event !== null && wallet.deposit.event.seq > baseline.current && (wallet.deposit.event.phase === 'received' || wallet.deposit.event.phase === 'sweeping')
-  useVisiblePolling(qk.wallet(workspaceId), inFlight ? 4_000 : 8_000)
+  useVisiblePolling(qk.wallet(workspaceId), inFlight ? 4_000 : 8_000, 4_000)
   // The embedded checkout, closed once its USDC is credited (the desktop closes its checkout popup the same way).
   const [checkout, setCheckout] = useState<{ url: string; provider: CardProvider } | null>(null)
   const event = wallet.deposit.event
