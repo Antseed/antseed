@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, mkdir, rm, symlink, writeFile } from 'node:fs/promises'
+import { mkdtemp, mkdir, rm, stat, symlink, writeFile } from 'node:fs/promises'
 import { createServer } from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { tmpdir } from 'node:os'
@@ -104,7 +104,7 @@ test('the shell is offered only when allowed, runs in the scratch directory with
   assert.equal(chatTools({ sandboxDir: root, allowShell: false })['run_command'], undefined)
   process.env['ANTSEED_TEST_SECRET'] = 'leak'
   try {
-    const tools = chatTools({ sandboxDir: root, allowShell: true })
+    const tools = chatTools({ sandboxDir: root, allowShell: true, approvedCommandCalls: new Set(['t']) })
     const result = await run(tools, 'run_command', { command: 'pwd; echo "s=${ANTSEED_TEST_SECRET:-none}"; exit 3' })
     assert.equal(result.exitCode, 3)
     assert.match(result.stdout, /s=none/)
@@ -112,6 +112,15 @@ test('the shell is offered only when allowed, runs in the scratch directory with
   } finally {
     delete process.env['ANTSEED_TEST_SECRET']
   }
+})
+
+test('the shell refuses a call the user did not approve', async () => {
+  const root = await sandbox()
+  for (const approvedCommandCalls of [undefined, new Set<string>(), new Set(['another-call'])]) {
+    const tools = chatTools({ sandboxDir: root, allowShell: true, ...(approvedCommandCalls ? { approvedCommandCalls } : {}) })
+    await assert.rejects(run(tools, 'run_command', { command: 'touch ran' }), /not approved/)
+  }
+  await assert.rejects(stat(join(root, 'ran')), /ENOENT/)
 })
 
 test('chat models: text only, tool-capable first, cheapest offer and peers by reputation', () => {

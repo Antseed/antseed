@@ -3,11 +3,14 @@
  *
  *   web_fetch, web_search   every console member
  *   list/read/write_file    a per-chat scratch directory under the gateway's data dir
- *   run_command             org admins only: a shell in that directory
+ *   run_command             org admins only: a shell in that directory, one approved command at a time
  *
  * The scratch directory confines the file tools, not the shell: a command
  * runs as the gateway's own OS user, with its permissions. That is why the
- * shell is for organization admins, who can run the gateway CLI anyway.
+ * shell is for organization admins, who can run the gateway CLI anyway, and
+ * why no command runs without the admin's approval of that exact call: the
+ * model's output comes from a network seller (and from any page web_fetch
+ * reads), so it must never be able to start a command on its own.
  */
 import { spawn } from 'node:child_process'
 import { lookup } from 'node:dns/promises'
@@ -28,12 +31,19 @@ const COMMAND_TIMEOUT_MS = 60_000
 const MAX_COMMAND_OUTPUT = 20_000
 const MAX_FILE_BYTES = 1024 * 1024
 const USER_AGENT = 'Mozilla/5.0 (compatible; AntseedGatewayChat/1.0)'
+/** The tool that runs only after the user approves the exact call. */
+export const SHELL_TOOL = 'run_command'
 
 export interface ChatToolOptions {
   /** The chat's scratch directory (created on first use). */
   sandboxDir: string
   /** Offer run_command (org admins). */
   allowShell: boolean
+  /**
+   * Tool call ids of run_command calls the user approved in this request:
+   * run_command refuses any other call, whatever the agent loop decides.
+   */
+  approvedCommandCalls?: ReadonlySet<string>
   /** Brave Search API key; DuckDuckGo's HTML results without one. */
   braveApiKey?: string | null
   /** Replaces all outbound HTTP (tests); web_fetch then does not pin its connection to the checked addresses. */
@@ -74,10 +84,13 @@ export function chatTools(options: ChatToolOptions): ToolSet {
     }),
   }
   if (options.allowShell) {
-    tools['run_command'] = tool({
-      description: `Run a shell command in the chat's scratch directory on the gateway host (/bin/sh, ${COMMAND_TIMEOUT_MS / 1000} s timeout). Returns exit code, stdout and stderr.`,
+    tools[SHELL_TOOL] = tool({
+      description: `Run a shell command in the chat's scratch directory on the gateway host (/bin/sh, ${COMMAND_TIMEOUT_MS / 1000} s timeout). Returns exit code, stdout and stderr. The user approves each command before it runs; if they deny one, do not retry it.`,
       inputSchema: z.object({ command: z.string().min(1) }),
-      execute: async ({ command }) => runCommand(options.sandboxDir, command),
+      execute: async ({ command }, { toolCallId }) => {
+        if (!options.approvedCommandCalls?.has(toolCallId)) throw new Error('This command was not approved by the user, so it did not run.')
+        return runCommand(options.sandboxDir, command)
+      },
     })
   }
   return tools

@@ -1,5 +1,7 @@
 import assert from 'node:assert/strict'
+import { existsSync } from 'node:fs'
 import * as http from 'node:http'
+import { join } from 'node:path'
 import { test } from 'node:test'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { addActiveMember, call, FakeConsoleAuth, memberPrincipal, startConsole, tempDataDir, testDeps } from '../console-api/test-support.js'
@@ -10,7 +12,11 @@ const PEER = 'ab'.repeat(20)
 interface Upstream { port: number; requests: Array<{ path: string; auth: string; body: any }>; close: () => Promise<void> }
 
 /** A stand-in for the gateway's own /v1: one model, a tool call on the first turn, text after the tool result. */
-async function fakeGateway(validKey: (keyId: string, control: string) => boolean, onTurn: () => void = () => {}): Promise<Upstream> {
+async function fakeGateway(
+  validKey: (keyId: string, control: string) => boolean,
+  onTurn: () => void = () => {},
+  toolCall: { name: string; arguments: string } = { name: 'list_files', arguments: '{}' },
+): Promise<Upstream> {
   const requests: Upstream['requests'] = []
   const server = http.createServer((req, res) => {
     const chunks: Buffer[] = []
@@ -31,7 +37,7 @@ async function fakeGateway(validKey: (keyId: string, control: string) => boolean
       res.writeHead(200, { 'content-type': 'text/event-stream', 'x-antseed-peer-id': PEER })
       const send = (delta: unknown, finish: string | null = null) => res.write(`data: ${JSON.stringify({ id: 'c1', object: 'chat.completion.chunk', created: 1, model: body.model, choices: [{ index: 0, delta, finish_reason: finish }] })}\n\n`)
       if (toolTurn) {
-        send({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: { name: 'list_files', arguments: '{}' } }] })
+        send({ role: 'assistant', tool_calls: [{ index: 0, id: 'call_1', type: 'function', function: toolCall }] })
         send({}, 'tool_calls')
       } else {
         send({ role: 'assistant', content: last.role === 'tool' ? 'Your scratch space is empty.' : 'Second answer.' })
@@ -216,6 +222,87 @@ test('an org admin chats in a workspace they do not belong to with an unowned ke
     // Reused, not recreated.
     await call(server.port, 'GET', `/console/api/chat/threads?workspace=${workspace.id}`, { who: 'ada' })
     assert.equal(store.listKeys({ workspaceId: workspace.id }).filter((key) => key.label.startsWith(CHAT_KEY_LABEL)).length, 1)
+  } finally {
+    await server.close()
+    await upstream.close()
+    cleanup()
+  }
+})
+
+test('an admin\'s shell command runs only after they approve that exact call', async () => {
+  const { dir, store, cleanup } = tempDataDir()
+  const workspace = store.ensureWorkspaceForIdentity(DEFAULT_BUYER_IDENTITY)
+  const admin = addActiveMember(store, 'Ada', { orgRole: 'admin', workspaces: [{ workspaceId: workspace.id, role: 'admin' }] })
+  const auth = new FakeConsoleAuth()
+  auth.as('ada', memberPrincipal(store, admin.id))
+  // The seller's model asks for a command; it must not run on its say-so.
+  const upstream = await fakeGateway((keyId, control) => control === 'test-secret' && store.getKey(keyId)?.status === 'active', () => {}, { name: 'run_command', arguments: JSON.stringify({ command: 'touch ran' }) })
+  const server = await startConsole(testDeps(store, dir), auth, [chatRouteRegistrar({ gatewayPort: () => upstream.port })])
+  const scratch = (threadId: string) => join(dir, 'gateway', 'chat', admin.id, threadId)
+  const events = (text: string) => text.split('\n').filter((line) => line.startsWith('data: {')).map((line) => JSON.parse(line.slice(6)))
+  const ask = (threadId: string) => call(server.port, 'POST', '/console/api/chat', {
+    who: 'ada',
+    body: { workspaceId: workspace.id, model: 'agent-model', id: threadId, messages: [{ id: `u-${threadId}`, role: 'user', parts: [{ type: 'text', text: 'Run something' }] }] },
+  })
+  /** The stored open answer, with the client's decision on its approval request (and optionally a tampered command). */
+  const answer = (threadId: string, approved: boolean, command?: string) => {
+    const open = store.getChatThread(threadId)!.messages.at(-1) as { id: string; parts: Array<Record<string, any>> }
+    const parts = open.parts.map((part) => (part['state'] === 'approval-requested'
+      ? { ...part, state: 'approval-responded', approval: { ...part['approval'], approved }, ...(command ? { input: { command } } : {}) }
+      : part))
+    return call(server.port, 'POST', '/console/api/chat', { who: 'ada', body: { workspaceId: workspace.id, model: 'agent-model', id: threadId, messages: [{ ...open, role: 'assistant', parts }] } })
+  }
+  const completions = () => upstream.requests.filter((request) => request.path === '/v1/chat/completions').length
+  try {
+    await call(server.port, 'GET', `/console/api/chat/models?workspace=${workspace.id}`, { who: 'ada' })
+
+    // Asked: the answer stops at an approval request; nothing ran.
+    const asked = events((await ask('t_deny')).text)
+    assert.ok(asked.some((event) => event.type === 'tool-approval-request'), asked.map((event) => event.type).join(','))
+    assert.ok(!asked.some((event) => event.type === 'tool-output-available'))
+    assert.equal(existsSync(join(scratch('t_deny'), 'ran')), false)
+    const pending = store.getChatThread('t_deny')!.messages.at(-1) as { parts: Array<{ state?: string; approval?: { signature?: string } }> }
+    assert.ok(pending.parts.some((part) => part.state === 'approval-requested' && typeof part.approval?.signature === 'string'))
+
+    // Denied: it does not run, and the model is told.
+    const turnsBefore = completions()
+    const denied = await answer('t_deny', false)
+    assert.equal(denied.status, 200)
+    assert.ok(events(denied.text).some((event) => event.type === 'tool-output-denied'))
+    assert.equal(existsSync(join(scratch('t_deny'), 'ran')), false)
+    assert.equal(completions(), turnsBefore + 1)
+    // The decision cannot be replayed as an approval: the request is closed.
+    assert.equal((await answer('t_deny', true)).status, 400)
+    assert.equal(existsSync(join(scratch('t_deny'), 'ran')), false)
+
+    // Approved: the stored command runs (not one the client rewrote), once.
+    await ask('t_ok')
+    assert.equal(existsSync(join(scratch('t_ok'), 'ran')), false)
+    const approved = await answer('t_ok', true, 'touch tampered')
+    assert.equal(approved.status, 200)
+    const output = events(approved.text).find((event) => event.type === 'tool-output-available')
+    assert.ok(output, approved.text)
+    assert.equal(output.output.exitCode, 0)
+    assert.equal(existsSync(join(scratch('t_ok'), 'ran')), true)
+    assert.equal(existsSync(join(scratch('t_ok'), 'tampered')), false)
+    assert.equal((await answer('t_ok', true)).status, 400)
+
+    // An approval left in stored history (an answer cut off before it ran) never runs on a later turn.
+    await ask('t_stale')
+    const thread = store.getChatThread('t_stale')!
+    const messages = thread.messages.map((message: any, index: number) => (index === thread.messages.length - 1
+      ? { ...message, parts: message.parts.map((part: any) => (part.state === 'approval-requested' ? { ...part, state: 'approval-responded', approval: { ...part.approval, approved: true } } : part)) }
+      : message))
+    store.saveChatThread({ id: 't_stale', owner: { ...thread.owner, workspaceId: thread.workspaceId }, title: thread.title, model: thread.model, peerId: thread.peerId, messages })
+    const later = await call(server.port, 'POST', '/console/api/chat', {
+      who: 'ada',
+      body: { workspaceId: workspace.id, model: 'agent-model', id: 't_stale', messages: [{ id: 'u-later', role: 'user', parts: [{ type: 'text', text: 'And a second question?' }] }] },
+    })
+    assert.equal(later.status, 200)
+    assert.equal(existsSync(join(scratch('t_stale'), 'ran')), false)
+    // Nor by answering it again.
+    assert.equal((await answer('t_stale', true)).status, 400)
+    assert.equal(existsSync(join(scratch('t_stale'), 'ran')), false)
   } finally {
     await server.close()
     await upstream.close()

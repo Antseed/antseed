@@ -2,7 +2,7 @@ import '../chat/chat.css'
 import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
-import { DefaultChatTransport, type UIMessage } from 'ai'
+import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai'
 import { CheckIcon, ChevronsUpDownIcon, KeyRoundIcon, MessageSquarePlusIcon, ServerIcon, ShuffleIcon, Trash2Icon } from 'lucide-react'
 import { API_BASE, CSRF_HEADER, api } from '../api'
 import type { ApiKey, ChatMessageMetadata, ChatModel, ChatModelPeer, ChatThread, RoutePreview } from '../api/types'
@@ -398,7 +398,35 @@ function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded 
   )
 }
 
-function ToolCall({ part }: { part: ToolPart }) {
+/**
+ * A tool call waiting for the user (the shell, for org admins): the exact
+ * command, with Approve and Deny. Nothing runs until Approve; the gateway
+ * runs the call it stored, not whatever the page sends back.
+ */
+function ToolApproval({ part, onAnswer }: { part: ToolPart; onAnswer: ((approved: boolean) => void) | null }) {
+  const input = part.input as { command?: unknown } | undefined
+  const command = typeof input?.command === 'string' ? input.command : JSON.stringify(part.input, null, 2)
+  return (
+    <div className="space-y-2 border-t p-3">
+      <p className="font-medium text-sm">Run this command on the gateway host?</p>
+      <pre className="max-h-48 overflow-auto whitespace-pre-wrap break-all rounded-md bg-muted/50 p-2 font-mono text-xs">{command}</pre>
+      <p className="text-muted-foreground text-xs">
+        It runs as the gateway's user, with access to its files. The model chose it, and a seller or a page it read can steer the model: approve only a command you understand.
+      </p>
+      {onAnswer
+        ? (
+          <div className="flex gap-2">
+            <Button type="button" size="sm" variant="secondary" onClick={() => onAnswer(true)}>Approve</Button>
+            <Button type="button" size="sm" variant="outline" onClick={() => onAnswer(false)}>Deny</Button>
+          </div>
+        )
+        : <p className="text-muted-foreground text-xs">Not run: the conversation moved on.</p>}
+    </div>
+  )
+}
+
+function ToolCall({ part, onApproval }: { part: ToolPart; onApproval: ((id: string, approved: boolean) => void) | null }) {
+  const awaiting = part.state === 'approval-requested'
   return (
     <Tool defaultOpen={part.state === 'output-error'}>
       {part.type === 'dynamic-tool'
@@ -408,6 +436,7 @@ function ToolCall({ part }: { part: ToolPart }) {
         <ToolInput input={part.input} />
         <ToolOutput output={part.output} errorText={part.errorText} />
       </ToolContent>
+      {awaiting && <ToolApproval part={part} onAnswer={onApproval ? (approved) => onApproval(part.approval.id, approved) : null} />}
     </Tool>
   )
 }
@@ -468,7 +497,12 @@ export default function Chat() {
     prepareSendMessagesRequest: ({ id, messages }) => ({ body: { ...choice.current, id, messages: messages.slice(-1) } }),
   }), [])
 
-  const { messages, sendMessage, status, stop, error, setMessages, clearError } = useChat<ChatMessage>({ id: chatId, transport })
+  // Approve / Deny on a shell command sends the answer back once every request in it is answered; the gateway resumes it.
+  const { messages, sendMessage, status, stop, error, setMessages, clearError, addToolApprovalResponse } = useChat<ChatMessage>({
+    id: chatId,
+    transport,
+    sendAutomaticallyWhen: lastAssistantMessageIsCompleteWithApprovalResponses,
+  })
 
   // Opening a saved conversation loads it from the gateway (and its model and pinned peer).
   const stored = useQuery({
@@ -635,7 +669,11 @@ export default function Chat() {
                           </Reasoning>
                         )
                       }
-                      if (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) return <ToolCall key={key} part={part as ToolPart} />
+                      if (part.type === 'dynamic-tool' || part.type.startsWith('tool-')) {
+                        // Only the latest answer's requests can still be answered; older ones were settled as not run.
+                        const answerable = !busy && index === messages.length - 1
+                        return <ToolCall key={key} part={part as ToolPart} onApproval={answerable ? (id, approved) => { void addToolApprovalResponse({ id, approved }) } : null} />
+                      }
                       return null
                     })}
                   </MessageContent>
@@ -676,7 +714,7 @@ export default function Chat() {
           <PromptInputTools>
             <span className="px-2 text-muted-foreground text-xs">
               {model ? (model.toolUse ? 'Web search, web pages and scratch files' : 'This model cannot use tools; plain chat') : ''}
-              {model?.toolUse && isOrgAdmin(viewer) ? ', plus a shell (admins)' : ''}
+              {model?.toolUse && isOrgAdmin(viewer) ? ', plus a shell that asks before each command (admins)' : ''}
             </span>
           </PromptInputTools>
           <PromptInputSubmit status={status} onStop={stop} disabled={!modelId} />

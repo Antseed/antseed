@@ -5,6 +5,7 @@
  *   GET    /chat/models?workspace=<id>   → ChatModel[]  (text models, tool-capable first, with their peers)
  *   GET    /chat/context?workspace=<id>  → ChatContext  (the key that pays, with its limits and usage)
  *   POST   /chat  { id, messages, model, peerId?, workspaceId? } → UI message stream (SSE)
+ *                  (the last message is the user's, or the open answer with the user's approvals)
  *   GET    /chat/threads?workspace=<id>  → ChatThread[]  (the caller's conversations, newest first)
  *   GET    /chat/threads/:id             → ChatThreadDetail  (with its UIMessages)
  *   DELETE /chat/threads/:id             → 204
@@ -20,14 +21,24 @@
  * conversation is saved as soon as a message arrives (so it is listed while
  * the answer streams) and again, whole, when the answer finishes.
  *
+ * The shell tool (org admins) never runs on the model's say-so: each call
+ * stops the answer with an approval request, and the client resumes it by
+ * sending that answer back with Approve or Deny on each request. Only the
+ * decision is taken from the client; the call itself (its id and command)
+ * comes from the stored thread, and the approval requests are HMAC-signed
+ * with a key derived from the control secret. Approvals left in stored
+ * history are settled as denied, so a replayed or edited thread cannot run a
+ * command.
+ *
  * Which peer answered is always visible: a pinned peer goes to the buyer as
  * `peerId@model`, and every answer's message metadata names the peer(s) that
  * served it, from the `x-antseed-peer-id` header of each model call, with
  * the tokens used and an estimated cost at that peer's advertised prices.
  */
+import { createHmac } from 'node:crypto'
 import { join } from 'node:path'
 import { createOpenAICompatible } from '@ai-sdk/openai-compatible'
-import { convertToModelMessages, createIdGenerator, stepCountIs, streamText, type UIMessage } from 'ai'
+import { convertToModelMessages, createIdGenerator, isToolUIPart, stepCountIs, streamText, type UIMessage } from 'ai'
 import { GATEWAY_CONTROL_HEADER } from '../../routing-policy/policy.js'
 import { isOrgAdmin, requestActor, requireWorkspaceAccess } from '../console-api/access.js'
 import type { ConsoleDeps } from '../console-api/deps.js'
@@ -38,7 +49,7 @@ import { GATEWAY_INTERNAL_KEY_HEADER } from '../server.js'
 import { createKey } from '../services/keys.js'
 import type { ChatThreadOwner, ChatThreadSummary } from '../store.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
-import { chatTools } from './tools.js'
+import { chatTools, SHELL_TOOL } from './tools.js'
 
 export const CHAT_KEY_LABEL = 'Web chat'
 /** Names the conversation for the buyer (`x-<tool>-session-id`, see proxy/conversation-identity.ts). */
@@ -193,13 +204,28 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
       const existing = deps.store.getChatThread(threadId)
       if (existing && !ownThread(caller.owner, threadId)) throw new ConsoleError(404, 'not_found', 'Conversation not found')
       const incoming = body.messages[body.messages.length - 1] as UIMessage
-      if (!incoming || typeof incoming !== 'object' || incoming.role !== 'user' || !Array.isArray(incoming.parts)) {
+      if (!incoming || typeof incoming !== 'object' || !Array.isArray(incoming.parts) || (incoming.role !== 'user' && incoming.role !== 'assistant')) {
         throw new ConsoleError(400, 'invalid_messages', 'The last message must be the user\'s')
       }
       const stored = (existing?.messages ?? []) as UIMessage[]
-      // Re-sending a stored message (a retry) replaces everything after it.
-      const at = stored.findIndex((message) => message.id === incoming.id)
-      const messages: UIMessage[] = at >= 0 ? [...stored.slice(0, at), incoming] : [...stored, incoming]
+      let messages: UIMessage[]
+      // run_command calls the caller approved in this request: the only ones that may run.
+      let approvedCommandCalls = new Set<string>()
+      if (incoming.role === 'user') {
+        // Re-sending a stored message (a retry) replaces everything after it.
+        const at = stored.findIndex((message) => message.id === incoming.id)
+        messages = (at >= 0 ? [...stored.slice(0, at), incoming] : [...stored, incoming]).map(settleApprovals)
+      } else {
+        // Approve / Deny on the open answer: only the stored thread's last message can be answered, and only its decisions are read.
+        const open = stored[stored.length - 1]
+        if (!open || open.role !== 'assistant' || open.id !== incoming.id) {
+          throw new ConsoleError(400, 'invalid_messages', 'Only the latest answer\'s approval requests can be answered')
+        }
+        const answered = answerApprovals(open, incoming)
+        if (!answered) throw new ConsoleError(400, 'invalid_messages', 'There is no approval request to answer')
+        messages = [...stored.slice(0, -1).map(settleApprovals), answered.message]
+        approvedCommandCalls = answered.approvedCommandCalls
+      }
 
       // A model (or pinned peer) that cannot call tools gets a plain chat: some sellers reject tool definitions.
       const known = modelsCache.get(caller.keyId)?.models.find((entry) => entry.id === model)
@@ -209,6 +235,7 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
         ? chatTools({
           sandboxDir: join(deps.dataDir, 'gateway', 'chat', caller.dirName, threadId),
           allowShell: caller.admin,
+          approvedCommandCalls,
           braveApiKey: options.braveApiKey ?? null,
         })
         : {}
@@ -229,6 +256,9 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
         system: SYSTEM_PROMPT,
         messages: await convertToModelMessages(messages, { tools, ignoreIncompleteToolCalls: true }),
         tools,
+        // Every shell command waits for the user's Approve; the request is signed so a client cannot forge one.
+        toolApproval: { [SHELL_TOOL]: 'user-approval' },
+        experimental_toolApprovalSecret: createHmac('sha256', deps.controlSecret).update('antseed-chat-tool-approval').digest(),
         stopWhen: stepCountIs(MAX_STEPS),
         abortSignal: abort.signal,
         onError: ({ error }) => deps.log(`gateway chat: ${model}: ${String(error instanceof Error ? error.message : error)}`),
@@ -275,6 +305,63 @@ export function chatRouteRegistrar(options: ChatRouteOptions) {
       return undefined
     }, allow)
   }
+}
+
+type UIPart = UIMessage['parts'][number]
+type ToolPart = Extract<UIPart, { toolCallId: string }>
+
+const NOT_RUN = 'Not run: this approval request is no longer open.'
+
+/** A tool call that never ran, recorded as denied. */
+function deniedPart(part: ToolPart, reason: string): UIPart {
+  const approval = 'approval' in part && part.approval ? part.approval : { id: `none-${part.toolCallId}` }
+  return { ...part, state: 'output-denied', approval: { ...approval, approved: false, reason } } as unknown as UIPart
+}
+
+/**
+ * Stored history never carries an open or answered approval into a new
+ * turn: a request still waiting, or answered but never run (the turn was
+ * cut off), is settled as denied, so it cannot run later.
+ */
+export function settleApprovals(message: UIMessage): UIMessage {
+  if (!message.parts.some((part) => isToolUIPart(part) && (part.state === 'approval-requested' || part.state === 'approval-responded'))) return message
+  return {
+    ...message,
+    parts: message.parts.map((part) => (isToolUIPart(part) && (part.state === 'approval-requested' || part.state === 'approval-responded') ? deniedPart(part, NOT_RUN) : part)),
+  }
+}
+
+/**
+ * The stored answer `open` with the caller's decisions from `incoming` (the
+ * same answer as the client has it). Only `approved` (and a short reason) is
+ * read from the client, for an approval request the stored answer is waiting
+ * on, matched by both its approval id and tool call id; the call's input
+ * stays the stored one. Requests the client left unanswered are denied.
+ * Null when the stored answer waits on nothing or nothing was answered.
+ */
+export function answerApprovals(open: UIMessage, incoming: UIMessage): { message: UIMessage; approvedCommandCalls: Set<string> } | null {
+  const decisions = new Map<string, { approved: boolean; reason?: string }>()
+  for (const part of incoming.parts) {
+    if (!isToolUIPart(part) || part.state !== 'approval-responded' || typeof part.approval?.id !== 'string' || typeof part.approval.approved !== 'boolean') continue
+    const reason = typeof part.approval.reason === 'string' ? part.approval.reason.slice(0, 500) : undefined
+    decisions.set(`${part.toolCallId}\u0000${part.approval.id}`, { approved: part.approval.approved, ...(reason ? { reason } : {}) })
+  }
+  const approvedCommandCalls = new Set<string>()
+  let answered = 0
+  const parts = open.parts.map((part): UIPart => {
+    if (!isToolUIPart(part)) return part
+    if (part.state === 'approval-responded') return deniedPart(part, NOT_RUN)
+    if (part.state !== 'approval-requested') return part
+    const decision = decisions.get(`${part.toolCallId}\u0000${part.approval.id}`)
+    if (!decision) return deniedPart(part, NOT_RUN)
+    answered += 1
+    if (decision.approved) {
+      if (part.type === `tool-${SHELL_TOOL}` || (part.type === 'dynamic-tool' && part.toolName === SHELL_TOOL)) approvedCommandCalls.add(part.toolCallId)
+      return { ...part, state: 'approval-responded', approval: { ...part.approval, approved: true, ...(decision.reason ? { reason: decision.reason } : {}) } } as UIPart
+    }
+    return { ...part, state: 'approval-responded', approval: { ...part.approval, approved: false, reason: decision.reason ?? 'The user denied this command.' } } as UIPart
+  })
+  return answered > 0 ? { message: { ...open, parts }, approvedCommandCalls } : null
 }
 
 type StepTokens = NonNullable<ChatMessageMetadata['usage']>

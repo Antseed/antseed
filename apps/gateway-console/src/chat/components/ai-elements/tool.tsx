@@ -55,8 +55,8 @@ const statusLabels: Record<ToolPart["state"], string> = {
 };
 
 const statusIcons: Record<ToolPart["state"], ReactNode> = {
-  "approval-requested": <ClockIcon className="size-3 text-yellow-600" />,
-  "approval-responded": <CheckCircleIcon className="size-3 text-blue-600" />,
+  "approval-requested": <ClockIcon className="size-3 text-muted-foreground" />,
+  "approval-responded": <CheckCircleIcon className="size-3 text-muted-foreground" />,
   "input-available": <ClockIcon className="size-3 animate-pulse" />,
   "input-streaming": <CircleIcon className="size-3" />,
   "output-available": <CheckCircleIcon className="size-3 text-green-600" />,
