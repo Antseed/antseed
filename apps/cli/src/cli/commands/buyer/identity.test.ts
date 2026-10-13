@@ -77,7 +77,7 @@ describe('buyer identities with a passphrase', () => {
   test('the default wallet address is read from an encrypted key without decrypting it', async () => {
     const hex = '44'.repeat(32)
     writeFileSync(keyFile(), hex, { mode: 0o600 })
-    usePassphrase('pw')
+    usePassphrase('correct horse')
     await run('protect')
     usePassphrase(null)
     assert.equal(await storedDefaultIdentityAddress(dataDir), identityFromPrivateKeyHex(hex).wallet.address)
@@ -99,7 +99,7 @@ describe('buyer identity protect / unprotect', () => {
     const archived = await archiveBuyerIdentity(dataDir, 'old')
     const files = [keyFile(), keyFile('buyer-identities', 'team-a'), join(archived, 'identity.key')]
 
-    usePassphrase('pw')
+    usePassphrase('correct horse')
     const output = await run('protect', '--all')
     assert.match(output, /Encrypted default/)
     assert.match(output, /Encrypted team-a/)
@@ -124,7 +124,7 @@ describe('buyer identity protect / unprotect', () => {
   test('protect takes a single identity by name and leaves the others alone', async () => {
     writeFileSync(keyFile(), '77'.repeat(32), { mode: 0o600 })
     await createBuyerIdentity(dataDir, 'team-a')
-    usePassphrase('pw')
+    usePassphrase('correct horse')
     await run('protect', 'team-a')
     assert.ok(isEncrypted(keyFile('buyer-identities', 'team-a')))
     assert.ok(!isEncrypted(keyFile()))

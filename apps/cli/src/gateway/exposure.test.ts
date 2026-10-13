@@ -94,7 +94,7 @@ test('start-up warns about wallet keys stored unencrypted, and stops once they a
     assert.match(warning ?? '', /stored unencrypted \(default, team-a\).*set ANTSEED_PASSPHRASE/)
     assert.doesNotMatch(await unencryptedWalletWarning(dataDir, true) ?? '', /set ANTSEED_PASSPHRASE/)
 
-    for (const dir of [dataDir, join(dataDir, 'buyer-identities', 'team-a')]) await new FileIdentityStore(dir, { passphrase: 'pw' }).protect()
+    for (const dir of [dataDir, join(dataDir, 'buyer-identities', 'team-a')]) await new FileIdentityStore(dir, { passphrase: 'correct horse' }).protect()
     assert.equal(await unencryptedWalletWarning(dataDir, false), null)
   } finally {
     rmSync(dataDir, { recursive: true, force: true })

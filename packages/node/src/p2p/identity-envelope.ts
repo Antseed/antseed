@@ -13,6 +13,8 @@ import { computeAddress } from 'ethers';
 
 export const PASSPHRASE_ENV = 'ANTSEED_PASSPHRASE';
 export const PASSPHRASE_FILE_ENV = 'ANTSEED_PASSPHRASE_FILE';
+/** For passphrases that encrypt keys from now on; files encrypted earlier open with any length. */
+export const MIN_PASSPHRASE_LENGTH = 12;
 
 export interface ScryptParams {
   N: number;
@@ -40,6 +42,13 @@ export function deriveScryptKey(password: string, salt: Buffer, params: ScryptPa
   return new Promise((resolvePromise, reject) => {
     scryptCallback(password.normalize('NFKC'), salt, KEY_BYTES, options, (error, key) => (error ? reject(error) : resolvePromise(key)));
   });
+}
+
+/** Throws unless the passphrase is long enough to encrypt a key with, counted as scrypt sees it (NFKC, untrimmed). */
+export function assertNewIdentityPassphrase(passphrase: string): void {
+  if ([...passphrase.normalize('NFKC')].length < MIN_PASSPHRASE_LENGTH) {
+    throw new Error(`The passphrase in ${PASSPHRASE_ENV} (or ${PASSPHRASE_FILE_ENV}) is too short to encrypt wallet keys with: use at least ${MIN_PASSPHRASE_LENGTH} characters.`);
+  }
 }
 
 export function isIdentityEnvelope(text: string): boolean {

@@ -8,6 +8,7 @@ import { hexToBytes, bytesToHex } from "../utils/hex.js";
 import {
   PASSPHRASE_ENV,
   PASSPHRASE_FILE_ENV,
+  assertNewIdentityPassphrase,
   decryptIdentityKey,
   encryptIdentityKey,
   identityEnvelopeAddress,
@@ -98,7 +99,9 @@ export class FileIdentityStore implements IdentityStore {
   /** Written encrypted when a passphrase is configured. */
   async save(hexKey: string): Promise<void> {
     const passphrase = this.passphrase();
-    await this.writeKeyFile(passphrase ? await encryptIdentityKey(hexKey, passphrase) : hexKey);
+    if (!passphrase) return this.writeKeyFile(hexKey);
+    assertNewIdentityPassphrase(passphrase);
+    await this.writeKeyFile(await encryptIdentityKey(hexKey, passphrase));
   }
 
   /** How the key file is stored, or null when there is none. */
@@ -123,6 +126,7 @@ export class FileIdentityStore implements IdentityStore {
     const stored = await this.readKeyFile();
     if (stored === null) throw new Error(`No identity at ${this.keyPath}.`);
     if (isIdentityEnvelope(stored)) return false;
+    assertNewIdentityPassphrase(passphrase);
     const hexKey = this.validHex(stored);
     const envelope = await encryptIdentityKey(hexKey, passphrase);
     // The plaintext is about to be replaced: make sure the passphrase opens what replaces it.

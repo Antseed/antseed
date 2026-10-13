@@ -75,6 +75,8 @@ export {
 export {
   PASSPHRASE_ENV,
   PASSPHRASE_FILE_ENV,
+  MIN_PASSPHRASE_LENGTH,
+  assertNewIdentityPassphrase,
   deriveScryptKey,
   encryptIdentityKey,
   decryptIdentityKey,

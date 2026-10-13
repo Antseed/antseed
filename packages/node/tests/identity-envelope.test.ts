@@ -15,6 +15,7 @@ import { FileIdentityStore, identityFromPrivateKeyHex, loadOrCreateIdentity } fr
 
 const FAST = { N: 2 ** 14, r: 8, p: 1 };
 const KEY = '11'.repeat(32);
+const PW = 'correct horse battery';
 
 const dirsToClean: string[] = [];
 
@@ -62,7 +63,7 @@ describe('identity envelope', () => {
 describe('FileIdentityStore with a passphrase', () => {
   it('writes new keys encrypted (0600) and loads them back', async () => {
     const dir = await tmpDir();
-    const store = new FileIdentityStore(dir, { passphrase: 'pw' });
+    const store = new FileIdentityStore(dir, { passphrase: PW });
     await store.save(KEY);
 
     const file = path.join(dir, 'identity.key');
@@ -77,7 +78,7 @@ describe('FileIdentityStore with a passphrase', () => {
 
   it('fails closed without the passphrase, naming the variable, and on a wrong one', async () => {
     const dir = await tmpDir();
-    await new FileIdentityStore(dir, { passphrase: 'pw' }).save(KEY);
+    await new FileIdentityStore(dir, { passphrase: PW }).save(KEY);
 
     await expect(new FileIdentityStore(dir, { passphrase: null }).load()).rejects.toThrow(/encrypted; set ANTSEED_PASSPHRASE/);
     await expect(new FileIdentityStore(dir, { passphrase: 'nope' }).load()).rejects.toThrow(/Cannot unlock identity .*Wrong passphrase/);
@@ -87,17 +88,38 @@ describe('FileIdentityStore with a passphrase', () => {
   it('reads plaintext keys as before and does not rewrite them', async () => {
     const dir = await tmpDir();
     await fs.writeFile(path.join(dir, 'identity.key'), KEY, { mode: 0o600 });
-    const store = new FileIdentityStore(dir, { passphrase: 'pw' });
+    const store = new FileIdentityStore(dir, { passphrase: PW });
 
     expect(await store.load()).toBe(KEY);
     expect(await fs.readFile(path.join(dir, 'identity.key'), 'utf8')).toBe(KEY);
+  });
+
+  it('refuses a passphrase shorter than 12 characters for new keys, counted after NFKC', async () => {
+    const dir = await tmpDir();
+    const file = path.join(dir, 'identity.key');
+    await expect(new FileIdentityStore(dir, { passphrase: 'short' }).save(KEY)).rejects.toThrow(/ANTSEED_PASSPHRASE.*at least 12 characters/);
+    await expect(fs.access(file)).rejects.toThrow();
+    // Eleven ligature characters that NFKC expands to twenty-two: long enough.
+    await new FileIdentityStore(dir, { passphrase: '\uFB00'.repeat(11) }).save(KEY);
+
+    await fs.writeFile(file, KEY, { mode: 0o600 });
+    await expect(new FileIdentityStore(dir, { passphrase: ' 10 chars ' }).protect()).rejects.toThrow(/at least 12 characters/);
+    expect(await fs.readFile(file, 'utf8')).toBe(KEY);
+  });
+
+  it('still opens files encrypted earlier with a short passphrase', async () => {
+    const dir = await tmpDir();
+    await fs.writeFile(path.join(dir, 'identity.key'), await encryptIdentityKey(KEY, 'pw', FAST), { mode: 0o600 });
+    const store = new FileIdentityStore(dir, { passphrase: 'pw' });
+    expect(await store.load()).toBe(KEY);
+    expect(await store.unprotect()).toBe(true);
   });
 
   it('protects and unprotects a key in place', async () => {
     const dir = await tmpDir();
     const file = path.join(dir, 'identity.key');
     await fs.writeFile(file, KEY, { mode: 0o600 });
-    const store = new FileIdentityStore(dir, { passphrase: 'pw' });
+    const store = new FileIdentityStore(dir, { passphrase: PW });
 
     await expect(new FileIdentityStore(dir, { passphrase: null }).protect()).rejects.toThrow(/Set ANTSEED_PASSPHRASE/);
     expect(await store.protect()).toBe(true);
@@ -131,7 +153,7 @@ describe('passphrase from the environment', () => {
 
   it('loadOrCreateIdentity encrypts with ANTSEED_PASSPHRASE and removes it from the environment', async () => {
     const dir = await tmpDir();
-    process.env.ANTSEED_PASSPHRASE = 'env-pw';
+    process.env.ANTSEED_PASSPHRASE = 'env passphrase 1';
 
     const created = await loadOrCreateIdentity(dir);
     expect(process.env.ANTSEED_PASSPHRASE).toBeUndefined();
@@ -139,7 +161,7 @@ describe('passphrase from the environment', () => {
 
     const reloaded = await loadOrCreateIdentity(dir);
     expect(reloaded.wallet.address).toBe(created.wallet.address);
-    expect(await new FileIdentityStore(dir, { passphrase: 'env-pw' }).load()).toBe(created.wallet.privateKey.slice(2));
-    expect(identityPassphraseEnv()).toEqual({ ANTSEED_PASSPHRASE: 'env-pw' });
+    expect(await new FileIdentityStore(dir, { passphrase: 'env passphrase 1' }).load()).toBe(created.wallet.privateKey.slice(2));
+    expect(identityPassphraseEnv()).toEqual({ ANTSEED_PASSPHRASE: 'env passphrase 1' });
   });
 });
