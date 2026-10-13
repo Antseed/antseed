@@ -51,6 +51,8 @@ export interface AuthStore {
   memberWorkspaceRoles(memberId: string): ReadonlyMap<string, WorkspaceRole>
   isSetupComplete(): boolean
   createOwner(input: { label: string; email: string | null }): AuthMember
+  /** The live invite behind a token hash, without consuming it. */
+  peekInvite(tokenHash: string, now: number): { member: AuthMember } | null
   consumeInvite(tokenHash: string, now: number): AuthMember | null
   /** Token hash of the member's live invite; an invited member signs in by SSO only while it lasts. */
   liveInviteHash(memberId: string, now: number): string | null

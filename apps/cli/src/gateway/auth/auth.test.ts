@@ -127,6 +127,21 @@ describe('console auth: setup and passkeys', () => {
 })
 
 describe('console auth: invites and wallets', () => {
+  it('adds no sign-in method when the invite lapsed during sign-up', async () => {
+    harness = await startHarness()
+    const wallet = Wallet.createRandom()
+    const { member, token } = harness.store.invite({ label: 'Lee' })
+    const browser = harness.browser()
+    const enrollment = (await browser.request('POST', '/auth/invite', { token })).body.enrollment
+    for (const invite of harness.store.invites.values()) invite.expiresAt = harness.clock.now - 1
+    const message = (await browser.request('POST', '/auth/wallet/nonce', { address: wallet.address })).body.message
+    const refused = await browser.request('POST', '/auth/wallet/verify', { message, signature: await wallet.signMessage(message), enrollment })
+    assert.equal(refused.status, 400)
+    assert.equal(refused.body.error.code, 'invite_expired')
+    assert.equal(harness.auth.credentialsFor(member.id).length, 0)
+    assert.equal(harness.store.getMember(member.id)!.status, 'invited')
+  })
+
   it('consumes an invite once and signs in with a wallet', async () => {
     harness = await startHarness()
     const wallet = Wallet.createRandom()
@@ -136,7 +151,10 @@ describe('console auth: invites and wallets', () => {
     const invited = await browser.request('POST', '/auth/invite', { token })
     assert.equal(invited.status, 200)
     assert.equal(invited.body.label, 'Dana')
-    assert.equal((await harness.browser().request('POST', '/auth/invite', { token })).status, 400)
+    // Until a sign-in method is registered the invite stays open: opening it again (a refresh) still works.
+    const reopened = await harness.browser().request('POST', '/auth/invite', { token })
+    assert.equal(reopened.status, 200)
+    assert.equal(harness.store.getMember(member.id)!.status, 'invited')
 
     const nonce = await browser.request('POST', '/auth/wallet/nonce', { address: wallet.address })
     const message: string = nonce.body.message
@@ -147,6 +165,9 @@ describe('console auth: invites and wallets', () => {
     assert.equal(verified.status, 200, JSON.stringify(verified.body))
     assert.equal(verified.body.me.member.id, member.id)
     assert.deepEqual(verified.body.me.workspaces.map((entry: { workspace: { id: string }; role: string }) => [entry.workspace.id, entry.role]), [['ws_research', 'member']])
+    assert.equal(harness.store.getMember(member.id)!.status, 'active')
+    const used = await harness.browser().request('POST', '/auth/invite', { token })
+    assert.equal(used.body.error.code, 'invite_used')
 
     // The nonce is single use.
     const replay = await harness.browser().request('POST', '/auth/wallet/verify', { message, signature: await wallet.signMessage(message) })

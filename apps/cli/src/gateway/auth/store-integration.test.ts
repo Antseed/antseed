@@ -3,6 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { afterEach, describe, it } from 'node:test'
+import { Wallet } from 'ethers'
 import { exportJWK, generateKeyPair, SignJWT, createLocalJWKSet, type JWK } from 'jose'
 import { GatewayStore } from '../store.js'
 import { SoftwarePasskey, startHarness, type Harness } from './test-helpers.js'
@@ -62,8 +63,18 @@ describe('console auth against the real GatewayStore', () => {
     const store = harness.store as unknown as GatewayStore
     const browser = harness.browser()
 
+    // The invite stays open until a sign-in method is registered, then it is used.
     const used = store.createInvite({ label: 'Eli', email: null, orgRole: 'member', workspaces: [], expiresAt: harness.clock.now + 3_600_000, createdBy: null })
     assert.equal((await browser.request('POST', '/auth/invite', { token: used.token })).status, 200)
+    const reopened = await browser.request('POST', '/auth/invite', { token: used.token })
+    assert.equal(reopened.status, 200, 'opening the link again before signing up works')
+    assert.equal(store.getMember(used.invite.memberId)!.status, 'invited')
+    const wallet = Wallet.createRandom()
+    const message = (await browser.request('POST', '/auth/wallet/nonce', { address: wallet.address })).body.message
+    const enrolled = await browser.request('POST', '/auth/wallet/verify', { message, signature: await wallet.signMessage(message), enrollment: reopened.body.enrollment })
+    assert.equal(enrolled.status, 200, JSON.stringify(enrolled.body))
+    assert.equal(store.getMember(used.invite.memberId)!.status, 'active')
+    assert.notEqual(store.getInvite(used.invite.id)!.usedAt, null)
     const again = await browser.request('POST', '/auth/invite', { token: used.token })
     assert.equal(again.body.error.code, 'invite_used')
 

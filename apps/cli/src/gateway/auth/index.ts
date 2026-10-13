@@ -292,7 +292,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (!member) return { error: 'invalid_enrollment' }
       if (member.status === 'disabled') return { error: 'disabled' }
       if (member.status === 'invited') {
-        const activated = activateWithInvite(member.id)
+        const activated = activateWithInvite(member.id, req)
         return activated ? bind(activated) : { error: 'not_invited' }
       }
       return bind(member)
@@ -303,7 +303,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (byEmail.status === 'invited') {
         // Only while their invite is live: an expired or cancelled invite
         // must not turn into access because the email still matches.
-        const activated = activateWithInvite(byEmail.id)
+        const activated = activateWithInvite(byEmail.id, req)
         return activated ? bind(activated) : { error: 'not_invited' }
       }
       return bindCredential ? { error: 'not_linked' } : { member: byEmail }
@@ -319,10 +319,12 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   /** Activates an invited member by consuming their newest live (unexpired, unused) invite; null when there is none. */
-  function activateWithInvite(memberId: string): AuthMember | null {
+  function activateWithInvite(memberId: string, req: http.IncomingMessage | null): AuthMember | null {
     const now = deps.now()
     const hash = store.liveInviteHash(memberId, now)
-    return hash ? store.consumeInvite(hash, now) : null
+    const member = hash ? store.consumeInvite(hash, now) : null
+    if (member && req) recordAudit(req, { kind: 'member', id: member.id, label: member.label }, 'auth.invite_accept')
+    return member
   }
 
   /** New active member in the Default workspace as role member. */
@@ -470,6 +472,24 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
     if (req) recordAudit(req, { kind: 'member', id: member.id, label: member.label }, 'auth.credential_add', details)
     deps.log(`Console: ${row.kind} sign-in method added for member ${member.id} (${via}).`)
     return row
+  }
+
+  /**
+   * Registers a sign-in method through an enrollment and uses the enrollment
+   * up. An invited member's invite is consumed in the same transaction, so a
+   * sign-up that fails before this point leaves the invite link usable.
+   */
+  function enrollCredential(req: http.IncomingMessage, enrollment: string, credential: NewCredential): { member: AuthMember; credential: CredentialRow } {
+    return db.transaction(() => {
+      const memberId = db.consumeEnrollment(enrollment)
+      let member = memberId ? store.getMember(memberId) : null
+      if (!member) throw new ConsoleError(400, 'invalid_enrollment', 'This sign-up link has expired. Ask for a new one.')
+      if (member.status === 'invited') {
+        member = activateWithInvite(member.id, req)
+        if (!member) throw new ConsoleError(400, 'invite_expired', 'This invite link has expired. Ask for a new one.')
+      }
+      return { member, credential: addCredential(req, member, credential, 'enrollment') }
+    })
   }
 
   /**
@@ -637,15 +657,16 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       const tokenHash = sha256Hex(token)
       const limited = limit(raw, `invite:${tokenHash}`)
       if (limited) return limited
-      const member = store.consumeInvite(tokenHash, deps.now())
-      if (!member) {
+      // The invite stays open until the first sign-in method is registered
+      // (enrollCredential), so the link can be opened again if sign-up fails.
+      const found = store.peekInvite(tokenHash, deps.now())
+      if (!found) {
         const state = store.inviteState(tokenHash, deps.now())
         if (state === 'used') throw new ConsoleError(400, 'invite_used', 'This invite link was already used.')
         if (state === 'expired') throw new ConsoleError(400, 'invite_expired', 'This invite link has expired.')
         throw new ConsoleError(400, 'invalid_token', 'This invite link is invalid.')
       }
-      recordAudit(raw, { kind: 'member', id: member.id, label: member.label }, 'auth.invite_accept')
-      return enrollmentFor(member)
+      return enrollmentFor(found.member)
     }), PUBLIC)
   }
 
@@ -697,18 +718,20 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (!verification.verified) throw new ConsoleError(400, 'passkey_invalid', 'Passkey registration could not be verified.')
       const { credential } = verification.registrationInfo
       if (db.findPasskey(credential.id)) throw new ConsoleError(409, 'credential_exists', 'This passkey is already registered.')
-      const added = addCredential(request.raw, member, {
+      const passkey: NewCredential = {
         kind: 'passkey',
         label: optionalString(input, 'label')?.slice(0, 80) ?? 'Passkey',
         webauthnId: credential.id,
         publicKey: credential.publicKey,
         counter: credential.counter,
         transports: credential.transports ?? [],
-      }, viaSession ? 'session' : 'enrollment')
-      if (enrollment) db.consumeEnrollment(enrollment)
-      const current = store.getMember(member.id) ?? member
-      if (viaSession) return me((request.principal ?? await authenticate(request.raw))!)
-      return startMemberSession(request, current, 'passkey', added.id)
+      }
+      if (viaSession) {
+        addCredential(request.raw, member, passkey, 'session')
+        return me((request.principal ?? await authenticate(request.raw))!)
+      }
+      const enrolled = enrollCredential(request.raw, enrollment!, passkey)
+      return startMemberSession(request, enrolled.member, 'passkey', enrolled.credential.id)
     }, PUBLIC)
 
     router.add('POST', '/auth/passkey/login/options', async ({ raw }) => {
@@ -784,11 +807,8 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
         addCredential(request.raw, member, { kind: 'wallet', label, address: signer }, 'session')
         return me(principal!)
       }
-      const memberId = db.consumeEnrollment(enrollment)
-      const member = memberId ? store.getMember(memberId) : null
-      if (!member) throw new ConsoleError(400, 'invalid_enrollment', 'This sign-up link has expired. Ask for a new one.')
-      const added = addCredential(request.raw, member, { kind: 'wallet', label, address: signer }, 'enrollment')
-      return startMemberSession(request, member, 'wallet', added.id)
+      const enrolled = enrollCredential(request.raw, enrollment, { kind: 'wallet', label, address: signer })
+      return startMemberSession(request, enrolled.member, 'wallet', enrolled.credential.id)
     }), PUBLIC)
   }
 

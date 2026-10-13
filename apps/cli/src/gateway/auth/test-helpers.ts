@@ -98,6 +98,12 @@ export class FakeStore implements AuthStore {
     return null
   }
 
+  peekInvite(tokenHash: string, now: number): { member: AuthMember } | null {
+    const invite = this.invites.get(tokenHash)
+    const member = invite && !invite.used && invite.expiresAt > now ? this.getMember(invite.memberId) : null
+    return member?.status === 'invited' ? { member } : null
+  }
+
   consumeInvite(tokenHash: string, now: number): AuthMember | null {
     const invite = this.invites.get(tokenHash)
     if (!invite || invite.used || invite.expiresAt <= now) return null
