@@ -250,7 +250,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     .option('--accept-narrowed', 'save owner caps above the admin caps (they never apply)', false)
     .option('--json', 'print machine-readable JSON', false)
     .action((id: string, options: Record<string, unknown>, cmd: Command) => withGateway(cmd, ({ store, ctx, actor }) => {
-      requireKey(store, id)
+      const before = requireKey(store, id)
       if (options['expiry'] === false && options['expiresInDays'] !== undefined) throw new Error('Use either --expires-in-days or --no-expiry.')
       const limits = parseLimitOptions(options)
       const ownerLimits = parseOwnerLimitOptions(options)
@@ -271,6 +271,9 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         return
       }
       console.log(`Updated ${record.id} (${record.label}).`)
+      if (owner !== undefined && owner !== before.ownerMemberId && record.status === 'active') {
+        console.log(chalk.yellow(`The owner changed, so the old API key no longer works. Issue a new one with \`antseed gateway key rotate ${record.id}\`, or the new owner can rotate it in the console.`))
+      }
       console.log(`Admin limits: ${describeLimits(record)}`)
       console.log(`Owner limits: ${describeLimits({ limits: record.ownerLimits })}`)
     }))
