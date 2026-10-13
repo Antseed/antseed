@@ -115,7 +115,7 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   const inFlight = wallet.deposit.event !== null && wallet.deposit.event.seq > baseline.current && (wallet.deposit.event.phase === 'received' || wallet.deposit.event.phase === 'sweeping')
   useVisiblePolling(qk.wallet(workspaceId), inFlight ? 4_000 : 8_000, 4_000)
   // The embedded checkout, closed once its USDC is credited (the desktop closes its checkout popup the same way).
-  const [checkout, setCheckout] = useState<{ url: string; provider: CardProvider } | null>(null)
+  const [checkout, setCheckout] = useState<{ url: string; origin: string; provider: CardProvider } | null>(null)
   const event = wallet.deposit.event
   const credited = event && event.seq > baseline.current && event.phase === 'credited' ? event : null
   useEffect(() => {
@@ -142,8 +142,9 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
     setNotice(null)
     try {
       const { url } = await api.wallet.cardLink(workspaceId, value, provider)
-      if (!/^https:\/\//.test(url)) throw new Error('The gateway returned an invalid checkout link.')
-      setCheckout({ url, provider })
+      const origin = URL.canParse(url) ? new URL(url).origin : null
+      if (!origin?.startsWith('https://')) throw new Error('The gateway returned an invalid checkout link.')
+      setCheckout({ url, origin, provider })
     } catch (cause) {
       setNotice(errorMessage(cause))
     } finally {
@@ -216,8 +217,9 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
       )}>
       {checkout && (
         <iframe className="gc-checkout__frame" src={checkout.url} title="Antseed Pay checkout"
-          // Card wallets (Apple Pay, Google Pay) inside the page's own Crossmint/Stripe frames need the Payment Request API delegated.
-          allow="payment *; clipboard-write" />
+          // Card wallets (Apple Pay, Google Pay) inside the page's own Crossmint/Stripe frames need the Payment Request API delegated:
+          // to the pay page's origin only, which passes it on to the frames it embeds.
+          allow={`payment ${checkout.origin}; clipboard-write`} />
       )}
     </Modal>
   )
