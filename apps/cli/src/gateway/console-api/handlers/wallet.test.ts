@@ -172,7 +172,9 @@ test('card amount bounds', () => {
   assert.equal(cardAmountString('10.50'), '10.5')
   assert.equal(cardAmountString(1), '1')
   assert.equal(cardAmountString(10_000), '10000')
-  for (const bad of [0, -5, 0.5, 10_001, 'abc', '', null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assert.equal(cardAmountString('12.34'), '12.34')
+  assert.equal(cardAmountString('12.340'), '12.34')
+  for (const bad of [0, -5, 0.5, 10_001, 'abc', '', null, undefined, Number.NaN, Number.POSITIVE_INFINITY, 10.1234567, '10.125']) {
     assert.throws(() => cardAmountString(bad), Error, String(bad))
   }
 })
@@ -190,6 +192,7 @@ test('POST card-link signs with the workspace identity', async () => {
 test('POST card-link validates input and access', async () => {
   const router = setup()
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 0.25, provider: 'crossmint' }), 400, 'invalid_amount')
+  await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 10.1234567, provider: 'crossmint' }), 400, 'invalid_amount')
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 10, provider: 'paypal' }), 400, 'invalid_provider')
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', outsider, { amountUsd: 10, provider: 'crossmint' }), 403)
   const noKey = setup({ loadWallet: async () => null })

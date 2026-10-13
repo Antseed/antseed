@@ -13,6 +13,8 @@ export { DEFAULT_ANTSEED_PAY_URL }
 /** Deposits take at least 1 USDC on a first deposit; the upper bound only catches typos. */
 const CARD_MIN_USD = 1
 const CARD_MAX_USD = 10_000
+/** The pay page's link amount format: whole dollars or up to 2 decimals ("20", "12.5"). */
+const CARD_AMOUNT_RE = /^\d+(\.\d{1,2})?$/
 
 export function antseedPayBaseUrl(env: NodeJS.ProcessEnv = process.env): string {
   return env['ANTSEED_PAY_URL']?.trim() || DEFAULT_ANTSEED_PAY_URL
@@ -20,7 +22,8 @@ export function antseedPayBaseUrl(env: NodeJS.ProcessEnv = process.env): string 
 
 /**
  * The amount as the desktop writes it, `String(Number(input))` ("10.50" →
- * "10.5"); throws a user-facing message when it is out of bounds.
+ * "10.5"); throws a user-facing message when it is out of bounds or has
+ * more than 2 decimals, which the pay page rejects as a malformed link.
  */
 export function cardAmountString(input: unknown): string {
   let amount = Number.NaN
@@ -29,7 +32,9 @@ export function cardAmountString(input: unknown): string {
   if (!Number.isFinite(amount) || amount <= 0) throw new Error('amountUsd must be a positive number.')
   if (amount < CARD_MIN_USD) throw new Error(`The minimum card deposit is $${CARD_MIN_USD}.`)
   if (amount > CARD_MAX_USD) throw new Error(`The maximum card deposit is $${CARD_MAX_USD}.`)
-  return String(amount)
+  const text = String(amount)
+  if (!CARD_AMOUNT_RE.test(text)) throw new Error('The card deposit amount can have at most 2 decimals (cents).')
+  return text
 }
 
 /** The signed message (the pay page's wire format). */
