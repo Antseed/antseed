@@ -9,20 +9,16 @@
 export const ANTSEED_WALLETCONNECT_PROJECT_ID = '9a1851410cb5589bc351a6dabf17140e'
 
 /**
- * Public Base mainnet RPCs in fallback order, picked by a benchmark of the
- * 3-concurrent-eth_call pattern that broke the desktop credits pill
- * (getBuyerBalance + getBuyerCreditLimit + getOperator in parallel):
- *   publicnode              — 153ms, 3/3 reliable (primary)
- *   tenderly public gateway — 161ms, 3/3 reliable
- *   nodies public           — 163ms, 3/3 reliable
- * Explicitly NOT in this list: llamarpc (0/3, missing revert data — the
- * original bug) and mainnet.base.org (1/3, flaky under concurrent reads).
- * Mirrors the @antseed/node default primary.
+ * Public Base mainnet RPCs in fallback order: the same list as the
+ * @antseed/node base-mainnet chain config (`payments/chain-config.ts`), so the
+ * browser apps and the buyer read the chain through the same endpoints. The
+ * benchmark and the reasons publicnode and llamarpc are left out are there.
  */
 export const BASE_PUBLIC_RPC_URLS: readonly string[] = [
-  'https://base-rpc.publicnode.com',
   'https://base.gateway.tenderly.co',
+  'https://base.drpc.org',
   'https://base-public.nodies.app',
+  'https://mainnet.base.org',
 ]
 
 const USDC_DECIMALS = 6
