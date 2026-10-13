@@ -8,6 +8,7 @@ import {
   asObject,
   confirmations,
   fullLimitsFromWire,
+  keyUsageForDtos,
   limitsFromWire,
   notFound,
   optionalBoolean,
@@ -66,9 +67,11 @@ export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): voi
     const workspace = query.get('workspace')
     const member = query.get('member')
     if (principal?.kind === 'member') activeMember(store, principal)
-    return store.listKeys({ ...(workspace ? { workspaceId: workspace } : {}), ...(member ? { ownerMemberId: member } : {}) })
+    const keys = store.listKeys({ ...(workspace ? { workspaceId: workspace } : {}), ...(member ? { ownerMemberId: member } : {}) })
       .filter((key) => keyAccess(deps, principal, key) !== 'none')
-      .map((key) => apiKeyDto(store, key, deps.now()))
+    const now = deps.now()
+    const usage = keyUsageForDtos(store, keys.map((key) => key.id), now)
+    return keys.map((key) => apiKeyDto(store, key, now, usage.get(key.id)))
   }, { allow: ['member', 'token', 'key'] })
 
   router.add('POST', '/keys', async (request) => {

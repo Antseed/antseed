@@ -252,6 +252,13 @@ export interface RequestOutcome {
   servedFree?: boolean
 }
 
+/** What a key listing shows: lifetime requests and spend, and spend since a given time. */
+export interface KeyUsageSummary {
+  requests: number
+  spentUsdc: number
+  spentSinceUsdc: number
+}
+
 export interface KeyUsageStats {
   requests: number
   failedRequests: number
@@ -1414,6 +1421,40 @@ export class GatewayStore {
       cachedInputTokens: ledger.cached_input_tokens + reported.cached_input_tokens,
       outputTokens: ledger.output_tokens + reported.output_tokens,
     }
+  }
+
+  /**
+   * Lifetime requests and spend, plus spend since `since`, for many keys in
+   * one grouped query per table (rather than `usageStats` per key). Every
+   * id asked for gets an entry.
+   */
+  keyUsageSummaries(keyIds: readonly string[], since: number): Map<string, KeyUsageSummary> {
+    const summaries = new Map<string, KeyUsageSummary>(keyIds.map((id) => [id, { requests: 0, spentUsdc: 0, spentSinceUsdc: 0 }]))
+    if (keyIds.length === 0) return summaries
+    const ids = JSON.stringify(keyIds)
+    const requests = this._stmt(`
+      SELECT key_id, COUNT(*) AS requests FROM gateway_requests
+      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+    `).all(ids) as Array<{ key_id: string; requests: number }>
+    const rolled = this._stmt(`
+      SELECT key_id, SUM(requests) AS requests FROM request_rollups
+      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+    `).all(ids) as Array<{ key_id: string; requests: number }>
+    for (const row of [...requests, ...rolled]) {
+      const summary = summaries.get(row.key_id)
+      if (summary) summary.requests += row.requests
+    }
+    const spend = this._stmt(`
+      SELECT key_id, -SUM(amount_usdc) AS spent, -SUM(CASE WHEN created_at >= ? THEN amount_usdc ELSE 0 END) AS spent_since
+      FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' GROUP BY key_id
+    `).all(since, ids) as Array<{ key_id: string; spent: number; spent_since: number }>
+    for (const row of spend) {
+      const summary = summaries.get(row.key_id)
+      if (!summary) continue
+      summary.spentUsdc = row.spent
+      summary.spentSinceUsdc = row.spent_since
+    }
+    return summaries
   }
 
   // ── Peer lists ──────────────────────────────────────────────────────────

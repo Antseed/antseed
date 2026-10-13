@@ -214,6 +214,20 @@ test('requests still in flight are not failures; pruning in chunks keeps request
     assert.deepEqual(store.usageReport({}, 'day').groups.map((g) => [g.group, g.requests]), [['2026-01-05', 6]])
     assert.equal(store.usageStats(key.id).requests, 6)
     assert.equal(store.usageStats(key.id).failedRequests, 2)
+
+    // The grouped summary for key listings agrees with usageStats, rollups and all.
+    const { key: idle } = store.createKey({ label: 'idle', limits: NO_LIMITS, expiresAt: null })
+    start(store, 'gw_late', key.id, base + 20_000)
+    store.recordLedgerEntry({ kind: 'spend', keyId: key.id, buyerIdentity: 'default', amountUsdc: 300, externalRef: 'old', createdAt: base })
+    store.recordLedgerEntry({ kind: 'spend', keyId: key.id, buyerIdentity: 'default', amountUsdc: 200, externalRef: 'new', createdAt: base + 20_000 })
+    const summaries = store.keyUsageSummaries([key.id, idle.id], base + 10_000)
+    assert.deepEqual(summaries.get(key.id), {
+      requests: store.usageStats(key.id).requests,
+      spentUsdc: store.usageStats(key.id).spentUsdc,
+      spentSinceUsdc: store.usageStats(key.id, base + 10_000).spentUsdc,
+    })
+    assert.deepEqual(summaries.get(key.id), { requests: 7, spentUsdc: 500, spentSinceUsdc: 200 })
+    assert.deepEqual(summaries.get(idle.id), { requests: 0, spentUsdc: 0, spentSinceUsdc: 0 })
     assert.equal(store.usageReport({ keyIds: [] }, null).totals.requests, 0, 'rollups honour the visibility scope')
   } finally {
     store.close()
