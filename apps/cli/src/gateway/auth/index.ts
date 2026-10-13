@@ -563,7 +563,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
           counter: stored.counter ?? 0,
           transports: parseTransports(stored.transports),
         },
-        requireUserVerification: false,
+        requireUserVerification: true,
       })
     } catch (error) {
       throw new ConsoleError(401, 'passkey_invalid', `Passkey sign-in failed: ${errorMessage(error)}`)
@@ -684,7 +684,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
         userID: new TextEncoder().encode(member.id),
         attestationType: 'none',
         excludeCredentials: memberPasskeys(member.id).map((row) => ({ id: row.webauthn_id!, transports: parseTransports(row.transports) })),
-        authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'preferred' },
+        authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
       })
       db.saveChallenge(creation.challenge, 'register', member.id)
       return creation
@@ -710,7 +710,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
           expectedChallenge: challenge,
           expectedOrigin: rp.origin,
           expectedRPID: rp.hostname,
-          requireUserVerification: false,
+          requireUserVerification: true,
         })
       } catch (error) {
         throw new ConsoleError(400, 'passkey_invalid', `Passkey registration failed: ${errorMessage(error)}`)
@@ -738,7 +738,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       const limited = limit(raw)
       if (limited) return limited
       const rp = passkeyRp(raw)
-      const request = await generateAuthenticationOptions({ rpID: rp.hostname, userVerification: 'preferred' })
+      const request = await generateAuthenticationOptions({ rpID: rp.hostname, userVerification: 'required' })
       db.saveChallenge(request.challenge, 'login', null)
       return request
     }, PUBLIC)
@@ -899,7 +899,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (passkeys.length === 0) throw new ConsoleError(400, 'no_passkey', 'You have no passkey. Confirm with your wallet instead.')
       const options = await generateAuthenticationOptions({
         rpID: rp.hostname,
-        userVerification: 'preferred',
+        userVerification: 'required',
         allowCredentials: passkeys.map((row) => ({ id: row.webauthn_id!, transports: parseTransports(row.transports) })),
       })
       // Bound to the member: a plain sign-in challenge (no member) can't be used here.

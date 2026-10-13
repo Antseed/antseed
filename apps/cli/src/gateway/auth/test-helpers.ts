@@ -366,7 +366,8 @@ export class SoftwarePasskey {
     return this.credentialId.toString('base64url')
   }
 
-  register(options: { challenge: string; rp: { id?: string }; user: { id: string } }, origin: string): unknown {
+  /** `userVerified: false` clears the UV flag: the authenticator proved presence, not who is holding it. */
+  register(options: { challenge: string; rp: { id?: string }; user: { id: string } }, origin: string, overrides: { userVerified?: boolean } = {}): unknown {
     this.userHandle = options.user.id
     const rpId = options.rp.id!
     const cose = cbor(new Map<number, CborValue>([
@@ -377,7 +378,7 @@ export class SoftwarePasskey {
     const idLength = Buffer.alloc(2)
     idLength.writeUInt16BE(this.credentialId.length)
     const authData = Buffer.concat([
-      createHash('sha256').update(rpId).digest(), Buffer.from([0x45]), Buffer.alloc(4), Buffer.alloc(16), idLength, this.credentialId, cose,
+      createHash('sha256').update(rpId).digest(), Buffer.from([overrides.userVerified === false ? 0x41 : 0x45]), Buffer.alloc(4), Buffer.alloc(16), idLength, this.credentialId, cose,
     ])
     const attestationObject = cbor(new Map<string, CborValue>([['fmt', 'none'], ['attStmt', new Map()], ['authData', authData]]))
     const clientDataJSON = Buffer.from(JSON.stringify({ type: 'webauthn.create', challenge: options.challenge, origin, crossOrigin: false }))
@@ -391,11 +392,11 @@ export class SoftwarePasskey {
     }
   }
 
-  login(options: { challenge: string; rpId?: string }, origin: string, overrides: { counter?: number } = {}): unknown {
+  login(options: { challenge: string; rpId?: string }, origin: string, overrides: { counter?: number; userVerified?: boolean } = {}): unknown {
     this.counter = overrides.counter ?? this.counter + 1
     const counter = Buffer.alloc(4)
     counter.writeUInt32BE(this.counter)
-    const authData = Buffer.concat([createHash('sha256').update(options.rpId!).digest(), Buffer.from([0x05]), counter])
+    const authData = Buffer.concat([createHash('sha256').update(options.rpId!).digest(), Buffer.from([overrides.userVerified === false ? 0x01 : 0x05]), counter])
     const clientDataJSON = Buffer.from(JSON.stringify({ type: 'webauthn.get', challenge: options.challenge, origin, crossOrigin: false }))
     const signature = sign('sha256', Buffer.concat([authData, createHash('sha256').update(clientDataJSON).digest()]), this._privateKey)
     return {

@@ -13,14 +13,14 @@ function setupToken(link: string): string {
   return link.slice(link.indexOf('#') + 1)
 }
 
-async function registerPasskey(browser: Browser, enrollment: string | undefined, passkey: SoftwarePasskey) {
+async function registerPasskey(browser: Browser, enrollment: string | undefined, passkey: SoftwarePasskey, overrides: { userVerified?: boolean } = {}) {
   const options = await browser.request('POST', '/auth/passkey/register/options', enrollment ? { enrollment } : {})
   assert.equal(options.status, 200, JSON.stringify(options.body))
   const origin = `http://${browser.host}`
-  return browser.request('POST', '/auth/passkey/register/verify', { enrollment, response: passkey.register(options.body, origin), label: 'Laptop' })
+  return browser.request('POST', '/auth/passkey/register/verify', { enrollment, response: passkey.register(options.body, origin, overrides), label: 'Laptop' })
 }
 
-async function loginPasskey(browser: Browser, passkey: SoftwarePasskey, overrides: { counter?: number } = {}) {
+async function loginPasskey(browser: Browser, passkey: SoftwarePasskey, overrides: { counter?: number; userVerified?: boolean } = {}) {
   const options = await browser.request('POST', '/auth/passkey/login/options', {})
   assert.equal(options.status, 200, JSON.stringify(options.body))
   return browser.request('POST', '/auth/passkey/login/verify', { response: passkey.login(options.body, `http://${browser.host}`, overrides) })
@@ -85,6 +85,31 @@ describe('console auth: setup and passkeys', () => {
     const replay = await loginPasskey(harness.browser(), passkey, { counter: 1 })
     assert.equal(replay.status, 401)
     assert.equal(replay.body.error.code, 'passkey_invalid')
+  })
+
+  it('requires user verification for passkey registration and sign-in', async () => {
+    harness = await startHarness()
+    const browser = harness.browser()
+    const setup = await browser.request('POST', '/auth/setup', { token: setupToken(harness.auth.createSetupLink()), email: 'owner@example.com' })
+    assert.equal(setup.status, 200, JSON.stringify(setup.body))
+
+    const registerOptions = await browser.request('POST', '/auth/passkey/register/options', { enrollment: setup.body.enrollment })
+    assert.equal(registerOptions.body.authenticatorSelection.userVerification, 'required')
+    const loginOptions = await harness.browser().request('POST', '/auth/passkey/login/options', {})
+    assert.equal(loginOptions.body.userVerification, 'required')
+
+    // Presence alone (no PIN or biometric) does not register a passkey...
+    const unverified = await registerPasskey(browser, setup.body.enrollment, new SoftwarePasskey(), { userVerified: false })
+    assert.equal(unverified.status, 400)
+    assert.equal(unverified.body.error.code, 'passkey_invalid')
+
+    // ...nor sign in with one.
+    const passkey = new SoftwarePasskey()
+    assert.equal((await registerPasskey(browser, setup.body.enrollment, passkey)).status, 200)
+    const login = await loginPasskey(harness.browser(), passkey, { userVerified: false })
+    assert.equal(login.status, 401)
+    assert.equal(login.body.error.code, 'passkey_invalid')
+    assert.equal((await loginPasskey(harness.browser(), passkey)).status, 200)
   })
 
   it('only the newest setup link works, and an owner who never registered can re-claim', async () => {
