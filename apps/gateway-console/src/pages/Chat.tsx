@@ -421,15 +421,17 @@ function ToolCall({ part }: { part: ToolPart }) {
  */
 export default function Chat() {
   const { workspace, viewer, me } = useConsole()
+  // Per member as well as workspace: people sharing a browser must not reopen each other's conversation.
+  const storageScope = `${workspace.id}:${me.member.id}`
   const models = useQuery({ queryKey: qk.chatModels(workspace.id), queryFn: () => api.chat.models(workspace.id), staleTime: 60_000 })
-  const [modelId, setModelId] = useState<string | null>(() => load(`model:${workspace.id}`, null))
-  const [peerId, setPeerId] = useState<string | null>(() => load(`peer:${workspace.id}`, null))
+  const [modelId, setModelId] = useState<string | null>(() => load(`model:${storageScope}`, null))
+  const [peerId, setPeerId] = useState<string | null>(() => load(`peer:${storageScope}`, null))
   const queryClient = useQueryClient()
   const threads = useQuery({ queryKey: qk.chatThreads(workspace.id), queryFn: () => api.chat.threads(workspace.id) })
   const context = useQuery({ queryKey: qk.chatContext(workspace.id), queryFn: () => api.chat.context(workspace.id), staleTime: 30_000 })
   const fillRef = useFillViewport<HTMLDivElement>()
   // The open conversation; a new one gets its id here and is saved on the gateway with its first answer.
-  const [chatId, setChatId] = useState<string>(() => load(`chat:${workspace.id}`, newChatId()))
+  const [chatId, setChatId] = useState<string>(() => load(`chat:${storageScope}`, newChatId()))
   const model = models.data?.find((entry) => entry.id === modelId)
     ?? (modelId ? models.data?.find((entry) => modelKey(entry.id) === modelKey(modelId)) : undefined) ?? null
   // A model no seller offers any more (sellers drop one while busy): the chat moves on and says so.
@@ -453,9 +455,9 @@ export default function Chat() {
     if (modelId) setGoneModel(modelId)
     setModelId(first.id)
   }, [models.data, model])
-  useEffect(() => { save(`model:${workspace.id}`, modelId) }, [workspace.id, modelId])
-  useEffect(() => { save(`peer:${workspace.id}`, peerId) }, [workspace.id, peerId])
-  useEffect(() => { save(`chat:${workspace.id}`, chatId) }, [workspace.id, chatId])
+  useEffect(() => { save(`model:${storageScope}`, modelId) }, [storageScope, modelId])
+  useEffect(() => { save(`peer:${storageScope}`, peerId) }, [storageScope, peerId])
+  useEffect(() => { save(`chat:${storageScope}`, chatId) }, [storageScope, chatId])
 
   // The transport reads the current choice at send time; the gateway keeps the history, so only the newest message goes.
   const choice = useRef({ workspaceId: workspace.id, model: modelId, peerId })
