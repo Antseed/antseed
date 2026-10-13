@@ -420,6 +420,19 @@ Every `policy set` command (and `routing set`, `preset create|update`) takes the
 
 Funding stays with the buyer commands. A workspace pays from its buyer identity (`antseed gateway workspace show` prints it and its address): send USDC on Base to that address, or show it as a QR code with `antseed --data-dir <data-dir>/buyer-identities/<identity> buyer deposit --no-watch` (the Default workspace uses your data dir itself). Card checkout is console-only. For the authorized wallet, `antseed gateway workspace operator show <workspace>` reads it from the chain and says whose it is; `operator authorize <workspace> <address>` signs the authorization for an address when none is set and prints the signature, the calldata and a `cast send` example to submit it from any wallet (or `--browser` opens the local wallet page for the workspace's wallet, like `antseed buyer set-authorized-wallet --identity <identity>`); `operator transfer <workspace> <address>|--clear` hands over the role when the workspace wallet authorizes itself, paying gas from that wallet. `authorize` and `transfer` print a warning and ask for confirmation unless you pass `--yes`, and are recorded in the audit log as `antseed CLI`.
 
+## Protecting wallet keys
+
+Wallet keys (`identity.key` in the data dir and in each `buyer-identities/<name>/`) are stored unencrypted by default, readable only by their owner. Set `ANTSEED_PASSPHRASE` (or `ANTSEED_PASSPHRASE_FILE`, a file whose first line is the passphrase) for the buyer and the gateway, and every new wallet key, including the ones the console creates for workspaces, is written encrypted with it (scrypt + AES-256-GCM). Keys that already exist stay as they are until you encrypt them:
+
+```bash
+export ANTSEED_PASSPHRASE='a long passphrase'
+antseed buyer identity protect --all     # every wallet key, archived ones included
+antseed buyer identity list              # the Key column shows "data dir, encrypted"
+antseed buyer identity unprotect --all --yes   # back to plaintext
+```
+
+Without the passphrase an encrypted key cannot be read, and the buyer refuses to start rather than create another wallet; a wrong passphrase is refused too. Keep the passphrase somewhere safe: it is the only way to recover the keys. `antseed gateway start` warns when wallet keys are stored unencrypted. `antseed gateway export` copies encrypted keys as they are, so the server needs the same passphrase. The [server installer](/docs/guides/gateway-server) takes `ANTSEED_PASSPHRASE` from its environment and keeps a copy in `/etc/antseed/wallet.env` (0600), which both services load.
+
 ## Security notes
 
 - API keys, management tokens, invite and setup links, and sessions are stored only as SHA-256 hashes.
