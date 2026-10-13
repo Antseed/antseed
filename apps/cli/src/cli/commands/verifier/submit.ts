@@ -115,13 +115,14 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
         config: config.verifier,
       })
       const audits = await reuseLedgerEvidence(prepared, ledger)
+      const submittedEvidence = await submittedEvidenceHashes(verifierClient, address)
       const credited = await verifierClient.auditCredits(address, window.epoch)
       let auditorCreditsLeft = limits.perAuditor > credited.auditor ? limits.perAuditor - credited.auditor : 0n
       const modelCreditsLeft = new Map<string, bigint>()
       const pending: PendingModelAudit[] = []
       for (const audit of audits) {
         const previous = ledger.models[audit.key] ?? null
-        const alreadySubmitted = await verifierClient.evidenceUsed(audit.evidenceHash)
+        const alreadySubmitted = submittedEvidence.has(normalized(audit.evidenceHash))
         let expectsCredit = false
         if (!alreadySubmitted) {
           if (!modelCreditsLeft.has(audit.modelHash)) {
@@ -175,14 +176,14 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
           ledger.models[audit.key] = entry
           await writeModelAuditLedger(ledgerPath, ledger)
 
-          if (await verifierClient.evidenceUsed(audit.evidenceHash)) {
-            const event = await findSubmission(verifierClient, audit, address)
+          const event = await findSubmission(verifierClient, audit, address)
+          if (event) {
             ledger.models[audit.key] = {
               ...entry,
               status: 'submitted',
-              transactionHash: event?.transactionHash ?? null,
-              blockNumber: event?.blockNumber ?? null,
-              evidenceUri: event?.evidenceUri ?? evidenceUri,
+              transactionHash: event.transactionHash,
+              blockNumber: event.blockNumber,
+              evidenceUri: event.evidenceUri || evidenceUri,
             }
             await writeModelAuditLedger(ledgerPath, ledger)
             recovered += 1
@@ -231,6 +232,12 @@ export function registerVerifierSubmitCommand(verifierCmd: Command): void {
       console.log(chalk.dim(`Ledger: ${ledgerPath}`))
       if (failed > 0) process.exitCode = 1
     })
+}
+
+/** Evidence hashes this auditor has already submitted on-chain, read from its `ModelAudited` events. */
+async function submittedEvidenceHashes(client: VerifierClient, auditor: string): Promise<Set<string>> {
+  const events = await client.queryModelAudits({ auditor })
+  return new Set(events.map((event) => normalized(event.evidenceHash)))
 }
 
 /** Keeps evidence an earlier attempt wrote, so a retry submits the same evidence hash. */

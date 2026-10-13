@@ -160,9 +160,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.equal(await client.isVerified(3n), false)
     assert.equal((await client.queryServiceAudits(1n)).length, 2)
     const undetermined = await client.serviceStatus(2n, 'model-b')
-    assert.equal(undetermined.lastResult, VERIFIER_VERDICT.UNDETERMINED)
-    assert.equal(undetermined.verdict, VERIFIER_VERDICT.NONE)
-    assert.equal(undetermined.undeterminedStreak, 1)
+    assert.equal(undetermined.verdict, VERIFIER_VERDICT.UNDETERMINED)
     assert.deepEqual(await client.auditCredits(auditor.address, AUDIT_EPOCH), { auditor: 2n, total: 2n })
 
     assert.equal(await client.emissionsGate(), getAddress(gateAddress))
@@ -177,7 +175,7 @@ test('an approved auditor submits one audit per model, earns credits, and a re-r
     assert.deepEqual(await client.agentStatus(1n), { verifiedCount: 0, diffCount: 0 })
     assert.deepEqual(await client.agentStatus(2n), { verifiedCount: 0, diffCount: 0 })
     assert.equal(await client.isVerified(1n), false, 'verdicts expire without any cleanup transaction')
-    assert.equal((await client.serviceStatus(1n, 'model-a')).lastResult, VERIFIER_VERDICT.SAME, 'latest result kept')
+    assert.equal((await client.serviceStatus(1n, 'model-a')).verdict, VERIFIER_VERDICT.SAME, 'expired verdict stays readable')
 
     castSend(rpcUrl, gateAddress, 'setCurrentEpoch(uint256)', [String(AUDIT_EPOCH + 1)])
     const stale = submit(approved, ['--yes'])

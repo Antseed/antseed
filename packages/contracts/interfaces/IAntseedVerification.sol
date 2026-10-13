@@ -6,15 +6,15 @@ import {IAntseedRegistry} from "./IAntseedRegistry.sol";
 import {IAntseedSellerPools} from "./IAntseedSellerPools.sol";
 
 /// @notice Model-verification audits submitted by approved auditors, one model per submission.
-/// @dev Status is kept per (agent, service). SAME and DIFF set the service's verdict and record
-///      the emissions epoch it was given in; the verdict counts while
-///      `currentEpoch < epoch + validityEpochs`, and drops out on its own afterwards.
-///      UNDETERMINED is recorded as the latest result for routing but leaves the verdict and its
-///      epoch unchanged. A single approved auditor's SAME or DIFF sets the verdict; auditors
-///      double-check DIFF results off-chain before submitting them. Auditors earn one credit per model audit, whatever the results, up to an
+/// @dev Status is kept per (agent, service). The latest result (SAME, DIFF, or UNDETERMINED) is
+///      the service's verdict, with the emissions epoch it was given in; it is live while
+///      `currentEpoch < epoch + validityEpochs` and drops out on its own afterwards. Only SAME and
+///      DIFF count in the agent's status. A single approved auditor's result sets the verdict;
+///      auditors double-check DIFF results off-chain before submitting them. Auditors earn one credit per model audit, whatever the results, up to an
 ///      owner-set number per model and epoch (default 1), once the owner sets `rewardsStartEpoch`,
 ///      and are paid from the verification emission bucket in proportion to their credits, capped
-///      at `maxAuditorShareBps` of the epoch's budget per auditor.
+///      at `maxAuditorShareBps` of the epoch's budget per auditor. These credit and share limits are
+///      safety limits against a compromised or malicious auditor.
 interface IAntseedVerification {
     enum Verdict {
         NONE,
@@ -34,21 +34,15 @@ interface IAntseedVerification {
     }
 
     /// @param modelHash Model the service was last audited as.
-    /// @param verdict Latest definitive status (NONE, SAME, or DIFF). Counted in the agent's
-    ///        status only while `currentEpoch < epoch + validityEpochs`.
+    /// @param verdict Latest result (NONE, SAME, DIFF, or UNDETERMINED). Live only while
+    ///        `currentEpoch < epoch + validityEpochs`; only SAME and DIFF count in the agent's status.
     /// @param updatedAt When the live verdict last changed.
-    /// @param lastResult Latest submitted result for this service, including UNDETERMINED.
-    /// @param undeterminedStreak Consecutive UNDETERMINED results since the last SAME or DIFF.
-    /// @param lastAuditedAt When `lastResult` was submitted.
-    /// @param epoch Emissions epoch `verdict` was given in; every SAME or DIFF result moves it to
-    ///        the current epoch. Zero while `verdict` is NONE.
+    /// @param epoch Emissions epoch `verdict` was given in; every result moves it to the current
+    ///        epoch. Zero while `verdict` is NONE.
     struct ServiceStatus {
         bytes32 modelHash;
         Verdict verdict;
         uint64 updatedAt;
-        Verdict lastResult;
-        uint16 undeterminedStreak;
-        uint64 lastAuditedAt;
         uint64 epoch;
     }
 
@@ -70,7 +64,7 @@ interface IAntseedVerification {
 
     /// @notice Records one auditor's results for every seller audited as `modelHash`.
     /// @dev Reverts unless the caller is an approved auditor, `expectedEpoch` is the current
-    ///      epoch of the pinned emissions gate, `evidenceHash` is unused, and `results` is non-empty, bounded, and
+    ///      epoch of the pinned emissions gate, `evidenceHash` is non-zero, and `results` is non-empty, bounded, and
     ///      strictly ordered by (agentId, serviceHash).
     function submitModelAudit(
         uint256 expectedEpoch,

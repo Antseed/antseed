@@ -24,12 +24,13 @@ After M003:
   2. The verification owner calls `setRewardsStartEpoch` with the launch epoch. Audits
      from that epoch on earn credits; earlier audits never claim past budgets.
   Each auditor can claim at most `maxAuditorShareBps` of an epoch's verification budget
-  (default 2,000 = 20%, owner-settable from 1 to 10,000). The cap in force when an epoch
-  earns its first credit applies to that whole epoch, and budget above it is never minted.
+  (default 2,000 = 20%, owner-settable from 1 to 10,000). The cap in force at claim time
+  applies, and budget above it is never minted.
 - **Verdicts expire by epoch.** A SAME or DIFF counts for `validityEpochs` emissions
   epochs including the one it was given in (default 2; owner-settable from 1 to 4), and
-  then drops out on its own. A single auditor's SAME or DIFF sets the verdict; auditors
-  double-check DIFF results off-chain before submitting.
+  then drops out on its own. The latest result from a single auditor sets the verdict,
+  including UNDETERMINED, which clears an earlier SAME or DIFF. Auditors double-check
+  DIFF results off-chain before submitting.
 - **The emissions gate is pinned.** The constructor reads the gate behind
   `registry.emissions()` (usage accounting's `emissionsGate()`) and keeps it for life,
   so verdict epochs never mix gates. A new gate needs a new verification deployment.

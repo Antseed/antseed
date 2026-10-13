@@ -240,42 +240,38 @@ contract AntseedVerificationTest is Test {
         assertTrue(verification.isVerified(agentId));
     }
 
-    function test_undeterminedLeavesDiffInPlace() public {
+    function test_undeterminedReplacesDiff() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(DIFF));
-        assertEq(verification.agentStatus(agentId).diffCount, 1);
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(UNDETERMINED));
+        assertEq(verification.agentStatus(agentId).diffCount, 0, "latest result wins");
     }
 
-    function test_undeterminedIsRecordedWithoutChangingVerdict() public {
+    function test_undeterminedReplacesSame() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
         IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
-        assertEq(uint8(service.verdict), uint8(NONE));
-        assertEq(uint8(service.lastResult), uint8(UNDETERMINED));
-        assertEq(service.undeterminedStreak, 1);
-        assertEq(service.lastAuditedAt, block.timestamp);
+        assertEq(uint8(service.verdict), uint8(UNDETERMINED));
+        assertEq(service.epoch, EPOCH);
         assertEq(service.modelHash, MODEL_A);
         assertFalse(verification.isVerified(agentId));
 
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        _advance(1);
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        _audit(auditorC, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        service = verification.serviceStatus(agentId, SERVICE_A);
-        assertEq(uint8(service.verdict), uint8(SAME), "verdict kept");
-        assertEq(uint8(service.lastResult), uint8(UNDETERMINED));
-        assertEq(service.undeterminedStreak, 2);
-        assertEq(service.epoch, EPOCH, "UNDETERMINED does not extend the verdict");
         assertTrue(verification.isVerified(agentId));
+
         _advance(1);
+        vm.expectEmit(true, true, false, true, address(verification));
+        emit AntseedVerification.ServiceStatusChanged(agentId, SERVICE_A, MODEL_A, SAME, UNDETERMINED);
+        vm.expectEmit(true, false, false, true, address(verification));
+        emit AntseedVerification.AgentStatusChanged(agentId, 0, 0);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        assertFalse(verification.isVerified(agentId), "verdict ages out under UNDETERMINED results");
+        service = verification.serviceStatus(agentId, SERVICE_A);
+        assertEq(uint8(service.verdict), uint8(UNDETERMINED), "latest result wins");
+        assertEq(service.epoch, EPOCH + 1);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0);
+        assertFalse(verification.isVerified(agentId));
 
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        service = verification.serviceStatus(agentId, SERVICE_A);
-        assertEq(uint8(service.lastResult), uint8(SAME));
-        assertEq(service.undeterminedStreak, 0, "definitive result resets streak");
-        assertTrue(verification.isVerified(agentId));
+        assertTrue(verification.isVerified(agentId), "a new SAME verifies again");
     }
 
     function test_modelChangeResetsServiceStatus() public {
@@ -287,8 +283,9 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.serviceStatus(agentId, SERVICE_A).modelHash, MODEL_B);
 
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        assertEq(verification.agentStatus(agentId).verifiedCount, 0, "model change alone drops the verdict");
-        assertEq(verification.serviceStatus(agentId, SERVICE_A).epoch, 0);
+        assertEq(verification.agentStatus(agentId).verifiedCount, 0, "model change drops the verdict");
+        assertEq(uint8(verification.serviceStatus(agentId, SERVICE_A).verdict), uint8(UNDETERMINED));
+        assertEq(verification.serviceStatus(agentId, SERVICE_A).modelHash, MODEL_A);
     }
 
     function test_ownerCanClearServiceStatus() public {
@@ -355,14 +352,12 @@ contract AntseedVerificationTest is Test {
         verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
     }
 
-    function test_clearResetsLatestResultAndStreak() public {
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+    function test_clearResetsUndetermined() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
         verification.clearServiceStatus(agentId, SERVICE_A);
         IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(service.verdict), uint8(NONE));
-        assertEq(uint8(service.lastResult), uint8(NONE));
-        assertEq(service.undeterminedStreak, 0);
+        assertEq(service.epoch, 0);
         assertEq(service.modelHash, MODEL_A);
     }
 
@@ -397,7 +392,7 @@ contract AntseedVerificationTest is Test {
         assertEq(verification.agentStatus(0).diffCount, 0);
     }
 
-    function test_rejectsZeroAgentBeforeValidAgentWithoutConsumingEvidence() public {
+    function test_rejectsZeroAgentBeforeValidAgent() public {
         bytes32 evidence = keccak256("zero-agent-evidence");
         IAntseedVerification.ServiceResult[] memory results = new IAntseedVerification.ServiceResult[](2);
         results[0] = _result(0, SERVICE_A, SAME);
@@ -406,7 +401,6 @@ contract AntseedVerificationTest is Test {
         vm.expectRevert(AntseedVerification.UnknownAgent.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, evidence, "", results);
 
-        assertFalse(verification.usedEvidence(evidence));
         assertFalse(verification.isVerified(0));
         assertFalse(verification.isVerified(agentId));
         assertEq(verification.epochCredits(EPOCH), 0);
@@ -423,15 +417,12 @@ contract AntseedVerificationTest is Test {
         verification.submitModelAudit(EPOCH - 1, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
     }
 
-    function test_rejectsReusedEvidence() public {
+    function test_sameEvidenceCanBeSubmittedAgain() public {
         vm.startPrank(auditorA);
         verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
-        vm.expectRevert(AntseedVerification.EvidenceAlreadyUsed.selector);
-        verification.submitModelAudit(EPOCH, MODEL_B, keccak256("evidence"), "", _single(agentId, SERVICE_B, SAME));
-        vm.stopPrank();
-        vm.prank(auditorB);
-        vm.expectRevert(AntseedVerification.EvidenceAlreadyUsed.selector);
         verification.submitModelAudit(EPOCH, MODEL_A, keccak256("evidence"), "", _single(agentId, SERVICE_A, SAME));
+        vm.stopPrank();
+        assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 1, "per-model cap still holds");
     }
 
     function test_rejectsInvalidResults() public {
@@ -625,7 +616,6 @@ contract AntseedVerificationTest is Test {
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
         _audit(auditorA, keccak256("model-c"), agentId, bytes32(uint256(3)), SAME);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(verification.epochMaxAuditorShareBps(EPOCH), 2_000);
 
         gate.setCurrentEpoch(EPOCH + 1);
         assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 180 ether, "675 capped at 20% of 900");
@@ -635,24 +625,15 @@ contract AntseedVerificationTest is Test {
         assertEq(gate.epochMinted(EPOCH), 360 ether, "the rest of the bucket is never minted");
     }
 
-    function test_shareCapIsSavedPerEpoch() public {
+    function test_shareCapAppliesAtClaimTime() public {
         verification.setMaxAuditorShareBps(5_000);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        verification.setMaxAuditorShareBps(1_000);
         _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(verification.epochMaxAuditorShareBps(EPOCH), 5_000, "later changes do not touch this epoch");
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(_claim(auditorA), 450 ether, "50% cap, half the credits");
 
-        _advance(1);
-        gate.setBudget(address(verification), EPOCH + 1, 900 ether);
-        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
-        assertEq(verification.epochMaxAuditorShareBps(EPOCH + 1), 1_000);
-
-        gate.setCurrentEpoch(EPOCH + 2);
-        assertEq(_claim(auditorA), 450 ether, "epoch 5: 50% cap, half the credits");
-        uint256[] memory epochs = new uint256[](1);
-        epochs[0] = EPOCH + 1;
-        vm.prank(auditorA);
-        assertEq(verification.claimAuditorRewards(epochs), 90 ether, "epoch 6: 10% cap");
+        verification.setMaxAuditorShareBps(1_000);
+        assertEq(_claim(auditorB), 90 ether, "lowered cap applies to unclaimed rewards");
     }
 
     function test_claimsOnlyFinalizedEpochs() public {

@@ -87,10 +87,9 @@ export interface AuditorCredits {
 export const VERIFICATION_ABI = [
   'function setAuditor(address auditor, bool approved) external',
   'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
-  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint8 lastResult,uint16 undeterminedStreak,uint64 lastAuditedAt,uint64 epoch))',
+  'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch))',
   'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount))',
   'function isVerified(uint256 agentId) external view returns (bool)',
-  'function usedEvidence(bytes32 evidenceHash) external view returns (bool)',
   'function claimAuditorRewards(uint256[] epochs) external returns (uint256)',
   'function pendingAuditorReward(address auditor,uint256 epoch) external view returns (uint256)',
   'function epochCredits(uint256 epoch) external view returns (uint256)',
@@ -145,12 +144,10 @@ export function sortServiceResults(results: readonly ServiceResultInput[]): Serv
 
 export interface VerifierServiceStatus {
   modelHash: string;
+  /** Latest result (SAME, DIFF, or UNDETERMINED); only SAME and DIFF count in the agent's status. */
   verdict: VerifierVerdict;
-  lastResult: VerifierVerdict;
-  undeterminedStreak: number;
   updatedAt: bigint;
-  lastAuditedAt: bigint;
-  /** Emissions epoch the SAME/DIFF verdict was given in; it counts while `currentEpoch < epoch + validityEpochs`. 0 when there is none. */
+  /** Emissions epoch the verdict was given in; it counts while `currentEpoch < epoch + validityEpochs`. 0 when there is none. */
   epoch: bigint;
 }
 
@@ -219,10 +216,6 @@ export class VerifierClient extends BaseEvmClient {
     return { perAuditor: BigInt(perAuditor), perModel: BigInt(perModel) };
   }
 
-  async evidenceUsed(evidenceHash: string): Promise<boolean> {
-    return Boolean(await this._contract().getFunction('usedEvidence')(evidenceHash));
-  }
-
   /** The emissions gate pinned by the contract at deployment; `expectedEpoch` is checked against it. */
   async emissionsGate(): Promise<string> {
     return getAddress(String(await this._contract().getFunction('emissionsGate')()));
@@ -267,10 +260,7 @@ export class VerifierClient extends BaseEvmClient {
       modelHash: String(status.modelHash ?? status[0]),
       verdict: Number(status.verdict ?? status[1]) as VerifierVerdict,
       updatedAt: BigInt(status.updatedAt ?? status[2]),
-      lastResult: Number(status.lastResult ?? status[3]) as VerifierVerdict,
-      undeterminedStreak: Number(status.undeterminedStreak ?? status[4]),
-      lastAuditedAt: BigInt(status.lastAuditedAt ?? status[5]),
-      epoch: BigInt(status.epoch ?? status[6]),
+      epoch: BigInt(status.epoch ?? status[3]),
     };
   }
 

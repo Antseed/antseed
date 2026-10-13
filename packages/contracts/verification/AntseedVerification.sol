@@ -16,13 +16,12 @@ interface IEmissionsGateSource {
 
 /// @notice Records model-verification audits from approved auditors, one model per submission.
 ///
-///         Status: each (agent, service) keeps its latest definitive verdict and the emissions
+///         Status: each (agent, service) keeps its latest result as its verdict, with the emissions
 ///         epoch it was given in. A verdict counts while `currentEpoch < epoch + validityEpochs`
-///         (default 2: through the epoch after the audit). A SAME verifies that service and a
-///         DIFF marks it as not serving the audited model; the latest SAME or DIFF wins and moves
-///         the verdict to the current epoch. Auditors double-check a DIFF off-chain before
-///         submitting it. An UNDETERMINED result is recorded as the service's latest result
-///         (with a streak counter for routing) but changes no verdict or epoch.
+///         (default 2: through the epoch after the audit). A SAME verifies that service, a DIFF
+///         marks it as not serving the audited model, and an UNDETERMINED (the audit could not
+///         decide) counts as neither. The latest result always wins. Auditors double-check a DIFF
+///         off-chain before submitting it.
 ///         Each agent keeps per-epoch SAME and DIFF counters, so its status sums only the last
 ///         `validityEpochs` epochs and older verdicts drop out without any cleanup.
 ///
@@ -33,8 +32,8 @@ interface IEmissionsGateSource {
 ///         model and `maxCreditsPerAuditorPerEpoch` overall, provided the audit covers at least one
 ///         agent with staked pool power. Once the epoch is final an auditor claims
 ///         `min(budget * credits / totalCredits, budget * maxAuditorShareBps / BPS)` from the
-///         verification emission bucket, using the share cap in force when the epoch's first
-///         credit was earned. Budget above the cap is never minted.
+///         verification emission bucket, using the share cap in force at claim time. Budget above
+///         the cap is never minted.
 contract AntseedVerification is IAntseedVerification, Ownable2Step {
     uint256 public constant MAX_RESULTS_PER_AUDIT = 256;
     uint256 public constant MAX_EVIDENCE_URI_BYTES = 200;
@@ -50,15 +49,20 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     IAntseedEmissionsGate public immutable override emissionsGate;
     IAntseedSellerPools public override sellerPools;
     uint8 public override validityEpochs = 2;
+    // Safety limits against a compromised or malicious auditor; honest auditors should stay below them.
+    /// @notice Safety limit: credits one auditor can earn per epoch (default 100). Stops an auditor
+    ///         that invents model hashes from inflating total credits and diluting honest auditors.
     uint32 public maxCreditsPerAuditorPerEpoch = 100;
+    /// @notice Safety limit: credited audits of the same model per auditor and epoch (default 1).
+    ///         Stops an auditor from earning repeatedly by re-auditing one model.
     uint32 public maxCreditsPerModelPerEpoch = 1;
-    /// @notice Most of an epoch's verification budget one auditor can claim, in bps (default 20%).
+    /// @notice Safety limit: most of an epoch's verification budget one auditor can claim, in bps
+    ///         (default 20%). Stops a single auditor from draining the bucket.
     uint16 public override maxAuditorShareBps = 2_000;
     /// @notice First epoch whose audits earn credits; `type(uint256).max` keeps rewards off.
     uint256 public override rewardsStartEpoch = type(uint256).max;
 
     mapping(address auditor => bool approved) public override approvedAuditors;
-    mapping(bytes32 evidenceHash => bool used) public usedEvidence;
 
     mapping(uint256 agentId => mapping(bytes32 serviceHash => ServiceStatus status)) private _serviceStatus;
     // Latest SAME/DIFF verdicts given in each epoch; a verdict moves out when the service gets a new one.
@@ -69,8 +73,6 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     mapping(uint256 epoch => mapping(address auditor => mapping(bytes32 modelHash => uint256 credits))) public
         modelCredits;
     mapping(uint256 epoch => mapping(address auditor => bool claimed)) public auditorEpochClaimed;
-    /// @notice `maxAuditorShareBps` saved when the epoch earned its first credit; 0 before that.
-    mapping(uint256 epoch => uint16 shareBps) public epochMaxAuditorShareBps;
 
     event AuditorSet(address indexed auditor, bool approved);
     event SellerPoolsSet(address sellerPools);
@@ -101,7 +103,6 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     error InvalidValue();
     error NotApprovedAuditor();
     error InvalidEvidenceUri();
-    error EvidenceAlreadyUsed();
     error InvalidResults();
     error UnknownAgent();
     error SelfAudit();
@@ -147,21 +148,23 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         emit ValidityEpochsSet(epochs);
     }
 
+    /// @notice Sets the per-auditor safety limit on credits per epoch.
     function setMaxCreditsPerAuditorPerEpoch(uint32 maxCredits) external onlyOwner {
         if (maxCredits == 0) revert InvalidValue();
         maxCreditsPerAuditorPerEpoch = maxCredits;
         emit MaxCreditsPerAuditorPerEpochSet(maxCredits);
     }
 
-    /// @notice Credited audits of the same model per auditor and epoch (default 1).
+    /// @notice Sets the per-model safety limit on credited audits per auditor and epoch.
     function setMaxCreditsPerModelPerEpoch(uint32 maxCredits) external onlyOwner {
         if (maxCredits == 0) revert InvalidValue();
         maxCreditsPerModelPerEpoch = maxCredits;
         emit MaxCreditsPerModelPerEpochSet(maxCredits);
     }
 
-    /// @notice Caps one auditor's claim per epoch so a compromised auditor cannot take the whole
-    ///         bucket. Applies to epochs that earn their first credit after the change.
+    /// @notice Sets the safety limit on one auditor's share of an epoch's budget, so a compromised
+    ///         auditor cannot take the whole bucket. Applies to every claim made after the change,
+    ///         including past epochs.
     function setMaxAuditorShareBps(uint16 shareBps) external onlyOwner {
         if (shareBps == 0 || shareBps > BPS) revert InvalidValue();
         maxAuditorShareBps = shareBps;
@@ -176,12 +179,9 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         emit RewardsStartEpochSet(epoch);
     }
 
-    /// @notice Remediation for a wrong service result: resets its verdict and latest result.
+    /// @notice Remediation for a wrong service result: resets its verdict.
     function clearServiceStatus(uint256 agentId, bytes32 serviceHash) external onlyOwner {
-        ServiceStatus storage service = _serviceStatus[agentId][serviceHash];
-        _resetService(agentId, serviceHash, service, emissionsGate.currentEpoch());
-        service.lastResult = Verdict.NONE;
-        service.undeterminedStreak = 0;
+        _resetService(agentId, serviceHash, _serviceStatus[agentId][serviceHash], emissionsGate.currentEpoch());
     }
 
     // ═══════════════════════════════════════════════════════════════════
@@ -197,14 +197,12 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     ) external override {
         if (!approvedAuditors[msg.sender]) revert NotApprovedAuditor();
         if (modelHash == bytes32(0) || evidenceHash == bytes32(0)) revert InvalidValue();
-        if (usedEvidence[evidenceHash]) revert EvidenceAlreadyUsed();
         _validateEvidenceUri(evidenceUri);
         uint256 count = results.length;
         if (count == 0 || count > MAX_RESULTS_PER_AUDIT) revert InvalidResults();
 
         uint256 epoch = emissionsGate.currentEpoch();
         if (epoch != expectedEpoch) revert EpochChanged();
-        usedEvidence[evidenceHash] = true;
 
         bool staked;
         uint256 previousAgent;
@@ -284,22 +282,13 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         if (service.modelHash != modelHash) {
             if (service.modelHash != bytes32(0)) _resetService(agentId, serviceHash, service, epoch);
             service.modelHash = modelHash;
-            service.undeterminedStreak = 0;
         }
-        service.lastResult = verdict;
-        service.lastAuditedAt = uint64(block.timestamp);
-        if (verdict == Verdict.UNDETERMINED) {
-            if (service.undeterminedStreak < type(uint16).max) service.undeterminedStreak += 1;
-            return;
-        }
-        service.undeterminedStreak = 0;
-
         Verdict previous = _liveVerdict(service, epoch);
         if (service.verdict == verdict && service.epoch == epoch) return;
         _uncount(agentId, service);
         EpochCounts storage counts = _epochCounts[agentId][epoch];
         if (verdict == Verdict.SAME) counts.same += 1;
-        else counts.diff += 1;
+        else if (verdict == Verdict.DIFF) counts.diff += 1;
         service.verdict = verdict;
         service.epoch = uint64(epoch);
         if (previous == verdict) return;
@@ -324,7 +313,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         if (stored == Verdict.NONE) return;
         EpochCounts storage counts = _epochCounts[agentId][service.epoch];
         if (stored == Verdict.SAME) counts.same -= 1;
-        else counts.diff -= 1;
+        else if (stored == Verdict.DIFF) counts.diff -= 1;
     }
 
     function _liveVerdict(ServiceStatus storage service, uint256 epoch) private view returns (Verdict) {
@@ -363,7 +352,6 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     function _creditAudit(uint256 epoch, bytes32 modelHash) private {
         if (modelCredits[epoch][msg.sender][modelHash] >= maxCreditsPerModelPerEpoch) return;
         if (auditorEpochCredits[epoch][msg.sender] >= maxCreditsPerAuditorPerEpoch) return;
-        if (epochCredits[epoch] == 0) epochMaxAuditorShareBps[epoch] = maxAuditorShareBps;
         modelCredits[epoch][msg.sender][modelHash] += 1;
         auditorEpochCredits[epoch][msg.sender] += 1;
         epochCredits[epoch] += 1;
@@ -388,7 +376,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         if (credits == 0 || auditorEpochClaimed[epoch][auditor]) return 0;
         uint256 budget = gate.controllerEpochBudget(address(this), epoch);
         uint256 reward = (budget * credits) / epochCredits[epoch];
-        uint256 cap = (budget * epochMaxAuditorShareBps[epoch]) / BPS;
+        uint256 cap = (budget * maxAuditorShareBps) / BPS;
         return reward < cap ? reward : cap;
     }
 
