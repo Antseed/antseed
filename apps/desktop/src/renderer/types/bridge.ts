@@ -501,6 +501,9 @@ export type DesktopBridge = {
   publicTunnelStart?: (settings?: { provider?: TunnelProvider }) => Promise<{ ok: boolean; status?: PublicTunnelStatus; error?: string }>;
   publicTunnelStop?: () => Promise<{ ok: boolean; status?: PublicTunnelStatus; error?: string }>;
   publicTunnelGetApiKey?: () => Promise<{ apiKey: string | null }>;
+  publicTunnelGetConsoleStatus?: () => Promise<TunnelConsoleStatus>;
+  /** Mints a one-time setup link and opens it in the browser (the console itself once claimed). */
+  publicTunnelClaimConsole?: () => Promise<{ ok: boolean; status: TunnelConsoleStatus; error?: string }>;
 
   /* Floating always-on-top pill window */
   vprFloatSetExpanded?: (expanded: boolean) => void;
@@ -523,6 +526,11 @@ export type DesktopBridge = {
 };
 
 export type TunnelProvider = 'cloudflare' | 'ngrok';
+/** The gateway console a running tunnel publishes at <public url>/console. */
+export type TunnelConsoleStatus = {
+  state: 'unclaimed' | 'claimed' | 'unavailable';
+  url: string | null;
+};
 export type PublicTunnelStatus = {
   configured: boolean;
   configuredProviders: TunnelProvider[];
