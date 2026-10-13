@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from 'react'
 import { useAccount, useConfig, useReadContract, useWriteContract } from 'wagmi'
 import { simulateContract } from 'wagmi/actions'
-import { formatUnits, parseUnits } from 'viem'
+import { formatUnits, isAddress, parseUnits } from 'viem'
 import { DEPOSITS_ABI, ERC20_ABI } from '@antseed/wallet-config/abis'
 import { Alert, Button, TextField } from '@antseed/ui'
 import type { ChainInfo, Wallet } from '../api/types'
@@ -137,6 +137,11 @@ function Withdraw({ workspaceId, wallet, chain, onDone, onAuthorize }: Props) {
 const BODIES: Record<FundingAction, (props: Props) => ReactNode> = { deposit: Deposit, withdraw: Withdraw }
 
 export default function WalletFunding(props: Props) {
+  // Both contract calls take the workspace wallet as the buyer; until the
+  // gateway reports one there is nothing to deposit to or withdraw from.
+  if (!isAddress(props.wallet.address)) {
+    return <Alert tone="warning">This workspace has no wallet address yet, so it cannot {props.action === 'deposit' ? 'receive deposits' : 'withdraw'}. Reload once the gateway has set up the workspace wallet.</Alert>
+  }
   const Body = BODIES[props.action]
   return (
     <WalletProvider chain={props.chain}>
