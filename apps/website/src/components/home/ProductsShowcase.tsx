@@ -63,7 +63,7 @@ export function ProductsShowcase() {
               ))}
             </ul>
             <div className={`${styles.ctaRow} ${styles.gatewayCta}`}>
-              <Button to="/docs/gateway" size="lg" arrow className={styles.greenBtn}>Set up AI gateway</Button>
+              <Button to="/docs/quickstart" size="lg" arrow className={styles.greenBtn}>Set up AI gateway</Button>
               <span className={`${home.ctaCaption} ${home.ctaCheck}`}>
                 <i aria-hidden="true" />No signup required
               </span>

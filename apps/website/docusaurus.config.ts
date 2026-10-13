@@ -320,7 +320,7 @@ const config: Config = {
           position: 'right',
           className: 'header-download-link',
         },
-        {to: '/docs/gateway', label: 'Set up gateway', position: 'right', className: 'header-gateway-link'},
+        {to: '/docs/quickstart', label: 'Set up gateway', position: 'right', className: 'header-gateway-link'},
       ],
     },
     prism: {

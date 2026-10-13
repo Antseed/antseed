@@ -108,7 +108,7 @@ export function LaunchHero() {
               <CommandChip command={GATEWAY_INSTALL_COMMAND} size="md" dark className={styles.command} />
               <div className={styles.panelNote}>
                 <span>Paste it into a terminal or your agent.</span>
-                <LinkArrow to="/docs/gateway">Gateway docs</LinkArrow>
+                <LinkArrow to="/docs/quickstart">Gateway docs</LinkArrow>
               </div>
               <span className={`${home.ctaCaption} ${home.ctaCheck} ${styles.panelCheck}`}>
                 <i aria-hidden="true" />No signup required
