@@ -268,3 +268,30 @@ test('a gateway active watch lapses to background without a heartbeat, and a hea
   t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS * 3)
   assert.equal(watcher.status().mode, 'active')
 })
+
+test('a gateway heartbeat and a desktop hold keep each other\'s active watch alive', async (t) => {
+  const chain: FakeChain = {
+    walletBalance: 0n,
+    depositsAvailable: 0n,
+    depositsReserved: 0n,
+    creditLimit: 100_000_000n,
+    authorizationUsed: false,
+  }
+  const { watcher, cleanup } = await makeWatcher(chain)
+  t.after(async () => { watcher.stop(); await cleanup() })
+  t.mock.timers.enable({ apis: ['setTimeout', 'setInterval', 'Date'], now: 1_000_000 })
+
+  // The desktop's indefinite hold outlives a console heartbeat's TTL.
+  watcher.promote()
+  watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS * 2)
+  assert.equal(watcher.status().mode, 'active')
+
+  // The desktop closing its flow does not end the console's watch...
+  watcher.promote(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  watcher.demote()
+  assert.equal(watcher.status().mode, 'active')
+  // ...which lapses once its heartbeats stop.
+  t.mock.timers.tick(DEPOSIT_WATCH_ACTIVE_TTL_MS)
+  assert.equal(watcher.status().mode, 'background')
+})
