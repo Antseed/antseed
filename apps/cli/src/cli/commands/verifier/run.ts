@@ -9,6 +9,7 @@ import {
   appendVerifierEvent,
   modelAuditsDirectory,
   modelAuditReportPath,
+  modelAuditRechecksDirectory,
   modelAuditSellersDirectory,
   modelReferencesDirectory,
   readVerifierRunManifest,
@@ -664,7 +665,7 @@ export function registerVerifierRunCommand(verifier: Command): void {
                 const recheck = await verifyModelTarget({
                   context: {
                     proxy,
-                    evidenceDir: modelAuditSellersDirectory(evidenceDir, epoch, model, runId),
+                    evidenceDir: modelAuditRechecksDirectory(evidenceDir, epoch, model, runId),
                     checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
                     requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
                     auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,

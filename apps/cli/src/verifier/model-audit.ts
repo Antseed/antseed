@@ -50,8 +50,8 @@ export interface ModelAuditSellerResultV1 {
     evidenceHash: string
   }
   /**
-   * Second check on fresh probes after the first check (`audit`) said DIFF. `verdict` is DIFF only
-   * when this check is DIFF too; otherwise it is UNDETERMINED.
+   * Second check on fresh probes after the first check (`audit`) said DIFF. `verdict` stays DIFF
+   * unless this check is SAME, which makes it UNDETERMINED.
    */
   confirmation?: {
     verdict: ModelAuditVerdict
@@ -523,7 +523,7 @@ export function validateAuditMatchesSummary(
     || recheckEvidence.reference.probes.some((probe) => evidence.reference.probes.some((first) => first.id === probe.id))) {
     throw new Error('recheck reused probes from the first check')
   }
-  const expected = recheckEvidence.result.verdict === 'DIFF' ? 'DIFF' : 'UNDETERMINED'
+  const expected = recheckEvidence.result.verdict === 'SAME' ? 'UNDETERMINED' : 'DIFF'
   if (result.status !== expected) throw new Error('final verdict does not follow from the recheck')
 }
 

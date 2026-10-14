@@ -24,9 +24,9 @@ export interface DiffRecheckOutcome {
 }
 
 /**
- * A first DIFF only stands if a second check on probes the seller has never seen also says DIFF.
- * DIFF then SAME or UNDETERMINED becomes UNDETERMINED. When the second check cannot run, the
- * seller is reported as a failure so nothing is submitted for it.
+ * A first DIFF is rechecked on probes the seller has never seen. Only a recheck SAME overturns it
+ * (DIFF then SAME becomes UNDETERMINED); a recheck DIFF or UNDETERMINED keeps the DIFF. When the
+ * second check cannot run, the seller is reported as a failure so nothing is submitted for it.
  */
 export async function runDiffRechecks(input: {
   results: readonly ModelVerificationTargetResult[]
@@ -113,10 +113,10 @@ export async function runDiffRechecks(input: {
     const final = combineDiffRecheck(first, recheck, reservation.reference.referenceId)
     if (final.status === 'DIFF') {
       stats.confirmed += 1
-      input.log(`  ${label} recheck DIFF → confirmed DIFF`)
+      input.log(`  ${label} recheck ${recheck.status} → confirmed DIFF`)
     } else {
       stats.notConfirmed += 1
-      input.log(`  ${label} recheck ${recheck.status} → not confirmed, submitting UNDETERMINED`)
+      input.log(`  ${label} recheck SAME → not confirmed, submitting UNDETERMINED`)
     }
     finals.set(first, final)
   }))
@@ -140,7 +140,7 @@ export function combineDiffRecheck(
   if (first.status !== 'DIFF') throw new Error('only a DIFF is rechecked')
   return {
     ...first,
-    status: recheck.status === 'DIFF' ? 'DIFF' : 'UNDETERMINED',
+    status: recheck.status === 'SAME' ? 'UNDETERMINED' : 'DIFF',
     cumulativeCost: addAuditCostSummaries(first.cumulativeCost ?? first.cost, recheck.cumulativeCost ?? recheck.cost),
     recheck: {
       auditId: recheck.auditId,

@@ -173,6 +173,16 @@ export function modelAuditSellersDirectory(
   return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'sellers')
 }
 
+/** DIFF recheck evidence lives apart from first checks so it never overwrites a seller's first pack. */
+export function modelAuditRechecksDirectory(
+  evidenceDir: string,
+  epoch: string,
+  model: string,
+  runId: string,
+): string {
+  return join(modelAuditsDirectory(evidenceDir, epoch, model, runId), 'rechecks')
+}
+
 export function modelReferencesDirectory(evidenceDir: string, epoch: string, model: string): string {
   return join(modelDirectory(evidenceDir, epoch, model), 'references')
 }

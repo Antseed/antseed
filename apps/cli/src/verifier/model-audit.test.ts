@@ -184,6 +184,15 @@ test('a recheck may turn a first DIFF into UNDETERMINED, but never on reused pro
 
   validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4']))
   validateAuditMatchesSummary(first, summary('DIFF', 'DIFF'), evidence('DIFF', 'sha256:second', ['p3', 'p4']))
+  validateAuditMatchesSummary(
+    first, summary('DIFF', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
+  )
+  assert.throws(
+    () => validateAuditMatchesSummary(
+      first, summary('UNDETERMINED', 'UNDETERMINED'), evidence('UNDETERMINED', 'sha256:second', ['p3', 'p4']),
+    ),
+    /final verdict does not follow/,
+  )
   assert.throws(
     () => validateAuditMatchesSummary(first, summary('DIFF', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4'])),
     /final verdict does not follow/,

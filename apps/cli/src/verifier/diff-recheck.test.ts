@@ -74,16 +74,17 @@ test('only DIFF results are rechecked; a recheck DIFF confirms the DIFF', async 
   assert.ok(logs.some((line) => line.includes('confirmed DIFF')))
 })
 
-test('a recheck SAME or UNDETERMINED turns the DIFF into UNDETERMINED', async () => {
+test('a recheck SAME turns the DIFF into UNDETERMINED; a recheck UNDETERMINED keeps the DIFF', async () => {
   const toSame = result('b', 'DIFF')
   const toUndetermined = result('c', 'DIFF')
   const { outcome } = await run({
     results: [toSame, toUndetermined],
     recheckVerdicts: { [toSame.peerId]: 'SAME', [toUndetermined.peerId]: 'UNDETERMINED' },
   })
-  assert.deepEqual(outcome.results.map((entry) => entry.status), ['UNDETERMINED', 'UNDETERMINED'])
+  assert.deepEqual(outcome.results.map((entry) => entry.status), ['UNDETERMINED', 'DIFF'])
   assert.deepEqual(outcome.results.map((entry) => entry.recheck?.status), ['SAME', 'UNDETERMINED'])
-  assert.equal(outcome.stats.notConfirmed, 2)
+  assert.equal(outcome.stats.notConfirmed, 1)
+  assert.equal(outcome.stats.confirmed, 1)
   assert.equal(outcome.failures.length, 0)
 })
 
