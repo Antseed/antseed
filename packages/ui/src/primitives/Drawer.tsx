@@ -68,7 +68,8 @@ export function Drawer({
       if (event.target instanceof Node && panel.contains(event.target)) return;
       if (
         event.target instanceof Element &&
-        event.target.closest('[role="dialog"]') !== null
+        // Dialogs and menus opened from the drawer render in portals; using them must not close it.
+        event.target.closest('[role="dialog"], [role="menu"]') !== null
       ) {
         return;
       }

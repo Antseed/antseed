@@ -7,7 +7,8 @@ import {AllVersionsLink} from '../lib/AllVersionsLink';
 import {useMobileGetStarted} from '../lib/useMobileGetStarted';
 import {useNetworkStats} from '../lib/useNetworkStats';
 import {SkillChip} from './SkillChip';
-import {Button, ArrowRight} from './ui';
+import {CommandChip} from './CommandChip';
+import {Button, ArrowRight, LinkArrow} from './ui';
 import {DEMO_BEATS as BEATS, DEMO_TOTAL_FRAMES} from './HeroDemo';
 
 /**
@@ -76,17 +77,11 @@ export function CountUp({value, duration = 1100}: {value: string; duration?: num
    ============================================================ */
 const ANT_H = 800;
 const ANT_W = Math.round((15.2738 / 18) * ANT_H);
-const DOT_LIGHT = '213,217,215';
-const DOT_DARK = '197,208,203';
+const DOT_COLOR = '213,217,215';
 const SPARKLE_RGB = [16, 185, 129] as const;
 const SAMPLE_OFFSETS = [-4, 0, 4];
 
 const parseRgb = (s: string) => s.split(',').map(Number);
-
-const isDarkTheme = () =>
-  document.documentElement.dataset.theme === 'dark' ||
-  (document.documentElement.dataset.theme !== 'light' &&
-    window.matchMedia('(prefers-color-scheme: dark)').matches);
 
 interface HeroDot {
   x: number;
@@ -104,6 +99,10 @@ export function HeroDotCanvas({
   shutdownRef,
   originRef,
   compact = false,
+  selfClock = false,
+  antScale: antScaleProp = 1,
+  antScaleSmall,
+  antLift = 120,
 }: {
   frameRef: MutableRefObject<number>;
   /** 0 while the demo loops; otherwise the manual power-off's virtual frame. */
@@ -113,10 +112,39 @@ export function HeroDotCanvas({
       drawn smaller and centred on the demo instead of riding 120px above it
       (which clipped its head at the hero's top edge). */
   compact?: boolean;
+  /** No HeroDemo on the page to drive frameRef: advance it here, on the same
+      30 fps loop, only while the canvas is drawing (it pauses off-screen). */
+  selfClock?: boolean;
+  /** Ant size and how far its centre sits above the origin (non-compact). */
+  antScale?: number;
+  /** Ant size at phone widths (≤640px); defaults to antScale. */
+  antScaleSmall?: number;
+  antLift?: number;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  // Building the dot grid and drawing it is the heaviest script on the page,
+  // so it starts only after the page has loaded and the browser is idle:
+  // it never competes with the first paint or with the page becoming usable.
+  const [ready, setReady] = useState(false);
 
   useEffect(() => {
+    let idle = 0;
+    let timer = 0;
+    const start = () => {
+      if (typeof window.requestIdleCallback === 'function') idle = window.requestIdleCallback(() => setReady(true), {timeout: 1500});
+      else timer = window.setTimeout(() => setReady(true), 200);
+    };
+    if (document.readyState === 'complete') start();
+    else window.addEventListener('load', start, {once: true});
+    return () => {
+      window.removeEventListener('load', start);
+      if (idle) window.cancelIdleCallback(idle);
+      window.clearTimeout(timer);
+    };
+  }, []);
+
+  useEffect(() => {
+    if (!ready) return undefined;
     const canvas = canvasRef.current;
     if (!canvas) return undefined;
     const ctx = canvas.getContext('2d', {alpha: true});
@@ -125,13 +153,8 @@ export function HeroDotCanvas({
     if (!host) return undefined;
 
     const reducedMotion = window.matchMedia('(prefers-reduced-motion: reduce)').matches;
-    let color = DOT_LIGHT;
-    let baseRgb = parseRgb(color);
-    const applyTheme = () => {
-      color = isDarkTheme() ? DOT_DARK : DOT_LIGHT;
-      baseRgb = parseRgb(color);
-    };
-    applyTheme();
+    const color = DOT_COLOR;
+    const baseRgb = parseRgb(color);
     let disposed = false;
     let width = 0;
     let height = 0;
@@ -182,8 +205,8 @@ export function HeroDotCanvas({
         originY = origin.top - rect.top + 0.375 * origin.height;
       }
       // Ant placement — scaled and centred on the demo in the split hero.
-      let antScale = compact ? 0.5 : 1;
-      let antCenterY = originY - 120;
+      let antScale = compact ? 0.5 : width <= 640 ? antScaleSmall ?? antScaleProp : antScaleProp;
+      let antCenterY = originY - antLift;
       if (compact && origin) {
         // Size the ant to the demo box (card + "Finding best seller" pill) so
         // its top and bottom line up with the box, and centre it behind it.
@@ -342,7 +365,9 @@ export function HeroDotCanvas({
     // The frame clock lives in HeroDemo (frameRef), so pausing the draw loop
     // while the hero is scrolled out of view costs nothing in sync.
     let raf = 0;
+    const clockStart = performance.now();
     const loop = () => {
+      if (selfClock) frameRef.current = ((performance.now() - clockStart) / 1000) * 30;
       drawFrame(frameRef.current % DEMO_TOTAL_FRAMES, shutdownRef.current);
       raf = requestAnimationFrame(loop);
     };
@@ -365,17 +390,14 @@ export function HeroDotCanvas({
 
     const resize = new ResizeObserver(layout);
     resize.observe(host);
-    const themeWatch = new MutationObserver(applyTheme);
-    themeWatch.observe(document.documentElement, {attributes: true, attributeFilter: ['data-theme']});
 
     return () => {
       disposed = true;
       stopLoop();
       visibility?.disconnect();
       resize.disconnect();
-      themeWatch.disconnect();
     };
-  }, [frameRef, shutdownRef, originRef, compact]);
+  }, [ready, frameRef, shutdownRef, originRef, compact, selfClock, antScaleProp, antScaleSmall, antLift]);
 
   return <canvas ref={canvasRef} className={styles.heroCanvas} aria-hidden="true" />;
 }
@@ -383,7 +405,7 @@ export function HeroDotCanvas({
 /* ============================================================
    HERO
    ============================================================ */
-function DownloadCta({
+export function DownloadCta({
   caption,
   size = 'lg',
   versionsLink = true,
@@ -421,15 +443,16 @@ function DownloadCta({
   );
 }
 
-/* Hero use switch — three ways in. The desktop app is the default; the CLI
-   path reuses the commands documented in docs/guides/using-the-api.md and
-   the agent path installs skills/join-buyer (also served at /skill.md). */
+/* Hero use switch — three ways in. The desktop app is the default; the
+   gateway path is the one-line installer (static/install.sh, documented in
+   docs/start/quickstart.md) and the agent path installs skills/join-buyer
+   (also served at /skill.md). */
 export type HeroUse = 'app' | 'cli' | 'agent';
 
 const HERO_USES: {id: HeroUse; label: string}[] = [
-  {id: 'app', label: 'Download the AI VPN'},
-  {id: 'cli', label: 'Install the CLI'},
-  {id: 'agent', label: 'Install the skill'},
+  {id: 'app', label: 'Download AI VPN'},
+  {id: 'cli', label: 'Setup API Gateway'},
+  {id: 'agent', label: 'Install Skill'},
 ];
 
 function useCopy(text: string) {
@@ -456,26 +479,23 @@ function readUseParam(): HeroUse | null {
   return v === 'cli' || v === 'agent' || v === 'app' ? v : null;
 }
 
+export const GATEWAY_INSTALL_COMMAND = 'curl -fsSL https://antseed.com/install.sh | bash';
 const CLI_ALL = [
-  'npm install -g @antseed/cli',
-  'antseed buyer start',
-  "curl localhost:8377/v1/chat/completions -H 'content-type: application/json' -d '{\"model\": \"deepseek-v4-flash\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'",
-  'antseed buyer deposit',
+  GATEWAY_INSTALL_COMMAND,
+  "curl localhost:8379/v1/chat/completions -H \"authorization: Bearer $ANTSEED_API_KEY\" -H 'content-type: application/json' -d '{\"model\": \"deepseek-v4-flash\", \"messages\": [{\"role\": \"user\", \"content\": \"Hello\"}]}'",
 ].join('\n');
-const CLI_ACTIVITY = ['Proxy listening on localhost:8377', 'Works with any OpenAI-compatible app', 'Antseed routes each request to a provider'];
+const CLI_ACTIVITY = ['Gateway listening on localhost:8379', 'Keys, budgets and logs in the console', 'Antseed routes each request to a provider'];
 type CliTok = {cls: 'c'|'g'|'p'|'b'|'y'|'o'|'w'; text: string};
 const CLI_LINES: CliTok[][] = [
-  [{cls:'c',text:'# Install the CLI'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'npm'},{cls:'b',text:' install'},{cls:'y',text:' -g'},{cls:'o',text:' @antseed/cli'}],
-  [{cls:'c',text:'# Start your local endpoint'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'antseed'},{cls:'b',text:' buyer start'}],
-  [{cls:'w',text:'→ listening on localhost:8377'}],
+  [{cls:'c',text:'# Set up the gateway'}],
+  [{cls:'g',text:'$ '},{cls:'p',text:'curl'},{cls:'y',text:' -fsSL'},{cls:'o',text:' https://antseed.com/install.sh'},{cls:'w',text:' | '},{cls:'p',text:'bash'}],
+  [{cls:'w',text:'→ console: localhost:8379/console'}],
+  [{cls:'c',text:'# Claim the console, add funds, create a key'}],
   [{cls:'c',text:'# Call it like any OpenAI API'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'curl'},{cls:'b',text:' localhost:8377/v1/chat/completions'},{cls:'w',text:' \\'}],
+  [{cls:'g',text:'$ '},{cls:'p',text:'curl'},{cls:'b',text:' localhost:8379/v1/chat/completions'},{cls:'w',text:' \\'}],
+  [{cls:'y',text:'    -H'},{cls:'o',text:' "authorization: Bearer $ANTSEED_API_KEY"'},{cls:'w',text:' \\'}],
   [{cls:'y',text:'    -H'},{cls:'o',text:" 'content-type: application/json'"},{cls:'w',text:' \\'}],
   [{cls:'y',text:'    -d'},{cls:'o',text:' \'{"model": "deepseek-v4-flash", "messages": [{"role": "user", "content": "Hello"}]}\''}],
-  [{cls:'c',text:'# Fund it for paid models (free ones need nothing)'}],
-  [{cls:'g',text:'$ '},{cls:'p',text:'antseed'},{cls:'b',text:' buyer deposit'}],
 ];
 
 export function HeroCliVisual({active = true}: {active?: boolean}) {
@@ -492,7 +512,7 @@ export function HeroCliVisual({active = true}: {active?: boolean}) {
     <div className={`${ag.card} ${!active ? ag.paused : ''}`}>
       <div className={ag.top}>
         <span><i /> Running on localhost.</span>
-        <small>:8377</small>
+        <small>:8379</small>
       </div>
       <div className={`${ag.scene} ${cli.scene}`}>
         <div className={cli.terminal}>
@@ -502,7 +522,7 @@ export function HeroCliVisual({active = true}: {active?: boolean}) {
               <i style={{background: '#F59E0B'}} />
               <i style={{background: '#676663'}} />
             </span>
-            <span className={cli.barTitle}>Antseed CLI</span>
+            <span className={cli.barTitle}>Antseed gateway</span>
             <button type="button" className={cli.copy} onClick={all.copy} aria-live="polite">
               {all.copied ? 'Copied' : 'Copy commands'}
             </button>
@@ -573,8 +593,8 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
           <DownloadCta caption="No signup required" />
         </HeroCtaPane>
         <HeroCtaPane id="cli" use={use}>
-          <Button to="/docs/install" size="lg" arrow>Install the CLI</Button>
-          <span className={`${styles.useNote} ${styles.ctaCheck}`}><i aria-hidden="true" />Mac, Windows, Linux, or your server. No account.</span>
+          <CommandChip command={GATEWAY_INSTALL_COMMAND} />
+          <span className={styles.useNote}><LinkArrow to="/docs/quickstart">Read the docs</LinkArrow></span>
         </HeroCtaPane>
         <HeroCtaPane id="agent" use={use}>
           <SkillChip />
@@ -593,7 +613,7 @@ export function HeroUseCta({use, setUse, showSwitch = true}: {use: HeroUse; setU
 const HERO_MODELS_STAT = {value: '700+', label: 'Models', accent: true};
 
 /** Tokens / revenue / providers / models, streamed from Antscan. */
-export function HeroStatsRow() {
+export function HeroStatsRow({className}: {className?: string} = {}) {
   const stats = useNetworkStats();
   const heroStats: {value: string; label: string; accent?: boolean}[] = [
     {value: stats.tokens, label: 'Tokens processed'},
@@ -602,7 +622,7 @@ export function HeroStatsRow() {
     HERO_MODELS_STAT,
   ];
   return (
-    <dl className={styles.statsRow}>
+    <dl className={className ? `${styles.statsRow} ${className}` : styles.statsRow}>
       {heroStats.map((s) => (
         <div key={s.label} className={styles.stat}>
           <dd className={`${styles.statValue} ${s.accent ? styles.statAccent : ''}`}>

@@ -1,0 +1,76 @@
+/* Reachability banner and the Migrate page. Neutral like the rest of the console. */
+
+.gc-exposure {
+  display: flex; align-items: center; gap: 0.75rem; margin: 0 0 1.5rem; padding: 0.625rem 0.625rem 0.625rem 0.75rem;
+  background: var(--as-bg-surface); border: 1px solid var(--as-border-strong); border-radius: var(--as-radius-lg);
+  color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.45;
+  strong { color: var(--as-text-primary); font-weight: 600; }
+}
+.gc-exposure__icon {
+  display: inline-grid; place-items: center; flex: 0 0 auto; width: 1.875rem; height: 1.875rem;
+  border-radius: var(--as-radius-md); background: var(--as-bg-muted); color: var(--as-text-primary);
+}
+.gc-exposure__text { flex: 1; min-width: 0; }
+.gc-exposure__actions { display: flex; align-items: center; gap: 0.25rem; flex: 0 0 auto; }
+.gc-exposure__rec { color: var(--as-text-muted); font-weight: 450; }
+.gc-exposure__close { border-color: transparent; width: 1.875rem; height: 1.875rem; }
+
+.gc-migrate__now {
+  display: flex; flex-direction: column; gap: 0.5rem; padding: 0.875rem 1rem;
+  background: var(--as-bg-muted); border-radius: var(--as-radius-lg); font-size: 0.8125rem;
+}
+.gc-migrate__now-head { display: flex; align-items: center; gap: 0.5rem; flex-wrap: wrap; }
+.gc-migrate__addr { font-family: var(--gc-mono); font-size: 0.75rem; color: var(--as-text-secondary); }
+.gc-migrate__reasons { margin: 0; padding-left: 1.125rem; color: var(--as-text-secondary); display: flex; flex-direction: column; gap: 0.1875rem; }
+
+.gc-migrate__whys { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 0.875rem; }
+.gc-migrate__why {
+  display: flex; gap: 0.75rem; padding: 0.875rem 1rem;
+  border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface);
+}
+.gc-migrate__why-icon {
+  display: inline-grid; place-items: center; flex: 0 0 auto; width: 2rem; height: 2rem;
+  border-radius: var(--as-radius-md); background: var(--as-bg-muted); color: var(--as-text-primary);
+}
+.gc-migrate__why-title { font-weight: 600; color: var(--as-text-primary); }
+.gc-migrate__why-text { margin: 0.125rem 0 0; color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.45; }
+
+.gc-migrate__inputs { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.875rem; margin-bottom: 1.25rem; }
+.gc-migrate__steps { list-style: none; margin: 0; padding: 0; display: flex; flex-direction: column; }
+.gc-migrate__step {
+  position: relative; display: flex; gap: 0.875rem; padding-bottom: 1.25rem;
+  /* the line joining the step numbers */
+  &:not(:last-child)::before {
+    content: ''; position: absolute; left: 0.8125rem; top: 1.875rem; bottom: 0.25rem; width: 1px; background: var(--as-border-strong);
+  }
+}
+.gc-migrate__num {
+  display: inline-grid; place-items: center; flex: 0 0 auto; width: 1.625rem; height: 1.625rem; border-radius: 999px;
+  border: 1px solid var(--as-border-strong); background: var(--as-bg-surface); color: var(--as-text-primary);
+  font-size: 0.75rem; font-weight: 600; font-variant-numeric: tabular-nums;
+}
+.gc-migrate__body {
+  flex: 1; min-width: 0; display: flex; flex-direction: column; gap: 0.5rem;
+  p { margin: 0; color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.5; }
+  p code { font-family: var(--gc-mono); font-size: 0.75rem; }
+}
+.gc-migrate__title { margin: 0.1875rem 0 0; font-size: 0.875rem; font-weight: 600; color: var(--as-text-primary); }
+.gc-migrate__note {
+  display: flex; flex-direction: column; gap: 0.5rem; margin: 0.25rem 0 1rem; padding: 0.875rem 1rem;
+  border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.5;
+  strong { color: var(--as-text-primary); }
+}
+.gc-migrate__caveats { margin: 0; padding-left: 1.125rem; color: var(--as-text-secondary); font-size: 0.8125rem; display: flex; flex-direction: column; gap: 0.25rem;
+  li code { font-family: var(--gc-mono); font-size: 0.75rem; }
+}
+.gc-migrate .gc-fineprint { display: flex; align-items: center; gap: 0.375rem; flex-wrap: wrap; margin: 0; }
+
+@media (max-width: 860px) {
+  .gc-migrate__whys, .gc-migrate__inputs { grid-template-columns: minmax(0, 1fr); }
+}
+@media (max-width: 640px) {
+  .gc-exposure { flex-wrap: wrap; align-items: flex-start; }
+  .gc-exposure__text { flex-basis: calc(100% - 2.75rem); }
+  .gc-exposure__actions { width: 100%; justify-content: space-between; padding-left: 2.625rem; }
+  .gc-migrate__step { gap: 0.625rem; }
+}

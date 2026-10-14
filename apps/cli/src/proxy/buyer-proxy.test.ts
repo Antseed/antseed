@@ -1705,6 +1705,40 @@ test('model-only routing fails over to the next peer after a 401 or 403', async 
   }
 })
 
+test('model-only routing moves past a seller whose cached catalog still lists a model it stopped serving', async () => {
+  const stale = makePeer('a', ['openai'])
+  stale.reputationScore = 95
+  stale.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-5': ['openai-chat-completions'] } },
+  }
+  const serving = makePeer('b', ['openai'])
+  serving.reputationScore = 80
+  serving.providerServiceApiProtocols = {
+    openai: { services: { 'gpt-5': ['openai-chat-completions'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([stale, serving], [stale, serving], permissiveRouter())
+  ;(proxy as any)._refreshPeersNow = async () => {}
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    const notServed = peer.peerId === stale.peerId
+    return {
+      requestId: request.requestId,
+      statusCode: notServed ? 400 : 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify(notServed
+        ? { error: { message: 'Service "gpt-5" is not served by this peer.', type: 'invalid_request_error', code: 'model_not_found' } }
+        : { peerId: peer.peerId })),
+    }
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'gpt-5', messages: [] } }))
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [stale.peerId, serving.peerId])
+  assert.equal(JSON.parse(res.body).peerId, serving.peerId)
+})
+
 test('pinned proxy request rewrites a canonical alias to the advertised service id', async () => {
   const pinnedPeer = makePeer('a', ['openai'])
   pinnedPeer.providerServiceApiProtocols = {
@@ -4015,6 +4049,66 @@ test('getSweepReceipt returns cached relayer receipts case-insensitively', () =>
   assert.equal(proxy.getSweepReceipt(nonce), receipt)
   assert.equal(proxy.getSweepReceipt(nonce.toLowerCase()), receipt)
   assert.equal(proxy.getSweepReceipt('0x' + '00'.repeat(32)), null)
+})
+
+// Issue #1104: a client's own provider credentials must never reach a seller.
+// Sellers authenticate their upstream with their own keys; the buyer pays
+// on-chain. A malicious seller would otherwise read the raw key off the wire.
+const CLIENT_CREDENTIAL_HEADERS: Record<string, string> = {
+  authorization: 'Bearer sk-real',
+  'proxy-authorization': 'Basic cHJveHk6c2VjcmV0',
+  'x-api-key': 'sk-ant-real',
+  'x-goog-api-key': 'AIza-real',
+  'api-key': 'azure-real',
+  cookie: 'session=real',
+}
+
+test('buyer proxy does not forward client credential headers to the seller (buffered)', async () => {
+  const peer = makePeer('e', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let seen: Record<string, string> | null = null
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; headers: Record<string, string> }) => {
+    seen = request.headers
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: {
+      ...CLIENT_CREDENTIAL_HEADERS,
+      'x-antseed-pin-peer': peer.peerId,
+      'anthropic-version': '2023-06-01',
+      'x-antseed-spending-auth': 'signed-auth-payload',
+    },
+  }))
+  assert.equal(res.statusCode, 200)
+  assert.ok(seen, 'seller received a request')
+  const leaked = Object.keys(CLIENT_CREDENTIAL_HEADERS).filter((name) => seen![name] !== undefined)
+  assert.deepEqual(leaked, [], `credential headers reached the seller: ${leaked.join(', ')}`)
+  // Non-credential client headers still pass through.
+  assert.equal(seen!['anthropic-version'], '2023-06-01')
+  assert.equal(seen!['content-type'], 'application/json')
+  // AntSeed's own payment-auth header is not a client credential.
+  assert.equal(seen!['x-antseed-spending-auth'], 'signed-auth-payload')
+})
+
+test('buyer proxy does not forward client credential headers to the seller (streaming)', async () => {
+  const peer = makePeer('f', ['openai'])
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  let seen: Record<string, string> | null = null
+  ;(proxy as any)._node.sendRequestStream = async (
+    _peer: PeerInfo,
+    request: { requestId: string; headers: Record<string, string> },
+  ) => {
+    seen = request.headers
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+  }
+  ;(proxy as any)._node.sendRequest = (proxy as any)._node.sendRequestStream
+  await invokeProxy(proxy, makeProxyRequest({
+    headers: { ...CLIENT_CREDENTIAL_HEADERS, accept: 'text/event-stream', 'x-antseed-pin-peer': peer.peerId },
+    body: { model: 'gpt-4o', stream: true, messages: [] },
+  }))
+  assert.ok(seen, 'seller received a request')
+  const leaked = Object.keys(CLIENT_CREDENTIAL_HEADERS).filter((name) => seen![name] !== undefined)
+  assert.deepEqual(leaked, [], `credential headers reached the seller: ${leaked.join(', ')}`)
 })
 
 test('switching a chat route while a request is in flight is not reverted when that request completes', async () => {

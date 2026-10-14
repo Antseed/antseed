@@ -2,6 +2,7 @@ import assert from 'node:assert/strict';
 import test from 'node:test';
 import { createDefaultConfig } from './defaults.js';
 import {
+  buyerSettingOverrides,
   resolveEffectiveBuyerConfig,
   resolveEffectiveRoleConfig,
   resolveEffectiveSellerConfig,
@@ -133,4 +134,16 @@ test('effective config resolution does not mutate loaded config', () => {
   assert.equal(effective.buyer.maxPricing.defaults.inputUsdPerMillion, 123);
   assert.equal(effective.seller.providers.openai?.defaults?.outputUsdPerMillion, 44);
   assert.deepEqual(config, original);
+});
+
+test('buyerSettingOverrides names the settings env and flags take over', () => {
+  assert.deepEqual(buyerSettingOverrides({ env: {} }), []);
+  assert.deepEqual(
+    buyerSettingOverrides({
+      env: { ANTSEED_BUYER_MAX_INPUT_USD_PER_MILLION: '3', ANTSEED_BASE_RPC_URL: 'https://rpc.example', ANTSEED_BUYER_MAX_STREAM_DURATION_MS: '5' },
+      buyerOverrides: { proxyPort: 9000, metadataFetchTimeoutMs: 500 },
+      verifierFlags: true,
+    }).sort(),
+    ['maxPricing.inputUsdPerMillion', 'network.maxStreamDurationMs', 'network.metadataFetchTimeoutMs', 'payments.rpcUrl', 'proxyPort', 'verifier'],
+  );
 });

@@ -1,20 +1,20 @@
 ---
-sidebar_position: 2
 slug: /discovery
-title: Peer Discovery
+title: Peer discovery
 sidebar_label: Discovery
+description: How sellers announce themselves on the DHT and how buyers fetch and validate signed seller metadata.
 hide_title: true
 ---
 
-# Peer Discovery
+# Peer discovery
 
-The discovery protocol uses a DHT network (built on BEP 5) as a decentralized directory of seller nodes, combined with an HTTP metadata endpoint for retrieving provider details and Skills. All nodes bootstrap through dedicated Antseed infrastructure.
+Discovery uses a DHT (built on BEP 5) as a decentralized directory of seller nodes, plus an HTTP metadata endpoint on each seller that returns its signed service catalog, prices, and capabilities. Nodes bootstrap through Antseed-run DHT bootstrap nodes; after that, discovery is peer to peer.
 
-## DHT Topic Hashing
+## DHT topic hashing
 
 Sellers announce multiple topic types. Each topic is SHA1-hashed for DHT lookup.
 
-| Topic Type | Plain Topic String | Key Normalization |
+| Topic type | Plain topic string | Key normalization |
 |---|---|---|
 | Wildcard | `antseed:*` | Fixed topic; also supports older buyers |
 | Subnet | `antseed:subnet:{index}` | First byte of normalized peer ID modulo 16 |
@@ -42,14 +42,14 @@ A known peer can be resolved directly through `antseed:peer:{peerId}`.
 Capability-specific lookup is also available separately. Neither requires
 reintroducing per-model announcements.
 
-## Bootstrap Nodes
+## Bootstrap nodes
 
 | Host | Port |
 |---|---|
 | `dht1.antseed.com` | 6881 |
 | `dht2.antseed.com` | 6881 |
 
-## DHT Configuration
+## DHT configuration
 
 | Parameter | Value |
 |---|---|
@@ -58,18 +58,17 @@ reintroducing per-model announcements.
 | Operation timeout | 25 seconds |
 | Subnet count | 16 |
 
-## Metadata Endpoint
+## Metadata endpoint
 
-Each seller runs an HTTP server exposing `GET /metadata` which returns JSON-serialized `PeerMetadata` with pricing, capacity, and optional metadata tags/protocol hints.  
-By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataPortOffset = 0`).
+Each seller runs an HTTP server exposing `GET /metadata` which returns JSON-serialized `PeerMetadata` with pricing, capacity, and optional tags and protocol hints. By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataPortOffset = 0`).
 
 ## PeerMetadata
 
 ```json title="metadata structure"
 {
-  "peerId": "a1b2c3d4...40 hex chars (EVM address)",
+  "peerId": "<peerId>",
   "version": 12,
-  "displayName": "Acme Inference - us-east-1",
+  "displayName": "Example Inference",
   "publicAddress": "peer.example.com:6882",
   "providers": [{
     "provider": "openai",
@@ -105,7 +104,7 @@ By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataP
   "region": "us-east",
   "timestamp": 1708272000000,
   "capabilities": ["verification.response-auth.v1"],
-  "sellerContract": "1f228613116e2d08014dfdcc198377c8dedf18c9",
+  "sellerContract": "<seller contract address>",
   "verifications": {
     "domains": [
       { "domain": "provider.example.com", "methods": ["dns-txt"] }
@@ -114,7 +113,7 @@ By default, metadata is fetched from `http://{host}:{port}/metadata` (`metadataP
       { "username": "example-org", "repository": "antseed-verification" }
     ]
   },
-  "signature": "eip191...130 hex chars"
+  "signature": "<EIP-191 signature, 130 hex chars>"
 }
 ```
 
@@ -124,9 +123,9 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
 
 ```json
 {
-  "serviceApiProtocols": { "flux.1-schnell": ["openai-images"] },
+  "serviceApiProtocols": { "qwen-image": ["openai-images"] },
   "serviceUnitBillingModels": {
-    "flux.1-schnell": {
+    "qwen-image": {
       "openai-images": {
         "version": 1,
         "components": [
@@ -136,7 +135,7 @@ Metadata v11 added `serviceUnitBillingModels`; v12 adds `serviceCapabilities` an
     }
   },
   "serviceCapabilities": {
-    "flux.1-schnell": {
+    "qwen-image": {
       "inputs": ["text", "image"],
       "outputs": ["image"],
       "supportedParameters": ["background", "output_format", "quality", "size"]
@@ -149,9 +148,7 @@ Capability fields are optional; absence means unknown. `inputs` and `outputs` de
 
 Capabilities are hints, not enforced contracts. The buyer proxy performs one advisory check: when a peer announces `supportedParameters` for the routed service and the request body carries parameters outside that list, the proxy logs a warning and forwards the request unchanged. The upstream provider remains the authority on which parameters it accepts.
 
-:::warning Metadata version compatibility
-Buyers reject metadata versions newer than they understand. A v10/v11 buyer therefore drops a v12 seller, while a v12 buyer continues to accept v10 and v11 sellers. Upgrade buyers before sellers using the [metadata v12 migration guide](/docs/guides/metadata-v12-upgrade).
-:::
+Buyers accept metadata versions 10 through 12 and reject versions newer than they understand. The current version is 12.
 
 `publicAddress` is optional. When present, buyers should prefer it over the raw host learned from the DHT announcement. This is intended for deployments where DHT traffic exits from one IP but buyers must connect to another address, such as a Kubernetes load balancer.
 
@@ -159,77 +156,10 @@ Buyers reject metadata versions newer than they understand. A v10/v11 buyer ther
 
 `verifications` is optional. It carries external ownership claims that are included in the signed metadata. Domain and GitHub proofs bind to `peerId`, not to `sellerContract`, because the peer identity is the key that signs discovery metadata and operates the node.
 
-## Domain and GitHub Verification Claims
+## Domain and GitHub verification claims
 
-Domain verification supports two proof transports:
+The optional `verifications` field carries domain claims (proved by a DNS TXT record at `_antseed.<domain>` or an HTTPS well-known file at `/.well-known/antseed.json`) and GitHub claims (proved by an `antseed.json` file in a public repository). Proofs bind to `peerId`, not `sellerContract`, and verifiers reject redirected proof URLs. For the exact record and file formats and how to publish them, see [Verified identity](/docs/provide/verified-identity).
 
-- DNS TXT at `_antseed.<domain>` with value `antseed-peer=<peer-id-without-0x>`
-- HTTPS well-known JSON at `https://<domain>/.well-known/antseed.json`
+## Matching and ranking
 
-A DNS-backed claim looks like:
-
-```json
-{
-  "domain": "provider.example.com",
-  "methods": ["dns-txt"]
-}
-```
-
-The matching DNS record is:
-
-```text
-_antseed.provider.example.com TXT "antseed-peer=a1b2c3d4...40hex"
-```
-
-An HTTPS well-known proof uses this JSON shape:
-
-```json
-{
-  "type": "antseed-domain-verification",
-  "peerId": "a1b2c3d4...40hex",
-  "domain": "provider.example.com"
-}
-```
-
-GitHub verification fetches a public file from:
-
-```text
-https://raw.githubusercontent.com/<username>/<repository>/HEAD/antseed.json
-```
-
-The proof file shape is:
-
-```json
-{
-  "type": "antseed-github-verification",
-  "peerId": "a1b2c3d4...40hex",
-  "username": "example-org"
-}
-```
-
-The repository name is part of the metadata claim, not the proof file. If no repository is provided, verifiers use the profile repository named after the username.
-
-Verifiers reject redirected proof URLs. Domain and GitHub proofs must be served directly from the claimed domain or GitHub account path.
-
-## Peer Scoring
-
-The weights below belong to the generic router-core scorer. Model-only routing
-in the buyer proxy and desktop uses the shared Price + Trust ranking described
-in [Reputation](./reputation.md#trust-score).
-
-| Dimension | Weight | Description |
-|---|---|---|
-| Price | 0.30 | Lower price scores higher (inverted min-max) |
-| Latency | 0.25 | Lower latency scores higher (EMA-based) |
-| Capacity | 0.20 | More available capacity scores higher |
-| Reputation | 0.10 | Higher reputation scores higher (0-100) |
-| Freshness | 0.10 | Recently seen peers score higher |
-| Reliability | 0.05 | Lower failure rate and streak scores higher |
-
-The generic scorer normalizes its factors across eligible candidates. The
-lower-level `minPeerReputation` filter defaults to `0`, but model-only routing
-also applies `buyer.routingPreferences.minTrustScore`, which defaults to `60`.
-Setting the first filter to zero does not disable the second. Peers in a failure
-cooldown are also excluded.
-
-Buyers can filter by capability, Skill, minimum reputation, and price ceiling.
+Buyers match the requested service against each seller's catalog locally, then filter and rank eligible sellers. The trust score is described in [Reputation](/docs/reputation). Routing weights, defaults, and filters are documented only in the [router plugin API](/docs/router-api).

@@ -259,6 +259,27 @@ function validateVerifications(
   }
 }
 
+function validateBuyerVerifier(
+  path: string,
+  verifier: AntseedConfig['buyer']['verifier'],
+  errors: string[],
+): void {
+  if (verifier === undefined) return;
+  if (!verifier || typeof verifier !== 'object' || Array.isArray(verifier)) {
+    errors.push(`${path} must be an object when provided`);
+    return;
+  }
+  for (const key of ['enabled', 'require'] as const) {
+    if (verifier[key] !== undefined && typeof verifier[key] !== 'boolean') errors.push(`${path}.${key} must be a boolean`);
+  }
+  if (verifier.prefer !== undefined && (!Array.isArray(verifier.prefer) || verifier.prefer.some((id) => typeof id !== 'string' || id.trim() === ''))) {
+    errors.push(`${path}.prefer must be a list of verifier ids`);
+  }
+  if (verifier.enabled === false && (verifier.require || (verifier.prefer?.length ?? 0) > 0)) {
+    errors.push(`${path}.enabled cannot be false while require or prefer is set`);
+  }
+}
+
 function validateBuyerVerification(
   path: string,
   verification: AntseedConfig['buyer']['verification'],
@@ -338,6 +359,7 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   validateBuyerVerification('buyer.verification', config.buyer.verification, errors);
+  validateBuyerVerifier('buyer.verifier', config.buyer.verifier, errors);
 
   if (!Number.isInteger(config.seller.maxConcurrentBuyers) || config.seller.maxConcurrentBuyers < 1) {
     errors.push('seller.maxConcurrentBuyers must be an integer >= 1');

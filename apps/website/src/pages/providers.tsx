@@ -21,6 +21,10 @@ import {
   FlowConnectionIcon,
 } from '@hugeicons/core-free-icons';
 
+/* ── Foundation Provider Staking Program ─────────────────────── */
+const STAKING_PROGRAM_FORM_URL =
+  'https://docs.google.com/forms/d/e/1FAIpQLSdeb4e5bx-aJxVzqb41HrJmWFYNOitszgIM7sZ9fUx-nVbCbQ/viewform';
+
 /* ── FAQ ─────────────────────────────────────────────────────── */
 const PROVIDER_FAQ = [
   {
@@ -187,7 +191,7 @@ export default function Providers(): JSX.Element {
         }
         lead="Set your price. Announce to the network. Receive USDC for settled deliveries - whether you run a model, a routing service, or a specialized agent."
       >
-        <Button to="/docs/guides/become-a-provider" arrow>Read the provider guide</Button>
+        <Button to="/docs/provide" arrow>Read the provider guide</Button>
         <Button to="/docs/install" variant="ghost">Install the CLI</Button>
       </PageHero>
 
@@ -283,7 +287,7 @@ export default function Providers(): JSX.Element {
               Your backend URL, API key, and routing logic are intended to remain under your control.
               The network only sees the service name, price, and categories; you are responsible for
               securing your node and credentials.{' '}
-              <LinkArrow to="/docs/config">Read the config reference</LinkArrow>
+              <LinkArrow to="/docs/buyer-config">Read the config reference</LinkArrow>
             </p>
           </Reveal>
         </div>
@@ -333,17 +337,29 @@ export default function Providers(): JSX.Element {
         <Reveal>
           <SectionHeader
             title="Build reputation that compounds."
-            lead="Every delivery is recorded onchain. Your reputation belongs to your wallet. No platform can revoke it."
+            lead="Your reputation lives onchain. No platform can revoke it."
           />
         </Reveal>
         <Reveal delay={80}>
           <p className={styles.repNote}>
-            Every settled delivery is recorded onchain against your wallet: success rate, latency,
-            token accuracy from signed receipts, and uptime across the windows you announce. Buyers
-            and routers read those stats when they rank you, so a strong track record brings more
-            traffic and can command a higher price.{' '}
+            Success rate, latency, token accuracy, and uptime are tracked against your wallet.
+            Buyers and routers rank you on them, so a strong record brings more traffic and higher
+            prices.{' '}
             <LinkArrow to="/docs/reputation">How trust is computed</LinkArrow>
           </p>
+        </Reveal>
+
+        <Reveal className={styles.stakingCallout} delay={120}>
+          <div className={styles.stakingBody}>
+            <p className={styles.stakingKicker}>Foundation Provider Staking Program</p>
+            <h3 className={styles.stakingTitle}>Get Foundation stake behind you.</h3>
+            <p className={styles.stakingText}>
+              The Foundation may stake ANTS behind high-performing, active providers to boost their
+              reputation. Milestone-based; KYB/KYC required. TEE and free-model providers get
+              priority.
+            </p>
+          </div>
+          <Button href={STAKING_PROGRAM_FORM_URL} arrow>Apply to the program</Button>
         </Reveal>
       </Section>
 
@@ -387,9 +403,12 @@ export default function Providers(): JSX.Element {
             <a href="/docs/lightpaper">Read the lightpaper</a>
             <a href="/docs/payments">Read the payment protocol</a>
             <a href="/docs/faq">Read the FAQ</a>
+            <a href={STAKING_PROGRAM_FORM_URL} target="_blank" rel="noopener noreferrer">
+              Apply for Foundation staking
+            </a>
           </>
         }>
-        <Button to="/docs/guides/become-a-provider" variant="white" size="lg" arrow>Read the provider guide</Button>
+        <Button to="/docs/provide" variant="white" size="lg" arrow>Read the provider guide</Button>
       </FinalCta>
     </Layout>
   );

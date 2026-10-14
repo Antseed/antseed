@@ -9,6 +9,7 @@
  */
 import { app, BrowserWindow, shell } from 'electron';
 import { createServer as createPaymentsServer } from '@antseed/payments';
+import { DEFAULT_ANTSEED_PAY_URL, type AntseedPayIntegration } from '@antseed/payments/card-link';
 import { isDev } from '../app-context.js';
 import { LOCALHOST, LOCALHOST_URL } from '../constants.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -116,10 +117,11 @@ export function openPaymentsPopup(url: string): void {
 // delivered on Base to the buyer hot wallet and credited into AntseedDeposits
 // via the P2P deposit relay — same path as a direct QR transfer.
 //
-// Providers come from config (payments.card.providers) as HTTPS URL templates
-// with {address} and optional {amount} placeholders. The default is Antseed's
-// hosted card page, which handles the Coinbase Onramp session server-side so
-// the CDP secret key never ships inside the app.
+// Providers come from config (payments.card.providers) as HTTPS pages or
+// server-side checkout endpoints. URL templates may use {address} and
+// optional {amount} placeholders. The default is Antseed's hosted card page,
+// which handles the onramp session server-side so provider credentials never
+// ship inside the app.
 export type CardProvider = { id: string; label: string; url: string };
 
 // The hosted pay page. Dev builds target the locally-run checkout (the
@@ -127,17 +129,22 @@ export type CardProvider = { id: string; label: string; url: string };
 // before a deploy; ANTSEED_PAY_URL overrides the target in any build.
 const ANTSEED_PAY_URL =
   process.env['ANTSEED_PAY_URL']?.trim()
-  || (isDev ? 'http://localhost:3120/' : 'https://antseed-pay.com/');
+  || (isDev ? 'http://localhost:3120/' : DEFAULT_ANTSEED_PAY_URL);
 
 export const DEFAULT_CARD_PROVIDERS: CardProvider[] = [
   { id: 'meridian', label: 'Meridian', url: 'https://antseed.mrdn.finance/?buyer={address}' },
   { id: 'antseed-pay', label: 'Antseed Pay', url: ANTSEED_PAY_URL },
   // Same page, opened on its Stripe integration (US only).
   { id: 'antseed-pay-stripe', label: 'Antseed Pay (Stripe)', url: ANTSEED_PAY_URL },
+  {
+    id: 'peer-pay',
+    label: 'Peer Pay',
+    url: 'https://antseed-checkout.pay.zkp2p.xyz/api/checkout',
+  },
 ];
 
 /** Which pay-page integration a provider id opens; null for other providers. */
-export function payPageProvider(id: string): 'crossmint' | 'stripe' | null {
+export function payPageProvider(id: string): AntseedPayIntegration | null {
   if (id === 'antseed-pay') return 'crossmint';
   if (id === 'antseed-pay-stripe') return 'stripe';
   return null;

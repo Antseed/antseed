@@ -9,7 +9,7 @@ import {
   DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS,
   DEFAULT_BUYER_REQUEST_TIMEOUT_MS,
 } from './defaults.js';
-import { loadConfig } from './loader.js';
+import { configFromObject, loadConfig } from './loader.js';
 import { createDefaultConfig } from './defaults.js';
 import { deriveDisplayNameFromPeerId, shouldDeriveDisplayName } from './identity-display-name.js';
 
@@ -1060,4 +1060,11 @@ test('loadConfig preserves seller agentDir setting', async () => {
       assert.equal(config.seller.agentDir, '/etc/antseed/my-agent');
     }
   );
+});
+
+test('buyer.verifier is read and validated like the rest of the config', () => {
+  assert.deepEqual(configFromObject({ buyer: { verifier: { require: true, prefer: ['antseed-verifier'] } } }).buyer.verifier, { require: true, prefer: ['antseed-verifier'] });
+  assert.equal(configFromObject({}).buyer.verifier, undefined);
+  assert.throws(() => configFromObject({ buyer: { verifier: { enabled: false, require: true } } }), /buyer\.verifier\.enabled cannot be false/);
+  assert.throws(() => configFromObject({ buyer: { verifier: { prefer: 'x' } } }), /buyer\.verifier\.prefer/);
 });

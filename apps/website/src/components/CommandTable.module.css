@@ -1,0 +1,59 @@
+/* Copy button in the command column of a CommandTable row.
+   Hidden until the row is hovered/focused; always shown on touch screens. */
+
+.cellInner {
+  display: flex;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.command {
+  flex: 1;
+  min-width: 0;
+}
+
+.copy {
+  flex: none;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin: -3px -6px -3px 0;
+  padding: 0;
+  color: var(--as-text-3);
+  background: transparent;
+  border: 1px solid transparent;
+  border-radius: 7px;
+  cursor: pointer;
+  opacity: 0;
+  transition: opacity 0.15s ease, color 0.15s ease, background 0.15s ease, border-color 0.15s ease;
+}
+
+tr:hover .copy,
+.copy:focus-visible,
+.copied {
+  opacity: 1;
+}
+
+.copy:hover {
+  color: var(--as-heading);
+  background: var(--as-white);
+  border-color: var(--as-line);
+}
+
+.copy:focus-visible {
+  outline: 2px solid var(--as-green);
+  outline-offset: 1px;
+}
+
+.copied,
+.copied:hover {
+  color: var(--as-green-deep);
+}
+
+@media (hover: none) {
+  .copy {
+    opacity: 1;
+  }
+}

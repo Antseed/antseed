@@ -81,6 +81,7 @@ export function VprHomeView({ onSelectView }: Props) {
     floatOpen: state.vprFloatOpen,
     creditsSpendable: state.creditsSpendableUsdc,
     creditsTotalOwned: state.creditsTotalOwnedUsdc,
+    creditsBalanceKnown: state.creditsBalanceKnown,
     creditsChannels: state.creditsChannels,
     reminderOffer: state.reminderOffer,
     networkAlert: state.networkAlert,
@@ -358,10 +359,12 @@ export function VprHomeView({ onSelectView }: Props) {
   // $5 left it's just noise. Keyed off spendable, not the unreserved slice: an
   // open session holds funds that still buy requests.
   const creditsSpendableNum = Number(snap.creditsSpendable);
+  // Nothing to nudge about until the balance has actually been read.
   const showAddBalance = !addBalanceDismissed
+    && snap.creditsBalanceKnown
     && !(Number.isFinite(creditsSpendableNum) && creditsSpendableNum > 5);
   const hasDeposited = Number(snap.creditsTotalOwned) > 0 || snap.creditsChannels.length > 0;
-  const reminderOffer = hasDeposited ? null : snap.reminderOffer;
+  const reminderOffer = hasDeposited || !snap.creditsBalanceKnown ? null : snap.reminderOffer;
 
   function submitDraft(): void {
     const text = draft.trim();

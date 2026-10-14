@@ -91,7 +91,7 @@ export function readDefaultRoutedModel(dataDir: string): string | null {
 
 export function noDefaultRouteWarning(buyerPort: number): string {
   return 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
-    + 'Pick a model in the AntSeed desktop app, or set one on the running buyer: '
+    + 'Pick a model in the Antseed desktop app, or set one on the running buyer: '
     + `curl -X POST http://localhost:${buyerPort}/_antseed/route -H 'content-type: application/json' -d '{"model":"<peerId>@<service>"}'`
 }
 
@@ -111,7 +111,7 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
   const warnings: string[] = []
   if (!readDefaultRoutedModel(ctx.dataDir)) warnings.push(noDefaultRouteWarning(port))
   if (profile.configPatch.format === 'claude-desktop') {
-    warnings.push('Claude Desktop is routed through the AntSeed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
+    warnings.push('Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
   }
   try {
     writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
@@ -208,13 +208,13 @@ function emit(report: AppsActionReport, json: boolean): void {
   }
   const label = report.displayName ?? report.app
   if (report.action === 'connect') {
-    console.log(chalk.green(`${label}: connected to the AntSeed buyer on port ${report.buyerPort}`))
+    console.log(chalk.green(`${label}: connected to the Antseed buyer on port ${report.buyerPort}`))
     console.log(chalk.dim(`Config: ${report.configPath}`))
     console.log(chalk.dim('The app uses the model "antseed", which the buyer resolves to its current default route. Restart the app if it is running.'))
   } else if (report.changed) {
-    console.log(chalk.green(`${label}: disconnected; AntSeed's settings were removed from ${report.configPath}`))
+    console.log(chalk.green(`${label}: disconnected; Antseed's settings were removed from ${report.configPath}`))
   } else {
-    console.log(chalk.dim(`${label}: nothing to disconnect (no AntSeed settings found)`))
+    console.log(chalk.dim(`${label}: nothing to disconnect (no Antseed settings found)`))
   }
   for (const warning of report.warnings ?? []) console.log(chalk.yellow(warning))
 }
@@ -222,7 +222,7 @@ function emit(report: AppsActionReport, json: boolean): void {
 export function registerAppsCommands(program: Command): void {
   const apps = program
     .command('apps')
-    .description('Connect local AI tools (Codex, Claude Code, OpenCode, …) to the AntSeed buyer by editing their config')
+    .description('Connect local AI tools (Codex, Claude Code, OpenCode, …) to the Antseed buyer by editing their config')
     .option('--json', 'print machine-readable JSON')
     .action((options: { json?: boolean }) => {
       runStatus(apps, options.json === true)
@@ -236,7 +236,7 @@ export function registerAppsCommands(program: Command): void {
     })
 
   apps.command('connect')
-    .description('Point an app\'s config at the AntSeed buyer proxy (backs up the original first)')
+    .description('Point an app\'s config at the Antseed buyer proxy (backs up the original first)')
     .argument('<app>', 'app name, as listed by `antseed apps`')
     .option('--port <buyerPort>', 'buyer proxy port (default: running buyer / buyer.proxyPort / 8377)', parseBuyerPort)
     .option('--json', 'print machine-readable JSON')
@@ -246,7 +246,7 @@ export function registerAppsCommands(program: Command): void {
     })
 
   apps.command('disconnect')
-    .description('Remove only what AntSeed added to an app\'s config, restoring replaced values')
+    .description('Remove only what Antseed added to an app\'s config, restoring replaced values')
     .argument('<app>', 'app name, as listed by `antseed apps`')
     .option('--json', 'print machine-readable JSON')
     .action((app: string, options: { json?: boolean }, command: Command) => {

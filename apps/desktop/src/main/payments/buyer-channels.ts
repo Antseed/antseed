@@ -154,10 +154,13 @@ export async function requestCooperativeChannelClose(peerId: string): Promise<Cl
   return requestCooperativeChannelCloseAtPort(port, peerId);
 }
 
+const BUYER_PROXY_TIMEOUT_MS = 10_000;
+
 export async function fetchBuyerProxyJson(pathname: string): Promise<Record<string, unknown> | null> {
   const port = await resolveBuyerProxyPort();
   try {
-    const response = await fetch(`${LOCALHOST_URL}:${port}${pathname}`);
+    // A proxy that accepts but never answers (mid-restart) must not hang callers.
+    const response = await fetch(`${LOCALHOST_URL}:${port}${pathname}`, { signal: AbortSignal.timeout(BUYER_PROXY_TIMEOUT_MS) });
     if (!response.ok) return null;
     const body = await response.json();
     return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
@@ -331,10 +334,25 @@ export function notePendingSpend(channels: readonly DesktopPaymentChannelSummary
  * Signed-but-unsettled spend across the buyer's open channels. Falls back to
  * the last known value when the buyer proxy is unreachable — dropping to 0
  * there would silently inflate the displayed balance.
+ *
+ * `maxWaitMs` bounds how long a caller waits: the buyer proxy may still be
+ * starting (app launch, upgrade) and every open channel is read on-chain, so
+ * past the bound the last known value is returned and the read finishes in
+ * the background for the next poll.
  */
-export async function getPendingSpendUsdc(): Promise<bigint> {
+export async function getPendingSpendUsdc(maxWaitMs?: number): Promise<bigint> {
   if (Date.now() - cachedPendingSpendAt < PENDING_SPEND_TTL_MS) return cachedPendingSpend;
-  const channels = await loadBuyerChannels(false).catch(() => null);
-  if (!channels) return cachedPendingSpend;
-  return notePendingSpend(channels);
+  const read = loadBuyerChannels(false)
+    .catch(() => null)
+    .then((channels) => (channels ? notePendingSpend(channels) : cachedPendingSpend));
+  if (maxWaitMs === undefined) return read;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<bigint>((resolve) => {
+    timer = setTimeout(() => resolve(cachedPendingSpend), maxWaitMs);
+  });
+  try {
+    return await Promise.race([read, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

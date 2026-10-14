@@ -1,7 +1,7 @@
 {
   "name": "@antseed/desktop",
   "productName": "Antseed AI VPN",
-  "version": "0.2.57",
+  "version": "0.2.60",
   "private": true,
   "description": "Desktop app for Antseed",
   "author": "Antseed <hello@antseed.com>",
@@ -60,6 +60,7 @@
   },
   "devDependencies": {
     "@antseed/ui": "workspace:*",
+    "@antseed/wallet-config": "workspace:*",
     "@electron/notarize": "^3.1.1",
     "@hugeicons/core-free-icons": "^4.0.0",
     "@hugeicons/react": "^1.1.5",

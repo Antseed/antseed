@@ -1,7 +1,7 @@
-import {themes as prismThemes} from 'prism-react-renderer';
 import type {Config, Plugin, PluginConfig, PluginModule} from '@docusaurus/types';
 import type * as Preset from '@docusaurus/preset-classic';
 import integrationsPagesPlugin from './plugins/integrations-pages';
+import prismTheme from './src/lib/prismTheme';
 import {integrations as integrationEntries} from './src/integrations/integrations';
 import desktopPkg from '../desktop/package.json';
 
@@ -113,6 +113,28 @@ const config: Config = {
       {
         redirects: [
           {from: '/lightpaper', to: '/docs/lightpaper'},
+          // Docs restructure: the apps, CLI and older posts link to these.
+          {from: '/docs/guides/gateway-console', to: '/docs/gateway'},
+          {from: '/docs/guides/gateway-server', to: '/docs/gateway/server'},
+          {from: '/docs/guides/gateway-api-keys', to: '/docs/gateway/api'},
+          {from: '/docs/guides/vpr', to: '/docs/desktop'},
+          {from: '/docs/guides/verify-tee', to: '/docs/verify-tee'},
+          {from: '/docs/guides/using-the-api', to: '/docs/api'},
+          {from: '/docs/pricing', to: '/docs/api/routing'},
+          {from: '/docs/guides/agents', to: '/docs/agents'},
+          {from: '/docs/guides/public-tunnels', to: '/docs/tunnels'},
+          {from: '/docs/config', to: '/docs/buyer-config'},
+          {from: '/docs/guides/become-a-provider', to: '/docs/provide'},
+          {from: '/docs/guides/tee-provider', to: '/docs/provide/tee'},
+          {from: '/docs/guides/payments', to: '/docs/provide/payments'},
+          {from: '/docs/guides/staking', to: '/docs/provide/staking'},
+          {from: '/docs/guides/metrics', to: '/docs/provide/metrics'},
+          {from: '/docs/guides/metadata-v12-upgrade', to: '/docs/metadata-v12-upgrade'},
+          {from: '/docs/create-plugin', to: '/docs/provider-api'},
+          {from: '/docs/metering', to: '/docs/payments'},
+          {from: '/docs/protocol/legacy-emissions', to: '/docs/legacy-emissions'},
+          {from: '/docs/protocol/recognized-usage', to: '/docs/recognized-usage'},
+          {from: '/docs/protocol/reward-policies', to: '/docs/reward-policies'},
           // /connect was renamed to /integrations — keep old links working.
           {from: '/connect', to: '/integrations'},
           ...integrationEntries.map((i) => ({
@@ -135,6 +157,10 @@ const config: Config = {
   ],
 
   headTags: [
+    // The General Sans stylesheet comes from api.fontshare.com and its font
+    // files from cdn.fontshare.com: open both connections up front.
+    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://api.fontshare.com'}},
+    {tagName: 'link', attributes: {rel: 'preconnect', href: 'https://cdn.fontshare.com', crossorigin: 'anonymous'}},
     // Second Search Console owner. A site can carry several verification tags,
     // one per Google account, and removing one un-verifies that account — so
     // this is additive, not a replacement for the token in themeConfig.metadata.
@@ -286,31 +312,20 @@ const config: Config = {
           className: 'header-github-link',
         },
         {
-          href: 'https://x.com/antseed',
-          'aria-label': 'X',
-          position: 'right',
-          className: 'header-x-link',
-        },
-        {
-          href: 'https://t.me/antseed',
-          'aria-label': 'Telegram',
-          position: 'right',
-          className: 'header-telegram-link',
-        },
-        {
           // Custom item (src/theme/NavbarItem/DownloadNavbarItem.tsx): links
           // straight to the installer for the visitor's OS/arch, falling back
           // to the releases page when detection fails.
           type: 'custom-download',
-          label: 'Download the AI VPN',
+          label: 'Desktop app',
           position: 'right',
           className: 'header-download-link',
         },
+        {to: '/docs/quickstart', label: 'Set up gateway', position: 'right', className: 'header-gateway-link'},
       ],
     },
     prism: {
-      theme: prismThemes.nightOwl,
-      darkTheme: prismThemes.nightOwl,
+      theme: prismTheme,
+      darkTheme: prismTheme,
       additionalLanguages: ['bash', 'json', 'typescript'],
     },
   } satisfies Preset.ThemeConfig,

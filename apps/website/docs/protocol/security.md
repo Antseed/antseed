@@ -1,7 +1,7 @@
 ---
-sidebar_position: 7
 slug: /security
 title: Security
+description: Identity, key storage, signing roles, risk bounds, and the hard limits that protect buyers and sellers.
 hide_title: true
 ---
 
@@ -24,7 +24,7 @@ as its deposits operator; those roles do not have to share the node key.
 | **Payment authorization** | EIP-712 signatures (ReserveAuth, SpendingAuth) |
 | **PeerId** | EVM address (40 hex chars, no `0x` prefix) |
 
-## Signing Identity vs Funding Wallet
+## Signing identity vs funding wallet
 
 The **signing identity** signs protocol messages and payment authorizations.
 Gasless buyer funding can send USDC to this address first, then use a signed
@@ -40,27 +40,27 @@ The buyer authorizes its initial operator with an EIP-712 signature; the current
 operator controls subsequent operator transfers. Check `getOperator(buyer)`
 rather than assuming the funding wallet has withdrawal authority.
 
-## Key Storage
+## Key storage
 
 | Environment | Protection |
 |---|---|
 | **Desktop app** | Electron `safeStorage` API encrypts the secp256k1 private key at rest using the OS keychain (macOS Keychain, Windows Credential Manager, Linux libsecret). On first launch after upgrade, plaintext `identity.key` is auto-encrypted and the original deleted. |
-| **CLI / Server** | Plaintext `identity.key` in the data directory (`~/.antseed/`). Use `ANTSEED_IDENTITY_HEX` env var with a secrets manager for production deployments. |
+| **CLI / server** | `identity.key` in the data directory (`~/.antseed/` by default), plaintext unless you encrypt it with a passphrase (`ANTSEED_PASSPHRASE`; see [Wallet keys](/docs/gateway/wallet-keys)). On servers you can instead pass the key through `ANTSEED_IDENTITY_HEX` from a secrets manager. |
 
-## Auto vs Manual Approval
+## Auto vs manual approval
 
 Payment signatures can be issued in two modes:
 
-| Mode | Flow | Use Case |
+| Mode | Flow | Use case |
 |---|---|---|
-| **Auto** | Node receives 402 → signs ReserveAuth internally → sends to seller → seller calls `reserve()` | Server/CLI deployments, unattended operation |
-| **Manual** | Node receives 402 → propagates to UI → user reviews and approves → desktop signs with keychain-encrypted key → seller calls `reserve()` | Desktop app, interactive sessions |
+| **Auto** | Node receives 402 → signs ReserveAuth and SpendingAuth internally → sends to seller → seller calls `reserve()` | Gateway, server, and CLI deployments |
+| **Manual** | Node receives 402 → propagates to the application → the application signs and returns the authorization in the `x-antseed-spending-auth` header → seller calls `reserve()` | Applications that want an approval step |
 
 Both modes produce identical on-chain outcomes. The difference is whether the signing step requires user interaction. Each ReserveAuth is scoped to a specific seller, capped by `maxAmount`, and expires at `deadline`.
 
-## Risk Bounds
+## Risk bounds
 
-| Scenario | Signing Identity Exposed | Funding Wallet Exposed | Maximum Loss |
+| Scenario | Signing identity exposed | Funding wallet exposed | Maximum loss |
 |---|---|---|---|
 | **Node compromised** | Yes | Not if its key is kept separately | Authorized deposit spending, node-wallet assets, and any roles held by that key |
 | **Signing key extracted** | Yes | Not if its key is kept separately | Same exposure as the signing identity |
@@ -72,27 +72,27 @@ These roles can use the same address, in which case their risks combine. A
 separate funding wallet is not exposed merely because it previously funded a
 buyer, but shared keys, allowances, and operator permissions must be considered.
 
-## Protocol-Level Controls
+## Protocol-level controls
 
 All communication happens over an untrusted network. Every trust-critical operation is cryptographically verified:
 
-- **secp256k1 peer identity** — every node has a unique keypair; metadata, connection handshakes, and metering receipts are all signed with EIP-191 `personal_sign`
-- **Replay-resistant authentication** — connection envelopes include nonce + timestamp with skew checks
-- **Bounded resource usage** — frame sizes, upload caps, stream durations, and concurrent connections are all hard-limited
-- **On-chain settlement** — EIP-712 signed ReserveAuth and SpendingAuth with per-seller, per-session, time-bounded authorization
+- **secp256k1 peer identity**: every node has a unique keypair; discovery metadata and connection handshakes are signed with EIP-191 `personal_sign`
+- **Replay-resistant authentication**: connection envelopes include nonce + timestamp with a 30-second skew check and a nonce replay guard
+- **Bounded resource usage**: frame sizes, upload caps, stream durations, and concurrent connections are all hard-limited
+- **On-chain settlement**: EIP-712 signed ReserveAuth and SpendingAuth with per-seller, per-session, time-bounded authorization
 
-## Buyer-Seller Flow Controls
+## Buyer-seller flow controls
 
 | Stage | Controls |
 |---|---|
 | **Discovery** | Signed metadata with freshness checks, topic normalization, private IP filtering |
-| **Connection** | EIP-191 signed intro envelopes with nonce replay guard, timestamp skew rejection, per-IP connection cap (10) |
-| **Transport** | Frame type and size validation (64 MiB max), fail-closed on decode errors, request and stream timeouts |
-| **Upload/Stream** | Per-request cap (32 MiB), global pending cap (256 MiB), upload timeout (120s), bounded stream buffers and configurable duration limits |
-| **Metering** | Bilateral EIP-191 signed receipts with running totals, auto-ack enabled by default |
+| **Connection** | EIP-191 signed intro envelopes with nonce replay guard, timestamp skew rejection, per-IP inbound connection cap (64) |
+| **Transport** | Encrypted TCP (X25519 + AES-256-GCM) or DTLS WebRTC when the peer supports it; frame type and size validation (64 MiB max), fail-closed on decode errors, request and stream timeouts |
+| **Upload/Stream** | Per-request cap (64 MiB), global pending cap (256 MiB), upload timeout (120s), bounded stream buffers and configurable duration limits |
+| **Metering** | Seller reports usage per request; the buyer recomputes the cost from the seller's published prices before signing the next cumulative SpendingAuth ([Payments](/docs/payments#how-billing-works)) |
 | **Payment** | 402 gating until ReserveAuth is committed on-chain via `reserve()`, bounded by maxAmount and deadline |
 
-## Default Limits
+## Default limits
 
 Buyer request and stream defaults are defined in `packages/buyer-core` and the
 CLI configuration. They are configurable; upload and connection limits are
@@ -103,18 +103,18 @@ separate transport controls.
 | Buyer request timeout | 5 min |
 | Max stream buffer | 16 MiB |
 | Buyer max stream duration | 30 min |
-| Per-upload cap | 32 MiB |
+| Per-upload cap | 64 MiB |
 | Global pending upload cap | 256 MiB |
 | Upload timeout | 120 s |
 | Node metadata fetch timeout | 1.5 s |
-| Max inbound connections per IP | 10 |
+| Max inbound connections per IP | 64 |
 
-## Best Practices
+## Best practices
 
-1. Keep treasury and operator keys separate from the node where possible. Use `deposit(buyer, amount)` for direct external funding, or the [gasless sweep flow](../guides/payments.md) when funding the node address. Minimize assets left in the hot wallet.
+1. Keep treasury and operator keys separate from the node where possible. Use `deposit(buyer, amount)` for direct external funding, or the gasless sweep flow ([Payments](/docs/payments#gasless-deposit-sweeps)) when funding the node address. Minimize assets left in the hot wallet.
 2. Deposit only what you need for a session. Top up as needed rather than pre-loading large amounts into AntseedDeposits.
-3. Keep `allowPrivateIPs=false` in production.
+3. If you embed the node SDK, keep `allowPrivateIPs` off in production (the SDK default).
 4. Keep signature verification and stale metadata rejection enabled (both on by default).
-5. Encrypted TCP (`transport.tcp-enc.v1`) is used automatically between peers that advertise it; set `requireSecureTransport` to refuse plaintext/unsigned transports once your peers are upgraded.
+5. Encrypted TCP (`transport.tcp-enc.v1`) is used automatically between peers that advertise it. SDK users can set the `requireSecureTransport` node option to refuse plaintext TCP and unsigned SDP.
 6. On servers, use `ANTSEED_IDENTITY_HEX` with a secrets manager instead of storing keys on disk.
 7. Back up your secp256k1 private key — it is the only way to recover your PeerId (EVM address) and on-chain wallet.

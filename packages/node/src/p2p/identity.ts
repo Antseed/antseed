@@ -1,10 +1,20 @@
 import { randomBytes } from "node:crypto";
-import { access, readFile, writeFile, mkdir } from "node:fs/promises";
+import { access, readFile, writeFile, mkdir, rename, rm } from "node:fs/promises";
 import { join } from "node:path";
 import { homedir } from "node:os";
 import { Wallet } from "ethers";
 import { toPeerId, type PeerId } from "../types/peer.js";
 import { hexToBytes, bytesToHex } from "../utils/hex.js";
+import {
+  PASSPHRASE_ENV,
+  PASSPHRASE_FILE_ENV,
+  assertNewIdentityPassphrase,
+  decryptIdentityKey,
+  encryptIdentityKey,
+  identityEnvelopeAddress,
+  isIdentityEnvelope,
+  resolveIdentityPassphrase,
+} from "./identity-envelope.js";
 
 export { hexToBytes, bytesToHex };
 
@@ -28,29 +38,49 @@ export interface IdentityStore {
   save(hexKey: string): Promise<void>;
 }
 
+export interface FileIdentityStoreOptions {
+  /**
+   * Unlocks an encrypted key file, and encrypts new ones. Defaults to
+   * ANTSEED_PASSPHRASE / ANTSEED_PASSPHRASE_FILE; null means no passphrase.
+   */
+  passphrase?: string | null;
+}
+
+/** Decrypted keys by envelope, so repeated loads in one process skip the deliberately slow scrypt. */
+const decryptedKeys = new Map<string, { passphrase: string; hexKey: string }>();
+
 /**
- * Stores identity private key as a hex file on disk (default behavior).
+ * Stores identity private key as a file on disk (default behavior): 64 hex
+ * chars, or a passphrase-encrypted envelope (see identity-envelope.ts).
  */
 export class FileIdentityStore implements IdentityStore {
   private readonly keyPath: string;
   private readonly encryptedKeyPath: string;
   private readonly dir: string;
 
-  constructor(configDir?: string) {
+  constructor(configDir?: string, private readonly options: FileIdentityStoreOptions = {}) {
     this.dir = configDir ?? CONFIG_DIR;
     this.keyPath = join(this.dir, PRIVATE_KEY_FILE);
     this.encryptedKeyPath = join(this.dir, ENCRYPTED_PRIVATE_KEY_FILE);
   }
 
-  async load(): Promise<string | null> {
+  private passphrase(): string | null {
+    return this.options.passphrase !== undefined ? this.options.passphrase : resolveIdentityPassphrase();
+  }
+
+  /** The key file's content, or null when there is none. */
+  private async readKeyFile(): Promise<string | null> {
     try {
-      const hexKey = (await readFile(this.keyPath, "utf-8")).trim();
-      return hexKey;
+      return (await readFile(this.keyPath, "utf-8")).trim();
     } catch (error) {
-      if (!isMissingFileError(error)) {
-        throw new Error(`Unable to read identity at ${this.keyPath}; refusing to create a replacement identity.`, { cause: error });
-      }
+      if (isMissingFileError(error)) return null;
+      throw new Error(`Unable to read identity at ${this.keyPath}; refusing to create a replacement identity.`, { cause: error });
     }
+  }
+
+  async load(): Promise<string | null> {
+    const stored = await this.readKeyFile();
+    if (stored !== null) return isIdentityEnvelope(stored) ? this.decrypt(stored) : stored;
 
     try {
       await access(this.encryptedKeyPath);
@@ -66,9 +96,108 @@ export class FileIdentityStore implements IdentityStore {
     );
   }
 
+  /** Written encrypted when a passphrase is configured. */
   async save(hexKey: string): Promise<void> {
+    const passphrase = this.passphrase();
+    if (!passphrase) return this.writeKeyFile(hexKey);
+    assertNewIdentityPassphrase(passphrase);
+    await this.writeKeyFile(await encryptIdentityKey(hexKey, passphrase));
+  }
+
+  /** How the key file is stored, or null when there is none. */
+  async format(): Promise<"plaintext" | "encrypted" | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null) return null;
+    return isIdentityEnvelope(stored) ? "encrypted" : "plaintext";
+  }
+
+  /** The wallet address, read without the passphrase; null when there is no key file. */
+  async address(): Promise<string | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null) return null;
+    if (isIdentityEnvelope(stored)) return identityEnvelopeAddress(stored);
+    return identityFromPrivateKeyHex(this.validHex(stored)).wallet.address;
+  }
+
+  /**
+   * Whether this passphrase unlocks the encrypted key file; null when the
+   * file is missing or plaintext. Throws when the file is unreadable or damaged.
+   */
+  async unlocksWith(passphrase: string): Promise<boolean | null> {
+    const stored = await this.readKeyFile();
+    if (stored === null || !isIdentityEnvelope(stored)) return null;
+    const cached = decryptedKeys.get(stored);
+    if (cached?.passphrase === passphrase) return true;
+    let hexKey: string;
+    try {
+      hexKey = await decryptIdentityKey(stored, passphrase);
+    } catch (error) {
+      if ((error as Error).message.startsWith("Wrong passphrase")) return false;
+      throw error;
+    }
+    decryptedKeys.set(stored, { passphrase, hexKey });
+    return true;
+  }
+
+  /** Encrypts a plaintext key file in place; false when it already is encrypted. */
+  async protect(): Promise<boolean> {
+    const passphrase = this.passphrase();
+    if (!passphrase) throw new Error(`Set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to the passphrase that should protect the key.`);
+    const stored = await this.readKeyFile();
+    if (stored === null) throw new Error(`No identity at ${this.keyPath}.`);
+    if (isIdentityEnvelope(stored)) return false;
+    assertNewIdentityPassphrase(passphrase);
+    const hexKey = this.validHex(stored);
+    const envelope = await encryptIdentityKey(hexKey, passphrase);
+    // The plaintext is about to be replaced: make sure the passphrase opens what replaces it.
+    if (await decryptIdentityKey(envelope, passphrase) !== hexKey) throw new Error(`Encrypting ${this.keyPath} failed its check; the file was left as it was.`);
+    await this.writeKeyFile(envelope);
+    return true;
+  }
+
+  /** Decrypts an encrypted key file in place; false when it already is plaintext. */
+  async unprotect(): Promise<boolean> {
+    const stored = await this.readKeyFile();
+    if (stored === null) throw new Error(`No identity at ${this.keyPath}.`);
+    if (!isIdentityEnvelope(stored)) return false;
+    await this.writeKeyFile(await this.decrypt(stored));
+    return true;
+  }
+
+  private validHex(stored: string): string {
+    const hexKey = stored.replace(/^0x/, "");
+    if (!/^[0-9a-fA-F]{64}$/.test(hexKey)) throw new Error(`Identity at ${this.keyPath} is invalid: expected 64 hex characters.`);
+    return hexKey.toLowerCase();
+  }
+
+  private async decrypt(envelope: string): Promise<string> {
+    const passphrase = this.passphrase();
+    if (!passphrase) {
+      throw new Error(`Identity at ${this.keyPath} is encrypted; set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to unlock it.`);
+    }
+    const cached = decryptedKeys.get(envelope);
+    if (cached?.passphrase === passphrase) return cached.hexKey;
+    let hexKey: string;
+    try {
+      hexKey = await decryptIdentityKey(envelope, passphrase);
+    } catch (error) {
+      throw new Error(`Cannot unlock identity at ${this.keyPath}: ${(error as Error).message}`, { cause: error });
+    }
+    decryptedKeys.set(envelope, { passphrase, hexKey });
+    return hexKey;
+  }
+
+  /** Owner-only and atomic, so a crash never leaves a half-written key. */
+  private async writeKeyFile(content: string): Promise<void> {
     await mkdir(this.dir, { recursive: true });
-    await writeFile(this.keyPath, hexKey, { mode: 0o600 });
+    const temp = `${this.keyPath}.${randomBytes(6).toString("hex")}.tmp`;
+    try {
+      await writeFile(temp, content, { mode: 0o600, flag: "wx" });
+      await rename(temp, this.keyPath);
+    } catch (error) {
+      await rm(temp, { force: true });
+      throw error;
+    }
   }
 }
 

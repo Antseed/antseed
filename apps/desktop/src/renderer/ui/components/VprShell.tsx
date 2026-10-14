@@ -160,7 +160,7 @@ export function VprShell({ activeView, onSelectView, onNavigateBack, children }:
         )}
         <NetworkAlertBanner />
         <UpdateBanner />
-        <DepositProgressBanner />
+        <DepositProgressBanner onAddFunds={() => onSelectView('deposit')} onDepositView={activeView === 'deposit'} />
       </main>
       <footer className={styles.statusStrip}>
         <span className={networkStatusClassName(snap.networkHealth)}>

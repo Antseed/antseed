@@ -6,7 +6,10 @@ import {
   FileIdentityStore,
   identityFromPrivateKeyHex,
   isValidBuyerIdentityName,
+  loadOrCreateIdentity,
+  PASSPHRASE_ENV,
   type Identity,
+  type IdentityStore,
 } from '@antseed/node'
 
 /**
@@ -146,8 +149,11 @@ export async function listBuyerIdentities(dataDir: string): Promise<StoredBuyerI
     const dir = buyerIdentityDir(dataDir, name)
     const keyFrom = await readKeySourceRef(dir).catch(() => undefined)
     try {
-      const identity = await loadBuyerIdentity(dataDir, name)
-      if (identity) identities.push({ name, address: identity.wallet.address, dir, ...(keyFrom ? { keyFrom } : {}) })
+      // A key stored encrypted is listed by the address beside it, without the passphrase.
+      const address = keyFrom === null
+        ? await new FileIdentityStore(dir).address()
+        : (await loadBuyerIdentity(dataDir, name))?.wallet.address
+      if (address) identities.push({ name, address, dir, ...(keyFrom ? { keyFrom } : {}) })
     } catch (err) {
       identities.push({ name, address: null, dir, ...(keyFrom ? { keyFrom } : {}), error: err instanceof Error ? err.message : String(err) })
     }
@@ -158,18 +164,102 @@ export async function listBuyerIdentities(dataDir: string): Promise<StoredBuyerI
 /** The default wallet's address, or why the CLI cannot read it. */
 export async function readDefaultWallet(dataDir: string): Promise<{ address: string | null; note: string }> {
   try {
-    const hex = await new FileIdentityStore(dataDir).load()
-    if (hex && hex.length === 64) return { address: identityFromPrivateKeyHex(hex).wallet.address, note: '' }
+    const { identity, fromEnv } = await loadDefaultBuyerIdentity(dataDir)
+    if (identity) return { address: identity.wallet.address, note: fromEnv ? 'from ANTSEED_IDENTITY_HEX' : '' }
     return { address: null, note: 'created on first buyer start' }
   } catch {
+    const locked = await storedDefaultIdentityAddress(dataDir)
+    if (locked) return { address: locked, note: `encrypted; set ${PASSPHRASE_ENV} to use it` }
     return { address: null, note: 'encrypted by the AI VPN' }
   }
 }
 
-/** Wallet address of any identity, default included; null when unknown or unreadable. */
+class NoStoredDefaultIdentity extends Error {}
+
+/**
+ * The default identity exactly as the buyer loads it: ANTSEED_IDENTITY_HEX
+ * (how the desktop app hands the buyer its wallet) first, then the data
+ * dir's identity.key. Goes through the node's own loader, so a key it already
+ * took from the environment in this process is found too, but never creates
+ * a key. `fromEnv` says the key did not come from the data dir.
+ */
+export async function loadDefaultBuyerIdentity(dataDir: string): Promise<{ identity: Identity | null; fromEnv: boolean }> {
+  let readDisk = false
+  const store: IdentityStore = {
+    load: () => {
+      readDisk = true
+      return new FileIdentityStore(dataDir).load()
+    },
+    save: () => Promise.reject(new NoStoredDefaultIdentity()),
+  }
+  try {
+    const identity = await loadOrCreateIdentity(store)
+    return { identity, fromEnv: !readDisk }
+  } catch (err) {
+    if (err instanceof NoStoredDefaultIdentity) return { identity: null, fromEnv: false }
+    throw err
+  }
+}
+
+/**
+ * The desktop app keeps the default wallet encrypted (identity.enc) and hands
+ * it to the buyer in ANTSEED_IDENTITY_HEX; without that variable a CLI
+ * process cannot know which wallet the buyer pays from.
+ */
+export function hasDesktopIdentity(dataDir: string): Promise<boolean> {
+  return exists(join(dataDir, 'identity.enc'))
+}
+
+/** The signing key of any identity, default included, as the buyer loads it; null when none is stored. */
+export async function loadBuyerSigningIdentity(dataDir: string, name: string): Promise<Identity | null> {
+  if (name === DEFAULT_BUYER_IDENTITY) return (await loadDefaultBuyerIdentity(dataDir)).identity
+  return loadBuyerIdentity(dataDir, name)
+}
+
+/** Wallet address of any identity, default included (honouring ANTSEED_IDENTITY_HEX); null when unknown or unreadable. */
 export async function buyerIdentityAddress(dataDir: string, name: string): Promise<string | null> {
-  if (name === DEFAULT_BUYER_IDENTITY) return (await readDefaultWallet(dataDir)).address
-  return (await loadBuyerIdentity(dataDir, name).catch(() => null))?.wallet.address ?? null
+  return (await loadBuyerSigningIdentity(dataDir, name).catch(() => null))?.wallet.address ?? null
+}
+
+/**
+ * The address of the default wallet stored in a data dir (its identity.key),
+ * never ANTSEED_IDENTITY_HEX: for a data dir that is not the one this
+ * process's buyer runs on, such as a freshly imported bundle. The node's
+ * loader keeps the variable's key for the whole process whatever dir it is
+ * asked about. An encrypted key is not decrypted for it. Null when there is
+ * no readable key.
+ */
+export async function storedDefaultIdentityAddress(dataDir: string): Promise<string | null> {
+  return new FileIdentityStore(dataDir).address().catch(() => null)
+}
+
+/**
+ * The wallet key files stored in a data dir: the default identity.key, each
+ * buyer identity's and the archived ones, whose wallets may still hold funds.
+ * With `name`, that identity's only.
+ */
+export async function storedWalletKeys(dataDir: string, name?: string): Promise<Array<{ name: string; store: FileIdentityStore }>> {
+  if (name === DEFAULT_BUYER_IDENTITY) return [{ name, store: new FileIdentityStore(dataDir) }]
+  if (name !== undefined) {
+    assertBuyerIdentityName(name)
+    const dir = buyerIdentityDir(dataDir, name)
+    const keyFrom = await readKeySourceRef(dir)
+    if (keyFrom) throw new Error(`Buyer identity "${name}" reads its key from ${keyFrom}; nothing is stored in the data dir.`)
+    return [{ name, store: new FileIdentityStore(dir) }]
+  }
+  const dirs: Array<{ name: string; dir: string }> = [{ name: DEFAULT_BUYER_IDENTITY, dir: dataDir }]
+  const root = buyerIdentitiesDir(dataDir)
+  for (const entry of (await readdir(root).catch(() => [] as string[])).sort()) {
+    if (isValidBuyerIdentityName(entry) && entry !== DEFAULT_BUYER_IDENTITY) dirs.push({ name: entry, dir: join(root, entry) })
+  }
+  for (const entry of (await readdir(join(root, ARCHIVE_DIR)).catch(() => [] as string[])).sort()) {
+    dirs.push({ name: `${ARCHIVE_DIR}/${entry}`, dir: join(root, ARCHIVE_DIR, entry) })
+  }
+  const stored: Array<{ name: string; store: FileIdentityStore }> = []
+  for (const { name: keyName, dir } of dirs) {
+    if (await exists(join(dir, KEY_FILE))) stored.push({ name: keyName, store: new FileIdentityStore(dir) })
+  }
+  return stored
 }
 
 /** Move an identity aside; its key is kept because the wallet may still hold funds. */
