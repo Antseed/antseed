@@ -18,7 +18,7 @@ You can also point an agent directly at [`SKILL.md`](SKILL.md).
 
 ## Prerequisites
 
-`@antseed/cli` installed (`npm install -g @antseed/cli`) and an API key for the endpoint. One check sends about 100 short questions to the endpoint, which you pay for.
+`@antseed/cli` installed (`npm install -g @antseed/cli`) and an API key for the endpoint. One check sends about 100–120 short questions to the endpoint (about $0.10 at Opus-class prices), which you pay for.
 
 ## Example prompt
 

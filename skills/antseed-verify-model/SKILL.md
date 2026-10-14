@@ -28,7 +28,7 @@ The key must never appear in the conversation or in shell history. Give the user
 printf 'API key: '; read -rs VERIFY_API_KEY; echo; export VERIFY_API_KEY
 ```
 
-It works in zsh and bash, and the key is not echoed. Endpoints without a key, such as a local Antseed buyer proxy at `http://127.0.0.1:8377/v1`, skip this step.
+It works in zsh and bash, and the key is not echoed. If the key is already in an environment variable (for example `OPENROUTER_API_KEY` from a `.env` file), skip the prompt and pass `--api-key-env OPENROUTER_API_KEY` instead, without printing it. Endpoints without a key, such as a local Antseed buyer proxy at `http://127.0.0.1:8377/v1`, skip this step.
 
 If your commands run in a different shell from the user's terminal, the variable is not visible to you. Then give the user the full command from step 3 to run themselves and ask them to paste the output.
 
@@ -48,9 +48,9 @@ What it does:
 2. Checks the evidence against the hash recorded on-chain, so the questions cannot have been tampered with.
 3. Sends a fresh random subset of that audit's questions to the endpoint, in batches of 10, and runs the statistical test.
 
-If the user already has an audit address, add `--audit ipfs://<cid>` to use it instead of looking one up on-chain. Without the Antseed CLI, `npx antseed-verify --base-url <url> --model <id> --audit ipfs://<cid> --json` does the same.
+If the user already has an audit address, add `--audit ipfs://<cid>` to use it instead of looking one up on-chain.
 
-The check pays the endpoint for roughly 100 short questions (about 20–30k tokens). Mention this before running.
+The check pays the endpoint for about 100–120 short questions, roughly 10–15k tokens (about $0.10 at Opus-class prices), and takes about a minute. Mention this before running.
 
 ## 4. Tell the user the result
 
@@ -60,7 +60,15 @@ Exit codes: `0` SAME, `2` DIFF, `3` UNDETERMINED, `1` error.
 - **DIFF**: significantly more wrong answers than the genuine model makes. The endpoint very likely serves a different model (or a heavily quantized or altered one).
 - **UNDETERMINED**: some questions got no usable answer (errors, refusals, timeouts), so there is no verdict. Not evidence either way; suggest trying again later.
 
-Answer in one or two plain sentences with the numbers from the output, for example: "SAME: 4 of 100 answers differed, and the genuine model gets up to 6 wrong, so this looks like the real claude-opus-5.5." Mention the audit it used (`audit` in the JSON).
+Read the numbers from the JSON:
+
+- answers that differed: `stats.targetHamming` of `stats.targetTotal`
+- what the genuine model gets wrong at most: about `stats.p0Cp99 × stats.targetTotal`
+- p-value: `stats.pValueBinomial` (DIFF when it is below 0.05)
+
+UNDETERMINED with `stats.targetCoverage` 0 means no question got an answer at all. That is a setup problem, not a result: look at `batches[].failureReason` in the `--out` file (`HTTP 401`/`403` means a wrong key, connection errors mean a wrong base URL), fix it, and run again. A single unanswered question is enough to make the result UNDETERMINED.
+
+Answer in one or two plain sentences, for example: "SAME: 6 of 120 answers differed, while the genuine model gets up to about 11 wrong (p = 0.97), so this looks like the real claude-opus-5.5." Mention the audit it used (`audit` in the JSON).
 
 ## Rules
 
@@ -72,8 +80,8 @@ Answer in one or two plain sentences with the numbers from the output, for examp
 
 ## Errors
 
+- `failed to fetch https://ipfs.io/ipfs/... HTTP 429` (or 5xx, timeouts): the public IPFS gateway is rate-limiting. Nothing was paid. Retry with `--ipfs-gateway https://gateway.pinata.cloud/ipfs` (or another gateway); the evidence is hash-checked, so any gateway is safe.
 - `no published on-chain audit found for <model>`: nobody has audited that model yet, or the name differs from the audited one. Ask the user for the audited model name or an `ipfs://` audit address.
 - `No verification contract address configured`: the CLI's chain has no verification contract. Ask for an `ipfs://` audit address and pass `--audit`.
 - `audit … is for X, not Y`: the audited model name does not match the audit; use the name the audit was made for.
-- HTTP 401/403 from the endpoint: the API key is missing or wrong; have the user set it again with step 2.
-- `antseed: command not found`: install with `npm install -g @antseed/cli`, or use `npx antseed-verify` with `--audit`.
+- `antseed: command not found`, or `verifier check` missing: install or update with `npm install -g @antseed/cli@latest`. `verifier check` needs a CLI release that includes model verification.
