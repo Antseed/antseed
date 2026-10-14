@@ -15,6 +15,22 @@ import styles from './VprRouterView.module.scss';
 
 const modelKey = (model: RouterAllowedModel) => JSON.stringify([model.provider, model.serviceId]);
 
+const COST_QUALITY_STOPS = [
+  { value: 0, label: 'Best quality', description: 'Strongest models, highest price.' },
+  { value: 5, label: 'Balanced', description: 'Good answers at a moderate price.' },
+  { value: 10, label: 'Lowest cost', description: 'Cheapest model that can handle the request.' },
+] as const;
+const DEFAULT_COST_QUALITY_STOP = 1;
+
+function costQualityStopIndex(value: number | undefined): number {
+  if (value === undefined) return DEFAULT_COST_QUALITY_STOP;
+  let nearest = 0;
+  COST_QUALITY_STOPS.forEach((stop, index) => {
+    if (Math.abs(stop.value - value) < Math.abs(COST_QUALITY_STOPS[nearest].value - value)) nearest = index;
+  });
+  return nearest;
+}
+
 export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const actions = useActions();
   const snapshot = useUiSelector((state) => ({ services: state.vprRoutingServices, selected: state.vprRouteSelection.router,
@@ -59,6 +75,10 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
       setSaveError(`Could not save router settings: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
+  const selectedStop = costQualityStopIndex(costQualityTradeoff);
+  function selectStop(index: number): void {
+    updateSettings(index === DEFAULT_COST_QUALITY_STOP ? undefined : COST_QUALITY_STOPS[index].value, allowedModels);
+  }
   function toggleModel(provider: string, serviceId: string): void {
     const model = { provider, serviceId };
     const selected = allowedModels ?? catalog.map(({ provider, serviceId }) => ({ provider, serviceId }));
@@ -98,15 +118,27 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
         <h2>Router settings</h2>
         <div className={styles.settings}>
           <div className={styles.settingText}>
-            <h3><label htmlFor="router-cost-quality">Cost / quality</label></h3>
-            <p className={styles.hint}>0 = best quality · 10 = cheapest. Unset uses the router default (5).</p>
+            <h3 id="router-cost-quality-title" className={styles.settingTitle}>Cost / quality</h3>
+            <p className={styles.hint}>How the router trades answer quality against price.</p>
           </div>
-          <input id="router-cost-quality" type="range" min={0} max={10} step={1}
-            value={costQualityTradeoff ?? 5} aria-valuetext={costQualityTradeoff === undefined ? 'Router default (5)' : String(costQualityTradeoff)}
-            onChange={event => updateSettings(Number(event.currentTarget.value), allowedModels)} />
-          <output htmlFor="router-cost-quality">{costQualityTradeoff ?? 'Default (5)'}</output>
-          <button type="button" disabled={costQualityTradeoff === undefined}
-            onClick={() => updateSettings(undefined, allowedModels)}>Use router default</button>
+          <div id="router-cost-quality" className={styles.segmented} role="radiogroup" aria-labelledby="router-cost-quality-title"
+            onKeyDown={event => {
+              const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
+              if (!step) return;
+              event.preventDefault();
+              const next = Math.min(COST_QUALITY_STOPS.length - 1, Math.max(0, selectedStop + step));
+              selectStop(next);
+              (event.currentTarget.children[next] as HTMLElement | undefined)?.focus();
+            }}>
+            {COST_QUALITY_STOPS.map((stop, index) => <button key={stop.value} type="button" role="radio"
+              aria-checked={index === selectedStop} tabIndex={index === selectedStop ? 0 : -1}
+              className={index === selectedStop ? styles.segmentSelected : styles.segment}
+              onClick={() => selectStop(index)}>{stop.label}</button>)}
+          </div>
+          <p className={styles.segmentDescription}>
+            <strong>{COST_QUALITY_STOPS[selectedStop].label}</strong>
+            {' · '}{costQualityTradeoff === undefined ? "the router's default. " : ''}{COST_QUALITY_STOPS[selectedStop].description}
+          </p>
         </div>
         <div className={styles.modelHeading}>
           <h2>Allowed models</h2>

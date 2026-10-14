@@ -53,16 +53,23 @@ test.each([
   assert.doesNotMatch(markup, /models? selected\.|including newly advertised ones/);
 });
 
-test.each([0, 5, 10, undefined])('IRP cost-quality slider displays %s without reversing its scale', (costQualityTradeoff) => {
+test.each([
+  [0, 0], [2, 0], [5, 1], [8, 2], [10, 2], [undefined, 1],
+] as const)('IRP cost-quality control displays %s as the selected option without reversing its scale', (costQualityTradeoff, stop) => {
   const state = createInitialUiState();
   state.vprRoutingServices = [service];
   state.vprRouteSelection.router = { service, costQualityTradeoff };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(markup, /0 = best quality · 10 = cheapest/);
-  assert.match(markup, /type="range" min="0" max="10" step="1"/);
-  assert.ok(markup.includes('value="' + (costQualityTradeoff ?? 5) + '"'));
-  assert.match(markup, /Use router default/);
+  assert.match(markup, /id="router-cost-quality-title"[^>]*>Cost \/ quality<\/h3>/);
+  assert.match(markup, /role="radiogroup" aria-labelledby="router-cost-quality-title"/);
+  const options = [...markup.matchAll(/role="radio" aria-checked="(true|false)"[^>]*>([^<]+)<\/button>/g)];
+  assert.deepEqual(options.map(option => option[2]), ['Best quality', 'Balanced', 'Lowest cost']);
+  assert.deepEqual(options.map(option => option[1] === 'true'), options.map((_, index) => index === stop));
+  assert.doesNotMatch(markup, /<output/);
+  assert.equal(markup.includes("the router&#x27;s default."), costQualityTradeoff === undefined);
+  assert.doesNotMatch(markup, /type="range"|>Default<\/button>/);
+  assert.equal(state.vprRouteSelection.router?.costQualityTradeoff, costQualityTradeoff);
 });
 
 test('Models lists a router with the same row structure and a Router tag', () => {
@@ -99,7 +106,7 @@ test('browsing router detail shows settings without changing the selected model'
   const markup = renderToStaticMarkup(<VprModelView />);
   assert.match(markup, /Cost \/ quality/);
   assert.match(markup, /Use router/);
-  assert.match(markup, /Default \(5\)/);
+  assert.match(markup, /role="radio" aria-checked="true"[^>]*>Balanced</);
   assert.match(markup, /Allowed models/);
   assert.doesNotMatch(markup, /Chooses a model for each request from the models you allow/);
   assert.doesNotMatch(markup, /levanto \/ route/);
@@ -114,7 +121,7 @@ test('saved preferences remain visible and unavailable routers cannot be applied
   state.vprRouteSelection.router = { service, costQualityTradeoff: 0 };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(markup, /value="0"/);
+  assert.match(markup, /role="radio" aria-checked="true"[^>]*>Best quality</);
   assert.match(markup, /This router is unavailable/);
   assert.match(markup, /disabled=""/);
   assert.doesNotMatch(markup, /\/completed request/);
@@ -152,7 +159,8 @@ test('unset tradeoff displays router default without persisting an explicit valu
   state.vprRouteSelection.router = { service, costQualityTradeoff: undefined };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(markup, /Default \(5\)/);
+  assert.match(markup, /role="radio" aria-checked="true"[^>]*>Balanced</);
+  assert.match(markup, /the router&#x27;s default\./);
   assert.doesNotMatch(markup, /cqt|Quality focused/);
   assert.deepEqual(state.vprRouteSelection.router.costQualityTradeoff, undefined);
 });
@@ -177,7 +185,7 @@ test('catalog intersection excludes unsupported providers and drops stale select
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
   assert.doesNotMatch(markup, /unsupported-provider/);
   assert.doesNotMatch(markup, /offline-model|removed-model|Previously selected models|No selected supported models/);
-  assert.equal((markup.match(/aria-checked="true"/g) ?? []).length, 1);
+  assert.equal((markup.match(/role="checkbox" aria-checked="true"/g) ?? []).length, 1);
 });
 
 test('checkbox identity distinguishes provider and model IDs containing separators', () => {
@@ -195,8 +203,8 @@ test('checkbox identity distinguishes provider and model IDs containing separato
   state.vprRouteSelection.router = { service: catalogService, costQualityTradeoff: 5, allowedModels: [models[0]!] };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
-  assert.equal((markup.match(/aria-checked="true"/g) ?? []).length, 1);
-  assert.equal((markup.match(/aria-checked="false"/g) ?? []).length, 1);
+  assert.equal((markup.match(/role="checkbox" aria-checked="true"/g) ?? []).length, 1);
+  assert.equal((markup.match(/role="checkbox" aria-checked="false"/g) ?? []).length, 1);
 });
 
 test('supported exact providers remain selectable even when the main model catalog groups them together', () => {
@@ -216,5 +224,5 @@ test('supported exact providers remain selectable even when the main model catal
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
   assert.doesNotMatch(markup, /No selected supported models/);
-  assert.equal((markup.match(/aria-checked="true"/g) ?? []).length, 1);
+  assert.equal((markup.match(/role="checkbox" aria-checked="true"/g) ?? []).length, 1);
 });

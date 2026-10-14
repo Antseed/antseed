@@ -75,9 +75,58 @@
   border-bottom: 1px solid var(--border);
 
   .settingText { flex-basis: 100%; }
-  input[type='range'] { flex: 1; min-width: 120px; accent-color: var(--brand); }
-  output { font-size: 12px; min-width: 60px; text-align: right; }
-  button { font-size: 12px; }
+  .settingTitle { margin: 0 0 4px; }
+  .segmented {
+    display: flex;
+    flex: 1 1 100%;
+    gap: 2px;
+    padding: 3px;
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    background: var(--bg-surface);
+  }
+  .segment, .segmentSelected {
+    flex: 1;
+    min-width: 0;
+    padding: 6px 4px;
+    border: 0;
+    border-radius: 7px;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    white-space: nowrap;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    cursor: pointer;
+
+    &:hover { color: var(--text-primary); }
+    &:focus-visible { outline: 2px solid var(--brand); outline-offset: 1px; }
+  }
+  .segmentSelected {
+    background: var(--bg-primary);
+    color: var(--text-primary);
+    font-weight: 500;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, 0.08), 0 0 0 1px var(--border);
+
+    &::before {
+      content: '';
+      display: inline-block;
+      width: 6px;
+      height: 6px;
+      margin-right: 6px;
+      border-radius: 50%;
+      background: var(--brand);
+      vertical-align: 1px;
+    }
+  }
+  .segmentDescription {
+    flex-basis: 100%;
+    margin: 2px 0 0;
+    color: var(--text-muted);
+    font-size: 12px;
+
+    strong { color: var(--text-primary); font-weight: 500; }
+  }
 }
 
 .allModels {
