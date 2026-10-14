@@ -39,7 +39,7 @@
   --as-white: #FFFFFF;             /* page background */
   --as-card: #F4F5F4;              /* raised card surface */
   --as-ink: #001E12;               /* dark green ink — always dark: buttons, dark sections */
-  --as-heading: #001E12;           /* heading/ink text — flips light in dark mode */
+  --as-heading: #001E12;           /* heading/ink text */
 
   /* SIGNAL — the brand green. one green, three jobs */
   --as-green: #10B981;             /* primary — actions, accents, the ant */
@@ -212,101 +212,6 @@ html[data-theme='light'],
   --ifm-navbar-link-hover-color: #001E12;
 }
 
-html[data-theme='dark'] {
-  /* Dark mode — the ink surfaces from the dark sections of the design */
-  --as-heading: #FFFEFB;
-  --as-card: #03251A;
-  --as-green: #10B981;
-  --as-green-bright: #3DC799;
-  --as-green-deep: #0A6F4D;
-  --as-soil-0: #02130D;
-  --as-soil-1: #001E12;
-  --as-soil-2: #03251A;
-  --as-soil-3: #053827;
-  --as-text: #FFFEFB;
-  --as-text-2: #B9CCC2;
-  --as-text-3: #6E837A;
-  --as-line: rgba(198, 240, 226, 0.1);
-  --as-line-strong: rgba(198, 240, 226, 0.18);
-  --as-green-glow: rgba(16, 185, 129, 0.45);
-  --as-green-dim: rgba(16, 185, 129, 0.1);
-  --as-surface-tint: rgba(255, 255, 255, 0.02);
-  --as-clay: #D79627;
-  --as-clay-dim: rgba(215, 150, 39, 0.14);
-  --as-risk: #ff6b6b;
-  --as-risk-deep: #ff4b4b;
-  --as-risk-dim: rgba(255, 107, 107, 0.11);
-  --as-logo-ink: #FFFEFB;
-  --as-page-bg: #001E12;
-  --as-dotgrid: radial-gradient(rgba(198, 240, 226, 0.08) 1px, transparent 1px);
-  --as-code-block-bg: #02130D;
-  --as-code-title-bg: #03251A;
-  --as-code-text: #DCF7EE;
-  --as-inline-code-text: #6BD5B1;
-  --as-inline-code-bg: rgba(16, 185, 129, 0.1);
-  --as-scrollbar-track: #001E12;
-  --as-scrollbar-thumb: #053827;
-  --as-scrollbar-thumb-hover: #064A34;
-  --as-selection-bg: rgba(16, 185, 129, 0.32);
-  --as-selection-text: #FFFEFB;
-  --ifm-scrollbar-track-background-color: var(--as-scrollbar-track);
-  --ifm-scrollbar-thumb-background-color: var(--as-scrollbar-thumb);
-  --ifm-scrollbar-thumb-hover-background-color: var(--as-scrollbar-thumb-hover);
-
-  --ifm-color-primary: #10B981;
-  --ifm-color-primary-dark: #0D9467;
-  --ifm-color-primary-darker: #0A6F4D;
-  --ifm-color-primary-darkest: #064A34;
-  --ifm-color-primary-light: #3DC799;
-  --ifm-color-primary-lighter: #6BD5B1;
-  --ifm-color-primary-lightest: #98E2CA;
-  --ifm-color-warning: var(--as-risk);
-  --ifm-color-warning-dark: var(--as-risk-deep);
-  --ifm-color-warning-darker: #e13d3d;
-  --ifm-color-warning-darkest: #bd2d2d;
-  --ifm-color-warning-light: #ff8585;
-  --ifm-color-warning-lighter: #ff9d9d;
-  --ifm-color-warning-lightest: #ffd0d0;
-  --ifm-color-warning-contrast-background: rgba(255, 107, 107, 0.1);
-  --ifm-color-warning-contrast-foreground: #ffd6d6;
-
-  --ifm-navbar-height: 68px;
-  --ifm-background-color: #001E12;
-  --ifm-background-surface-color: #03251A;
-  --ifm-navbar-background-color: transparent;
-  --ifm-footer-background-color: #001E12;
-
-  --ifm-font-family-base: var(--as-font-ui);
-  --ifm-font-family-monospace: var(--as-font-data);
-  --ifm-heading-font-family: var(--as-font-display);
-
-  --ifm-code-background: #03251A;
-  --ifm-code-border-radius: 4px;
-  --ifm-code-padding-horizontal: 6px;
-  --ifm-code-padding-vertical: 2px;
-  --ifm-code-font-size: 12px;
-
-  --ifm-color-emphasis-300: #053827;
-  --ifm-font-color-base: #DCF7EE;
-  --ifm-font-color-secondary: #B9CCC2;
-  --ifm-heading-color: #FFFEFB;
-  --ifm-heading-font-weight: 500;
-  --ifm-link-color: #3DC799;
-  --ifm-link-hover-color: #6BD5B1;
-  --ifm-menu-color: #B9CCC2;
-  --ifm-menu-color-active: #3DC799;
-  --ifm-menu-color-background-hover: rgba(16, 185, 129, 0.06);
-  --ifm-menu-color-background-active: rgba(16, 185, 129, 0.1);
-  --ifm-navbar-link-color: #DCF7EE;
-  --ifm-navbar-link-hover-color: #FFFEFB;
-
-  --ifm-hr-border-color: rgba(198, 240, 226, 0.08);
-  --ifm-toc-border-color: rgba(198, 240, 226, 0.08);
-  --ifm-table-border-color: rgba(198, 240, 226, 0.05);
-
-  --docusaurus-highlighted-code-line-bg: rgba(16, 185, 129, 0.08);
-}
-
 /* =============================================
    Motion — page transitions
    Each route renders its own Layout, so .main-wrapper remounts on
@@ -341,6 +246,52 @@ body {
   font-weight: 450;
 }
 
+/* Funding announcement above the shared navigation. */
+.theme-announcement-bar {
+  --docusaurus-announcement-bar-height: auto;
+  min-height: 42px;
+  border-bottom: none;
+  font-family: var(--as-font-app);
+}
+
+.theme-announcement-bar .funding-announcement {
+  display: inline-flex;
+  flex-wrap: wrap;
+  align-items: center;
+  justify-content: center;
+  gap: 2px 12px;
+  padding: 5px 8px;
+  color: var(--as-on-void);
+  font-size: 14px;
+  line-height: 1.5;
+  text-decoration: none;
+}
+
+.funding-announcement > span {
+  white-space: nowrap;
+  text-decoration: underline;
+  text-underline-offset: 3px;
+}
+
+.theme-announcement-bar .funding-announcement:hover {
+  color: var(--as-mint);
+}
+
+.theme-announcement-bar .close {
+  color: var(--as-on-void);
+  opacity: 0.8;
+}
+
+.theme-announcement-bar .close:hover {
+  opacity: 1;
+}
+
+.funding-announcement:focus-visible {
+  outline: 2px solid var(--as-mint);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
 /* =============================================
    Navbar — floating white pill on brand-white page
    ============================================= */
@@ -368,12 +319,6 @@ nav.navbar {
   align-items: center;
   flex-wrap: nowrap;
   box-shadow: 0 2px 8px rgba(17, 23, 20, 0.08);
-}
-
-html[data-theme='dark'] .navbar__inner {
-  background: rgba(3, 37, 26, 0.88);
-  border-color: rgba(198, 240, 226, 0.12);
-  box-shadow: 0 10px 32px -14px rgba(0, 0, 0, 0.5);
 }
 
 .navbar__items {
@@ -439,10 +384,6 @@ html[data-theme='dark'] .navbar__inner {
   background-size: 16px;
 }
 
-html[data-theme='dark'] .header-docs-link::before {
-  filter: brightness(0) invert(1);
-}
-
 /* Pricing ↗ style external marker */
 .header-pricing-link::after {
   content: ' ↗';
@@ -457,39 +398,49 @@ html[data-theme='dark'] .header-docs-link::before {
   display: none;
 }
 
-/* Download AI VPN — the brand-green pill, per the Figma navbar. */
-.navbar__items--right .header-download-link {
-  background: var(--as-green);
-  color: #FFFFFF !important;
-  border: 1px solid var(--as-green);
+/* Navbar CTAs — "Desktop app" (outlined) and "Set up gateway" (filled ink),
+   the gateway being the path we lead with. */
+.navbar__items--right .header-download-link,
+.navbar__items--right .header-gateway-link {
   border-radius: 999px;
   padding: 4px 16px;
-  margin-left: 12px;
   font-size: 14px;
   font-weight: 600;
   opacity: 1;
+  white-space: nowrap;
   transition: background 0.15s ease, border-color 0.15s ease, transform 0.15s ease;
+}
+
+.navbar__items--right .header-download-link {
+  margin-left: 12px;
+  background: transparent;
+  border: 1px solid var(--as-gray-3);
+  color: var(--as-heading) !important;
 }
 
 .navbar__items--right .header-download-link:hover,
 .navbar__items--right .header-download-link:focus-visible {
-  background: var(--as-primary-6);
-  border-color: var(--as-primary-6);
+  border-color: var(--as-heading);
+  color: var(--as-heading) !important;
+}
+
+.navbar__items--right .header-gateway-link {
+  margin-left: 8px;
+  background: var(--as-ink);
+  border: 1px solid var(--as-ink);
   color: #FFFFFF !important;
 }
 
-.navbar__items--right .header-download-link:active {
+.navbar__items--right .header-gateway-link:hover,
+.navbar__items--right .header-gateway-link:focus-visible {
+  background: var(--as-void-cta);
+  border-color: var(--as-void-cta);
+  color: #FFFFFF !important;
+}
+
+.navbar__items--right .header-download-link:active,
+.navbar__items--right .header-gateway-link:active {
   transform: scale(0.98);
-}
-
-html[data-theme='dark'] .navbar__items--right .header-download-link {
-  color: var(--as-ink) !important;
-}
-
-html[data-theme='dark'] .navbar__items--right .header-download-link:hover {
-  background: var(--as-primary-4);
-  border-color: var(--as-primary-4);
-  color: var(--as-ink) !important;
 }
 
 /* Social icon links — SVG background icons, tinted to ink */
@@ -516,12 +467,6 @@ html[data-theme='dark'] .navbar__items--right .header-download-link:hover {
 .header-x-link:hover,
 .header-telegram-link:hover {
   opacity: 1;
-}
-
-html[data-theme='dark'] .header-github-link,
-html[data-theme='dark'] .header-x-link,
-html[data-theme='dark'] .header-telegram-link {
-  filter: brightness(0) invert(1);
 }
 
 .navbar__items--right .clean-btn {
@@ -626,11 +571,6 @@ html[data-theme='light'] .custom-footer-link:focus-visible {
   color: var(--as-green) !important;
 }
 
-html[data-theme='dark'] .custom-footer-link:hover,
-html[data-theme='dark'] .custom-footer-link:focus-visible {
-  color: #e6edf3 !important;
-}
-
 .custom-footer-social {
   display: inline-flex;
   align-items: center;
@@ -665,11 +605,11 @@ html[data-theme='light'] .custom-footer-social:focus-visible {
    Sidebar — match original flat, non-collapsible style
    ============================================= */
 
-/* Sidebar container width to match original (w-52 = 208px) */
+/* Sidebar container width: wide enough for the longest section and page names on one line */
 aside.theme-doc-sidebar-container {
   background: var(--ifm-background-color);
   border-right: 1px solid var(--ifm-toc-border-color) !important;
-  --doc-sidebar-width: 208px !important;
+  --doc-sidebar-width: 256px !important;
 }
 
 /* Sidebar items */
@@ -693,36 +633,97 @@ aside.theme-doc-sidebar-container {
   font-weight: 500;
 }
 
-/* Category heading labels — small, uppercase, muted. Scoped to the docs
-   sidebar: the mobile navbar's "Use it for" dropdown also carries
-   .menu__link--sublist and must keep normal casing. */
-.theme-doc-sidebar-item-category > .menu__list-item-collapsible > .menu__link,
+/* Category rows — icon + label + chevron, collapsible. Scoped to the
+   docs sidebar: the mobile navbar's "Use it for" dropdown also carries
+   .menu__link--sublist and keeps its own styling. */
+.theme-doc-sidebar-menu > .theme-doc-sidebar-item-category {
+  margin-top: 2px;
+}
+
 .theme-doc-sidebar-menu .menu__link--sublist {
-  font-size: 11px;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 13.5px;
   font-weight: 500;
-  text-transform: uppercase;
-  letter-spacing: 1px;
-  color: var(--ifm-font-color-secondary);
-  padding: 8px 12px;
-  margin: 12px 4px 4px;
-  cursor: default;
+  color: var(--as-heading);
+  padding: 8px 10px 8px 12px;
+  margin: 0 4px;
+  cursor: pointer;
 }
 
-.theme-doc-sidebar-item-category > .menu__list-item-collapsible > .menu__link:hover,
-.menu__link--sublist:hover {
+.theme-doc-sidebar-menu .menu__link--sublist:hover {
+  background: var(--ifm-menu-color-background-hover);
+  color: var(--as-heading);
+}
+
+/* Section icon — drawn via mask so it follows currentColor */
+.sidebar-icon > .menu__list-item-collapsible > .menu__link::before {
+  content: '';
+  flex: none;
+  width: 16px;
+  height: 16px;
+  background-color: var(--as-text-3);
+  -webkit-mask: var(--sidebar-icon) center / contain no-repeat;
+  mask: var(--sidebar-icon) center / contain no-repeat;
+}
+
+.sidebar-icon:has(.menu__link--active) > .menu__list-item-collapsible > .menu__link::before {
+  background-color: var(--as-green-deep);
+}
+
+.sidebar-icon--start { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 15l-3-3c.7-2.6 2.1-5 4-6.9C14.9 3.2 17.8 2.4 21.5 2.5c.1 3.7-.7 6.6-2.6 8.5-1.9 1.9-4.3 3.3-6.9 4z"/><path d="M9 12H5.5l2.2-3.3c.5-.7 1.2-1.1 2-1.2L12 7.3"/><path d="M12 15v3.5l3.3-2.2c.7-.5 1.1-1.2 1.2-2l.2-2.3"/><path d="M5.5 16.5c-1.3 1.3-1.5 4.5-1.5 4.5s3.2-.2 4.5-1.5c.8-.8.8-2.2 0-3-.8-.8-2.2-.8-3 0z"/></svg>'); }
+.sidebar-icon--guides { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 6.5C10.5 5 8 4.5 3 4.5v13c5 0 7.5.5 9 2 1.5-1.5 4-2 9-2v-13c-5 0-7.5.5-9 2z"/><path d="M12 6.5v13"/></svg>'); }
+.sidebar-icon--protocol { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l9 4.5-9 4.5-9-4.5z"/><path d="M3 12l9 4.5 9-4.5"/><path d="M3 16.5l9 4.5 9-4.5"/></svg>'); }
+.sidebar-icon--plugins { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M9 4.5a2 2 0 1 1 4 0V6h4.5v4.5H19a2 2 0 1 1 0 4h-1.5V19H13v-1.5a2 2 0 1 0-4 0V19H4.5v-4.5H6a2 2 0 1 0 0-4H4.5V6H9z"/></svg>'); }
+.sidebar-icon--cli { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 5.5h17v13h-17z"/><path d="M7 9.5l2.5 2.5L7 14.5"/><path d="M12 14.5h4.5"/></svg>'); }
+.sidebar-icon--papers { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M14 3H7a2 2 0 0 0-2 2v14a2 2 0 0 0 2 2h10a2 2 0 0 0 2-2V8z"/><path d="M14 3v5h5"/><path d="M9 13h6M9 17h4"/></svg>'); }
+.sidebar-icon--gateway { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h17v6h-17z"/><path d="M3.5 13.5h17v6h-17z"/><path d="M7 7.5h.01M7 16.5h.01"/><path d="M11 7.5h6M11 16.5h6"/></svg>'); }
+.sidebar-icon--desktop { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h17v11h-17z"/><path d="M9 20h6M12 15.5V20"/></svg>'); }
+.sidebar-icon--connect { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M10 14a4 4 0 0 0 5.7 0l3.1-3.1a4 4 0 0 0-5.7-5.7L11.5 6.8"/><path d="M14 10a4 4 0 0 0-5.7 0l-3.1 3.1a4 4 0 0 0 5.7 5.7l1.6-1.6"/></svg>'); }
+.sidebar-icon--providers { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><circle cx="12" cy="12" r="2.5"/><circle cx="12" cy="4" r="1.5"/><circle cx="19" cy="16" r="1.5"/><circle cx="5" cy="16" r="1.5"/><path d="M12 5.5v4M17.7 15.2l-3.5-2M6.3 15.2l3.5-2"/></svg>'); }
+.sidebar-icon--security { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M12 3l7.5 3v5.5c0 4.5-3.2 8.2-7.5 9.5-4.3-1.3-7.5-5-7.5-9.5V6z"/><path d="M9 12l2 2 4-4"/></svg>'); }
+.sidebar-icon--archive { --sidebar-icon: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M3.5 4.5h17v4h-17z"/><path d="M5 8.5v11h14v-11"/><path d="M10 12.5h4"/></svg>'); }
+
+/* Chevron — points down when open, right when collapsed */
+.theme-doc-sidebar-menu .menu__link--sublist-caret::after {
+  content: '';
+  display: block !important;
+  flex: none;
+  margin-left: auto;
+  width: 14px;
+  height: 14px;
+  min-width: 14px;
+  background: var(--as-text-3);
+  -webkit-mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>') center / contain no-repeat;
+  mask: url('data:image/svg+xml,<svg xmlns="http://www.w3.org/2000/svg" viewBox="0 0 24 24" fill="none" stroke="black" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M6 9l6 6 6-6"/></svg>') center / contain no-repeat;
+  transform: rotate(0deg);
+  transition: transform 0.18s ease;
+}
+
+.theme-doc-sidebar-menu .menu__list-item--collapsed > .menu__list-item-collapsible > .menu__link--sublist-caret::after {
+  transform: rotate(-90deg);
+}
+
+.theme-doc-sidebar-menu .menu__list-item-collapsible:hover {
   background: transparent;
-  color: var(--ifm-font-color-secondary);
 }
 
-/* Hide collapse arrows since categories are non-collapsible */
-.menu__caret,
-.menu__link--sublist-caret::after {
-  display: none !important;
-}
-
-/* Remove extra padding from nested category lists */
-.menu__list .menu__list {
+/* Nested pages — indented under a hairline guide */
+.theme-doc-sidebar-menu .menu__list {
+  margin: 2px 0 8px 23px;
   padding-left: 0;
+  border-left: 1px solid var(--as-line);
+}
+
+.theme-doc-sidebar-menu .menu__list .menu__link {
+  padding: 6px 10px;
+  margin: 1px 4px 1px 8px;
+}
+
+/* Hide the separate caret button Docusaurus adds to linked categories */
+.theme-doc-sidebar-menu .menu__caret {
+  display: none !important;
 }
 
 /* =============================================
@@ -862,6 +863,17 @@ aside.theme-doc-sidebar-container {
   border-radius: 6px;
 }
 
+/* Inline chips move to the next line whole instead of splitting mid-token
+   (e.g. `--` / `output`). Only a chip wider than the column wraps, inside
+   its own box. */
+.markdown :not(pre) > code {
+  display: inline-block;
+  max-width: 100%;
+  line-height: 1.45;
+  vertical-align: baseline;
+  overflow-wrap: anywhere;
+}
+
 .markdown table {
   font-family: var(--as-font-data);
   font-size: 12px;
@@ -889,6 +901,107 @@ aside.theme-doc-sidebar-container {
 
 .markdown table thead tr {
   border-bottom-color: var(--ifm-hr-border-color);
+}
+
+/* Command / flag reference tables (docs/cli) — wrap a markdown table in
+   <div className="command-table"> to get this layout. */
+.markdown .command-table table {
+  display: table;
+  width: 100%;
+  table-layout: fixed;
+  border-collapse: separate;
+  border-spacing: 0;
+  border: 1px solid var(--as-line);
+  border-radius: 12px;
+  overflow: hidden;
+  font-family: var(--as-font-ui);
+  font-size: 14px;
+  margin-bottom: 24px;
+}
+
+.markdown .command-table th,
+.markdown .command-table td {
+  border: 0;
+  border-bottom: 1px solid var(--ifm-table-border-color);
+  padding: 10px 16px;
+  text-align: left;
+  vertical-align: top;
+}
+
+.markdown .command-table tr:last-child td {
+  border-bottom: 0;
+}
+
+.markdown .command-table th {
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  font-weight: 500;
+  letter-spacing: 0.08em;
+  text-transform: uppercase;
+  color: var(--as-text-3);
+  background: var(--as-card) !important;
+  border-bottom: 1px solid var(--as-line);
+}
+
+.markdown .command-table th:first-child,
+.markdown .command-table td:first-child {
+  width: 48%;
+}
+
+.markdown .command-table tr:hover td {
+  background: var(--as-surface-tint);
+}
+
+.markdown .command-table td {
+  color: var(--as-text-2);
+  line-height: 1.55;
+}
+
+/* The command itself: plain mono, no chip — it already owns the column */
+.markdown .command-table td:first-child code {
+  padding: 0;
+  background: transparent;
+  border: 0;
+  font-size: 12.5px;
+  line-height: 1.6;
+  color: var(--as-heading);
+  overflow-wrap: normal;
+  word-break: normal;
+}
+
+.markdown .command-table td + td code {
+  font-size: 12px;
+  white-space: nowrap;
+}
+
+@media (max-width: 640px) {
+  .markdown .command-table table,
+  .markdown .command-table tbody,
+  .markdown .command-table tr,
+  .markdown .command-table td {
+    display: block;
+    width: auto !important;
+  }
+  .markdown .command-table thead {
+    display: none;
+  }
+  .markdown .command-table tr {
+    padding: 10px 14px;
+    border-bottom: 1px solid var(--ifm-table-border-color);
+  }
+  .markdown .command-table tr:last-child {
+    border-bottom: 0;
+  }
+  .markdown .command-table td {
+    padding: 0;
+    border: 0;
+  }
+  .markdown .command-table td + td {
+    margin-top: 4px;
+  }
+  .markdown .command-table td + td code {
+    white-space: normal;
+  }
 }
 
 /* =============================================
@@ -953,24 +1066,14 @@ aside.theme-doc-sidebar-container {
 }
 
 /* =============================================
-   Code blocks
+   Code blocks — header strip + body, see src/theme/CodeBlock/Layout
    ============================================= */
 .prism-code {
-  font-size: 12px !important;
-}
-
-div[class*='codeBlockTitle'] {
   font-family: var(--as-font-data);
-  font-size: 11px;
-  letter-spacing: 1px;
-  text-transform: uppercase;
-  color: var(--as-primary-3);
-  background: var(--as-code-title-bg);
-  border-bottom: 1px solid var(--ifm-hr-border-color);
-}
-
-div[class*='codeBlockContent'] {
+  font-size: 13px !important;
+  line-height: 1.7;
   background: var(--as-code-block-bg) !important;
+  color: var(--as-code-text) !important;
 }
 
 /* Only theme Docusaurus markdown code blocks — page-level terminal
@@ -978,6 +1081,8 @@ div[class*='codeBlockContent'] {
 .markdown pre,
 .theme-code-block pre {
   background: var(--as-code-block-bg) !important;
+  border-radius: 0;
+  margin-bottom: 0;
 }
 
 /* Infima paints every <code> with the inline-code chip background —
@@ -987,22 +1092,31 @@ pre code,
   background: transparent !important;
 }
 
+.theme-code-block .prism-code code {
+  padding: 16px 20px;
+  font-size: 13px;
+  line-height: 1.7;
+}
+
 /* Code blocks read as terminal cards */
 .theme-code-block {
-  border-radius: 16px;
+  border-radius: 12px !important;
   overflow: hidden;
-  border: 1px solid var(--as-line-on-void);
-  box-shadow: none;
+  border: 1px solid var(--as-ink);
+  box-shadow: 0 1px 2px rgba(0, 30, 18, 0.06), 0 8px 24px -12px rgba(0, 30, 18, 0.25);
 }
 
-.markdown pre {
-  border-radius: 0;
-  margin-bottom: 0;
+.theme-code-block pre::-webkit-scrollbar {
+  height: 8px;
 }
 
-.prism-code {
-  background: var(--as-code-block-bg) !important;
-  color: var(--as-code-text) !important;
+.theme-code-block pre::-webkit-scrollbar-thumb {
+  background: rgba(220, 247, 238, 0.15);
+  border-radius: 999px;
+}
+
+.theme-code-block pre::-webkit-scrollbar-track {
+  background: transparent;
 }
 
 /* =============================================
@@ -1109,8 +1223,6 @@ pre code,
    ============================================= */
 /* Responsive rules */
 
-
-
 /* =============================================
    Blog — warm theme adjustments
    ============================================= */
@@ -1180,16 +1292,9 @@ html:has(.homepage-wrapper) {
 
 /* =============================================
    Blog — Antseed brand page redesign
-   Content/SEO untouched. Dark-first soil surface,
+   Content/SEO untouched. Soil surface,
    readable cards, compact metadata, mobile-safe.
    ============================================= */
-html[data-theme='dark'] .blog-wrapper,
-html[data-theme='dark'] .blog-wrapper .main-wrapper,
-html[data-theme='dark'] .blog-list-page .main-wrapper,
-html[data-theme='dark'] .blog-post-page .main-wrapper,
-html[data-theme='dark'] main[class*='blog'] {
-  background: var(--as-page-bg) !important;
-}
 html[data-theme='light'] .blog-wrapper,
 html[data-theme='light'] .blog-wrapper .main-wrapper,
 html[data-theme='light'] .blog-list-page .main-wrapper,
@@ -1869,10 +1974,6 @@ html[data-theme='light'] .blog-wrapper .pagination-nav__link:hover {
   color: var(--as-text-2);
 }
 
-html[data-theme='dark'] .usecase:hover {
-  background: rgba(255, 255, 255, 0.06);
-}
-
 /* mobile sidebar: rows stack as plain menu entries */
 .navbar-sidebar .usecase {
   padding: 8px 12px;
@@ -1885,5 +1986,7 @@ html[data-theme='dark'] .usecase:hover {
   .navbar__brand { margin-right: 12px; }
   .navbar__items .navbar__item.navbar__link,
   .navbar__items .navbar__item.dropdown > .navbar__link { padding-inline: 8px; }
-  .navbar__items--right .header-download-link { padding-inline: 14px; }
+  .navbar__items--right .header-download-link,
+  .navbar__items--right .header-gateway-link { padding-inline: 14px; }
+  .navbar__items .navbar__link { white-space: nowrap; }
 }

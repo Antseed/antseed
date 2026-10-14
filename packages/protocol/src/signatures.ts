@@ -115,7 +115,7 @@ export interface ReceiveAuthorizationMessage {
 // =========================================================================
 
 /**
- * SpendingAuth metadata v3.
+ * SpendingAuth metadata v4.
  *
  * ABI layout:
  *   abi.encode(
@@ -124,6 +124,8 @@ export interface ReceiveAuthorizationMessage {
  *     uint256 cumulativeOutputTokens,
  *     uint256 cumulativeRequestCount,
  *     uint256 cumulativeOutputImages,
+ *     uint256 cumulativeVideoGenerations,
+ *     uint256 cumulativeVideoSeconds,
  *     ServiceTotal[] services
  *   )
  *
@@ -131,7 +133,7 @@ export interface ReceiveAuthorizationMessage {
  * aggregate token/request counters by decoding only those fields. Service
  * entries are buyer-side attribution metadata for indexers: input tokens
  * include cached input, with cached input broken out separately. The service
- * tuple appends cumulativeOutputImages after the v2 fields; decoders must
+ * tuple appends image and video counters after the v2 fields; decoders must
  * switch on the leading version word before decoding the services array.
  *
  * Generated images are counted twice, deliberately:
@@ -153,6 +155,8 @@ export interface SpendingAuthMetadata {
   cumulativeRequestCount: bigint;
   /** Optional so FreeUsageMetadata-shaped objects remain assignable; encodes as 0. */
   cumulativeOutputImages?: bigint;
+  cumulativeVideoGenerations?: bigint;
+  cumulativeVideoSeconds?: bigint;
   services?: SpendingAuthServiceMetadata[];
 }
 
@@ -164,19 +168,21 @@ export interface SpendingAuthServiceMetadata {
   cumulativeOutputTokens: bigint;
   cumulativeRequestCount: bigint;
   cumulativeOutputImages: bigint;
+  cumulativeVideoGenerations?: bigint;
+  cumulativeVideoSeconds?: bigint;
 }
 
-export const METADATA_VERSION = 3n;
+export const METADATA_VERSION = 4n;
 
 /**
- * Flat output-token equivalent credited per generated image in v3 metadata
+ * Flat output-token equivalent credited per generated image in payment metadata
  * (Gemini 2.5 Flash Image's published rate). Attribution only — never feeds
  * cost verification. Bound to METADATA_VERSION: changing it requires a bump.
  */
 export const OUTPUT_IMAGE_TOKEN_EQUIVALENT = 1290n;
 
 const SERVICE_METADATA_ABI_TYPE =
-  'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]';
+  'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]';
 
 /** v2 service tuple, still used by FreeUsage metadata v1 (no image counter). */
 const SERVICE_METADATA_ABI_TYPE_V2 =
@@ -186,15 +192,21 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
   const coder = AbiCoder.defaultAbiCoder();
   const services = [...(metadata.services ?? [])].sort((a, b) =>
     a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
-  );
+  ).map((service) => ({
+    ...service,
+    cumulativeVideoGenerations: service.cumulativeVideoGenerations ?? 0n,
+    cumulativeVideoSeconds: service.cumulativeVideoSeconds ?? 0n,
+  }));
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE],
     [
       METADATA_VERSION,
       metadata.cumulativeInputTokens,
       metadata.cumulativeOutputTokens,
       metadata.cumulativeRequestCount,
       metadata.cumulativeOutputImages ?? 0n,
+      metadata.cumulativeVideoGenerations ?? 0n,
+      metadata.cumulativeVideoSeconds ?? 0n,
       services,
     ],
   );
@@ -211,6 +223,8 @@ export interface ServiceMetadataDelta {
   outputTokens: bigint;
   requests: bigint;
   outputImages: bigint;
+  videoGenerations?: bigint;
+  videoSeconds?: bigint;
 }
 
 export function withServiceMetadata<T extends { services?: SpendingAuthServiceMetadata[] }>(
@@ -234,6 +248,8 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeOutputTokens: 0n,
     cumulativeRequestCount: 0n,
     cumulativeOutputImages: 0n,
+    cumulativeVideoGenerations: 0n,
+    cumulativeVideoSeconds: 0n,
   };
 
   byServiceId.set(serviceId, {
@@ -244,6 +260,8 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeOutputTokens: existing.cumulativeOutputTokens + delta.outputTokens,
     cumulativeRequestCount: existing.cumulativeRequestCount + delta.requests,
     cumulativeOutputImages: (existing.cumulativeOutputImages ?? 0n) + delta.outputImages,
+    cumulativeVideoGenerations: (existing.cumulativeVideoGenerations ?? 0n) + (delta.videoGenerations ?? 0n),
+    cumulativeVideoSeconds: (existing.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
   });
 
   return {
@@ -263,6 +281,8 @@ export const ZERO_METADATA: SpendingAuthMetadata = {
   cumulativeOutputTokens: 0n,
   cumulativeRequestCount: 0n,
   cumulativeOutputImages: 0n,
+  cumulativeVideoGenerations: 0n,
+  cumulativeVideoSeconds: 0n,
   services: [],
 };
 

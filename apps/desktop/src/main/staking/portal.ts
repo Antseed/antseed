@@ -7,6 +7,7 @@ import { ensureSecureIdentity, getSecureIdentity } from '../identity.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { getMainWindow } from '../ui/window.js';
 import { invalidateCreditsCache } from '../payments/credits.js';
+import { invalidateSharedChainReads } from '../payments/shared-chain.js';
 import { createStakingWindowSession } from './window.js';
 import { StakingSessionManager } from './session.js';
 
@@ -29,6 +30,7 @@ export const stakingSessions = new StakingSessionManager(async () => {
     address: identity.wallet.address,
     onActionFinished: () => {
       invalidateCreditsCache();
+      invalidateSharedChainReads();
       getMainWindow()?.webContents.send('payments:completed');
     },
   }, getMainWindow);

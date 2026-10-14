@@ -558,8 +558,8 @@ const api = {
   setDebugLogs(enabled: boolean): Promise<{ ok: true }> {
     return ipcRenderer.invoke('desktop:set-debug-logs', enabled) as Promise<{ ok: true }>;
   },
-  creditsGetInfo() {
-    return ipcRenderer.invoke('credits:get-info');
+  creditsGetInfo(opts?: { fresh?: boolean }) {
+    return ipcRenderer.invoke('credits:get-info', opts);
   },
   identityExportKey: () => ipcRenderer.invoke('identity:export-key'),
   identityImportKey: (privateKeyHex: string) => ipcRenderer.invoke('identity:import-key', privateKeyHex),
@@ -573,7 +573,7 @@ const api = {
   paymentsCloseCheckoutWindows: (): Promise<{ ok: boolean }> => ipcRenderer.invoke('payments:close-checkout-windows') as Promise<{ ok: boolean }>,
   paymentsGetBuyerUsage: () => ipcRenderer.invoke('payments:get-buyer-usage'),
   paymentsGetBuyerSpendHistory: () => ipcRenderer.invoke('payments:get-buyer-spend-history'),
-  paymentsGetChannels: () => ipcRenderer.invoke('payments:get-channels'),
+  paymentsGetChannels: (opts?: { fresh?: boolean }) => ipcRenderer.invoke('payments:get-channels', opts),
   paymentsRequestCooperativeClose: (opts: { peerId: string }) => ipcRenderer.invoke('payments:request-cooperative-close', opts),
   paymentsGetRewardsSummary: () => ipcRenderer.invoke('payments:get-rewards-summary'),
   onPaymentsCompleted(handler: () => void): () => void {
@@ -635,6 +635,8 @@ const api = {
   publicTunnelStart: (settings?: { provider?: 'cloudflare' | 'ngrok' }) => ipcRenderer.invoke('public-tunnel:start', settings),
   publicTunnelStop: () => ipcRenderer.invoke('public-tunnel:stop'),
   publicTunnelGetApiKey: () => ipcRenderer.invoke('public-tunnel:get-api-key'),
+  publicTunnelGetConsoleStatus: () => ipcRenderer.invoke('public-tunnel:get-console-status'),
+  publicTunnelClaimConsole: () => ipcRenderer.invoke('public-tunnel:claim-console'),
 
   /* Floating always-on-top pill window */
   vprFloatOpen(data: unknown): Promise<{ ok: boolean }> {

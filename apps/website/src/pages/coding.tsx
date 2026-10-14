@@ -34,7 +34,7 @@ type ConnectCard = {name: string; logo?: string; glyph?: ReactNode; to: string};
 const CONNECT_CARDS: ConnectCard[] = [
   {name: 'Claude Code', logo: '/logos/anthropic.png', to: '/integrations/claude-code'},
   {name: 'Codex', logo: '/logos/openai.png', to: '/integrations/codex'},
-  {name: 'Cursor', glyph: <Cursor size={24} />, to: '/docs/guides/public-tunnels#use-it-with-cursor'},
+  {name: 'Cursor', glyph: <Cursor size={24} />, to: '/docs/tunnels#use-it-with-cursor'},
   {name: 'OpenCode', glyph: SquareGlyph, to: '/integrations/opencode'},
   {name: 'Pi', glyph: PiGlyph, to: '/integrations/pi'},
 ];
@@ -180,11 +180,11 @@ const CODING_FAQ = [
   },
   {
     q: 'Is it the same model I get on the plan?',
-    a: 'The live board lists what providers serve, including frontier models, each at the provider’s own price. Every response is signed by the provider and matched against the model’s fingerprint; providers who serve something else lose reputation and stop getting routed. <a href="/docs/guides/verify-tee">How verification works →</a>',
+    a: 'The live board lists what providers serve, including frontier models, each at the provider’s own price. Every response is signed by the provider and matched against the model’s fingerprint; providers who serve something else lose reputation and stop getting routed. <a href="/docs/verify-tee">How verification works →</a>',
   },
   {
     q: 'Does Cursor work?',
-    a: "Yes, through a public endpoint. Some Cursor requests come from Cursor's own servers, which cannot reach your <code>localhost</code>, so publish an authenticated HTTPS endpoint from the AI VPN, then in Cursor's model settings paste the Antseed key as the OpenAI API key and the endpoint as the OpenAI base URL. <a href=\"/docs/guides/public-tunnels#use-it-with-cursor\">Cursor setup →</a>",
+    a: "Yes, through a public endpoint. Some Cursor requests come from Cursor's own servers, which cannot reach your <code>localhost</code>, so publish an authenticated HTTPS endpoint from the AI VPN, then in Cursor's model settings paste the Antseed key as the OpenAI API key and the endpoint as the OpenAI base URL. <a href=\"/docs/tunnels#use-it-with-cursor\">Cursor setup →</a>",
   },
   {
     q: 'How do I pick which model my tool uses?',
@@ -204,7 +204,7 @@ function CodingPrivacy() {
       }}
       privateCard={{
         text: 'Working on something you cannot share? Route to a TEE-verified provider and your source is processed inside a secure enclave the provider cannot read.',
-        to: '/docs/guides/verify-tee',
+        to: '/docs/verify-tee',
       }}
     />
   );

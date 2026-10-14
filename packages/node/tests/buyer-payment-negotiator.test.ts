@@ -58,6 +58,7 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     getRequestBilling: vi.fn().mockReturnValue(undefined),
     getSessionPricing: vi.fn().mockReturnValue(null),
     maxPerRequestUsdc: 100_000n,
+    maxVideoRequestUsdc: 5_000_000n,
     maxReserveAmountUsdc: 10_000_000n,
   } as unknown as BuyerPaymentManager & Record<string, unknown>;
 }
@@ -132,6 +133,23 @@ describe('BuyerPaymentNegotiator', () => {
   });
 
   describe('preparePreRequestAuth', () => {
+    it('rejects video pricing above the buyer cap before any request is sent', () => {
+      const request: SerializedHttpRequest = { requestId: 'video-cap', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: enc.encode(JSON.stringify({ model: 'video-model', duration: '8s' })) };
+      expect(() => negotiator.trackRequestBillingContext(request, 'video-model', {
+        sellerPeerId: SELLER_PEER_ID, provider: 'venice', service: 'video-model', serviceApiProtocol: 'venice-video',
+        unitModel: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 1 }] },
+      })).toThrow('Video costs 8.0 USDC, limit is 5.0 USDC');
+      expect(bpm.signPerRequestAuth).not.toHaveBeenCalled();
+    });
+    it('attributes malformed video quantities to the buyer', () => {
+      const request: SerializedHttpRequest = { requestId: 'video-invalid', method: 'POST', path: '/api/v1/video/queue', headers: { 'content-type': 'application/json' }, body: enc.encode(JSON.stringify({ model: 'video-model', duration: -1 })) };
+      try {
+        negotiator.trackRequestBillingContext(request, 'video-model', { sellerPeerId: SELLER_PEER_ID, provider: 'venice', service: 'video-model', serviceApiProtocol: 'venice-video', unitModel: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } });
+        expect.fail('Expected invalid request');
+      } catch (error) {
+        expect(error).toMatchObject({ code: 'invalid-request', attribution: 'buyer' });
+      }
+    });
     it('no-ops when peer is not locked', async () => {
       await negotiator.preparePreRequestAuth(peer, conn);
       expect(bpm.signPerRequestAuth).not.toHaveBeenCalled();
@@ -348,7 +366,8 @@ describe('BuyerPaymentNegotiator', () => {
         currentAcceptedCumulative: '56218',
       });
 
-      const result = await negotiator.handle402(response, peer, conn, makeRequest());
+      const req = makeRequest();
+      const result = await negotiator.handle402(response, peer, conn, req);
 
       expect(bpm.clearLockConfirmation).not.toHaveBeenCalled();
       expect(bpm.extendCurrentSpendingAuth).toHaveBeenCalledWith(
@@ -356,6 +375,7 @@ describe('BuyerPaymentNegotiator', () => {
         10000n,
         expect.anything(),
         85119n, // <— the catch-up target the seller asked for
+        req.requestId,
       );
       expect(result.action).toBe('retry');
     });
@@ -622,6 +642,8 @@ describe('BuyerPaymentNegotiator', () => {
       expect(body.reason).toBeUndefined();
       expect(body.minBudgetPerRequest).toBe('10000');
       expect(body.suggestedAmount).toBe('100000');
+      // What the session would lock, so the UI can name the exact shortfall.
+      expect(body.requiredReserve).toBe('100000');
       expect(body.peerId).toBe(peer.peerId);
       // Should be the buyer-authored, user-friendly body — not the raw seller 402
       // fields that would leak internal catch-up/accounting state.
@@ -793,10 +815,13 @@ describe('BuyerPaymentNegotiator', () => {
           unitLimits: { output_images: 1 },
         },
         requestFacts: {
-          model: 'gpt-image-1',
-          size: 'auto',
-          quality: 'auto',
-          requestedImages: 1,
+          kind: 'image',
+          image: {
+            model: 'gpt-image-1',
+            size: 'auto',
+            quality: 'auto',
+            requestedImages: 1,
+          },
         },
         unitModel: {
           version: 1,

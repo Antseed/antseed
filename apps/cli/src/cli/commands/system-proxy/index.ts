@@ -8,7 +8,7 @@ import { registerSystemProxyStatusCommand } from './status.js'
 export function registerSystemProxyCommands(program: Command): void {
   const systemProxyCmd = program
     .command('system-proxy')
-    .description('Local System Proxy for routing configured tools through AntSeed')
+    .description('Local System Proxy for routing configured tools through Antseed')
 
   registerSystemProxyInstallCaCommand(systemProxyCmd)
   registerSystemProxyCaTrustStateCommand(systemProxyCmd)

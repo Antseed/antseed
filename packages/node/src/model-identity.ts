@@ -9,8 +9,16 @@ export const CODING_ONLY_SUFFIX_RE = /(?:[-:._\s]+coding[-:._\s]+only|codingonly
  */
 function stripModelDecorations(value: string): string {
   let normalized = String(value ?? '').trim().toLowerCase();
-  const slash = normalized.lastIndexOf('/');
-  if (slash >= 0) normalized = normalized.slice(slash + 1);
+  // Drop only the leading vendor segment: "openai/gpt-5" is "gpt-5", but
+  // "bytedance/seedance-2.5/text-to-video" must not collapse into every other
+  // "<vendor>/<model>/text-to-video" endpoint. "accounts/x/models/<id>" paths
+  // keep only the model id.
+  const modelsPath = normalized.match(/^accounts\/[^/]+\/models\/(.+)$/);
+  if (modelsPath) normalized = modelsPath[1] ?? '';
+  else {
+    const slash = normalized.indexOf('/');
+    if (slash >= 0) normalized = normalized.slice(slash + 1);
+  }
   normalized = normalized.replace(/[-:._\s]+(latest|\d{6,8}|\d{4}-\d{2}(-\d{2})?)$/, '');
   normalized = normalized.replace(/^anthropic[-:._\s]+(?=claude(?:[-:._\s]|\d|$))/, '');
   normalized = normalized.replace(/^openai[-:._\s]+(?=gpt(?:[-:._\s]|\d|$))/, '');
@@ -92,7 +100,7 @@ function titleModelToken(token: string): string {
 
 function prettifyModelSlug(value: string): string {
   return stripModelDecorations(value)
-    .split(/[-_:\s]+/)
+    .split(/[-_:/\s]+/)
     .filter(Boolean)
     .map(titleModelToken)
     .join(' ');

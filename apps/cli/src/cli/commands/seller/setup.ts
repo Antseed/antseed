@@ -90,6 +90,10 @@ export function getSellerSetupCredentialHint(pluginName: string): string {
       return 'start your local LLM runtime (no API key required)';
     case 'typesafe':
       return 'export TYPESAFE_API_KEY=<key>';
+    case 'venice-video':
+      return 'export VENICE_VIDEO_API_KEY=<seller-api-key>';
+    case 'fal-video':
+      return 'export FAL_VIDEO_API_KEY=<seller-fal-key>';
     default:
       return `set the credentials required by ${pluginName}`;
   }
@@ -110,7 +114,7 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
 
       try {
-        console.log(chalk.bold('\nAntSeed Seller Setup\n'));
+        console.log(chalk.bold('\nAntseed seller setup\n'));
 
         const currentRpcUrl = config.payments.crypto?.rpcUrl;
         const rpcPrompt = currentRpcUrl

@@ -369,6 +369,18 @@ function normalizeSellerFreeTier(
   };
 }
 
+function normalizeSellerFreeUsage(
+  value: unknown,
+  fallback?: AntseedConfig['seller']['freeUsage'],
+): { freeUsage: NonNullable<AntseedConfig['seller']['freeUsage']> } | Record<string, never> {
+  const src: Record<string, unknown> | undefined = isRecord(value) ? value : fallback;
+  if (!src) return {};
+  const out: NonNullable<AntseedConfig['seller']['freeUsage']> = {};
+  if (typeof src['recordBatchSize'] === 'number') out.recordBatchSize = src['recordBatchSize'];
+  if (typeof src['recordFlushIntervalMs'] === 'number') out.recordFlushIntervalMs = src['recordFlushIntervalMs'];
+  return Object.keys(out).length > 0 ? { freeUsage: out } : {};
+}
+
 function mergeSellerConfig(
   defaults: AntseedConfig['seller'],
   value: unknown
@@ -385,6 +397,7 @@ function mergeSellerConfig(
       ...(normalizeSellerHealthCheck(undefined, defaults.healthCheck)),
       ...(normalizeSellerGasCheck(undefined, defaults.gasCheck)),
       ...(normalizeSellerFreeTier(undefined, defaults.freeTier)),
+      ...(normalizeSellerFreeUsage(undefined, defaults.freeUsage)),
     };
   }
 
@@ -409,6 +422,10 @@ function mergeSellerConfig(
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
     ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
+    ...(value['restrictedCountries'] !== undefined
+      ? { restrictedCountries: value['restrictedCountries'] as string[] }
+      : {}),
+    ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
   };
 }
 
@@ -501,6 +518,7 @@ function mergeBuyerConfig(
       disableMetadataV2Services: defaults.disableMetadataV2Services,
       autoSweep: defaults.autoSweep,
       ...(normalizeBuyerVerification(undefined, defaults.verification)),
+      ...(defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
     };
   }
   return {
@@ -536,6 +554,9 @@ function mergeBuyerConfig(
       'buyer.autoSweep',
     ),
     ...(normalizeBuyerVerification(value['verification'], defaults.verification)),
+    ...(value['verifier'] !== undefined
+      ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
+      : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
   };
 }
 
@@ -570,6 +591,15 @@ export async function loadConfig(configPath: string): Promise<AntseedConfig> {
     return createDefaultConfig();
   }
 
+  return configFromObject(parsedRaw);
+}
+
+/**
+ * A parsed config file's object merged over the defaults and validated,
+ * exactly as `loadConfig` reads it. Throws when the result is invalid, so an
+ * edit can be checked before it is written.
+ */
+export function configFromObject(parsedRaw: unknown): AntseedConfig {
   const defaults = createDefaultConfig();
   const parsed = isRecord(parsedRaw) ? parsedRaw : {};
 

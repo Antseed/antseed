@@ -40,7 +40,7 @@ Reselling subscription credentials violates upstream provider terms of service.
 buyers are not required to already hold or handle crypto: the desktop app
 offers a card checkout (Stripe-backed onramp, region-gated) alongside crypto
 funding, and USDC can be funded from an exchange withdrawal, another wallet,
-or a card on-ramp (see `apps/website/docs/guides/payments.md`,
+or a card on-ramp (see `apps/website/docs/gateway/funding.md`,
 `apps/desktop/src/renderer/ui/components/views/VprDepositView.tsx`, and
 `apps/cli/README.md`). Never describe AntSeed as crypto-only, wallet-only, or
 as requiring the user to already own cryptocurrency.

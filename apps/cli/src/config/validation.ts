@@ -258,6 +258,27 @@ function validateVerifications(
   }
 }
 
+function validateBuyerVerifier(
+  path: string,
+  verifier: AntseedConfig['buyer']['verifier'],
+  errors: string[],
+): void {
+  if (verifier === undefined) return;
+  if (!verifier || typeof verifier !== 'object' || Array.isArray(verifier)) {
+    errors.push(`${path} must be an object when provided`);
+    return;
+  }
+  for (const key of ['enabled', 'require'] as const) {
+    if (verifier[key] !== undefined && typeof verifier[key] !== 'boolean') errors.push(`${path}.${key} must be a boolean`);
+  }
+  if (verifier.prefer !== undefined && (!Array.isArray(verifier.prefer) || verifier.prefer.some((id) => typeof id !== 'string' || id.trim() === ''))) {
+    errors.push(`${path}.prefer must be a list of verifier ids`);
+  }
+  if (verifier.enabled === false && (verifier.require || (verifier.prefer?.length ?? 0) > 0)) {
+    errors.push(`${path}.enabled cannot be false while require or prefer is set`);
+  }
+}
+
 function validateBuyerVerification(
   path: string,
   verification: AntseedConfig['buyer']['verification'],
@@ -337,6 +358,7 @@ export function validateConfig(config: AntseedConfig): string[] {
   }
 
   validateBuyerVerification('buyer.verification', config.buyer.verification, errors);
+  validateBuyerVerifier('buyer.verifier', config.buyer.verifier, errors);
 
   if (!Number.isInteger(config.seller.maxConcurrentBuyers) || config.seller.maxConcurrentBuyers < 1) {
     errors.push('seller.maxConcurrentBuyers must be an integer >= 1');
@@ -432,6 +454,24 @@ export function validateConfig(config: AntseedConfig): string[] {
       (!Number.isSafeInteger(freeTier.windowMs) || freeTier.windowMs < 1_000)
     ) {
       errors.push('seller.freeTier.windowMs must be a safe integer >= 1000');
+    }
+  }
+
+  const restrictedCountries = config.seller.restrictedCountries;
+  if (
+    restrictedCountries !== undefined &&
+    (!Array.isArray(restrictedCountries) || !restrictedCountries.every((code) => /^[A-Z]{2}$/.test(String(code))))
+  ) {
+    errors.push('seller.restrictedCountries must be an array of 2-letter uppercase ISO country codes');
+  }
+
+  if (config.seller.freeUsage !== undefined) {
+    const { recordBatchSize, recordFlushIntervalMs } = config.seller.freeUsage;
+    if (recordBatchSize !== undefined && (!Number.isSafeInteger(recordBatchSize) || recordBatchSize < 1)) {
+      errors.push('seller.freeUsage.recordBatchSize must be a positive safe integer');
+    }
+    if (recordFlushIntervalMs !== undefined && (!Number.isSafeInteger(recordFlushIntervalMs) || recordFlushIntervalMs < 1_000)) {
+      errors.push('seller.freeUsage.recordFlushIntervalMs must be a safe integer >= 1000');
     }
   }
 

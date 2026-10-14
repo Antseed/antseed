@@ -5,7 +5,7 @@ import { PayCheckoutDeposit } from '../components/PayCheckoutDeposit';
 import { PayCheckoutWithdraw } from '../components/PayCheckoutWithdraw';
 import { PayChannelClose } from '../components/PayChannelClose';
 import { openRewardsDashboard } from '../api';
-import { Button } from '../components/Button';
+import { Button } from '@antseed/ui';
 import { notifyPaymentCompleted } from '../api';
 import { truncateAddress } from '../utils/format';
 import { getExplorerTxUrl } from '../utils/txLink';

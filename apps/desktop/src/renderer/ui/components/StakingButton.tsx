@@ -43,13 +43,13 @@ export function StakingButton({ className, children, page = 'stake', disabled = 
       <button type="button" className={[className, styles.primary].filter(Boolean).join(' ')} onClick={() => void run('open')} disabled={busy.open || disabled} aria-busy={busy.open}>
         {busy.open ? 'Opening…' : children}
       </button>
-      <InfoTooltip narrow content={<><strong>{copyLabel}</strong><span>Paste into your preferred browser on this computer. Keep AntSeed open and don’t share this session link.</span></>}>
+      <InfoTooltip narrow content={<><strong>{copyLabel}</strong><span>Paste into your preferred browser on this computer. Keep Antseed open and don’t share this session link.</span></>}>
         <button type="button" className={styles.copy} onClick={() => void run('copy')} disabled={busy.copy || copyDisabled} aria-label={copyLabel} aria-busy={busy.copy}>
           <HugeiconsIcon icon={copied ? Tick02Icon : Copy01Icon} size={15} strokeWidth={1.8} aria-hidden="true" />
         </button>
       </InfoTooltip>
     </div>
-    <span role="status" className={styles.status}>{copied ? `${page === 'rewards' ? 'Rewards' : 'Staking'} link copied. Paste into your preferred browser on this computer. Keep AntSeed open.` : ''}</span>
+    <span role="status" className={styles.status}>{copied ? `${page === 'rewards' ? 'Rewards' : 'Staking'} link copied. Paste into your preferred browser on this computer. Keep Antseed open.` : ''}</span>
     {error && <span role="alert" className={styles.error}>{error}</span>}
   </>;
 }

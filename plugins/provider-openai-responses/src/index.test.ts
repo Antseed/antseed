@@ -196,6 +196,47 @@ describe('provider-openai-responses plugin', () => {
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 
+  it('preserves an explicit reasoning profile when relaying to the Codex backend', async () => {
+    const authFile = writeAuthFile({
+      tokens: {
+        access_token: makeJwt({}),
+        account_id: 'acct-file',
+      },
+    });
+    const fetchMock = vi.fn().mockResolvedValue(
+      new Response(JSON.stringify({ id: 'resp_1' }), {
+        status: 200,
+        headers: { 'content-type': 'application/json' },
+      }),
+    );
+    globalThis.fetch = fetchMock as unknown as typeof fetch;
+
+    const provider = plugin.createProvider({
+      OPENAI_RESPONSES_AUTH_FILE: authFile,
+      ANTSEED_ALLOWED_SERVICES: 'gpt-5.6-sol',
+    });
+
+    await provider.handleRequest({
+      requestId: 'req-reasoning-profile',
+      method: 'POST',
+      path: '/v1/responses',
+      headers: { 'content-type': 'application/json' },
+      body: new TextEncoder().encode(JSON.stringify({
+        model: 'gpt-5.6-sol',
+        input: 'Return only 42',
+        reasoning: { effort: 'none' },
+        stream: false,
+      })),
+    });
+
+    const [, init] = fetchMock.mock.calls[0] as [string, RequestInit];
+    const upstreamBody = JSON.parse(
+      new TextDecoder().decode((init.body as Uint8Array) ?? new Uint8Array(0)),
+    ) as Record<string, unknown>;
+    expect(upstreamBody.reasoning).toEqual({ effort: 'none' });
+    rmSync(dirname(authFile), { recursive: true, force: true });
+  });
+
   it('rewrites announced service names via alias map', async () => {
     const authFile = writeAuthFile({
       tokens: {
@@ -337,9 +378,23 @@ describe('provider-openai-responses plugin', () => {
     const fetchMock = vi.fn().mockResolvedValue(
       new Response(
         'event: response.created\n'
-          + 'data: {"type":"response.created","response":{"id":"resp_1","model":"gpt-5.5","status":"in_progress","output":[]}}\n\n'
+          + 'data: {"type":"response.created","sequence_number":0,"response":{"id":"resp_1","model":"gpt-5.5","status":"in_progress","output":[]}}\n\n'
+          + 'event: response.output_item.added\n'
+          + 'data: {"type":"response.output_item.added","sequence_number":1,"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"in_progress","content":[]}}\n\n'
+          + 'event: response.content_part.added\n'
+          + 'data: {"type":"response.content_part.added","sequence_number":2,"item_id":"msg_1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"","annotations":[]}}\n\n'
+          + 'event: response.output_text.delta\n'
+          + 'data: {"type":"response.output_text.delta","sequence_number":3,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"h","logprobs":[]}\n\n'
+          + 'event: response.output_text.delta\n'
+          + 'data: {"type":"response.output_text.delta","sequence_number":4,"item_id":"msg_1","output_index":0,"content_index":0,"delta":"i","logprobs":[]}\n\n'
+          + 'event: response.output_text.done\n'
+          + 'data: {"type":"response.output_text.done","sequence_number":5,"item_id":"msg_1","output_index":0,"content_index":0,"text":"hi","logprobs":[]}\n\n'
+          + 'event: response.content_part.done\n'
+          + 'data: {"type":"response.content_part.done","sequence_number":6,"item_id":"msg_1","output_index":0,"content_index":0,"part":{"type":"output_text","text":"hi","annotations":[]}}\n\n'
+          + 'event: response.output_item.done\n'
+          + 'data: {"type":"response.output_item.done","sequence_number":7,"output_index":0,"item":{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}}\n\n'
           + 'event: response.completed\n'
-          + 'data: {"type":"response.completed","response":{"id":"resp_1","object":"response","model":"gpt-5.5","status":"completed","output":[{"type":"message","id":"msg_1","role":"assistant","status":"completed","content":[{"type":"output_text","text":"hi","annotations":[]}]}],"output_text":"hi","usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}\n\n'
+          + 'data: {"type":"response.completed","sequence_number":8,"response":{"id":"resp_1","object":"response","model":"gpt-5.5","status":"completed","output":[],"usage":{"input_tokens":3,"output_tokens":1,"total_tokens":4}}}\n\n'
           + 'data: [DONE]\n\n',
         {
           status: 200,
@@ -374,7 +429,14 @@ describe('provider-openai-responses plugin', () => {
     expect(response.headers['content-type']).toBe('application/json');
     const body = JSON.parse(new TextDecoder().decode(response.body)) as Record<string, unknown>;
     expect(body.id).toBe('resp_1');
-    expect(body.output_text).toBe('hi');
+    expect(body.output).toEqual([{
+      type: 'message',
+      id: 'msg_1',
+      role: 'assistant',
+      status: 'completed',
+      content: [{ type: 'output_text', text: 'hi', annotations: [] }],
+    }]);
+    expect(body.output_text).toBeUndefined();
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 

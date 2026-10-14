@@ -876,7 +876,7 @@ export default function IntegrationPage({integration}: {integration: Integration
         note={
           <>
             <a href="/integrations">All integrations</a>
-            <a href="/docs/guides/using-the-api">Protocol guide</a>
+            <a href="/docs/api">Protocol guide</a>
           </>
         }>
         <Button to="/docs/install" variant="white" size="lg" arrow>Install Antseed</Button>

@@ -41,4 +41,13 @@ describe('canonicalModelKey', () => {
     expect(sameCanonicalModel('deepseek-v4-pro', 'deepseek-v4-pro:web')).toBe(false);
     expect(sameCanonicalModel('google-palm-2', 'palm-2')).toBe(false);
   });
+
+  it('keeps every path segment after the vendor', () => {
+    expect(sameCanonicalModel('openai/gpt-5.6-sol', 'gpt-5.6-sol')).toBe(true);
+    expect(sameCanonicalModel('accounts/fireworks/models/glm-5-2', 'glm-5.2')).toBe(true);
+    expect(sameCanonicalModel('bytedance/seedance-2.5/text-to-video', 'xai/grok-imagine-video/v1.5/lite/text-to-video')).toBe(false);
+    expect(sameCanonicalModel('fal-ai/veo3.1/fast', 'fal-ai/veo3.1')).toBe(false);
+    expect(sameCanonicalModel('minimax/h3-max/text-to-video', 'minimax/h3/text-to-video')).toBe(false);
+    expect(canonicalModelKey('bytedance/seedance-2.5/text-to-video')).toBe('seedance2.5texttovideo');
+  });
 });

@@ -1,6 +1,6 @@
 {
   "name": "@antseed/cli",
-  "version": "0.1.165",
+  "version": "0.1.180",
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
   "files": [
@@ -21,29 +21,42 @@
     "start:seed": "node dist/cli/index.js seed",
     "start:connect": "node dist/cli/index.js connect",
     "typecheck": "tsc --noEmit",
-    "test": "npm run build && node --test dist/config/*.test.js dist/cli/commands/**/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/tunnel/*.test.js"
+    "test": "npm run build && node --test dist/config/*.test.js dist/cli/*.test.js dist/cli/commands/**/*.test.js dist/proxy/*.test.js dist/plugins/*.test.js dist/system-proxy/*.test.js dist/gateway/*.test.js dist/gateway/*/*.test.js dist/gateway/*/*/*.test.js dist/routing-policy/*.test.js dist/buyer-identities/*.test.js"
   },
   "dependencies": {
+    "@ai-sdk/openai-compatible": "^3",
+    "@ai-sdk/tui": "^1",
     "@antseed/ant-agent": "workspace:*",
     "@antseed/ants": "workspace:*",
     "@antseed/api-adapter": "workspace:*",
+    "@antseed/connected-apps": "workspace:*",
+    "@antseed/gateway-console": "workspace:*",
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",
     "@antseed/router-core": "workspace:*",
     "@peculiar/x509": "^2.0.0",
+    "@simplewebauthn/server": "^13.1.0",
     "@tanstack/query-core": "5.97.0",
+    "ai": "^7",
+    "better-sqlite3": "^12.6.2",
     "chalk": "^5.6.2",
     "cli-table3": "^0.6.5",
     "commander": "^14.0.3",
     "dotenv": "^16.6.1",
+    "ethers": "~6.16.0",
+    "geoip-country": "^5",
+    "jose": "^6.0.0",
     "open": "^11.0.0",
     "ora": "^9.3.0",
     "qrcode": "^1.5.4",
-    "reflect-metadata": "^0.2.2"
+    "reflect-metadata": "^0.2.2",
+    "zod": "^4"
   },
   "devDependencies": {
     "@antseed/router-local": "workspace:*",
+    "@types/better-sqlite3": "^7.6.13",
+    "@types/geoip-country": "^5",
     "@types/node": "^20.11.0",
     "tsx": "^4.7.0",
     "typescript": "^5.3.0"

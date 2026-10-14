@@ -42,6 +42,33 @@ function validMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 
 
 describe('validateMetadata', () => {
+  it('validates announced video options', () => {
+    const metadata = validMetadata();
+    metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: { video: { durationsSeconds: [0, 5, 5], resolutions: ['bad value'], inputs: [], requiredInputs: ['first_frame'] } } };
+    expect(validateMetadata(metadata).map(error => error.message)).toEqual(expect.arrayContaining([
+      'Invalid video.durationsSeconds value 0',
+      'Duplicate video.durationsSeconds value 5',
+      'Invalid video.resolutions value "bad value"',
+      'video.requiredInputs must also be listed in video.inputs',
+    ]));
+    metadata.providers[0]!.serviceCapabilities = { [metadata.providers[0]!.services[0]!]: {
+      video: { durationsSeconds: [5] },
+    } };
+    expect(validateMetadata({ ...metadata, version: 12 })).toEqual([]);
+  });
+
+  it('accepts native video unit pricing and video output capabilities', () => {
+    const metadata = validMetadata();
+    const provider = metadata.providers[0]!;
+    provider.provider = 'venice';
+    provider.services = ['video'];
+    provider.serviceApiProtocols = { video: ['venice-video'] };
+    provider.serviceCapabilities = { video: { inputs: ['text'], outputs: ['video'] } };
+    provider.serviceUnitBillingModels = { video: {
+      'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] },
+    } };
+    expect(validateMetadata(metadata)).toEqual([]);
+  });
   it('should return no errors for valid metadata', () => {
     const errors = validateMetadata(validMetadata());
     expect(errors).toEqual([]);
@@ -305,7 +332,7 @@ describe('validateMetadata', () => {
     expect(bothErrors).toEqual([]);
   });
 
-  it('rejects non-image service unit billing models for now', () => {
+  it('rejects unit billing for unsupported chat protocols', () => {
     const errors = validateMetadata(validMetadata({
       version: SERVICE_UNIT_BILLING_METADATA_VERSION,
       providers: [

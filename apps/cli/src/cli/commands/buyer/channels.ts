@@ -43,7 +43,7 @@ async function listBuyerChannels(buyerCmd: Command, options: { status?: string; 
     const limit = parseInt(options.limit as string, 10) || 20;
     const statusFilter = options.status as string | undefined;
 
-    const allSessions = store.getAllChannelsByBuyer('buyer', buyerAddress);
+    const allSessions = store.getBuyerPaymentChannels(buyerAddress);
     let filtered = allSessions;
     if (statusFilter) filtered = filtered.filter((session) => session.status === statusFilter);
 

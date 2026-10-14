@@ -1,17 +1,20 @@
 import type {
   CatalogServiceCapabilities,
   CatalogServiceProtocol,
+  NativeVideoProtocol,
   NetworkServiceCatalogPeer,
   PeerInfo,
 } from '@antseed/node';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
 import {
+  NATIVE_VIDEO_PROTOCOLS,
   buildNetworkServiceOffers,
+  isNativeVideoProtocol,
   normalizedModelReputationScore,
   preferredModelDisplayName,
 } from '@antseed/node';
 
-export type ChatServiceProtocol = Exclude<CatalogServiceProtocol, 'openai-images' | 'typesafe-systemone'>;
+export type ChatServiceProtocol = Exclude<CatalogServiceProtocol, 'openai-images' | 'typesafe-systemone' | NativeVideoProtocol>;
 export type { CatalogServiceCapabilities, CatalogServiceProtocol };
 
 export type ChatServiceCatalogEntry = {
@@ -30,9 +33,20 @@ export type ChatServiceCatalogEntry = {
   cachedInputUsdPerMillion?: number;
   minImageUsdPerImage?: number;
   maxImageUsdPerImage?: number;
+  /** Native video offers: advertised `video_seconds` price range (USD per second). */
+  minVideoUsdPerSecond?: number;
+  maxVideoUsdPerSecond?: number;
+  /** Native video offers: advertised `video_generations` price range (USD per video). */
+  minVideoUsdPerVideo?: number;
+  maxVideoUsdPerVideo?: number;
   categories?: string[];
   description?: string;
 };
+
+export type VideoPriceFields = Pick<
+  ChatServiceCatalogEntry,
+  'minVideoUsdPerSecond' | 'maxVideoUsdPerSecond' | 'minVideoUsdPerVideo' | 'maxVideoUsdPerVideo'
+>;
 
 type NetworkModelsPeerOffer = {
   advertisedVerifierIds?: unknown;
@@ -49,6 +63,7 @@ type NetworkModelsPeerOffer = {
   cachedInputUsdPerMillion?: unknown;
   minImageUsdPerImage?: unknown;
   maxImageUsdPerImage?: unknown;
+  unitBillingModels?: unknown;
 };
 
 type NetworkModelsEntry = {
@@ -58,6 +73,7 @@ type NetworkModelsEntry = {
 
 const CATALOG_SERVICE_PROTOCOLS = new Set<string>([
   'anthropic-messages', 'openai-chat-completions', 'openai-responses', 'openai-images',
+  ...NATIVE_VIDEO_PROTOCOLS,
 ]);
 
 function isCatalogServiceProtocol(value: unknown): value is CatalogServiceProtocol {
@@ -97,7 +113,60 @@ function normalizeCapabilities(value: unknown): CatalogServiceCapabilities | und
   if (typeof raw.reasoning === 'boolean') capabilities.reasoning = raw.reasoning;
   if (typeof raw.toolUse === 'boolean') capabilities.toolUse = raw.toolUse;
   if (typeof raw.structuredOutput === 'boolean') capabilities.structuredOutput = raw.structuredOutput;
+  const video = normalizeVideoOptions(raw.video);
+  if (video) capabilities.video = video;
   return Object.keys(capabilities).length > 0 ? capabilities : undefined;
+}
+
+/** Keeps the advertised native-video options a buyer can show (durations, resolutions, ...). */
+export function normalizeVideoOptions(value: unknown): CatalogServiceCapabilities['video'] | undefined {
+  const raw = asRecord(value);
+  if (!raw) return undefined;
+  const durations = Array.isArray(raw.durationsSeconds)
+    ? [...new Set(raw.durationsSeconds.filter((item): item is number => (
+      typeof item === 'number' && Number.isFinite(item) && item > 0
+    )))].sort((a, b) => a - b)
+    : [];
+  const video: NonNullable<CatalogServiceCapabilities['video']> = {};
+  if (durations.length > 0) video.durationsSeconds = durations;
+  for (const key of ['resolutions', 'aspectRatios'] as const) {
+    const values = stringArray(raw[key]);
+    if (values.length > 0) video[key] = values;
+  }
+  for (const key of ['inputs', 'requiredInputs'] as const) {
+    const values = stringArray(raw[key]);
+    if (values.length > 0) video[key] = values as NonNullable<typeof video[typeof key]>;
+  }
+  if (typeof raw.audio === 'boolean') video.audio = raw.audio;
+  return Object.keys(video).length > 0 ? video : undefined;
+}
+
+/**
+ * Advertised per-second and per-video price ranges of a native video offer,
+ * read from its unit billing model (`unitBillingModels.<protocol>.components`).
+ * Components may be resolution/model specific, so each unit yields a range.
+ */
+export function videoPriceFieldsFromUnitBilling(unitBillingModels: unknown, protocol: unknown): VideoPriceFields {
+  const models = asRecord(unitBillingModels);
+  if (!models) return {};
+  const preferred = typeof protocol === 'string' ? asRecord(models[protocol]) : null;
+  const candidates = preferred ? [preferred] : Object.values(models).map(asRecord).filter((model) => model !== null);
+  const perSecond: number[] = [];
+  const perVideo: number[] = [];
+  for (const model of candidates) {
+    if (!Array.isArray(model.components)) continue;
+    for (const rawComponent of model.components) {
+      const component = asRecord(rawComponent);
+      const price = nonNegativeNumber(component?.priceUsd);
+      if (!component || price === undefined) continue;
+      if (component.unit === 'video_seconds') perSecond.push(price);
+      else if (component.unit === 'video_generations') perVideo.push(price);
+    }
+  }
+  return {
+    ...(perSecond.length > 0 ? { minVideoUsdPerSecond: Math.min(...perSecond), maxVideoUsdPerSecond: Math.max(...perSecond) } : {}),
+    ...(perVideo.length > 0 ? { minVideoUsdPerVideo: Math.min(...perVideo), maxVideoUsdPerVideo: Math.max(...perVideo) } : {}),
+  };
 }
 
 /**
@@ -132,6 +201,9 @@ export function buildChatServiceCatalogFromNetworkModels(payload: unknown): Chat
       const cachedInputUsdPerMillion = nonNegativeNumber(offer.cachedInputUsdPerMillion);
       const minImageUsdPerImage = nonNegativeNumber(offer.minImageUsdPerImage);
       const maxImageUsdPerImage = nonNegativeNumber(offer.maxImageUsdPerImage);
+      const videoPrices = isNativeVideoProtocol(protocol)
+        ? videoPriceFieldsFromUnitBilling(offer.unitBillingModels, protocol)
+        : {};
 
       entries.push({
         advertisedVerifierIds: normalizeAdvertisedVerifierIds(offer.advertisedVerifierIds),
@@ -149,6 +221,7 @@ export function buildChatServiceCatalogFromNetworkModels(payload: unknown): Chat
         ...(cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion } : {}),
         ...(minImageUsdPerImage !== undefined ? { minImageUsdPerImage } : {}),
         ...(maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage } : {}),
+        ...videoPrices,
         ...(categories.length > 0 ? { categories } : {}),
       });
     }
@@ -192,6 +265,7 @@ export function buildChatServiceCatalogFromPersistedPeers(payload: unknown): Cha
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
       ...(offer.minImageUsdPerImage !== undefined ? { minImageUsdPerImage: offer.minImageUsdPerImage } : {}),
       ...(offer.maxImageUsdPerImage !== undefined ? { maxImageUsdPerImage: offer.maxImageUsdPerImage } : {}),
+      ...(isNativeVideoProtocol(offer.protocol) ? videoPriceFieldsFromUnitBilling(offer.unitBillingModels, offer.protocol) : {}),
       ...(offer.categories?.length ? { categories: offer.categories } : {}),
     }];
   });

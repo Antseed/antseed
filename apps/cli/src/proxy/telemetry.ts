@@ -237,6 +237,12 @@ type ResolvedPricing = {
   cachedInputUsdPerMillion: number | null
 }
 
+function setPricingHeaders(headers: Record<string, string>, pricing: ResolvedPricing): void {
+  setFiniteNumberHeader(headers, 'x-antseed-input-usd-per-million', pricing.inputUsdPerMillion)
+  setFiniteNumberHeader(headers, 'x-antseed-output-usd-per-million', pricing.outputUsdPerMillion)
+  setFiniteNumberHeader(headers, 'x-antseed-cached-input-usd-per-million', pricing.cachedInputUsdPerMillion)
+}
+
 function resolvePeerPricing(peer: PeerInfo, provider: string, service: string | null): ResolvedPricing {
   const providerPricing = peer.providerPricing?.[provider]
   if (providerPricing) {
@@ -332,9 +338,7 @@ export function attachAntseedTelemetryHeaders(
   if (telemetry.pricing.service) {
     headers['x-antseed-service'] = telemetry.pricing.service
   }
-  setFiniteNumberHeader(headers, 'x-antseed-input-usd-per-million', telemetry.pricing.inputUsdPerMillion)
-  setFiniteNumberHeader(headers, 'x-antseed-output-usd-per-million', telemetry.pricing.outputUsdPerMillion)
-  setFiniteNumberHeader(headers, 'x-antseed-cached-input-usd-per-million', telemetry.pricing.cachedInputUsdPerMillion)
+  setPricingHeaders(headers, telemetry.pricing)
   headers['x-antseed-token-source'] = telemetry.usage.source
   headers['x-antseed-input-tokens'] = String(telemetry.usage.inputTokens)
   headers['x-antseed-cached-input-tokens'] = String(telemetry.usage.cachedInputTokens)
@@ -346,13 +350,15 @@ export function attachAntseedTelemetryHeaders(
   return headers
 }
 
+/** Streamed responses carry the seller's advertised prices too (a gateway tells a free seller by them). */
 export function attachStreamingAntseedHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
-  requestId: string,
+  request: SerializedHttpRequest,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...upstreamHeaders }
-  headers['x-antseed-request-id'] = requestId
+  headers['x-antseed-request-id'] = request.requestId
   setPeerIdentityHeaders(headers, selectedPeer)
+  setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), extractRequestedService(request)))
   return headers
 }

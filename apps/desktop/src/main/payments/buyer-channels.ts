@@ -3,15 +3,20 @@
  * the on-chain enrichment the Credits view needs (channel status, and spend
  * authorized but not yet settled).
  */
-import { ChannelsClient, type CloseChannelResultPayload } from '@antseed/node';
+import { ChannelsClient, type ChannelInfo, type CloseChannelResultPayload } from '@antseed/node';
+import type { AbstractProvider } from 'ethers';
+import { createHash } from 'node:crypto';
 import { LOCALHOST_URL } from '../constants.js';
 import { pendingSpendFromChannels } from '../billing/credits-balance.js';
 import { resolveBuyerProxyPort } from '../runtime/active-config.js';
 import { getCachedChannelsClient, loadCachedCryptoConfig, setCachedChannelsClient } from './credits.js';
+import { sharedChainProvider } from './shared-chain.js';
+import { CHANNELS_FRESH_MS, cachedRead, readKeys, refreshFresh } from './read-cache.js';
 import {
   applyChannelOnChainSnapshot,
   normalizePaymentChannelSummary,
   requestCooperativeChannelCloseAtPort,
+  readChannelsBatched,
   runInBatches,
 } from './buyer-channel-control.js';
 
@@ -149,10 +154,13 @@ export async function requestCooperativeChannelClose(peerId: string): Promise<Cl
   return requestCooperativeChannelCloseAtPort(port, peerId);
 }
 
+const BUYER_PROXY_TIMEOUT_MS = 10_000;
+
 export async function fetchBuyerProxyJson(pathname: string): Promise<Record<string, unknown> | null> {
   const port = await resolveBuyerProxyPort();
   try {
-    const response = await fetch(`${LOCALHOST_URL}:${port}${pathname}`);
+    // A proxy that accepts but never answers (mid-restart) must not hang callers.
+    const response = await fetch(`${LOCALHOST_URL}:${port}${pathname}`, { signal: AbortSignal.timeout(BUYER_PROXY_TIMEOUT_MS) });
     if (!response.ok) return null;
     const body = await response.json();
     return body && typeof body === 'object' && !Array.isArray(body) ? body as Record<string, unknown> : null;
@@ -170,7 +178,6 @@ export function formatAnts(value: bigint): string {
 }
 
 
-
 // Bound concurrent on-chain reads without skipping older active-looking rows.
 const CHANNEL_ENRICH_CONCURRENCY = 12;
 
@@ -182,9 +189,15 @@ const CHANNEL_ENRICH_CONCURRENCY = 12;
 // simply keep returning status 0.
 const sellerFacadeClients = new Map<string, ChannelsClient>();
 
+/** Drop the per-seller facade clients so they rebuild on the current chain config. */
+export function resetSellerFacadeClients(): void {
+  sellerFacadeClients.clear();
+}
+
 function facadeClientFor(
   cc: NonNullable<Awaited<ReturnType<typeof loadCachedCryptoConfig>>>,
   seller: string,
+  provider: AbstractProvider | null,
 ): ChannelsClient {
   const key = seller.toLowerCase();
   let client = sellerFacadeClients.get(key);
@@ -195,6 +208,7 @@ function facadeClientFor(
       contractAddress: seller,
       evmChainId: cc.chainId,
     });
+    if (provider) client.withProvider(provider);
     sellerFacadeClients.set(key, client);
   }
   return client;
@@ -203,9 +217,10 @@ function facadeClientFor(
 // The local ChannelStore can lag the chain (a seller-side settle/close is not
 // always observed), so rows that look active are re-checked on-chain before
 // the activity view offers a Close action on a dead channel.
-async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[]): Promise<void> {
+async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[], fresh = false): Promise<void> {
   const cc = await loadCachedCryptoConfig();
   if (!cc?.channelsAddress) return;
+  const provider = await sharedChainProvider({ rpcUrl: cc.rpcUrl, fallbackRpcUrls: cc.fallbackRpcUrls, chainId: cc.chainId });
   let client = getCachedChannelsClient();
   if (!client) {
     client = new ChannelsClient({
@@ -214,6 +229,7 @@ async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[]): 
       contractAddress: cc.channelsAddress,
       evmChainId: cc.chainId,
     });
+    if (provider) client.withProvider(provider);
     setCachedChannelsClient(client);
   }
   // Every row the activity view treats as current is re-checked, including
@@ -225,11 +241,18 @@ async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[]): 
   for (const row of candidates) {
     applyChannelOnChainSnapshot(row);
   }
-  await runInBatches(candidates, CHANNEL_ENRICH_CONCURRENCY, async (row) => {
-    let info = await client.getSession(row.channelId);
-    if (info.status === 0 && /^0x[0-9a-fA-F]{40}$/.test(row.seller)) {
-      info = await facadeClientFor(cc, row.seller).getSession(row.channelId).catch(() => info);
-    }
+  if (candidates.length === 0) return;
+  // Callers poll this from several views; the same set of channels is read
+  // from the chain at most once per freshness window (settles, closes and
+  // payments invalidate it).
+  const ids = candidates.map((row) => row.channelId).sort();
+  const key = readKeys.channelStatus(createHash('sha256').update(ids.join(',')).digest('hex'));
+  const read = () => readChannelSessions(cc, client, provider, candidates);
+  const sessions = fresh ? await refreshFresh(key, read) : await cachedRead(key, CHANNELS_FRESH_MS, read);
+  for (const row of candidates) {
+    const info = sessions.get(row.channelId);
+    // A failed read keeps the last verified state, as before.
+    if (!info) continue;
     applyChannelOnChainSnapshot(row, {
       status: info.status,
       deposit: info.deposit.toString(),
@@ -238,13 +261,50 @@ async function enrichChannelStatuses(channels: DesktopPaymentChannelSummary[]): 
     });
     // status 0 (no on-chain record) is ambiguous — a channel may exist
     // locally before its on-chain reserve lands. Keep the last verified state.
+  }
+}
+
+/** On-chain sessions for `rows`: canonical channels first, then each delegated seller's facade. */
+async function readChannelSessions(
+  cc: NonNullable<Awaited<ReturnType<typeof loadCachedCryptoConfig>>>,
+  client: ChannelsClient,
+  provider: AbstractProvider | null,
+  rows: DesktopPaymentChannelSummary[],
+): Promise<Map<string, ChannelInfo>> {
+  // One Multicall3 read for every candidate instead of an eth_call per row;
+  // rows it could not read fall back to per-row reads.
+  const batched = await readChannelsBatched(client.provider, client.contractAddress, rows.map((row) => row.channelId)).catch(() => null);
+  const sessions = new Map<string, ChannelInfo>();
+  const unknown: DesktopPaymentChannelSummary[] = [];
+  await runInBatches(rows, CHANNEL_ENRICH_CONCURRENCY, async (row) => {
+    const info = batched?.get(row.channelId) ?? await client.getSession(row.channelId);
+    sessions.set(row.channelId, info);
+    if (info.status === 0 && /^0x[0-9a-fA-F]{40}$/.test(row.seller)) unknown.push(row);
   });
+  // Channels with no canonical record may live behind the seller's facade.
+  // Group them per facade and read each group in one call; a seller that is
+  // not a facade resolves to itself and has no channel record to read.
+  const bySeller = new Map<string, DesktopPaymentChannelSummary[]>();
+  for (const row of unknown) bySeller.set(row.seller.toLowerCase(), [...(bySeller.get(row.seller.toLowerCase()) ?? []), row]);
+  await runInBatches([...bySeller.values()], CHANNEL_ENRICH_CONCURRENCY, async (group) => {
+    const facade = facadeClientFor(cc, group[0]!.seller, provider);
+    const readAddress = await facade.readAddress.catch(() => facade.contractAddress);
+    if (readAddress.toLowerCase() === facade.contractAddress.toLowerCase()) return;
+    const viaFacade = await readChannelsBatched(facade.provider, readAddress, group.map((row) => row.channelId)).catch(() => null);
+    await Promise.allSettled(group.map(async (row) => {
+      const info = viaFacade?.get(row.channelId) ?? await facade.getSession(row.channelId);
+      sessions.set(row.channelId, info);
+    }));
+  });
+  return sessions;
 }
 
 /** Fetch buyer channels from the local proxy, optionally re-checking them on-chain. */
 export async function loadBuyerChannels(
   all: boolean,
   enrichOnChain = true,
+  /** Skip the short status cache, e.g. for an explicit refresh. */
+  fresh = false,
 ): Promise<DesktopPaymentChannelSummary[] | null> {
   const body = await fetchBuyerProxyJson(`/_antseed/channels${all ? '?all=1' : ''}`);
   if (!body) return null;
@@ -253,7 +313,7 @@ export async function loadBuyerChannels(
       .map((entry) => normalizePaymentChannelSummary(entry))
       .filter((entry): entry is DesktopPaymentChannelSummary => entry !== null)
     : [];
-  if (enrichOnChain) await enrichChannelStatuses(channels).catch(() => {});
+  if (enrichOnChain) await enrichChannelStatuses(channels, fresh).catch(() => {});
   return channels;
 }
 
@@ -274,10 +334,25 @@ export function notePendingSpend(channels: readonly DesktopPaymentChannelSummary
  * Signed-but-unsettled spend across the buyer's open channels. Falls back to
  * the last known value when the buyer proxy is unreachable — dropping to 0
  * there would silently inflate the displayed balance.
+ *
+ * `maxWaitMs` bounds how long a caller waits: the buyer proxy may still be
+ * starting (app launch, upgrade) and every open channel is read on-chain, so
+ * past the bound the last known value is returned and the read finishes in
+ * the background for the next poll.
  */
-export async function getPendingSpendUsdc(): Promise<bigint> {
+export async function getPendingSpendUsdc(maxWaitMs?: number): Promise<bigint> {
   if (Date.now() - cachedPendingSpendAt < PENDING_SPEND_TTL_MS) return cachedPendingSpend;
-  const channels = await loadBuyerChannels(false).catch(() => null);
-  if (!channels) return cachedPendingSpend;
-  return notePendingSpend(channels);
+  const read = loadBuyerChannels(false)
+    .catch(() => null)
+    .then((channels) => (channels ? notePendingSpend(channels) : cachedPendingSpend));
+  if (maxWaitMs === undefined) return read;
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  const timeout = new Promise<bigint>((resolve) => {
+    timer = setTimeout(() => resolve(cachedPendingSpend), maxWaitMs);
+  });
+  try {
+    return await Promise.race([read, timeout]);
+  } finally {
+    clearTimeout(timer);
+  }
 }

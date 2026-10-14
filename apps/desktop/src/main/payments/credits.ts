@@ -10,6 +10,7 @@
 import {
   ANTSTokenClient,
   ChannelsClient,
+  DepositRelayClient,
   DepositsClient,
   EmissionsClient,
   formatUsdc,
@@ -24,7 +25,9 @@ import { getSecureIdentity } from '../identity.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
 import { asRecord, asString } from '../utils.js';
-import { getPendingSpendUsdc } from './buyer-channels.js';
+import { getPendingSpendUsdc, resetSellerFacadeClients } from './buyer-channels.js';
+import { resetSharedChain, withSharedProvider } from './shared-chain.js';
+import { clearChainReads, invalidateChainReads } from './read-cache.js';
 
 export type CreditsInfo = {
   evmAddress: string | null;
@@ -44,6 +47,15 @@ export type CreditsInfo = {
   /** spendableUsdc + walletUsdc — the complete balance the buyer owns. */
   totalOwnedUsdc: string;
   creditLimitUsdc: string;
+  /** Contract floor for a buyer's first deposit, net of the relay fee. */
+  minFirstDepositUsdc: string;
+  /** Fixed fee the deposit relayer takes from each wallet sweep. */
+  depositFeeUsdc: string;
+  /**
+   * False until the deposits balance has been read once for this wallet.
+   * Until then every amount above is a placeholder zero, not a real balance.
+   */
+  balanceKnown: boolean;
 };
 
 const EMPTY_CREDITS: Omit<CreditsInfo, 'evmAddress'> = {
@@ -56,7 +68,18 @@ const EMPTY_CREDITS: Omit<CreditsInfo, 'evmAddress'> = {
   walletUsdc: '0',
   totalOwnedUsdc: '0',
   creditLimitUsdc: '0',
+  minFirstDepositUsdc: '1',
+  depositFeeUsdc: '0.05',
+  balanceKnown: false,
 };
+
+// Deposit rules: MIN_BUYER_DEPOSIT on AntseedDeposits and FEE on the deposit
+// relay. They almost never change, so read once per chain config; these
+// mainnet values only stand in until the first read succeeds.
+const DEFAULT_MIN_FIRST_DEPOSIT = 1_000_000n;
+const DEFAULT_DEPOSIT_FEE = 50_000n;
+type DepositRules = { minFirstDeposit: bigint; fee: bigint };
+let cachedDepositRules: DepositRules | null = null;
 
 // Use shared formatUsdc from @antseed/node
 const formatUsdc6 = formatUsdc;
@@ -73,13 +96,15 @@ type CreditsComponentCache = {
   balance: CreditsBalanceComponents;
   creditLimit: bigint;
   operatorAddress: string | null;
+  depositRules: DepositRules | null;
+  balanceKnown: boolean;
 };
 
 let cachedCreditsComponents: CreditsComponentCache | null = null;
 
 // Cached crypto config — invalidated on config update. Uses protocol defaults
 // from resolveChainConfig with optional user overrides from config.json.
-let cachedCryptoConfig: {
+type CryptoConfig = {
   rpcUrl: string;
   fallbackRpcUrls?: string[];
   depositsAddress: string;
@@ -93,15 +118,19 @@ let cachedCryptoConfig: {
   recognizedUsageEffectiveEpoch?: number;
   antsTokenAddress?: string;
   depositRelayAddress?: string;
-} | null = null;
+};
+let cachedCryptoConfig: CryptoConfig | null = null;
 
 // Cached on-chain clients for the rewards summary — invalidated together with
 // cachedCryptoConfig on config updates.
 let cachedEmissionsClient: EmissionsClient | null = null;
 let cachedAntsTokenClient: ANTSTokenClient | null = null;
 let cachedChannelsClient: ChannelsClient | null = null;
+// One deposits client for the credits poll and the deposit watcher, reading
+// through the shared chain provider.
+let cachedDepositsClient: Promise<DepositsClient> | null = null;
 
-export async function loadCachedCryptoConfig(): Promise<typeof cachedCryptoConfig> {
+export async function loadCachedCryptoConfig(): Promise<CryptoConfig | null> {
   if (cachedCryptoConfig) return cachedCryptoConfig;
   let overrides: Record<string, unknown> = {};
   try {
@@ -142,6 +171,10 @@ export async function loadCachedCryptoConfig(): Promise<typeof cachedCryptoConfi
   return cachedCryptoConfig;
 }
 
+// The balance must not wait on the buyer proxy (still starting at launch) or
+// on its per-channel chain reads; pending spend catches up on the next poll.
+const PENDING_SPEND_MAX_WAIT_MS = 2_000;
+
 let creditsRpcFailCount = 0;
 let creditsRpcLastFailAt = 0;
 const CREDITS_RPC_BACKOFF_THRESHOLD = 3;
@@ -156,6 +189,8 @@ function componentCacheFor(evmAddress: string): CreditsComponentCache {
     balance: EMPTY_BALANCE_COMPONENTS,
     creditLimit: 0n,
     operatorAddress: null,
+    depositRules: cachedDepositRules,
+    balanceKnown: false,
   };
   return cachedCreditsComponents;
 }
@@ -173,7 +208,34 @@ function creditsInfoFromCache(cache: CreditsComponentCache): CreditsInfo {
     walletUsdc: formatUsdc6(totals.wallet),
     totalOwnedUsdc: formatUsdc6(totals.totalOwned),
     creditLimitUsdc: formatUsdc6(cache.creditLimit),
+    minFirstDepositUsdc: formatUsdc6(cache.depositRules?.minFirstDeposit ?? DEFAULT_MIN_FIRST_DEPOSIT),
+    depositFeeUsdc: formatUsdc6(cache.depositRules?.fee ?? DEFAULT_DEPOSIT_FEE),
+    balanceKnown: cache.balanceKnown,
   };
+}
+
+async function readDepositRules(cc: CryptoConfig, depositsClient: DepositsClient): Promise<DepositRules | null> {
+  if (cachedDepositRules) return cachedDepositRules;
+  try {
+    const relay = cc.depositRelayAddress
+      ? await withSharedProvider(new DepositRelayClient({
+        rpcUrl: cc.rpcUrl,
+        ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
+        contractAddress: cc.depositRelayAddress,
+        evmChainId: cc.chainId,
+      }), { rpcUrl: cc.rpcUrl, fallbackRpcUrls: cc.fallbackRpcUrls, chainId: cc.chainId })
+      : null;
+    const [minFirstDeposit, fee] = await Promise.all([
+      depositsClient.getMinBuyerDeposit(),
+      relay ? relay.fee() : Promise.resolve(DEFAULT_DEPOSIT_FEE),
+    ]);
+    const rules = { minFirstDeposit, fee };
+    // Without a relay the fee is only the default; re-read once it's configured.
+    if (relay) cachedDepositRules = rules;
+    return rules;
+  } catch {
+    return null; // keep the defaults; retried on the next poll
+  }
 }
 
 export async function refreshCreditsInfo(): Promise<CreditsInfo> {
@@ -199,13 +261,19 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
     creditsRpcFailCount = 0;
   }
 
-  const depositsClient = new DepositsClient({ rpcUrl: cc.rpcUrl, ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}), contractAddress: cc.depositsAddress, usdcAddress: cc.usdcAddress, ...(cc.chainId ? { evmChainId: cc.chainId } : {}) });
+  const depositsClient = await getDepositsClient(cc);
+
+  // The deposit rules only shape funding copy and the defaults match mainnet,
+  // so they never hold up the balance; a later poll picks them up.
+  void readDepositRules(cc, depositsClient).then((rules) => {
+    if (rules) cache.depositRules = rules;
+  });
 
   const [balanceResult, creditLimitResult, operatorResult, pendingResult, walletResult] = await Promise.allSettled([
     depositsClient.getBuyerBalance(evmAddress),
     depositsClient.getBuyerCreditLimit(evmAddress),
     depositsClient.getOperator(evmAddress),
-    getPendingSpendUsdc(),
+    getPendingSpendUsdc(PENDING_SPEND_MAX_WAIT_MS),
     depositsClient.getUSDCBalance(evmAddress),
   ]);
 
@@ -213,6 +281,7 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
   if (balanceResult.status === 'fulfilled') {
     balanceUpdates.available = balanceResult.value.available;
     balanceUpdates.reserved = balanceResult.value.reserved;
+    cache.balanceKnown = true;
     creditsRpcFailCount = 0;
   } else {
     creditsRpcFailCount++;
@@ -242,6 +311,7 @@ export async function refreshCreditsInfo(): Promise<CreditsInfo> {
 /** Drop the cached balance — call when the signing identity changes. */
 export function invalidateCreditsCache(): void {
   cachedCreditsComponents = null;
+  invalidateChainReads();
 }
 
 /**
@@ -250,12 +320,31 @@ export function invalidateCreditsCache(): void {
  * instead of serving answers from the old chain.
  */
 export function invalidateChainClients(): void {
+  resetSharedChain();
+  resetSellerFacadeClients();
+  clearChainReads();
   cachedCryptoConfig = null;
+  cachedDepositsClient = null;
   cachedEmissionsClient = null;
   cachedAntsTokenClient = null;
   cachedChannelsClient = null;
   cachedCreditsComponents = null;
+  cachedDepositRules = null;
   creditsRpcFailCount = 0;
+}
+
+/** The cached deposits client for `cc`, reading through the shared chain provider. */
+export function getDepositsClient(cc: CryptoConfig): Promise<DepositsClient> {
+  if (cachedDepositsClient) return cachedDepositsClient;
+  const client = new DepositsClient({
+    rpcUrl: cc.rpcUrl,
+    ...(cc.fallbackRpcUrls ? { fallbackRpcUrls: cc.fallbackRpcUrls } : {}),
+    contractAddress: cc.depositsAddress,
+    usdcAddress: cc.usdcAddress,
+    ...(cc.chainId ? { evmChainId: cc.chainId } : {}),
+  });
+  cachedDepositsClient = withSharedProvider(client, { rpcUrl: cc.rpcUrl, fallbackRpcUrls: cc.fallbackRpcUrls, chainId: cc.chainId });
+  return cachedDepositsClient;
 }
 
 export function getCachedChannelsClient(): ChannelsClient | null {

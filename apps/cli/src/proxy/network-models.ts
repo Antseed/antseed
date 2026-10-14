@@ -23,9 +23,10 @@ import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/mode
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
-export type NetworkModelType = 'text' | 'image' | 'decision'
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
 
 export type NetworkModelPeerOffer = {
+  unitBillingModels?: NetworkServiceOffer['unitBillingModels']
   advertisedVerifierIds?: string[]
   peerId: string
   displayName?: string
@@ -91,6 +92,8 @@ export type NetworkModelBuildOptions = {
     cooldownUntil?: number | null
     failureStreak?: number | null
   }>
+  /** Only offers it accepts are listed (a gateway routing policy); a model left with none is omitted. */
+  offerFilter?: (offer: NetworkServiceOffer) => boolean
 }
 
 function normalizedModelAlias(serviceId: string): string {
@@ -182,6 +185,7 @@ export function parseModelTypeFilter(raw: string | null): ModelTypeFilter {
   const value = raw?.trim().toLowerCase() ?? ''
   if (value === '') return 'all'
   if (value === 'image' || value === 'images') return 'image'
+  if (value === 'video' || value === 'videos') return 'video'
   if (value === 'text') return 'text'
   if (value === 'decision' || value === 'decisions') return 'decision'
   return 'invalid'
@@ -206,7 +210,9 @@ export function buildNetworkModels(
     normalizedReputationByPeerId.set(peer.peerId, normalizedModelReputationScore(peer))
   }
 
-  const allOffers = buildNetworkServiceOffers(peers)
+  const offerFilter = options.offerFilter
+  const discoveredOffers = buildNetworkServiceOffers(peers)
+  const allOffers = offerFilter ? discoveredOffers.filter(offerFilter) : discoveredOffers
   const offersByPeerModel = new Map<string, NetworkServiceOffer[]>()
   for (const offer of allOffers) {
     const key = canonicalModelKey(offer.serviceId)
@@ -266,6 +272,7 @@ export function buildNetworkModels(
       protocol: offer.protocol,
       protocols: offer.protocols,
       type: offer.type,
+      ...(offer.unitBillingModels ? { unitBillingModels: offer.unitBillingModels } : {}),
       ...(offer.capabilities ? { capabilities: offer.capabilities } : {}),
       ...(offer.categories ? { categories: offer.categories } : {}),
       reputationScore: normalizedReputationByPeerId.get(offer.peerId) ?? null,

@@ -15,7 +15,7 @@ import styles from './VprToolsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
 
 const CURSOR_WEBSITE = 'https://cursor.com/';
-const CURSOR_GUIDE = 'https://antseed.com/docs/guides/public-tunnels#use-it-with-cursor';
+const CURSOR_GUIDE = 'https://antseed.com/docs/tunnels#use-it-with-cursor';
 const MASKED_API_KEY = '••••••••••••••••••••••••••••••••';
 type CopyKind = 'url' | 'key' | 'model';
 
