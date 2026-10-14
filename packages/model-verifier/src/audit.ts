@@ -84,6 +84,7 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   }
   const concurrency = Math.max(1, Math.min(options.concurrency ?? 4, batches.length))
   await Promise.all(Array.from({ length: concurrency }, () => worker()))
+  if (records.every((record) => record.status === 'failed')) throw new AuditNoAnswersError(records)
 
   const answers = records.flatMap((record) => record.answers)
   const transportFailed = records.flatMap((record) => record.answers.map(() => record.status === 'failed'))
@@ -104,6 +105,34 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
     startedAt,
     completedAt: new Date().toISOString(),
   }
+}
+
+/**
+ * Thrown when the endpoint answered no batch at all (wrong key, URL or model id, or the
+ * endpoint is down). That is a setup error, not an UNDETERMINED verdict.
+ */
+export class AuditNoAnswersError extends Error {
+  readonly batches: AuditBatchRecord[]
+
+  constructor(batches: AuditBatchRecord[]) {
+    const reasons = new Map<string, number>()
+    for (const batch of batches) {
+      const reason = batch.failureReason ?? 'unknown failure'
+      reasons.set(reason, (reasons.get(reason) ?? 0) + 1)
+    }
+    const [reason] = [...reasons.entries()].sort((left, right) => right[1] - left[1])[0] ?? ['unknown failure']
+    super(`the endpoint answered none of the ${batches.length} requests, so no verdict: ${reason}${hintFor(reason)}`)
+    this.name = 'AuditNoAnswersError'
+    this.batches = batches
+  }
+}
+
+function hintFor(reason: string): string {
+  if (/^HTTP 40[13]\b/.test(reason)) return ' (check the API key)'
+  if (/^HTTP 404\b/.test(reason)) return ' (check the base URL and model id)'
+  if (/^HTTP 400\b/.test(reason)) return ' (check the model id and protocol)'
+  if (!reason.startsWith('HTTP ')) return ' (check the base URL; the endpoint may be down)'
+  return ''
 }
 
 /**

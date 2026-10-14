@@ -51,6 +51,27 @@ describe('resolveAuditReference', () => {
     expect(requested.at(-1)).toBe(`${GATEWAY}/${CID}/runs/run-1/models/open-model-70b/references/large.json`)
   })
 
+  it('falls back to the next public gateway when one rate-limits', async () => {
+    const { evidenceHash, files } = publishedAudit()
+    const requested: string[] = []
+    const fetchImpl = (async (url: string) => {
+      requested.push(url)
+      if (url.startsWith('https://ipfs.io/')) return new Response('slow down', { status: 429 })
+      const body = files[url.slice(url.indexOf(`/${CID}/`) + CID.length + 2)]
+      return body === undefined ? new Response('not found', { status: 404 }) : new Response(canonicalJsonStringify(body))
+    }) as unknown as typeof fetch
+    const resolved = await resolveAuditReference(`ipfs://${CID}`, { fetchImpl, evidenceHash })
+    expect(resolved.evidenceHash).toBe(evidenceHash)
+    expect(requested[0]).toBe(`https://ipfs.io/ipfs/${CID}/publication.json`)
+    expect(requested[1]).toBe(`https://gateway.pinata.cloud/ipfs/${CID}/publication.json`)
+  })
+
+  it('names every gateway it tried when all fail', async () => {
+    const fetchImpl = (async () => new Response('slow down', { status: 429 })) as unknown as typeof fetch
+    await expect(resolveAuditReference(`ipfs://${CID}`, { fetchImpl }))
+      .rejects.toThrow(/ipfs\.io.*HTTP 429.*pinata.*HTTP 429.*dweb\.link.*HTTP 429/)
+  })
+
   it('rejects evidence that does not match the on-chain hash', async () => {
     const { fetchImpl } = publishedAudit()
     await expect(resolveAuditReference(CID, { fetchImpl, ipfsGateway: GATEWAY, evidenceHash: `0x${'0'.repeat(64)}` }))

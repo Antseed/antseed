@@ -1,5 +1,6 @@
 import { readFile } from 'node:fs/promises'
 import { validateKbfReferenceV1, type KbfReferenceV1 } from '@antseed/fingerprints'
+import { fetchIpfsText } from './ipfs.js'
 
 export interface LoadReferenceOptions {
   /** Accept references marked `imported`, whose provenance the operator vouches for. */
@@ -18,10 +19,7 @@ export async function loadReference(source: string, options: LoadReferenceOption
 }
 
 async function readSource(source: string, options: LoadReferenceOptions): Promise<string> {
-  if (source.startsWith('ipfs://')) {
-    const gateway = (options.ipfsGateway ?? 'https://ipfs.io/ipfs').replace(/\/+$/, '')
-    return fetchText(`${gateway}/${source.slice('ipfs://'.length)}`, options.fetchImpl)
-  }
+  if (source.startsWith('ipfs://')) return fetchIpfsText(source.slice('ipfs://'.length), options)
   if (source.startsWith('https://') || source.startsWith('http://')) return fetchText(source, options.fetchImpl)
   return readFile(source, 'utf8')
 }

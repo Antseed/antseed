@@ -59,7 +59,7 @@ export function registerVerifierCheckCommand(verifier: Command): void {
     .option('--protocol <name>', 'openai or anthropic', 'openai')
     .option('--api-key-env <name>', 'environment variable holding the endpoint API key', 'VERIFY_API_KEY')
     .option('--audit <ipfs://cid>', 'use this published audit instead of the latest on-chain one')
-    .option('--ipfs-gateway <url>', 'IPFS gateway base URL (default: https://ipfs.io/ipfs)')
+    .option('--ipfs-gateway <url>', 'use only this IPFS gateway (default: try ipfs.io, then other public gateways)')
     .option('--rpc-url <url>', 'Base JSON-RPC URL override')
     .option('--out <file>', 'write the full audit record (including raw responses) as JSON')
     .option('--json', 'print the result as JSON')
@@ -92,8 +92,9 @@ export function registerVerifierCheckCommand(verifier: Command): void {
         onBatch: options.json
           ? undefined
           : ({ completed, total }) => process.stderr.write(`\r  batches ${completed}/${total}`),
+      }).finally(() => {
+        if (!options.json) process.stderr.write('\n')
       })
-      if (!options.json) process.stderr.write('\n')
       if (options.out) await writeFile(options.out, `${JSON.stringify(result, null, 2)}\n`)
       if (options.json) {
         console.log(JSON.stringify({ ...auditSummaryJson(result), audit: `ipfs://${resolved.cid}` }, null, 2))

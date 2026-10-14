@@ -25,6 +25,13 @@ describe('auditEndpoint', () => {
     expect(result.evaluation.stats.targetHamming).toBe(0)
   })
 
+  it('fails instead of returning UNDETERMINED when the endpoint answers nothing', async () => {
+    const endpoint = new FakeEndpoint()
+    endpoint.call = async () => ({ ok: false, status: 401, retryable: false, message: 'HTTP 401: {"error":"User not found."}' })
+    await expect(auditEndpoint({ endpoint, reference: testReference(), probeCount: 20 }))
+      .rejects.toThrow(/answered none of the 2 requests.*HTTP 401.*check the API key/)
+  })
+
   it('varies the prompt wording between batches', async () => {
     const endpoint = new FakeEndpoint()
     const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 200 })

@@ -23,12 +23,14 @@ Options:
   --header <k=v>          Extra request header, repeatable
   --probes <n>            Fixed probe count (multiple of 10); default is the smallest powered subset
   --concurrency <n>       Parallel requests (default 4)
+  --ipfs-gateway <url>    Use only this IPFS gateway (default: try ipfs.io, then other public gateways)
   --trust-imported        Accept references marked as imported
   --out <file>            Write the full audit record (including raw responses) as JSON
   --json                  Print the result as JSON
   -h, --help              Show this help
 
-Exit codes: 0 SAME, 1 error, 2 DIFF, 3 UNDETERMINED or UNKNOWN.`
+Exit codes: 0 SAME, 1 error (including an endpoint that answered nothing), 2 DIFF,
+3 UNDETERMINED or UNKNOWN.`
 
 async function main(): Promise<number> {
   const { values } = parseArgs({
@@ -42,6 +44,7 @@ async function main(): Promise<number> {
       header: { type: 'string', multiple: true },
       probes: { type: 'string' },
       concurrency: { type: 'string' },
+      'ipfs-gateway': { type: 'string' },
       'trust-imported': { type: 'boolean', default: false },
       out: { type: 'string' },
       json: { type: 'boolean', default: false },
@@ -53,7 +56,10 @@ async function main(): Promise<number> {
     return values.help ? 0 : 1
   }
 
-  const loadOptions = { trustImported: values['trust-imported'] }
+  const loadOptions = {
+    trustImported: values['trust-imported'],
+    ...(values['ipfs-gateway'] ? { ipfsGateway: values['ipfs-gateway'] } : {}),
+  }
   const reference = values.audit
     ? (await resolveAuditReference(values.audit, loadOptions)).reference
     : await loadReference(values.reference!, loadOptions)
@@ -72,8 +78,9 @@ async function main(): Promise<number> {
     onBatch: values.json
       ? undefined
       : ({ completed, total }) => process.stderr.write(`\r  batches ${completed}/${total}`),
+  }).finally(() => {
+    if (!values.json) process.stderr.write('\n')
   })
-  if (!values.json) process.stderr.write('\n')
   if (values.out) await writeFile(values.out, `${JSON.stringify(result, null, 2)}\n`)
 
   if (values.json) console.log(JSON.stringify(auditSummaryJson(result), null, 2))

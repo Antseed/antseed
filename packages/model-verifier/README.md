@@ -23,6 +23,10 @@ VERIFY_API_KEY=... npx antseed-verify \
 | `DIFF` | Significantly more mismatches than the genuine model makes | 2 |
 | `UNDETERMINED` | Not every probe could be judged (the same rule as on-chain audits) | 3 |
 
+An endpoint that answers none of the requests (wrong key, URL or model id) is an error
+(exit 1) with the reason, not a verdict. Published audits are fetched from ipfs.io, then
+other public gateways if one rate-limits; `--ipfs-gateway` pins one.
+
 To reuse the probes of a published Antseed model audit, pass `--audit ipfs://<cid>`
 instead of `--reference`. The verifier checks the audit evidence against its hash and
 uses the largest KBF reference the audit published. `antseed verifier check <model>`

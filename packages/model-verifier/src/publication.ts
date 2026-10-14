@@ -1,8 +1,6 @@
 import { canonicalHashBytes32, type KbfReferenceV1 } from '@antseed/fingerprints'
+import { fetchIpfsText } from './ipfs.js'
 import { loadReference, type LoadReferenceOptions } from './reference.js'
-
-const DEFAULT_IPFS_GATEWAY = 'https://ipfs.io/ipfs'
-const FETCH_TIMEOUT_MS = 30_000
 
 export interface ResolveAuditReferenceOptions extends LoadReferenceOptions {
   /** Expected bytes32 evidence hash, e.g. from the on-chain `ModelAudited` event. */
@@ -37,14 +35,13 @@ export async function resolveAuditReference(
   options: ResolveAuditReferenceOptions = {},
 ): Promise<ResolvedAuditReference> {
   const cid = parseCid(source)
-  const gateway = (options.ipfsGateway ?? DEFAULT_IPFS_GATEWAY).replace(/\/+$/, '')
-  const root = `${gateway}/${cid}`
-  const publication = await fetchJson<PublicationIndex>(`${root}/publication.json`, options.fetchImpl)
+  const fetchJson = async <T>(path: string): Promise<T> => JSON.parse(await fetchIpfsText(`${cid}/${path}`, options)) as T
+  const publication = await fetchJson<PublicationIndex>('publication.json')
   if (publication.kind !== 'antseed-verifier-ipfs-publication' || typeof publication.evidencePath !== 'string') {
     throw new Error(`${source} is not an Antseed verifier publication`)
   }
   const evidencePath = safeRelativePath(publication.evidencePath)
-  const evidence = await fetchJson<AuditEvidence>(`${root}/${evidencePath}`, options.fetchImpl)
+  const evidence = await fetchJson<AuditEvidence>(evidencePath)
   if (evidence.kind !== 'antseed-verifier-model-audit-evidence' || typeof evidence.model !== 'string') {
     throw new Error(`${source} does not contain model audit evidence`)
   }
@@ -64,7 +61,7 @@ export async function resolveAuditReference(
 
   const evidenceDirectory = evidencePath.includes('/') ? evidencePath.slice(0, evidencePath.lastIndexOf('/')) : ''
   const referencePath = safeRelativePath(evidenceDirectory ? `${evidenceDirectory}/${selected.path}` : selected.path)
-  const reference = await loadReference(`${root}/${referencePath}`, options)
+  const reference = await loadReference(`ipfs://${cid}/${referencePath}`, options)
   if (reference.referenceId !== selected.referenceId) {
     throw new Error(`published reference ${reference.referenceId} does not match evidence entry ${selected.referenceId}`)
   }
@@ -91,10 +88,4 @@ function safeRelativePath(path: string): string {
   }
   if (segments.length === 0) throw new Error(`empty publication path: ${path}`)
   return segments.join('/')
-}
-
-async function fetchJson<T>(url: string, fetchImpl: typeof fetch = fetch): Promise<T> {
-  const response = await fetchImpl(url, { signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-  if (!response.ok) throw new Error(`failed to fetch ${url}: HTTP ${response.status}`)
-  return await response.json() as T
 }

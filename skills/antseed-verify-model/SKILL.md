@@ -54,7 +54,7 @@ The check pays the endpoint for about 100–120 short questions, roughly 10–15
 
 ## 4. Tell the user the result
 
-Exit codes: `0` SAME, `2` DIFF, `3` UNDETERMINED, `1` error.
+Exit codes: `0` SAME, `2` DIFF, `3` UNDETERMINED, `1` error. If the endpoint answered nothing at all, the check fails with `the endpoint answered none of the N requests, so no verdict: <reason> (check the API key)` instead of giving a verdict; fix the key, URL or model id and run again.
 
 - **SAME**: no evidence of substitution. The endpoint misses about as often as the genuine model does, so it very likely serves the claimed model.
 - **DIFF**: significantly more wrong answers than the genuine model makes. The endpoint very likely serves a different model (or a heavily quantized or altered one).
@@ -66,7 +66,7 @@ Read the numbers from the JSON:
 - what the genuine model gets wrong at most: about `stats.p0Cp99 × stats.targetTotal`
 - p-value: `stats.pValueBinomial` (DIFF when it is below 0.05)
 
-UNDETERMINED with `stats.targetCoverage` 0 means no question got an answer at all. That is a setup problem, not a result: look at `batches[].failureReason` in the `--out` file (`HTTP 401`/`403` means a wrong key, connection errors mean a wrong base URL), fix it, and run again. A single unanswered question is enough to make the result UNDETERMINED.
+A single unanswered question is enough to make the result UNDETERMINED.
 
 Answer in one or two plain sentences, for example: "SAME: 6 of 120 answers differed, while the genuine model gets up to about 11 wrong (p = 0.97), so this looks like the real claude-opus-5.5." Mention the audit it used (`audit` in the JSON).
 
@@ -80,7 +80,8 @@ Answer in one or two plain sentences, for example: "SAME: 6 of 120 answers diffe
 
 ## Errors
 
-- `failed to fetch https://ipfs.io/ipfs/... HTTP 429` (or 5xx, timeouts): the public IPFS gateway is rate-limiting. Nothing was paid. Retry with `--ipfs-gateway https://gateway.pinata.cloud/ipfs` (or another gateway); the evidence is hash-checked, so any gateway is safe.
+- `the endpoint answered none of the N requests`: see the reason in the message. `HTTP 401`/`403` means a wrong API key (redo step 2), `HTTP 404`/`400` a wrong base URL, model id or protocol, connection errors a wrong URL or a down endpoint. Nothing was judged and little or nothing was paid.
+- `failed to fetch ipfs://... (... HTTP 429 ...)`: every public IPFS gateway the CLI tried is rate-limiting or down (it tries ipfs.io, Pinata and dweb.link in turn). Nothing was paid. Wait a minute or pass another gateway with `--ipfs-gateway <url>`; the evidence is hash-checked, so any gateway is safe.
 - `no published on-chain audit found for <model>`: nobody has audited that model yet, or the name differs from the audited one. Ask the user for the audited model name or an `ipfs://` audit address.
 - `No verification contract address configured`: the CLI's chain has no verification contract. Ask for an `ipfs://` audit address and pass `--audit`.
 - `audit … is for X, not Y`: the audited model name does not match the audit; use the name the audit was made for.
