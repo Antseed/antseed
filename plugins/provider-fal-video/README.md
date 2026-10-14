@@ -14,6 +14,10 @@ export FAL_VIDEO_API_KEY=<seller-fal-key>
 - `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `fal-ai/kling-video/v2.1/standard/text-to-video` (64 characters at most)
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `fal-video` pricing using `video_generations` or `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
+- `FAL_VIDEO_BILLING_API_KEY`: optional fal key with the `billing:usage:read` permission (presets BILLING, READONLY or FULL), used only to read the credit balance
+- `FAL_VIDEO_MIN_BALANCE_USD`: optional, default `0`. With a billing key, models stop being advertised while the balance is at or below it
+
+Each seller health sweep reads fal's public model list (`GET https://api.fal.ai/v1/models`): an endpoint fal no longer lists, or no longer reports as `active`, stops being advertised. A `deprecated` endpoint stays advertised with a warning. Without a billing key, running out of credits is only noticed when buyer requests fail, and such a model stays unadvertised until the seller restarts.
 
 The service ID is the fal endpoint ID; aliases are not supported.
 
@@ -27,6 +31,8 @@ Buyers send fal's model input as JSON, with the endpoint ID as `model`:
 | `POST /fal/v1/video/retrieve` with `{model, request_id}` | `GET {base}/{owner}/{alias}/requests/{id}/status`, then the result's `video.url` |
 
 Retrieve returns fal's `IN_QUEUE` / `IN_PROGRESS` status as JSON, `{"status":"FAILED"}` when fal reports an error, and streams the finished MP4 through the seller once fal reports `COMPLETED`. fal's `status_url`/`response_url` are not passed to buyers: they need the seller's key. Media is fetched from the `https` URL in the result without the seller key. Cancel and webhooks are not relayed.
+
+The body is passed to fal unchanged, so field names are fal's own and differ by model (for example `start_image_url` for Kling V3, `image_url` for Seedance). At startup the seller reads each endpoint's input schema from `https://fal.ai/api/openapi/queue/openapi.json` (without the seller key) and announces its field names as `supportedParameters`, so buyers can name fields the way the model expects. A service that already sets `supportedParameters` in `ANTSEED_SERVICE_CAPABILITIES_JSON` keeps them. If the schema cannot be read, the service is announced without them.
 
 `video_seconds` pricing uses the request's `duration` (`5`, `"5"` or `"5s"`); use `video_generations` for models without a numeric duration.
 

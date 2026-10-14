@@ -1,5 +1,5 @@
-import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus } from '@antseed/node';
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
   parseCsv,
@@ -11,10 +11,15 @@ import {
 } from '@antseed/provider-core';
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
+export const FAL_PLATFORM_URL = 'https://api.fal.ai';
+export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
 
 const PROTOCOL = 'fal-video';
 const MAX_JSON_BYTES = 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
+const HEALTH_CHECK_TIMEOUT_MS = 15_000;
+/** Endpoint IDs per fal model-list request. */
+const MODEL_LOOKUP_BATCH = 50;
 /** fal endpoint IDs: `owner/alias[/path...]`, at most 64 characters (the discovery service-name limit). */
 const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
 
@@ -32,9 +37,85 @@ async function readJson(response: Response): Promise<Record<string, unknown> | n
   return body.length <= MAX_JSON_BYTES ? parseJsonObject(body) : null;
 }
 
+/** fal input field names from an endpoint's OpenAPI schema, or null when they cannot be announced as-is. */
+export function falInputParameters(schema: Record<string, unknown> | null, endpointId: string): string[] | null {
+  const paths = schema?.paths as Record<string, any> | undefined;
+  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
+  if (typeof ref !== 'string') return null;
+  const properties = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!]?.properties;
+  if (!properties || typeof properties !== 'object') return null;
+  const parameters = Object.keys(properties).sort();
+  return parameters.length > 0 && validateServiceCapabilityFields({ supportedParameters: parameters }).length === 0 ? parameters : null;
+}
+
 /** fal's queue status and result URLs use only `owner/alias`, not the endpoint's sub-path. */
 export function falAppId(endpointId: string): string {
   return endpointId.split('/').slice(0, 2).join('/');
+}
+
+type FalAccount =
+  | { status: 'ok'; balanceUsd: number }
+  | { status: 'unknown'; reason: string };
+
+/**
+ * Read fal's public model list for the given endpoint IDs: endpoint ID →
+ * status (`active`, `deprecated`, ...). IDs missing from the result no longer
+ * exist on fal. Returns null when fal does not answer clearly. fal answers a
+ * whole lookup with `404 Endpoint(s) not found` when any one requested
+ * endpoint is unknown, so such a lookup is repeated per endpoint.
+ */
+async function readFalModelStatuses(platformUrl: string, services: string[]): Promise<Map<string, string> | null> {
+  const statuses = new Map<string, string>();
+  const lookup = async (ids: string[]): Promise<boolean> => {
+    const query = new URLSearchParams(ids.map((id): [string, string] => ['endpoint_id', id]));
+    const response = await fetch(`${platformUrl}/v1/models?${query}`, { redirect: 'error', signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS) });
+    if (response.status === 404) {
+      const error = (await readJson(response))?.error as { message?: unknown } | undefined;
+      if (error?.message !== 'Endpoint(s) not found') return false;
+      if (ids.length === 1) return true;
+      for (const id of ids) {
+        if (!await lookup([id])) return false;
+      }
+      return true;
+    }
+    if (!response.ok) return false;
+    const models = (await readJson(response))?.models;
+    if (!Array.isArray(models)) return false;
+    for (const model of models as Array<{ endpoint_id?: unknown; metadata?: { status?: unknown } }>) {
+      if (typeof model?.endpoint_id === 'string') {
+        statuses.set(model.endpoint_id, typeof model.metadata?.status === 'string' ? model.metadata.status : 'active');
+      }
+    }
+    return true;
+  };
+  try {
+    for (let start = 0; start < services.length; start += MODEL_LOOKUP_BATCH) {
+      if (!await lookup(services.slice(start, start + MODEL_LOOKUP_BATCH))) return null;
+    }
+    return statuses;
+  } catch {
+    return null;
+  }
+}
+
+/** Read the account's credit balance. Needs a key with the `billing:usage:read` permission. */
+async function readFalAccount(platformUrl: string, billingKey: string): Promise<FalAccount> {
+  try {
+    const response = await fetch(`${platformUrl}/v1/account/billing?expand=credits`, {
+      headers: { authorization: `Key ${billingKey}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { status: 'unknown', reason: `fal rejected FAL_VIDEO_BILLING_API_KEY (HTTP ${response.status}); it needs the billing:usage:read permission` };
+    }
+    if (!response.ok) return { status: 'unknown', reason: `fal billing check returned HTTP ${response.status}` };
+    const credits = (await readJson(response))?.credits as { current_balance?: unknown } | undefined;
+    if (typeof credits?.current_balance !== 'number') return { status: 'unknown', reason: 'fal billing check returned no balance' };
+    return { status: 'ok', balanceUsd: credits.current_balance };
+  } catch (cause) {
+    return { status: 'unknown', reason: `fal billing check failed: ${cause instanceof Error ? cause.message : String(cause)}` };
+  }
 }
 
 const plugin: AntseedProviderPlugin = {
@@ -50,6 +131,19 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
+    {
+      key: 'FAL_VIDEO_BILLING_API_KEY',
+      label: 'fal Billing API Key',
+      type: 'secret',
+      description: 'Optional fal key with the billing:usage:read permission. Lets the seller stop advertising models while credits are low and advertise them again after a top-up',
+    },
+    {
+      key: 'FAL_VIDEO_MIN_BALANCE_USD',
+      label: 'Minimum Balance (USD)',
+      type: 'number',
+      default: 0,
+      description: 'With a billing key, stop advertising video models while the fal balance is at or below this amount',
+    },
   ],
   createProvider(config): Provider {
     const apiKey = config['FAL_VIDEO_API_KEY']?.trim();
@@ -72,6 +166,32 @@ const plugin: AntseedProviderPlugin = {
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const authorization = `Key ${apiKey}`;
+    const billingKey = config['FAL_VIDEO_BILLING_API_KEY']?.trim() || undefined;
+    const minBalanceUsd = Number(config['FAL_VIDEO_MIN_BALANCE_USD'] ?? 0);
+    if (!Number.isFinite(minBalanceUsd) || minBalanceUsd < 0) throw new Error('FAL_VIDEO_MIN_BALANCE_USD must be a non-negative number');
+    const warned = new Set<string>();
+    const warnOnce = (message: string) => {
+      if (warned.has(message)) return;
+      warned.add(message);
+      console.warn(`[fal-video] ${message}`);
+    };
+
+    const serviceCapabilities: Record<string, ServiceCapabilities> = Object.fromEntries(
+      services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }]),
+    );
+
+    // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
+    const init = async () => {
+      await Promise.all(services.filter(service => !serviceCapabilities[service]!.supportedParameters).map(async service => {
+        try {
+          const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(service)}`, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+          const parameters = response.ok ? falInputParameters(await readJson(response), service) : null;
+          if (parameters) serviceCapabilities[service]!.supportedParameters = parameters;
+        } catch {
+          // Unknown input fields: buyers fall back to the common names.
+        }
+      }));
+    };
 
     const route = (request: SerializedHttpRequest) => {
       const videoRoute = nativeVideoRoute(request);
@@ -132,10 +252,32 @@ const plugin: AntseedProviderPlugin = {
       pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
       serviceApiProtocols: Object.fromEntries(services.map(service => [service, [PROTOCOL]])),
       serviceUnitBillingModels,
-      serviceCapabilities: Object.fromEntries(services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }])),
+      serviceCapabilities,
       maxConcurrency,
       getCapacity: () => ({ current: active, max: maxConcurrency }),
+      init,
       handleRequest,
+      async checkServiceHealth(checked) {
+        const [statuses, account] = await Promise.all([
+          readFalModelStatuses(FAL_PLATFORM_URL, checked),
+          billingKey ? readFalAccount(FAL_PLATFORM_URL, billingKey) : Promise.resolve(undefined),
+        ]);
+        if (account?.status === 'unknown') warnOnce(account.reason);
+        return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
+          const status = statuses?.get(service);
+          if (statuses && !status) return [service, { status: 'unavailable', reason: 'fal no longer offers this endpoint' }];
+          if (status && status !== 'active' && status !== 'deprecated') {
+            return [service, { status: 'unavailable', reason: `fal reports this endpoint ${status}` }];
+          }
+          if (status === 'deprecated') warnOnce(`${service} is deprecated on fal and may stop working; consider replacing it`);
+          if (account?.status === 'ok' && account.balanceUsd <= minBalanceUsd) {
+            return [service, { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` }];
+          }
+          if (!statuses) return [service, { status: 'unknown', reason: 'fal model list unavailable' }];
+          if (account?.status === 'unknown') return [service, account];
+          return [service, account ? { status: 'available', balanceUsd: account.balanceUsd } : { status: 'available' }];
+        }));
+      },
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);
         if (videoRoute?.action !== 'retrieve') return handleRequest(request);

@@ -78,7 +78,26 @@ export interface Provider {
 
   /** Return current and maximum concurrent request counts */
   getCapacity(): { current: number; max: number };
+
+  /**
+   * Optional free health check for services that can't be probed with a
+   * request, because every request generates and charges for media (image
+   * and video). Implementations call only free upstream endpoints (account,
+   * balance, model list) and answer for each requested service. The model
+   * health checker calls it once per sweep with every such service.
+   */
+  checkServiceHealth?(services: string[]): Promise<Record<string, ServiceHealthStatus>>;
 }
+
+/**
+ * Result of `Provider.checkServiceHealth` for one service. `unknown` (the
+ * check itself failed or can't tell) never counts against the service.
+ * `balanceUsd` is the upstream account balance when the provider can read it.
+ */
+export type ServiceHealthStatus =
+  | { status: 'available'; balanceUsd?: number }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'unknown'; reason?: string };
 
 export interface ProviderStreamCallbacks {
   signal?: AbortSignal;

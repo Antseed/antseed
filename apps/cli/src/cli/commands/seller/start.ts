@@ -21,6 +21,7 @@ import {
   parseEther,
   type Provider,
   type Prover,
+  type SellerProviderResponseEvent,
   type ConfigField,
   resolveChainConfig,
   loadOrCreateIdentity,
@@ -832,8 +833,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Periodic model health self-checks: probe supported text services with
       // a minimal completion; unadvertise services that keep failing and
       // restore them when they recover, refreshing signed metadata each time.
-      // Image services are skipped because a meaningful probe would generate
-      // and charge for an image.
+      // Image and video services are not probed because a meaningful probe
+      // would generate and charge for media. Providers check them with free
+      // account and model-list calls instead (checkServiceHealth), and real
+      // buyer requests that fail with an upstream credits or auth error also
+      // count against them.
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
         healthChecker = new ModelHealthChecker({
@@ -849,11 +853,13 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             if (event.status === 'removed') {
               console.log(chalk.yellow(`Model ${event.provider}/${event.service} unadvertised — failing health checks (${event.detail})`))
             } else {
-              console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered`))
+              console.log(chalk.green(`Model ${event.provider}/${event.service} re-advertised — health check recovered (${event.detail})`))
             }
             void node.refreshSellerMetadata().catch(() => {})
           },
         })
+        const checker = healthChecker
+        node.on('seller:provider-response', (event: SellerProviderResponseEvent) => checker.recordRequestOutcome(event))
         healthChecker.start()
       }
 

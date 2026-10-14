@@ -98,7 +98,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect(network.buyerNode!.buyerPaymentManager!.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
       const pending = await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'queue-1' });
       expect(pending.status).toBe(200);
-      expect((await pending.json()).status).toBe('PROCESSING');
+      expect(await pending.json()).toMatchObject({ status: 'processing', upstream_status: 'PROCESSING' });
       ready = true;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const download = await post('/api/v1/video/retrieve', { model: 'wan-2.5', queue_id: 'queue-1' });
@@ -173,7 +173,7 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       expect(await created.json()).toMatchObject({ model, request_id: 'fal-req-1', status: 'IN_QUEUE' });
       const pending = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-req-1' });
       expect(pending.status).toBe(200);
-      expect((await pending.json()).status).toBe('IN_PROGRESS');
+      expect(await pending.json()).toMatchObject({ status: 'processing', upstream_status: 'IN_PROGRESS' });
       ready = true;
       for (let attempt = 0; attempt < 2; attempt += 1) {
         const download = await post('/fal/v1/video/retrieve', { model, request_id: 'fal-req-1' });
@@ -234,9 +234,9 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
         download = response;
         break;
       }
-      const status = await response.json() as { status?: unknown; error?: unknown };
+      const status = await response.json() as { status?: unknown; upstream_status?: unknown; error?: unknown };
       expect(response.status, JSON.stringify(status)).toBe(200);
-      expect(status.status).toBe('PROCESSING');
+      expect(status).toMatchObject({ status: 'processing', upstream_status: 'PROCESSING' });
       await new Promise(resolve => setTimeout(resolve, 5_000));
     }
 

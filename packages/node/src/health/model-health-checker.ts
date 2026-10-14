@@ -1,4 +1,4 @@
-import type { Provider } from '../interfaces/seller-provider.js';
+import type { Provider, ServiceHealthStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
@@ -35,6 +35,18 @@ export interface ModelHealthEvent {
   detail: string;
 }
 
+/**
+ * Emitted by the seller node (`seller:provider-response`) after a provider
+ * answers a real buyer request.
+ */
+export interface SellerProviderResponseEvent {
+  provider: string;
+  service: string;
+  statusCode: number;
+  /** Leading bytes of the response body, for diagnostics. */
+  body?: Uint8Array;
+}
+
 export interface ServiceHealthSnapshot {
   provider: string;
   service: string;
@@ -65,6 +77,11 @@ interface ServiceHealthState {
   consecutiveFailures: number;
   removed: boolean;
   removedAtIndex: number;
+  /** What unadvertised the service: a failed check, or failed buyer requests. */
+  removedBy: 'check' | 'request' | null;
+  /** Upstream balance last reported before buyer requests unadvertised the service. */
+  removedAtBalanceUsd: number | null;
+  lastFailureSource: 'check' | 'request' | null;
   lastProbeAt: number | null;
   lastStatusCode: number | null;
   lastDetail: string | null;
@@ -89,6 +106,7 @@ export class ModelHealthChecker {
   private readonly _probeTimeoutMs: number;
   private readonly _onChange: ModelHealthCheckerConfig['onChange'];
   private readonly _states = new Map<string, ServiceHealthState>();
+  private readonly _balances = new Map<string, number>();
   private _timer: ReturnType<typeof setInterval> | null = null;
   private _sweepInFlight: Promise<void> | null = null;
   private _stopped = false;
@@ -132,6 +150,37 @@ export class ModelHealthChecker {
       clearInterval(this._timer);
       this._timer = null;
     }
+  }
+
+  /**
+   * Fold the result of a real buyer request into health state, for services
+   * the periodic probe skips (image and video generation). Only upstream
+   * account failures (see `classifyMediaRequestStatus`) count against the
+   * service; user errors, rate limits, and transient upstream errors are
+   * ignored. A success resets the failure count. A removed media service is
+   * re-advertised by the provider's free health check
+   * (`Provider.checkServiceHealth`) once its account recovers; without one it
+   * stays unadvertised until the seller restarts.
+   */
+  recordRequestOutcome({ provider: providerName, service, statusCode, body }: SellerProviderResponseEvent): void {
+    const target = this._targets.find(({ provider }) => provider.name === providerName);
+    if (!target) return;
+    const provider = target.provider;
+    if (supportsHealthProbe(resolveProbeProtocol(provider, service))) return;
+    const outcome = classifyMediaRequestStatus(statusCode);
+    if (outcome === 'inconclusive') return;
+
+    const state = this._stateFor(provider.name, service);
+    state.lastProbeAt = Date.now();
+    state.lastStatusCode = statusCode;
+    state.lastDetail = outcome === 'healthy'
+      ? `HTTP ${statusCode}`
+      : `HTTP ${statusCode}: ${body ? summarizeBody(body) : '(no body)'}`;
+    if (outcome === 'healthy') {
+      state.consecutiveFailures = 0;
+      return;
+    }
+    this._recordFailure(provider, state, 'request');
   }
 
   /** Probe every advertised (and previously removed) service once. */
@@ -181,10 +230,68 @@ export class ModelHealthChecker {
         }
       }
 
+      const checkProvider = target.probeProvider?.checkServiceHealth ? target.probeProvider : provider;
+      const checked = checkProvider.checkServiceHealth
+        ? [...services].filter((service) => !supportsHealthProbe(resolveProbeProtocol(provider, service)))
+        : [];
+      if (checked.length > 0) {
+        await this._checkServices(target, checkProvider, checked);
+      }
       for (const service of services) {
         if (this._stopped) return;
+        if (checked.includes(service)) continue;
         await this._probeService(target, service);
       }
+    }
+  }
+
+  /**
+   * Run the provider's free health check for services the probe skips, and
+   * apply each answer: `unavailable` counts as a failed check, `available`
+   * re-advertises, `unknown` changes nothing. A service that buyer requests
+   * unadvertised (for example out of credits) is re-advertised only once the
+   * reported balance has grown since then, so a positive balance too small
+   * for one generation doesn't flip it back and forth.
+   */
+  private async _checkServices(target: ModelHealthTarget, checkProvider: Provider, services: string[]): Promise<void> {
+    const provider = target.provider;
+    let results: Record<string, ServiceHealthStatus>;
+    try {
+      results = await withTimeout(
+        checkProvider.checkServiceHealth!(services),
+        this._probeTimeoutMs,
+        `health check for ${provider.name} timed out after ${this._probeTimeoutMs}ms`,
+      );
+    } catch (err) {
+      debugLog(`[ModelHealth] ${provider.name}: health check inconclusive (${err instanceof Error ? err.message : err})`);
+      return;
+    }
+    for (const service of services) {
+      if (this._stopped) return;
+      const result = results[service];
+      const state = this._stateFor(provider.name, service);
+      if (!result || result.status === 'unknown') {
+        debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result?.reason ?? 'no result'})`);
+        continue;
+      }
+      state.lastProbeAt = Date.now();
+      state.lastStatusCode = null;
+      if (result.status === 'unavailable') {
+        state.lastDetail = result.reason;
+        this._recordFailure(provider, state, 'check');
+        continue;
+      }
+      const balance = result.balanceUsd;
+      if (balance !== undefined) this._balances.set(provider.name, balance);
+      if (state.lastFailureSource !== 'request') state.consecutiveFailures = 0;
+      if (!state.removed) continue;
+      if (state.removedBy === 'request'
+        && (balance === undefined || balance <= (state.removedAtBalanceUsd ?? 0))) {
+        continue;
+      }
+      state.consecutiveFailures = 0;
+      state.lastDetail = balance === undefined ? 'Account check passed' : `Account check passed (balance $${balance.toFixed(2)})`;
+      this._restoreService(provider, state);
     }
   }
 
@@ -198,6 +305,9 @@ export class ModelHealthChecker {
         consecutiveFailures: 0,
         removed: false,
         removedAtIndex: 0,
+        removedBy: null,
+        removedAtBalanceUsd: null,
+        lastFailureSource: null,
         lastProbeAt: null,
         lastStatusCode: null,
         lastDetail: null,
@@ -217,6 +327,7 @@ export class ModelHealthChecker {
     try {
       const protocol = resolveProbeProtocol(provider, service);
       if (!supportsHealthProbe(protocol)) {
+        if (state.removed) return;
         state.lastStatusCode = null;
         state.lastDetail = `Skipped health probe for unsupported protocol ${protocol}`;
         debugLog(`[ModelHealth] ${provider.name}/${service}: ${state.lastDetail}`);
@@ -255,12 +366,19 @@ export class ModelHealthChecker {
       return;
     }
 
+    this._recordFailure(provider, state, 'check');
+  }
+
+  private _recordFailure(provider: Provider, state: ServiceHealthState, source: 'check' | 'request'): void {
     state.consecutiveFailures += 1;
+    state.lastFailureSource = source;
     debugWarn(
-      `[ModelHealth] ${provider.name}/${service}: probe failed `
+      `[ModelHealth] ${provider.name}/${state.service}: health check failed `
       + `(${state.consecutiveFailures}/${this._failureThreshold}) — ${state.lastDetail}`,
     );
     if (!state.removed && state.consecutiveFailures >= this._failureThreshold) {
+      state.removedBy = source;
+      state.removedAtBalanceUsd = source === 'request' ? this._balances.get(provider.name) ?? null : null;
       this._removeService(provider, state);
     }
   }
@@ -294,6 +412,9 @@ export class ModelHealthChecker {
   private _restoreService(provider: Provider, state: ServiceHealthState): void {
     const services = provider.services;
     state.removed = false;
+    state.removedBy = null;
+    state.removedAtBalanceUsd = null;
+    state.lastFailureSource = null;
     if (!services.includes(state.service)) {
       services.splice(Math.min(state.removedAtIndex, services.length), 0, state.service);
     }
@@ -408,6 +529,24 @@ export function classifyProbeStatus(statusCode: number): ProbeOutcome {
     return 'unhealthy';
   }
   if (statusCode >= 500) return 'unhealthy';
+  return 'inconclusive';
+}
+
+/**
+ * Classify a real buyer request to a service the probe skips.
+ *
+ * - 2xx — the upstream account accepted the work: healthy.
+ * - 401/402/403 — the seller's upstream account is out of credits, over its
+ *   spend limit, or its key is revoked or disabled (for example Venice
+ *   `INSUFFICIENT_BALANCE`, `API_KEY_USD_SPEND_LIMIT_EXCEEDED`,
+ *   `AUTHENTICATION_FAILED`, `API_ACCESS_DISABLED`): unhealthy.
+ * - Everything else — a bad prompt or parameter (400/413/422), a rate limit
+ *   (429), or a transient upstream error (5xx) says nothing about the
+ *   account, so it never counts against the service: inconclusive.
+ */
+export function classifyMediaRequestStatus(statusCode: number): ProbeOutcome {
+  if (statusCode >= 200 && statusCode < 300) return 'healthy';
+  if (statusCode === 401 || statusCode === 402 || statusCode === 403) return 'unhealthy';
   return 'inconclusive';
 }
 
