@@ -527,13 +527,13 @@ contract AntseedVerificationTest is Test {
         assertEq(address(verification.emissionsGate()), address(gate));
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 1);
-        assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 900 ether);
 
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.EpochChanged.selector);
         verification.submitModelAudit(EPOCH + 1, MODEL_A, _evidence(), "", _single(agentId, SERVICE_A, SAME));
 
         gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 900 ether);
         assertEq(_claim(auditorA), 900 ether);
         assertEq(gate.minted(auditorA), 900 ether);
     }
@@ -643,6 +643,18 @@ contract AntseedVerificationTest is Test {
         vm.prank(auditorA);
         vm.expectRevert(AntseedVerification.EpochNotFinalized.selector);
         verification.claimAuditorRewards(epochs);
+    }
+
+    function test_currentEpochShowsNoPendingRewardSoClaimsSkipIt() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertGt(verification.auditorEpochCredits(EPOCH, auditorA), 0);
+        assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 0, "current epoch is not final");
+
+        gate.setCurrentEpoch(EPOCH + 1);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(verification.pendingAuditorReward(auditorA, EPOCH + 1), 0, "new current epoch is not final");
+        assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 900 ether, "finished epoch is claimable");
+        assertEq(_claim(auditorA), 900 ether);
     }
 
     function test_unfundedBucketStaysClaimable() public {

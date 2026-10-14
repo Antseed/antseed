@@ -1,9 +1,9 @@
 /**
- * Shared schema types for the AntSeed fingerprint verifier suite.
+ * Shared schema types for the Antseed fingerprint verifier suite.
  * See docs/protocol/spec/07-model-verification.md.
  */
 
-import { canonicalHash, canonicalJsonStringify, sha256Hex } from './canonical-json.js';
+import { canonicalHash } from './canonical-json.js';
 
 export const FINGERPRINTS_PACKAGE_NAME = '@antseed/fingerprints';
 export const FINGERPRINTS_PACKAGE_VERSION = '0.1.0';
@@ -13,40 +13,6 @@ export const FINGERPRINTS_PACKAGE_VERSION = '0.1.0';
 // ---------------------------------------------------------------------------
 
 export type FingerprintVerdict = 'SAME' | 'DIFF' | 'UNDETERMINED' | 'UNKNOWN';
-
-/**
- * FROZEN on-chain enum mapping (matches the Solidity contract):
- * UNKNOWN=0, SAME=1, DIFF=2, UNDETERMINED=3.
- */
-const VERDICT_CODES: Record<FingerprintVerdict, number> = {
-  UNKNOWN: 0,
-  SAME: 1,
-  DIFF: 2,
-  UNDETERMINED: 3,
-};
-
-const CODE_VERDICTS: Record<number, FingerprintVerdict> = {
-  0: 'UNKNOWN',
-  1: 'SAME',
-  2: 'DIFF',
-  3: 'UNDETERMINED',
-};
-
-export function verdictToCode(verdict: FingerprintVerdict): number {
-  const code = VERDICT_CODES[verdict];
-  if (code === undefined) {
-    throw new Error(`verdictToCode: unknown verdict "${verdict}"`);
-  }
-  return code;
-}
-
-export function verdictFromCode(code: number): FingerprintVerdict {
-  const verdict = CODE_VERDICTS[code];
-  if (verdict === undefined) {
-    throw new Error(`verdictFromCode: unknown verdict code ${code}`);
-  }
-  return verdict;
-}
 
 // ---------------------------------------------------------------------------
 // Probes
@@ -140,63 +106,6 @@ export function computeReferenceId(
     delete copy[field];
   }
   return canonicalHash(copy);
-}
-
-// ---------------------------------------------------------------------------
-// Probe sets (verifier-generated, committed on-chain pre-audit)
-// ---------------------------------------------------------------------------
-
-export interface ProbeSet {
-  probeSetId: string;
-  service: string;
-  probes: KbfProbe[];
-  nonce: string;
-  createdAt: string;
-}
-
-/**
- * Order-sensitive content id over `{ service, probes }` — the COMPLETE probe
- * definitions, not just ids. Every scoring-relevant field (template, consensus,
- * range, tolerance, extensions) is bound, so two sets that would score answers
- * differently can never share an id.
- */
-export function computeProbeSetId(service: string, probes: readonly KbfProbe[]): string {
-  return canonicalHash({ service, probes });
-}
-
-/**
- * On-chain pre-audit commitment (bytes32): a standard hash commitment
- * `commit = SHA-256(canonicalJson({service, probes, nonce}))` over the FULL
- * ordered probe definitions. Binding the complete content (not merely probe
- * ids) is what stops a verifier from committing, observing responses, and then
- * tightening `tolerance` or altering `consensus`/`range`/`template` while the
- * commitment still verifies. Binding comes from SHA-256 collision resistance;
- * hiding from the 256-bit HKDF-derived nonce. Opened (probe set + nonce
- * revealed) only after responses, so a verifier cannot cherry-pick or reshape
- * probes after seeing answers.
- */
-export function computeProbeCommitment(
-  probeSet: Pick<ProbeSet, 'service' | 'probes' | 'nonce'>,
-): string {
-  return `0x${sha256Hex(canonicalProbeSetJson(probeSet))}`;
-}
-
-/**
- * THE canonical probe-set reveal bytes: the exact canonical-JSON string whose
- * `SHA-256(utf8(...))` (0x-prefixed) IS `computeProbeCommitment` — i.e. the
- * preimage a legacy regression fixture hashes against its pre-audit commitment.
- * Single source of truth: `computeProbeCommitment` is DEFINED as the hash of
- * exactly this string, so the commitment and the published reveal bytes can
- * never diverge (divergence would make the on-chain reveal revert forever).
- */
-export function canonicalProbeSetJson(
-  probeSet: Pick<ProbeSet, 'service' | 'probes' | 'nonce'>,
-): string {
-  return canonicalJsonStringify({
-    service: probeSet.service,
-    probes: probeSet.probes,
-    nonce: probeSet.nonce,
-  });
 }
 
 // ---------------------------------------------------------------------------

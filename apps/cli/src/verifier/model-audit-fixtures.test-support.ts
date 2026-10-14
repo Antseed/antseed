@@ -4,6 +4,7 @@ import { dirname } from 'node:path'
 import type { Wallet } from 'ethers'
 import { keccak256 } from 'ethers'
 import {
+  KBF_AUDIT_VERIFY_OPTIONS,
   KBF_PROBES_PER_REQUEST,
   canonicalHashBytes32,
   computeBinomialPower,
@@ -172,7 +173,7 @@ export async function writeSignedAuditRun(input: {
       }
       const answers = reference.probes.map((probe) => answersById.get(probe.id) ?? null)
       const matchVector = reference.probes.map((probe) => matchesById.get(probe.id) ?? null)
-      const fragment = verifyKbf(reference, { answers, matchVector }, { minCoverage: 1 })
+      const fragment = verifyKbf(reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
       if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'UNKNOWN fixture verdict')
       const undetermined = audit.verdict === 'UNDETERMINED'
       const verdict = undetermined ? 'UNDETERMINED' as const : fragment.verdict

@@ -651,11 +651,20 @@ ends. Results the contract would reject (your own agent, unknown agents,
 evidence that no longer matches its hash) are listed as excluded and do not
 block the model. Re-running is safe: a ledger under
 `<evidenceDir>/submissions/<run-id>/` records each model, and models already
-recorded on-chain are skipped. Each seller model's SAME or DIFF verdict expires
-14 days after its last audit; after submitting, `submit` also clears expired
-verdicts from sellers' counts (`--dry-run` lists them, `--no-expire` skips this).
-`verifier rewards --epochs <list>` shows the
-credits earned per epoch and claims the auditor share once an epoch is final.
+recorded on-chain are skipped. A seller service's SAME or DIFF verdict counts
+through the next epoch and then drops out on its own; the latest result always
+wins, and an UNDETERMINED clears an earlier verdict.
+
+`verifier run` rechecks every first DIFF on fresh probes the seller has never
+seen before it can be submitted. A recheck SAME turns the result into
+UNDETERMINED, a recheck DIFF or UNDETERMINED keeps the DIFF, and a seller whose
+recheck cannot run is reported as failed and not submitted. Fresh probes are
+generated once per model, only when a recheck needs them and the run uses
+`--enroll-if-needed`. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
+off. The `submit` preview shows how many results were rechecked.
+
+`verifier rewards --epochs <list>` shows the credits earned per epoch and claims
+the auditor share once an epoch is final; the current epoch shows 0 until it ends.
 
 ## Checking Other Endpoints
 

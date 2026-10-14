@@ -401,7 +401,7 @@ test('probe banks reject incompatible enrollment algorithms', async () => {
   }
 })
 
-test('audit reservations reject legacy AntSeed enrollment banks', async () => {
+test('audit reservations reject legacy Antseed enrollment banks', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-legacy-enrollment-'))
   try {
     const legacy = reference()

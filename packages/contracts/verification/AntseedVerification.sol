@@ -267,6 +267,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         }
     }
 
+    /// @notice Claimable reward for a finalized epoch; 0 for the current epoch, whose share can still change.
     function pendingAuditorReward(address auditor, uint256 epoch) external view override returns (uint256) {
         return _pendingReward(emissionsGate, auditor, epoch);
     }
@@ -373,7 +374,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         returns (uint256)
     {
         uint256 credits = auditorEpochCredits[epoch][auditor];
-        if (credits == 0 || auditorEpochClaimed[epoch][auditor]) return 0;
+        if (credits == 0 || auditorEpochClaimed[epoch][auditor] || epoch >= gate.currentEpoch()) return 0;
         uint256 budget = gate.controllerEpochBudget(address(this), epoch);
         uint256 reward = (budget * credits) / epochCredits[epoch];
         uint256 cap = (budget * maxAuditorShareBps) / BPS;

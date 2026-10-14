@@ -321,7 +321,7 @@ test('reference build uses minimum mandatory reasoning and persists the target o
   }
 })
 
-test('reference build routes only target requests through a pinned AntSeed peer', async () => {
+test('reference build routes only target requests through a pinned Antseed peer', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-'))
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
   const value = config()
@@ -383,7 +383,7 @@ test('reference build routes only target requests through a pinned AntSeed peer'
   }
 })
 
-test('AntSeed reference route failures preserve cached work and never fall back', async () => {
+test('Antseed reference route failures preserve cached work and never fall back', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-resume-'))
   const value = config()
   value.referenceEndpoint!.apiKey = 'openrouter-secret'
@@ -414,7 +414,7 @@ test('AntSeed reference route failures preserve cached work and never fall back'
       config: value,
       buyerProxyPort: 8377,
       fetchFn,
-    }), /AntSeed reference route unavailable.*fable-5-coding-only/)
+    }), /Antseed reference route unavailable.*fable-5-coding-only/)
     const reusablePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain chemistry_bp'))!
     await buildModelReference({
       model: MODEL,
@@ -1422,7 +1422,7 @@ test('checkpoint compatibility invalidates changed sizing policies', async () =>
   }
 })
 
-test('checkpoint compatibility invalidates changed AntSeed target routes', async () => {
+test('checkpoint compatibility invalidates changed Antseed target routes', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-checkpoint-'))
   const promptCalls = new Map<string, number>()
   let failSecondCandidateBatch = true

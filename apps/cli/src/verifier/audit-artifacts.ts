@@ -427,7 +427,7 @@ function renderModelAuditReportHtml(
   },
   reportDirectory: string,
 ): string {
-  const title = `AntSeed ${model} Verification Report — ${summary.epoch}`
+  const title = `Antseed ${model} Verification Report — ${summary.epoch}`
   return `<!doctype html>
 <html lang="en">
 <head>
@@ -488,7 +488,7 @@ function renderModelAuditReportHtml(
 <body>
 <main>
   <header>
-    <h1>AntSeed Model Verification Report</h1>
+    <h1>Antseed Model Verification Report</h1>
     <p class="subtitle">${escapeHtml(model)} · Epoch ${escapeHtml(summary.epoch)}</p>
     <p class="explanation">This report covers one model in one verification run. Each seller row links to that seller's signed evidence.</p>
     <dl class="metadata">

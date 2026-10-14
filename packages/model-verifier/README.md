@@ -21,7 +21,7 @@ VERIFY_API_KEY=... npx antseed-verify \
 |---|---|---|
 | `SAME` | No evidence of substitution at the reference's statistical power | 0 |
 | `DIFF` | Significantly more mismatches than the genuine model makes | 2 |
-| `UNDETERMINED` | Too many batches failed to judge (coverage below 80%) | 3 |
+| `UNDETERMINED` | Not every probe could be judged (the same rule as on-chain audits) | 3 |
 
 To reuse the probes of a published Antseed model audit, pass `--audit ipfs://<cid>`
 instead of `--reference`. The verifier checks the audit evidence against its hash and

@@ -1,7 +1,7 @@
 {
   "name": "@antseed/fingerprints",
   "version": "0.1.0",
-  "description": "Pure verifier math for AntSeed model verification: canonical JSON hashing, KBF fingerprint verifier, cohort consensus verification, probe bank, and audit/evidence schemas",
+  "description": "Pure verifier math for Antseed model verification: canonical JSON hashing, KBF fingerprint verifier, cohort consensus verification, probe bank, and audit/evidence schemas",
   "type": "module",
   "files": [
     "dist"

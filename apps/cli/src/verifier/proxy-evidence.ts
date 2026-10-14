@@ -357,10 +357,10 @@ function evidencePackReadme(
   manifest: ProxyAuditEvidencePackManifestV1,
   referenceId: string,
 ): string {
-  return `# AntSeed Verifier Evidence Pack\n\n`
+  return `# Antseed Verifier Evidence Pack\n\n`
     + `Audit: ${manifest.auditId}\n\n`
     + `- evidence.json: canonical complete audit evidence; hash ${manifest.evidenceHash}\n`
-    + `- exchanges/: one file per request batch, including the signed ResponseAuth record and exact AntSeed codec preimages\n`
+    + `- exchanges/: one file per request batch, including the signed ResponseAuth record and exact Antseed codec preimages\n`
     + `- manifest.json: hashes and evidence scope\n\n`
     + `Reference probe integrity is stored once for reference ${referenceId} in the model's references directory.\n\n`
     + `The local HTTP capture hash and signed P2P hash intentionally use different representations. `

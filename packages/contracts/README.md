@@ -704,7 +704,9 @@ States: `ready` (M001 active, at least one install missing), `active`,
 ### Verification
 
 `AntseedVerification` records model-verification audits from approved auditors and pays
-them from the verification emission bucket by the pool power of the agents they audit.
+them from the verification emission bucket by audit credits, capped per model, per
+auditor and by each auditor's share of the epoch budget. Rewards stay off until the owner
+sets `rewardsStartEpoch`.
 See [docs/protocol/verification.md](../../docs/protocol/verification.md).
 
 Administrative parameters use their contract's dedicated setters where available.

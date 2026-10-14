@@ -375,6 +375,15 @@ test('renders recognized-usage deployment fields into chain config', () => {
   assert.equal(rendered.sellerRegistryAddress, ADDRESS.sellerRegistry);
 });
 
+test('renders the verification deployment block so verifier log scans have a start', () => {
+  const rendered = renderNetwork({ chainId: 8453, contracts: {
+    verification: { address: ADDRESS.registry, deploymentBlock: 123 },
+  } });
+  assert.equal(rendered.verificationContractAddress, ADDRESS.registry);
+  assert.equal(rendered.verificationDeployBlock, 123);
+  assert.equal(renderNetwork({ chainId: 8453, contracts: {} }).verificationDeployBlock, undefined);
+});
+
 test('parses signer specs and resolves them to addresses, never keys', async () => {
   assert.deepEqual(parseSignerSpecs(['a=ledger', 'b=keystore:/k/b']), { a: 'ledger', b: 'keystore:/k/b' });
   assert.throws(() => parseSignerSpecs(['a=ledger', 'a=ledger:1']), /given twice/);

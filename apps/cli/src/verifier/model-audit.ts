@@ -2,6 +2,7 @@ import { readFile } from 'node:fs/promises'
 import { dirname, join, relative, resolve, sep } from 'node:path'
 import { getAddress } from 'ethers'
 import {
+  KBF_AUDIT_VERIFY_OPTIONS,
   canonicalHashBytes32,
   canonicalJsonStringify,
   validateKbfReferenceV1,
@@ -27,7 +28,7 @@ import { safeServiceSlug } from './slug.js'
 import { asError, normalized } from './utils.js'
 
 /** Options every audit passes to verifyKbf (see verifyModelTarget). */
-export const KBF_VERIFY_OPTIONS = { minCoverage: 1 } as const
+export const KBF_VERIFY_OPTIONS = KBF_AUDIT_VERIFY_OPTIONS
 
 export type ModelAuditVerdict = 'SAME' | 'DIFF' | 'UNDETERMINED'
 

@@ -85,7 +85,6 @@ export interface AuditorCredits {
 }
 
 export const VERIFICATION_ABI = [
-  'function setAuditor(address auditor, bool approved) external',
   'function submitModelAudit(uint256 expectedEpoch,bytes32 modelHash,bytes32 evidenceHash,string evidenceUri,(uint256 agentId,bytes32 serviceHash,uint8 verdict)[] results) external',
   'function serviceStatus(uint256 agentId,bytes32 serviceHash) external view returns ((bytes32 modelHash,uint8 verdict,uint64 updatedAt,uint64 epoch))',
   'function agentStatus(uint256 agentId) external view returns ((uint16 verifiedCount,uint16 diffCount))',
@@ -165,10 +164,6 @@ export class VerifierClient extends BaseEvmClient {
   private _contract(): Contract {
     this._contractInstance ??= new Contract(this._contractAddress, VERIFICATION_ABI, this._provider);
     return this._contractInstance;
-  }
-
-  async setAuditor(signer: AbstractSigner, auditor: string, approved: boolean): Promise<string> {
-    return this._execWrite(signer, VERIFICATION_ABI, 'setAuditor', getAddress(auditor), approved);
   }
 
   /** Records one auditor's results for every seller audited as one model. */

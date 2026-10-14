@@ -2,11 +2,11 @@ import { randomInt, randomUUID } from 'node:crypto'
 import { readFile, readdir } from 'node:fs/promises'
 import { join } from 'node:path'
 import {
+  KBF_AUDIT_VERIFY_OPTIONS,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
-  canonicalJsonStringify,
   computeMatchVector,
   parseKbfAnswers,
   queryProfileHash,
@@ -195,22 +195,6 @@ export interface ModelVerificationSkip {
   auditId: string | null
   evidencePath: string | null
   evidenceHash: string | null
-}
-
-export interface ModelVerificationRunSummary {
-  version: 1
-  kind: 'antseed-model-verification-run'
-  runId: string
-  model: string
-  mode: 'buyer-proxy'
-  proxyBaseUrl: string
-  referenceId: string
-  probeCount: number
-  startedAt: string
-  completedAt: string
-  results: ModelVerificationTargetResult[]
-  failures: ModelVerificationFailure[]
-  skipped: ModelVerificationSkip[]
 }
 
 export interface VerificationTargetPolicy {
@@ -571,7 +555,7 @@ export async function verifyModelTarget(input: {
   }
   const answers = input.reference.probes.map((probe) => answersByProbeId.get(probe.id) ?? null)
   const matchVector = input.reference.probes.map((probe) => matchesByProbeId.get(probe.id) ?? null)
-  const fragment = verifyKbf(input.reference, { answers, matchVector }, { minCoverage: 1 })
+  const fragment = verifyKbf(input.reference, { answers, matchVector }, KBF_AUDIT_VERIFY_OPTIONS)
   if (fragment.verdict === 'UNKNOWN') throw new Error(fragment.verdictReason ?? 'verification returned UNKNOWN')
 
   const completedAt = Date.now()
@@ -1314,27 +1298,6 @@ function safeRequestId(body: Uint8Array): string | null {
     return null
   }
   return null
-}
-
-export async function writeRunSummary(evidenceDir: string, summary: ModelVerificationRunSummary): Promise<string> {
-  const { mkdir, open, rename } = await import('node:fs/promises')
-  const directory = join(evidenceDir, 'runs')
-  await mkdir(directory, { recursive: true })
-  const path = join(directory, `${summary.runId}.json`)
-  const temporary = `${path}.tmp-${process.pid}-${Date.now()}`
-  const handle = await open(temporary, 'wx')
-  try {
-    await handle.writeFile(canonicalJsonStringify(summary))
-    await handle.sync()
-  } finally {
-    await handle.close()
-  }
-  await rename(temporary, path)
-  return path
-}
-
-export async function readRunSummary(path: string): Promise<ModelVerificationRunSummary> {
-  return JSON.parse(await readFile(path, 'utf8')) as ModelVerificationRunSummary
 }
 
 export function extractCompletionText(body: Uint8Array): string | null {

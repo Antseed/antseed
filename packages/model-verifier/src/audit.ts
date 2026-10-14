@@ -1,5 +1,6 @@
 import { randomInt } from 'node:crypto'
 import {
+  KBF_AUDIT_VERIFY_OPTIONS,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   buildKbfPrompt,
@@ -90,7 +91,7 @@ export async function auditEndpoint(options: AuditOptions): Promise<AuditResult>
   // A batch that never returned is a transport failure (null), not a wrong answer.
   const matchVector = computeMatchVector(answers, probes)
     .map((entry, index): MatchEntry => (transportFailed[index] ? null : entry))
-  const evaluation = verifyKbf(subset, { answers, matchVector }, { minCoverage: options.minCoverage ?? 0.8 })
+  const evaluation = verifyKbf(subset, { answers, matchVector }, { minCoverage: options.minCoverage ?? KBF_AUDIT_VERIFY_OPTIONS.minCoverage })
 
   return {
     target: { endpoint: options.endpoint.label, model },

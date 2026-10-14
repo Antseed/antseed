@@ -373,32 +373,6 @@ export interface NetworkCLIConfig {
 /**
  * Top-level Antseed configuration structure.
  */
-/**
- * Seller-side deposit-sweep relayer configuration. ON by default (opt-out).
- */
-export interface RelayerCLIConfig {
-  /** Relay buyer deposit sweeps with the seller wallet. Default: true. */
-  enabled?: boolean;
-  /** Minimum acceptable profit (FEE - estimated gas cost) in USDC base units.
-   *  May be negative to relay at a loss (local testing). Default: "0". */
-  minProfitBaseUnits?: string;
-  /** Max concurrent sweep submissions. Default: 2. */
-  maxInFlight?: number;
-  /** Max sweep requests accepted per peer per minute. Default: 6. */
-  maxPerPeerPerMinute?: number;
-}
-
-/**
- * Network configuration within the Antseed config.
- */
-export interface NetworkCLIConfig {
-  /** Additional bootstrap nodes for DHT discovery (host:port pairs) */
-  bootstrapNodes: string[];
-}
-
-/**
- * Top-level Antseed configuration structure.
- */
 export interface AntseedConfig {
   /** Node identity information (peer ID, display name) */
   identity: {

@@ -192,7 +192,7 @@ export const VerifierConfigSchema = strictObject({
       context.addIssue({
         code: 'custom',
         path: [...modelPath, 'referenceProvider'],
-        message: 'must be omitted when referenceRoute sends reference requests through an AntSeed peer',
+        message: 'must be omitted when referenceRoute sends reference requests through an Antseed peer',
       })
     }
 

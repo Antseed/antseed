@@ -1399,7 +1399,6 @@ async function queryProbeAnswers(
   cacheDomain: string,
   query: (model: string, body: Record<string, unknown>) => Promise<string>,
   options: {
-    allowIncomplete?: boolean
     recoverTerminalEmptyBatches?: boolean
     stabilityDomain?: string
     log?: (message: string) => void
@@ -1425,13 +1424,7 @@ async function queryProbeAnswers(
         answers.push(...new Array<number | null>(batch.length).fill(null))
         continue
       }
-      if (!options.allowIncomplete || !isRecoverableContrastError(error)) throw error
-      const remaining = probes.length - offset
-      options.log?.(
-        `contrast model ${model} unavailable; skipping ${remaining} probe answers: ${asError(error).message}`,
-      )
-      answers.push(...new Array<number | null>(remaining).fill(null))
-      break
+      throw error
     }
   }
   return answers
@@ -1542,7 +1535,7 @@ async function postChatCompletion(
     } catch (error) {
       if (route.type !== 'antseed') throw error
       throw new Error(
-        `AntSeed reference route unavailable for peer ${route.peerId} service ${route.model}: ${asError(error).message}`,
+        `Antseed reference route unavailable for peer ${route.peerId} service ${route.model}: ${asError(error).message}`,
         { cause: error },
       )
     }
@@ -1552,7 +1545,7 @@ async function postChatCompletion(
         response.status,
         parseRetryAfterMs(response.headers.get('retry-after')),
         route.type === 'antseed'
-          ? `AntSeed peer ${route.peerId} service ${route.model}: ${detail}`
+          ? `Antseed peer ${route.peerId} service ${route.model}: ${detail}`
           : detail,
       )
     }
@@ -1745,7 +1738,7 @@ function resolveReferenceRequestRoute(input: {
   if (input.referenceRoute?.type === 'antseed') {
     const port = input.buyerProxyPort
     if (!Number.isInteger(port) || port! < 1 || port! > 65_535) {
-      throw new Error('buyer.proxyPort must be configured to use an AntSeed reference route')
+      throw new Error('buyer.proxyPort must be configured to use an Antseed reference route')
     }
     return {
       type: 'antseed',

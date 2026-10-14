@@ -885,6 +885,9 @@ const STRIPPED_HEADERS = new Set([
   GATEWAY_CONTROL_HEADER,
   GATEWAY_INTERNAL_KEY_HEADER,
   END_USER_HEADER,
+  // Proxy-internal hooks for the local verifier; a key holder must not choose them.
+  'x-antseed-request-id',
+  'x-antseed-capture-response-auth-preimages',
 ])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */

@@ -31,7 +31,6 @@ import {
   loadBuyerProxySnapshot,
   readModelAuditCheckpoints,
   verifyModelTarget,
-  writeRunSummary,
   type ModelVerificationResumeInput,
   type ModelVerificationSkip,
 } from './model-run.js'
@@ -667,32 +666,6 @@ test('buyer proxy snapshot requires a connected live daemon and parses peers', a
     assert.equal(snapshot.baseUrl, 'http://127.0.0.1:8377')
     assert.equal(snapshot.pid, process.pid)
     assert.equal(snapshot.peers.length, 1)
-  } finally {
-    await rm(directory, { recursive: true, force: true })
-  }
-})
-
-test('run summaries are canonical buyer-proxy artifacts', async () => {
-  const directory = await mkdtemp(join(tmpdir(), 'antseed-verifier-run-'))
-  try {
-    const path = await writeRunSummary(directory, {
-      version: 1,
-      kind: 'antseed-model-verification-run',
-      runId: 'run-1',
-      model: 'gpt-5.6-sol',
-      mode: 'buyer-proxy',
-      proxyBaseUrl: 'http://127.0.0.1:8377',
-      referenceId: 'reference-1',
-      probeCount: 100,
-      startedAt: '2026-08-04T10:00:00.000Z',
-      completedAt: '2026-08-04T10:01:00.000Z',
-      results: [],
-      failures: [],
-      skipped: [],
-    })
-    const bytes = await readFile(path, 'utf8')
-    assert.equal(bytes.endsWith('\n'), false)
-    assert.equal(JSON.parse(bytes).mode, 'buyer-proxy')
   } finally {
     await rm(directory, { recursive: true, force: true })
   }
