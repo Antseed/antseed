@@ -196,6 +196,15 @@ export async function resolveSystemPrompt(configPath: string): Promise<string | 
   }
 }
 
+/**
+ * Amount the payment card should ask for: the reserve this seller's session
+ * would lock (buyer-capped), falling back to the seller's suggestion.
+ */
+export function paymentRequiredAmount(body: Record<string, unknown> | null | undefined, fallback: string): string {
+  const required = body?.requiredReserve;
+  return typeof required === 'string' && /^\d+$/.test(required) && required !== '0' ? required : fallback;
+}
+
 export function normalizePaymentBody(body: Record<string, unknown>): Record<string, unknown> {
   if (body.peerId) return body;
   const inner = body.error;

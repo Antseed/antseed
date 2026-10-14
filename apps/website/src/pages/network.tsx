@@ -242,7 +242,7 @@ const FAILURES = [
 const STACK = [
   ['05', 'Reputation', 'Trust scoring and identity signals', 'reputation', 'reputation'],
   ['04', 'Payments', 'USDC channels and settlement', 'payments', 'payments'],
-  ['03', 'Metering', 'Counting usage and signing receipts', 'metering', 'metering'],
+  ['03', 'Metering', 'Counting usage into each signed payment', 'payments', 'metering'],
   ['02', 'Transport', 'Verified peers and encrypted traffic', 'transport', 'p2p'],
   ['01', 'Discovery', 'Finding peers and signed listings', 'discovery', 'discovery'],
 ];

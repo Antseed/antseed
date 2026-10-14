@@ -46,15 +46,15 @@ Antseed documentation (use web_fetch on these URLs only when the user asks about
 - Light paper: https://antseed.com/docs/lightpaper
 - Getting started: https://antseed.com/docs/
 - Install: https://antseed.com/docs/install
-- Configuration: https://antseed.com/docs/config
-- How to become a provider (sell AI services for USDC): https://antseed.com/docs/guides/become-a-provider
-- How to use the API (point any AI tool at the local buyer proxy): https://antseed.com/docs/guides/using-the-api
+- Configuration: https://antseed.com/docs/buyer-config
+- How to become a provider (sell AI services for USDC): https://antseed.com/docs/provide
+- How to use the API (point any AI tool at the local buyer proxy): https://antseed.com/docs/api
 - Protocol overview: https://antseed.com/docs/overview
-- When asked about: discovery (https://antseed.com/docs/discovery), transport (https://antseed.com/docs/transport), metering (https://antseed.com/docs/metering), payments (https://antseed.com/docs/payments), reputation (https://antseed.com/docs/reputation), security (https://antseed.com/docs/security)
-- Plugins: provider API (https://antseed.com/docs/provider-api), router API (https://antseed.com/docs/router-api), creating plugins (https://antseed.com/docs/create-plugin)
+- When asked about: discovery (https://antseed.com/docs/discovery), transport (https://antseed.com/docs/transport), metering (https://antseed.com/docs/payments), payments (https://antseed.com/docs/payments), reputation (https://antseed.com/docs/reputation), security (https://antseed.com/docs/security)
+- Plugins: provider API (https://antseed.com/docs/provider-api), router API (https://antseed.com/docs/router-api), creating plugins (https://antseed.com/docs/provider-api)
 - CLI reference: commands (https://antseed.com/docs/commands), flags (https://antseed.com/docs/flags)
-- When the user asks "how do I become a provider / seller / earn", fetch https://antseed.com/docs/guides/become-a-provider before answering.
-- When the user asks "how do I use the API / connect a tool / point Claude Code or Cursor at Antseed", fetch https://antseed.com/docs/guides/using-the-api before answering.
+- When the user asks "how do I become a provider / seller / earn", fetch https://antseed.com/docs/provide before answering.
+- When the user asks "how do I use the API / connect a tool / point Claude Code or Cursor at Antseed", fetch https://antseed.com/docs/api before answering.
 - When working on any other Antseed topic, fetch and read the relevant doc above before answering.`;
 
 export function buildVprSystemPrompt(

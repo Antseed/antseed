@@ -162,7 +162,6 @@
     align-items: flex-start;
   }
 
-
   .heroSplit .statsRow {
     grid-area: stats;
     align-self: start;
@@ -634,6 +633,11 @@
   margin: 0;
 }
 
+/* Homepage FAQ title, in the heavier homepage headline weight */
+.faqTitle.faqTitleStrong {
+  font-weight: 600;
+}
+
 /* Compound selector on purpose: single-class .statAccent ties with
    .statValue on specificity, and cssnano's rule merging reorders them in
    production — the accent silently lost to the later .statValue rule. */
@@ -1030,11 +1034,6 @@
   border-radius: 8px;
   padding: 0 8px 0 4px;
   white-space: nowrap;
-}
-
-:global(html[data-theme='dark']) .bestBadge {
-  background: rgba(255, 255, 255, 0.08);
-  color: var(--as-text-2);
 }
 
 .priceBestSub {
@@ -2053,7 +2052,7 @@
   font-family: var(--as-font-display);
   font-size: clamp(32px, 3.4vw, 48px);
   line-height: 54px;
-  font-weight: 500;
+  font-weight: 600;
   letter-spacing: -1px;
   color: var(--as-heading);
   margin: 0 0 16px;

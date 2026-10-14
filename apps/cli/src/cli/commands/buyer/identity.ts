@@ -1,16 +1,41 @@
 import { InvalidArgumentError, type Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
-import { DEFAULT_BUYER_IDENTITY, DepositsClient, resolveChainConfig } from '@antseed/node'
+import {
+  assertNewIdentityPassphrase,
+  DEFAULT_BUYER_IDENTITY,
+  DepositsClient,
+  FileIdentityStore,
+  MIN_PASSPHRASE_LENGTH,
+  PASSPHRASE_ENV,
+  PASSPHRASE_FILE_ENV,
+  resolveChainConfig,
+} from '@antseed/node'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
-import { archiveBuyerIdentity, createBuyerIdentity, listBuyerIdentities, parseKeySource, readDefaultWallet } from '../../../buyer-identities/store.js'
+import {
+  archiveBuyerIdentity,
+  createBuyerIdentity,
+  listBuyerIdentities,
+  parseKeySource,
+  readDefaultWallet,
+  storedWalletKeys,
+} from '../../../buyer-identities/store.js'
+import { anyKeyEncrypted, verifiedWalletPassphrase, walletPassphrase, type PassphrasePrompt } from '../../wallet-passphrase.js'
 
 function formatUsdc(baseUnits: bigint): string {
   return (Number(baseUnits) / 1_000_000).toFixed(2)
 }
 
-export function registerBuyerIdentityCommands(buyerCmd: Command): void {
+async function walletKeysFor(dataDir: string, name: string | undefined, all: boolean): ReturnType<typeof storedWalletKeys> {
+  if (all && name) throw new Error('Pass an identity name or --all, not both.')
+  const keys = await storedWalletKeys(dataDir, all ? undefined : (name ?? DEFAULT_BUYER_IDENTITY))
+  if (keys.length === 0) throw new Error(`No wallet keys are stored in ${dataDir}.`)
+  return keys
+}
+
+/** `prompt` replaces the terminal prompt for the passphrase, for tests. */
+export function registerBuyerIdentityCommands(buyerCmd: Command, prompt?: PassphrasePrompt): void {
   const identity = buyerCmd
     .command('identity')
     .description('Extra buyer wallets one running buyer can pay as (select per request with x-antseed-buyer-identity)')
@@ -54,14 +79,15 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
       const globalOpts = getGlobalOptions(buyerCmd)
       const stored = await listBuyerIdentities(globalOpts.dataDir)
       const defaultWallet = await readDefaultWallet(globalOpts.dataDir)
-      const rows: Array<{ name: string; address: string | null; keyFrom?: string; error?: string; available?: string; reserved?: string }> = [
-        { name: DEFAULT_BUYER_IDENTITY, address: defaultWallet.address },
-        ...stored.map((entry) => ({
+      const encrypted = async (dir: string): Promise<boolean> => (await new FileIdentityStore(dir).format().catch(() => null)) === 'encrypted'
+      const rows: Array<{ name: string; address: string | null; keyFrom?: string; encrypted?: boolean; error?: string; available?: string; reserved?: string }> = [
+        { name: DEFAULT_BUYER_IDENTITY, address: defaultWallet.address, encrypted: await encrypted(globalOpts.dataDir) },
+        ...await Promise.all(stored.map(async (entry) => ({
           name: entry.name,
           address: entry.address,
-          ...(entry.keyFrom ? { keyFrom: entry.keyFrom } : {}),
+          ...(entry.keyFrom ? { keyFrom: entry.keyFrom } : { encrypted: await encrypted(entry.dir) }),
           ...(entry.error ? { error: entry.error } : {}),
-        })),
+        }))),
       ]
 
       if (options.balances) {
@@ -98,11 +124,47 @@ export function registerBuyerIdentityCommands(buyerCmd: Command): void {
         table.push([
           row.name,
           row.address ?? (row.error ? chalk.yellow(row.error) : chalk.dim(defaultWallet.note)),
-          row.keyFrom ?? 'data dir',
+          row.keyFrom ?? (row.encrypted ? 'data dir, encrypted' : 'data dir'),
           ...(options.balances ? [row.available ?? '-', row.reserved ?? '-'] : []),
         ])
       }
       console.log(table.toString())
+    })
+
+  identity.command('protect')
+    .description(`Encrypt stored wallet keys with the passphrase in ${PASSPHRASE_ENV} (or the first line of ${PASSPHRASE_FILE_ENV}), asked on the terminal when neither is set; at least ${MIN_PASSPHRASE_LENGTH} characters`)
+    .argument('[name]', `identity to protect (default: ${DEFAULT_BUYER_IDENTITY})`)
+    .option('--all', 'every wallet key in the data dir, archived ones included', false)
+    .action(async (name: string | undefined, options: { all: boolean }) => {
+      const { dataDir } = getGlobalOptions(buyerCmd)
+      const keys = await walletKeysFor(dataDir, name, options.all)
+      // Checked against the keys already encrypted, so the data dir never holds keys under two passphrases.
+      const passphrase = await verifiedWalletPassphrase(dataDir, { confirmNew: true, ...(prompt ? { prompt } : {}) })
+      if (!passphrase) {
+        throw new Error(`Set ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV} to the passphrase that should protect the keys.`)
+      }
+      assertNewIdentityPassphrase(passphrase)
+      for (const key of keys) {
+        const changed = await key.store.protect()
+        console.log(changed ? chalk.green(`Encrypted ${key.name}`) : chalk.dim(`${key.name} is already encrypted`))
+      }
+      console.log(chalk.dim(`Every process that uses these wallets (buyer, gateway) now needs ${PASSPHRASE_ENV} or ${PASSPHRASE_FILE_ENV}, or asks for the passphrase when started on a terminal. Keep the passphrase safe: without it the keys cannot be recovered.`))
+    })
+
+  identity.command('unprotect')
+    .description('Store encrypted wallet keys as plaintext again')
+    .argument('[name]', `identity to decrypt (default: ${DEFAULT_BUYER_IDENTITY})`)
+    .option('--all', 'every wallet key in the data dir, archived ones included', false)
+    .option('--yes', 'confirm writing the private keys to disk unencrypted', false)
+    .action(async (name: string | undefined, options: { all: boolean; yes: boolean }) => {
+      const { dataDir } = getGlobalOptions(buyerCmd)
+      if (!options.yes) throw new Error('This writes the private keys to disk unencrypted; pass --yes to confirm.')
+      const keys = await walletKeysFor(dataDir, name, options.all)
+      if (await anyKeyEncrypted(keys)) await walletPassphrase(prompt ? { prompt } : {})
+      for (const key of keys) {
+        const changed = await key.store.unprotect()
+        console.log(changed ? chalk.yellow(`Decrypted ${key.name}`) : chalk.dim(`${key.name} is not encrypted`))
+      }
     })
 
   identity.command('remove')

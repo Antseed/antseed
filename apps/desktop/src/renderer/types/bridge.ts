@@ -125,6 +125,10 @@ export type DepositWatchStatus = {
   amountBaseUnits?: string;
   txHash?: string;
   error?: string;
+  /** Why a 'deferred' sweep is waiting (absent from older daemons). */
+  reason?: 'below-minimum' | 'credit-limit';
+  /** below-minimum: the wallet balance a sweep needs, relay fee included. */
+  minRequiredBaseUnits?: string;
 };
 
 export type LogEvent = {
@@ -411,7 +415,7 @@ export type DesktopBridge = {
   downloadUpdate?: () => Promise<InstallUpdateResult>;
   getUpdateStatus?: () => Promise<UpdateStatus | null>;
   setDebugLogs?: (enabled: boolean) => Promise<{ ok: true }>;
-  creditsGetInfo?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string } | null; error: string | null }>;
+  creditsGetInfo?: (opts?: { fresh?: boolean }) => Promise<{ ok: boolean; data: { evmAddress: string | null; operatorAddress: string | null; balanceUsdc: string; reservedUsdc: string; availableUsdc: string; pendingUsdc: string; spendableUsdc: string; walletUsdc: string; totalOwnedUsdc: string; creditLimitUsdc: string; minFirstDepositUsdc?: string; depositFeeUsdc?: string; balanceKnown?: boolean } | null; error: string | null }>;
   /** Prompts a native save dialog and writes the signer private key to the chosen file. */
   identityExportKey?: () => Promise<{ ok: boolean; canceled?: boolean; path?: string; error?: string | null }>;
   /** Replaces the signer private key (the current one is backed up on disk first). */
@@ -497,6 +501,9 @@ export type DesktopBridge = {
   publicTunnelStart?: (settings?: { provider?: TunnelProvider }) => Promise<{ ok: boolean; status?: PublicTunnelStatus; error?: string }>;
   publicTunnelStop?: () => Promise<{ ok: boolean; status?: PublicTunnelStatus; error?: string }>;
   publicTunnelGetApiKey?: () => Promise<{ apiKey: string | null }>;
+  publicTunnelGetConsoleStatus?: () => Promise<TunnelConsoleStatus>;
+  /** Mints a one-time setup link and opens it in the browser (the console itself once claimed). */
+  publicTunnelClaimConsole?: () => Promise<{ ok: boolean; status: TunnelConsoleStatus; error?: string }>;
 
   /* Floating always-on-top pill window */
   vprFloatSetExpanded?: (expanded: boolean) => void;
@@ -519,6 +526,11 @@ export type DesktopBridge = {
 };
 
 export type TunnelProvider = 'cloudflare' | 'ngrok';
+/** The gateway console a running tunnel publishes at <public url>/console. */
+export type TunnelConsoleStatus = {
+  state: 'unclaimed' | 'claimed' | 'unavailable';
+  url: string | null;
+};
 export type PublicTunnelStatus = {
   configured: boolean;
   configuredProviders: TunnelProvider[];

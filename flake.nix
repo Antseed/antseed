@@ -149,7 +149,7 @@
               # pnpm-lock.yaml change (the store no longer matches). After
               # touching the lockfile, regenerate it with:
               #   ./scripts/update-nix-hash.sh
-              hash = "sha256-YRwWbfRoU6gDpamUGVmZAf4skx0RZ0/dONgjw0aSUTc=";
+              hash = "sha256-R6gE3Dc0DvO67LIeDYZAwKXi8kfNa66biwd1mlMbRNw=";
             };
 
             pnpmWorkspaces = [ "@antseed/cli..." ];
@@ -247,6 +247,9 @@
               # to import.meta.url, which is the bundle's directory once built.
               cp -r apps/payments/dist/web "$out/libexec/antseed/web"
               cp -r apps/ants/dist/ants-web "$out/libexec/antseed/ants-web"
+              # Gateway console web app: @antseed/gateway-console resolves
+              # ./dist/ relative to import.meta.url, i.e. the bundle's directory.
+              cp -r apps/gateway-console/dist "$out/libexec/antseed/dist"
 
               for pkg in ${lib.concatStringsSep " " runtimeNodeModules}; do
                 if [ -e "node_modules/$pkg" ]; then

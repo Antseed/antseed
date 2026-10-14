@@ -124,6 +124,15 @@
   background: rgba(var(--accent-green-rgb), 0.2);
 }
 
+.neutral .title {
+  color: var(--text-primary);
+}
+
+.neutral .action {
+  background: var(--bg-hover, rgba(127, 127, 127, 0.1));
+  color: var(--text-primary);
+}
+
 .danger .action {
   background: rgba(var(--danger-rgb), 0.12);
   color: var(--danger);

@@ -744,6 +744,9 @@ export class BuyerPaymentNegotiator {
         peerId: peer.peerId,
         ...(req?.minBudgetPerRequest != null ? { minBudgetPerRequest: req.minBudgetPerRequest } : {}),
         ...(req?.suggestedAmount != null ? { suggestedAmount: req.suggestedAmount } : {}),
+        // What this seller's session would lock from available deposits —
+        // suggestedAmount clamped to the buyer's reserve cap.
+        ...(requestedReserveAmount != null ? { requiredReserve: requestedReserveAmount.toString() } : {}),
         message: 'You are out of AntSeed credits for this request. Add funds in the AntSeed app, or run "antseed buyer deposit <amount>" from the CLI, then retry.',
       });
       return {

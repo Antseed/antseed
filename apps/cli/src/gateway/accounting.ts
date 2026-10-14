@@ -1,8 +1,27 @@
 import { randomUUID } from 'node:crypto'
 import type { AttributedSpendEvent } from '../proxy/spend-attribution.js'
-import { findLimitBreach, type LimitBreach } from './limits.js'
+import { BUDGET_PERIODS, cappedPeriods, findLimitBreach, hasSpendLimits, type BudgetLevel, type BudgetLimits, type LimitBreach, type SpendLimits } from './limits.js'
 import { parseBaseUnits } from './money.js'
-import type { ApiKeyRecord, GatewayStore } from './store.js'
+import type { ApiKeyRecord, BudgetScope, GatewayStore, MemberRecord, WorkspaceRecord } from './store.js'
+
+/**
+ * The member and workspace a key's request is accounted to, when the caller
+ * already loaded them (the gateway does, once per request); otherwise they
+ * are read from the store.
+ */
+export interface KeyContext {
+  member: MemberRecord | null
+  workspace: WorkspaceRecord | null
+}
+
+/** The key's cap per period: the lower of the admins' and the owner's. */
+export function effectiveKeyLimits(key: Pick<ApiKeyRecord, 'limits' | 'ownerLimits'>): BudgetLimits {
+  const result = {} as BudgetLimits
+  for (const period of BUDGET_PERIODS) {
+    result[period] = lowerCap(key.limits[period] ?? null, key.ownerLimits?.[period] ?? null)
+  }
+  return result
+}
 
 /** Spend can be signed after the response ends (seller-initiated auth). */
 const DEFAULT_SETTLE_GRACE_MS = 60_000
@@ -17,7 +36,22 @@ export interface GatewayAccountingOptions {
   now?: () => number
 }
 
-type Hold = { keyId: string; amountUsdc: number; finished: boolean; timer: ReturnType<typeof setTimeout> | null }
+/** One level whose caps a key's request is admitted against. */
+type BudgetCheck = {
+  level: BudgetLevel
+  limits: SpendLimits | BudgetLimits
+  scope: BudgetScope
+  held: () => number
+}
+
+type Hold = {
+  keyId: string
+  memberId: string | null
+  workspaceId: string
+  amountUsdc: number
+  finished: boolean
+  timer: ReturnType<typeof setTimeout> | null
+}
 
 export function newRequestTag(): string {
   return `gw_${randomUUID()}`
@@ -44,18 +78,79 @@ export class GatewayAccounting {
   }
 
   heldUsdc(keyId: string): number {
+    return this._held((hold) => hold.keyId === keyId)
+  }
+
+  /** Holds in flight for every key a member owns. */
+  heldForMember(memberId: string): number {
+    return this._held((hold) => hold.memberId === memberId)
+  }
+
+  heldForWorkspace(workspaceId: string): number {
+    return this._held((hold) => hold.workspaceId === workspaceId)
+  }
+
+  private _held(match: (hold: Hold) => boolean): number {
     let held = 0
-    for (const hold of this._holds.values()) if (hold.keyId === keyId) held += hold.amountUsdc
+    for (const hold of this._holds.values()) if (match(hold)) held += hold.amountUsdc
     return held
   }
 
-  admit(key: ApiKeyRecord): Admission {
+  /** Whether any level above or at the key caps spend (so admission depends on the spend feed). */
+  hasBudgets(key: ApiKeyRecord, context: KeyContext = this._context(key)): boolean {
+    return this._budgetChecks(key, context).some(({ limits }) => hasSpendLimits(limits))
+  }
+
+  /** The key (the lower of its admin and owner caps), the member who owns it and its workspace. */
+  private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext): BudgetCheck[] {
+    const checks: BudgetCheck[] = [
+      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id) },
+    ]
+    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id) })
+    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id) })
+    return checks
+  }
+
+  private _context(key: ApiKeyRecord): KeyContext {
+    return {
+      member: key.ownerMemberId ? this._store.getMember(key.ownerMemberId) : null,
+      workspace: this._store.getWorkspace(key.workspaceId),
+    }
+  }
+
+  /**
+   * Admits a paid request only when the key (the lower of its admin and
+   * owner caps), the member who owns it and its workspace all have room.
+   * Member and workspace spend is the ledger as attributed at request time,
+   * so a member who revokes a key and creates a new one still counts
+   * everything spent before against the member's caps. Levels and periods
+   * without a cap cost no query.
+   */
+  admit(key: ApiKeyRecord, context: KeyContext = this._context(key)): Admission {
     const now = this._now()
-    const breach = findLimitBreach(key.limits, this._store.periodSpend(key.id, now), this.heldUsdc(key.id), now)
-    if (breach) return { ok: false, breach }
+    for (const { level, limits, scope, held } of this._budgetChecks(key, context)) {
+      const periods = cappedPeriods(limits)
+      if (periods.length === 0) continue
+      const breach = findLimitBreach(limits, this._store.spendByPeriod(scope, now, periods), held(), now)
+      if (breach) return { ok: false, breach: { ...breach, level } }
+    }
     const tag = newRequestTag()
-    this._holds.set(tag, { keyId: key.id, amountUsdc: this._options.holdUsdc, finished: false, timer: null })
+    this._holds.set(tag, {
+      keyId: key.id,
+      memberId: key.ownerMemberId,
+      workspaceId: key.workspaceId,
+      amountUsdc: this._options.holdUsdc,
+      finished: false,
+      timer: null,
+    })
     return { ok: true, tag }
+  }
+
+  /** Drops a hold at once, for a request that never reached the buyer. */
+  release(tag: string): void {
+    const hold = this._holds.get(tag)
+    if (hold?.timer) clearTimeout(hold.timer)
+    this._holds.delete(tag)
   }
 
   /** The response is over; keep the hold briefly for spend that is signed late. */
@@ -88,6 +183,11 @@ export class GatewayAccounting {
         cachedInputTokens: parseBaseUnits(event.cachedInputTokens),
         outputTokens: parseBaseUnits(event.outputTokens),
         createdAt: event.at,
+        // Spend counts against whoever the request was admitted for.
+        workspaceId: request.workspaceId,
+        memberId: request.memberId,
+        model: request.model,
+        endUser: request.endUser,
       })
       if (!inserted) continue
       recorded += 1
@@ -104,4 +204,11 @@ export class GatewayAccounting {
     for (const hold of this._holds.values()) if (hold.timer) clearTimeout(hold.timer)
     this._holds.clear()
   }
+}
+
+/** The stricter of two caps; null is no cap. */
+function lowerCap(a: number | null, b: number | null): number | null {
+  if (a === null) return b
+  if (b === null) return a
+  return Math.min(a, b)
 }

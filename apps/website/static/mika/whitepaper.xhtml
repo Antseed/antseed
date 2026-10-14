@@ -1,0 +1,1686 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<html xmlns:mica="https://www.esma.europa.eu/taxonomy/2025-03-31/mica/" xmlns:gen="http://xbrl.org/2008/generic" xmlns:lei-fn="http://www.xbrl.org/taxonomy/int/lei/2020-07-02/functions" xmlns:xbrldt="http://xbrl.org/2005/xbrldt" xmlns:variable="http://xbrl.org/2008/variable" xmlns:xl="http://www.xbrl.org/2003/XLink" xmlns:lei="http://www.xbrl.org/taxonomy/int/lei/2020-07-02" xmlns:cf="http://xbrl.org/2008/filter/concept" xmlns:valm="http://xbrl.org/2010/message/validation" xmlns:link="http://www.xbrl.org/2003/linkbase" xmlns:enum2="http://xbrl.org/2020/extensible-enumerations-2.0" xmlns:xlink="http://www.w3.org/1999/xlink" xmlns:validation="http://xbrl.org/2008/validation" xmlns:dtr-types_2="http://www.xbrl.org/dtr/type/2022-03-31" xmlns:dtr-types="http://www.xbrl.org/dtr/type/2020-01-21" xmlns:iso4217="http://www.xbrl.org/2003/iso4217" xmlns:msg="http://xbrl.org/2010/message" xmlns:va="http://xbrl.org/2008/assertion/value" xmlns:cfi="http://xbrl.org/2010/custom-function" xmlns:label="http://xbrl.org/2008/label" xmlns:xsi="http://www.w3.org/2001/XMLSchema-instance" xmlns:ef="http://xbrl.org/2008/filter/entity" xmlns:xbrli="http://www.xbrl.org/2003/instance" xmlns="http://www.w3.org/1999/xhtml" xmlns:ix="http://www.xbrl.org/2013/inlineXBRL" xmlns:ixt="http://www.xbrl.org/inlineXBRL/transformation/2011-07-31" xmlns:ixt4="http://www.xbrl.org/inlineXBRL/transformation/2020-02-12" xmlns:utr="http://www.xbrl.org/2009/utr" xmlns:negated="http://www.xbrl.org/2009/role/negated" xmlns:net="http://www.xbrl.org/2009/role/net" xmlns:nonnum="http://www.xbrl.org/dtr/type/non-numeric" xmlns:num="http://www.xbrl.org/dtr/type/numeric" xmlns:xbrldi="http://xbrl.org/2006/xbrldi" xmlns:xsd="http://www.w3.org/2001/XMLSchema" xsi:schemaLocation="http://xbrl.org/2006/xbrldi http://www.xbrl.org/2006/xbrldi-2006.xsd                        http://www.xbrl.org/2003/instance http://www.xbrl.org/2003/xbrl-instance-2003-12-31.xsd" xml:lang="en">
+<head>
+   <meta http-equiv="Content-Type" content="text/html; charset=UTF-8" />
+<title>MiCAR White Paper - The AntSeed Foundation</title>
+<style type="text/css">
+* { box-sizing: border-box; }
+
+body {
+  margin: 0;
+  background-color: #ffffff;
+  color: #263238;
+  font-family: Roboto, Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", "Helvetica Neue", Arial, sans-serif;
+  font-size: 15px;
+  line-height: 1.65;
+  -webkit-text-size-adjust: 100%;
+}
+
+/* Side margins are 7% of the pane, measured off the cover in the Figma, where
+   the content block occupies 86% of the document surface at every element:
+   logo, kicker, title, rule and the metadata grid all share that edge. Stated
+   as a percentage rather than a fixed width, the proportion holds as the pane
+   grows and shrinks instead of stranding the document in the middle of a wide
+   card. Long prose keeps its own measure below (`.cover-intro`, `.answer`),
+   which is what the Figma does with the intro paragraph. */
+.page {
+  margin: 0 auto;
+  padding: 64px 7% 120px 7%;
+}
+
+a { color: #1e88e5; }
+
+/* ------------------------------------------------------------------ cover */
+
+.cover-logo {
+  display: block;
+  max-height: 48px;
+  max-width: 260px;
+  margin-bottom: 72px;
+}
+
+.cover-kicker {
+  margin: 0 0 16px 0;
+  font-size: 12px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #6d727f;
+}
+
+.cover-kicker-separator {
+  padding: 0 10px;
+  color: #c4c8d0;
+}
+
+/* The design sets the issuer in its own case, not small caps: it is a company
+   name, and "OpenGradient" is not the same word as "OPENGRADIENT". */
+.cover-issuer {
+  color: #224a59;
+  text-transform: none;
+  letter-spacing: 0;
+  font-size: 13px;
+}
+
+.cover-title {
+  margin: 0 0 24px 0;
+  font-size: 44px;
+  line-height: 1.15;
+  font-weight: 700;
+  letter-spacing: -0.5px;
+  color: #121826;
+}
+
+.cover-intro {
+  margin: 0;
+  max-width: 34em;
+  font-size: 15px;
+  color: #6d727f;
+}
+
+.cover-rule {
+  height: 0;
+  margin: 40px 0 32px 0;
+  border: 0;
+  border-top: 1px solid #eceff1;
+}
+
+.cover-meta {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  grid-template-rows: auto auto;
+  gap: 6px 40px;
+  margin: 0;
+}
+
+.cover-meta dt {
+  grid-row: 1;
+  font-size: 11px;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #6d727f;
+}
+
+.cover-meta dd {
+  grid-row: 2;
+  margin: 0;
+  font-size: 15px;
+  color: #121826;
+}
+
+/* ------------------------------------------------------ table of contents */
+
+.toc {
+  margin-top: 56px;
+  padding: 28px 32px;
+  background-color: #fafafa;
+  border: 1px solid #eceff1;
+  border-radius: 8px;
+}
+
+.toc-heading {
+  margin: 0 0 14px 0;
+  font-size: 12px;
+  font-weight: 600;
+  letter-spacing: 1px;
+  text-transform: uppercase;
+  color: #546e7a;
+}
+
+.toc ol {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+}
+
+.toc a { text-decoration: none; }
+
+.toc a:hover { text-decoration: underline; }
+
+.toc-section-item { margin-top: 14px; }
+
+.toc-section-item:first-child { margin-top: 0; }
+
+.toc-section-link {
+  font-weight: 600;
+  color: #263238;
+}
+
+.toc-fields {
+  margin-top: 4px;
+  padding-left: 14px;
+}
+
+.toc-field-item { margin-top: 2px; }
+
+.toc-field-link {
+  color: #546e7a;
+  font-size: 14px;
+}
+
+.toc-number {
+  display: inline-block;
+  min-width: 3.4em;
+  color: rgba(0, 0, 0, 0.38);
+}
+
+/* ------------------------------------------------------------------- body */
+
+.section { margin-top: 56px; }
+
+.section-heading {
+  margin: 0;
+  padding-top: 24px;
+  border-top: 2px solid #eceff1;
+  font-size: 22px;
+  font-weight: 600;
+  line-height: 1.3;
+  color: #263238;
+}
+
+.field { margin-top: 32px; }
+
+.field-heading {
+  margin: 0 0 8px 0;
+  font-size: 16px;
+  font-weight: 600;
+  line-height: 1.4;
+  color: #263238;
+}
+
+.field-number {
+  display: inline-block;
+  min-width: 3.4em;
+  color: rgba(0, 0, 0, 0.38);
+}
+
+.answer {
+  color: #37474f;
+  /* Only bites on a very wide pane, where an uncapped answer would run to well
+     over 120 characters a line. Headings and rules still span the full block. */
+  max-width: 58em;
+}
+
+.answer p { margin: 0 0 12px 0; }
+
+.answer p:last-child { margin-bottom: 0; }
+
+.answer ul, .answer ol {
+  margin: 0 0 12px 0;
+  padding-left: 22px;
+}
+
+.answer li { margin-bottom: 4px; }
+
+.answer h4, .answer h5, .answer h6 {
+  margin: 16px 0 6px 0;
+  font-size: 15px;
+  font-weight: 600;
+  color: #263238;
+}
+
+.answer blockquote {
+  margin: 0 0 12px 0;
+  padding-left: 14px;
+  border-left: 3px solid #eceff1;
+  color: #546e7a;
+}
+
+.answer code {
+  padding: 1px 4px;
+  background-color: #f5f7f8;
+  border-radius: 3px;
+  font-family: SFMono-Regular, Menlo, Consolas, monospace;
+  font-size: 0.9em;
+}
+
+.answer pre {
+  margin: 0 0 12px 0;
+  padding: 12px 14px;
+  overflow-x: auto;
+  background-color: #f5f7f8;
+  border-radius: 6px;
+}
+
+.answer table {
+  width: 100%;
+  margin: 0 0 12px 0;
+  border-collapse: collapse;
+  font-size: 14px;
+}
+
+.answer th, .answer td {
+  padding: 8px 10px;
+  border: 1px solid #eceff1;
+  text-align: left;
+  vertical-align: top;
+}
+
+.answer th {
+  background-color: #fafafa;
+  font-weight: 600;
+}
+
+/* The frame is only about 1067px wide at a 1440px viewport and narrower on a
+   laptop, so the document has to reflow rather than assume a page width. */
+@media (max-width: 640px) {
+  /* Below this a 7% margin is worth less than the words it displaces. */
+  .page { padding: 32px 20px 72px 20px; }
+  .cover-logo { margin-bottom: 48px; }
+  .cover-title { font-size: 32px; }
+  .cover-meta {
+    grid-template-columns: minmax(0, 1fr);
+    grid-template-rows: none;
+  }
+  .cover-meta dt, .cover-meta dd { grid-row: auto; }
+  .cover-meta dd { margin-bottom: 12px; }
+}
+
+@media print {
+  .page { max-width: none; padding: 0; }
+  .toc {
+    padding: 0;
+    background-color: transparent;
+    border: 0;
+  }
+  .field { page-break-inside: avoid; }
+  .section-heading { page-break-after: avoid; }
+  a { color: inherit; }
+}
+</style>
+
+</head>
+<body>
+
+        <div style="display:none">
+          <ix:header>
+            <ix:hidden><ix:nonNumeric name="mica:PublicOfferingOrAdmissionToTrading" contextRef="_ctx1" id="TEMPLATE_E.1" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#AdmissionToTrading</ix:nonNumeric><ix:nonNumeric name="mica:TargetedHoldersForOtherToken" contextRef="_ctx1" id="TEMPLATE_E.13" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#AllTypesOfInvestors</ix:nonNumeric><ix:nonNumeric name="mica:PlacementFormForOtherToken" contextRef="_ctx1" id="TEMPLATE_E.32" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#NotApplicablePlacementForm</ix:nonNumeric><ix:nonNumeric name="mica:OtherTokenTypeOfWhitePaper" contextRef="_ctx1" id="TEMPLATE_F.4" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#OtherCryptoassetWhitePaper</ix:nonNumeric><ix:nonNumeric name="mica:OtherTokenTypeOfSubmission" contextRef="_ctx1" id="TEMPLATE_F.5" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#NewTypeOfSubmission</ix:nonNumeric><ix:nonNumeric name="mica:OtherTokenHomeMemberState" contextRef="_ctx1" id="TEMPLATE_F.18" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#IrelandMemberState</ix:nonNumeric><ix:nonNumeric name="mica:OtherTokenHostMemberStates" contextRef="_ctx1" id="TEMPLATE_F.19" escape="false">https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#AustriaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#BelgiumMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#BulgariaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#CroatiaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#CyprusMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#CzechiaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#DenmarkMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#EstoniaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#FinlandMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#FranceMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#GermanyMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#GreeceMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#HungaryMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#IcelandMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#ItalyMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#LatviaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#LiechtensteinMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#LithuaniaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#LuxembourgMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#MaltaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#NetherlandsMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#NorwayMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#PolandMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#PortugalMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#RomaniaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#SlovakiaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#SloveniaMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#SpainMemberState https://www.esma.europa.eu/taxonomy/2025-03-31/mica/#SwedenMemberState</ix:nonNumeric></ix:hidden>
+            <ix:references xml:lang="en">
+              <link:schemaRef xlink:type="simple" xlink:href="https://www.esma.europa.eu/taxonomy/mica/2025-03-31/mica_entry_table_2.xsd"/>
+            </ix:references>
+            <ix:resources>
+        <xbrli:context id="_ctx1">
+            <xbrli:entity>
+                <xbrli:identifier scheme="http://standards.iso.org/iso/17442">984500DE7AF09CDDDB83</xbrli:identifier>
+            </xbrli:entity>
+            <xbrli:period>
+                <xbrli:startDate>2026-01-01</xbrli:startDate>
+                <xbrli:endDate>2026-12-31</xbrli:endDate>
+            </xbrli:period>
+        </xbrli:context>
+        <xbrli:context id="_ctx_instant">
+            <xbrli:entity>
+                <xbrli:identifier scheme="http://standards.iso.org/iso/17442">984500DE7AF09CDDDB83</xbrli:identifier>
+            </xbrli:entity>
+            <xbrli:period>
+                <xbrli:instant>2026-12-31</xbrli:instant>
+            </xbrli:period>
+        </xbrli:context>
+        <xbrli:unit id="u_kWh"><xbrli:measure>utr:kWh</xbrli:measure></xbrli:unit>
+        <xbrli:unit id="u_pure"><xbrli:measure>xbrli:pure</xbrli:measure></xbrli:unit></ix:resources>
+          </ix:header>
+        </div>
+<div class="page">
+<div class="cover">
+<p class="cover-kicker"><span>Crypto-Asset White Paper</span><span class="cover-kicker-separator">|</span><span class="cover-issuer">The AntSeed Foundation</span></p>
+<h1 class="cover-title">MiCAR White Paper</h1>
+<p class="cover-intro">This white paper has been prepared in accordance with Regulation (EU) 2023/1114 of the European Parliament and of the Council of 31 May 2023 on markets in crypto-assets (MiCAR).</p>
+<hr class="cover-rule" />
+<dl class="cover-meta">
+<dt>Publication date</dt><dd>2026-10-28</dd>
+<dt>Person seeking admission to trading</dt><dd>The AntSeed Foundation</dd>
+</dl>
+</div>
+<div class="toc">
+<h2 class="toc-heading">Table of Contents</h2>
+<ol class="toc-sections">
+<li class="toc-section-item">
+<a class="toc-section-link" href="#preamble">Preamble</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-00"><span class="toc-number">00</span>Table of content</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-01"><span class="toc-number">01</span>Date of notification</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-02"><span class="toc-number">02</span>Statement in accordance with Article 6(3) of Regulation (EU) 2023/1114</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-03"><span class="toc-number">03</span>Compliance statement in accordance with Article 6(6) of Regulation (EU) 2023/1114</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-04"><span class="toc-number">04</span>Statement in accordance with Article 6(5), points (a), (b), (c), of Regulation (EU) 2023/1114</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-05"><span class="toc-number">05</span>Statement in accordance with Article 6(5), point (d), of Regulation (EU) 2023/1114</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-06"><span class="toc-number">06</span>Statement in accordance with Article 6(5), points (e) and (f), of Regulation (EU) 2023/1114</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#summary">SUMMARY</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-07"><span class="toc-number">07</span>Warning in accordance with Article 6(7), second subparagraph, of Regulation (EU) 2023/1114</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-08"><span class="toc-number">08</span>Characteristics of the crypto-asset</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-09"><span class="toc-number">09</span>Further information about utility tokens</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-10"><span class="toc-number">10</span>Key information about the offer to the public or admission to trading</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-a">Part A - Information about the Offeror or the Person Seeking Admission to Trading</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.1"><span class="toc-number">A.1</span>Name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.2"><span class="toc-number">A.2</span>Legal form</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.3"><span class="toc-number">A.3</span>Registered address</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.4"><span class="toc-number">A.4</span>Head office</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.5"><span class="toc-number">A.5</span>Registration date</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.6"><span class="toc-number">A.6</span>Legal entity identifier</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.7"><span class="toc-number">A.7</span>Another identifier required pursuant to applicable national law</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.8"><span class="toc-number">A.8</span>Contact telephone number</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.9"><span class="toc-number">A.9</span>E-mail address</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.10"><span class="toc-number">A.10</span>Response time (days)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.11"><span class="toc-number">A.11</span>Parent company</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.12"><span class="toc-number">A.12</span>Members of management body</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.13"><span class="toc-number">A.13</span>Business activity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.14"><span class="toc-number">A.14</span>Parent company business activity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.15"><span class="toc-number">A.15</span>Newly established</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.16"><span class="toc-number">A.16</span>Financial condition for the past three years</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-A.17"><span class="toc-number">A.17</span>Financial condition since registration</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-b">Part B - Information about the Issuer, If Different from the Offeror or Person Seeking Admission to Trading</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.1"><span class="toc-number">B.1</span>Issuer different from offerror or person seeking admission to trading</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.2"><span class="toc-number">B.2</span>Name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.3"><span class="toc-number">B.3</span>Legal form</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.4"><span class="toc-number">B.4</span>Registered address</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.5"><span class="toc-number">B.5</span>Head office</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.6"><span class="toc-number">B.6</span>Registration date</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.7"><span class="toc-number">B.7</span>Legal entity identifier</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.8"><span class="toc-number">B.8</span>Another identifier required pursuant to applicable national law</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.9"><span class="toc-number">B.9</span>Parent company</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.10"><span class="toc-number">B.10</span>Members of management body</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.11"><span class="toc-number">B.11</span>Business activity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-B.12"><span class="toc-number">B.12</span>Parent company business activity</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-c">Part C - Information about the Operator of the Trading Platform</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.1"><span class="toc-number">C.1</span>Name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.2"><span class="toc-number">C.2</span>Legal form</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.3"><span class="toc-number">C.3</span>Registered address</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.4"><span class="toc-number">C.4</span>Head office</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.5"><span class="toc-number">C.5</span>Registration date</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.6"><span class="toc-number">C.6</span>Legal entity identifier</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.7"><span class="toc-number">C.7</span>Another identifier required pursuant to applicable national law</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.8"><span class="toc-number">C.8</span>Parent company</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.9"><span class="toc-number">C.9</span>Reason for crypto-asset white paper preparation</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.10"><span class="toc-number">C.10</span>Members of management body</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.11"><span class="toc-number">C.11</span>Operator business activity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.12"><span class="toc-number">C.12</span>Parent company business activity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.13"><span class="toc-number">C.13</span>Other persons drawing up the crypto-asset white paper according to Article 6(1), second subparagraph, of Regulation (EU) 2023/1114</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-C.14"><span class="toc-number">C.14</span>Reason for drawing the white paper by persons referred to in Article 6(1), second subparagraph, of Regulation (EU) 2023/1114</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-d">Part D - Information about the Crypto-Asset Project</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.1"><span class="toc-number">D.1</span>Crypto-asset project name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.2"><span class="toc-number">D.2</span>Crypto-asset name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.3"><span class="toc-number">D.3</span>Abbreviation</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.4"><span class="toc-number">D.4</span>Crypto-asset project description</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.5"><span class="toc-number">D.5</span>Details of all natural or legal persons involved in implementation of crypto-asset project</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.6"><span class="toc-number">D.6</span>Utility token classification</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.7"><span class="toc-number">D.7</span>Key features of goods or services for utility token projects</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.8"><span class="toc-number">D.8</span>Plans for the token</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.9"><span class="toc-number">D.9</span>Resource allocation</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-D.10"><span class="toc-number">D.10</span>Planned use of collected funds or other tokens</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-e">Part E - Information about the Offer to the Public of Crypto-Assets or their Admission to Trading</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.1"><span class="toc-number">E.1</span>Public offering or admission to trading</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.2"><span class="toc-number">E.2</span>Reasons for public offer or admission to trading</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.3"><span class="toc-number">E.3</span>Fundraising target</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.4"><span class="toc-number">E.4</span>Minimum subscription goals</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.5"><span class="toc-number">E.5</span>Maximum subscription goals</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.6"><span class="toc-number">E.6</span>Oversubscription acceptance</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.7"><span class="toc-number">E.7</span>Oversubscription allocation</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.8"><span class="toc-number">E.8</span>Issue price</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.9"><span class="toc-number">E.9</span>Official currency determining issue price</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.10"><span class="toc-number">E.10</span>Subscription fee</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.11"><span class="toc-number">E.11</span>Offer price determination method</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.12"><span class="toc-number">E.12</span>Total number of offered or traded other tokens</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.13"><span class="toc-number">E.13</span>Targeted holders</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.14"><span class="toc-number">E.14</span>Holder restrictions</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.15"><span class="toc-number">E.15</span>Reimbursement notice</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.16"><span class="toc-number">E.16</span>Refund mechanism</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.17"><span class="toc-number">E.17</span>Refund timeline</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.18"><span class="toc-number">E.18</span>Offer phases</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.19"><span class="toc-number">E.19</span>Early purchase discount</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.20"><span class="toc-number">E.20</span>Time-limited offer</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.21"><span class="toc-number">E.21</span>Subscription period beginning</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.22"><span class="toc-number">E.22</span>Subscription period end</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.23"><span class="toc-number">E.23</span>Safeguarding arrangements for offered funds or other tokens</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.24"><span class="toc-number">E.24</span>Payment methods for other token purchase</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.25"><span class="toc-number">E.25</span>Value transfer methods for reimbursement</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.26"><span class="toc-number">E.26</span>Right of withdrawal</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.27"><span class="toc-number">E.27</span>Transfer of purchased other tokens</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.28"><span class="toc-number">E.28</span>Transfer time schedule</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.29"><span class="toc-number">E.29</span>Purchaser's technical requirements</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.30"><span class="toc-number">E.30</span>Other token service provider (CASP) name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.31"><span class="toc-number">E.31</span>CASP identifier</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.32"><span class="toc-number">E.32</span>Placement form</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.33"><span class="toc-number">E.33</span>Trading platforms name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.34"><span class="toc-number">E.34</span>Trading platforms market identifier code (MIC)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.35"><span class="toc-number">E.35</span>Trading platforms access</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.36"><span class="toc-number">E.36</span>Involved costs</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.37"><span class="toc-number">E.37</span>Offer expenses</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.38"><span class="toc-number">E.38</span>Conflicts of interest</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.39"><span class="toc-number">E.39</span>Applicable law</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-E.40"><span class="toc-number">E.40</span>Competent court</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-f">Part F - Information about the Crypto-Assets</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.1"><span class="toc-number">F.1</span>Other token type</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.2"><span class="toc-number">F.2</span>Other token functionality</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.3"><span class="toc-number">F.3</span>Planned application of functionalities</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.4"><span class="toc-number">F.4</span>Type of crypto-asset white paper</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.5"><span class="toc-number">F.5</span>Type of submission</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.6"><span class="toc-number">F.6</span>Other token characteristics</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.7"><span class="toc-number">F.7</span>Commercial name or trading name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.8"><span class="toc-number">F.8</span>Website of the issuer</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.9"><span class="toc-number">F.9</span>Starting date of offer to the public or admission to trading</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.10"><span class="toc-number">F.10</span>Publication date</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.11"><span class="toc-number">F.11</span>Any other services provided by the issuer</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.12"><span class="toc-number">F.12</span>Language or languages of white paper</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.13"><span class="toc-number">F.13</span>Digital token identifier code used to uniquely identify the crypto-asset or each of the several crypto assets to which the white paper relates, where available</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.14"><span class="toc-number">F.14</span>Functionally fungible group digital token identifier, where available</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.15"><span class="toc-number">F.15</span>Voluntary data flag</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.16"><span class="toc-number">F.16</span>Personal data flag</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.17"><span class="toc-number">F.17</span>LEI eligibility</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.18"><span class="toc-number">F.18</span>Home member state</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-F.19"><span class="toc-number">F.19</span>Host member states</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-g">Part G - Information on the Rights and Obligations attached to the Crypto-Assets</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.1"><span class="toc-number">G.1</span>Purchaser rights and obligations</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.2"><span class="toc-number">G.2</span>Exercise of rights and obligations</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.3"><span class="toc-number">G.3</span>Conditions for modifications of rights and obligations</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.4"><span class="toc-number">G.4</span>Future public offers</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.5"><span class="toc-number">G.5</span>Issuer retained other token</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.6"><span class="toc-number">G.6</span>Utility token classification</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.7"><span class="toc-number">G.7</span>Key features of goods or services utility tokens</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.8"><span class="toc-number">G.8</span>Utility tokens redemption</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.9"><span class="toc-number">G.9</span>Non-trading request</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.10"><span class="toc-number">G.10</span>Other tokens purchase or sale modalities</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.11"><span class="toc-number">G.11</span>Other tokens transfer restrictions</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.12"><span class="toc-number">G.12</span>Supply adjustment protocols</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.13"><span class="toc-number">G.13</span>Supply adjustment mechanisms</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.14"><span class="toc-number">G.14</span>Token value protection schemes</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.15"><span class="toc-number">G.15</span>Token value protection schemes description</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.16"><span class="toc-number">G.16</span>Compensation schemes</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.17"><span class="toc-number">G.17</span>Compensation schemes description</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.18"><span class="toc-number">G.18</span>Applicable law</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-G.19"><span class="toc-number">G.19</span>Competent court</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-h">Part H - Information on the underlying technology</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.1"><span class="toc-number">H.1</span>Distributed ledger technology (DTL)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.2"><span class="toc-number">H.2</span>Protocols and technical standards</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.3"><span class="toc-number">H.3</span>Technology used</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.4"><span class="toc-number">H.4</span>Consensus mechanism</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.5"><span class="toc-number">H.5</span>Incentive mechanisms and applicable fees</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.6"><span class="toc-number">H.6</span>Use of distributed ledger technology</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.7"><span class="toc-number">H.7</span>DLT functionality description</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.8"><span class="toc-number">H.8</span>Audit</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-H.9"><span class="toc-number">H.9</span>Audit outcome</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-i">Part I - Information on Risks</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-I.1"><span class="toc-number">I.1</span>Offer-related risks</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-I.2"><span class="toc-number">I.2</span>Issuer-related risks</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-I.3"><span class="toc-number">I.3</span>Other tokens-related risks</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-I.4"><span class="toc-number">I.4</span>Project implementation-related risks</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-I.5"><span class="toc-number">I.5</span>Technology-related risks</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-I.6"><span class="toc-number">I.6</span>Mitigation measures</a></li>
+</ol>
+</li>
+<li class="toc-section-item">
+<a class="toc-section-link" href="#part-j">Part J – Information on the sustainability indicators in relation to adverse impact on the climate and other environment-related adverse impacts</a>
+<ol class="toc-fields">
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.1"><span class="toc-number">S.1</span>Name</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.2"><span class="toc-number">S.2</span>Relevant legal entity identifier</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.3"><span class="toc-number">S.3</span>Name of the crypto-asset</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.4"><span class="toc-number">S.4</span>Consensus mechanism</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.5"><span class="toc-number">S.5</span>Incentive mechanisms and applicable fees</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.6"><span class="toc-number">S.6</span>Beginning of period to which disclosed information relates</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.7"><span class="toc-number">S.7</span>End of period to which disclosed information relates</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.8"><span class="toc-number">S.8</span>Energy consumption</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.9"><span class="toc-number">S.9</span>Energy consumption sources and methodologies</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.10"><span class="toc-number">S.10</span>Renewable energy consumption</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.11"><span class="toc-number">S.11</span>Energy intensity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.12"><span class="toc-number">S.12</span>Scope 1 DLT GHG emissions - controlled</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.13"><span class="toc-number">S.13</span>Scope 2 DLT GHG emissions - purchased</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.14"><span class="toc-number">S.14</span>GHG intensity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.15"><span class="toc-number">S.15</span>Key energy sources and methodologies</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.16"><span class="toc-number">S.16</span>Key GHG sources and methodologies</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.17"><span class="toc-number">S.17</span>Energy mix</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.18"><span class="toc-number">S.18</span>Energy use reduction</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.19"><span class="toc-number">S.19</span>Carbon intensity</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.20"><span class="toc-number">S.20</span>Scope 3 DLT GHG emissions - value chain</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.21"><span class="toc-number">S.21</span>GHG emissions reduction targets or commitments</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.22"><span class="toc-number">S.22</span>Generation of waste electrical and electronic equipment (WEEE)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.23"><span class="toc-number">S.23</span>Non-recycled WEEE ratio</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.24"><span class="toc-number">S.24</span>Generation of hazardous waste</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.25"><span class="toc-number">S.25</span>Generation of waste (all types)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.26"><span class="toc-number">S.26</span>Non-recycled waste ratio (all types)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.27"><span class="toc-number">S.27</span>Waste intensity (all types)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.28"><span class="toc-number">S.28</span>Waste reduction targets or commitments (all types)</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.29"><span class="toc-number">S.29</span>Impact of the use of equipment on natural resources</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.30"><span class="toc-number">S.30</span>Natural resources use reduction targets or commitments</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.31"><span class="toc-number">S.31</span>Water use</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.32"><span class="toc-number">S.32</span>Non recycled water ratio</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.33"><span class="toc-number">S.33</span>Other energy sources and methodologies</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.34"><span class="toc-number">S.34</span>Other GHG sources and methodologies</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.35"><span class="toc-number">S.35</span>Waste sources and methodologies</a></li>
+<li class="toc-field-item"><a class="toc-field-link" href="#f-S.36"><span class="toc-number">S.36</span>Natural resources sources and methodologies</a></li>
+</ol>
+</li>
+</ol>
+</div>
+<div class="section" id="preamble">
+<h2 class="section-heading">Preamble</h2>
+<div class="field" id="f-00">
+<h3 class="field-heading"><span class="field-number">00</span> Table of content</h3>
+<div class="answer"><ix:nonNumeric name="mica:TableOfContentForOtherTokenWhitePaper" contextRef="_ctx1" id="TEMPLATE_id_00" format="ixt4:fixed-true" escape="false">true</ix:nonNumeric></div>
+</div>
+<div class="field" id="f-01">
+<h3 class="field-heading"><span class="field-number">01</span> Date of notification</h3>
+<div class="answer"><p><ix:nonNumeric name="mica:DateOfNotificationForOtherTokenWhitePaper" contextRef="_ctx_instant" id="TEMPLATE_id_01" escape="false">2026-09-29</ix:nonNumeric></p></div>
+</div>
+<div class="field" id="f-02">
+<h3 class="field-heading"><span class="field-number">02</span> Statement in accordance with Article 6(3) of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:StatementEnsuringComplianceWithUnderlyingRegulation" contextRef="_ctx1" id="TEMPLATE_id_02" format="ixt4:fixed-true" escape="false"><p>This crypto-asset white paper has not been approved by any competent authority in any Member State of the European Union. The person seeking admission to trading of the crypto-asset is solely responsible for the content of this crypto-asset white paper.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-03">
+<h3 class="field-heading"><span class="field-number">03</span> Compliance statement in accordance with Article 6(6) of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:ComplianceStatementAboutManagementConfirmation" contextRef="_ctx1" id="TEMPLATE_id_03" format="ixt4:fixed-true" escape="false"><p>This crypto-asset white paper complies with Title II of Regulation (EU) 2023/1114 of the European Parliament and of the Council and, to the best of the knowledge of the management body, the information presented in the crypto-asset white paper is fair, clear and not misleading and the crypto-asset white paper makes no omission likely to affect its import.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-04">
+<h3 class="field-heading"><span class="field-number">04</span> Statement in accordance with Article 6(5), points (a), (b), (c), of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:StatementAboutPotentialRisks" contextRef="_ctx1" id="TEMPLATE_id_04" format="ixt4:fixed-true" escape="false"><p>The crypto-asset referred to in this crypto-asset white paper may lose its value in part or in full, may not always be transferable and may not be liquid.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-05">
+<h3 class="field-heading"><span class="field-number">05</span> Statement in accordance with Article 6(5), point (d), of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:StatementAboutExchangeabilityForOtherToken" contextRef="_ctx1" id="TEMPLATE_id_05" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-06">
+<h3 class="field-heading"><span class="field-number">06</span> Statement in accordance with Article 6(5), points (e) and (f), of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:StatementAboutCompensationAndGuaranteeForOtherToken" contextRef="_ctx1" id="TEMPLATE_id_06" format="ixt4:fixed-true" escape="false"><p>The crypto-asset referred to in this white paper is not covered by the investor compensation schemes under Directive 97/9/EC of the European Parliament and of the Council or the deposit guarantee schemes under Directive 2014/49/EU of the European Parliament and of the Council.</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="summary">
+<h2 class="section-heading">SUMMARY</h2>
+<div class="field" id="f-07">
+<h3 class="field-heading"><span class="field-number">07</span> Warning in accordance with Article 6(7), second subparagraph, of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:ClarificationRegardingOtherTokenOfferTerms" contextRef="_ctx1" id="TEMPLATE_id_07" format="ixt4:fixed-true" escape="false"><p>Warning</p>
+<p>This summary should be read as an introduction to the crypto-asset white paper. The prospective holder should base any decision to purchase this crypto-asset on the content of the crypto-asset white paper as a whole and not on the summary alone. The offer to the public of this crypto-asset does not constitute an offer or solicitation to purchase financial instruments and any such offer or solicitation can be made only by means of a prospectus or other offer documents pursuant to the applicable national law. This crypto-asset white paper does not constitute a prospectus as referred to in Regulation (EU) 2017/1129 of the European Parliament and of the Council or any other offer document pursuant to Union or national law.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-08">
+<h3 class="field-heading"><span class="field-number">08</span> Characteristics of the crypto-asset</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfCharacteristicsOfOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_id_08" escape="true"><p>ANTS is the native token of the AntSeed protocol, implemented as an ERC-20 token on the Base blockchain. It is designed to be used to access features of the protocol. These features are functions of the protocol, not rights attached to the token itself, and each requires separate action by the holder; simply holding ANTS does not confer any entitlement.</p>
+<p>Payments for AI services on the network are made in USDC, a US dollar stablecoin, and not in ANTS. ANTS is a reputational and separate incentive mechanism: the protocol creates new ANTS on a scheduled basis and allocates it to participants based on their verified activity on the network, such as completed service payments. These allocations require active participation and are not received through passive holding.</p>
+<p>Offering paid services on the network does not require a stake; providers are paid in USDC for services rendered regardless of whether any ANTS is staked. A stake is relevant only to establish eligibility for ANTS rewards. That eligibility stake is denominated in ANTS and held in seller pools attached to a provider's on-chain identity, and any ANTS holder may stake in support of a provider. A legacy mechanism under which eligibility was established through a USDC-denominated stake remains available as a fallback until it is explicitly disabled.</p>
+<p>The token has a maximum supply of 1.04 billion ANTS. As at 29 September 2026, approximately 120 million ANTS had been released under the emission schedule, of which approximately 118.67 million (98.9%) had been minted, including 3 million ANTS allocated to the burn address. Transfers of ANTS are currently restricted; transferability is targeted for Q4 2026, although no date has been fixed. New tokens are released on a fixed weekly schedule of 5 million ANTS per week, with the weekly amount halving every 104 weeks. Each week's release is allocated across fixed and dynamic components: 15% to the Foundation and 15% to contributors are fixed regardless of network activity, while up to 10% to verification and other growth incentives, up to 40% to stakers and up to 10% each to buyers and providers scale with network activity. Up to 30% of that week's scheduled release that is not earned through actual network activity shall be permanently removed from circulation ("burned"). The remaining balance shall be allocated to the Foundation. A portion of the Foundation’s allocation has been committed to the institutional and venture-capital investors through private sales, subject to lock-up and vesting restrictions.</p>
+<p>The protocol charges a 4% fee on AI service payments. These fees accumulate in a separate reserve contract. Accumulated fees may in future be directed to purchasing ANTS on the open market and permanently removing the purchased tokens from circulation (a "buy-and-burn" mechanism). This is not currently operating, and its activation and terms depend on the protocol's contracts and governance parameters.</p>
+<p>The AntSeed protocol operates on a decentralised, non-custodial and open-source basis, without a central operator or centralised user onboarding; participants interact directly with the protocol's smart contracts. Funds are held in smart contracts under rules fixed in code and not by the Foundation or any other person.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-09">
+<h3 class="field-heading"><span class="field-number">09</span> Further information about utility tokens</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfFurtherInformationAboutUtilityTokensExplanatory" contextRef="_ctx1" id="TEMPLATE_id_09" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-10">
+<h3 class="field-heading"><span class="field-number">10</span> Key information about the offer to the public or admission to trading</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferDescriptionExplanatory" contextRef="_ctx1" id="TEMPLATE_id_10" escape="true"><p>This white paper has been prepared for the purposes of seeking admission to trading on multiple crypto-asset trading platforms. The Issuer seeks to ensure broad accessibility for the ANTS token by pursuing admission to trading across suitable venues.</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-a">
+<h2 class="section-heading">Part A - Information about the Offeror or the Person Seeking Admission to Trading</h2>
+<div class="field" id="f-A.1">
+<h3 class="field-heading"><span class="field-number">A.1</span> Name</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfOtherTokenOfferor" contextRef="_ctx1" id="TEMPLATE_A.1" escape="false"><p>The AntSeed Foundation</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.2">
+<h3 class="field-heading"><span class="field-number">A.2</span> Legal form</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferorsLegalForm" contextRef="_ctx1" id="TEMPLATE_A.2" escape="false"><p>A private foundation registered under the Private Foundations Act 2017 (Gibraltar), registration number 00052</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.3">
+<h3 class="field-heading"><span class="field-number">A.3</span> Registered address</h3>
+<div class="answer"><p>Madison Building, Midtown, Queensway, Gibraltar, GX11</p></div>
+</div>
+<div class="field" id="f-A.4">
+<h3 class="field-heading"><span class="field-number">A.4</span> Head office</h3>
+<div class="answer"><p>Madison Building, Midtown, Queensway, Gibraltar, GX11</p></div>
+</div>
+<div class="field" id="f-A.5">
+<h3 class="field-heading"><span class="field-number">A.5</span> Registration date</h3>
+<div class="answer"><p><ix:nonNumeric name="mica:OfferorsRegistrationDate" contextRef="_ctx1" id="TEMPLATE_A.5" escape="false">2026-07-16</ix:nonNumeric></p></div>
+</div>
+<div class="field" id="f-A.6">
+<h3 class="field-heading"><span class="field-number">A.6</span> Legal entity identifier</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferorsLegalEntityIdentifier" contextRef="_ctx1" id="TEMPLATE_A.6" escape="false">984500DE7AF09CDDDB83</ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.7">
+<h3 class="field-heading"><span class="field-number">A.7</span> Another identifier required pursuant to applicable national law</h3>
+<div class="answer"></div>
+</div>
+<div class="field" id="f-A.8">
+<h3 class="field-heading"><span class="field-number">A.8</span> Contact telephone number</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferorsContactTelephoneNumber" contextRef="_ctx1" id="TEMPLATE_A.8" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.9">
+<h3 class="field-heading"><span class="field-number">A.9</span> E-mail address</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferorsEmailAddress" contextRef="_ctx1" id="TEMPLATE_A.9" escape="false"><p>contact@antseed.com</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.10">
+<h3 class="field-heading"><span class="field-number">A.10</span> Response time (days)</h3>
+<div class="answer"><p><ix:nonFraction name="mica:OfferorsResponseTimeDays" contextRef="_ctx1" id="TEMPLATE_A.10" unitRef="u_pure" decimals="0" format="ixt4:num-dot-decimal">001</ix:nonFraction></p></div>
+</div>
+<div class="field" id="f-A.11">
+<h3 class="field-heading"><span class="field-number">A.11</span> Parent company</h3>
+<div class="answer"><ix:nonNumeric name="mica:IdentificationOfOfferorsParentCompany" contextRef="_ctx1" id="TEMPLATE_A.11" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.12">
+<h3 class="field-heading"><span class="field-number">A.12</span> Members of management body</h3>
+<div class="answer"><p>1<br />
+Belvedere Trustees Ltd<br />
+Madison Building, Midtown, Queensway, Gibraltar, GX11<br />
+Foundation Council Member</p>
+<p>2<br />
+James Lasry<br />
+c/o Madison Building, Midtown, Queensway, Gibraltar, GX11<br />
+Foundation Council Member</p>
+<p>3<br />
+Maria de las Ares Navarro<br />
+c/o Madison Building, Midtown, Queensway, Gibraltar, GX11<br />
+Foundation Council Member</p>
+<p>4<br />
+Amos Meiri<br />
+c/o Madison Building, Midtown, Queensway, Gibraltar, GX11<br />
+Guardian</p></div>
+</div>
+<div class="field" id="f-A.13">
+<h3 class="field-heading"><span class="field-number">A.13</span> Business activity</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferorsBusinessActivityExplanatory" contextRef="_ctx1" id="TEMPLATE_A.13" escape="true"><p>The AntSeed Foundation's principal activity is the management, preservation and administration of its endowment for the benefit of the AntSeed Ecosystem, in accordance with its Charter objects.</p>
+<p>The Foundation's principal activities include:</p>
+<ul>
+<li>Supporting the long-term development, security, decentralization, education, adoption, utility, resilience, and sustainability of the AntSeed Ecosystem;</li>
+<li>Providing AntSeed Ecosystem Support, including funding grants, audits, and legal/regulatory analysis;</li>
+<li>Supporting open-source development and education relating to the AntSeed protocol;</li>
+<li>Supporting and indemnifying the Founders in respect of actions taken in creating and developing the AntSeed Ecosystem.</li>
+</ul>
+<p>The Foundation's principal market is the global, decentralized user and developer base of the AntSeed protocol; it has no geographic restriction on participation, as the protocol operates on a permissionless, peer-to-peer basis with no central operator or custody of user funds.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.14">
+<h3 class="field-heading"><span class="field-number">A.14</span> Parent company business activity</h3>
+<div class="answer"><ix:nonNumeric name="mica:ParentCompanyBusinessActivityOfOfferorSideExplanatory" contextRef="_ctx1" id="TEMPLATE_A.14" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.15">
+<h3 class="field-heading"><span class="field-number">A.15</span> Newly established</h3>
+<div class="answer"><ix:nonNumeric name="mica:NewlyEstablishedOfferorsIndicator" contextRef="_ctx1" id="TEMPLATE_A.15" format="ixt4:fixed-true" escape="false"><p>true</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.16">
+<h3 class="field-heading"><span class="field-number">A.16</span> Financial condition for the past three years</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutOfferorsFinancialConditionForPastThreeYearsExplanatory" contextRef="_ctx1" id="TEMPLATE_A.16" escape="true"><p>Not applicable as the offeror or person seeking admission to trading was established within the past three years.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-A.17">
+<h3 class="field-heading"><span class="field-number">A.17</span> Financial condition since registration</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutOfferorsFinancialConditionSinceRegistrationExplanatory" contextRef="_ctx1" id="TEMPLATE_A.17" escape="true"><p>The AntSeed Foundation was registered on 16 July 2026 and has no financial history predating that date. It was established with an initial endowment of £10. No annual return has yet fallen due and no audited accounts exist, so financial key performance indicators such as margins, run rate or liquidity ratios are not available.</p>
+<p>The Foundation's resources consist of its endowment together with its allocation under the protocol's emission schedule, being 15% of each week's release and any portion of a week's release remaining after the burn described in G.13. As these allocations are an ongoing percentage of a variable quantity rather than a fixed holding, they cannot be stated as a single figure.</p>
+<p>The Foundation measures the project's progress by network activity rather than by issuer financial metrics. As at 29 September 2026, the network had processed approximately 189 billion AI tokens and settled approximately USD 302,860 in payments for AI services, across 208 providers and 1,573 buyers. Protocol fees collected on those settlements totalled approximately USD 12,030. These figures are drawn from the AntSeed network explorer at https://antseedstats.com/ and reflect on-chain records at the date stated.</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-b">
+<h2 class="section-heading">Part B - Information about the Issuer, If Different from the Offeror or Person Seeking Admission to Trading</h2>
+<div class="field" id="f-B.1">
+<h3 class="field-heading"><span class="field-number">B.1</span> Issuer different from offerror or person seeking admission to trading</h3>
+<div class="answer"><ix:nonNumeric name="mica:IssuerDifferentFromOfferrorOrPersonSeekingAdmissionToTrading" contextRef="_ctx1" id="TEMPLATE_B.1" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-B.2">
+<h3 class="field-heading"><span class="field-number">B.2</span> Name</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfOtherTokenIssuer" contextRef="_ctx1" id="TEMPLATE_B.2" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-B.3">
+<h3 class="field-heading"><span class="field-number">B.3</span> Legal form</h3>
+<div class="answer"><ix:nonNumeric name="mica:IssuersLegalForm" contextRef="_ctx1" id="TEMPLATE_B.3" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-B.4">
+<h3 class="field-heading"><span class="field-number">B.4</span> Registered address</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-B.5">
+<h3 class="field-heading"><span class="field-number">B.5</span> Head office</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-B.6">
+<h3 class="field-heading"><span class="field-number">B.6</span> Registration date</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-B.7">
+<h3 class="field-heading"><span class="field-number">B.7</span> Legal entity identifier</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-B.8">
+<h3 class="field-heading"><span class="field-number">B.8</span> Another identifier required pursuant to applicable national law</h3>
+<div class="answer"><ix:nonNumeric name="mica:IssuersAnotherIdentifierRequiredPursuantToApplicableNationalLaw" contextRef="_ctx1" id="TEMPLATE_B.8" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-B.9">
+<h3 class="field-heading"><span class="field-number">B.9</span> Parent company</h3>
+<div class="answer"><ix:nonNumeric name="mica:IdentificationOfIssuersParentCompany" contextRef="_ctx1" id="TEMPLATE_B.9" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-B.10">
+<h3 class="field-heading"><span class="field-number">B.10</span> Members of management body</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-B.11">
+<h3 class="field-heading"><span class="field-number">B.11</span> Business activity</h3>
+<div class="answer"><ix:nonNumeric name="mica:IssuersBusinessActivityExplanatory" contextRef="_ctx1" id="TEMPLATE_B.11" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-B.12">
+<h3 class="field-heading"><span class="field-number">B.12</span> Parent company business activity</h3>
+<div class="answer"><ix:nonNumeric name="mica:ParentCompanyBusinessActivityOfIssuerSideExplanatory" contextRef="_ctx1" id="TEMPLATE_B.12" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-c">
+<h2 class="section-heading">Part C - Information about the Operator of the Trading Platform</h2>
+<div class="field" id="f-C.1">
+<h3 class="field-heading"><span class="field-number">C.1</span> Name</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfOtherTokenOperator" contextRef="_ctx1" id="TEMPLATE_C.1" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.2">
+<h3 class="field-heading"><span class="field-number">C.2</span> Legal form</h3>
+<div class="answer"><ix:nonNumeric name="mica:OperatorsLegalForm" contextRef="_ctx1" id="TEMPLATE_C.2" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.3">
+<h3 class="field-heading"><span class="field-number">C.3</span> Registered address</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-C.4">
+<h3 class="field-heading"><span class="field-number">C.4</span> Head office</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-C.5">
+<h3 class="field-heading"><span class="field-number">C.5</span> Registration date</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-C.6">
+<h3 class="field-heading"><span class="field-number">C.6</span> Legal entity identifier</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-C.7">
+<h3 class="field-heading"><span class="field-number">C.7</span> Another identifier required pursuant to applicable national law</h3>
+<div class="answer"><ix:nonNumeric name="mica:OperatorsAnotherIdentifierRequiredPursuantToApplicableNationalLaw" contextRef="_ctx1" id="TEMPLATE_C.7" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.8">
+<h3 class="field-heading"><span class="field-number">C.8</span> Parent company</h3>
+<div class="answer"><ix:nonNumeric name="mica:IdentificationOfOperatorsParentCompany" contextRef="_ctx1" id="TEMPLATE_C.8" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.9">
+<h3 class="field-heading"><span class="field-number">C.9</span> Reason for crypto-asset white paper preparation</h3>
+<div class="answer"><ix:nonNumeric name="mica:ReasonForCryptoassetWhitePaperPreparationExplanatory" contextRef="_ctx_instant" id="TEMPLATE_C.9" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.10">
+<h3 class="field-heading"><span class="field-number">C.10</span> Members of management body</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-C.11">
+<h3 class="field-heading"><span class="field-number">C.11</span> Operator business activity</h3>
+<div class="answer"><ix:nonNumeric name="mica:OperatorsBusinessActivityExplanatory" contextRef="_ctx1" id="TEMPLATE_C.11" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.12">
+<h3 class="field-heading"><span class="field-number">C.12</span> Parent company business activity</h3>
+<div class="answer"><ix:nonNumeric name="mica:ParentCompanyBusinessActivityOfOperatorSideExplanatory" contextRef="_ctx1" id="TEMPLATE_C.12" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.13">
+<h3 class="field-heading"><span class="field-number">C.13</span> Other persons drawing up the crypto-asset white paper according to Article 6(1), second subparagraph, of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherPersonsDrawingUpCryptoassetWhitePaperExplanatory" contextRef="_ctx1" id="TEMPLATE_C.13" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-C.14">
+<h3 class="field-heading"><span class="field-number">C.14</span> Reason for drawing the white paper by persons referred to in Article 6(1), second subparagraph, of Regulation (EU) 2023/1114</h3>
+<div class="answer"><ix:nonNumeric name="mica:ReasonForDrawingWhitePaperExplanatory" contextRef="_ctx1" id="TEMPLATE_C.14" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-d">
+<h2 class="section-heading">Part D - Information about the Crypto-Asset Project</h2>
+<div class="field" id="f-D.1">
+<h3 class="field-heading"><span class="field-number">D.1</span> Crypto-asset project name</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfOtherTokenProject" contextRef="_ctx1" id="TEMPLATE_D.1" escape="false"><p>AntSeed</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.2">
+<h3 class="field-heading"><span class="field-number">D.2</span> Crypto-asset name</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfOtherToken" contextRef="_ctx1" id="TEMPLATE_D.2" escape="false"><p>AntSeed</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.3">
+<h3 class="field-heading"><span class="field-number">D.3</span> Abbreviation</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenProjectAbbreviation" contextRef="_ctx1" id="TEMPLATE_D.3" escape="false"><p>ANTS</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.4">
+<h3 class="field-heading"><span class="field-number">D.4</span> Crypto-asset project description</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOtherTokenProjectExplanatory" contextRef="_ctx1" id="TEMPLATE_D.4" escape="true"><p><strong>Purpose and Goals:</strong></p>
+<p>AntSeed is an open-source, peer-to-peer network that allows users to buy AI services directly from independent providers, without a central platform in the middle. Providers can offer AI models, APIs or specialised agents, while buyers access these services through their existing AI tools. The project's goals are to enable open, competitive pricing for AI services, to allow participants to keep control of their own funds at all times, and to coordinate participation in the network through ANTS, the native token of the AntSeed protocol.</p>
+<p><strong>Key Features and Operation:</strong></p>
+<ul>
+<li>
+<p><strong>Direct connections between buyers and providers.</strong> Buyers find providers over the torrent network and exchange requests and responses with them directly over encrypted connections, without a central server or account system.</p>
+</li>
+<li>
+<p><strong>Works with existing AI tools.</strong> AntSeed's software (Virtual Private Router (VPR) and the AntSeed command-line tool) lets buyers connect the AI applications they already use to the network. The software automatically finds and selects providers on the buyer's behalf, based on preferences the buyer sets, such as price, speed, reliability and reputation.</p>
+</li>
+<li>
+<p><strong>Direct on-chain payments.</strong> Buyers pay providers directly in USDC (a US dollar stablecoin) through smart contracts on the Base blockchain. Funds are held in smart contracts under rules fixed in code, not by the Foundation or any other person: the channel contract holds no USDC, and funds remain in the deposit contract until charged or withdrawn. The protocol charges a 4% fee on these payments, which accumulates in a separate reserve contract. Once ANTS becomes transferable, these fees, including the amounts accumulated to date, will be used for the ANTS buy-and-burn mechanism.</p>
+</li>
+<li>
+<p><strong>The ANTS token.</strong> ANTS is the native token of the AntSeed protocol, designed to be used to access features of the protocol. It is separate from the payment system described above: buyers pay providers in USDC, while ANTS is created by the protocol and allocated to active participants based on their verified activity. Offering paid services on the network does not itself require a stake; sellers are paid in USDC for services rendered regardless. Eligibility for ANTS rewards, however, requires a seller pool with sufficient staked weight. This eligibility stake has historically been denominated in USDC under a legacy staking mechanism, and an upgrade under which it is instead denominated in ANTS, held in seller pools, has been developed and independently audited. Under this upgrade, the legacy USDC stake remains a fallback path to eligibility of providing ai services until it is explicitly disabled. Scheduled allocations not earned through actual network activity are permanently removed from circulation ("burned"), up to 30% of that week's scheduled release, with any remainder allocated to the Foundation.</p>
+</li>
+<li>
+<p><strong>Identity and reputation.</strong> Each provider has an identity on the network linked to its operator. A provider's reputation is built from its stake, its record of completed services, and feedback from buyers, and is used by buyers' software when selecting providers.</p>
+</li>
+<li>
+<p><strong>Independent verification.</strong> Approved verifiers test providers by sending them sample requests and publish the results on-chain in a form that anyone can independently check, helping buyers assess the quality and honesty of providers.</p>
+</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.5">
+<h3 class="field-heading"><span class="field-number">D.5</span> Details of all natural or legal persons involved in implementation of crypto-asset project</h3>
+<div class="answer"><p>1<br />
+Development team, The AntSeed Foundation</p></div>
+</div>
+<div class="field" id="f-D.6">
+<h3 class="field-heading"><span class="field-number">D.6</span> Utility token classification</h3>
+<div class="answer"><ix:nonNumeric name="mica:UtilityTokenClassificationForOtherTokenProjectIndicator" contextRef="_ctx1" id="TEMPLATE_D.6" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.7">
+<h3 class="field-heading"><span class="field-number">D.7</span> Key features of goods or services for utility token projects</h3>
+<div class="answer"><ix:nonNumeric name="mica:KeyFeaturesOfGoodsOrServicesForUtilityTokenProjectsExplanatory" contextRef="_ctx1" id="TEMPLATE_D.7" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.8">
+<h3 class="field-heading"><span class="field-number">D.8</span> Plans for the token</h3>
+<div class="answer"><p><strong>Past milestones</strong></p>
+<p>AntSeed has launched a decentralised, open marketplace for AI services in which independent providers offer hundreds of AI models through self-hosted software, with buyers paying providers directly in USDC on the Base blockchain and no intermediary holding user funds. The network is live and operational: as at 29 September 2026 it had processed approximately 189 billion AI tokens and settled approximately USD 302,860 in payments for AI services, with 208 providers and 1,573 buyers active on the network.</p>
+<p>The distribution of ANTS is also already operational. ANTS, the native token of the AntSeed protocol, is designed to be used to access features of the protocol. Newly created ANTS is released on a fixed weekly schedule and allocated to active participants, the Foundation and contributors. Offering paid services on the network does not itself require a stake; providers are paid in USDC for services rendered regardless. A stake is required to be eligible for ANTS rewards, and ANTS can already be staked into seller pools for this purpose; this stake has historically been denominated in USDC under a legacy mechanism, which remains a fallback path to eligibility for providing ai services until it is explicitly disabled. During this period, ANTS is not transferable: participants can claim and stake ANTS but cannot trade it.</p>
+<p><strong>Future milestones</strong></p>
+<ul>
+<li>
+<p><strong>Q4 2026 (target): ANTS becomes transferable.</strong> ANTS is expected to become freely transferable during Q4 2026, enabling holders to trade it and to use it across the protocol's features without restriction.</p>
+</li>
+<li>
+<p><strong>Following transferability: activation of the buy-and-burn mechanism.</strong> The 4% protocol fee charged on AI service payments (paid in USDC) has been accumulating in a separate reserve contract, which as at 29 September 2026 had collected approximately USD 12,030. The 4% protocol fee will be used for the ANTS buy-and-burn once ANTS becomes transferable.</p>
+</li>
+<li>
+<p><strong>No fixed date: disabling of the legacy USDC eligibility stake.</strong> Eligibility for ANTS rewards is now established through ANTS staked in seller pools. The legacy mechanism, under which eligibility for providing AI service  was established through a USDC-denominated stake, remains available as a fallback until it is explicitly disabled. No date has been set for disabling it.</p>
+</li>
+</ul></div>
+</div>
+<div class="field" id="f-D.9">
+<h3 class="field-heading"><span class="field-number">D.9</span> Resource allocation</h3>
+<div class="answer"><ix:nonNumeric name="mica:ResourceAllocationExplanatory" contextRef="_ctx1" id="TEMPLATE_D.9" escape="true"><p><strong>Financial resources</strong></p>
+<ul>
+<li>As at 29 September 2026, approximately USD 302,860 had settled in payments for AI services across the network, generating approximately USD 12,030 in protocol fees, with 208 providers and 1,573 active buyers. This indicates non-trivial economic activity flowing through the protocol.</li>
+</ul>
+<p><strong>Human resources</strong></p>
+<ul>
+<li>The Foundation does not maintain a formal team page and does not disclose headcount. Development and network operation are carried out by independent contributors, maintainers and providers, none of whom is employed by the Foundation.</li>
+</ul>
+<p><strong>Technological resources</strong></p>
+<ul>
+<li>Open-source, peer-to-peer protocol for AI services using BitTorrent DHT for discovery and the Base blockchain (USDC-denominated payment channels) for settlement; protocol, VPR client, verifications, network data, and payment contracts are published as open source on GitHub.</li>
+<li>Virtual Private Router (VPR) desktop software that runs locally, exposes OpenAI/Anthropic-compatible APIs at <code>localhost:8377</code>, routes requests across providers by price/latency/reputation/privacy, and is distributed via downloadable binaries.</li>
+<li>On-chain payment infrastructure on Base using AntseedDeposits and AntseedChannels contracts, cumulative EIP-712 payment channels, credit limits, and on-chain provider statistics used for routing and scoring.</li>
+<li>ANTS-based reputation and rewards layer with seller pools (ANTS locked behind seller identities, stake-weighted recognized usage, capped emission budgets) and verification mechanisms (signed responses and model fingerprints in a public swarm) to turn usage and evidence into on-chain reputation.</li>
+</ul>
+<p><strong>Other significant investments</strong></p>
+<ul>
+<li>Full technical documentation, a lightpaper, provider and trusted-execution-environment guides, and API and pricing documentation. Network activity can be independently inspected through the AntSeed network website at antseed.com.</li>
+<li>Live ecosystem of 610+ listed models and 208 independent providers, with integrations designed to plug AntSeed into existing AI tools and agentic apps, reflecting investment in ecosystem growth rather than a purely theoretical design.</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-D.10">
+<h3 class="field-heading"><span class="field-number">D.10</span> Planned use of collected funds or other tokens</h3>
+<div class="answer"><ix:nonNumeric name="mica:PlannedUseOfCollectedFundsOrOtherTokensExplanatory" contextRef="_ctx1" id="TEMPLATE_D.10" escape="true"><p>The AntSeed Foundation shall utilise its reserves to support ecosystem development, cover legal and regulatory obligations, and fund ongoing foundation operating costs.</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-e">
+<h2 class="section-heading">Part E - Information about the Offer to the Public of Crypto-Assets or their Admission to Trading</h2>
+<div class="field" id="f-E.1">
+<h3 class="field-heading"><span class="field-number">E.1</span> Public offering or admission to trading</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_E.1"><p>ATTR</p></div></div>
+</div>
+<div class="field" id="f-E.2">
+<h3 class="field-heading"><span class="field-number">E.2</span> Reasons for public offer or admission to trading</h3>
+<div class="answer"><ix:nonNumeric name="mica:ReasonsForPublicOfferOrAdmissionToTradingExplanatory" contextRef="_ctx1" id="TEMPLATE_E.2" escape="true"><p>Enable EU market access for ANTS holders.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.3">
+<h3 class="field-heading"><span class="field-number">E.3</span> Fundraising target</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.4">
+<h3 class="field-heading"><span class="field-number">E.4</span> Minimum subscription goals</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.5">
+<h3 class="field-heading"><span class="field-number">E.5</span> Maximum subscription goals</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.6">
+<h3 class="field-heading"><span class="field-number">E.6</span> Oversubscription acceptance</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.7">
+<h3 class="field-heading"><span class="field-number">E.7</span> Oversubscription allocation</h3>
+<div class="answer"><ix:nonNumeric name="mica:OversubscriptionAllocationExplanatory" contextRef="_ctx1" id="TEMPLATE_E.7" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.8">
+<h3 class="field-heading"><span class="field-number">E.8</span> Issue price</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.9">
+<h3 class="field-heading"><span class="field-number">E.9</span> Official currency determining issue price</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.10">
+<h3 class="field-heading"><span class="field-number">E.10</span> Subscription fee</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.11">
+<h3 class="field-heading"><span class="field-number">E.11</span> Offer price determination method</h3>
+<div class="answer"><ix:nonNumeric name="mica:OfferPriceDeterminationMethodExplanatory" contextRef="_ctx1" id="TEMPLATE_E.11" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.12">
+<h3 class="field-heading"><span class="field-number">E.12</span> Total number of offered or traded other tokens</h3>
+<div class="answer"><p><ix:nonFraction name="mica:TotalNumberOfOfferedOrTradedOtherTokens" contextRef="_ctx_instant" id="TEMPLATE_E.12" unitRef="u_pure" decimals="0" format="ixt4:num-dot-decimal">1,040,000,000</ix:nonFraction></p></div>
+</div>
+<div class="field" id="f-E.13">
+<h3 class="field-heading"><span class="field-number">E.13</span> Targeted holders</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_E.13"><p>All.</p></div></div>
+</div>
+<div class="field" id="f-E.14">
+<h3 class="field-heading"><span class="field-number">E.14</span> Holder restrictions</h3>
+<div class="answer"><ix:nonNumeric name="mica:HolderRestrictionsExplanatory" contextRef="_ctx1" id="TEMPLATE_E.14" escape="true"><p>There is no restriction on the type of holder, whether retail or professional. Restrictions applicable to all holders, including sanctions-related restrictions, are described in G.11.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.15">
+<h3 class="field-heading"><span class="field-number">E.15</span> Reimbursement notice</h3>
+<div class="answer"><p>There are no reimbursement rights.</p></div>
+</div>
+<div class="field" id="f-E.16">
+<h3 class="field-heading"><span class="field-number">E.16</span> Refund mechanism</h3>
+<div class="answer"><ix:nonNumeric name="mica:RefundMechanismExplanatory" contextRef="_ctx1" id="TEMPLATE_E.16" escape="true"><p>There is no refund mechanism.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.17">
+<h3 class="field-heading"><span class="field-number">E.17</span> Refund timeline</h3>
+<div class="answer"><ix:nonNumeric name="mica:RefundTimelineExplanatory" contextRef="_ctx1" id="TEMPLATE_E.17" escape="true"><p>There is no refund mechanism.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.18">
+<h3 class="field-heading"><span class="field-number">E.18</span> Offer phases</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOtherTokenProjectPhasesExplanatory" contextRef="_ctx1" id="TEMPLATE_E.18" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.19">
+<h3 class="field-heading"><span class="field-number">E.19</span> Early purchase discount</h3>
+<div class="answer"><ix:nonNumeric name="mica:DisclosureOfEarlyPurchaseDiscountExplanatory" contextRef="_ctx1" id="TEMPLATE_E.19" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.20">
+<h3 class="field-heading"><span class="field-number">E.20</span> Time-limited offer</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.21">
+<h3 class="field-heading"><span class="field-number">E.21</span> Subscription period beginning</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.22">
+<h3 class="field-heading"><span class="field-number">E.22</span> Subscription period end</h3>
+<div class="answer"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></div>
+</div>
+<div class="field" id="f-E.23">
+<h3 class="field-heading"><span class="field-number">E.23</span> Safeguarding arrangements for offered funds or other tokens</h3>
+<div class="answer"><ix:nonNumeric name="mica:SafeguardingArrangementsForOfferedFundsOrOtherTokensExplanatory" contextRef="_ctx1" id="TEMPLATE_E.23" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.24">
+<h3 class="field-heading"><span class="field-number">E.24</span> Payment methods for other token purchase</h3>
+<div class="answer"><ix:nonNumeric name="mica:PaymentMethodsForOtherTokenPurchaseExplanatory" contextRef="_ctx1" id="TEMPLATE_E.24" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.25">
+<h3 class="field-heading"><span class="field-number">E.25</span> Value transfer methods for reimbursement</h3>
+<div class="answer"><ix:nonNumeric name="mica:ValueTransferMethodsForReimbursementExplanatory" contextRef="_ctx1" id="TEMPLATE_E.25" escape="true"><p>There are no reimbursement rights.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.26">
+<h3 class="field-heading"><span class="field-number">E.26</span> Right of withdrawal</h3>
+<div class="answer"><ix:nonNumeric name="mica:RighOfWithdrawalExplanatory" contextRef="_ctx1" id="TEMPLATE_E.26" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.27">
+<h3 class="field-heading"><span class="field-number">E.27</span> Transfer of purchased other tokens</h3>
+<div class="answer"><ix:nonNumeric name="mica:TransferOfPurchasedOtherTokensExplanatory" contextRef="_ctx1" id="TEMPLATE_E.27" escape="true"><p>Via crypto-asset trading platforms on which ANTS is admitted to trading.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.28">
+<h3 class="field-heading"><span class="field-number">E.28</span> Transfer time schedule</h3>
+<div class="answer"><ix:nonNumeric name="mica:TransferTimeSchedule" contextRef="_ctx1" id="TEMPLATE_E.28" escape="false"><p>There is no relevant time schedule.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.29">
+<h3 class="field-heading"><span class="field-number">E.29</span> Purchaser's technical requirements</h3>
+<div class="answer"><ix:nonNumeric name="mica:PurchasersTechnicalRequirementsExplanatory" contextRef="_ctx1" id="TEMPLATE_E.29" escape="true"><p>There are no technical requirements.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.30">
+<h3 class="field-heading"><span class="field-number">E.30</span> Other token service provider (CASP) name</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfOtherTokenServiceProvider" contextRef="_ctx1" id="TEMPLATE_E.30" escape="false"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.31">
+<h3 class="field-heading"><span class="field-number">E.31</span> CASP identifier</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-E.32">
+<h3 class="field-heading"><span class="field-number">E.32</span> Placement form</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_E.32"><p>NTAV</p></div></div>
+</div>
+<div class="field" id="f-E.33">
+<h3 class="field-heading"><span class="field-number">E.33</span> Trading platforms name</h3>
+<div class="answer"><ix:nonNumeric name="mica:TradingPlatformsName" contextRef="_ctx1" id="TEMPLATE_E.33" escape="false"><p>The AntSeed Foundation is seeking admission to trading for the ANTS token across multiple trading platforms, including Payward Global Solutions Limited.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.34">
+<h3 class="field-heading"><span class="field-number">E.34</span> Trading platforms market identifier code (MIC)</h3>
+<div class="answer"><ix:nonNumeric name="mica:TradingPlatformsIdentifierCode" contextRef="_ctx1" id="TEMPLATE_E.34" escape="false"><p>PGSL</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.35">
+<h3 class="field-heading"><span class="field-number">E.35</span> Trading platforms access</h3>
+<div class="answer"><ix:nonNumeric name="mica:TradingPlatformsAccessExplanatory" contextRef="_ctx1" id="TEMPLATE_E.35" escape="true"><p>Online via the platform.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.36">
+<h3 class="field-heading"><span class="field-number">E.36</span> Involved costs</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfInvolvedCostsExplanatory" contextRef="_ctx1" id="TEMPLATE_E.36" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.37">
+<h3 class="field-heading"><span class="field-number">E.37</span> Offer expenses</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOfferExpensesExplanatory" contextRef="_ctx1" id="TEMPLATE_E.37" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.38">
+<h3 class="field-heading"><span class="field-number">E.38</span> Conflicts of interest</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutPotentialConflictsOfInterestForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_E.38" escape="true"><p>The AntSeed Foundation seeking to have the token admitted to an exchange is not aware of any potential conflict of interest of the persons involved in the admission of ANTS to trading.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.39">
+<h3 class="field-heading"><span class="field-number">E.39</span> Applicable law</h3>
+<div class="answer"><ix:nonNumeric name="mica:ApplicableLawForOtherTokenOfferExplanatory" contextRef="_ctx1" id="TEMPLATE_E.39" escape="true"><p>Gibraltar</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-E.40">
+<h3 class="field-heading"><span class="field-number">E.40</span> Competent court</h3>
+<div class="answer"><ix:nonNumeric name="mica:CompetentCourtForOtherTokenOfferExplanatory" contextRef="_ctx1" id="TEMPLATE_E.40" escape="true"><p>Gibraltar</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-f">
+<h2 class="section-heading">Part F - Information about the Crypto-Assets</h2>
+<div class="field" id="f-F.1">
+<h3 class="field-heading"><span class="field-number">F.1</span> Other token type</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenType" contextRef="_ctx1" id="TEMPLATE_F.1" escape="false"><p>The Token is a crypto-asset under Regulation (EU) 2023/1114 of the European Parliament and of the Council which is not an e-money token, an asset-referenced token or a utility token, each as defined under such Regulation. Therefore, it falls in the "Other" category.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.2">
+<h3 class="field-heading"><span class="field-number">F.2</span> Other token functionality</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutOtherTokenFunctionalityExplanatory" contextRef="_ctx1" id="TEMPLATE_F.2" escape="true"><p>ANTS is the native token of the AntSeed protocol, implemented as an ERC-20 token on the Base blockchain. It is designed to be used to access features of the protocol.</p>
+<p><strong>Intrinsic characteristics of the token:</strong></p>
+<p><em>Use across the protocol:</em> The functionality intrinsic to ANTS is its use across the use cases available on the AntSeed protocol. These use cases, such as staking by providers and participation in the protocol's incentive programmes, are features of the protocol itself, not rights attached to the token, and each requires separate action by the holder.</p>
+<p><em>No governance rights:</em> ANTS confers no voting or control rights on its holders, and there is no token-holder governance mechanism.</p>
+<p><em>No profit or cash-flow rights:</em> ANTS does not represent equity, debt, or dividends, and carries no claim on the assets or revenue of the AntSeed Foundation or the protocol.</p>
+<ul>
+<li>Not the payment asset:* Payments for AI services on the network are made in USDC and not in ANTS.</li>
+</ul>
+<p><strong>Features of the protocol which ANTS can be used for (each requiring separate action by the holder):</strong></p>
+<p>Offering paid services on the network does not itself require a stake; providers are paid in USDC for services rendered regardless of whether any ANTS is staked. ANTS can be staked into a seller pool to make that pool eligible for ANTS rewards and to build on-chain reputation; this staking is not limited to the provider itself, and any ANTS holder can stake into a seller pool on a provider's behalf. The protocol also distributes newly created ANTS on a fixed weekly schedule to active participants (stakers, buyers, providers and verifiers) based on their verified activity on the network; distributions not claimed through actual activity are permanently removed from circulation ("burned") or allocated to the Foundation. In addition, once ANTS becomes transferable, the protocol's accumulated 4% fee on AI service payments (paid in USDC) is intended to be used to purchase ANTS on the open market and permanently remove the purchased tokens from circulation ("buy-and-burn").</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.3">
+<h3 class="field-heading"><span class="field-number">F.3</span> Planned application of functionalities</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutPlannedApplicationOfFunctionalitiesExplanatory" contextRef="_ctx1" id="TEMPLATE_F.3" escape="true"><p><strong>Currently active</strong></p>
+<ul>
+<li>The scheduled release of ANTS is already operational. Newly created ANTS is released on a fixed weekly schedule of 5 million ANTS per week, in periods referred to in the protocol as "epochs," with the weekly amount halving every 104 weeks. As at 29 September 2026, 24 weekly releases had occurred, making approximately 120 million ANTS available. Participants claim tokens directly from the protocol's smart contract; there is no distribution by an issuer.</li>
+<li>Each week's release is allocated across fixed and dynamic components. Two allocations are fixed regardless of network activity: 15% to the Foundation and 15% to contributors. The remaining allocations are dynamic and scale with network activity within defined ranges: up to 10% to verification and other growth incentives, 2% to 40% to seller-pool stakers, based on the amount of ANTS actively staked in seller pools relative to a network-wide stake target; and 5% to 10% each to sellers/operators and to buyers, based on recognised settled USDC volume relative to a network-wide usage target. These allocations are claimed on the basis of verified activity on the network and require active participation.</li>
+<li>Offering paid services on the network does not itself require a stake; providers are paid in USDC for services rendered regardless of whether any ANTS is staked. A stake is relevant only to establish eligibility for ANTS rewards, and this staking is not limited to the provider itself: any ANTS holder may stake ANTS in support of a provider.</li>
+<li>ANTS staking, through seller pools attached to a provider's on-chain identity, is already implemented and available as the primary mechanism for establishing eligibility for ANTS rewards. A legacy mechanism under which this eligibility to provide ai services was established through a USDC-denominated stake remains available as a fallback path until it is explicitly disabled.</li>
+<li>ANTS is currently not transferable. Participants can claim and stake ANTS but cannot transfer or trade it.</li>
+</ul>
+<p><strong>Targeted for Q4 2026</strong></p>
+<ul>
+<li>ANTS is expected to become transferable. ANTS already exists and is already being released under the schedule described above; the planned change is limited to enabling transferability, not the creation or initial distribution of the token. From that point, holders will be able to trade ANTS and to use it across the protocol's features without restriction.</li>
+</ul>
+<p><strong>Future, contingent on transferability (no specific date)</strong></p>
+<ul>
+<li>A buy-and-burn mechanism has been described but is not currently operating. The protocol's 4% fee on AI service payments (paid in USDC) has been accumulating in a separate reserve contract. These accumulated fees may in future be directed to purchasing ANTS on the open market and permanently removing the purchased tokens from circulation. No activation date has been set, and activation and terms depend on the protocol's contracts and governance parameters, and this mechanism is separate from the burn applied to unearned dynamic emissions described above.</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.4">
+<h3 class="field-heading"><span class="field-number">F.4</span> Type of crypto-asset white paper</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_F.4"><p>OTHR</p></div></div>
+</div>
+<div class="field" id="f-F.5">
+<h3 class="field-heading"><span class="field-number">F.5</span> Type of submission</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_F.5"><p>NEWT</p></div></div>
+</div>
+<div class="field" id="f-F.6">
+<h3 class="field-heading"><span class="field-number">F.6</span> Other token characteristics</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOtherTokenCharacteristicsExplanatory" contextRef="_ctx1" id="TEMPLATE_F.6" escape="true"><p>ANTS is the native token of the AntSeed protocol, implemented as an ERC-20 token on the Base blockchain. It is designed to be used to access features of the protocol. These features are functions of the protocol, not rights attached to the token itself, and each requires separate action by the holder; simply holding ANTS does not confer any entitlement.</p>
+<p>Payments for AI services on the network are made in USDC, a US dollar stablecoin, and not in ANTS. ANTS is not just an incentive mechanism: it is also a reputational mechanism. The protocol creates new ANTS on a scheduled basis and allocates it to participants based on their verified activity on the network, including completed service payments and locked stake behind seller identities. These allocations require active participation and are not received through passive holding.</p>
+<p>Offering paid services on the network does not itself require a stake; providers are paid in USDC for services rendered regardless of whether any ANTS is staked. ANTS can already be staked into seller pools, which are ANTS-backed pools attached to a seller's on-chain identity, to establish eligibility for ANTS rewards and to strengthen that seller's on-chain reputation. This staking is not limited to the seller itself: any ANTS holder, including buyers, may stake ANTS behind a seller they wish to support. A legacy mechanism under which eligibility to provide ai services was established through a USDC-denominated stake remains available as a fallback path until it is explicitly disabled.</p>
+<p>The token has a maximum supply of 1.04 billion ANTS. As at 29 September 2026, approximately 120 million ANTS had been released under the schedule, of which approximately 118.67 million (98.9%) had been minted, including 3 million ANTS allocated to the burn address. Transfers of ANTS are currently restricted; transferability is targeted for Q4. New tokens are released on a fixed weekly schedule of 5 million ANTS per week, with the weekly amount halving every 104 weeks.</p>
+<p>Each week's release is allocated across fixed and dynamic components. Two allocations are fixed regardless of network activity: 15% to the Foundation and 15% to contributors,. The remaining allocations are dynamic and scale with network activity within defined ranges: up to 10% to verification and other growth incentives, rewarding participants who validate network activity, such as behavioural model checks, TEE attestation and anti-abuse work, 2% to 40% to seller-pool stakers, based on the amount of ANTS actively staked in seller pools relative to a network-wide stake target; and 5% to 10% each to sellers/operators and to buyers, based on recognised settled USDC volume relative to a network-wide usage target. These dynamic allocations grow toward their ceilings as stake and usage increase, rather than being paid at a fixed rate regardless of participation. Any portion of a week's dynamic allocation that is not earned through actual network activity is permanently removed from circulation ("burned"), up to 30% of that week's scheduled release, with any remainder allocated to the Foundation.<br />
+The protocol charges a 4% fee on AI service payments. These fees accumulate in a separate reserve contract. Accumulated fees may in future be directed to purchasing ANTS on the open market and permanently removing the purchased tokens from circulation (a "buy-and-burn" mechanism), separate from the dynamic-allocation burn described above. This mechanism is not currently operating, and its activation and terms depend on the protocol's contracts and governance parameters.</p>
+<p>The AntSeed protocol operates on a decentralised, non-custodial and open-source basis, without a central operator or centralised user onboarding; participants interact directly with the protocol's smart contracts. Funds are held in smart contracts under rules fixed in code, not by the Foundation or any other person.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.7">
+<h3 class="field-heading"><span class="field-number">F.7</span> Commercial name or trading name</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenIssuersCommercialOrTradingName" contextRef="_ctx1" id="TEMPLATE_F.7" escape="false"><p>AntSeed</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.8">
+<h3 class="field-heading"><span class="field-number">F.8</span> Website of the issuer</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenIssuersWebsite" contextRef="_ctx1" id="TEMPLATE_F.8" escape="false"><p>https://antseed.com/</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.9">
+<h3 class="field-heading"><span class="field-number">F.9</span> Starting date of offer to the public or admission to trading</h3>
+<div class="answer"><p><ix:nonNumeric name="mica:OtherTokenOfferStartingDate" contextRef="_ctx_instant" id="TEMPLATE_F.9" escape="false">2026-10-28</ix:nonNumeric></p></div>
+</div>
+<div class="field" id="f-F.10">
+<h3 class="field-heading"><span class="field-number">F.10</span> Publication date</h3>
+<div class="answer"><p><ix:nonNumeric name="mica:OtherTokenWhitePaperPublicationDate" contextRef="_ctx_instant" id="TEMPLATE_F.10" escape="false">2026-10-28</ix:nonNumeric></p></div>
+</div>
+<div class="field" id="f-F.11">
+<h3 class="field-heading"><span class="field-number">F.11</span> Any other services provided by the issuer</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutOtherServicesProvidedByOtherTokenIssuerExplanatory" contextRef="_ctx1" id="TEMPLATE_F.11" escape="true"><p>Nothing other than already stated in the white paper.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.12">
+<h3 class="field-heading"><span class="field-number">F.12</span> Language or languages of white paper</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutLanguagesUsedInOtherTokenWhitePaper" contextRef="_ctx1" id="TEMPLATE_F.12" escape="false"><p>English</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.13">
+<h3 class="field-heading"><span class="field-number">F.13</span> Digital token identifier code used to uniquely identify the crypto-asset or each of the several crypto assets to which the white paper relates, where available</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenDigitalTokenIdentifierCode" contextRef="_ctx1" id="TEMPLATE_F.13" escape="false"><p>ZRDZHC5KV</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.14">
+<h3 class="field-heading"><span class="field-number">F.14</span> Functionally fungible group digital token identifier, where available</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenFunctionallyFungibleGroupDigitalTokenIdentifier" contextRef="_ctx1" id="TEMPLATE_F.14" escape="false"><p>7XH4FZW07</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.15">
+<h3 class="field-heading"><span class="field-number">F.15</span> Voluntary data flag</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenVoluntaryDataFlagIndicator" contextRef="_ctx1" id="TEMPLATE_F.15" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.16">
+<h3 class="field-heading"><span class="field-number">F.16</span> Personal data flag</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenPersonalDataFlagIndicator" contextRef="_ctx1" id="TEMPLATE_F.16" format="ixt4:fixed-true" escape="false"><p>true</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.17">
+<h3 class="field-heading"><span class="field-number">F.17</span> LEI eligibility</h3>
+<div class="answer"><ix:nonNumeric name="mica:LEIEligibilityIndicatorForOtherToken" contextRef="_ctx1" id="TEMPLATE_F.17" format="ixt4:fixed-true" escape="false"><p>true</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-F.18">
+<h3 class="field-heading"><span class="field-number">F.18</span> Home member state</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_F.18"><p>Ireland</p></div></div>
+</div>
+<div class="field" id="f-F.19">
+<h3 class="field-heading"><span class="field-number">F.19</span> Host member states</h3>
+<div class="answer"><div style="-ix-hidden:TEMPLATE_F.19"><p>Austria, Belgium, Bulgaria, Croatia, Republic of Cyprus, Czechia, Denmark, Estonia, Finland, France, Germany, Greece, Hungary, Iceland, Italy, Latvia, Liechtenstein, Lithuania, Luxembourg, Malta, Netherlands, Norway, Poland, Portugal, Romania, Slovakia, Slovenia, Spain, Sweden</p></div></div>
+</div>
+</div>
+<div class="section" id="part-g">
+<h2 class="section-heading">Part G - Information on the Rights and Obligations attached to the Crypto-Assets</h2>
+<div class="field" id="f-G.1">
+<h3 class="field-heading"><span class="field-number">G.1</span> Purchaser rights and obligations</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutPurchaserRightsAndObligationsExplanatory" contextRef="_ctx1" id="TEMPLATE_G.1" escape="true"><p><strong>Rights attached to holding ANTS:</strong> ANTS confers no rights against The AntSeed Foundation, the protocol or any other person. It does not represent equity, debt, profit participation, dividends or any claim on the assets or revenue of the Foundation or of the protocol. It confers no voting, governance or control rights, and no token-holder governance mechanism exists. It carries no redemption, reimbursement or repayment right, and no entitlement to any distribution. The only right attaching to the token itself is the right to hold it and, once transferability is enabled, to transfer it.</p>
+<p><strong>Transfer restrictions:</strong> ANTS is currently not transferable. Holders cannot transfer, sell or otherwise dispose of ANTS on secondary markets until transferability is enabled, which is targeted for Q4 2026. ANTS already exists and is already being distributed under the protocol's release schedule; the anticipated change is limited to enabling transferability, not to any creation or initial distribution event. Further restrictions are described in G.11.</p>
+<p><strong>Obligations of holders:</strong> Holding ANTS imposes no ongoing obligations on the holder. There are no capital calls, redemption duties or contractual commitments of any kind. Participation in the protocol is voluntary and non-custodial, and any anti-money-laundering or know-your-customer requirements are imposed at the exchange, on-ramp or application layer rather than by a central protocol operator.</p>
+<p><strong>Features of the protocol which ANTS can be used for:</strong> Separately from the above, the AntSeed protocol makes certain features available to persons who choose to use ANTS in them. These are features of the protocol, not rights attached to the token, and each requires a separate, voluntary action by the holder; no entitlement arises from simply holding ANTS. Those features are described in F.2.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.2">
+<h3 class="field-heading"><span class="field-number">G.2</span> Exercise of rights and obligations</h3>
+<div class="answer"><ix:nonNumeric name="mica:ExerciseOfRightsAndObligationExplanatory" contextRef="_ctx1" id="TEMPLATE_G.2" escape="true"><p>ANTS carries no governance, voting, profit or cash-flow rights. There are accordingly no rights attached to the token for which a procedure or conditions of exercise arise.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.3">
+<h3 class="field-heading"><span class="field-number">G.3</span> Conditions for modifications of rights and obligations</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutConditionsForModificationsOfRightsAndObligationsExplanatory" contextRef="_ctx1" id="TEMPLATE_G.3" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.4">
+<h3 class="field-heading"><span class="field-number">G.4</span> Future public offers</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutFuturePublicOffersExplanatory" contextRef="_ctx1" id="TEMPLATE_G.4" escape="true"><p>There are no future offers planned.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.5">
+<h3 class="field-heading"><span class="field-number">G.5</span> Issuer retained other token</h3>
+<div class="answer"><p>Not applicable as a fixed or static figure. ANTS tokens are not pre-allocated or distributed by an issuer; they are claimed directly from the protocol's smart contract under the ongoing weekly release schedule described in F.3. Of each week's release, 15% is allocated to the Foundation. As the Foundation's allocation is an ongoing percentage of a variable quantity rather than a fixed retained holding, no static number of issuer-retained tokens can be specified.</p></div>
+</div>
+<div class="field" id="f-G.6">
+<h3 class="field-heading"><span class="field-number">G.6</span> Utility token classification</h3>
+<div class="answer"><ix:nonNumeric name="mica:UtilityTokenClassificationForOtherTokenIndicator" contextRef="_ctx1" id="TEMPLATE_G.6" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.7">
+<h3 class="field-heading"><span class="field-number">G.7</span> Key features of goods or services utility tokens</h3>
+<div class="answer"><ix:nonNumeric name="mica:KeyFeaturesOfGoodsAndServicesOfUtilityTokensExplanatory" contextRef="_ctx1" id="TEMPLATE_G.7" escape="true"><p>Not applicable as ANTS is not a utility token.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.8">
+<h3 class="field-heading"><span class="field-number">G.8</span> Utility tokens redemption</h3>
+<div class="answer"><ix:nonNumeric name="mica:UtilityTokensRedemptionExplanatory" contextRef="_ctx1" id="TEMPLATE_G.8" escape="true"><p>Not applicable as ANTS is not a utility token.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.9">
+<h3 class="field-heading"><span class="field-number">G.9</span> Non-trading request</h3>
+<div class="answer"><ix:nonNumeric name="mica:NontradingRequestIndicatorRelatedToOtherTokens" contextRef="_ctx1" id="TEMPLATE_G.9" format="ixt4:fixed-true" escape="false"><p>true</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.10">
+<h3 class="field-heading"><span class="field-number">G.10</span> Other tokens purchase or sale modalities</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokensPurchaseOrSaleModalitiesExplanatory" contextRef="_ctx1" id="TEMPLATE_G.10" escape="true"><p>Not applicable. This whitepaper is published solely in relation to the admission to trading of the ANTS token and does not relate to any public offering.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.11">
+<h3 class="field-heading"><span class="field-number">G.11</span> Other tokens transfer restrictions</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokensTransferRestrictionsExplanatory" contextRef="_ctx1" id="TEMPLATE_G.11" escape="true"><ul>
+<li>
+<p><strong>Institutional / VC lock-up:</strong> Tokens sold by Foundation to institutional / VC investors are drawn directly from the Foundation’s fixed allocation of future weekly emissions and are not created or issued outside the scheduled emission framework, are subject to a 1 year lock up from closing, followed by linear vesting over 24 months in equal monthly installments (i.e., those tokens cannot be freely transferred until vested).</p>
+</li>
+<li>
+<p><strong>General token availability:</strong> As of 29 September 2026, approximately 11.54% of the 1.04B ANTS max supply is currently available; remaining supply is described as "Tokens restricted," but no additional concrete transfer schedule or lock-up terms beyond the institutional/VC tranche are specified in the public token page.</p>
+</li>
+<li>
+<p><strong>Sanctions / eligibility restrictions:</strong> Use of the Services (including token, governance and grants programs) is prohibited for sanctioned persons and persons in comprehensively sanctioned jurisdictions, and users must not use the Services to evade sanctions or other legal restrictions. Interfaces or hosted services "may apply access restrictions where technically possible or legally required," even though the underlying protocol itself may remain technically accessible.</p>
+</li>
+<li>
+<p><strong>Protocol-level fees on transfers:</strong> Transactions settled through AntSeed smart contracts may be subject to protocol-level fees; fee rates, recipients and mechanisms can be set or updated via smart-contract parameters, multisigs or governance. No specific fee percentages or fixed schedules are disclosed in the terms.</p>
+</li>
+<li>
+<p><strong>Blacklist / whitelist / other transfer controls:</strong> No explicit on-chain wallet blacklist, whitelist, per-address transfer block, or geo-fenced token-transfer rules are described in the available token page, terms of service, or private materials reviewed, beyond the sanctions/eligibility restrictions above.</p>
+</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.12">
+<h3 class="field-heading"><span class="field-number">G.12</span> Supply adjustment protocols</h3>
+<div class="answer"><ix:nonNumeric name="mica:SupplyAdjustmentProtocolsIndicator" contextRef="_ctx1" id="TEMPLATE_G.12" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.13">
+<h3 class="field-heading"><span class="field-number">G.13</span> Supply adjustment mechanisms</h3>
+<div class="answer"><ix:nonNumeric name="mica:SupplyAdjustmentMechanismsExplanatory" contextRef="_ctx1" id="TEMPLATE_G.13" escape="true"><p>Any portion of a week’s scheduled ANTS emissions that is not distributed as part of the network recognized usage protocol is redirected to a burn address, up to a maximum of 30% of that week’s scheduled release. Any such unallocated portion exceeding this cap is allocated to the Foundation. Tokens transferred to the burn address cannot be transferred, claimed or used by any person, including the issuer or the Foundation, and are permanently removed from circulation. The total supply of ANTS recorded by the token contract remains unchanged. This mechanism operates automatically based on network activity levels and does not constitute a protocol for adjusting supply in response to changes in demand. Neither the offeror nor the Foundation has the ability to modify the maximum supply or the emission schedule.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.14">
+<h3 class="field-heading"><span class="field-number">G.14</span> Token value protection schemes</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenValueProtectionSchemesIndicator" contextRef="_ctx1" id="TEMPLATE_G.14" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.15">
+<h3 class="field-heading"><span class="field-number">G.15</span> Token value protection schemes description</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOtherTokenValueProtectionSchemesExplanatory" contextRef="_ctx1" id="TEMPLATE_G.15" escape="true"><p>There is no protection scheme available.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.16">
+<h3 class="field-heading"><span class="field-number">G.16</span> Compensation schemes</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokenCompensationSchemesIndicator" contextRef="_ctx1" id="TEMPLATE_G.16" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.17">
+<h3 class="field-heading"><span class="field-number">G.17</span> Compensation schemes description</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOtherTokenCompensationSchemesExplanatory" contextRef="_ctx1" id="TEMPLATE_G.17" escape="true"><p>There are no compensation schemes.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.18">
+<h3 class="field-heading"><span class="field-number">G.18</span> Applicable law</h3>
+<div class="answer"><ix:nonNumeric name="mica:ApplicableLawForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_G.18" escape="true"><p>Gibraltar</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-G.19">
+<h3 class="field-heading"><span class="field-number">G.19</span> Competent court</h3>
+<div class="answer"><ix:nonNumeric name="mica:CompetentCourtForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_G.19" escape="true"><p>Gibraltar</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-h">
+<h2 class="section-heading">Part H - Information on the underlying technology</h2>
+<div class="field" id="f-H.1">
+<h3 class="field-heading"><span class="field-number">H.1</span> Distributed ledger technology (DTL)</h3>
+<div class="answer"><ix:nonNumeric name="mica:DistributedLedgerTechnologyForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.1" escape="true"><p>AntSeed uses an open, peer-to-peer protocol where buyers connect directly to independent AI service providers, with no central platform holding funds or controlling access. Payments happen through smart contracts on the Base blockchain in USDC, and ANTS tokens are distributed programmatically from those contracts in weekly epochs, so eligible users mint them directly rather than receiving them from a central issuer. Security and immutability come from the underlying Base/Ethereum infrastructure and audited smart contracts, meaning once transactions and distribution events are confirmed on-chain they cannot be altered. Transparency is provided by open-source code, publicly visible token emission rules, and on-chain records of all payments, stakes, and ANTS allocations, which anyone can verify using standard blockchain explorers.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.2">
+<h3 class="field-heading"><span class="field-number">H.2</span> Protocols and technical standards</h3>
+<div class="answer"><ix:nonNumeric name="mica:ProtocolsAndTechnicalStandardsForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.2" escape="true"><p><strong>Protocols / standards used for ANTS</strong></p>
+<ul>
+<li><strong>Base L2 (OP Stack Ethereum rollup):</strong> ANTS is deployed on Base mainnet (chain ID 8453), an Ethereum L2 built on the OP Stack, inheriting Base's scalability and EVM interoperability.</li>
+<li><strong>ERC-20 standard:</strong> ANTS is implemented as a standard ERC-20 token, deployed at contract address <code>0xa87EE81b2C0Bc659307ca2D9ffdC38514DD85263</code> on Base, enabling compatibility with EVM wallets, exchanges, and standard tooling. Transfers are currently restricted at the contract level; the maximum supply is 1.04 billion ANTS.</li>
+<li><strong>USDC settlement (separate from ANTS):</strong> AI service payments between buyers and providers settle directly in USDC on Base through payment-channel smart contracts (deposits, session-scoped reservations and cumulative spend authorisations), independent of the ANTS token contract.</li>
+<li><strong>EVM wallet interoperability:</strong> No custom wallet logic is described; ANTS integration is via standard ERC-20 interfaces on Base, so any EVM-compatible wallet supporting Base can hold ANTS, subject to the current transfer restriction.</li>
+<li><strong>Peer-to-peer discovery and transport:</strong> Provider discovery uses an open DHT (distributed hash table), and request/response transport occurs over direct peer-to-peer channels using WebRTC or TCP, without a central routing server.</li>
+<li><strong>OpenAI- and Anthropic-compatible APIs:</strong> The Virtual Private Router (VPR) and the antseed command-line tool expose OpenAI- and Anthropic-compatible HTTP API endpoints locally, allowing existing AI tools and agents to connect to the network without modification.</li>
+<li><strong>Command-line tool and developer tooling::</strong> Project-specific SDKs and developer tooling are provided through the antseed command-line tool and the public GitHub repository, building on the standards above for network integration.</li>
+</ul>
+<p>No custom bridges, cross-chain protocols, or non-standard consensus/cryptography are described for ANTS at this stage; settlement and token interoperability are inherited from Base and standard Ethereum/EVM tooling.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.3">
+<h3 class="field-heading"><span class="field-number">H.3</span> Technology used</h3>
+<div class="answer"><ix:nonNumeric name="mica:InformationAboutTechnologyUsedForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.3" escape="true"><p>AntSeed uses a non-custodial model in which users control their own wallets and funds, with settlement occurring directly on-chain, currently in USDC on Base, via smart contracts. The node that participates in the network has a single secp256k1 key used as its signing identity and PeerId, while the funding wallet holding assets can be any external wallet the user controls, including hardware wallets, externally owned accounts, or multisig wallets. The funding wallet deposits into the AntseedDeposits contract and does not interact directly with the node.<br />
+On the desktop app, the node's private key is stored encrypted using the operating system keychain, via Electron safeStorage. CLI and server setups store a plaintext key file by default but can instead load the key from an environment variable backed by an external secrets manager. Payments are authorised via EIP-712 signatures from the signing identity and settled directly to provider wallets, with no central custodian holding user funds.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.4">
+<h3 class="field-heading"><span class="field-number">H.4</span> Consensus mechanism</h3>
+<div class="answer"><ix:nonNumeric name="mica:ConsensusMechanismForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.4" escape="true"><p>AntSeed runs on the Base blockchain, where ANTS is an ERC-20 token on Base mainnet and payments settle in USDC on Base. Base itself is an Ethereum Layer 2 chain using an optimistic rollup architecture built on the OP Stack, batching many transactions off-chain and posting them to Ethereum for final settlement.</p>
+<p>Security comes from Base inheriting Ethereum's Proof of Stake security guarantees: rollup transaction data is posted to Ethereum, which provides data availability and finality, while the optimistic model allows fraud proofs to challenge invalid state transitions. Efficiency comes from aggregating many user transactions into batches before posting to Ethereum, meaning users benefit from significantly lower fees and higher throughput than transacting directly on Ethereum L1, while still ultimately relying on Ethereum for settlement.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.5">
+<h3 class="field-heading"><span class="field-number">H.5</span> Incentive mechanisms and applicable fees</h3>
+<div class="answer"><ix:nonNumeric name="mica:IncentiveMechanismsAndApplicableFeesForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.5" escape="true"><p><strong>Incentive mechanisms (ANTS emissions)</strong></p>
+<p>ANTS releases are tied to authenticated network activity rather than to proof-of-work mining. The protocol releases 5 million ANTS per week, in periods referred to in the protocol as "epochs," with the weekly amount halving every 104 weeks.</p>
+<p>Each week's release is allocated across fixed and dynamic components. Two allocations are fixed regardless of network activity: 15% to the Foundation and 15% to contributors. A portion of the Foundation’s allocation has been committed to institutional and venture-capital investors through private sales, subject to lock-up and vesting restrictions. The remaining allocations are dynamic and scale within defined ranges according to network activity: up to 10% to verification and other growth incentives, rewarding participants who validate network activity such as behavioural model checks, TEE attestation and anti-abuse work, 2% to 40% to seller-pool stakers, based on the amount of ANTS actively staked in seller pools relative to a network-wide stake target, and 5% to 10% each to providers and to buyers, based on recognised settled USDC volume relative to a network-wide usage target.<br />
+Each allocation is administered by a distribution contract holding a share of that week's release. Any portion of a dynamic share that is not earned through verified network activity is processed through a remainder mechanism: ANTS is minted to a burn address first, up to 30% of that week's scheduled release, with any remaining amount minted to the Foundation's reserve address.<br />
+<strong>Network security model</strong></p>
+<p>Offering services and being selected for paid traffic does not itself require any stake; providers are paid in USDC for services rendered regardless. A stake is relevant only to establish eligibility for ANTS rewards. This eligibility stake is already denominated in ANTS, held in seller pools bound to a provider's on-chain agent identifier, and any ANTS holder, including buyers, may stake ANTS in support of a provider. A legacy mechanism under which this eligibility to provide ai services stake was denominated in USDC remains available as a fallback path until it is explicitly disabled; under that legacy mechanism the minimum stake was 10 USDC.</p>
+<p>ANTS itself is currently non-transferable, so there is no liquid market in ANTS; releases accrue to eligible participants and the Foundation according to the schedule above. Network security and reward eligibility are governed through the stake requirement combined with on-chain reputation and feedback signals, rather than through block production.</p>
+<p><strong>Applicable fees</strong></p>
+<p>A 4% protocol fee, denominated in USDC, is charged on settlement of AI service transactions between buyers and providers and accumulates in a separate reserve contract; it is not paid to a centralised company. As at 29 September 2026, approximately USD 12,030 had been collected. The 4% protocol fee will be used for the ANTS buy-and-burn once ANTS becomes transferable. The burning of unearned weekly releases described above is a separate mechanism and does not fund any purchase of ANTS.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.6">
+<h3 class="field-heading"><span class="field-number">H.6</span> Use of distributed ledger technology</h3>
+<div class="answer"><ix:nonNumeric name="mica:UseOfDistributedLedgerTechnologyIndicatorForOtherToken" contextRef="_ctx1" id="TEMPLATE_H.6" format="ixt4:fixed-false" escape="false"><p>false</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.7">
+<h3 class="field-heading"><span class="field-number">H.7</span> DLT functionality description</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfDLTFunctionalityForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.7" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.8">
+<h3 class="field-heading"><span class="field-number">H.8</span> Audit</h3>
+<div class="answer"><ix:nonNumeric name="mica:AuditIndicatorForOtherToken" contextRef="_ctx1" id="TEMPLATE_H.8" format="ixt4:fixed-true" escape="false"><p>true</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-H.9">
+<h3 class="field-heading"><span class="field-number">H.9</span> Audit outcome</h3>
+<div class="answer"><ix:nonNumeric name="mica:AuditOutcomeForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_H.9" escape="true"><p>The AntSeed protocol's smart contract technology has undergone an independent security audit conducted by Sherlock, carried out between 3 July and 18 July 2026, with the final report issued on 12 August 2026. The audit covered the protocol's "Recognized Usage" upgrade to its trust and reputation layer, reviewing twelve Solidity smart contracts across the protocol's core, emissions, payments, and seller modules, including the ANTS token contract, the emissions gate, seller pools and staking, usage accounting, and payment channel contracts.</p>
+<p>The audit identified a total of nineteen findings, categorized by severity as two High, four Medium, and thirteen Low or Informational. As of the final report, no findings remained both unfixed and unacknowledged. Both High-severity findings and all four Medium-severity findings were resolved. Of the thirteen Low/Informational findings, four were resolved and nine were formally acknowledged by the development team, with the acknowledged items comprising minor or deliberate design decisions that the team assessed as acceptable or scheduled for a future protocol upgrade.</p>
+<p>The High-severity findings related to edge cases in the payment channel logic that could have allowed a buyer to receive paid services while avoiding collectible payment; both were remediated through contract and seller-node fixes. The Medium-severity findings concerned agent-to-seller binding, reward-weight timing, emissions minter management, and retroactive configuration effects on past epoch rewards, all of which were resolved.</p>
+<p>The auditor notes that the audit does not constitute a guarantee or warranty regarding the security of the protocol. The audit covered the contracts implementing this upgrade. The staking contract currently in use on the network was not within the audit scope.</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-i">
+<h2 class="section-heading">Part I - Information on Risks</h2>
+<div class="field" id="f-I.1">
+<h3 class="field-heading"><span class="field-number">I.1</span> Offer-related risks</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfOfferrelatedRisksForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_I.1" escape="true"><p><strong>Market / liquidity risk</strong></p>
+<ul>
+<li>Because ANTS is not yet transferable, there is no active secondary market and no market price. There is no assurance that an active market will develop once transferability is enabled; holders may be unable to sell their tokens or may face extreme price volatility once trading starts.</li>
+<li>Future liquidity depends on third-party trading platforms deciding to list ANTS; there is no assurance of listing or of sufficient order-book depth or stable pricing over time.</li>
+<li>The network's economic activity is tied to demand for AI inference services on AntSeed; if usage fails to grow or declines, this may negatively affect perceived token value and trading interest.</li>
+</ul>
+<p><strong>Legal / regulatory risk</strong></p>
+<ul>
+<li>The legal and regulatory classification of ANTS under EU MiCA and other regimes may be uncertain; changes in guidance could impose additional requirements on issuers, exchanges, or users, including registration, disclosure, or conduct rules.</li>
+<li>Authorities could treat ANTS or related activities, such as providing AI services for consideration or operating parts of the network, as regulated financial, payment, or investment services in some jurisdictions, triggering licensing and compliance obligations that may be difficult or costly to meet. Because the protocol is decentralised, non-custodial and has no central operator, there is no mechanism by which the network itself could halt or restrict its operation in response to such a determination; any practical enforcement would be limited to identifiable participants, intermediaries, or interfaces built on top of the protocol, rather than the protocol itself.</li>
+<li>Regulatory actions, sanctions, or restrictions on stablecoins (e.g., USDC on Base) or on peer-to-peer networks could impair the protocol's operation, settlement of payments, or tradability of ANTS.</li>
+</ul>
+<p><strong>AML / KYC risk</strong></p>
+<ul>
+<li>AntSeed is designed as an anonymous, account-less, non-custodial peer-to-peer protocol; buyers and providers interact directly using wallets and local software, which may make it harder to apply traditional AML/KYC controls at the protocol level.</li>
+<li>Exchanges, fiat on-ramps, and other intermediaries may impose strict AML/KYC measures for acquiring or disposing of ANTS; regulatory developments could lead to access restrictions for certain users, jurisdictions, or transaction types.</li>
+<li>If regulators view the protocol as facilitating misuse (e.g., by sanctioned or high-risk actors), they could pressure infrastructure providers, frontends, or listing venues to limit support for ANTS, indirectly affecting holders.</li>
+</ul>
+<p><strong>Technical / operational risk</strong></p>
+<ul>
+<li>AntSeed relies on a combination of a peer-to-peer routing layer (similar to BitTorrent) and the Base blockchain for payments; failures, congestion, or protocol changes at any of these layers may disrupt service, settlements, or token usage.</li>
+<li>Buyers and providers depend on local software (e.g., the VPR desktop app and CLI) and on secure configuration of hardware (including TEE environments); bugs, misconfigurations, malware, or compromised environments could lead to data leakage, loss of funds, or service outages.</li>
+<li>The ANTS token and related smart contracts run on Base; any vulnerabilities in the contracts, the underlying Layer 2, or its bridges, as well as chain reorganisations or censorship, could result in loss, theft, or frozen functionality. The protocol's smart contracts have been independently audited, as described in H.9 and I.5. An audit does not guarantee that no vulnerabilities remain.</li>
+<li>The protocol's discovery, verification, and reputation mechanisms depend on networked components (fingerprint swarms, verification feeds, reputation scoring); design flaws or attacks (e.g., Sybil attacks, collusion on verification) could degrade reliability and economic incentives.</li>
+</ul>
+<p><strong>Tokenomics / vesting risk</strong></p>
+<ul>
+<li>ANTS has a hard-capped maximum supply of 1.04 billion tokens, released through an emissions schedule; current supply is materially below the cap, so future emissions can significantly increase circulating supply and dilute existing holders.</li>
+<li>Emissions and rewards are linked to recognised usage in seller pools, which are stake-weighted and subject to caps and potential burns; changes in these parameters or in network activity can materially affect reward flows and the economic value of participating as a provider or token holder.</li>
+<li>Tokens sold by the Foundation to institutional and venture investors are subject to a one-year lock-up from closing followed by linear vesting over 24 months, as described in G.11. Concentrated holdings or large unlock events could create selling pressure and adversely affect secondary-market prices.</li>
+<li>The token's primary role as a trust and reputation layer (e.g., locked in seller pools, backing identities) may limit direct utility for end-users; if demand for reputation staking is lower than expected, token demand may underperform expectations.</li>
+</ul>
+<p><strong>Governance / centralization risk</strong></p>
+<ul>
+<li>Changes to the protocol's contracts and economic parameters follow the published AntSeed Improvement Proposal (AIP) process, which is open to community participation and requires a security-considerations review before any proposal can reach Final status. That process governs how a change is specified and agreed; it does not itself execute the change on-chain. The on-chain permissions required to deploy contract upgrades and to set parameters, including staking lock and slashing parameters and the destination of the verification allocation, are held by the addresses holding the relevant contract roles. The identity of those role-holders and the procedure they follow are not specified in the AIP process documentation. Holders of ANTS have no formal role in either the proposal process or its on-chain execution.</li>
+<li>ANTS confers no governance or voting rights and there is no token-holder governance mechanism. Protocol parameters, including release rules, fee rates and eligibility conditions, are therefore set without any vote of ANTS holders, and holders have no formal means of influencing changes to the economic parameters that affect them.</li>
+<li>The reputation and verification systems (seller pools, verification feeds, model fingerprints) can concentrate influence in a small set of high-stake or high-reputation providers; if these actors collude or are compromised, they may distort rewards, degrade network trust, or discourage new entrants.</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-I.2">
+<h3 class="field-heading"><span class="field-number">I.2</span> Issuer-related risks</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfIssuerrelatedRisksForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_I.2" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-I.3">
+<h3 class="field-heading"><span class="field-number">I.3</span> Other tokens-related risks</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherTokensrelatedRisksExplanatory" contextRef="_ctx1" id="TEMPLATE_I.3" escape="true"><p><strong>Market &amp; liquidity risks</strong></p>
+<ul>
+<li>ANTS is not yet transferable and is not admitted to trading on any venue, so there is no market price and no reliable public market data. Liquidity, price discovery and volatility once transferability is enabled are highly uncertain and may be adverse for early participants.</li>
+<li>Weekly emission schedule and long-term inflation (with 5 million tokens per epoch halving every 104 epochs over ~15 years) may create sustained sell pressure if recipients choose to monetize rewards.</li>
+</ul>
+<p><strong>Legal &amp; regulatory risks</strong></p>
+<ul>
+<li>The protocol is positioned as an open, decentralized peer-to-peer network with no central operator or custody of user funds, but regulators may still characterise the token or related activities as regulated instruments (e.g. securities or other crypto-assets) depending on jurisdiction and how ANTS is marketed or used.</li>
+<li>Private OTC sales to institutional/VC investors with lock-ups and vesting may increase scrutiny around unequal information or treatment versus retail users.</li>
+</ul>
+<p><strong>AML &amp; privacy risks</strong></p>
+<ul>
+<li>The network is "private by design" with no account or email and supports anonymous usage, which limits traceability of end-users and may raise AML/CFT concerns for regulated intermediaries interacting with the ecosystem.</li>
+<li>USDC-denominated, on-chain settlement on Base combined with anonymous participation could make it harder to detect or block sanctioned actors or illicit flows without robust external screening and monitoring.</li>
+</ul>
+<p><strong>Technical &amp; security risks</strong></p>
+<ul>
+<li>The protocol's smart contracts were reviewed in an independent security audit by Sherlock, completed in July 2026 (final report 12 August 2026). All High and Medium severity findings were resolved, and the remaining Low and Informational findings were either resolved or formally acknowledged. Penetration testing of the peer-to-peer node software has not been completed, so that software has not undergone equivalent independent review. An audit does not guarantee that no vulnerabilities remain.</li>
+<li>Reliance on trusted execution environments (TEE-verified providers) for privacy introduces dependence on specific hardware and its security assumptions; any TEE compromise could expose user prompts and data despite "sealed enclave" assurances.</li>
+</ul>
+<p><strong>Governance risks</strong></p>
+<ul>
+<li>Changes to the protocol, its on-chain contracts, client interfaces and economic parameters follow a published process, AntSeed Improvement Proposals (AIPs). A proposal moves through defined statuses, from Idea and Draft through Review and Last Call to Final, with a Last Call period of at least 14 days set by an editor, and cannot reach Final status if its security-considerations section is missing or judged insufficient. Proposals are submitted publicly and the process is open to community participation. Changes to network economics, including ANTS emission schedules, staking requirements, pricing metadata and fee conventions, fall within the scope of this process. The process governs specification and agreement rather than authorisation: editors handle the administrative and editorial stages and do not decide the merits of a proposal, and the process documentation does not identify who holds the on-chain permissions required to implement an approved change. ANTS holders have no formal voting role at any stage. A single editor currently administers the process, which may concentrate influence over the pace at which proposals progress.</li>
+<li>Concentrated allocations to institutional/VC investors may give a relatively small group disproportionate influence over any future governance or de facto control via token holdings.</li>
+</ul>
+<p><strong>Listings &amp; distribution risks</strong></p>
+<ul>
+<li>There is no assurance of active trading markets, liquidity support, or continued listing once admission is obtained; trading venues can change terms, restrict access, or delist an asset at their discretion.</li>
+<li>Tokens bearing the AntSeed and ANTS names, but unconnected to the protocol and issued under different contract addresses, already appear on third-party price and trading interfaces. Prospective holders may be unable to distinguish these from ANTS and could acquire an unrelated asset. Holders should verify the token contract address before transacting.</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-I.4">
+<h3 class="field-heading"><span class="field-number">I.4</span> Project implementation-related risks</h3>
+<div class="answer"><ix:nonNumeric name="mica:ProjectImplementationrelatedRisksExplanatory" contextRef="_ctx1" id="TEMPLATE_I.4" escape="true"><p><strong>Technical risks</strong></p>
+<ul>
+<li>The protocol's smart contracts were reviewed in an independent security audit by Sherlock, completed in July 2026 (final report 12 August 2026). All High and Medium severity findings were resolved, and the remaining Low and Informational findings were either resolved or formally acknowledged. Penetration testing of the peer-to-peer node software has not been completed. An audit does not guarantee that no vulnerabilities remain, and residual risk persists in release, staking and fee or burn logic.</li>
+<li>The buy-and-burn of accumulated protocol fees described in this white paper has not been activated. There is no assurance that it will be activated, or activated on the terms described. Implementation defects in weekly releases, burn routing, or any future buy-and-burn execution could disrupt rewards.</li>
+</ul>
+<p><strong>Operational and resource risks</strong></p>
+<ul>
+<li>As a fully decentralized, open-source protocol with no central operator, effective coordination among contributors for upgrades, incident response, and milestone delivery may be slower and less predictable.</li>
+<li>Absence of a formal risk register and limited documented governance structures beyond a foundation charter may indicate immature internal processes for systematically managing implementation and operational risks.</li>
+</ul>
+<p><strong>Third-party dependency risks</strong></p>
+<ul>
+<li>The protocol depends on the Base chain and USDC for settlement, so any technical, liquidity, or regulatory issues affecting Base or USDC (e.g., outages, depegs, policy changes) could impair protocol operations and fee flows.</li>
+<li>Independent providers set prices and deliver AI services; poor performance, downtime, or exit by key providers could reduce network utility and undermine adoption.</li>
+</ul>
+<p><strong>Market and liquidity risks</strong></p>
+<ul>
+<li>ANTS is not yet transferable, and its emissions are tied to weekly epochs and to network activity. There is uncertainty about initial and ongoing secondary-market liquidity and price discovery once transferability is enabled.</li>
+<li>The value accrual design (protocol-fee-funded buy-and-burn, activity-based emissions, burns of unused emissions) may not achieve its intended effects if network usage or fee volumes are lower than expected, limiting demand for ANTS.</li>
+</ul>
+<p><strong>Legal and compliance risks</strong></p>
+<ul>
+<li>The protocol is described as fully decentralized with no central operator or custody, which may reduce some regulatory touchpoints but also creates uncertainty about which entities (e.g., the foundation, core contributors, major providers) could be considered responsible under evolving crypto and AI-service regulations.</li>
+<li>Lack of a defined AML/KYC framework at protocol level and reliance on peer-to-peer interaction could attract regulatory scrutiny in certain jurisdictions, especially if usage scales or if ANTS is perceived as having investment-like features due to emissions and burn mechanisms.</li>
+</ul>
+<p><strong>Governance and tokenomics risks</strong></p>
+<ul>
+<li>Governance is centered around a foundation charter with no separate board or committee charters and no documented conflict-of-interest policy, which may weaken accountability, checks and balances, and decision-making transparency.</li>
+<li>Emissions of 5 million tokens per weekly epoch (with periodic halving) up to a 1.04 billion cap, combined with activity-based distribution and burns of unused emissions, creates complex incentives; misalignment between stakers, providers, and the foundation (which receives remaining unused emissions) could lead to governance friction.</li>
+<li>Concentration of protocol fees in a reserve contract for future buy-and-burn introduces discretion over timing and parameters of these operations; if governance processes are weak, this may create perceived or actual governance capture and value-allocation disputes.</li>
+</ul></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-I.5">
+<h3 class="field-heading"><span class="field-number">I.5</span> Technology-related risks</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfTechnologyrelatedRisksForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_I.5" escape="true"><p><strong>Smart contracts</strong> AntSeed relies on multiple smart contracts deployed on Base mainnet, including the ERC-20 ANTS token, an AntseedDeposits contract that custodies buyer USDC and seller payouts, an AntseedChannels contract that manages per-session payment locking and settlement (and which holds no USDC itself), and the recognized usage protocol which includes the smart contracts governing ANTS distribution. This concentrates smart-contract risk in a relatively complex settlement flow (reserve-serve-settle), where bugs or logic errors in deposit custody, channel accounting, or emission logic could lead to loss or misallocation of funds. Funds are held by smart contracts under rules fixed in code rather than by the Foundation or any other person; the channel contract holds no USDC, and funds remain in the deposit contract until charged or withdrawn. Because the deposit contract holds pooled user funds, a contract-level exploit there represents a worst-case exposure affecting all deposited funds across all users.</p>
+<p><strong>Cross-chain and protocol interactions</strong> The current design is single-chain for on-chain settlement, using USDC on Base mainnet (chain ID 8453), with a Base Sepolia testnet deployment for testing; there is no documented cross-chain bridge, so classic bridge risk is limited, but any future expansion to other chains or wrapped assets would introduce additional attack surfaces. The protocol also depends on external AI providers and their infrastructure, so misconfiguration or compromise at the provider level can cause incorrect or malicious responses even if on-chain components behave correctly.</p>
+<p><strong>Scalability and performance</strong> Routing and metering run over an encrypted peer-to-peer network with explicit, hard-coded limits on frame size, concurrent connections per IP, upload/stream caps, and stream durations, which mitigates some resource-abuse and denial-of-service vectors but may become bottlenecks under heavy load or targeted attack. Settlement depends on Base's throughput and gas costs; spikes in network congestion could delay settlement, increase operating costs for providers, or affect the economics of small-value transactions.</p>
+<p><strong>Wallets, keys, and identity</strong> Each node's identity is a single secp256k1 private key whose derived EVM address serves simultaneously as the network PeerId and the on-chain signing address; there is no key-derivation or multi-key scheme, so this one key signs protocol messages, EIP-712 payment authorizations, and on-chain transactions. The architecture separates this signing identity from an external funding wallet: the funding wallet deposits USDC into the AntseedDeposits contract and has no ongoing role thereafter, which bounds worst-case loss from a compromised node to the current deposit balance rather than the full funding wallet. This nonetheless places significant weight on secure storage of the signing key. In desktop deployments the key is encrypted at rest via the operating system keychain, but in CLI/server mode the default is a plaintext key file, making operational security practices (environment-variable injection, secrets managers, hardened hosts) critical.</p>
+<p><strong>Privacy</strong> The network is designed for anonymous, account-free usage, with confidentiality of requests and responses resting substantially on transport-level encryption between peers. Buyers who select providers without hardware-based attestation rely primarily on transport encryption and provider honesty for prompt and content confidentiality. Where the protocol offers attested (TEE-based) providers, part of the privacy assurance shifts to correct hardware attestation and configuration.</p>
+<p><strong>Layer 2 (Base) dependencies</strong> All token and payment flows use Base and USDC, so AntSeed inherits Base's consensus, uptime, and censorship-resistance properties; outages, reorganizations, or protocol changes on Base could halt deposits, settlement, or ANTS transfers. Regulatory or issuer actions affecting USDC on Base (such as freezes or blacklisting by the stablecoin issuer) could also impair users' ability to fund the network or withdraw funds.</p>
+<p><strong>Audits and security assurance</strong> The AntSeed smart contracts underwent an independent security audit conducted by Sherlock in July 2026 (final report August 2026), covering the ANTS token, payment channel, deposit, staking, and emissions contracts. This included the on-chain validation of EIP-191/EIP-712 signatures and associated nonce and timestamp replay protection, as these checks are implemented within the audited contracts. All High and Medium severity findings were resolved, and remaining Low/Informational findings were either resolved or formally acknowledged by the development team. The act of signing itself, meaning the client-side generation of these signatures and the security of the underlying signing key, falls outside the scope of a contract audit and is addressed instead under key-handling practices described above. Separately, penetration testing of the peer-to-peer node software has not been completed per project documentation, meaning the node software, including its resource-usage limits and other network-level controls, has not undergone equivalent independent review.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-I.6">
+<h3 class="field-heading"><span class="field-number">I.6</span> Mitigation measures</h3>
+<div class="answer"><ix:nonNumeric name="mica:MitigationMeasuresForTechnologyRiskForOtherTokenExplanatory" contextRef="_ctx1" id="TEMPLATE_I.6" escape="true"><p><strong>Smart contracts</strong><br />
+The protocol's smart contracts on Base mainnet, including the ANTS token, deposit, payment channel, staking, and emissions contracts, were reviewed in an independent security audit conducted by Sherlock in July 2026. All High and Medium severity findings were resolved prior to the final report, and remaining Low/Informational findings were either resolved or formally acknowledged by the development team. The audit specifically strengthened the payment channel settlement logic, closing edge cases in the reserve-serve-settle flow through both contract-level and node-level fixes. The architecture also isolates custody risk: the AntseedChannels contract that manages session logic holds no USDC and is designed to be swappable (redeployable by re-pointing the on-chain registry), while the fund-holding contracts (Deposits, Staking) are treated as stable contracts that rarely change. All deployed contracts are verified on BaseScan.</p>
+<p><strong>Cross-chain and protocol interactions</strong><br />
+Confining on-chain settlement to a single chain (Base) avoids cross-chain bridge dependencies and the associated attack surface, as no bridge or wrapped-asset mechanism is used in the current design. Contract addresses for each supported chain are built into the client software rather than manually configured, reducing the risk of misdirected transactions.</p>
+<p><strong>Scalability and performance</strong><br />
+The peer-to-peer transport layer enforces hard-coded resource limits, including a maximum frame size (64 MiB), per-request upload cap (32 MiB), global pending upload cap (256 MiB), stream buffer and duration limits, request and upload timeouts, and a per-IP inbound connection cap, which constrain resource exhaustion and denial-of-service conditions. Transport applies fail-closed handling on decode errors. Settlement is designed around Base's low-cost Layer 2 environment to limit transaction-cost exposure.</p>
+<p><strong>Wallets, keys, and identity</strong><br />
+The protocol structurally separates the node's signing identity from fund custody: the signing key never holds funds directly, and an external funding wallet (which may be a hardware wallet or multisig) deposits into the AntseedDeposits contract and has no ongoing role thereafter. This bounds the worst-case loss from a compromised node to the current deposit balance, leaving the funding wallet unaffected. In desktop deployments, the signing key is encrypted at rest through the operating system keychain, with any legacy plaintext key auto-encrypted on upgrade. For server and CLI deployments, the documentation directs operators to supply the key via an environment variable backed by a secrets manager rather than storing it on disk, and recommends funding only via the deposit contract from a hardware wallet or multisig, depositing only amounts needed per session.</p>
+<p><strong>Cryptographic and protocol controls</strong><br />
+Trust-critical operations are cryptographically verified: node identities use secp256k1 keypairs, with protocol messages, connection handshakes, and metering receipts signed using EIP-191 personal_sign and verified via ecrecover, and payment authorizations signed using EIP-712 (ReserveAuth and SpendingAuth), each scoped to a specific seller, capped by a maximum amount, and time-bounded by an expiry deadline. Connection envelopes include nonce and timestamp checks to resist replay attacks, and payment is gated (via HTTP 402) until an on-chain reservation is committed. Emission rewards are subject to per-recipient caps, with overages redirected to the Protocol Reserve.</p>
+<p><strong>Layer 2 (Base) dependency</strong><br />
+The dependency on Base and USDC is inherent to the design and is disclosed as a residual risk rather than one that can be fully mitigated; the single-chain approach nonetheless avoids the additional attack surface introduced by multi-chain or bridged architectures.</p>
+<p><strong>Residual and outstanding items</strong><br />
+Penetration testing of the peer-to-peer node software has not yet been completed per project documentation, and is identified as an outstanding assurance item. Certain acknowledged (unremediated) low-severity audit findings reflect deliberate design decisions or fixes deferred to a future protocol upgrade, as recorded in the audit report.</p></ix:nonNumeric></div>
+</div>
+</div>
+<div class="section" id="part-j">
+<h2 class="section-heading">Part J – Information on the sustainability indicators in relation to adverse impact on the climate and other environment-related adverse impacts</h2>
+<div class="field" id="f-S.1">
+<h3 class="field-heading"><span class="field-number">S.1</span> Name</h3>
+<div class="answer"><ix:nonNumeric name="mica:Name" contextRef="_ctx1" id="TEMPLATE_S.1" escape="false"><p>The AntSeed Foundation</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.2">
+<h3 class="field-heading"><span class="field-number">S.2</span> Relevant legal entity identifier</h3>
+<div class="answer"><ix:nonNumeric name="mica:RelevantLegalEntityIdentifier" contextRef="_ctx1" id="TEMPLATE_S.2" escape="false"><p>984500DE7AF09CDDDB83</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.3">
+<h3 class="field-heading"><span class="field-number">S.3</span> Name of the crypto-asset</h3>
+<div class="answer"><ix:nonNumeric name="mica:NameOfCryptoAssetSustainability" contextRef="_ctx1" id="TEMPLATE_S.3" escape="false"><p>AntSeed</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.4">
+<h3 class="field-heading"><span class="field-number">S.4</span> Consensus mechanism</h3>
+<div class="answer"><ix:nonNumeric name="mica:ConsensusMechanismSustainabilityExplanatory" contextRef="_ctx1" id="TEMPLATE_S.4" escape="true"><p>AntSeed runs on the Base blockchain, where ANTS is an ERC-20 token on Base mainnet and payments settle in USDC on Base. Base itself is an Ethereum Layer 2 chain using an optimistic rollup architecture built on the OP Stack, batching many transactions off-chain and posting them to Ethereum for final settlement.</p>
+<p>Security comes from Base inheriting Ethereum's Proof of Stake security guarantees: rollup transaction data is posted to Ethereum, which provides data availability and finality, while the optimistic model allows fraud proofs to challenge invalid state transitions. Efficiency comes from aggregating many user transactions into batches before posting to Ethereum, meaning users benefit from significantly lower fees and higher throughput than transacting directly on Ethereum L1, while still ultimately relying on Ethereum for settlement.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.5">
+<h3 class="field-heading"><span class="field-number">S.5</span> Incentive mechanisms and applicable fees</h3>
+<div class="answer"><ix:nonNumeric name="mica:IncentiveMechanismsAndApplicableFeesSustainabilityExplanatory" contextRef="_ctx1" id="TEMPLATE_S.5" escape="true"><p><strong>Incentive mechanisms (ANTS emissions)</strong></p>
+<p>ANTS releases are tied to authenticated network activity rather than to proof-of-work mining. The protocol releases 5 million ANTS per week, in periods referred to in the protocol as "epochs," with the weekly amount halving every 104 weeks.<br />
+Each week's release is allocated across fixed and dynamic components. Two allocations are fixed regardless of network activity: 15% to the Foundation and 15% to contributors. The remaining allocations are dynamic and scale within defined ranges according to network activity: up to 10% to verification and other growth incentives, rewarding participants who validate network activity such as behavioural model checks, TEE attestation and anti-abuse work, 2% to 40% to seller-pool stakers, based on the amount of ANTS actively staked in seller pools relative to a network-wide stake target, and 5% to 10% each to providers and to buyers, based on recognised settled USDC volume relative to a network-wide usage target.<br />
+Each allocation is administered by a distribution contract holding a share of that week's release. Any portion of a dynamic share that is not earned through verified network activity is processed through a remainder mechanism: ANTS is minted to a burn address first, up to 30% of that week's scheduled release, with any remaining amount minted to the Foundation's reserve address.</p>
+<p><strong>Network security model</strong></p>
+<p>Offering services and being selected for paid traffic does not itself require any stake; providers are paid in USDC for services rendered regardless. A stake is relevant only to establish eligibility for ANTS rewards. This eligibility stake is already denominated in ANTS, held in seller pools bound to a provider's on-chain agent identifier, and any ANTS holder, including buyers, may stake ANTS in support of a provider. A legacy mechanism under which the eligibility for providing ai services stake was denominated in USDC remains available as a fallback path until it is explicitly disabled; under that legacy mechanism the minimum stake was 10 USDC.<br />
+ANTS itself is currently non-transferable, so there is no liquid market in ANTS; releases accrue to eligible participants and the Foundation according to the schedule above. Network security and reward eligibility are governed through the stake requirement combined with on-chain reputation and feedback signals, rather than through block production.</p>
+<p><strong>Applicable fees</strong></p>
+<p>A 4% protocol fee, denominated in USDC, is charged on settlement of AI service transactions between buyers and providers and accumulates in a separate reserve contract; it is not paid to a centralised company. As at 29 September 2026, approximately USD 12,030 had been collected. The 4% protocol fee will be used for the ANTS buy-and-burn once ANTS becomes transferable.  The burning of unearned weekly releases described above is a separate mechanism and does not fund any purchase of ANTS.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.6">
+<h3 class="field-heading"><span class="field-number">S.6</span> Beginning of period to which disclosed information relates</h3>
+<div class="answer"><p><ix:nonNumeric name="mica:BeginningOfPeriodToWhichDisclosedInformationRelates" contextRef="_ctx_instant" id="TEMPLATE_S.6" escape="false">2026-08-06</ix:nonNumeric></p></div>
+</div>
+<div class="field" id="f-S.7">
+<h3 class="field-heading"><span class="field-number">S.7</span> End of period to which disclosed information relates</h3>
+<div class="answer"><p><ix:nonNumeric name="mica:EndOfPeriodToWhichDisclosedInformationRelates" contextRef="_ctx_instant" id="TEMPLATE_S.7" escape="false">2026-08-19</ix:nonNumeric></p></div>
+</div>
+<div class="field" id="f-S.8">
+<h3 class="field-heading"><span class="field-number">S.8</span> Energy consumption</h3>
+<div class="answer"><p><ix:nonFraction name="mica:EnergyConsumption" contextRef="_ctx1" id="TEMPLATE_S.8" unitRef="u_kWh" decimals="0" format="ixt4:num-dot-decimal">0</ix:nonFraction></p></div>
+</div>
+<div class="field" id="f-S.9">
+<h3 class="field-heading"><span class="field-number">S.9</span> Energy consumption sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfEnergyConsumptionSourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.9" escape="true"><p>Data provided by CCRI; all indicators are based on a set of assumptions and thus represent estimates; methodology description and overview of input data, external datasets and underlying assumptions available at:<br />
+https://carbon-ratings.com/dl/whitepaper-mica methods-2024 and https://docs.mica.api.carbon ratings.com. We do not account for any offsetting of energy consumption or other market-based mechanism as of today.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.10">
+<h3 class="field-heading"><span class="field-number">S.10</span> Renewable energy consumption</h3>
+<div class="answer"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></div>
+</div>
+<div class="field" id="f-S.11">
+<h3 class="field-heading"><span class="field-number">S.11</span> Energy intensity</h3>
+<div class="answer"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></div>
+</div>
+<div class="field" id="f-S.12">
+<h3 class="field-heading"><span class="field-number">S.12</span> Scope 1 DLT GHG emissions - controlled</h3>
+<div class="answer"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></div>
+</div>
+<div class="field" id="f-S.13">
+<h3 class="field-heading"><span class="field-number">S.13</span> Scope 2 DLT GHG emissions - purchased</h3>
+<div class="answer"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></div>
+</div>
+<div class="field" id="f-S.14">
+<h3 class="field-heading"><span class="field-number">S.14</span> GHG intensity</h3>
+<div class="answer"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></div>
+</div>
+<div class="field" id="f-S.15">
+<h3 class="field-heading"><span class="field-number">S.15</span> Key energy sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfKeyEnergySourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.15" escape="true"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.16">
+<h3 class="field-heading"><span class="field-number">S.16</span> Key GHG sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:DescriptionOfKeyGHGSourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.16" escape="true"><p>Not applicable as the annual energy consumption is less than 500,000 kWh.</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.17">
+<h3 class="field-heading"><span class="field-number">S.17</span> Energy mix</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.18">
+<h3 class="field-heading"><span class="field-number">S.18</span> Energy use reduction</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.19">
+<h3 class="field-heading"><span class="field-number">S.19</span> Carbon intensity</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.20">
+<h3 class="field-heading"><span class="field-number">S.20</span> Scope 3 DLT GHG emissions - value chain</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.21">
+<h3 class="field-heading"><span class="field-number">S.21</span> GHG emissions reduction targets or commitments</h3>
+<div class="answer"><ix:nonNumeric name="mica:GHGEmissionsReductionTargetsOrCommitmentsExplanatory" contextRef="_ctx1" id="TEMPLATE_S.21" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.22">
+<h3 class="field-heading"><span class="field-number">S.22</span> Generation of waste electrical and electronic equipment (WEEE)</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.23">
+<h3 class="field-heading"><span class="field-number">S.23</span> Non-recycled WEEE ratio</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.24">
+<h3 class="field-heading"><span class="field-number">S.24</span> Generation of hazardous waste</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.25">
+<h3 class="field-heading"><span class="field-number">S.25</span> Generation of waste (all types)</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.26">
+<h3 class="field-heading"><span class="field-number">S.26</span> Non-recycled waste ratio (all types)</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.27">
+<h3 class="field-heading"><span class="field-number">S.27</span> Waste intensity (all types)</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.28">
+<h3 class="field-heading"><span class="field-number">S.28</span> Waste reduction targets or commitments (all types)</h3>
+<div class="answer"><ix:nonNumeric name="mica:WasteReductionTargetsOrCommitmentsAllTypesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.28" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.29">
+<h3 class="field-heading"><span class="field-number">S.29</span> Impact of the use of equipment on natural resources</h3>
+<div class="answer"><ix:nonNumeric name="mica:ImpactOfUseOfEquipmentOnNaturalResourcesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.29" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.30">
+<h3 class="field-heading"><span class="field-number">S.30</span> Natural resources use reduction targets or commitments</h3>
+<div class="answer"><ix:nonNumeric name="mica:NaturalResourcesUseReductionTargetsOrCommitmentsExplanatory" contextRef="_ctx1" id="TEMPLATE_S.30" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.31">
+<h3 class="field-heading"><span class="field-number">S.31</span> Water use</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.32">
+<h3 class="field-heading"><span class="field-number">S.32</span> Non recycled water ratio</h3>
+<div class="answer"><p>N/A .</p></div>
+</div>
+<div class="field" id="f-S.33">
+<h3 class="field-heading"><span class="field-number">S.33</span> Other energy sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherEnergySourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.33" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.34">
+<h3 class="field-heading"><span class="field-number">S.34</span> Other GHG sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:OtherGHGSourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.34" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.35">
+<h3 class="field-heading"><span class="field-number">S.35</span> Waste sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:WasteSourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.35" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+<div class="field" id="f-S.36">
+<h3 class="field-heading"><span class="field-number">S.36</span> Natural resources sources and methodologies</h3>
+<div class="answer"><ix:nonNumeric name="mica:NaturalResourcesSourcesAndMethodologiesExplanatory" contextRef="_ctx1" id="TEMPLATE_S.36" escape="true"><p>N/A .</p></ix:nonNumeric></div>
+</div>
+</div>
+</div>
+
+</body>
+</html>

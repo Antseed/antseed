@@ -1,21 +1,18 @@
 ---
-sidebar_position: 6
 slug: /recognized-usage
-title: Recognized Usage and ANTS Rewards
+title: Recognized usage and ANTS rewards
+sidebar_label: Recognized usage
+description: How seller pools, recognized-usage points, and the emissions schedule turn paid service delivery into ANTS rewards.
 hide_title: true
 ---
 
-# Recognized Usage and ANTS Rewards
+# Recognized usage and ANTS rewards
 
-**Protocol start: September 10, 2026 at 09:54:21 UTC — epoch 22.**
+Recognized usage connects ANTS rewards to paid service delivery and seller-pool stake. It has been active on Base mainnet since epoch 22. This page covers seller eligibility, locked staking positions, usage points, and how rewards are allocated. Buyer USDC deposits, payment channels, and settlement signatures are described in [Payments](/docs/payments) and are independent of rewards. For how-to steps, see [Staking and rewards](/docs/provide/staking). For rewards earned before epoch 22, see [Legacy emissions](/docs/legacy-emissions).
 
-Recognized usage connects ANTS rewards to paid service delivery and seller-pool
-stake. This page describes the protocol from that start date: seller eligibility,
-locked staking positions, usage points, and reward distribution. Buyer USDC
-deposits, payment channels, and settlement signatures are unchanged.
-
-**Looking for rewards earned before migration?** See
-[Legacy emissions and claims](./legacy-emissions.md).
+:::note
+The numeric settings on this page are the current Base mainnet configuration. They are owner-configurable; read the contracts listed on [Contract addresses](/docs/contracts) before relying on them.
+:::
 
 ## Seller pools and recognized usage
 
@@ -30,7 +27,7 @@ before an epoch boundary to have power in that epoch.
 Legacy USDC staking remains an eligibility fallback until explicitly disabled;
 the new seller registry does not expose the legacy USDC withdrawal flow.
 
-The registry's `minSellerPoolStake` is currently 0 on Base mainnet, so any
+The seller registry's `minSellerPoolStake` is 0 on Base mainnet, so any
 seller with a bound agent ID is eligible to sell without staking. Stake
 determines pool power and rewards, not selling eligibility.
 
@@ -41,7 +38,7 @@ early-exit terms. Rewards already accrued remain claimable using the old
 position ID; future rewards follow the new seller pool when the move takes
 effect, normally in the next epoch. Moving does not bypass the lock.
 
-The Base mainnet settings checked on **September 6, 2026** are:
+The Base mainnet settings are:
 
 - **Move-weight penalty: 0%** (`moveWeightPenaltyBps = 0`). If configured above
   zero, this penalty reduces the moved position's future staking weight, not
@@ -65,39 +62,13 @@ The slashed ANTS is sent to `0x000000000000000000000000000000000000dEaD`,
 not to the team or reserve. This principal burn is separate from the epoch
 emission burn described below and does not consume its 30% cap.
 
-These percentages are owner-configurable settings, not immutable guarantees.
-Check the pool contract's current values before moving or withdrawing stake.
+These percentages are owner-configurable. Check the pool contract's current values before moving or withdrawing stake.
 
-## Starter positions and seller proxies
+## Starter positions
 
-Fund `AntseedPositionInit` with ANTS separately. Before global transfers are
-enabled, the funding wallet must be a whitelisted sender. Fund conservatively:
-the faucet has no owner or sweep function, so unused funds cannot be recovered.
+`AntseedPositionInit` grants one starter staking position per agent to sellers that were staked in **legacy USDC staking** (`legacyStaking.getAgentId(seller) != 0` and `legacyStaking.isStakedAboveMin(seller)`). Eligibility through the new seller registry or ANTS pools alone does not qualify. A contract seller's authorized operator can initialize on its behalf; the caller owns the resulting position, its staking rewards, and withdrawal rights, while the seller's pool receives the power. All starter positions share one fixed end epoch, and initialization reverts with `InitExpired` once `currentEpoch() + stakeActivationDelay()` reaches it.
 
-Starter grants require an agent ID registered in **legacy USDC staking** and
-legacy stake meeting its minimum: `legacyStaking.getAgentId(seller) != 0` and
-`legacyStaking.isStakedAboveMin(seller) == true`. Eligibility through the new
-seller registry or ANTS pools alone does not qualify a seller for this grant.
-
-A qualifying seller can call `initPosition()`. For a contract seller, an
-authorized operator can call `initPosition(seller)`. When caller and seller
-differ, the seller's `isOperator(caller)` must return true. Owning the proxy or
-staking DIEM does not by itself satisfy that check.
-
-The caller owns the resulting position, its staking rewards, and withdrawal
-rights; the seller's agent pool receives the power. There is one starter grant
-per agent. Historical wash flags do not prevent initialization.
-
-All starter positions share the faucet's fixed `initEndEpoch`. Initialization
-requires `currentEpoch() + stakeActivationDelay() < initEndEpoch`; at or beyond
-that limit, it reverts with `InitExpired`. Claiming later does not extend the
-lock's end epoch. The faucet must also hold at least `initAmount` ANTS for each
-grant.
-
-With the recognized-usage CLI, use `antseed seller legacy claim-starter`
-(or `antseed ants seller claim-starter`) for starter-position initialization. It creates a staking position;
-it does not withdraw locked legacy rewards. That separate release is described
-in [Locked seller rewards: M002](./legacy-emissions.md#locked-seller-rewards-m002).
+Use `antseed seller legacy claim-starter` (or `antseed ants seller claim-starter`). It creates a staking position; it does not release locked legacy rewards, which is described in [Legacy emissions](/docs/legacy-emissions#locked-seller-rewards-m002).
 
 ## Reward policies
 
@@ -107,14 +78,12 @@ wash-trading policy zeros both sides when the seller's finalized proven wash
 volume reaches 25% of its authenticated historical total. It does not block USDC
 settlement or starter positions, and it does not erase previously recorded points.
 
-See [Reward Policies](./reward-policies.md) for how policies compose, the
+See [Reward policies](/docs/reward-policies) for how policies compose, the
 wash-trading rule, and how SP1 proofs are anchored to Base history.
 
 ## Emissions and destinations
 
-The gate uses weekly epochs and a 104-epoch halving interval. Its genesis is
-April 9, 2026 at 09:54:21 UTC. The token's maximum supply remains 1.04 billion ANTS.
-Allocation ceilings from epoch 22 are:
+The emissions gate uses weekly epochs, an initial emission of 5 million ANTS per epoch, and a 104-epoch halving interval, counted from its genesis (epoch 0 began April 9, 2026 at 09:54:21 UTC). The token's maximum supply is 1.04 billion ANTS. Allocation ceilings are:
 
 - **40% seller-pool rewards**, with the effective share determined dynamically.
 - **20% usage rewards**, with dynamic buyer and seller/operator shares.
@@ -134,7 +103,7 @@ staker allocation; more recognized volume increases the buyer and seller/operato
 usage allocations. The unused portion of each reward ceiling follows the burn
 and reserve rule rather than being paid out regardless of participation.
 
-The mainnet configuration for epoch 22, checked on **September 7, 2026**, is:
+The Base mainnet configuration is:
 
 - **Stake target: 400 million active ANTS across the network.** The staker share
   rises from a 2% baseline toward a 40% ceiling. The input is active staked
@@ -177,22 +146,7 @@ and `dynamicUsageConfigAt(epoch)` on the reward contracts.
 
 ### Destinations
 
-The configured destinations are:
-
-- USDC protocol fees and legacy reserve flushes: registry reserve
-  `0xBF348D3eEDA2012c60375ebFe4Eb46511859f70F`.
-- Team emissions and legacy team flushes: registry team wallet
-  `0x47151b68e2f34500A4f8886885cE69b179Bf5B0B`.
-- New ANTS reserve emissions: `0x3B4f9f426B9E465621037dF72b6DEBDD8EF1fD8c`.
-- Initial verification controller: `0x5B3A59088bD5BD5f722571420c09a9251a03AAdb`.
-
-The verification allocation initially belongs to a wallet, not a deployed
-verification contract. Keep gate ownership so its editable controller can later
-be transferred to that contract. Enabling ANTS trading is also a separate,
-one-way action; M001 does not enable it.
-
-For pre-migration claims and reserve/team flushes, see
-[Legacy emissions and claims](./legacy-emissions.md#escrow-and-flushes).
+USDC protocol fees go to the protocol reserve configured in AntseedRegistry. Team emissions go to the registry's team wallet, reserve emissions to the emissions reserve, and the verification allocation to its controller. See [Contract addresses](/docs/contracts) for the protocol reserve. For pre-migration claims and reserve and team flushes, see [Legacy emissions](/docs/legacy-emissions#escrow-and-flushes).
 
 ### Unallocated emissions and burns
 
@@ -226,51 +180,6 @@ transfer already-staked ANTS there. Neither path calls the token's ERC-20 burn
 operation or reduces `totalSupply()`; the dead-address balance should not be
 treated as circulating rewards.
 
-## Deployed M001 contracts — Base mainnet {#mainnet-contracts}
+## Contracts
 
-These are the Base mainnet contracts activated in epoch 22 on September 10, 2026.
-The first 11 were deployed on September 6; the legacy rewards registry adapter
-was deployed on September 9. All were verified on Basescan.
-
-| Contract | Address |
-|---|---|
-| AntseedWashTradingRegistry | `0xc02a111CB94332Cc31C08E079cbe781880b2121C` |
-| AntseedEmissionsGate | `0xE60a31E6CD2F8455503cA0B3f6545Dd3DDF543BD` |
-| AntseedSellerPools | `0x8Bf4d39AA13F3CB03F87D9500767fBc4D0940652` |
-| AntseedSellerRegistry | `0x99c533BCc6Ca646E543dbA835Fdbb9C2ee02Cb60` |
-| AntseedPositionInit | `0xB68AD13b681319fcEB6b0A640c2fd96C0138CBc8` |
-| AntseedUsageAccounting | `0xAdd2D85316153D7bfaF7921EE9Bf1Bb6c7A1cBc9` |
-| AntseedPointsPolicyRegistry | `0x212D2C1058b84507de248a147aaFeB08fb19E3b6` |
-| AntseedWashTradingPointsPolicy | `0x7a605aaa3c725aa25012dfDeD6B5dddcC561D6e5` |
-| AntseedSellerPoolsRewards | `0x83cc5B9AA0c8cB8683F35462c385a5BAAa755EE5` |
-| AntseedUsageRewards | `0x78330bF154172F1137219Bb559d4F3A270B3201F` |
-| AntseedLegacyEmissionsEscrow | `0x4d0fC3C0BBb5233Af6c4Ce33223e5330c34db9ab` |
-| AntseedLegacyRewardsPoolRegistry | `0xF76590430d9fCe0E871107Aa1f1AE796B0d03a11` |
-
-The [payments address list](./payments.md#base-mainnet-contract-addresses)
-contains the settlement contracts. Pre-migration endpoints are listed in the
-[legacy guide](./legacy-emissions.md#legacy-contract-addresses).
-
-## SDK configuration
-
-`getChainConfig('base-mainnet').recognizedUsage` exposes the 11 phase-1 addresses
-under `contracts`, plus `effectiveEpoch: 22` and the recorded `status: 'active'`.
-The adapter's address and provenance are recorded in the activation history and
-`current.json`.
-This metadata is generated from the deployment ledger, not a live
-RPC query. A scheduled epoch passing does not automatically change its status.
-
-`emissionsContractAddress` and `stakingContractAddress` follow the committed
-active `current.json`; the gate is not an accounting endpoint. Pool and reward
-contracts use their own interfaces; legacy CLI staking commands are not
-starter-position initialization commands.
-
-## Deployment and activation
-
-Activation completed through operator transactions on September 10, 2026,
-not an automatic timestamp switch. The original mainnet deployment record is
-`packages/contracts/deployments/base-mainnet/history/001-recognized-usage-deployed.json`;
-the preparation and cutover receipts are recorded in
-`packages/contracts/deployments/base-mainnet/history/001-recognized-usage-activated.json`.
-For operational sequencing, proof submission, funding, and pointer checks, use
-`packages/contracts/script/migrations/M001RecognizedUsage/README.md` in the repository.
+The recognized-usage contracts (emissions gate, seller registry, seller pools, usage accounting, points policies, reward controllers, position init, and the legacy emissions escrow) are listed on [Contract addresses](/docs/contracts). SDK users can read them from `getChainConfig('base-mainnet').recognizedUsage`.
