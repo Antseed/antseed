@@ -114,6 +114,7 @@ const sidebars: SidebarsConfig = {
         'protocol/security',
         'protocol/recognized-usage',
         'protocol/reward-policies',
+        'protocol/model-verification',
       ],
     },
     {

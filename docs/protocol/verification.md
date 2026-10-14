@@ -1,6 +1,8 @@
 # Model verification
 
 Checks that a seller serves the model it advertises, and pays the people who check.
+This is the contract-level spec; the plain-language overview is the website page
+[Model verification](../../apps/website/docs/protocol/model-verification.md).
 
 ## Roles
 
