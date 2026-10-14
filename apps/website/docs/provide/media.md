@@ -35,7 +35,7 @@ A unit billing model maps a protocol key to a list of priced components:
 
 A component can carry a `match` object to price tiers. Match keys are `model`, `size`, `quality` and `resolution`, compared with the request's values. Every billed unit must match a component: a request that matches none is refused, not served for free.
 
-Image and video services stay advertised without health checks, because a probe would generate a paid result.
+Image and video services are not health-probed, because a probe would generate a paid result. The seller stops advertising one after repeated buyer requests fail with `401`, `402` or `403`. The Venice and fal video plugins also check for free on each health sweep: Venice reads the key's balance and its public model list, and fal reads its public model list, plus the balance when `FAL_VIDEO_BILLING_API_KEY` is set. A model that fails these checks is unadvertised, and advertised again once they pass.
 
 ## Routing services
 
@@ -132,6 +132,8 @@ antseed config seller add-service video <video-model> \
 
 The service ID is sent unchanged as `model` to your API, so don't set `--upstream`. A `status` of `FAILED`, `ERROR` or `CANCELLED` ends the job unpaid.
 
+At startup the plugin also reads `GET /api/v1/models?type=video` and announces the queue fields each model takes as `supportedParameters`, so buyers send only those. If your server has no model list, set `supportedParameters` in `--capabilities` yourself, for example `["duration","image_url","prompt","resolution"]`.
+
 ### fal.ai models
 
 The `fal-video` plugin relays fal's queue API. The service ID must be the fal endpoint ID (at most 64 characters), and every service needs `fal-video` pricing:
@@ -143,6 +145,8 @@ antseed config seller add-provider fal --plugin fal-video
 antseed config seller add-service fal <fal-endpoint-id> \
   --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
 ```
+
+Requests are passed to fal unchanged. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
 
 ### Video pricing
 

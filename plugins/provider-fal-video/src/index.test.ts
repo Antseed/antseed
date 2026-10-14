@@ -1,6 +1,6 @@
-import { afterEach, expect, it, vi } from 'vitest';
+import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { falAppId } from './index.js';
+import plugin, { falAppId, falInputParameters } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -19,6 +19,17 @@ const retrieve = (body: object = { model: MODEL, request_id: 'req-1' }) =>
 const stream = (provider: Provider, req = retrieve(), callbacks: Partial<ProviderStreamCallbacks> = {}) =>
   provider.handleRequestStream!(req, { signal: new AbortController().signal, onResponseStart() {}, onResponseChunk() {}, ...callbacks });
 const parse = (body: Uint8Array) => JSON.parse(Buffer.from(body).toString());
+
+const V3 = 'fal-ai/kling-video/v3/pro/image-to-video';
+const v3Config = {
+  ...config,
+  ANTSEED_ALLOWED_SERVICES: V3,
+  ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [V3]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } }),
+};
+const schema = (endpointId: string, properties: Record<string, object>) => ({
+  paths: { [`/${endpointId}`]: { post: { requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/Input' } } } } } } },
+  components: { schemas: { Input: { properties } } },
+});
 
 it('derives fal app IDs for queue status and result URLs', () => {
   expect(falAppId(MODEL)).toBe('fal-ai/kling-video');
@@ -54,6 +65,42 @@ it('submits the input to the fal queue with seller auth and hides fal URLs', asy
   expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { authorization: 'Key seller-secret' } });
   expect(Object.keys(init.headers).some((key: string) => key.startsWith('x-antseed-'))).toBe(false);
   expect(parse(init.body)).toEqual(input);
+});
+
+it('reads the input field names from the fal schema', () => {
+  expect(falInputParameters(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} }), V3)).toEqual(['end_image_url', 'prompt', 'start_image_url']);
+  expect(falInputParameters(schema('fal-ai/other', { prompt: {} }), V3)).toBeNull();
+  expect(falInputParameters(schema(V3, { Prompt: {} }), V3)).toBeNull();
+  expect(falInputParameters(schema(V3, Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`field_${i}`, {}]))), V3)).toBeNull();
+  expect(falInputParameters(null, V3)).toBeNull();
+});
+
+it('advertises each endpoint\'s fal input fields and forwards the body unchanged', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} })))
+    .mockResolvedValue(Response.json({ request_id: 'req-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(v3Config) as Provider;
+  expect(provider.serviceCapabilities?.[V3]?.supportedParameters).toBeUndefined();
+  await provider.init!();
+  expect(fetchMock.mock.calls[0]![0]).toBe(`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=${encodeURIComponent(V3)}`);
+  expect(fetchMock.mock.calls[0]![1].headers).toBeUndefined();
+  expect(provider.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'], supportedParameters: ['end_image_url', 'prompt', 'start_image_url'] });
+  const input = { prompt: 'cat', image_url: 'first', start_image_url: 'start' };
+  await provider.handleRequest(request('/fal/v1/video/queue', { model: V3, ...input }));
+  expect(parse(fetchMock.mock.calls[1]![1].body)).toEqual(input);
+});
+
+it('keeps configured parameters and starts without them when the fal schema is unavailable', async () => {
+  const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+  vi.stubGlobal('fetch', fetchMock);
+  const offline = plugin.createProvider(v3Config) as Provider;
+  await offline.init!();
+  expect(offline.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'] });
+  const configured = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { supportedParameters: ['prompt', 'start_image_url'] } }) }) as Provider;
+  await configured.init!();
+  expect(configured.serviceCapabilities?.[V3]?.supportedParameters).toEqual(['prompt', 'start_image_url']);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 it('passes fal validation errors back without accepting a job', async () => {
@@ -137,4 +184,97 @@ it('refuses non-HTTPS result URLs', async () => {
   const response = await stream(plugin.createProvider(config) as Provider);
   expect(response.statusCode).toBe(502);
   expect(fetchMock).toHaveBeenCalledTimes(2);
+});
+
+describe('checkServiceHealth', () => {
+  const OTHER = 'fal-ai/wan-pro/image-to-video';
+  const twoModels = {
+    ...config,
+    ANTSEED_ALLOWED_SERVICES: `${MODEL},${OTHER}`,
+    ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({
+      [MODEL]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } },
+      [OTHER]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } },
+    }),
+  };
+  const notFound = () => Response.json({ error: { type: 'not_found', message: 'Endpoint(s) not found' } }, { status: 404 });
+  const models = (list: Array<[string, string]>) =>
+    Response.json({ models: list.map(([endpoint_id, status]) => ({ endpoint_id, metadata: { status } })) });
+  const mockFal = (modelsResponse: Response | Error, billing?: Response) => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const response = url.includes('/account/billing') ? billing! : modelsResponse;
+      if (response instanceof Error) throw response;
+      return response;
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    return fetchMock;
+  };
+  const check = (cfg: Record<string, string> = twoModels) =>
+    (plugin.createProvider(cfg) as Provider).checkServiceHealth!([MODEL, OTHER]);
+
+  it('reports listed endpoints as available from fal\'s public model list, without the seller key', async () => {
+    const fetchMock = mockFal(models([[MODEL, 'active'], [OTHER, 'active']]));
+    expect(await check()).toEqual({ [MODEL]: { status: 'available' }, [OTHER]: { status: 'available' } });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe(`https://api.fal.ai/v1/models?endpoint_id=${encodeURIComponent(MODEL)}&endpoint_id=${encodeURIComponent(OTHER)}`);
+    expect(init.headers).toBeUndefined();
+  });
+
+  it('reports a removed endpoint as unavailable and keeps a deprecated one with a warning', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    mockFal(models([[MODEL, 'deprecated']]));
+    const results = await check();
+    expect(results[MODEL]).toEqual({ status: 'available' });
+    expect(results[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('no longer offers') });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('deprecated'));
+    vi.stubGlobal('fetch', vi.fn(async () => notFound()));
+    expect((await check())[MODEL]).toMatchObject({ status: 'unavailable' });
+    warn.mockRestore();
+  });
+
+  it('looks endpoints up one by one when fal rejects a lookup for one unknown endpoint', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const ids = new URL(url).searchParams.getAll('endpoint_id');
+      return ids.includes(OTHER) ? notFound() : models(ids.map((id): [string, string] => [id, 'active']));
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    const results = await check();
+    expect(results[MODEL]).toEqual({ status: 'available' });
+    expect(results[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('no longer offers') });
+    expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('reports unknown for any other 404, such as a moved route', async () => {
+    mockFal(Response.json({ error: { type: 'not_found', message: 'Route not found' } }, { status: 404 }));
+    expect(await check()).toMatchObject({ [MODEL]: { status: 'unknown' }, [OTHER]: { status: 'unknown' } });
+  });
+
+  it('reports unknown when the model list can not be read', async () => {
+    mockFal(new Error('network down'));
+    expect((await check())[MODEL]).toMatchObject({ status: 'unknown' });
+  });
+
+  it('checks the balance with the optional billing key', async () => {
+    const withBilling = { ...twoModels, FAL_VIDEO_BILLING_API_KEY: 'billing-secret', FAL_VIDEO_MIN_BALANCE_USD: '1' };
+    const fetchMock = mockFal(models([[MODEL, 'active'], [OTHER, 'active']]), Response.json({ credits: { current_balance: 12.5, currency: 'USD' } }));
+    expect((await check(withBilling))[MODEL]).toEqual({ status: 'available', balanceUsd: 12.5 });
+    const [billingUrl, billingInit] = fetchMock.mock.calls.find(([url]) => url.includes('billing'))!;
+    expect(billingUrl).toBe('https://api.fal.ai/v1/account/billing?expand=credits');
+    expect(billingInit).toMatchObject({ headers: { authorization: 'Key billing-secret' } });
+
+    mockFal(models([[MODEL, 'active'], [OTHER, 'active']]), Response.json({ credits: { current_balance: 0.5, currency: 'USD' } }));
+    expect((await check(withBilling))[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.50') });
+  });
+
+  it('reports unknown and warns once when the billing key lacks permission', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const provider = plugin.createProvider({ ...twoModels, FAL_VIDEO_BILLING_API_KEY: 'run-only' }) as Provider;
+    for (let i = 0; i < 2; i++) {
+      mockFal(models([[MODEL, 'active'], [OTHER, 'active']]), Response.json({ error: {} }, { status: 403 }));
+      expect((await provider.checkServiceHealth!([MODEL, OTHER]))[MODEL]).toMatchObject({ status: 'unknown', reason: expect.stringContaining('billing:usage:read') });
+    }
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(() => plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: 'x' })).toThrow('FAL_VIDEO_MIN_BALANCE_USD');
+    warn.mockRestore();
+  });
 });

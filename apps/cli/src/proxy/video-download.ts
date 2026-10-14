@@ -10,7 +10,44 @@ const SELLER_ERROR_CODES = new Set([
   'video_download_failed', 'video_download_unavailable', 'video_download_busy', 'video_status_unavailable',
   'unsupported_video_download', 'unsupported_video_request', 'resource_ownership_unavailable',
 ])
-const RETURNED_STATUSES = new Set([400, 404, 409, 410, 413, 429, 502, 503, 504])
+const RETURNED_STATUSES = new Set([400, 404, 409, 410, 413, 429])
+const PROCESSING_STATUSES = new Set(['PROCESSING', 'QUEUED', 'PENDING', 'IN_QUEUE', 'IN_PROGRESS', 'RUNNING'])
+const FAILED_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'])
+
+/**
+ * One status vocabulary for every video seller and plugin version:
+ * - `processing` / `failed` / `completed`: what the seller reported (`upstream_status` keeps its word).
+ * - `unknown` (200): the seller answered but could not read the job's state right now; poll again.
+ * - `seller_unreachable` (502/504): the seller could not be reached; the job is kept, poll again later.
+ */
+export type VideoJobStatus = 'processing' | 'failed' | 'completed' | 'unknown' | 'seller_unreachable'
+
+export function normalizeVideoStatus(status: unknown): VideoJobStatus | null {
+  if (typeof status !== 'string') return null
+  const upper = status.toUpperCase()
+  if (PROCESSING_STATUSES.has(upper)) return 'processing'
+  if (FAILED_STATUSES.has(upper)) return 'failed'
+  if (upper === 'COMPLETED') return 'completed'
+  return null
+}
+
+function parseObject(body: Uint8Array): Record<string, unknown> | null {
+  if (body.length > 1024 * 1024) return null
+  try {
+    const parsed = JSON.parse(Buffer.from(body).toString('utf8')) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : null
+  } catch {
+    return null
+  }
+}
+
+/** A seller's JSON status answer with `status` mapped to the shared vocabulary; unchanged when it has no known status. */
+function withNormalizedStatus(body: Uint8Array): Uint8Array {
+  const parsed = parseObject(body)
+  const status = normalizeVideoStatus(parsed?.status)
+  if (!parsed || !status) return body
+  return Buffer.from(JSON.stringify({ ...parsed, status, upstream_status: parsed.status }))
+}
 
 function sellerErrorCode(body: Uint8Array): string | null {
   if (body.length > 4096) return null
@@ -24,20 +61,25 @@ function sellerErrorCode(body: Uint8Array): string | null {
 
 /** Streams a finished video from the seller that owns the job to the client. */
 export async function downloadVideo(request: SerializedHttpRequest, response: ServerResponse, send: SendDownload, clientSignal: AbortSignal): Promise<void> {
-  const error = (status: number, code: string) => {
-    response.writeHead(status, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-    response.end(JSON.stringify({ error: { code, message: 'Video download unavailable' } }))
+  const reply = (httpStatus: number, body: Record<string, unknown>) => {
+    response.writeHead(httpStatus, { 'content-type': 'application/json', 'cache-control': 'no-store' })
+    response.end(JSON.stringify(body))
   }
+  const error = (httpStatus: number, code: string) => reply(httpStatus, { error: { code, message: 'Video download unavailable' } })
+  const pending = (httpStatus: number, status: 'unknown' | 'seller_unreachable', code: string, message: string) =>
+    reply(httpStatus, { status, retryable: true, error: { code, message } })
   if (activeDownloads >= 2) { error(429, 'video_download_busy'); return }
   activeDownloads += 1
   const signal = AbortSignal.any([clientSignal, AbortSignal.timeout(5 * 60_000)])
   const headers = Object.fromEntries(Object.entries(request.headers).filter(([key]) => !['range', 'if-range', 'content-length', 'accept-encoding'].includes(key.toLowerCase())))
   let length: number | null = null
   let received = 0
+  let sellerAnswered = false
   try {
     const body = request.method === 'GET' ? new Uint8Array(0) : request.body
     const result = await send({ ...request, headers: { ...headers, [VIDEO_DOWNLOAD_STREAM_HEADER]: VIDEO_DOWNLOAD_STREAM_VERSION }, body }, {
       onResponseStart: (start, metadata) => {
+        sellerAnswered = true
         if (!metadata.streaming) return
         const lengthHeader = start.headers['content-length']
         length = lengthHeader === undefined ? null : Number(lengthHeader)
@@ -55,20 +97,24 @@ export async function downloadVideo(request: SerializedHttpRequest, response: Se
     signal.throwIfAborted()
     if (!response.headersSent) {
       // A JSON answer instead of a stream: a status such as Venice "PROCESSING", or a seller error.
-      if (result.headers['content-type']?.startsWith('application/json') && result.statusCode < 500) {
+      const isJson = result.headers['content-type']?.startsWith('application/json') === true
+      if (isJson && result.statusCode < 500) {
         response.writeHead(result.statusCode, { 'content-type': 'application/json', 'cache-control': 'no-store' })
-        response.end(Buffer.from(result.body))
+        response.end(Buffer.from(result.statusCode === 200 ? withNormalizedStatus(result.body) : result.body))
         return
       }
-      const code = result.headers['content-type']?.startsWith('application/json') ? sellerErrorCode(result.body) : null
-      error(RETURNED_STATUSES.has(result.statusCode) ? result.statusCode : 502, code ?? 'video_download_unavailable')
+      const code = isJson ? sellerErrorCode(result.body) : null
+      if (RETURNED_STATUSES.has(result.statusCode)) { error(result.statusCode, code ?? 'video_download_unavailable'); return }
+      // The seller answered, so it is reachable; it just could not read the job's state right now.
+      pending(200, 'unknown', code ?? 'video_status_unavailable', 'The seller could not read the video job status right now; poll again')
       return
     }
     if (result.statusCode !== 200 || (length !== null && received !== length)) throw new Error('Incomplete video')
     response.end()
   } catch {
     if (response.headersSent || clientSignal.aborted) response.destroy()
-    else error(signal.aborted ? 504 : 502, 'video_download_failed')
+    else if (sellerAnswered) error(502, 'video_download_failed')
+    else pending(signal.aborted ? 504 : 502, 'seller_unreachable', 'video_download_failed', 'The seller holding this video job could not be reached; the job is kept, poll again later')
   } finally {
     activeDownloads -= 1
   }

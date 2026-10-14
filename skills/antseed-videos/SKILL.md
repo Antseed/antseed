@@ -23,27 +23,29 @@ End every stage with a question and wait for the answer. Never start the next st
 
 1. Fetch the video catalog (`/v1/models?type=videos`).
 2. Give a short, honest take on the idea: what will work on screen, what is missing, and one or two ways to make it stronger. Offer an improved one-paragraph version of the idea.
-3. Recommend one video model that takes a first frame (and a last frame when possible) and say why, following [references/prompting.md](references/prompting.md#choosing-models). List three to five alternatives from the catalog, one line each, using only what the catalog shows.
+3. Recommend one video model that takes a first frame (and a last frame when possible) and say why, following [references/prompting.md](references/prompting.md#choosing-models). When the user wants a character, product, or style kept consistent rather than an exact opening shot, or brings reference images, recommend a reference-to-video model instead (catalog with `frames=ref`), and say the video will not start on any given image. List three to five alternatives from the catalog, one line each, using only what the catalog shows.
 4. Ask: "Does this version of the idea work for you? Shall I use **<model>**, or another one from the list?"
 
 ### Stage 2 — Prompts and frames
 
 This stage has two approvals, because frames cost money.
 
-**2a. Prompts (free).**
+**2a. Prompts.**
 
-1. Fetch the chosen model's offers (`/v1/models/<id>`) to see its frame inputs, durations, resolutions, and aspect ratios.
+1. Fetch the chosen model's offers (`/v1/models/<id>`) to see its frame inputs, durations, resolutions, aspect ratios, and the request fields each seller lists (`fields`). Show the user the fields.
 2. Write the video prompt in the style the chosen model responds to best ([references/prompting.md](references/prompting.md)).
 3. Write the first-frame prompt, and a last-frame prompt when the model takes `last_frame`. Both share one style phrase so the look stays consistent.
-4. Propose the aspect ratio. The frames decide the video's shape, so it is fixed here.
+4. Propose the aspect ratio. The frames decide the video's shape, so it is fixed here. `aspect_ratio` is sent only to a seller that lists the ratio ([references/requests.md](references/requests.md#aspect-ratio)).
 5. Recommend a strong image model for the frames from the image catalog (`/v1/models?type=images`), with its price per image. Never pick a weak or unknown image model on your own.
 6. Paste the video prompt and every frame prompt in full. Ask: "Change anything? Shall I make the frames with **<image model>** at <ratio> for about $<cost>?"
 
-**2b. Frames (paid).**
+**2b. Frames.**
 
-1. Generate each frame with the `antseed-images` skill and the approved image model. Check the saved frame's shape with `frame_size` ([references/requests.md](references/requests.md#frame-shape)), not by opening the image; if it does not match the agreed ratio, tell the user and either redo it or use the frame's ratio.
+1. Generate each frame with the `antseed-images` skill and the approved image model. Check the saved frame's shape with `frame_size` ([references/requests.md](references/requests.md#frame-shape)), not by opening the image; if it does not match the agreed ratio, crop it with `fit_frame` and show the cropped frame, or redo it if the crop cuts off the subject.
 2. Show each saved frame: in Antseed Desktop, call `show_media`; elsewhere, give its path.
 3. Ask: "Is the first frame right, or should I redo it? And the last frame?" Redo a frame, with an adjusted prompt if needed, until the user approves.
+
+For a reference-to-video model, make or collect reference images instead of frames: clear views of each character, product, or style to keep, one subject per image. Show them and ask for approval as with frames. Name them in the video prompt as `@Image1`, `@Image2` when the model supports it ([references/prompting.md](references/prompting.md#reference-to-video)).
 
 If the user uploads frames, skip making them: get their paths (in Antseed Desktop, `get_chat_image_path`), show them, and confirm which is first and which is last. Use a text-to-video model (catalog with `frames=no`) only when the user asks to skip frames; say that the look may drift.
 
@@ -62,7 +64,7 @@ After "go", queue the video once, save the job file, wait, and save the MP4 ([re
 
 - **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered, so a failed or rejected create costs nothing, but a repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
 - Status checks and downloads use the saved job id and never create jobs.
-- Send only values the seller advertises. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
+- Send only values the seller advertises, under the field names the seller lists in `fields`; never assume a field a seller does not list. Send `aspect_ratio` only when the chosen seller lists that ratio; otherwise the frame sets the shape. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
 - Always send the create to the chosen seller, as `<peerId>@<model>` (the cheapest compatible seller from the price step).
 - After a failed create or job, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first. Before an approved retry, rename `<name>.job.json` to `<name>.failed.job.json`.
 - Never print base64 media, signed URLs, authorization headers, private keys, or full API responses. Keep the buyer proxy on loopback.

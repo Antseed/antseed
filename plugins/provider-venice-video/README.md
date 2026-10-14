@@ -14,6 +14,9 @@ export VENICE_VIDEO_API_KEY=<seller-api-key>
 - `ANTSEED_ALLOWED_SERVICES`: Venice video model names
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `venice-video` pricing using `video_generations` or `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
+- `VENICE_VIDEO_MIN_BALANCE_USD`: optional, default `0`. Models stop being advertised while the key's Venice balance (USD + DIEM + bundled credits) is at or below it
+
+Each seller health sweep reads `GET /api/v1/api_keys/rate_limits` (key, access, balance) and the public `GET /api/v1/models?type=video`. A rejected key, blocked access, a balance at the minimum, or a model Venice no longer lists or reports offline stops that model being advertised, and it is advertised again once the check passes. Neither call generates media.
 
 Venice's model list does not say which image-to-video models accept a last frame, so announce each model's frames yourself. Buyers send only the inputs you list in `video.inputs`; leaving out `last_frame` makes them skip it even when Venice would accept it. Check a model with one cheap queue that sends both `image_url` and `end_image_url` (Venice answers `This model does not support end_image_url` when it can't), then announce it:
 
@@ -30,6 +33,8 @@ Venice's model list does not say which image-to-video models accept a last frame
 
 With `antseed seller start`, set this per service as `seller.providers.<name>.services.<id>.capabilities`.
 
-The plugin relays `POST /api/v1/video/queue` unchanged and handles `POST /api/v1/video/retrieve` by returning Venice JSON status or streaming the finished MP4 through the seller. For private models, Venice returns a short-lived `download_url` on queue; the plugin removes it from the buyer's response, keeps it for 24 hours, and streams the file from it once retrieve reports `COMPLETED`. Kept URLs are saved in the seller's data directory (`venice-video-download-urls.json`, set through `ANTSEED_DATA_DIR`, which `antseed seller start` passes automatically), so they survive a seller restart. It does not fetch or enforce Venice model metadata. `POST /api/v1/video/complete` is not relayed.
+At startup the seller reads Venice's video model list (`GET /api/v1/models?type=video`) and announces the queue fields each model takes as `supportedParameters`: `prompt`, `duration`, `resolution` and `aspect_ratio` when the model lists values, `audio` when it is configurable, and the frame fields for the `video.inputs` you announce (`image_url`, `end_image_url`, `reference_image_urls`; `image_url` for image-to-video models when you announce none). Buyers send only the fields listed. A service that sets `supportedParameters` itself keeps it. If the list cannot be read or does not include the model, the service is announced without it.
+
+The plugin relays `POST /api/v1/video/queue` unchanged and handles `POST /api/v1/video/retrieve` by returning Venice JSON status or streaming the finished MP4 through the seller. For private models, Venice returns a short-lived `download_url` on queue; the plugin removes it from the buyer's response, keeps it for 24 hours, and streams the file from it once retrieve reports `COMPLETED`. Kept URLs are saved in the seller's data directory (`venice-video-download-urls.json`, set through `ANTSEED_DATA_DIR`, which `antseed seller start` passes automatically), so they survive a seller restart. It does not enforce Venice model metadata. `POST /api/v1/video/complete` is not relayed.
 
 Check that Venice's terms allow your offering. AntSeed sellers must add value rather than resell raw API access.

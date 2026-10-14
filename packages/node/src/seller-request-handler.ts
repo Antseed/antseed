@@ -774,6 +774,15 @@ export class SellerRequestHandler {
             unitCostUsdc = finalBilling.costUsdc;
           }
 
+        if (requestedModel !== 'unknown') {
+          this._deps.emit('seller:provider-response', {
+            provider: provider.name,
+            service: requestedModel,
+            statusCode,
+            body: responseBody.slice(0, 200),
+          });
+        }
+
         // Record metering
         const latencyMs = Date.now() - startTime;
         if (this._deps.sessionTracker) {

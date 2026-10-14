@@ -1,7 +1,7 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AntseedProviderPlugin, Provider, SerializedHttpRequest } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus } from '@antseed/node';
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
   BaseProvider,
@@ -17,11 +17,13 @@ export const VENICE_DEFAULT_BASE_URL = 'https://api.venice.ai';
 
 const PROTOCOL = 'venice-video';
 const MAX_STATUS_BYTES = 1024 * 1024;
+const MAX_MODELS_BYTES = 4 * 1024 * 1024;
 const MAX_ACTIVE_DOWNLOADS = 2;
 /** Venice pre-signed download URLs are valid for 24 hours. */
 const DOWNLOAD_URL_TTL_MS = 24 * 60 * 60_000;
 const MAX_DOWNLOAD_URLS = 1000;
 const DOWNLOAD_URLS_FILE = 'venice-video-download-urls.json';
+const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 
 type DownloadUrls = Map<string, { url: string; expiresAt: number }>;
 
@@ -58,6 +60,30 @@ function saveDownloadUrls(dataDir: string | undefined, urls: DownloadUrls): void
   }
 }
 
+const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', reference_image: 'reference_image_urls' } as const;
+
+/**
+ * Queue fields a Venice model takes, from its `/models` constraints. Frame
+ * fields follow the seller's announced `video.inputs`, because Venice does not
+ * say which models accept a last frame.
+ */
+export function veniceInputParameters(model: unknown, inputs?: readonly string[]): string[] | null {
+  const constraints = (model as { model_spec?: { constraints?: Record<string, unknown> } } | null)?.model_spec?.constraints;
+  if (!constraints || typeof constraints !== 'object') return null;
+  const frames = inputs
+    ? Object.entries(FRAME_FIELDS).filter(([input]) => inputs.includes(input)).map(([, field]) => field)
+    : constraints.model_type === 'image-to-video' ? [FRAME_FIELDS.first_frame] : [];
+  const parameters = [
+    'prompt',
+    'duration',
+    ...(Array.isArray(constraints.resolutions) && constraints.resolutions.length > 0 ? ['resolution'] : []),
+    ...(Array.isArray(constraints.aspect_ratios) && constraints.aspect_ratios.length > 0 ? ['aspect_ratio'] : []),
+    ...(constraints.audio_configurable === true ? ['audio'] : []),
+    ...frames,
+  ].sort();
+  return validateServiceCapabilityFields({ supportedParameters: parameters }).length === 0 ? parameters : null;
+}
+
 function error(request: SerializedHttpRequest, statusCode: number, code: string, message: string) {
   return videoDownloadError(request, statusCode, code, message);
 }
@@ -68,6 +94,59 @@ function retrieveBody(service: string, queueId: string, deleteMedia: unknown): U
     queue_id: queueId,
     ...(typeof deleteMedia === 'boolean' ? { delete_media_on_completion: deleteMedia } : {}),
   }));
+}
+
+type VeniceAccount =
+  | { status: 'ok'; balanceUsd: number }
+  | { status: 'unavailable'; reason: string }
+  | { status: 'unknown'; reason: string };
+
+/**
+ * Read the key's account state from Venice's free rate-limits endpoint. The
+ * balance adds the USD, DIEM (1 DIEM buys $1 of inference a day) and bundled
+ * credit balances.
+ */
+async function readVeniceAccount(baseUrl: string, apiKey: string): Promise<VeniceAccount> {
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/api_keys/rate_limits`, {
+      headers: { authorization: `Bearer ${apiKey}` },
+      redirect: 'error',
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+    });
+    if (response.status === 401 || response.status === 403) {
+      return { status: 'unavailable', reason: `Venice rejected the API key (HTTP ${response.status})` };
+    }
+    if (!response.ok) return { status: 'unknown', reason: `Venice account check returned HTTP ${response.status}` };
+    const data = (parseJsonObject(Buffer.from(await response.arrayBuffer()))?.data ?? null) as
+      { accessPermitted?: unknown; balances?: Record<string, unknown> } | null;
+    if (!data || typeof data !== 'object') return { status: 'unknown', reason: 'Venice account check returned no data' };
+    if (data.accessPermitted === false) return { status: 'unavailable', reason: 'Venice API access is not permitted for this key' };
+    const balances = Object.values(data.balances ?? {}).filter((value): value is number => typeof value === 'number' && Number.isFinite(value));
+    if (balances.length === 0) return { status: 'unknown', reason: 'Venice account check returned no balance' };
+    return { status: 'ok', balanceUsd: balances.reduce((sum, value) => sum + value, 0) };
+  } catch (cause) {
+    return { status: 'unknown', reason: `Venice account check failed: ${cause instanceof Error ? cause.message : String(cause)}` };
+  }
+}
+
+/** Venice's public video model list: model ID → offline flag, or null when unreadable. */
+async function readVeniceVideoModels(baseUrl: string): Promise<Map<string, boolean> | null> {
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/models?type=video`, {
+      redirect: 'error',
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+    });
+    if (!response.ok) return null;
+    const data = parseJsonObject(Buffer.from(await response.arrayBuffer()))?.data;
+    if (!Array.isArray(data)) return null;
+    const models = new Map<string, boolean>();
+    for (const model of data as Array<{ id?: unknown; model_spec?: { offline?: unknown } }>) {
+      if (typeof model?.id === 'string') models.set(model.id, model.model_spec?.offline === true);
+    }
+    return models.size > 0 ? models : null;
+  } catch {
+    return null;
+  }
 }
 
 const plugin: AntseedProviderPlugin = {
@@ -83,6 +162,13 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON', label: 'Unit Pricing', type: 'string', required: true },
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
+    {
+      key: 'VENICE_VIDEO_MIN_BALANCE_USD',
+      label: 'Minimum Balance (USD)',
+      type: 'number',
+      default: 0,
+      description: 'Stop advertising video models while the Venice balance is at or below this amount',
+    },
   ],
   createProvider(config): Provider {
     const apiKey = config['VENICE_VIDEO_API_KEY']?.trim();
@@ -101,14 +187,19 @@ const plugin: AntseedProviderPlugin = {
     if (missingPricing) throw new Error(`Missing ${PROTOCOL} unit pricing for ${missingPricing}`);
     const maxConcurrency = Number(config['ANTSEED_MAX_CONCURRENCY'] ?? 10);
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
+    const minBalanceUsd = Number(config['VENICE_VIDEO_MIN_BALANCE_USD'] ?? 0);
+    if (!Number.isFinite(minBalanceUsd) || minBalanceUsd < 0) throw new Error('VENICE_VIDEO_MIN_BALANCE_USD must be a non-negative number');
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
+    const serviceCapabilities: Record<string, ServiceCapabilities> = Object.fromEntries(
+      services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }]),
+    );
     const relay = new BaseProvider({
       name: 'venice-video',
       services,
       pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
       serviceApiProtocols: Object.fromEntries(services.map(service => [service, [PROTOCOL]])),
       serviceUnitBillingModels,
-      serviceCapabilities: Object.fromEntries(services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }])),
+      serviceCapabilities,
       relay: {
         baseUrl,
         authHeaderName: 'authorization',
@@ -124,6 +215,29 @@ const plugin: AntseedProviderPlugin = {
       const videoRoute = nativeVideoRoute(request);
       const service = requestService(request);
       return { videoRoute, service: service && services.includes(service) ? service : undefined };
+    };
+
+    // Announces the queue fields each model takes, so buyers send only those.
+    const init = async () => {
+      const pending = services.filter(service => !serviceCapabilities[service]!.supportedParameters);
+      if (pending.length === 0) return;
+      try {
+        const response = await fetch(`${baseUrl}/api/v1/models?type=video`, {
+          headers: { authorization: `Bearer ${apiKey}` },
+          redirect: 'error',
+          signal: AbortSignal.timeout(10_000),
+        });
+        const body = Buffer.from(await response.arrayBuffer());
+        const data = response.ok && body.length <= MAX_MODELS_BYTES ? parseJsonObject(body)?.data : null;
+        if (!Array.isArray(data)) return;
+        for (const service of pending) {
+          const capabilities = serviceCapabilities[service]!;
+          const parameters = veniceInputParameters(data.find(model => model?.id === service), capabilities.video?.inputs);
+          if (parameters) capabilities.supportedParameters = parameters;
+        }
+      } catch {
+        // Unknown model fields: buyers fall back to their defaults.
+      }
     };
 
     let activeDownloads = 0;
@@ -178,10 +292,24 @@ const plugin: AntseedProviderPlugin = {
       pricing: relay.pricing,
       serviceApiProtocols: relay.serviceApiProtocols,
       serviceUnitBillingModels,
-      serviceCapabilities: relay.serviceCapabilities,
+      serviceCapabilities,
       maxConcurrency,
       getCapacity: () => relay.getCapacity(),
+      init,
       handleRequest,
+      async checkServiceHealth(checked) {
+        const [account, models] = await Promise.all([readVeniceAccount(baseUrl, apiKey), readVeniceVideoModels(baseUrl)]);
+        return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
+          if (account.status === 'unavailable') return [service, account];
+          if (models && !models.has(service)) return [service, { status: 'unavailable', reason: 'Venice no longer offers this model' }];
+          if (models?.get(service)) return [service, { status: 'unavailable', reason: 'Venice reports this model offline' }];
+          if (account.status === 'unknown') return [service, account];
+          if (account.balanceUsd <= minBalanceUsd) {
+            return [service, { status: 'unavailable', reason: `Venice balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` }];
+          }
+          return [service, { status: 'available', balanceUsd: account.balanceUsd }];
+        }));
+      },
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);
         if (videoRoute?.action !== 'retrieve') return handleRequest(request);
