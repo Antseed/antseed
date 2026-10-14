@@ -49,7 +49,8 @@ services whose verdicts still count. `isVerified(agentId)` is true while at leas
 them is SAME and none is DIFF. Each agent keeps one small SAME/DIFF counter per epoch, so
 these reads sum at most `validityEpochs` counters however many services the agent has.
 
-The owner can `clearServiceStatus(agentId, serviceHash)` to remediate a wrong result.
+The owner can `clearServiceStatuses(agentIds, serviceHashes)` to reset wrong results,
+many seller services in one call.
 Revoking an auditor (`setAuditor(auditor, false)`) stops new submissions; its verdicts
 stay until they expire.
 
@@ -87,6 +88,9 @@ The 10% verification emission bucket is split by **audit credits**, from
   `min(budget × auditorCredits / totalCredits, budget × maxAuditorShareBps / 10_000)`
   with `claimAuditorRewards`. `pendingAuditorReward` returns 0 for the current epoch,
   whose share can still change.
+- The owner can `voidAuditorCredits(epoch, auditor)` to remove a bad auditor's credits
+  for an epoch before that auditor claims, so farmed credits stop shrinking the honest
+  auditors' shares. Credits already claimed cannot be voided.
 
 ## Rollout
 
@@ -107,5 +111,5 @@ owner sets `rewardsStartEpoch`. See
 - **Per-model volume.** Points carry no model, so the bonus applies to a seller's
   whole volume.
 - **Per-auditor verdict history.** The contract does not record which auditor gave a
-  verdict, so a revoked auditor's verdicts are cleared per service or expire on their
-  own.
+  verdict, so a revoked auditor's verdicts are cleared with `clearServiceStatuses` (many
+  services per call) or expire on their own.

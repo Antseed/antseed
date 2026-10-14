@@ -98,6 +98,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     event AgentStatusChanged(uint256 indexed agentId, uint16 verifiedCount, uint16 diffCount);
     event AuditCredited(uint256 indexed epoch, address indexed auditor, bytes32 indexed modelHash);
     event AuditorRewardClaimed(uint256 indexed epoch, address indexed auditor, uint256 amount);
+    event AuditorCreditsVoided(uint256 indexed epoch, address indexed auditor, uint256 credits);
 
     error InvalidAddress();
     error InvalidValue();
@@ -108,6 +109,7 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
     error SelfAudit();
     error EpochChanged();
     error EpochNotFinalized();
+    error AlreadyClaimed();
 
     /// @dev Pins the emissions gate behind `registry.emissions()`. After M001 the registry points at
     ///      usage accounting, which exposes the gate as `emissionsGate()`; otherwise the registry
@@ -179,9 +181,29 @@ contract AntseedVerification is IAntseedVerification, Ownable2Step {
         emit RewardsStartEpochSet(epoch);
     }
 
-    /// @notice Remediation for a wrong service result: resets its verdict.
-    function clearServiceStatus(uint256 agentId, bytes32 serviceHash) external onlyOwner {
-        _resetService(agentId, serviceHash, _serviceStatus[agentId][serviceHash], emissionsGate.currentEpoch());
+    /// @notice Remediation for wrong results, e.g. from a revoked auditor: resets each listed
+    ///         service's verdict. `agentIds[i]` pairs with `serviceHashes[i]`.
+    function clearServiceStatuses(uint256[] calldata agentIds, bytes32[] calldata serviceHashes)
+        external
+        onlyOwner
+    {
+        uint256 count = agentIds.length;
+        if (count != serviceHashes.length) revert InvalidValue();
+        uint256 epoch = emissionsGate.currentEpoch();
+        for (uint256 i = 0; i < count; i++) {
+            _resetService(agentIds[i], serviceHashes[i], _serviceStatus[agentIds[i]][serviceHashes[i]], epoch);
+        }
+    }
+
+    /// @notice Remediation for credit farming: removes an auditor's unclaimed credits for an
+    ///         epoch so they no longer dilute other auditors' shares. Claimed epochs cannot be voided.
+    function voidAuditorCredits(uint256 epoch, address auditor) external onlyOwner {
+        if (auditorEpochClaimed[epoch][auditor]) revert AlreadyClaimed();
+        uint256 credits = auditorEpochCredits[epoch][auditor];
+        if (credits == 0) return;
+        auditorEpochCredits[epoch][auditor] = 0;
+        epochCredits[epoch] -= credits;
+        emit AuditorCreditsVoided(epoch, auditor, credits);
     }
 
     // ═══════════════════════════════════════════════════════════════════

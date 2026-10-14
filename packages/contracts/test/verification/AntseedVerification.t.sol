@@ -292,7 +292,7 @@ contract AntseedVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
         assertFalse(verification.isVerified(agentId));
-        verification.clearServiceStatus(agentId, SERVICE_B);
+        _clear(agentId, SERVICE_B);
         assertEq(uint8(verification.serviceStatus(agentId, SERVICE_B).verdict), uint8(NONE));
         assertEq(verification.agentStatus(agentId).diffCount, 0);
         assertTrue(verification.isVerified(agentId));
@@ -302,12 +302,12 @@ contract AntseedVerificationTest is Test {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
         _advance(2);
-        verification.clearServiceStatus(agentId, SERVICE_A);
-        verification.clearServiceStatus(agentId, SERVICE_B);
-        verification.clearServiceStatus(agentId, SERVICE_B);
+        _clear(agentId, SERVICE_A);
+        _clear(agentId, SERVICE_B);
+        _clear(agentId, SERVICE_B);
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         assertTrue(verification.isVerified(agentId));
-        verification.clearServiceStatus(agentId, SERVICE_A);
+        _clear(agentId, SERVICE_A);
         assertFalse(verification.isVerified(agentId));
     }
 
@@ -352,9 +352,33 @@ contract AntseedVerificationTest is Test {
         verification.submitModelAudit(EPOCH, MODEL_A, _evidence(), "", results);
     }
 
+    function test_ownerClearsManyServicesInOneCall() public {
+        uint256 other = _register(address(0x5E3), 100);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, DIFF);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, DIFF);
+        _audit(auditorA, MODEL_A, other, SERVICE_A, DIFF);
+
+        uint256[] memory agents = new uint256[](3);
+        bytes32[] memory services = new bytes32[](3);
+        (agents[0], agents[1], agents[2]) = (agentId, agentId, other);
+        (services[0], services[1], services[2]) = (SERVICE_A, SERVICE_B, SERVICE_A);
+        verification.clearServiceStatuses(agents, services);
+
+        assertEq(verification.agentStatus(agentId).diffCount, 0);
+        assertEq(verification.agentStatus(other).diffCount, 0);
+        assertEq(uint8(verification.serviceStatus(other, SERVICE_A).verdict), uint8(NONE));
+    }
+
+    function test_clearRejectsMismatchedLists() public {
+        uint256[] memory agents = new uint256[](2);
+        bytes32[] memory services = new bytes32[](1);
+        vm.expectRevert(AntseedVerification.InvalidValue.selector);
+        verification.clearServiceStatuses(agents, services);
+    }
+
     function test_clearResetsUndetermined() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, UNDETERMINED);
-        verification.clearServiceStatus(agentId, SERVICE_A);
+        _clear(agentId, SERVICE_A);
         IAntseedVerification.ServiceStatus memory service = verification.serviceStatus(agentId, SERVICE_A);
         assertEq(uint8(service.verdict), uint8(NONE));
         assertEq(service.epoch, 0);
@@ -479,7 +503,9 @@ contract AntseedVerificationTest is Test {
         vm.expectRevert();
         verification.setSellerPools(address(pools));
         vm.expectRevert();
-        verification.clearServiceStatus(agentId, SERVICE_A);
+        verification.clearServiceStatuses(new uint256[](0), new bytes32[](0));
+        vm.expectRevert();
+        verification.voidAuditorCredits(EPOCH, auditorB);
         vm.stopPrank();
 
         vm.expectRevert(AntseedVerification.InvalidValue.selector);
@@ -657,6 +683,34 @@ contract AntseedVerificationTest is Test {
         assertEq(_claim(auditorA), 900 ether);
     }
 
+    function test_voidingCreditsRestoresHonestShares() public {
+        verification.setMaxAuditorShareBps(10_000);
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        _audit(auditorA, MODEL_B, agentId, SERVICE_B, SAME);
+        _audit(auditorA, keccak256("model-c"), agentId, bytes32(uint256(3)), SAME);
+        _audit(auditorB, MODEL_A, agentId, SERVICE_A, SAME);
+        assertEq(verification.epochCredits(EPOCH), 4);
+
+        vm.expectEmit(true, true, false, true, address(verification));
+        emit AntseedVerification.AuditorCreditsVoided(EPOCH, auditorA, 3);
+        verification.voidAuditorCredits(EPOCH, auditorA);
+        assertEq(verification.auditorEpochCredits(EPOCH, auditorA), 0);
+        assertEq(verification.epochCredits(EPOCH), 1);
+
+        gate.setCurrentEpoch(EPOCH + 1);
+        assertEq(verification.pendingAuditorReward(auditorA, EPOCH), 0);
+        assertEq(_claim(auditorB), 900 ether, "the honest auditor gets the whole budget back");
+        verification.voidAuditorCredits(EPOCH, auditorA);
+    }
+
+    function test_cannotVoidClaimedCredits() public {
+        _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
+        gate.setCurrentEpoch(EPOCH + 1);
+        _claim(auditorA);
+        vm.expectRevert(AntseedVerification.AlreadyClaimed.selector);
+        verification.voidAuditorCredits(EPOCH, auditorA);
+    }
+
     function test_unfundedBucketStaysClaimable() public {
         _audit(auditorA, MODEL_A, agentId, SERVICE_A, SAME);
         gate.setBudget(address(verification), EPOCH, 0);
@@ -704,7 +758,7 @@ contract AntseedVerificationTest is Test {
             if (step % 7 == 0) {
                 _advance(1);
             } else if (step % 7 == 1) {
-                verification.clearServiceStatus(agentId, service);
+                _clear(agentId, service);
             } else if (step % 7 == 2) {
                 verification.setValidityEpochs(uint8(1 + (step >> 5) % 4));
             } else {
@@ -796,6 +850,14 @@ contract AntseedVerificationTest is Test {
         }
         vm.prank(auditor);
         verification.submitModelAudit(epoch, model, evidence, "ipfs://cid", _single(id, service, verdict));
+    }
+
+    function _clear(uint256 agent, bytes32 service) private {
+        uint256[] memory agents = new uint256[](1);
+        bytes32[] memory services = new bytes32[](1);
+        agents[0] = agent;
+        services[0] = service;
+        verification.clearServiceStatuses(agents, services);
     }
 
     function _claim(address auditor) private returns (uint256) {
