@@ -128,6 +128,8 @@ export const VerifierConfigSchema = strictObject({
   auditMaxConcurrentBatchesPerPeer: positiveIntegerSchema.optional(),
   auditConcurrencyPromotionLatencyMs: positiveIntegerSchema.optional(),
   auditPeerTimeoutMs: positiveIntegerSchema.optional(),
+  /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
+  diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
   contrastSelection: VerifierContrastSelectionSchema.optional(),
   referenceEndpoint: VerifierReferenceEndpointSchema.optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),

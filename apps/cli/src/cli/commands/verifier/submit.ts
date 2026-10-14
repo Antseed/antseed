@@ -334,15 +334,18 @@ function reusablePublication(previous: ModelAuditLedgerEntryV1 | null, evidenceH
 
 function printPreview(pending: readonly PendingModelAudit[]): void {
   if (pending.length === 0) return
-  const table = new Table({ head: ['Model', 'Sellers', 'SAME', 'DIFF', 'UNDETERMINED', 'Credit', 'Status'] })
+  const table = new Table({ head: ['Model', 'Sellers', 'SAME', 'DIFF', 'UNDETERMINED', 'Rechecked', 'Credit', 'Status'] })
   for (const { audit, alreadySubmitted, expectsCredit } of pending) {
     const count = (verdict: string) => audit.evidence.results.filter((result) => result.verdict === verdict).length
+    const rechecked = audit.evidence.results.filter((result) => result.confirmation)
+    const confirmed = rechecked.filter((result) => result.verdict === 'DIFF').length
     table.push([
       audit.key,
       String(audit.results.length),
       String(count('SAME')),
       String(count('DIFF')),
       String(count('UNDETERMINED')),
+      rechecked.length === 0 ? '-' : `${rechecked.length} (${confirmed} DIFF confirmed)`,
       alreadySubmitted ? '-' : expectsCredit ? 'expected' : 'cap reached',
       alreadySubmitted ? 'already submitted' : 'ready',
     ])

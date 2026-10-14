@@ -47,6 +47,7 @@ import {
 } from '../../../verifier/model-run.js'
 import {
   loadModelAuditReservation,
+  reserveDiffRecheckReference,
   reserveModelAuditReference,
   voidModelAuditReference,
 } from '../../../verifier/probe-bank.js'
@@ -58,7 +59,8 @@ import {
 } from '../../../verifier/proxy-evidence.js'
 import { openResponseAuthReader } from '../../../verifier/response-auth-reader.js'
 import { getGlobalOptions } from '../types.js'
-import { ensureAuditableReference } from '../../../verifier/ensure-auditable-reference.js'
+import { enrollFreshProbes, ensureAuditableReference } from '../../../verifier/ensure-auditable-reference.js'
+import { runDiffRechecks, type DiffRecheckStats } from '../../../verifier/diff-recheck.js'
 import { VerifierRunProgress } from './run-progress.js'
 import { failureOutcomeReason } from '../../../verifier/outcome-reason.js'
 import {
@@ -437,6 +439,10 @@ export function registerVerifierRunCommand(verifier: Command): void {
             await writeVerifierStatus(evidenceDir, status!)
           })
         }
+        const diffConfirmationRuns = config.verifier?.diffConfirmationRuns ?? 1
+        const recheckTotals: DiffRecheckStats = {
+          rechecked: 0, confirmed: 0, notConfirmed: 0, skipped: 0, cost: emptyAuditCostSummary(),
+        }
         const appendEvent = async (event: Record<string, unknown>): Promise<void> => {
           await eventQueue.run(async () => { await appendVerifierEvent(evidenceDir, epoch, event) })
         }
@@ -627,8 +633,93 @@ export function registerVerifierRunCommand(verifier: Command): void {
               }
             })
           })
-          const results = outcomes.flatMap((outcome) => outcome.result ? [outcome.result] : [])
+          const firstResults = outcomes.flatMap((outcome) => outcome.result ? [outcome.result] : [])
           const failures = outcomes.flatMap((outcome) => outcome.failure ? [outcome.failure] : [])
+          let results = firstResults
+          if (diffConfirmationRuns > 0) {
+            const targetByPeer = new Map(targets.map((target) => [target.peer.peerId.toLowerCase(), target]))
+            const rechecked = await runDiffRechecks({
+              results: firstResults,
+              reserve: (first) => reserveDiffRecheckReference({
+                banksDir, model, sellerPeerId: first.peerId, service: first.service,
+                runId, epoch, config: config.verifier,
+              }),
+              enroll: enrollmentBudget === null ? null : async () => {
+                await enrollFreshProbes({
+                  model, banksDir,
+                  referencesDir: config.verifier?.referencesDir ?? join(globalOptions.dataDir, 'verifier', 'references'),
+                  config: config.verifier,
+                  maxRequests: enrollmentBudget,
+                  buyerProxyPort: config.buyer.proxyPort,
+                  log: (message) => console.log(chalk.dim(`[enrollment:${model}] ${message}`)),
+                })
+              },
+              verify: async (first, reference, recheckAuditId) => {
+                const target = targetByPeer.get(first.peerId.toLowerCase())
+                if (!target) throw new Error(`seller ${first.peerId} is no longer a target`)
+                referenceSources.set(reference.referenceId, reference)
+                const advertisedConcurrency = target.peer.maxConcurrency && target.peer.maxConcurrency > 0
+                  ? target.peer.maxConcurrency
+                  : maxConcurrentBatchesPerPeer
+                const recheck = await verifyModelTarget({
+                  context: {
+                    proxy,
+                    evidenceDir: modelAuditSellersDirectory(evidenceDir, epoch, model, runId),
+                    checkpointRootDir: modelAuditsDirectory(evidenceDir, epoch, model, runId),
+                    requestTimeoutMs: config.verifier?.probeRequestTimeoutMs ?? 120_000,
+                    auditTimeoutMs: config.verifier?.auditPeerTimeoutMs ?? 600_000,
+                    responseAuthReader: responseAuthReader!,
+                    batchConcurrency: Math.min(maxConcurrentBatchesPerPeer, advertisedConcurrency),
+                    batchConcurrencyPromotionLatencyMs:
+                      config.verifier?.auditConcurrencyPromotionLatencyMs ?? 30_000,
+                    batchLimiter,
+                  },
+                  target: target.peer,
+                  service: target.service,
+                  reference,
+                  auditId: canonicalHashBytes32({
+                    domain: 'antseed-verifier-diff-recheck-audit-v1',
+                    runId,
+                    firstAuditId: first.auditId,
+                    reservationAuditId: recheckAuditId,
+                  }),
+                  checkpointIdentity: { runId, epoch, model },
+                  diffRecheck: true,
+                })
+                if (recheck.status === 'SKIPPED') {
+                  await voidModelAuditReference({
+                    banksDir, model, sellerPeerId: first.peerId, auditId: recheckAuditId,
+                    reason: `${recheck.code}: ${recheck.reason}`,
+                  })
+                } else {
+                  await updateStatus((value) => { value.cost = addAuditCostSummaries(value.cost, recheck.cost) })
+                }
+                return recheck
+              },
+              concurrency: async (tasks) => {
+                await mapConcurrently(tasks, maxConcurrentPeersPerModel, (task) => task())
+              },
+              log: (message) => console.log(chalk.cyan(`[recheck:${model}] ${message}`)),
+            })
+            results = rechecked.results
+            failures.push(...rechecked.failures)
+            if (rechecked.failures.length > 0) {
+              await updateStatus((value) => { value.failures += rechecked.failures.length })
+            }
+            recheckTotals.rechecked += rechecked.stats.rechecked
+            recheckTotals.confirmed += rechecked.stats.confirmed
+            recheckTotals.notConfirmed += rechecked.stats.notConfirmed
+            recheckTotals.skipped += rechecked.stats.skipped
+            recheckTotals.cost = addAuditCostSummaries(recheckTotals.cost, rechecked.stats.cost)
+            for (const result of results) {
+              if (!result.recheck) continue
+              await appendEvent({
+                type: 'audit-rechecked', runId, epoch, model, peerId: result.peerId,
+                firstAuditId: result.auditId, recheckAuditId: result.recheck.auditId,
+                recheckVerdict: result.recheck.status, verdict: result.status, at: new Date().toISOString(),
+              })
+            }
+          }
           const allSkipped = [
             ...skipped,
             ...outcomes.flatMap((outcome) => outcome.skipped ? [outcome.skipped] : []),
@@ -772,6 +863,16 @@ export function registerVerifierRunCommand(verifier: Command): void {
         console.log(chalk.dim(`Summary: ${epochSummaryPath}`))
         console.log(chalk.dim(`Run manifest: ${manifestPath}`))
         for (const report of reportPaths) console.log(chalk.dim(`Report (${report.model}): ${report.path}`))
+        const recheckCount = recheckTotals.confirmed + recheckTotals.notConfirmed + recheckTotals.skipped
+        if (diffConfirmationRuns > 0 && recheckCount > 0) {
+          console.log(chalk.cyan(
+            `DIFF rechecks: ${recheckCount} (${recheckTotals.confirmed} confirmed, `
+            + `${recheckTotals.notConfirmed} not confirmed, ${recheckTotals.skipped} skipped), `
+            + `$${recheckTotals.cost.estimatedCostUsd.toFixed(6)}`,
+          ))
+        } else if (diffConfirmationRuns === 0) {
+          console.log(chalk.yellow('DIFF rechecks: off (verifier.diffConfirmationRuns = 0)'))
+        }
         console.log(chalk.dim(`Estimated audit cost: $${status.cost.estimatedCostUsd.toFixed(6)}`))
         if (status.failures > 0) process.exitCode = 1
       } catch (error) {
@@ -830,7 +931,8 @@ export async function loadResumeCandidates(
       throw new Error(`resume model summary is incompatible: ${model.summaryPath}`)
     }
     for (const result of summary.results) {
-      if (result.status !== 'UNDETERMINED') continue
+      // An unconfirmed DIFF stays UNDETERMINED; repairing its first check could only bring the DIFF back.
+      if (result.status !== 'UNDETERMINED' || result.recheck) continue
       const evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
       candidates.set(resumeKey(model.model, result.peerId), {
         model: model.model,
@@ -864,7 +966,8 @@ export async function loadCheckpointResumeCandidates(
     for (const { path, checkpoint } of checkpoints) {
       if (checkpoint.runId !== sourceRunId
         || checkpoint.epoch !== epoch
-        || checkpoint.model.toLowerCase() !== model.toLowerCase()) continue
+        || checkpoint.model.toLowerCase() !== model.toLowerCase()
+        || checkpoint.diffRecheck) continue
       const evidenceHash = canonicalHashBytes32(checkpoint)
       candidates.set(resumeKey(model, checkpoint.targetPeerId), {
         model,

@@ -260,6 +260,8 @@ export async function buildModelReference(input: {
    * self-tests are measured again by this build.
    */
   seedProbes?: { probes: readonly KbfProbe[]; source: Record<string, unknown> }
+  /** Probe ids already banked; generation never returns them, so every selected probe is new. */
+  excludedProbeIds?: ReadonlySet<string>
 }): Promise<{
   reference: KbfReferenceV1
   path: string
@@ -368,6 +370,7 @@ export async function buildModelReference(input: {
     reasoningStrategy: targetReasoningStrategy,
     routesByModel: [...routesByModel.entries()],
     ...(initial ? { initialReferenceId: initial.referenceId } : {}),
+    ...(input.excludedProbeIds ? { excludedProbeIds: canonicalHashBytes32([...input.excludedProbeIds].sort()) } : {}),
     ...(input.seedProbes ? {
       seedProbeIds: canonicalHashBytes32(input.seedProbes.probes.map((probe) => probe.id)),
       seedSource: input.seedProbes.source,
@@ -459,6 +462,7 @@ export async function buildModelReference(input: {
         log: input.log,
         initial: collected,
         preferredContrastModels: undetectedContrasts,
+        excludedProbeIds: input.excludedProbeIds,
       })
       const additions = collected.probes.slice(selfOutcomes.length, targetCount)
       if (additions.length > 0) {
@@ -665,6 +669,7 @@ export async function collectReferenceProbes(input: {
   initial?: CollectedReferenceProbes
   preferredContrastModels?: readonly string[]
   shuffle?: <T>(values: readonly T[]) => T[]
+  excludedProbeIds?: ReadonlySet<string>
 }): Promise<CollectedReferenceProbes> {
   assertPositiveInteger(input.targetCount, 'targetCount')
   const candidateCountPerRound = input.candidateCountPerRound ?? Math.max(CANDIDATE_COUNT, input.targetCount * 3)
@@ -707,7 +712,7 @@ export async function collectReferenceProbes(input: {
       input.log,
     )
     const candidates = generated.filter((probe) => {
-      if (state.generatedProbeIds.has(probe.id)) return false
+      if (state.generatedProbeIds.has(probe.id) || input.excludedProbeIds?.has(probe.id)) return false
       state.generatedProbeIds.add(probe.id)
       return true
     })

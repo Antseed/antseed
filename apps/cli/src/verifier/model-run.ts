@@ -124,6 +124,8 @@ export interface ModelAuditCheckpointV1 {
   auditId: string
   parentAuditId: string | null
   reservationAuditId?: string
+  /** Set on checkpoints of a DIFF recheck, which a resume never repairs as a first check. */
+  diffRecheck?: true
   runId: string
   epoch: string
   model: string
@@ -152,6 +154,20 @@ export interface ModelVerificationTargetResult {
   requestCount: number
   cost: AuditCostSummaryV1
   cumulativeCost?: AuditCostSummaryV1
+  evidencePath: string
+  evidenceHash: string
+  /** Second check on fresh probes after a first DIFF; `status` above is then the final verdict. */
+  recheck?: ModelVerificationRecheckV1
+}
+
+export interface ModelVerificationRecheckV1 {
+  auditId: string
+  status: 'SAME' | 'DIFF' | 'UNDETERMINED'
+  referenceId: string
+  probeCount: number
+  parsedProbeCount: number
+  correctProbeCount: number
+  cost: AuditCostSummaryV1
   evidencePath: string
   evidenceHash: string
 }
@@ -378,6 +394,7 @@ export async function verifyModelTarget(input: {
     epoch: string
     model: string
   }
+  diffRecheck?: boolean
 }): Promise<ModelVerificationTargetResult | ModelVerificationSkip> {
   const batches = createDomainHomogeneousKbfBatches(
     input.reference.probes,
@@ -412,6 +429,7 @@ export async function verifyModelTarget(input: {
       auditId,
       parentAuditId: input.resume?.parentAuditId ?? null,
       reservationAuditId: input.resume?.reservationAuditId ?? auditId,
+      ...(input.diffRecheck ? { diffRecheck: true as const } : {}),
       runId: input.checkpointIdentity?.runId ?? '',
       epoch: input.checkpointIdentity?.epoch ?? '',
       model: input.checkpointIdentity?.model ?? input.reference.referenceModel,

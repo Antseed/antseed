@@ -110,6 +110,7 @@ interface SellerAuditReportResult {
   auditId?: string
   evidencePath?: string
   outcomeReason?: VerificationOutcomeReasonV1 | null
+  recheck?: { status: string; parsedProbeCount: number; probeCount: number }
 }
 
 interface SellerAuditReportFailure {
@@ -312,7 +313,10 @@ export async function renderModelAuditReports(
         incorrect: result.parsedProbeCount === 0 ? '—' : String(result.incorrectProbeCount),
         correctRate: result.correctRate === null ? 'N/A' : `${(result.correctRate * 100).toFixed(1)}%`,
         verdict: result.status,
-        reason: reportReason(result.outcomeReason),
+        reason: result.recheck
+          ? `first check DIFF; recheck ${result.recheck.status} `
+            + `(${result.recheck.parsedProbeCount}/${result.recheck.probeCount} fresh probes)`
+          : reportReason(result.outcomeReason),
         nextAction: result.outcomeReason?.nextAction ?? '—',
         auditId: result.auditId,
         evidencePath: result.evidencePath,

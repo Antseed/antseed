@@ -49,6 +49,21 @@ export interface ModelAuditSellerResultV1 {
     evidencePath: string
     evidenceHash: string
   }
+  /**
+   * Second check on fresh probes after the first check (`audit`) said DIFF. `verdict` is DIFF only
+   * when this check is DIFF too; otherwise it is UNDETERMINED.
+   */
+  confirmation?: {
+    verdict: ModelAuditVerdict
+    referenceId: string
+    stats: FingerprintStats
+    matchVectorHash: string
+    audit: {
+      auditId: string
+      evidencePath: string
+      evidenceHash: string
+    }
+  }
 }
 
 export interface ExcludedSellerAuditV1 {
@@ -208,7 +223,12 @@ export async function prepareModelAudits(input: {
       })
     }
 
-    const accepted: Array<{ agentId: bigint; result: ModelAuditSummaryV1['results'][number]; evidence: ProxyAuditEvidenceV1 }> = []
+    const accepted: Array<{
+      agentId: bigint
+      result: ModelAuditSummaryV1['results'][number]
+      evidence: ProxyAuditEvidenceV1
+      recheckEvidence: ProxyAuditEvidenceV1 | null
+    }> = []
     const seen = new Set<string>()
     let referenceModel: string | null = null
     for (const result of summary.results) {
@@ -221,9 +241,13 @@ export async function prepareModelAudits(input: {
         continue
       }
       let evidence: ProxyAuditEvidenceV1
+      let recheckEvidence: ProxyAuditEvidenceV1 | null = null
       try {
         evidence = await verifyProxyAuditEvidenceFile(result.evidencePath, result.evidenceHash)
-        validateAuditMatchesSummary(evidence, result)
+        if (result.recheck) {
+          recheckEvidence = await verifyProxyAuditEvidenceFile(result.recheck.evidencePath, result.recheck.evidenceHash)
+        }
+        validateAuditMatchesSummary(evidence, result, recheckEvidence)
       } catch (error) {
         exclude(`invalid audit evidence: ${asError(error).message}`)
         continue
@@ -250,7 +274,7 @@ export async function prepareModelAudits(input: {
         continue
       }
       seen.add(duplicateKey)
-      accepted.push({ agentId, result, evidence })
+      accepted.push({ agentId, result, evidence, recheckEvidence })
     }
 
     allExcluded.push(...excluded.map((entry) => ({ ...entry, model })))
@@ -266,7 +290,10 @@ export async function prepareModelAudits(input: {
       const evidenceDirectory = dirname(evidencePath)
       const references: PreparedModelAudit['references'] = []
       const referenceEntries: ModelAuditEvidenceV1['references'] = []
-      for (const { evidence } of slice) {
+      const auditEvidence = slice.flatMap(({ evidence, recheckEvidence }) => (
+        recheckEvidence ? [evidence, recheckEvidence] : [evidence]
+      ))
+      for (const evidence of auditEvidence) {
         const referenceId = evidence.reference.referenceId
         if (referenceEntries.some((entry) => entry.referenceId === referenceId)) continue
         const referencePath = join(evidenceDirectory, 'references', `${referenceFileName(referenceId)}.json`)
@@ -285,7 +312,7 @@ export async function prepareModelAudits(input: {
         })
       }
       referenceEntries.sort((left, right) => left.referenceId.localeCompare(right.referenceId))
-      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence }) => ({
+      const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, recheckEvidence }) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
         displayName: result.displayName,
@@ -302,6 +329,19 @@ export async function prepareModelAudits(input: {
           evidencePath: portableRelative(evidenceDirectory, result.evidencePath),
           evidenceHash: result.evidenceHash,
         },
+        ...(result.recheck && recheckEvidence ? {
+          confirmation: {
+            verdict: result.recheck.status,
+            referenceId: recheckEvidence.reference.referenceId,
+            stats: recheckEvidence.result.stats,
+            matchVectorHash: recheckEvidence.result.matchVectorHash,
+            audit: {
+              auditId: result.recheck.auditId,
+              evidencePath: portableRelative(evidenceDirectory, result.recheck.evidencePath),
+              evidenceHash: result.recheck.evidenceHash,
+            },
+          },
+        } : {}),
       }))
       const evidence: ModelAuditEvidenceV1 = {
         version: 1,
@@ -332,7 +372,9 @@ export async function prepareModelAudits(input: {
           verdict: verifierVerdict(entry.verdict),
         }))),
         references,
-        auditEvidencePaths: slice.map(({ result }) => result.evidencePath),
+        auditEvidencePaths: slice.flatMap(({ result }) => (
+          result.recheck ? [result.evidencePath, result.recheck.evidencePath] : [result.evidencePath]
+        )),
       })
     }
   }
@@ -460,14 +502,29 @@ function portableRelative(from: string, to: string): string {
   return relative(resolve(from), resolve(to)).split(sep).join('/')
 }
 
-function validateAuditMatchesSummary(
+export function validateAuditMatchesSummary(
   evidence: ProxyAuditEvidenceV1,
   result: ModelAuditSummaryV1['results'][number],
+  recheckEvidence: ProxyAuditEvidenceV1 | null = null,
 ): void {
-  if (normalized(evidence.target.peerId) !== normalized(result.peerId)) throw new Error('seller peer ID mismatch')
-  if (normalized(evidence.target.service) !== normalized(result.service)) throw new Error('service mismatch')
-  if ((evidence.target.agentId ?? null) !== (result.agentId ?? null)) throw new Error('seller agent ID mismatch')
-  if (evidence.result.verdict !== result.status) throw new Error('verdict mismatch')
+  for (const checked of recheckEvidence ? [evidence, recheckEvidence] : [evidence]) {
+    if (normalized(checked.target.peerId) !== normalized(result.peerId)) throw new Error('seller peer ID mismatch')
+    if (normalized(checked.target.service) !== normalized(result.service)) throw new Error('service mismatch')
+    if ((checked.target.agentId ?? null) !== (result.agentId ?? null)) throw new Error('seller agent ID mismatch')
+  }
+  if (!result.recheck) {
+    if (evidence.result.verdict !== result.status) throw new Error('verdict mismatch')
+    return
+  }
+  if (!recheckEvidence) throw new Error('recheck evidence missing')
+  if (evidence.result.verdict !== 'DIFF') throw new Error('recheck without a first DIFF')
+  if (recheckEvidence.result.verdict !== result.recheck.status) throw new Error('recheck verdict mismatch')
+  if (recheckEvidence.reference.referenceId === evidence.reference.referenceId
+    || recheckEvidence.reference.probes.some((probe) => evidence.reference.probes.some((first) => first.id === probe.id))) {
+    throw new Error('recheck reused probes from the first check')
+  }
+  const expected = recheckEvidence.result.verdict === 'DIFF' ? 'DIFF' : 'UNDETERMINED'
+  if (result.status !== expected) throw new Error('final verdict does not follow from the recheck')
 }
 
 async function readModelSummary(path: string, runId: string, model: string): Promise<ModelAuditSummaryV1> {

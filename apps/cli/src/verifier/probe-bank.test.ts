@@ -16,6 +16,7 @@ import {
   epochProbeReferencePath,
   inspectModelProbeBankPower,
   loadModelAuditReservation,
+  reserveDiffRecheckReference,
   reserveModelAuditReference,
   SELLER_PROBE_SELECTION_METHOD,
   sellerEpochProbeReferencePath,
@@ -703,6 +704,63 @@ test('different sellers reserve independent references concurrently', async () =
     assert.equal(new Set(reservations.map((reservation) => reservation.ledgerPath)).size, 4)
     assert.equal(new Set(reservations.map((reservation) => reservation.reference.referenceId)).size, 4)
     for (const reservation of reservations) assert.equal(reservation.reference.probes.length, 100)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a DIFF recheck draws probes the seller has never been assigned and stays stable on resume', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
+  const seller = '11'.repeat(20)
+  try {
+    await appendReference(directory)
+    const first = await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4',
+    })
+    const recheck = await reserveDiffRecheckReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4',
+    })
+    const firstIds = new Set(first.reference.probes.map((probe) => probe.id))
+    assert.equal(recheck.reference.probes.length, 100)
+    assert.ok(recheck.reference.probes.every((probe) => !firstIds.has(probe.id)))
+
+    const again = await reserveDiffRecheckReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4',
+    })
+    assert.equal(again.auditId, recheck.auditId)
+    assert.equal(again.reference.referenceId, recheck.reference.referenceId)
+    const loaded = await loadModelAuditReservation({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller, auditId: recheck.auditId,
+    })
+    assert.equal(loaded.reference.referenceId, recheck.reference.referenceId)
+
+    // The first check of the same epoch keeps its own probes.
+    const rerun = await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-b', epoch: '4',
+    })
+    assert.equal(rerun.reference.referenceId, first.reference.referenceId)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('a DIFF recheck reports BANK_EXHAUSTED instead of reusing seen probes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-probe-bank-recheck-'))
+  const seller = '11'.repeat(20)
+  try {
+    await appendReference(directory, reference(150))
+    await reserveModelAuditReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4',
+    })
+    await assert.rejects(reserveDiffRecheckReference({
+      banksDir: directory, model: 'model-a', sellerPeerId: seller,
+      service: 'model-a', runId: 'run-a', epoch: '4',
+    }), new RegExp(`^Error: ${BANK_EXHAUSTED}`))
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

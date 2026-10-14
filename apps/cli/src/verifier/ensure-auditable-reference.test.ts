@@ -3,7 +3,7 @@ import { mkdtemp, rm } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
-import { ensureAuditableReference } from './ensure-auditable-reference.js'
+import { enrollFreshProbes, ensureAuditableReference } from './ensure-auditable-reference.js'
 import { referenceFixture } from './model-audit-fixtures.test-support.js'
 
 async function fixture(body: (input: Parameters<typeof ensureAuditableReference>[0], calls: string[], operations: NonNullable<Parameters<typeof ensureAuditableReference>[1]>) => Promise<void>) {
@@ -23,6 +23,7 @@ async function fixture(body: (input: Parameters<typeof ensureAuditableReference>
       return { totalProbeCount: 100, eligibleProbeCount: 100, selectedProbeCount: inspections++ ? 100 : null, statisticalPower: 0.95 }
     },
     loadSeed: async () => { calls.push('seed'); return referenceFixture('model-a', 100) },
+    loadIndex: async () => { calls.push('index'); return { contrastModels: ['contrast-x'], probeIds: ['banked-1', 'banked-2'] } },
     catalog: async () => { calls.push('catalog'); return null },
     build: async (options) => {
       calls.push('build')
@@ -86,4 +87,20 @@ test('top-up preserves existing contrasts rather than choosing easier substitute
   }
   await ensureAuditableReference(input, operations)
   assert.equal(calls.includes('finalize'), true)
+}))
+
+test('fresh enrollment builds a new reference that excludes every banked probe', async () => fixture(async (input, calls, operations) => {
+  operations.build = async (options) => {
+    calls.push('build')
+    assert.equal(options.initialReference, undefined)
+    assert.deepEqual([...(options.excludedProbeIds ?? [])], ['banked-1', 'banked-2'])
+    assert.deepEqual(options.config?.referenceEndpoint?.models['model-a']?.contrastModels, ['contrast-x'])
+    assert.equal(options.config?.referenceMaxRequestsPerBuild, 10)
+    return { reference: referenceFixture('model-a', 100), path: 'reference.json',
+      cost: { totalUsdMicros: '3000000', requestCount: 1, models: [], purposes: [] },
+      finalize: async () => { calls.push('finalize') } }
+  }
+  const enrolled = await enrollFreshProbes(input, operations)
+  assert.deepEqual(calls, ['index', 'catalog', 'build', 'append', 'finalize'])
+  assert.equal(enrolled.addedProbeCount, 10)
 }))

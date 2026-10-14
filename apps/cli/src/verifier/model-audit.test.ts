@@ -12,6 +12,7 @@ import {
   preparedFromEvidence,
   readModelAuditEvidence,
   readModelAuditLedger,
+  validateAuditMatchesSummary,
   writeModelAuditEvidence,
   writeModelAuditLedger,
   type PreparedModelAudit,
@@ -167,4 +168,34 @@ test('written evidence round-trips to the same contract call, and the ledger is 
     await writeModelAuditLedger(path, ledger)
     await assert.rejects(readModelAuditLedger(path, { ...binding, epoch: '8' }), /another run/)
   })
+})
+
+test('a recheck may turn a first DIFF into UNDETERMINED, but never on reused probes', () => {
+  const evidence = (verdict: string, referenceId: string, probeIds: string[]) => ({
+    target: { peerId: 'aa'.repeat(20), service: 'model-a', agentId: '7' },
+    reference: { referenceId, probes: probeIds.map((id) => ({ id })) },
+    result: { verdict },
+  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[0]
+  const summary = (status: string, recheckStatus: string) => ({
+    peerId: 'aa'.repeat(20), service: 'model-a', agentId: '7', status,
+    recheck: { status: recheckStatus },
+  }) as unknown as Parameters<typeof validateAuditMatchesSummary>[1]
+  const first = evidence('DIFF', 'sha256:first', ['p1', 'p2'])
+
+  validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4']))
+  validateAuditMatchesSummary(first, summary('DIFF', 'DIFF'), evidence('DIFF', 'sha256:second', ['p3', 'p4']))
+  assert.throws(
+    () => validateAuditMatchesSummary(first, summary('DIFF', 'SAME'), evidence('SAME', 'sha256:second', ['p3', 'p4'])),
+    /final verdict does not follow/,
+  )
+  assert.throws(
+    () => validateAuditMatchesSummary(first, summary('DIFF', 'DIFF'), evidence('DIFF', 'sha256:second', ['p2', 'p4'])),
+    /reused probes/,
+  )
+  assert.throws(
+    () => validateAuditMatchesSummary(evidence('SAME', 'sha256:first', ['p1']), summary('UNDETERMINED', 'SAME'),
+      evidence('SAME', 'sha256:second', ['p3'])),
+    /without a first DIFF/,
+  )
+  assert.throws(() => validateAuditMatchesSummary(first, summary('UNDETERMINED', 'SAME'), null), /recheck evidence missing/)
 })

@@ -1010,6 +1010,32 @@ test('collector stops after repeated rounds without progress', async () => {
   assert.equal(generationRequests, 3)
 })
 
+test('collector never returns probes that are already banked', async () => {
+  const banked = { id: '', name: 'banked fact', domain: 'test', template: 'The banked collector value is ___.',
+    consensus: 1, range: [0, 10] as [number, number], tolerance: { mode: 'absolute' as const, value: 0 } }
+  let generationRequests = 0
+  let bankedId = ''
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      generationRequests += 1
+      return JSON.stringify([{ ...banked, id: undefined }])
+    }
+    return '(1) 1'
+  }
+  const firstRun = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1, query,
+  })
+  bankedId = firstRun.probes[0]!.id
+  generationRequests = 0
+  await assert.rejects(collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1,
+    maxNoProgressRounds: 1, query, excludedProbeIds: new Set([bankedId]),
+  }), /made no progress/)
+  assert.ok(generationRequests >= 1)
+})
+
 test('collector rejects certified consensus values outside the declared range', async () => {
   let generationRound = 0
   const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {

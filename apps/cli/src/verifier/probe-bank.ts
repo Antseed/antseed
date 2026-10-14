@@ -80,6 +80,8 @@ export interface SellerProbeLedgerV1 {
     probeIds: string[]
     /** How the subset and order were drawn. Absent on legacy shared-epoch assignments. */
     selection?: SellerProbeSelectionMethod
+    /** Set on the second probe set reserved to recheck a DIFF. */
+    purpose?: 'diff-recheck'
     reservedAt: string
     voidedAt?: string
     voidReason?: string
@@ -295,6 +297,117 @@ export async function reserveModelAuditReference(input: {
   }
 }
 
+/**
+ * Reserves the probes for a DIFF recheck: a fresh powered subset drawn only from probes this
+ * seller has never been assigned, in any epoch. The set is stored per seller, model and epoch, so
+ * a resumed run rechecks on the same probes.
+ */
+export async function reserveDiffRecheckReference(input: {
+  banksDir: string
+  model: string
+  sellerPeerId: string
+  service: string
+  runId: string
+  epoch: string
+  config?: VerifierCLIConfig
+  now?: () => number
+  shuffle?: <T>(values: readonly T[]) => T[]
+}): Promise<{ reference: KbfReferenceV1; auditId: string }> {
+  const ledgerPath = sellerLedgerPath(input.banksDir, input.model, input.sellerPeerId)
+  const lock = await acquirePidFileLock(`${ledgerPath}.lock`)
+  try {
+    const bank = await readRequiredBank(bankPath(input.banksDir, input.model), input.model)
+    const ledger = await readJsonIfExists<SellerProbeLedgerV1>(ledgerPath)
+    if (!ledger
+      || normalized(ledger.model) !== normalized(input.model)
+      || normalized(ledger.sellerPeerId) !== normalized(input.sellerPeerId)) {
+      throw new Error(`invalid seller probe ledger at ${ledgerPath}`)
+    }
+    const path = diffRecheckReferencePath(input.banksDir, input.model, input.epoch, input.sellerPeerId)
+    const existing = await readJsonIfExists<SellerEpochProbeReferenceV1>(path)
+    const existingAssignment = existing && ledger.assignments.find((entry) => (
+      entry.purpose === 'diff-recheck' && entry.epoch === input.epoch && !entry.voidedAt
+      && entry.referenceId === existing.reference.referenceId
+    ))
+    if (existing && existingAssignment) {
+      const reference = validateSellerEpochProbeReference({
+        value: existing, bank, model: input.model, sellerPeerId: input.sellerPeerId, epoch: input.epoch, config: input.config,
+      })
+      return { reference, auditId: existingAssignment.auditId }
+    }
+    const used = new Set(ledger.assignments.flatMap((assignment) => assignment.probeIds))
+    const activeContrasts = new Set(bank.contrastModels.map(normalized))
+    const excludedDomains = excludedVerifierDomains(input.config, input.model)
+    const candidates = bank.probes.filter((entry) => !excludedDomains.has(entry.probe.domain)
+      && entry.distinguishingContrastModels.some((model) => activeContrasts.has(normalized(model))))
+    const available = candidates.filter((entry) => !used.has(entry.probe.id))
+    const now = input.now?.() ?? Date.now()
+    const reference = selectPoweredReference(bank, (input.shuffle ?? cryptoShuffle)(available), input.config, now)
+    if (!reference) {
+      throw new Error(
+        `${BANK_EXHAUSTED}: ${available.length} probes never assigned to seller ${input.sellerPeerId} `
+        + `remain for a ${input.model} recheck`,
+      )
+    }
+    const value: SellerEpochProbeReferenceV1 = {
+      version: 1,
+      kind: 'antseed-kbf-seller-epoch-probe-reference',
+      model: input.model,
+      epoch: input.epoch,
+      sellerPeerId: input.sellerPeerId,
+      compatibilityHash: bank.compatibilityHash,
+      selection: {
+        method: SELLER_PROBE_SELECTION_METHOD,
+        eligibleProbeCount: available.length,
+        excludedPreviouslyAssignedProbeCount: candidates.length - available.length,
+        allowProbeReuse: false,
+      },
+      reference,
+      createdAt: new Date(now).toISOString(),
+      createdByRunId: input.runId,
+    }
+    await mkdir(dirname(path), { recursive: true })
+    await writeJsonAtomic(path, value)
+    const reservedAt = new Date(now).toISOString()
+    const auditId = canonicalHashBytes32({
+      domain: 'antseed-verifier-diff-recheck-reservation-v1',
+      runId: input.runId,
+      epoch: input.epoch,
+      model: normalized(input.model),
+      sellerPeerId: normalized(input.sellerPeerId),
+      service: normalized(input.service),
+      referenceId: reference.referenceId,
+      reservedAt,
+    })
+    ledger.assignments.push({
+      auditId,
+      runId: input.runId,
+      epoch: input.epoch,
+      service: input.service,
+      referenceId: reference.referenceId,
+      probeIds: reference.probes.map((probe) => probe.id),
+      selection: SELLER_PROBE_SELECTION_METHOD,
+      purpose: 'diff-recheck',
+      reservedAt,
+    })
+    await writeJsonAtomic(ledgerPath, ledger)
+    return { reference: structuredClone(reference), auditId }
+  } finally {
+    await lock.release()
+  }
+}
+
+export function diffRecheckReferencePath(banksDir: string, model: string, epoch: string, sellerPeerId: string): string {
+  return join(
+    banksDir,
+    safeServiceSlug(model),
+    'epochs',
+    safeServiceSlug(epoch),
+    'rechecks',
+    `${sellerPeerHash(sellerPeerId)}.json`,
+  )
+}
+
 export async function loadModelAuditReservation(input: {
   banksDir: string
   model: string
@@ -313,7 +426,9 @@ export async function loadModelAuditReservation(input: {
   const assignment = ledger.assignments.find((entry) => entry.auditId === input.auditId && !entry.voidedAt)
   if (!assignment) throw new Error(`active audit reservation ${input.auditId} not found in ${ledgerPath}`)
   const sellerEpochReference = await readJsonIfExists<SellerEpochProbeReferenceV1>(
-    sellerEpochProbeReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId),
+    assignment.purpose === 'diff-recheck'
+      ? diffRecheckReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId)
+      : sellerEpochProbeReferencePath(input.banksDir, input.model, assignment.epoch, input.sellerPeerId),
   )
   if (sellerEpochReference) {
     const reference = validateSellerEpochProbeReference({
@@ -762,6 +877,20 @@ export function probeBankCompatibilityHash(model: string, reference: KbfReferenc
       clopperPearsonConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
     },
   })
+}
+
+/** Contrast models and probe ids of a model's bank, without rebuilding it as one reference. */
+export async function loadBankProbeIndex(
+  banksDir: string,
+  model: string,
+): Promise<{ contrastModels: string[]; probeIds: string[] } | undefined> {
+  const bank = await readJsonIfExists<ProbeBankV1>(bankPath(banksDir, model))
+  if (!bank) return undefined
+  if (bank.kind !== 'antseed-kbf-probe-bank' || normalized(bank.model) !== normalized(model)) {
+    throw new Error(`invalid probe bank for ${model}`)
+  }
+  assertCurrentBankEnrollment(bank, model)
+  return { contrastModels: [...bank.contrastModels], probeIds: bank.probes.map((entry) => entry.probe.id) }
 }
 
 export async function loadBankEnrollmentReference(banksDir: string, model: string): Promise<KbfReferenceV1 | undefined> {
