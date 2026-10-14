@@ -454,6 +454,47 @@ test('loadConfig accepts OpenRouter-sourced prices and intelligence scores', asy
   });
 });
 
+test('loadConfig accepts named reference upstreams and rejects unknown ones', async () => {
+  const models = (upstream: unknown) => ({
+    target: { upstreamModel: 'anthropic/claude-test', contrastModels: ['contrast'], upstream },
+  });
+  await withTempConfig(JSON.stringify({ verifier: {
+    upstreams: {
+      anthropic: { type: 'anthropic', baseUrl: 'https://api.anthropic.com/v1', apiKeyEnv: 'ANTHROPIC_API_KEY' },
+    },
+    referenceEndpoint: {
+      baseUrl: 'https://openrouter.ai/api/v1', sourceId: 'openrouter', trust: 'trusted',
+      models: models({ name: 'anthropic', model: 'claude-test' }),
+    },
+  } }), async (configPath) => {
+    const config = await loadConfig(configPath);
+    assert.equal(config.verifier?.upstreams?.anthropic?.type, 'anthropic');
+    assert.deepEqual(config.verifier?.referenceEndpoint?.models.target?.upstream, { name: 'anthropic', model: 'claude-test' });
+  });
+  await withTempConfig(JSON.stringify({ verifier: {
+    referenceEndpoint: {
+      baseUrl: 'https://openrouter.ai/api/v1', sourceId: 'openrouter', trust: 'trusted',
+      models: models({ name: 'missing' }),
+    },
+  } }), async (configPath) => {
+    await assert.rejects(loadConfig(configPath), /must name an entry in verifier\.upstreams/);
+  });
+  await withTempConfig(JSON.stringify({ verifier: {
+    upstreams: { seller: { type: 'antseed', peerId: '12'.repeat(20) } },
+    referenceEndpoint: {
+      baseUrl: 'https://openrouter.ai/api/v1', sourceId: 'openrouter', trust: 'trusted',
+      models: models({ name: 'seller' }),
+    },
+  } }), async (configPath) => {
+    await assert.rejects(loadConfig(configPath), /upstream\.pricing is required for an antseed upstream/);
+  });
+  await withTempConfig(JSON.stringify({ verifier: {
+    upstreams: { native: { type: 'gemini', baseUrl: 'https://example.test' } },
+  } }), async (configPath) => {
+    await assert.rejects(loadConfig(configPath), /upstreams\.native\.type/);
+  });
+});
+
 test('loadConfig rejects invalid verifier settings', async () => {
   await withTempConfig(JSON.stringify({ verifier: { referenceBatchRetryCount: -1 } }), async (configPath) => {
     await assert.rejects(loadConfig(configPath), /referenceBatchRetryCount/);

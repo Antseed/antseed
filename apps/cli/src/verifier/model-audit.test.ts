@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
-import { mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
+import { createHash } from 'node:crypto'
+import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -8,6 +9,7 @@ import { canonicalHashBytes32 } from '@antseed/fingerprints'
 import { VERIFIER_VERDICT, modelHash, serviceHash, sortServiceResults } from '@antseed/node/payments'
 import {
   modelAuditLedgerPath,
+  modelAuditUpstreams,
   prepareModelAudits,
   preparedFromEvidence,
   readModelAuditEvidence,
@@ -35,6 +37,7 @@ async function withRun(
   options: {
     owners?: Record<string, string>
     tamper?: (evidenceDir: string) => Promise<void>
+    beforePrepare?: (banksDir: string) => Promise<void>
     maxResultsPerSubmission?: number
   } = {},
 ): Promise<void> {
@@ -44,6 +47,7 @@ async function withRun(
     const banksDir = join(directory, 'banks')
     const manifest = await writeSignedAuditRun({ evidenceDir, banksDir, runId: 'run-1', epoch: '7', auditor, audits })
     await options.tamper?.(evidenceDir)
+    await options.beforePrepare?.(banksDir)
     const prepared = await prepareModelAudits({
       evidenceDir,
       banksDir,
@@ -167,6 +171,48 @@ test('written evidence round-trips to the same contract call, and the ledger is 
     assert.deepEqual(ledger.models, {})
     await writeModelAuditLedger(path, ledger)
     await assert.rejects(readModelAuditLedger(path, { ...binding, epoch: '8' }), /another run/)
+  })
+})
+
+test('evidence lists, copies, and round-trips the bank\'s raw reference exchanges', async () => {
+  const upstream = {
+    name: 'referenceEndpoint', type: 'openrouter', baseUrl: 'https://openrouter.ai/api/v1', model: 'model-a',
+    protocol: 'openai-chat-completions', request: { overrides: {}, omissions: [] }, providerPin: null,
+  }
+  const raw = Buffer.from(JSON.stringify({ kind: 'antseed-reference-exchanges', exchanges: [] }))
+  const sha256 = `sha256:${createHash('sha256').update(raw).digest('hex')}`
+  await withRun([audit('1', sellers[0]!, 'model-a')], async ({ prepared }) => {
+    const [entry] = prepared.audits as [PreparedModelAudit]
+    assert.deepEqual(entry.evidence.referenceEvidence, [{
+      referenceId: `0x${'cd'.repeat(32)}`,
+      path: 'reference-evidence/cdcdcdcdcdcdcdcd.exchanges.json',
+      sha256,
+      upstream,
+      exchangeCount: 0,
+    }])
+    assert.deepEqual(modelAuditUpstreams(entry), [upstream])
+    await writeModelAuditEvidence(entry)
+    const copied = entry.referenceEvidence[0]!.path
+    assert.equal((await readFile(copied)).equals(raw), true)
+    const evidence = await readModelAuditEvidence(entry.evidencePath, entry.evidenceHash)
+    const rebuilt = preparedFromEvidence(entry.key, entry.evidencePath, evidence)
+    assert.deepEqual(rebuilt.referenceEvidence.map((item) => item.path), [copied])
+  }, {
+    beforePrepare: async (banksDir) => {
+      const bankFile = join(banksDir, 'model-a', 'bank.json')
+      const bank: Record<string, unknown> = { version: 1, kind: 'antseed-kbf-probe-bank', model: 'model-a' }
+      await mkdir(join(banksDir, 'model-a', 'reference-evidence'), { recursive: true })
+      await writeFile(join(banksDir, 'model-a', 'reference-evidence', 'cdcdcdcdcdcdcdcd.exchanges.json'), raw)
+      bank.referenceExchanges = [{
+        referenceId: `0x${'cd'.repeat(32)}`,
+        path: 'reference-evidence/cdcdcdcdcdcdcdcd.exchanges.json',
+        sha256,
+        upstream,
+        exchangeCount: 0,
+        requestCount: 0,
+      }]
+      await writeFile(bankFile, JSON.stringify(bank))
+    },
   })
 })
 

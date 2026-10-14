@@ -1,4 +1,5 @@
 import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
 import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -321,6 +322,129 @@ test('reference build uses minimum mandatory reasoning and persists the target o
   }
 })
 
+test('reference build sends target requests to a native Anthropic upstream and records raw exchanges', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-anthropic-'))
+  const banksDir = join(directory, 'banks')
+  const value = config({
+    upstreams: {
+      'anthropic-native': { type: 'anthropic', baseUrl: 'https://api.anthropic.test/v1/', apiKey: 'anthropic-secret' },
+    },
+  })
+  value.referenceEndpoint!.apiKey = 'openrouter-secret'
+  value.referenceEndpoint!.models[MODEL]!.upstream = { name: 'anthropic-native', model: 'claude-test-native' }
+  const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ role: string; content: string }>
+    }
+    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body })
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (String(url).endsWith('/messages')) {
+      return new Response(JSON.stringify({
+        content: [{ type: 'text', text: successfulContent('upstream-test', prompt) }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 100, output_tokens: 20 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    const target = requests.filter((request) => request.url.endsWith('/messages'))
+    const contrast = requests.filter((request) => request.url.endsWith('/chat/completions'))
+    assert.equal(target.length > 0, true)
+    assert.equal(target.every((request) => request.url === 'https://api.anthropic.test/v1/messages'), true)
+    assert.equal(target.every((request) => request.headers['x-api-key'] === 'anthropic-secret'
+      && request.headers['anthropic-version'] === '2023-06-01'
+      && request.headers.authorization === undefined), true)
+    assert.equal(target.every((request) => request.body.model === 'claude-test-native'
+      && typeof request.body.system === 'string'
+      && request.body.messages instanceof Array
+      && (request.body.messages as Array<{ role: string }>).every((message) => message.role !== 'system')
+      && request.body.top_p === undefined
+      && request.body.reasoning_effort === undefined), true)
+    assert.equal(contrast.every((request) => request.headers.authorization === 'Bearer openrouter-secret'), true)
+
+    const upstream = built.reference.provenance?.upstream as Record<string, unknown>
+    assert.deepEqual(upstream, {
+      name: 'anthropic-native',
+      type: 'anthropic',
+      baseUrl: 'https://api.anthropic.test/v1',
+      model: 'claude-test-native',
+      protocol: 'anthropic-messages',
+      request: { overrides: {}, omissions: ['top_p'] },
+      providerPin: null,
+    })
+    assert.equal(built.reference.provenance?.sourceId, 'upstream:anthropic-native:anthropic:claude-test-native')
+    assert.equal(built.reference.queryProfile.upstreamModel, 'claude-test-native')
+    assert.equal(JSON.stringify(built.reference).includes('secret'), false)
+
+    const exchanges = built.exchanges!
+    const raw = await readFile(exchanges.path)
+    assert.equal(exchanges.sha256, `sha256:${createHash('sha256').update(raw).digest('hex')}`)
+    const document = JSON.parse(raw.toString('utf8')) as {
+      kind: string
+      exchanges: Array<{ url: string; protocol: string; requestBody: string; responseBody: string; status: number }>
+    }
+    assert.equal(document.kind, 'antseed-reference-exchanges')
+    assert.equal(exchanges.exchangeCount, document.exchanges.length)
+    assert.equal(exchanges.exchangeCount, requests.length)
+    assert.equal(raw.toString('utf8').includes('secret'), false)
+    const anthropicExchange = document.exchanges.find((exchange) => exchange.protocol === 'anthropic-messages')!
+    assert.equal(JSON.parse(anthropicExchange.requestBody).model, 'claude-test-native')
+    assert.equal(JSON.parse(anthropicExchange.responseBody).stop_reason, 'end_turn')
+
+    const appended = await appendModelReferenceToBank({
+      banksDir, model: MODEL, reference: built.reference, cost: built.cost, exchanges,
+    })
+    await built.finalize()
+    await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.exchanges.jsonl`)), { code: 'ENOENT' })
+    const bank = JSON.parse(await readFile(appended.path, 'utf8')) as {
+      referenceExchanges: Array<{ path: string; sha256: string; upstream: unknown }>
+    }
+    assert.equal(bank.referenceExchanges.length, 1)
+    assert.equal(bank.referenceExchanges[0]!.sha256, exchanges.sha256)
+    assert.deepEqual(bank.referenceExchanges[0]!.upstream, upstream)
+    const stored = await readFile(join(banksDir, MODEL, bank.referenceExchanges[0]!.path))
+    assert.equal(stored.equals(raw), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the default reference endpoint records OpenRouter-style upstream provenance', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-default-upstream-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider A'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
+    return new Response(JSON.stringify({
+      provider: 'Provider A',
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 100, completion_tokens: 20 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.equal(built.reference.provenance?.sourceId, 'test-source')
+    assert.deepEqual(built.reference.provenance?.upstream, {
+      name: 'referenceEndpoint',
+      type: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'upstream-test',
+      protocol: 'openai-chat-completions',
+      request: { overrides: { reasoning_effort: 'none' }, omissions: [] },
+      providerPin: ['Provider A'],
+    })
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
 test('reference build routes only target requests through a pinned Antseed peer', async () => {
   const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-'))
   const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
@@ -378,6 +502,48 @@ test('reference build routes only target requests through a pinned Antseed peer'
     })
     assert.equal(built.reference.provenance?.sourceId, `test-source:antseed:${'12'.repeat(20)}:fable-5-coding-only`)
     assert.equal(built.cost.models.find((entry) => entry.model === 'upstream-test')?.inputUsdPerMillion, 0.45)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an antseed entry in verifier.upstreams routes target requests to that pinned seller', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-upstream-peer-'))
+  const peerId = '34'.repeat(20)
+  const value = config({ upstreams: { 'trusted-seller': { type: 'antseed', peerId } } })
+  value.referenceEndpoint!.models[MODEL]!.upstream = {
+    name: 'trusted-seller',
+    model: 'seller-service',
+    pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5 },
+  }
+  const requests: Array<{ url: string; headers: Record<string, string>; model: string }> = []
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, model: body.model })
+    const logicalModel = body.model === 'seller-service' ? 'upstream-test' : body.model
+    return response(successfulContent(logicalModel, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8377, fetchFn,
+    })
+    const target = requests.filter((request) => request.model === 'seller-service')
+    assert.equal(target.length > 0, true)
+    assert.equal(target.every((request) => request.url === 'http://127.0.0.1:8377/v1/chat/completions'
+      && request.headers['x-antseed-pin-peer'] === peerId), true)
+    assert.equal(built.reference.provenance?.sourceId, `test-source:antseed:${peerId}:seller-service`)
+    assert.deepEqual(built.reference.provenance?.upstream, {
+      name: 'trusted-seller',
+      type: 'antseed',
+      baseUrl: 'http://127.0.0.1:8377/v1',
+      model: 'seller-service',
+      protocol: 'openai-chat-completions',
+      request: { overrides: {}, omissions: ['temperature', 'top_p'] },
+      providerPin: null,
+      peerId,
+    })
+    assert.equal(built.cost.models.find((entry) => entry.model === 'upstream-test')?.inputUsdPerMillion, 0.5)
+    await built.finalize()
   } finally {
     await rm(directory, { recursive: true, force: true })
   }

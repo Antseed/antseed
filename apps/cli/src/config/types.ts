@@ -15,6 +15,7 @@ export type {
   VerifierReferenceEndpointConfig,
   VerifierReferenceModelConfig,
   VerifierReferenceProviderConfig,
+  VerifierUpstreamConfig,
 } from '../verifier/config-schema.js';
 
 /**

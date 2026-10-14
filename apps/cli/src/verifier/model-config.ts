@@ -88,7 +88,30 @@ export function resolveVerifierModelConfig(
       `no contrast models selected for ${service}; check the configured price ratio and intelligence threshold`,
     )
   }
-  return { ...model, service, pricing, contrastModels }
+  return { ...withAntseedUpstreamRoute(config, model), service, pricing, contrastModels }
+}
+
+/**
+ * An `antseed` entry in `verifier.upstreams` is the same as a per-model `referenceRoute`:
+ * reference requests go through the buyer proxy, pinned to that seller.
+ */
+function withAntseedUpstreamRoute(
+  config: VerifierCLIConfig,
+  model: VerifierReferenceModelConfig,
+): VerifierReferenceModelConfig {
+  const upstream = model.upstream && config.upstreams?.[model.upstream.name]
+  if (upstream?.type !== 'antseed') return model
+  if (!model.upstream!.pricing) throw new Error(`upstream ${model.upstream!.name} requires upstream.pricing`)
+  const selected = model.upstream
+  return {
+    ...model,
+    referenceRoute: {
+      type: 'antseed',
+      service: (selected!.model ?? model.upstreamModel).trim(),
+      peerId: upstream.peerId,
+      pricing: selected!.pricing!,
+    },
+  }
 }
 
 export function blendedModelPrice(

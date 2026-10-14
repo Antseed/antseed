@@ -1,10 +1,11 @@
-import { readFile } from 'node:fs/promises'
-import { dirname, join, relative, resolve, sep } from 'node:path'
+import { copyFile, mkdir, readFile } from 'node:fs/promises'
+import { basename, dirname, join, relative, resolve, sep } from 'node:path'
 import { getAddress } from 'ethers'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
   canonicalHashBytes32,
   canonicalJsonStringify,
+  sha256Hex,
   validateKbfReferenceV1,
   type FingerprintStats,
   type KbfReferenceV1,
@@ -21,7 +22,8 @@ import type { VerifierCLIConfig } from '../config/types.js'
 import type { ModelAuditSummaryV1, VerifierRunManifestV1 } from './audit-artifacts.js'
 import { readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
 import type { VerificationOutcomeReasonV1 } from './outcome-reason.js'
-import { findEpochProbeReference } from './probe-bank.js'
+import type { ReferenceUpstreamProvenanceV1 } from './model-reference.js'
+import { findEpochProbeReference, loadBankReferenceExchanges } from './probe-bank.js'
 import { verifyProxyAuditEvidenceFile, type ProxyAuditEvidenceV1 } from './proxy-evidence.js'
 import { resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
@@ -95,9 +97,25 @@ export interface ModelAuditEvidenceV1 {
     /** Full KBF reference, relative to the evidence document; null when it could not be exported. */
     path: string | null
   }>
+  /**
+   * Raw upstream request/response bytes behind the probe bank these references were drawn
+   * from, one file per reference build. Absent on evidence written before they were recorded.
+   */
+  referenceEvidence?: ModelAuditReferenceEvidenceV1[]
   kbfOptions: typeof KBF_VERIFY_OPTIONS
   results: ModelAuditSellerResultV1[]
   excluded: ExcludedSellerAuditV1[]
+}
+
+export interface ModelAuditReferenceEvidenceV1 {
+  /** Reference build that produced the exchanges. */
+  referenceId: string
+  /** Relative to the evidence document. */
+  path: string
+  /** sha256 of the file's exact bytes. */
+  sha256: string
+  upstream: ReferenceUpstreamProvenanceV1
+  exchangeCount: number
 }
 
 export interface AuditPublicationV1 {
@@ -123,6 +141,8 @@ export interface PreparedModelAudit {
   results: ServiceResultInput[]
   references: Array<{ path: string; reference: KbfReferenceV1 }>
   auditEvidencePaths: string[]
+  /** Raw reference exchange files: where they are read from and where they go next to the evidence. */
+  referenceEvidence: Array<{ sourcePath: string; path: string }>
 }
 
 export type ModelAuditSubmissionStatus = 'pending' | 'submitted' | 'failed'
@@ -313,6 +333,19 @@ export async function prepareModelAudits(input: {
         })
       }
       referenceEntries.sort((left, right) => left.referenceId.localeCompare(right.referenceId))
+      const referenceEvidence: PreparedModelAudit['referenceEvidence'] = []
+      const referenceEvidenceEntries: ModelAuditReferenceEvidenceV1[] = []
+      for (const stored of await loadBankReferenceExchanges(input.banksDir, model)) {
+        const path = join(evidenceDirectory, 'reference-evidence', basename(stored.path))
+        referenceEvidence.push({ sourcePath: stored.absolutePath, path })
+        referenceEvidenceEntries.push({
+          referenceId: stored.referenceId,
+          path: portableRelative(evidenceDirectory, path),
+          sha256: stored.sha256,
+          upstream: stored.upstream,
+          exchangeCount: stored.exchangeCount,
+        })
+      }
       const results: ModelAuditSellerResultV1[] = slice.map(({ agentId, result, evidence, recheckEvidence }) => ({
         agentId: agentId.toString(),
         peerId: result.peerId,
@@ -355,6 +388,7 @@ export async function prepareModelAudits(input: {
         part,
         partCount,
         references: referenceEntries,
+        ...(referenceEvidenceEntries.length > 0 ? { referenceEvidence: referenceEvidenceEntries } : {}),
         kbfOptions: KBF_VERIFY_OPTIONS,
         results,
         excluded: part === 1 ? excluded : [],
@@ -373,6 +407,7 @@ export async function prepareModelAudits(input: {
           verdict: verifierVerdict(entry.verdict),
         }))),
         references,
+        referenceEvidence,
         auditEvidencePaths: slice.flatMap(({ result }) => (
           result.recheck ? [result.evidencePath, result.recheck.evidencePath] : [result.evidencePath]
         )),
@@ -384,6 +419,16 @@ export async function prepareModelAudits(input: {
 
 export async function writeModelAuditEvidence(prepared: PreparedModelAudit): Promise<void> {
   for (const { path, reference } of prepared.references) await writeJsonAtomic(path, reference, true)
+  for (const { sourcePath, path } of prepared.referenceEvidence) {
+    if (resolve(sourcePath) === resolve(path)) continue
+    await mkdir(dirname(path), { recursive: true })
+    await copyFile(sourcePath, path)
+    const expected = prepared.evidence.referenceEvidence
+      ?.find((entry) => resolve(dirname(prepared.evidencePath), entry.path) === resolve(path))?.sha256
+    if (expected && `sha256:${sha256Hex(await readFile(path))}` !== expected) {
+      throw new Error(`reference evidence ${sourcePath} does not match its recorded sha256`)
+    }
+  }
   await writeJsonAtomic(prepared.evidencePath, prepared.evidence, true)
 }
 
@@ -423,7 +468,24 @@ export function preparedFromEvidence(
     }))),
     references: [],
     auditEvidencePaths,
+    referenceEvidence: (evidence.referenceEvidence ?? []).map((entry) => {
+      const path = resolve(dirname(evidencePath), entry.path)
+      return { sourcePath: path, path }
+    }),
   }
+}
+
+/** Distinct reference upstreams named by a model audit's evidence and references. */
+export function modelAuditUpstreams(audit: PreparedModelAudit): ReferenceUpstreamProvenanceV1[] {
+  const upstreams = new Map<string, ReferenceUpstreamProvenanceV1>()
+  const add = (upstream: unknown): void => {
+    if (!upstream || typeof upstream !== 'object') return
+    const value = upstream as ReferenceUpstreamProvenanceV1
+    upstreams.set(canonicalJsonStringify(value), value)
+  }
+  for (const entry of audit.evidence.referenceEvidence ?? []) add(entry.upstream)
+  for (const { reference } of audit.references) add(reference.provenance?.upstream)
+  return [...upstreams.entries()].sort(([left], [right]) => left.localeCompare(right)).map(([, value]) => value)
 }
 
 export function canonicalEvidenceBytes(evidence: ModelAuditEvidenceV1): Buffer {

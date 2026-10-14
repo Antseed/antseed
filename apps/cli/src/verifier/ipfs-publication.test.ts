@@ -81,6 +81,50 @@ test('publishes only hash-committed seller evidence, without exchange copies or 
   }
 })
 
+test('publishes raw reference exchanges and lists the reference upstreams', async () => {
+  const evidenceDir = await mkdtemp(join(tmpdir(), 'antseed-ipfs-reference-evidence-'))
+  try {
+    const runId = 'run-8'
+    const reportDirectory = join(evidenceDir, 'reports', runId)
+    const evidencePath = join(reportDirectory, '1.evidence.json')
+    const exchangesPath = join(reportDirectory, 'reference-evidence', 'abcdef.exchanges.json')
+    await mkdir(dirname(exchangesPath), { recursive: true })
+    await writeFile(exchangesPath, JSON.stringify({ kind: 'antseed-reference-exchanges', exchanges: [] }))
+    const upstream = {
+      name: 'referenceEndpoint',
+      type: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'anthropic/claude-test',
+      protocol: 'openai-chat-completions',
+      request: { overrides: {}, omissions: [] },
+      providerPin: null,
+    }
+    const publication = await prepareAuditPublication({
+      evidenceDir,
+      runId,
+      model: 'model-a',
+      evidenceHash: `0x${'22'.repeat(32)}`,
+      evidencePath,
+      evidenceBytes: Buffer.from(JSON.stringify({ kind: 'agent-evidence' })),
+      referencePaths: [],
+      auditEvidencePaths: [],
+      referenceEvidencePaths: [exchangesPath],
+      upstreams: [upstream],
+    })
+    const paths = publication.files.map((file) => file.path)
+    assert.ok(paths.includes(`reports/${runId}/reference-evidence/abcdef.exchanges.json`))
+    const indexFile = publication.files.find((file) => file.path === 'publication.json')!
+    const index = JSON.parse(Buffer.from(indexFile.bytes).toString('utf8')) as {
+      scope: { rawReferenceExchanges: boolean }
+      upstreams: unknown[]
+    }
+    assert.equal(index.scope.rawReferenceExchanges, true)
+    assert.deepEqual(index.upstreams, [upstream])
+  } finally {
+    await rm(evidenceDir, { recursive: true, force: true })
+  }
+})
+
 test('uploads a CIDv1 Pinata folder with portable package paths and retries transient failures', async () => {
   const publication = fixturePublication(2)
   const calls: Array<{ authorization: string | null; names: string[]; cidVersion: unknown }> = []

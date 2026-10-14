@@ -70,6 +70,7 @@ export async function ensureAuditableReference(input: {
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
       answeredContrastModelsByProbeId: built.answeredContrastModelsByProbeId,
+      exchanges: built.exchanges,
     })
     input.log?.(`enrolled +${appended.addedProbeCount} probes; ${appended.totalProbeCount} banked`)
     const refreshed = await operations.inspect({ ...input, config })
@@ -125,6 +126,7 @@ export async function enrollFreshProbes(input: {
     const appended = await operations.append({
       banksDir: input.banksDir, model: input.model, reference: built.reference, cost: built.cost,
       answeredContrastModelsByProbeId: built.answeredContrastModelsByProbeId,
+      exchanges: built.exchanges,
     })
     await built.finalize()
     input.log?.(

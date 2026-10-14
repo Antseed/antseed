@@ -13,6 +13,7 @@ import {
   preparedFromEvidence,
   readModelAuditEvidence,
   readModelAuditLedger,
+  modelAuditUpstreams,
   writeModelAuditEvidence,
   writeModelAuditLedger,
   type AuditPublicationV1,
@@ -311,6 +312,8 @@ async function publish(
     evidenceBytes: canonicalEvidenceBytes(audit.evidence),
     referencePaths: audit.references.map((reference) => reference.path),
     auditEvidencePaths: audit.auditEvidencePaths,
+    referenceEvidencePaths: audit.referenceEvidence.map((entry) => entry.path),
+    upstreams: modelAuditUpstreams(audit),
   })
   const published = await publishVerificationToPinata(packaged, pinataJwt)
   return {

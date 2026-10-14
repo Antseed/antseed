@@ -17,6 +17,51 @@ This is the contract-level spec; the plain-language overview is the website page
 Which models an auditor checks in an epoch is coordinated off-chain; the contract does
 not enforce an assignment.
 
+## Reference upstreams
+
+A reference records the genuine model's answers, so where those answers came from
+matters. Reference builds query OpenRouter (`verifier.referenceEndpoint`) by default.
+An auditor can send a model's own reference requests to another API instead, so
+answers bought from OpenRouter can be compared with the model maker's native API:
+
+```json
+{
+  "verifier": {
+    "upstreams": {
+      "anthropic": { "type": "anthropic", "baseUrl": "https://api.anthropic.com/v1", "apiKeyEnv": "ANTHROPIC_API_KEY" },
+      "openai": { "type": "openai", "baseUrl": "https://api.openai.com/v1", "apiKeyEnv": "OPENAI_API_KEY" },
+      "my-seller": { "type": "antseed", "peerId": "<40-char seller peer id>" }
+    },
+    "referenceEndpoint": {
+      "models": {
+        "claude-opus-5.5": { "upstreamModel": "anthropic/claude-opus-5.5", "upstream": { "name": "anthropic", "model": "claude-opus-5-5" } }
+      }
+    }
+  }
+}
+```
+
+- `type` is `openrouter`, `openai` (any OpenAI-compatible Chat Completions API),
+  `anthropic` (native Messages API) or `antseed` (one seller, reached through the local
+  buyer proxy and pinned to its peer id; the model's `upstream` then needs `pricing`, and
+  `model` is the seller's service). Contrast models always go through `referenceEndpoint`.
+- **Only use an Antseed seller you trust** (your own node, or one in a TEE), ideally one
+  that already came back SAME against an OpenRouter or native reference. If that seller
+  serves a different model, the reference is wrong too, and honest sellers come back DIFF.
+  The older per-model `referenceRoute` does the same thing and still works.
+- Each reference stores `provenance.upstream`: the upstream's name, type, base URL,
+  model id, protocol, the request overrides and omissions, and any pinned OpenRouter
+  provider. It never stores API keys. A build from another upstream gets its own
+  `sourceId`, so its questions never mix with an OpenRouter-built bank.
+- Every request and response the build received, byte for byte (no credentials), is
+  saved as `reference-evidence/<id>.exchanges.json` next to the probe bank, with its
+  sha256 in `bank.json` (`referenceExchanges`).
+- A published audit includes those files under `reference-evidence/`, lists them with
+  their sha256 and upstream in the evidence document (`referenceEvidence`), and lists
+  the upstreams in `publication.json` (`upstreams`). The evidence hash goes on-chain, so
+  those sha256 values are committed too. Banks built before this have no raw exchanges
+  to publish.
+
 ## On-chain state
 
 `submitModelAudit(expectedEpoch, modelHash, evidenceHash, evidenceUri, results)`:

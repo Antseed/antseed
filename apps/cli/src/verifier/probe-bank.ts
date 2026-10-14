@@ -1,6 +1,6 @@
 import { randomInt } from 'node:crypto'
-import { mkdir, readdir } from 'node:fs/promises'
-import { dirname, join } from 'node:path'
+import { copyFile, mkdir, readdir } from 'node:fs/promises'
+import { dirname, join, relative, sep } from 'node:path'
 import {
   KBF_REFERENCE_VERSION,
   aggregateKbfSelfTestOutcomes,
@@ -16,7 +16,11 @@ import {
 } from '@antseed/fingerprints'
 import type { VerifierCLIConfig } from '../config/types.js'
 import { acquirePidFileLock, readJsonIfExists, writeJsonAtomic } from './atomic-files.js'
-import type { ReferenceBuildCostV1 } from './model-reference.js'
+import type {
+  ReferenceBuildCostV1,
+  ReferenceExchangesFileV1,
+  ReferenceUpstreamProvenanceV1,
+} from './model-reference.js'
 import { excludedVerifierDomains } from './model-config.js'
 import { isReferenceProbeCountAllowed, resolveReferenceSizingPolicy } from './reference-sizing.js'
 import { safeServiceSlug } from './slug.js'
@@ -53,8 +57,20 @@ export interface ProbeBankV1 {
   probes: BankProbeV1[]
   sourceReferenceIds: string[]
   referenceCosts: ReferenceCostEntryV1[]
+  /** Raw upstream exchanges of each build that added probes; absent on older banks. */
+  referenceExchanges?: BankReferenceExchangesV1[]
   createdAt: string
   updatedAt: string
+}
+
+export interface BankReferenceExchangesV1 {
+  referenceId: string
+  /** Relative to the model's bank directory. */
+  path: string
+  sha256: string
+  upstream: ReferenceUpstreamProvenanceV1
+  exchangeCount: number
+  requestCount: number
 }
 
 export interface ReferenceCostEntryV1 {
@@ -139,6 +155,8 @@ export async function appendModelReferenceToBank(input: {
   reference: KbfReferenceV1
   cost: ReferenceBuildCostV1
   answeredContrastModelsByProbeId?: ReadonlyMap<string, readonly string[]>
+  /** Raw upstream exchanges of this build; copied into the bank so they survive the next build. */
+  exchanges?: ReferenceExchangesFileV1
 }): Promise<{
   path: string
   addedProbeCount: number
@@ -159,7 +177,11 @@ export async function appendModelReferenceToBank(input: {
       input.cost,
       input.answeredContrastModelsByProbeId,
     )
+    const exchanges = input.exchanges
+      ? await storeBankExchanges(dirname(path), validatedReference.referenceId, input.exchanges)
+      : undefined
     if (!existing) {
+      if (exchanges) incoming.referenceExchanges = [exchanges]
       await writeJsonAtomic(path, incoming)
       return {
         path,
@@ -209,12 +231,43 @@ export async function appendModelReferenceToBank(input: {
     if (!bank.referenceCosts.some((entry) => entry.referenceId === validatedReference.referenceId)) {
       bank.referenceCosts.push(...incoming.referenceCosts)
     }
+    if (exchanges && !bank.referenceExchanges?.some((entry) => entry.referenceId === exchanges.referenceId)) {
+      bank.referenceExchanges = [...(bank.referenceExchanges ?? []), exchanges]
+    }
     bank.updatedAt = new Date().toISOString()
     await writeJsonAtomic(path, bank)
     return { path, addedProbeCount, canonicalConflictProbeCount, totalProbeCount: bank.probes.length }
   } finally {
     await lock.release()
   }
+}
+
+async function storeBankExchanges(
+  bankDirectory: string,
+  referenceId: string,
+  exchanges: ReferenceExchangesFileV1,
+): Promise<BankReferenceExchangesV1> {
+  const target = join(bankDirectory, 'reference-evidence', `${referenceId.replace(/^0x/, '').slice(0, 16)}.exchanges.json`)
+  await mkdir(dirname(target), { recursive: true })
+  await copyFile(exchanges.path, target)
+  return {
+    referenceId,
+    path: relative(bankDirectory, target).split(sep).join('/'),
+    sha256: exchanges.sha256,
+    upstream: exchanges.upstream,
+    exchangeCount: exchanges.exchangeCount,
+    requestCount: exchanges.requestCount,
+  }
+}
+
+/** Raw reference exchanges stored with a model's bank, with absolute paths. */
+export async function loadBankReferenceExchanges(
+  banksDir: string,
+  model: string,
+): Promise<Array<BankReferenceExchangesV1 & { absolutePath: string }>> {
+  const path = bankPath(banksDir, model)
+  const bank = await readJsonIfExists<ProbeBankV1>(path)
+  return (bank?.referenceExchanges ?? []).map((entry) => ({ ...entry, absolutePath: join(dirname(path), entry.path) }))
 }
 
 function canonicalBankProbe(probe: KbfProbe): Record<string, unknown> {
@@ -864,7 +917,9 @@ export function probeBankCompatibilityHash(model: string, reference: KbfReferenc
     referenceModel: normalized(reference.referenceModel),
     serviceAliases: reference.serviceAliases.map(normalized).sort(),
     queryProfileHash: referenceCompatibilityProfileHash(reference),
-    provenance: reference.provenance ?? null,
+    // The upstream description is not part of compatibility: banks built before it was
+    // recorded keep accepting new builds, and sourceId already separates upstreams.
+    provenance: withoutUpstream(reference.provenance),
     generator: {
       name: reference.generator.name,
       version: reference.generator.version,
@@ -877,6 +932,12 @@ export function probeBankCompatibilityHash(model: string, reference: KbfReferenc
       clopperPearsonConfidence: reference.statisticalPowerEvidence.clopperPearsonConfidence,
     },
   })
+}
+
+function withoutUpstream(provenance: KbfReferenceV1['provenance']): unknown {
+  if (!provenance) return null
+  const { upstream: _upstream, ...rest } = provenance as Record<string, unknown>
+  return rest
 }
 
 /** Contrast models and probe ids of a model's bank, without rebuilding it as one reference. */

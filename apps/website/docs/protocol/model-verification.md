@@ -25,7 +25,8 @@ Fingerprinting (KBF)**.
 ## How one check works
 
 1. **A reference is built once per model.** The genuine model is queried through a
-   trusted upstream provider. Questions it answers consistently are kept; questions
+   trusted upstream: OpenRouter by default, or the model maker's own API (for example
+   Anthropic or OpenAI) when an auditor sets one up. Questions it answers consistently are kept; questions
    where cheaper look-alikes give the same answers are dropped, because they cannot
    tell models apart. The reference also measures the genuine model's own
    error rate, since even the real model is not perfectly consistent.
@@ -62,8 +63,9 @@ So one unlucky run does not mark an honest seller.
 
 ## Public evidence
 
-Every audit is published to IPFS: the questions asked, the seller's raw responses, and
-the statistics. Its hash goes on-chain with the result. Anyone can download it and
+Every audit is published to IPFS: the questions asked, the seller's raw responses, the
+statistics, and where the reference answers came from (which API, which model id and
+which request settings), with the raw reference requests and responses. Its hash goes on-chain with the result. Anyone can download it and
 re-run the same kind of check themselves (see [Check a model yourself](#check-a-model-yourself)).
 An auditor that publishes wrong results can be caught from its own evidence and loses
 its approval.

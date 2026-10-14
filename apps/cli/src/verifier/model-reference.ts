@@ -1,5 +1,5 @@
-import { readFile, unlink } from 'node:fs/promises'
-import { join } from 'node:path'
+import { appendFile, mkdir, readFile, unlink } from 'node:fs/promises'
+import { dirname, join } from 'node:path'
 import {
   KBF_DEFAULT_SELF_TEST_RUNS,
   KBF_ENROLLMENT_TEMPERATURES,
@@ -9,6 +9,7 @@ import {
   aggregateKbfSelfTestOutcomes,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
+  canonicalJsonStringify,
   computeBinomialPower,
   computeMatchVector,
   computeReferenceId,
@@ -19,6 +20,7 @@ import {
   computeContrastDetection,
   matchesTolerance,
   parseKbfAnswers,
+  sha256Hex,
   validateKbfReferenceV1,
   type KbfProbe,
   type KbfReferenceV1,
@@ -28,6 +30,7 @@ import type {
   VerifierCLIConfig,
   VerifierModelPricingConfig,
   VerifierReferenceEndpointConfig,
+  VerifierUpstreamConfig,
 } from '../config/types.js'
 import {
   REFERENCE_MINIMUM_MISMATCH_DELTA,
@@ -45,7 +48,7 @@ import {
   canonicalKbfTolerance,
   createCanonicalKbfProbe,
 } from './canonical-kbf-domains.js'
-import { writeJsonAtomic } from './atomic-files.js'
+import { writeJsonAtomic, writeTextAtomic } from './atomic-files.js'
 import { createDomainHomogeneousKbfBatches } from './kbf-batching.js'
 import { asError, normalized, sleep } from './utils.js'
 
@@ -61,6 +64,7 @@ const DEFAULT_MAX_CONCURRENT_REQUESTS_PER_MODEL = 3
 const NEW_ACCOUNT_MINIMUM_REQUEST_INTERVAL_MS = 6_500
 const NEW_ACCOUNT_RATE_LIMIT_COOLDOWN_MS = 65_000
 const MAX_TOKENS = 1600
+const ANTHROPIC_VERSION = '2023-06-01'
 const REFERENCE_SIZING_ALGORITHM_VERSION = 2
 const MINIMUM_SUPPORTED_REASONING_STRATEGY = 'reasoning-effort-minimum-supported' as const
 const DISABLED_REASONING_STRATEGY = 'reasoning-effort-none' as const
@@ -177,6 +181,9 @@ interface ReferenceProviderRouting {
   allow_fallbacks: false
 }
 
+export type ReferenceUpstreamType = 'openrouter' | 'openai' | 'anthropic' | 'antseed'
+export type ReferenceUpstreamProtocol = 'openai-chat-completions' | 'anthropic-messages'
+
 interface ReferenceRequestRoute {
   type: 'direct' | 'antseed'
   baseUrl: string
@@ -187,6 +194,60 @@ interface ReferenceRequestRoute {
   requestOverrides: Record<string, unknown>
   requestOmissions: Array<'temperature' | 'top_p'>
   providerRouting?: ReferenceProviderRouting
+  /** Named `verifier.upstreams` entry; absent when requests go to `referenceEndpoint`. */
+  upstream?: { name: string; type: ReferenceUpstreamType }
+  /** Absent means OpenAI Chat Completions. */
+  protocol?: 'anthropic-messages'
+}
+
+/**
+ * Where the reference model's answers came from. Never holds API keys. Stored in
+ * `provenance.upstream` so anyone reading a published reference can see which API
+ * produced it and with which request settings.
+ */
+export interface ReferenceUpstreamProvenanceV1 {
+  /** `verifier.upstreams` entry name, or `referenceEndpoint`. */
+  name: string
+  type: ReferenceUpstreamType
+  baseUrl: string
+  model: string
+  protocol: ReferenceUpstreamProtocol
+  request: { overrides: Record<string, unknown>; omissions: string[] }
+  providerPin: string[] | null
+  peerId?: string
+}
+
+/** One raw request/response pair sent to a reference upstream, without credentials. */
+export interface ReferenceExchangeV1 {
+  cacheKey: string
+  model: string
+  purpose: ReferenceBuildCostPurposeV1['purpose']
+  url: string
+  protocol: ReferenceUpstreamProtocol
+  requestBody: string
+  status: number
+  responseBody: string
+  receivedAt: string
+}
+
+export interface ReferenceExchangesFileV1 {
+  path: string
+  /** sha256 of the file's exact bytes. */
+  sha256: string
+  upstream: ReferenceUpstreamProvenanceV1
+  exchangeCount: number
+  requestCount: number
+}
+
+/** Every upstream exchange behind one reference build, published as reference evidence. */
+export interface ReferenceExchangesV1 {
+  version: 1
+  kind: 'antseed-reference-exchanges'
+  model: string
+  upstream: ReferenceUpstreamProvenanceV1
+  requestCount: number
+  exchangeCount: number
+  exchanges: ReferenceExchangeV1[]
 }
 
 export async function loadModelReference(input: {
@@ -265,6 +326,8 @@ export async function buildModelReference(input: {
 }): Promise<{
   reference: KbfReferenceV1
   path: string
+  /** Raw upstream exchanges behind this build (`ReferenceExchangesV1`). */
+  exchanges?: ReferenceExchangesFileV1
   cost: ReferenceBuildCostV1
   /** Contrast models that returned a parseable answer, by selected probe id. */
   answeredContrastModelsByProbeId?: Map<string, string[]>
@@ -285,17 +348,19 @@ export async function buildModelReference(input: {
         catalog: input.catalog ?? null,
         referenceRoute: isTarget ? modelConfig.referenceRoute : undefined,
         referenceProvider: isTarget ? modelConfig.referenceProvider : undefined,
+        upstream: isTarget && modelConfig.upstream ? {
+          name: modelConfig.upstream.name,
+          model: modelConfig.upstream.model,
+          config: input.config?.upstreams?.[modelConfig.upstream.name],
+        } : undefined,
         buyerProxyPort: input.buyerProxyPort,
       })] as const
     }),
   )
   const targetRoute = routesByModel.get(normalized(modelConfig.upstreamModel))!
   const targetRequestOverrides = targetRoute.requestOverrides
-  const targetReasoningStrategy = targetRoute.type === 'antseed'
-    ? BARE_REASONING_STRATEGY
-    : 'reasoning' in targetRequestOverrides
-    ? MINIMUM_SUPPORTED_REASONING_STRATEGY
-    : DISABLED_REASONING_STRATEGY
+  const targetReasoningStrategy = referenceReasoningStrategy(targetRoute)
+  const upstreamProvenance = referenceUpstreamProvenance(endpoint, targetRoute)
   const timeoutMs = input.config?.probeRequestTimeoutMs ?? 120_000
   const sizing = resolveReferenceSizingPolicy(input.config)
   const queryProfile = createReferenceQueryProfile({
@@ -326,8 +391,7 @@ export async function buildModelReference(input: {
         name: 'antseed-simple-reference-builder', version: REFERENCE_BUILDER_VERSION, verifierKind: 'kbf',
         params: { enrollmentBatchingVersion: 2, enrollmentStabilityVersion: 2, referenceEndpointRequest },
       },
-      provenance: { sourceId: targetRoute.type === 'antseed'
-        ? `${endpoint.sourceId}:antseed:${targetRoute.peerId}:${targetRoute.model}` : endpoint.sourceId, trust: endpoint.trust },
+      provenance: { sourceId: referenceSourceId(endpoint, targetRoute), trust: endpoint.trust },
     }
     if (probeBankCompatibilityHash(input.model, initial) !== probeBankCompatibilityHash(input.model, expected)
       || initial.generator.params.selfTestRuns !== selfTestRuns
@@ -377,6 +441,7 @@ export async function buildModelReference(input: {
     } : {}),
   })
   const checkpoint = await ReferenceBuildCheckpoint.open(checkpointPath, compatibilityHash)
+  const exchangesPath = referenceExchangesPath(input.referencesDir, input.model)
   const limiter = input.requestLimiter ?? createReferenceRequestLimiter(input.config)
   const query = createReferenceQuery({
     timeoutMs,
@@ -546,6 +611,12 @@ export async function buildModelReference(input: {
       + `(${servedTargetProviders.join(', ')}); pin referenceProvider.order for a reproducible reference`,
     )
   }
+  const exchanges = await writeReferenceExchanges({
+    path: exchangesPath,
+    model: input.model,
+    upstream: upstreamProvenance,
+    checkpoint,
+  })
   const reference: KbfReferenceV1 = {
     version: KBF_REFERENCE_VERSION,
     kind: 'kbf',
@@ -593,10 +664,9 @@ export async function buildModelReference(input: {
       },
     },
     provenance: {
-      sourceId: targetRoute.type === 'antseed'
-        ? `${endpoint.sourceId}:antseed:${targetRoute.peerId}:${targetRoute.model}`
-        : endpoint.sourceId,
+      sourceId: referenceSourceId(endpoint, targetRoute),
       trust: endpoint.trust,
+      upstream: upstreamProvenance,
     },
     queryProfile,
     selfTest,
@@ -630,7 +700,14 @@ export async function buildModelReference(input: {
     probe.id,
     [...(collected.answeredContrastModelsByProbeId?.get(probe.id) ?? modelConfig.contrastModels)],
   ]))
-  return { reference: validated, path, cost, answeredContrastModelsByProbeId, finalize: () => checkpoint.remove() }
+  return {
+    reference: validated,
+    path,
+    exchanges,
+    cost,
+    answeredContrastModelsByProbeId,
+    finalize: () => checkpoint.remove(),
+  }
 }
 
 function referenceContrasts(
@@ -1143,6 +1220,13 @@ function createReferenceQuery(input: {
             + response.outputTokens * pricing.outputUsdPerMillion,
           )),
         }
+        await input.checkpoint.appendExchange({
+          cacheKey,
+          model,
+          purpose: cachedResponse.purpose,
+          ...response.exchange,
+          receivedAt: new Date().toISOString(),
+        })
         await input.checkpoint.set(cacheKey, cachedResponse)
         consumed.set(cacheKey, cachedResponse)
         recordProvider(model, response.provider)
@@ -1166,6 +1250,15 @@ function createReferenceQuery(input: {
               error.inputTokens * pricing.inputUsdPerMillion
               + error.outputTokens * pricing.outputUsdPerMillion,
             )),
+          }
+          if (error.exchange) {
+            await input.checkpoint.appendExchange({
+              cacheKey,
+              model,
+              purpose: cachedResponse.purpose,
+              ...error.exchange,
+              receivedAt: new Date().toISOString(),
+            })
           }
           await input.checkpoint.set(cacheKey, cachedResponse)
           consumed.set(cacheKey, cachedResponse)
@@ -1197,10 +1290,20 @@ function createReferenceQuery(input: {
 export class ReferenceBuildCheckpoint {
   private saveChain = Promise.resolve()
 
+  private exchangeChain = Promise.resolve()
+
   private constructor(
     private readonly path: string,
     private readonly value: ReferenceBuildCheckpointV1,
   ) {}
+
+  /**
+   * Raw exchanges live in a JSONL sidecar so the checkpoint itself stays small. It records
+   * every answered request (failed HTTP calls are not recorded), including ones later retried.
+   */
+  get exchangesPath(): string {
+    return this.path.replace(/\.json$/, '') + '.exchanges.jsonl'
+  }
 
   static async open(path: string, compatibilityHash: string): Promise<ReferenceBuildCheckpoint> {
     try {
@@ -1225,6 +1328,7 @@ export class ReferenceBuildCheckpoint {
       requestsUsed: 0,
       responses: {},
     })
+    await removeIfExists(checkpoint.exchangesPath)
     await checkpoint.save()
     return checkpoint
   }
@@ -1254,10 +1358,46 @@ export class ReferenceBuildCheckpoint {
     await this.save()
   }
 
-  async remove(): Promise<void> {
-    await unlink(this.path).catch((error: NodeJS.ErrnoException) => {
-      if (error.code !== 'ENOENT') throw error
+  get requestsUsed(): number {
+    return this.value.requestsUsed
+  }
+
+  async appendExchange(exchange: ReferenceExchangeV1): Promise<void> {
+    const run = this.exchangeChain.then(async () => {
+      await mkdir(dirname(this.exchangesPath), { recursive: true })
+      await appendFile(this.exchangesPath, `${JSON.stringify(exchange)}\n`, 'utf8')
     })
+    this.exchangeChain = run.catch(() => {})
+    await run
+  }
+
+  /** Every exchange this build recorded, in the order received. */
+  async readExchanges(): Promise<ReferenceExchangeV1[]> {
+    await this.exchangeChain
+    const exchanges: ReferenceExchangeV1[] = []
+    let raw: string
+    try {
+      raw = await readFile(this.exchangesPath, 'utf8')
+    } catch (error) {
+      if ((error as NodeJS.ErrnoException).code === 'ENOENT') return exchanges
+      throw error
+    }
+    for (const line of raw.split('\n')) {
+      if (!line.trim()) continue
+      try {
+        const exchange = JSON.parse(line) as ReferenceExchangeV1
+        if (typeof exchange.cacheKey === 'string') exchanges.push(exchange)
+      } catch {
+        // A crash can leave a torn last line; that response is simply not published.
+      }
+    }
+    return exchanges
+  }
+
+  async remove(): Promise<void> {
+    await removeIfExists(this.path)
+    await this.exchangeChain
+    await removeIfExists(this.exchangesPath)
   }
 
   private async save(): Promise<void> {
@@ -1511,25 +1651,50 @@ async function querySelfTestBatch(
   }
 }
 
+interface ReferenceRawExchange {
+  url: string
+  protocol: ReferenceUpstreamProtocol
+  requestBody: string
+  status: number
+  responseBody: string
+}
+
+interface ReferenceCompletion {
+  content: string
+  inputTokens: number
+  outputTokens: number
+  provider: string | null
+  exchange: ReferenceRawExchange
+}
+
 async function postChatCompletion(
   route: ReferenceRequestRoute,
   body: Record<string, unknown>,
   timeoutMs: number,
   fetchFn: typeof fetch,
-): Promise<{ content: string; inputTokens: number; outputTokens: number; provider: string | null }> {
+): Promise<ReferenceCompletion> {
   const controller = new AbortController()
   const timeout = setTimeout(() => controller.abort(), timeoutMs)
+  const anthropic = route.protocol === 'anthropic-messages'
+  const baseUrl = route.baseUrl.replace(/\/+$/, '')
+  const url = anthropic ? `${baseUrl}/messages` : `${baseUrl}/chat/completions`
+  const routedBody = applyReferenceRouteToBody(route, body)
+  const requestBody = JSON.stringify(anthropic ? toAnthropicMessagesBody(routedBody) : routedBody)
   try {
     let response: Response
     try {
-      response = await fetchFn(`${route.baseUrl.replace(/\/+$/, '')}/chat/completions`, {
+      response = await fetchFn(url, {
         method: 'POST',
         headers: {
           'content-type': 'application/json',
-          ...(route.apiKey ? { authorization: `Bearer ${route.apiKey}` } : {}),
+          ...(route.apiKey
+            ? anthropic
+              ? { 'x-api-key': route.apiKey, 'anthropic-version': ANTHROPIC_VERSION }
+              : { authorization: `Bearer ${route.apiKey}` }
+            : anthropic ? { 'anthropic-version': ANTHROPIC_VERSION } : {}),
           ...(route.peerId ? { 'x-antseed-pin-peer': route.peerId } : {}),
         },
-        body: JSON.stringify(applyReferenceRouteToBody(route, body)),
+        body: requestBody,
         signal: controller.signal,
       })
     } catch (error) {
@@ -1539,8 +1704,9 @@ async function postChatCompletion(
         { cause: error },
       )
     }
+    const responseBody = await response.text()
     if (!response.ok) {
-      const detail = (await response.text()).slice(0, 200)
+      const detail = responseBody.slice(0, 200)
       throw new ReferenceEndpointError(
         response.status,
         parseRetryAfterMs(response.headers.get('retry-after')),
@@ -1549,44 +1715,114 @@ async function postChatCompletion(
           : detail,
       )
     }
-    const parsed = await response.json() as {
-      provider?: unknown
-      choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown; native_finish_reason?: unknown }>
-      usage?: {
-        prompt_tokens?: unknown
-        completion_tokens?: unknown
-        completion_tokens_details?: { reasoning_tokens?: unknown }
-      }
+    const exchange: ReferenceRawExchange = {
+      url,
+      protocol: anthropic ? 'anthropic-messages' : 'openai-chat-completions',
+      requestBody,
+      status: response.status,
+      responseBody,
     }
-    const provider = optionalString(parsed.provider)
-    assertPinnedProvider(route, provider)
-    const choice = parsed.choices?.[0]
-    const content = completionText(choice?.message?.content)
-    const inputTokens = nonNegativeInteger(parsed.usage?.prompt_tokens)
-    const outputTokens = nonNegativeInteger(parsed.usage?.completion_tokens)
-    if (content === null) {
-      const finishReason = optionalString(choice?.finish_reason)
-      const nativeFinishReason = optionalString(choice?.native_finish_reason)
-      const detail = JSON.stringify({
-        finishReason,
-        nativeFinishReason,
-        completionTokens: parsed.usage?.completion_tokens ?? null,
-        reasoningTokens: parsed.usage?.completion_tokens_details?.reasoning_tokens ?? null,
-      })
+    const parsed = parseCompletion(anthropic, responseBody)
+    assertPinnedProvider(route, parsed.provider)
+    if (parsed.content === null) {
       throw new EmptyReferenceResponseError(
-        finishReason,
-        nativeFinishReason,
-        detail,
-        inputTokens ?? 0,
-        outputTokens ?? 0,
+        parsed.finishReason,
+        parsed.nativeFinishReason,
+        parsed.emptyDetail,
+        parsed.inputTokens ?? 0,
+        parsed.outputTokens ?? 0,
+        exchange,
       )
     }
-    if (inputTokens === null || outputTokens === null) {
+    if (parsed.inputTokens === null || parsed.outputTokens === null) {
       throw new Error(`reference endpoint omitted token usage for ${route.model}`)
     }
-    return { content, inputTokens, outputTokens, provider }
+    return {
+      content: parsed.content,
+      inputTokens: parsed.inputTokens,
+      outputTokens: parsed.outputTokens,
+      provider: parsed.provider,
+      exchange,
+    }
   } finally {
     clearTimeout(timeout)
+  }
+}
+
+function parseCompletion(anthropic: boolean, responseBody: string): {
+  content: string | null
+  inputTokens: number | null
+  outputTokens: number | null
+  provider: string | null
+  finishReason: string | null
+  nativeFinishReason: string | null
+  emptyDetail: string
+} {
+  if (anthropic) {
+    const parsed = JSON.parse(responseBody) as {
+      content?: Array<{ type?: unknown; text?: unknown }>
+      stop_reason?: unknown
+      usage?: { input_tokens?: unknown; output_tokens?: unknown }
+    }
+    const text = (parsed.content ?? [])
+      .filter((block) => block?.type === 'text' && typeof block.text === 'string')
+      .map((block) => block.text as string)
+      .join('')
+    const stopReason = optionalString(parsed.stop_reason)
+    const finishReason = stopReason === 'max_tokens' ? 'length' : stopReason
+    const outputTokens = nonNegativeInteger(parsed.usage?.output_tokens)
+    return {
+      content: text.trim() ? text : null,
+      inputTokens: nonNegativeInteger(parsed.usage?.input_tokens),
+      outputTokens,
+      provider: null,
+      finishReason,
+      nativeFinishReason: stopReason,
+      emptyDetail: JSON.stringify({ finishReason, nativeFinishReason: stopReason, completionTokens: outputTokens }),
+    }
+  }
+  const parsed = JSON.parse(responseBody) as {
+    provider?: unknown
+    choices?: Array<{ message?: { content?: unknown }; finish_reason?: unknown; native_finish_reason?: unknown }>
+    usage?: {
+      prompt_tokens?: unknown
+      completion_tokens?: unknown
+      completion_tokens_details?: { reasoning_tokens?: unknown }
+    }
+  }
+  const choice = parsed.choices?.[0]
+  const finishReason = optionalString(choice?.finish_reason)
+  const nativeFinishReason = optionalString(choice?.native_finish_reason)
+  return {
+    content: completionText(choice?.message?.content),
+    inputTokens: nonNegativeInteger(parsed.usage?.prompt_tokens),
+    outputTokens: nonNegativeInteger(parsed.usage?.completion_tokens),
+    provider: optionalString(parsed.provider),
+    finishReason,
+    nativeFinishReason,
+    emptyDetail: JSON.stringify({
+      finishReason,
+      nativeFinishReason,
+      completionTokens: parsed.usage?.completion_tokens ?? null,
+      reasoningTokens: parsed.usage?.completion_tokens_details?.reasoning_tokens ?? null,
+    }),
+  }
+}
+
+/** Converts an OpenAI chat body to the Anthropic Messages API: system prompts move to `system`. */
+function toAnthropicMessagesBody(body: Record<string, unknown>): Record<string, unknown> {
+  const { messages, max_tokens: maxTokens, ...rest } = body
+  const system: string[] = []
+  const turns: Array<{ role: string; content: unknown }> = []
+  for (const message of (messages ?? []) as Array<{ role: string; content: unknown }>) {
+    if (message.role === 'system' && typeof message.content === 'string') system.push(message.content)
+    else turns.push({ role: message.role, content: message.content })
+  }
+  return {
+    ...rest,
+    ...(system.length > 0 ? { system: system.join('\n\n') } : {}),
+    messages: turns,
+    max_tokens: maxTokens ?? MAX_TOKENS,
   }
 }
 
@@ -1642,6 +1878,7 @@ class EmptyReferenceResponseError extends Error {
     readonly detail = '',
     readonly inputTokens = 0,
     readonly outputTokens = 0,
+    readonly exchange?: ReferenceRawExchange,
   ) {
     super(`reference endpoint returned no text content${detail ? `: ${detail}` : ''}`)
   }
@@ -1733,8 +1970,40 @@ function resolveReferenceRequestRoute(input: {
   catalog: VerifierModelCatalog | null
   referenceRoute?: ResolvedVerifierModelConfig['referenceRoute']
   referenceProvider?: ResolvedVerifierModelConfig['referenceProvider']
+  upstream?: { name: string; model?: string; config: VerifierUpstreamConfig | undefined }
   buyerProxyPort?: number
 }): ReferenceRequestRoute {
+  if (input.upstream && input.referenceRoute?.type !== 'antseed') {
+    const config = input.upstream.config
+    if (!config) throw new Error(`verifier.upstreams.${input.upstream.name} is not configured`)
+    if (config.type === 'antseed') throw new Error(`antseed upstream ${input.upstream.name} must resolve to a referenceRoute`)
+    const apiKey = (config.apiKeyEnv ? process.env[config.apiKeyEnv] : undefined) ?? config.apiKey
+    if (!apiKey) {
+      throw new Error(
+        `verifier.upstreams.${input.upstream.name} has no API key`
+        + (config.apiKeyEnv ? `; set ${config.apiKeyEnv}` : ''),
+      )
+    }
+    const model = (input.upstream.model ?? input.model).trim()
+    return {
+      type: 'direct',
+      baseUrl: config.baseUrl.replace(/\/+$/, ''),
+      model,
+      apiKey,
+      requestOverrides: config.type === 'openrouter'
+        ? resolveReferenceRequestOverrides(input.model, input.catalog)
+        : {},
+      requestOmissions: config.type === 'anthropic' ? ['top_p'] : [],
+      upstream: { name: input.upstream.name, type: config.type },
+      ...(config.type === 'anthropic' ? { protocol: 'anthropic-messages' as const } : {}),
+      ...(input.referenceProvider && config.type === 'openrouter' ? {
+        providerRouting: {
+          order: input.referenceProvider.order.map((provider) => provider.trim()),
+          allow_fallbacks: false as const,
+        },
+      } : {}),
+    }
+  }
   if (input.referenceRoute?.type === 'antseed') {
     const port = input.buyerProxyPort
     if (!Number.isInteger(port) || port! < 1 || port! > 65_535) {
@@ -1748,6 +2017,7 @@ function resolveReferenceRequestRoute(input: {
       pricing: input.referenceRoute.pricing,
       requestOverrides: {},
       requestOmissions: ['temperature', 'top_p'],
+      ...(input.upstream ? { upstream: { name: input.upstream.name, type: 'antseed' as const } } : {}),
     }
   }
   return {
@@ -1884,4 +2154,74 @@ function assertNonNegativeInteger(value: number, name: string): void {
 
 function referencePath(referencesDir: string, model: string): string {
   return join(referencesDir, `${safeServiceSlug(model)}.json`)
+}
+
+function referenceExchangesPath(referencesDir: string, model: string): string {
+  return join(referencesDir, `${safeServiceSlug(model)}.exchanges.json`)
+}
+
+function referenceReasoningStrategy(route: ReferenceRequestRoute): ReferenceEndpointRequestV1['reasoningStrategy'] {
+  if (route.type === 'antseed') return BARE_REASONING_STRATEGY
+  if ('reasoning' in route.requestOverrides) return MINIMUM_SUPPORTED_REASONING_STRATEGY
+  if ('reasoning_effort' in route.requestOverrides) return DISABLED_REASONING_STRATEGY
+  return BARE_REASONING_STRATEGY
+}
+
+/** Builds from different upstreams get different source ids, so their probes never share a bank. */
+function referenceSourceId(endpoint: VerifierReferenceEndpointConfig, route: ReferenceRequestRoute): string {
+  if (route.type === 'antseed') return `${endpoint.sourceId}:antseed:${route.peerId}:${route.model}`
+  if (route.upstream) return `upstream:${route.upstream.name}:${route.upstream.type}:${route.model}`
+  return endpoint.sourceId
+}
+
+function referenceUpstreamProvenance(
+  endpoint: VerifierReferenceEndpointConfig,
+  route: ReferenceRequestRoute,
+): ReferenceUpstreamProvenanceV1 {
+  const type: ReferenceUpstreamType = route.type === 'antseed'
+    ? 'antseed'
+    : route.upstream?.type ?? (/openrouter\.ai/i.test(endpoint.baseUrl) ? 'openrouter' : 'openai')
+  return {
+    name: route.upstream?.name ?? 'referenceEndpoint',
+    type,
+    baseUrl: route.baseUrl,
+    model: route.model,
+    protocol: route.protocol ?? 'openai-chat-completions',
+    request: { overrides: route.requestOverrides, omissions: [...route.requestOmissions] },
+    providerPin: route.providerRouting ? [...route.providerRouting.order] : null,
+    ...(route.peerId ? { peerId: route.peerId } : {}),
+  }
+}
+
+async function writeReferenceExchanges(input: {
+  path: string
+  model: string
+  upstream: ReferenceUpstreamProvenanceV1
+  checkpoint: ReferenceBuildCheckpoint
+}): Promise<ReferenceExchangesFileV1> {
+  const exchanges = await input.checkpoint.readExchanges()
+  const document: ReferenceExchangesV1 = {
+    version: 1,
+    kind: 'antseed-reference-exchanges',
+    model: input.model,
+    upstream: input.upstream,
+    requestCount: input.checkpoint.requestsUsed,
+    exchangeCount: exchanges.length,
+    exchanges,
+  }
+  const bytes = Buffer.from(canonicalJsonStringify(document), 'utf8')
+  await writeTextAtomic(input.path, bytes.toString('utf8'))
+  return {
+    path: input.path,
+    sha256: `sha256:${sha256Hex(bytes)}`,
+    upstream: input.upstream,
+    exchangeCount: exchanges.length,
+    requestCount: input.checkpoint.requestsUsed,
+  }
+}
+
+async function removeIfExists(path: string): Promise<void> {
+  await unlink(path).catch((error: NodeJS.ErrnoException) => {
+    if (error.code !== 'ENOENT') throw error
+  })
 }

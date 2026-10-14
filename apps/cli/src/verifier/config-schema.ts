@@ -60,6 +60,40 @@ export const VerifierReferenceProviderSchema = strictObject({
   ).refine((values) => values.length > 0, 'must list at least one provider'),
 })
 
+const VerifierApiUpstreamSchema = strictObject({
+  type: z.enum(['openrouter', 'openai', 'anthropic']),
+  baseUrl: nonEmptyStringSchema,
+  apiKey: z.string().optional(),
+  apiKeyEnv: nonEmptyStringSchema.optional(),
+})
+
+/**
+ * One Antseed seller, reached through the local buyer proxy and pinned to its peer id.
+ * Only use a seller you trust: if it serves a different model, the reference is wrong too.
+ */
+const VerifierAntseedUpstreamSchema = strictObject({
+  type: z.literal('antseed'),
+  peerId: z.string().regex(PEER_ID_PATTERN, 'must be a 40-character hex peer id'),
+})
+
+/**
+ * A named source of reference answers: OpenRouter, any OpenAI-compatible Chat
+ * Completions API, the native Anthropic Messages API, or a trusted Antseed seller.
+ */
+export const VerifierUpstreamSchema = z.discriminatedUnion('type', [
+  VerifierApiUpstreamSchema,
+  VerifierAntseedUpstreamSchema,
+])
+
+/** Sends a model's own reference requests to a named upstream instead of `referenceEndpoint`. */
+export const VerifierModelUpstreamSchema = strictObject({
+  name: nonEmptyStringSchema,
+  /** Model id on that upstream (the seller's service for `antseed`); defaults to `upstreamModel`. */
+  model: nonEmptyStringSchema.optional(),
+  /** What the seller charges; required for an `antseed` upstream. */
+  pricing: VerifierModelPricingSchema.optional(),
+})
+
 export const VerifierReferenceModelSchema = strictObject({
   enabled: z.boolean().optional(),
   serviceAliases: uniqueStringsSchema(
@@ -70,6 +104,7 @@ export const VerifierReferenceModelSchema = strictObject({
   pricing: VerifierModelPricingSchema.optional(),
   referenceRoute: VerifierAntseedReferenceRouteSchema.optional(),
   referenceProvider: VerifierReferenceProviderSchema.optional(),
+  upstream: VerifierModelUpstreamSchema.optional(),
   contrastModels: uniqueStringsSchema(
     'must be a string array when provided',
     'must not contain duplicates',
@@ -131,6 +166,7 @@ export const VerifierConfigSchema = strictObject({
   /** Rechecks of a first DIFF on fresh probes before it is submitted: 1 (default) or 0 to turn rechecks off. */
   diffConfirmationRuns: z.number().int().min(0).max(1).optional(),
   contrastSelection: VerifierContrastSelectionSchema.optional(),
+  upstreams: z.record(z.string(), VerifierUpstreamSchema).optional(),
   referenceEndpoint: VerifierReferenceEndpointSchema.optional(),
   referenceMaxRequestsPerBuild: positiveIntegerSchema.optional(),
   referenceBatchRetryCount: z.number().int().min(0, 'must be an integer >= 0').optional(),
@@ -195,6 +231,37 @@ export const VerifierConfigSchema = strictObject({
         message: 'must be omitted when referenceRoute sends reference requests through an Antseed peer',
       })
     }
+    if (model.upstream) {
+      const upstream = config.upstreams?.[model.upstream.name]
+      if (!upstream) {
+        context.addIssue({
+          code: 'custom',
+          path: [...modelPath, 'upstream', 'name'],
+          message: 'must name an entry in verifier.upstreams',
+        })
+      }
+      if (model.referenceRoute) {
+        context.addIssue({
+          code: 'custom',
+          path: [...modelPath, 'upstream'],
+          message: 'must be omitted when referenceRoute sends reference requests through an Antseed peer',
+        })
+      }
+      if (model.referenceProvider && upstream && upstream.type !== 'openrouter') {
+        context.addIssue({
+          code: 'custom',
+          path: [...modelPath, 'referenceProvider'],
+          message: 'is only supported with an openrouter upstream',
+        })
+      }
+      if (upstream?.type === 'antseed' && !model.upstream.pricing) {
+        context.addIssue({
+          code: 'custom',
+          path: [...modelPath, 'upstream', 'pricing'],
+          message: 'is required for an antseed upstream',
+        })
+      }
+    }
 
     const hasExplicitContrasts = (model.contrastModels?.length ?? 0) > 0
     if ((model.contrastModels?.length ?? 0) > maxContrastModels) {
@@ -236,6 +303,7 @@ export type VerifierAntseedReferenceRouteConfig = z.infer<typeof VerifierAntseed
 export type VerifierReferenceProviderConfig = z.infer<typeof VerifierReferenceProviderSchema>
 export type VerifierReferenceModelConfig = z.infer<typeof VerifierReferenceModelSchema>
 export type VerifierContrastModelConfig = z.infer<typeof VerifierContrastModelSchema>
+export type VerifierUpstreamConfig = z.infer<typeof VerifierUpstreamSchema>
 export type VerifierReferenceEndpointConfig = z.infer<typeof VerifierReferenceEndpointSchema>
 
 function formatConfigPath(rootPath: string, issuePath: PropertyKey[]): string {

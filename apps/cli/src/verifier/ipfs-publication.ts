@@ -62,7 +62,8 @@ class PinataUploadError extends Error {
 /**
  * Packages one model audit's evidence for public pinning: the canonical evidence document,
  * the exported KBF references, and each referenced seller's hash-committed `evidence.json`,
- * which already embeds every signed exchange. The per-batch `exchanges/` copies are not published.
+ * which already embeds every signed exchange, and the raw upstream exchanges behind the references
+ * (`reference-evidence/`). The per-batch `exchanges/` copies are not published.
  * Paths mirror the evidence directory so the document's relative links resolve inside the CID.
  */
 export async function prepareAuditPublication(input: {
@@ -75,6 +76,10 @@ export async function prepareAuditPublication(input: {
   evidenceBytes: Uint8Array
   referencePaths: string[]
   auditEvidencePaths: string[]
+  /** Raw upstream request/response files behind the references. */
+  referenceEvidencePaths?: string[]
+  /** Reference upstreams (type, base URL, model, request settings); never API keys. */
+  upstreams?: unknown[]
 }): Promise<PreparedVerificationPublication> {
   const evidenceRoot = resolve(input.evidenceDir)
   const publicationPath = (path: string): string => portablePath(evidenceRoot, path)
@@ -83,6 +88,9 @@ export async function prepareAuditPublication(input: {
   for (const path of [...input.referencePaths].sort()) addPublicationFile(files, publicationPath(path), await readFile(path))
   for (const evidencePath of [...new Set(input.auditEvidencePaths)].sort()) {
     addPublicationFile(files, publicationPath(evidencePath), await readFile(evidencePath))
+  }
+  for (const path of [...new Set(input.referenceEvidencePaths ?? [])].sort()) {
+    addPublicationFile(files, publicationPath(path), await readFile(path))
   }
 
   const evidenceFiles = [...files.values()].sort((left, right) => left.path.localeCompare(right.path))
@@ -98,7 +106,9 @@ export async function prepareAuditPublication(input: {
       sellerSignedResponses: true,
       exactSignedPreimages: true,
       onChainEvidenceUri: true,
+      rawReferenceExchanges: (input.referenceEvidencePaths?.length ?? 0) > 0,
     },
+    upstreams: input.upstreams ?? [],
     fileCount: evidenceFiles.length,
     totalBytes: evidenceFiles.reduce((total, file) => total + file.size, 0),
     files: evidenceFiles.map((file) => ({ path: file.path, size: file.size, sha256: file.sha256 })),
