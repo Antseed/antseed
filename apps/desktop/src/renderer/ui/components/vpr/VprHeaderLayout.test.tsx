@@ -13,6 +13,7 @@ vi.mock('../../hooks/useTeeVerification', () => ({ useTeeBackgroundVerification:
 beforeEach(() => {
   const state = createInitialUiState();
   state.creditsTotalOwnedUsdc = '69.13';
+  state.creditsBalanceKnown = true;
   initStore(state);
 });
 

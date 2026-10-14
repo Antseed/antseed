@@ -37,6 +37,7 @@ test('seller free-tier fields can be created before the optional block exists', 
   assert.equal(isDynamicKey('seller.freeTier.maxRequestsPerIp'), true);
   assert.equal(isDynamicKey('seller.freeTier.windowMs'), true);
   assert.equal(isDynamicKey('seller.freeTier.typo'), false);
+  assert.equal(isDynamicKey('seller.restrictedCountries'), true);
   const config = createDefaultConfig() as unknown as Record<string, unknown>;
   setConfigValue(config, 'seller.freeTier.maxRequestsPerAddress', '100');
   setConfigValue(config, 'seller.freeTier.maxRequestsPerIp', '300');

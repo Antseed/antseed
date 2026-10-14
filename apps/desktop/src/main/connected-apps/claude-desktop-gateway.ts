@@ -6,7 +6,7 @@ import path from 'node:path';
 import {
   CLAUDE_GATEWAY_DEFAULT_PORT,
   ROUTED_MODEL_ALIAS,
-} from '../system-proxy/config-patch.js';
+} from '@antseed/connected-apps/config-patch';
 
 /**
  * Loopback gateway for Claude Desktop's native third-party inference mode.

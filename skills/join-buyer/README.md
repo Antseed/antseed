@@ -1,6 +1,6 @@
 # join-buyer
 
-Set up an Antseed buyer on the agent's machine: install the CLI, start the local buyer proxy, fund it, and point any OpenAI- or Anthropic-compatible tool at `http://localhost:8377`.
+Set the user up with their own Antseed gateway, run as the Gateway Console: install and start it, have the user claim the console and add funds, create an API key, and point any OpenAI- or Anthropic-compatible tool at `http://localhost:8379/v1` (or the server's HTTPS URL).
 
 ## Install
 
@@ -16,24 +16,23 @@ You can also point an agent directly at [`SKILL.md`](SKILL.md).
 
 ## Prerequisites
 
-Node.js 20+ and `npm`. Nothing else: no account, no API key. Paid models need USDC on Base, which the skill walks the user through depositing; free models need no funds.
+macOS or Linux with Node.js 20+ and `npm`; a Linux server with systemd for an always-on gateway. No account. The user needs a browser to claim the console with a passkey and, for paid models, to add funds by card or USDC on Base. Free models need no funds.
 
 ## Parameters
 
 Provide the skill with any of these; it asks for what it cannot infer:
 
-- `tool` — what to connect: `claude-code`, `codex`, `opencode`, `hermes`, `openclaw`, `cursor`, `aider`, `python`, `curl`, or `any` (default)
-- `chain` — `base-mainnet` (default) or `base-sepolia`
-- `proxy_url` — buyer URL; default `http://localhost:8377`
-- `data_dir` — optional dedicated data directory for an isolated buyer
+- `where` — `local` (default) or `server`
+- `domain` — for a server: the hostname to serve HTTPS at
+- `tool` — what to connect: `claude-code`, `codex`, `opencode`, `hermes`, `openclaw`, `cursor`, `python`, `curl`, or `any` (default)
 
-The skill installs `@antseed/cli`, writes the chain config, starts `antseed buyer start`, verifies `/v1/models`, funds the buyer with `antseed buyer deposit` when paid models are wanted, then configures the chosen tool.
+The skill runs `curl -fsSL https://antseed.com/install.sh | bash` (or `npm install -g @antseed/cli` and `antseed gateway start`), hands the user the one-time console setup link, waits while they claim the console and fund it in **Wallet & Funding**, creates an API key, configures the chosen tool and verifies a first request in the console's **Logs**. It also covers the plain local buyer proxy (`antseed buyer start` on port 8377) as a fallback.
 
 ## Example prompt
 
 ```text
-Use the join-buyer skill to set this machine up as an Antseed buyer and
+Use the join-buyer skill to set up an Antseed gateway on this machine and
 route Claude Code through it.
 ```
 
-See [SKILL.md](SKILL.md) for the step-by-step instructions, routing and pinning rules, safety rules, and error handling.
+See [SKILL.md](SKILL.md) for the step-by-step instructions, the console steps, tool configuration, safety rules, and error handling.

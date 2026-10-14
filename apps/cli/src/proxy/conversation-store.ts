@@ -296,12 +296,15 @@ export class ConversationStore {
     return this._byId.get(conversationId(tool, sessionKey))?.pinnedModel ?? null
   }
 
-  recordRoutedModel(id: string, routedModel: string): StoredConversation | null {
+  /** `pinAtRouting`: the chat's pin when the request was routed. If it has
+      changed since (switched mid-flight), the newer pin is kept. */
+  recordRoutedModel(id: string, routedModel: string, pinAtRouting?: string | null): StoredConversation | null {
     const existing = this._byId.get(id)
     if (!existing) return null
     const record = {
       ...existing,
-      pinnedModel: existing.peerSource === 'user' && existing.pinnedModel
+      pinnedModel: (existing.peerSource === 'user' && existing.pinnedModel)
+        || (pinAtRouting !== undefined && existing.pinnedModel !== pinAtRouting)
         ? existing.pinnedModel
         : routedModel,
       lastModel: routedModel,

@@ -50,6 +50,7 @@ export class VerificationSampler {
 
   async maybeStoreResponseAuthSample(input: ResponseAuthSampleInput): Promise<StoredVerificationSample | null> {
     if (!input.verified) return null;
+    if (input.response.streamedBody) return null;
     if (!this.shouldSample()) return null;
 
     const requestBytes = encodeHttpRequest(input.request);

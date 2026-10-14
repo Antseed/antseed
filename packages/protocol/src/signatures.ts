@@ -133,7 +133,7 @@ export interface ReceiveAuthorizationMessage {
 // =========================================================================
 
 /**
- * SpendingAuth metadata v3.
+ * SpendingAuth metadata v4.
  *
  * ABI layout:
  *   abi.encode(
@@ -142,6 +142,8 @@ export interface ReceiveAuthorizationMessage {
  *     uint256 cumulativeOutputTokens,
  *     uint256 cumulativeRequestCount,
  *     uint256 cumulativeOutputImages,
+ *     uint256 cumulativeVideoGenerations,
+ *     uint256 cumulativeVideoSeconds,
  *     ServiceTotal[] services
  *   )
  *
@@ -149,7 +151,7 @@ export interface ReceiveAuthorizationMessage {
  * aggregate token/request counters by decoding only those fields. Service
  * entries are buyer-side attribution metadata for indexers: input tokens
  * include cached input, with cached input broken out separately. The service
- * tuple appends cumulativeOutputImages after the v2 fields; decoders must
+ * tuple appends image and video counters after the v2 fields; decoders must
  * switch on the leading version word before decoding the services array.
  *
  * Generated images are counted twice, deliberately:
@@ -248,8 +250,7 @@ export function attributionTailAbi(attribution: UsageAttribution | undefined): {
 export function decodeMetadataAttribution(encoded: string): { clientId: string; invite: ReferralInvite | null } | null {
   const coder = AbiCoder.defaultAbiCoder();
   const [version] = coder.decode(['uint256'], encoded) as unknown as [bigint];
-  // v3 metadata carries five static words (adds cumulativeOutputImages); v1/v2 carry four.
-  const staticWords = version === METADATA_VERSION ? 5 : 4;
+  const staticWords = metadataStaticWords(version);
   const headWords = staticWords + 1 + ATTRIBUTION_TAIL_TYPES.length;
   // Head (with tail) plus the services length word.
   if ((encoded.length - 2) / 64 < headWords + 1) return null;
@@ -263,12 +264,25 @@ export function decodeMetadataAttribution(encoded: string): { clientId: string; 
   };
 }
 
+/**
+ * Static head words before the services-array offset, by metadata version:
+ * v4 adds the two video counters, v3 adds cumulativeOutputImages, v1/v2 (and
+ * FreeUsage v1) carry version, in, out and requests. Mirrors AntseedStatsV2.
+ */
+export function metadataStaticWords(version: bigint): number {
+  if (version === 4n) return 7;
+  if (version === 3n) return 5;
+  return 4;
+}
+
 export interface SpendingAuthMetadata {
   cumulativeInputTokens: bigint;
   cumulativeOutputTokens: bigint;
   cumulativeRequestCount: bigint;
   /** Optional so FreeUsageMetadata-shaped objects remain assignable; encodes as 0. */
   cumulativeOutputImages?: bigint;
+  cumulativeVideoGenerations?: bigint;
+  cumulativeVideoSeconds?: bigint;
   services?: SpendingAuthServiceMetadata[];
   /** Optional client / invite attribution tail; omitted when unset. */
   attribution?: UsageAttribution;
@@ -282,19 +296,21 @@ export interface SpendingAuthServiceMetadata {
   cumulativeOutputTokens: bigint;
   cumulativeRequestCount: bigint;
   cumulativeOutputImages: bigint;
+  cumulativeVideoGenerations?: bigint;
+  cumulativeVideoSeconds?: bigint;
 }
 
-export const METADATA_VERSION = 3n;
+export const METADATA_VERSION = 4n;
 
 /**
- * Flat output-token equivalent credited per generated image in v3 metadata
+ * Flat output-token equivalent credited per generated image in payment metadata
  * (Gemini 2.5 Flash Image's published rate). Attribution only — never feeds
  * cost verification. Bound to METADATA_VERSION: changing it requires a bump.
  */
 export const OUTPUT_IMAGE_TOKEN_EQUIVALENT = 1290n;
 
 const SERVICE_METADATA_ABI_TYPE =
-  'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]';
+  'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]';
 
 /** v2 service tuple, still used by FreeUsage metadata v1 (no image counter). */
 const SERVICE_METADATA_ABI_TYPE_V2 =
@@ -304,16 +320,22 @@ export function encodeMetadata(metadata: SpendingAuthMetadata): string {
   const coder = AbiCoder.defaultAbiCoder();
   const services = [...(metadata.services ?? [])].sort((a, b) =>
     a.serviceId < b.serviceId ? -1 : a.serviceId > b.serviceId ? 1 : 0,
-  );
+  ).map((service) => ({
+    ...service,
+    cumulativeVideoGenerations: service.cumulativeVideoGenerations ?? 0n,
+    cumulativeVideoSeconds: service.cumulativeVideoSeconds ?? 0n,
+  }));
   const tail = attributionTailAbi(metadata.attribution);
   return coder.encode(
-    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE, ...tail.types],
+    ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', SERVICE_METADATA_ABI_TYPE, ...tail.types],
     [
       METADATA_VERSION,
       metadata.cumulativeInputTokens,
       metadata.cumulativeOutputTokens,
       metadata.cumulativeRequestCount,
       metadata.cumulativeOutputImages ?? 0n,
+      metadata.cumulativeVideoGenerations ?? 0n,
+      metadata.cumulativeVideoSeconds ?? 0n,
       services,
       ...tail.values,
     ],
@@ -331,6 +353,8 @@ export interface ServiceMetadataDelta {
   outputTokens: bigint;
   requests: bigint;
   outputImages: bigint;
+  videoGenerations?: bigint;
+  videoSeconds?: bigint;
 }
 
 export function withServiceMetadata<T extends { services?: SpendingAuthServiceMetadata[] }>(
@@ -354,6 +378,8 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeOutputTokens: 0n,
     cumulativeRequestCount: 0n,
     cumulativeOutputImages: 0n,
+    cumulativeVideoGenerations: 0n,
+    cumulativeVideoSeconds: 0n,
   };
 
   byServiceId.set(serviceId, {
@@ -364,6 +390,8 @@ export function withServiceMetadata<T extends { services?: SpendingAuthServiceMe
     cumulativeOutputTokens: existing.cumulativeOutputTokens + delta.outputTokens,
     cumulativeRequestCount: existing.cumulativeRequestCount + delta.requests,
     cumulativeOutputImages: (existing.cumulativeOutputImages ?? 0n) + delta.outputImages,
+    cumulativeVideoGenerations: (existing.cumulativeVideoGenerations ?? 0n) + (delta.videoGenerations ?? 0n),
+    cumulativeVideoSeconds: (existing.cumulativeVideoSeconds ?? 0n) + (delta.videoSeconds ?? 0n),
   });
 
   return {
@@ -383,6 +411,8 @@ export const ZERO_METADATA: SpendingAuthMetadata = {
   cumulativeOutputTokens: 0n,
   cumulativeRequestCount: 0n,
   cumulativeOutputImages: 0n,
+  cumulativeVideoGenerations: 0n,
+  cumulativeVideoSeconds: 0n,
   services: [],
 };
 

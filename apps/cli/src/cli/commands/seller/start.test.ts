@@ -1,5 +1,23 @@
 import assert from 'node:assert/strict';
 import test from 'node:test';
+
+test('native video runtime configuration maps each video seller endpoint to its credentials', () => {
+  for (const [plugin, prefix, protocol] of [['venice-video', 'VENICE_VIDEO', 'venice-video'], ['fal-video', 'FAL_VIDEO', 'fal-video']] as const) {
+    const config = createDefaultConfig();
+    config.seller.providers = { video: { plugin, baseUrl: 'https://seller.example.test', apiKeyEnv: 'TEST_VIDEO_KEY', services: { model: { unitBillingModels: { [protocol]: { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } } } } };
+    const previous = process.env['TEST_VIDEO_KEY'];
+    process.env['TEST_VIDEO_KEY'] = 'seller-key';
+    try {
+      const env = buildSellerPluginRuntimeEnv(config.seller, 'video');
+      assert.equal(env[`${prefix}_BASE_URL`], 'https://seller.example.test');
+      assert.equal(env[`${prefix}_API_KEY`], 'seller-key');
+      assert.equal(JSON.parse(env['ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON']!).model[protocol].components[0].unit, 'video_seconds');
+    } finally {
+      if (previous === undefined) delete process.env['TEST_VIDEO_KEY'];
+      else process.env['TEST_VIDEO_KEY'] = previous;
+    }
+  }
+});
 import { createDefaultConfig } from '../../../config/defaults.js';
 import { resolveEffectiveSellerConfig } from '../../../config/effective.js';
 import { requireCryptoConfig, resolveBaseRpcUrlOverride } from '../../payment-utils.js';

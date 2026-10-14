@@ -135,8 +135,18 @@ export class TrustSignalsClient {
    * id are omitted from the result.
    */
   async read(sellers: readonly string[]): Promise<Map<string, TrustSignals>> {
+    return (await this.readWithMisses(sellers)).signals;
+  }
+
+  /**
+   * Like `read`, and also reports which sellers the registry confirmed have
+   * no agent id, so a caller can tell them apart from sellers whose agent-id
+   * read failed (e.g. a throttled call), which are in neither.
+   */
+  async readWithMisses(sellers: readonly string[]): Promise<{ signals: Map<string, TrustSignals>; unregistered: Set<string> }> {
     const out = new Map<string, TrustSignals>();
-    if (sellers.length === 0) return out;
+    const unregistered = new Set<string>();
+    if (sellers.length === 0) return { signals: out, unregistered };
     const { sellerRegistry, channels, sellerPools, usageAccounting, washTradingRegistry } = this._addresses;
 
     // Round 1: agent ids, wash verdicts, current epoch.
@@ -154,7 +164,11 @@ export class TrustSignalsClient {
     const agentIds = new Map<string, number>();
     for (const call of round1Calls) {
       const agentId = toSafeNumber(round1.value(call.agentId));
-      if (!agentId || agentId <= 0) continue;
+      if (agentId === undefined) continue;
+      if (agentId <= 0) {
+        unregistered.add(call.seller);
+        continue;
+      }
       agentIds.set(call.seller, agentId);
       const signals: TrustSignals = { agentId };
       const flagged = round1.value(call.washFlagged);
@@ -163,7 +177,7 @@ export class TrustSignalsClient {
       if (share !== undefined) signals.washShareBps = share;
       out.set(call.seller, signals);
     }
-    if (agentIds.size === 0) return out;
+    if (agentIds.size === 0) return { signals: out, unregistered };
 
     // Round 2: channel stats, pool power, last epoch's recognized usage.
     const poolsEnabled = Boolean(sellerPools) && epoch !== undefined;
@@ -204,6 +218,6 @@ export class TrustSignalsClient {
         signals.usageShareBps = epoch === 0 ? 0 : shareBps(points, totalPoints);
       }
     }
-    return out;
+    return { signals: out, unregistered };
   }
 }

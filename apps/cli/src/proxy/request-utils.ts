@@ -1,5 +1,5 @@
 import { shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
-import { extractRequestBodyFields, parseJsonObject } from '@antseed/api-adapter'
+import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
   return ['1', 'true', 'yes', 'on'].includes((value ?? '').trim().toLowerCase())
@@ -42,6 +42,7 @@ export function parsePeerPinnedService(value: string): { peerId: string; service
 }
 
 export function extractRequestedService(request: SerializedHttpRequest): string | null {
+  if (nativeVideoRoute(request)) return requestService(request) ?? null
   const contentType = getHeader(request.headers, 'content-type').toLowerCase()
   if (!contentType.includes('application/json') && !contentType.startsWith('multipart/form-data')) {
     return null
@@ -315,6 +316,10 @@ export const SYSTEM_ROUTED_MODEL_HEADER = 'x-antseed-system-routed'
     traffic is attributed to the Connected App profile that captured it,
     rather than to a generic SDK User-Agent. Stripped before dispatch. */
 export const SYSTEM_PROXY_SOURCE_HEADER = 'x-antseed-system-proxy-source'
+
+/** Names the stored buyer identity (wallet) that pays for a request; absent
+    means the default identity. Local to the buyer — stripped before dispatch. */
+export const BUYER_IDENTITY_HEADER = 'x-antseed-buyer-identity'
 
 /**
  * Replace a proxy-assigned model with the chat's pinned route. Only used for

@@ -183,6 +183,22 @@
   display: block;
 }
 
+.peerMark,
+.paymentRailMark {
+  display: block;
+  object-fit: contain;
+}
+
+.peerMark {
+  border-radius: 7px;
+}
+
+.paymentRailMark {
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+}
+
 /* Trailing chevron on a method row — quiet "this opens a screen" affordance. */
 .methodArrow {
   flex: 0 0 auto;
@@ -278,6 +294,10 @@
   color: var(--text-faint, var(--text-secondary));
   font-size: 11px;
   line-height: 14px;
+}
+
+.amountHintWarn {
+  color: var(--text-secondary);
 }
 
 .amountRow {

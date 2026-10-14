@@ -83,7 +83,7 @@ function WhatAProviderSees() {
         <p className={styles.seesNote}>
           Your device checks a provider&apos;s TEE against Intel&apos;s own certificate chain before
           any payment, with no third party in between.{' '}
-          <Link to="/docs/guides/verify-tee" className={styles.setupLink}>
+          <Link to="/docs/verify-tee" className={styles.setupLink}>
             Read the TEE guide
             <ArrowRight size={16} />
           </Link>
@@ -170,7 +170,7 @@ function StaysOnYourMachine() {
       points={PRIVACY_POINTS}
       blocks={PRIVACY_TERMINAL_BLOCKS}
       ctaLabel="Read the TEE guide"
-      ctaTo="/docs/guides/verify-tee"
+      ctaTo="/docs/verify-tee"
     />
   );
 }
@@ -180,7 +180,7 @@ function StaysOnYourMachine() {
 const PRIVACY_FAQ = [
   {
     q: 'Can providers see my prompts?',
-    a: 'Standard providers can. TEE-verified providers cannot, because the hardware prevents it even if the operator wanted to look. When you pay for a TEE-verified request you receive a cryptographic attestation proving the enclave was genuine. <a href="/docs/guides/verify-tee">How verification works →</a>',
+    a: 'Standard providers can. TEE-verified providers cannot, because the hardware prevents it even if the operator wanted to look. When you pay for a TEE-verified request you receive a cryptographic attestation proving the enclave was genuine. <a href="/docs/verify-tee">How verification works →</a>',
   },
   {
     q: 'What does a provider learn about me?',

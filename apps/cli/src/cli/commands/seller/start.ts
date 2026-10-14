@@ -2,9 +2,11 @@ import type { Command } from 'commander'
 import chalk from 'chalk'
 import ora from 'ora'
 import { writeFile, unlink } from 'node:fs/promises'
+import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import { loadConfig } from '../../../config/loader.js'
+import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
   AntseedNode,
   ModelHealthChecker,
@@ -42,6 +44,7 @@ import { ensureDerivedIdentityDisplayName } from '../../../config/identity-displ
 import { AntAgentProvider, loadAntAgent, type AntAgentDefinition } from '@antseed/ant-agent'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
 import { startupReachabilityWarning } from './reachability.js'
+import { initializeProvider } from './provider-init.js'
 
 function getStateFile(dataDir: string): string {
   return join(dataDir, 'daemon.state.json')
@@ -317,6 +320,8 @@ export function buildSellerPluginRuntimeEnv(
     ? 'LOCAL_LLM'
     : pluginPackage === '@antseed/provider-typesafe'
       ? 'TYPESAFE'
+      : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
+      : pluginPackage === '@antseed/provider-fal-video' ? 'FAL_VIDEO'
       : 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl
@@ -462,11 +467,18 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
           }
           const runtimeEnv = buildSellerPluginRuntimeEnv(effectiveSellerConfig, providerName)
           const basePluginConfig = buildPluginConfig(configFields)
-          const pluginConfig = mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride })
+          const pluginConfig = {
+            ...mergeSellerRuntimeEnv(basePluginConfig, runtimeEnv, { forcePricingOverride }),
+            // Lets plugins keep small state (e.g. pending video download URLs) across restarts.
+            ANTSEED_DATA_DIR: globalOpts.dataDir,
+          }
           const provider = await plugin.createProvider(pluginConfig)
           if (provider.init) {
             spinner.text = `Validating credentials for "${providerName}"...`
-            await provider.init()
+            const ready = await initializeProvider(provider, effectiveSellerConfig.healthCheck?.enabled !== false)
+            if (!ready) {
+              spinner.warn(chalk.yellow(`Provider "${providerName}" OAuth unavailable; services hidden until health checks recover`))
+            }
           }
           providers.push(provider)
           spinner.succeed(chalk.green(`Provider "${providerName}" loaded via ${packageName}`))
@@ -612,7 +624,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         const rpcSource = baseRpcUrlOverride ? 'runtime override' : 'config/default'
         console.log(chalk.dim(`  Base RPC URL: ${paymentConfig.crypto.rpcUrl} (${rpcSource})`))
         if (isPublicRpcUrl(paymentConfig.crypto.rpcUrl)) {
-          console.log(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/config#base-rpc-url'))
+          console.log(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/buyer-config#base-rpc-url'))
         }
       }
       // CLI flag (decimal USDC) overrides config JSON (base-unit string).
@@ -640,6 +652,17 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       }
       if (gasCheckEnabled) {
         console.log(chalk.dim(`  gas checks: every ${Math.round(gasCheckIntervalMs / 1000)}s, pause advertising below ${formatEther(minGasBalanceWei)} ETH`))
+      }
+      const restrictedCountries = new Set(effectiveSellerConfig.restrictedCountries ?? DEFAULT_RESTRICTED_COUNTRIES)
+      let acceptInboundAddress: ((remoteAddress: string) => boolean) | undefined
+      if (restrictedCountries.size > 0) {
+        try {
+          const geoip = createRequire(import.meta.url)('geoip-country') as typeof import('geoip-country')
+          acceptInboundAddress = (ip) => !restrictedCountries.has(geoip.lookup(ip)?.country ?? '')
+          console.log(chalk.dim(`  restricted countries: ${[...restrictedCountries].join(', ')}`))
+        } catch (err) {
+          console.log(chalk.yellow(`  restricted countries: off, geoip-country failed to load (${(err as Error).message})`))
+        }
       }
       const maxUploadBodyBytes = parseOptionalPositiveIntegerEnv(process.env['ANTSEED_MAX_UPLOAD_BODY_BYTES'])
         ?? effectiveSellerConfig.maxUploadBodyBytes
@@ -711,10 +734,11 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         ...(signalingPort ? { signalingPort } : {}),
         ...(maxUploadBodyBytes !== undefined ? { maxUploadBodyBytes } : {}),
         ...(effectiveSellerConfig.freeTier ? { freeTier: effectiveSellerConfig.freeTier } : {}),
+        ...(effectiveSellerConfig.freeUsage ? { freeUsage: effectiveSellerConfig.freeUsage } : {}),
+        ...(acceptInboundAddress ? { acceptInboundAddress } : {}),
         payments: {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,
-          platformFeeRate: config.payments.platformFeeRate,
           settlementIdleMs: Number.isFinite(settlementIdleMs) ? settlementIdleMs : 30_000,
           defaultDepositAmountUSDC: defaultDepositAmountUSDCBaseUnits,
           sellerWalletAddress,
@@ -774,7 +798,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
-      for (const provider of registeredProviders) {
+      for (const [index, provider] of registeredProviders.entries()) {
+        // Preserve initial unavailability across optional agent wrappers.
+        if (providers[index]?.healthCheckAvailable === false) provider.healthCheckAvailable = false
         node.registerProvider(provider)
       }
 

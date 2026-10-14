@@ -1,6 +1,6 @@
 import type { Provider } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
-import type { ServiceApiProtocol } from '../types/service-api.js';
+import { isNativeVideoProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
 /** Default sweep interval. Each sweep sends one 1-token probe per advertised service. */
@@ -99,6 +99,19 @@ export class ModelHealthChecker {
     this._failureThreshold = Math.max(1, config.failureThreshold ?? DEFAULT_HEALTH_CHECK_FAILURE_THRESHOLD);
     this._probeTimeoutMs = config.probeTimeoutMs ?? DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS;
     this._onChange = config.onChange;
+    // Providers retained after an OAuth initialization failure must pass a real
+    // probe before any service is advertised. Keep their services in recovery
+    // state rather than dropping the provider permanently.
+    for (const { provider } of this._targets) {
+      if (provider.healthCheckAvailable !== false) continue;
+      for (const [index, service] of provider.services.entries()) {
+        const state = this._stateFor(provider.name, service);
+        state.removed = true;
+        state.removedAtIndex = index;
+        state.lastDetail = 'Awaiting successful probe after initialization failure';
+      }
+      provider.services.splice(0);
+    }
   }
 
   /** Start periodic sweeps. The first sweep runs immediately (async). */
@@ -319,7 +332,7 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
   // Image generations cost real money per probe; everything else has a
   // near-free minimal request shape.
-  return protocol !== 'openai-images';
+  return protocol !== 'openai-images' && !isNativeVideoProtocol(protocol);
 }
 
 /**
@@ -368,8 +381,8 @@ export function buildHealthProbeRequest(service: string, protocol: ServiceApiPro
         questions: { ok: { type: 'noul', instructions: 'Is the state the word ping?' } },
       };
       break;
-    case 'openai-images':
-      throw new Error('Health probes are not supported for openai-images services');
+    default:
+      throw new Error(`Health probes are not supported for ${protocol} services`);
   }
   return {
     requestId: `health-${Math.random().toString(36).slice(2, 10)}-${Date.now().toString(36)}`,

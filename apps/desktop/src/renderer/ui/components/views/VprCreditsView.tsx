@@ -6,6 +6,8 @@ import { useActions } from '../../hooks/useActions';
 import { shortAddress } from '../../../core/format';
 import { formatCompactTokens, VprCard, VprPage, VprStatRow, VprStatTile } from '../vpr/VprKit';
 import { BalanceSummaryCard } from './BalanceSummaryCard';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { ExportSignerKeyDialog, ImportSignerKeyDialog } from './SignerKeyDialogs';
 import styles from './VprCreditsView.module.scss';
 import { recordUserAction } from '../../../modules/telemetry/actions';
@@ -31,6 +33,7 @@ export function VprCreditsView({ onSelectView }: Props) {
   // Local to the button: background pollers (floating pill, payment events)
   // also refresh the summary, and mirroring their in-flight state here made
   // the button flip to "Refreshing..." constantly while traffic flowed.
+  const funding = useFundingStatus();
   const [refreshing, setRefreshing] = useState(false);
   const [exportKeyOpen, setExportKeyOpen] = useState(false);
   const [importKeyOpen, setImportKeyOpen] = useState(false);
@@ -72,6 +75,12 @@ export function VprCreditsView({ onSelectView }: Props) {
         <div className={styles.balanceGroup}>
           <BalanceSummaryCard
             values={balanceValues}
+            notice={(
+              <FundingStatusNotice
+                status={funding}
+                onManageSessions={() => onSelectView?.('activity')}
+              />
+            )}
             actions={(
               <div className={styles.payButtons}>
                 <button type="button" onClick={() => onSelectView?.('deposit')}>

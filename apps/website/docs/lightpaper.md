@@ -1,21 +1,21 @@
 ---
-sidebar_position: 1
 slug: /lightpaper
-title: Light Paper
+title: Light paper
+description: Why Antseed exists, how the peer-to-peer market for AI services works, and how buyers pay providers.
 hide_title: true
 ---
 
-# Light Paper
+# Light paper
 
-*April 2026*
+*Last updated October 2026*
 
-## The Thesis
+## The thesis
 
 Open-source AI models are getting more powerful every quarter. They are also getting smaller and easier to run. Models that required a data center two years ago now run on a single GPU. Models that required a GPU will soon run on a laptop. The result: more providers can offer top-tier open-source models, from inference companies and GPU operators to individuals running models at home.
 
 This is the trend Antseed is built on. As open-source models close the gap with closed APIs, the number of people and organizations capable of serving high-quality inference explodes. A peer-to-peer network turns that growing supply into a global, open market. More providers means more competition. More competition means lower prices. Smaller providers who could never compete with centralized platforms can now reach buyers directly.
 
-## The Problem
+## The problem
 
 Today, if you want multi-model AI access through a single endpoint, you have one real option: OpenRouter. OpenRouter is a centralized aggregator. It decides which providers get listed. It decides which models are available. Every request passes through their servers. It holds provider earnings until payout. It requires KYC. It is a gatekeeper dressed as infrastructure.
 
@@ -29,23 +29,23 @@ Antseed is a communication protocol for peer-to-peer AI services. Anyone can pro
 
 The protocol does not care what happens between request and response. It is a neutral transport layer: direct peer-to-peer communication. A request went in, a response came out, both sides confirmed, settlement happened.
 
-### Two Layers. One Protocol.
+### Two layers, one protocol
 
-**Layer 1: Open Peer-to-Peer Infrastructure.** Open source. Peer-to-peer. Anonymous by design. No central account. Discovery via BitTorrent DHT. Transport via direct, end-to-end encrypted peer-to-peer connections. The network routes around failures, and independent nodes may continue operating without reliance on a single hosted service. Blocking a service generally requires action against the independent providers who choose to serve it.
+**Layer 1: open peer-to-peer infrastructure.** Open source. Peer-to-peer. Anonymous by design. No central account. Discovery via BitTorrent DHT. Transport via direct, authenticated peer-to-peer connections, encrypted between peers that support it. The network routes around failures, and independent nodes may continue operating without reliance on a single hosted service. Blocking a service generally requires action against the independent providers who choose to serve it.
 
-**Layer 2: An Open Marketplace for AI Services.** Gasless payments. On-chain stats. Cumulative payment channels. Any provider. Any service. Set your own price. Buyers deposit USDC. Providers settle via cryptographic vouchers. Every settlement is recorded on-chain.
+**Layer 2: an open marketplace for AI services.** Gasless payments. On-chain stats. Cumulative payment channels. Any provider. Any service. Set your own price. Buyers fund a USDC deposit, by card or with USDC. Providers settle via cryptographic vouchers. Every settlement is recorded on-chain.
 
-## Three Ways to Provide
+## Three ways to provide
 
 All three expose a standard API. What runs behind it is entirely the provider's business.
 
-**Raw Inference.** Serve a model, a fine-tune, a local GPU, an open-weight model on a Mac Mini, or proxy an existing API with added value. Set the price per token. Buyers route based on price, latency, and on-chain reputation. When dozens of sellers offer the same model, margins compress toward zero and the buyer pays near-cost.
+**Raw inference.** Serve a model, a fine-tune, a local GPU, an open-weight model on a Mac Mini, or proxy an existing API with added value. Set the price per token. Buyers route to the cheapest seller that clears their on-chain reputation bar. When dozens of sellers offer the same model, margins compress toward zero and the buyer pays near-cost.
 
-**Routing Service.** Build specialized routing logic and offer it on the network. Latency-optimized, cost-minimizing, TEE-only, jurisdiction-aware. Earn on every request routed without running a single model. No model infrastructure required.
+**Routing service.** Build specialized routing logic and offer it on the network. Latency-optimized, cost-minimizing, TEE-only, jurisdiction-aware. Earn on every request routed without running a single model. No model infrastructure required.
 
-**AI Agent.** Wrap domain knowledge as a named, always-on service. System prompt, RAG sources, and toolchain stay private. Buyers pay for the expertise, not just the tokens. The network becomes a directory of specialized AI services: search by capability, sort by reputation, get a result.
+**AI agent.** Wrap domain knowledge as a named, always-on service. System prompt, RAG sources, and toolchain stay private. Buyers pay for the expertise, not just the tokens. The network becomes a directory of specialized AI services: search by capability, sort by reputation, get a result.
 
-## Why Decentralized
+## Why decentralized
 
 Decentralization is not the value proposition. Cheap, reliable, uncensorable AI access is. Decentralization is the mechanism that makes those properties durable.
 
@@ -55,7 +55,7 @@ Buyers are anonymous by default at the application layer: no central account, no
 
 Antseed's privacy model is architectural rather than account-based: users can route requests without a central identity account, platform-issued API key, or centralized chat database, and TEE providers can add hardware-backed confidentiality where available. It is not, however, a promise that every piece of data is hidden from every participant. Independent providers and supporting infrastructure may process data needed to deliver and settle requests, and public-chain activity remains visible on-chain. Users should choose providers and routes appropriate to the sensitivity of their work.
 
-## Why Now
+## Why now
 
 **Models commoditized.** Claude, GPT, Gemini, DeepSeek, Llama, converging in capability and racing to zero on price. Open-weight models compete with closed APIs on most tasks. When models become interchangeable, the access layer becomes the competitive battleground.
 
@@ -67,11 +67,11 @@ Antseed's privacy model is architectural rather than account-based: users can ro
 
 **The aggregator model proved demand.** OpenRouter, Together.ai, and others proved developers want multi-model access through a single endpoint. They validated the demand. Antseed removes the centralized bottleneck.
 
-## How Payments Work
+## How payments work
 
 Antseed uses cumulative payment channels settled on Base. Two contracts handle the money: **AntseedDeposits** (holds funds) and **AntseedChannels** (manages session lifecycle, holds no funds). Channels is swappable — it can be redeployed without touching buyer balances.
 
-### Deposit and Reserve
+### Deposit and reserve
 
 Buyers deposit USDC into AntseedDeposits. When a buyer wants to use a provider, they sign a **ReserveAuth** — an EIP-712 authorization that binds a channel ID, a maximum amount, and a deadline. The seller submits this signature on-chain, and the Deposits contract locks the authorized amount from the buyer's balance.
 
@@ -83,41 +83,46 @@ During a session, the buyer signs a **SpendingAuth** after each request. Each Sp
 
 This is a cumulative voucher model: only the latest SpendingAuth matters. If the buyer signs authorizations for $0.05, then $0.12, then $0.18, the seller only needs to submit the $0.18 signature to collect the full amount.
 
-### Close and Refund
+### Close and refund
 
 The seller calls **close** with the final SpendingAuth. The contract settles the remaining delta to the seller and releases unspent funds back to the buyer's deposit balance.
 
-If the seller disappears, the buyer (via their authorized operator wallet) calls **requestClose**. After a 15-minute grace period — during which the seller can still submit a final SpendingAuth — the buyer calls **withdraw** to reclaim the locked funds.
+If the seller disappears, the buyer's authorized operator wallet calls **requestClose**. After a 15-minute grace period, during which the seller can still submit a final SpendingAuth, the operator calls **withdraw** to release the locked funds back to the buyer's deposit.
 
-### Top Up
+### Top up
 
-When a session needs more budget, the seller can **topUp** the channel. This requires at least 85% of the current deposit to be settled (proven via SpendingAuth), plus a new ReserveAuth from the buyer for the higher ceiling. The channel continues without interruption.
+When a session needs more budget, the buyer signs a new ReserveAuth for a higher ceiling and the seller calls **topUp**. The contract only allows it once a set share of the current reservation has been settled via SpendingAuth (65% on Base mainnet; owner-configurable, 85% in the contract source). The channel continues without interruption.
 
-### Credit Limits
+### Credit limits
 
-Deposit balances are subject to credit limits that grow with usage. New buyers start with a $10 limit. Each unique seller interaction adds $5, and each day of history adds $0.50, up to a $50 maximum. This prevents abuse while rewarding active participation.
+Deposit balances are subject to a credit limit that can grow with usage: a base limit, plus a bonus for each distinct seller paid and for each day of history, up to a maximum. The contract source defaults are $10 base, +$5 per seller, +$0.50 per day, and a $50 maximum; the values are owner-configurable, and on Base mainnet the base and maximum are currently both $500.
 
-### On-Chain Stats
+### Protocol fee
+
+Each settlement pays a protocol fee on the newly settled amount to the protocol reserve; the seller receives the rest. On Base mainnet the fee is 4% (`PLATFORM_FEE_BPS = 400`). The contract source default is 2%, and the owner cannot set it above 10%.
+
+### On-chain stats
 
 Every settlement updates per-agent counters: channel count, ghost count (channels where the seller never delivered), total USDC volume, and last settlement timestamp. These stats are unforgeable — they can only be incremented through actual on-chain state transitions. Routers use these stats to score providers.
 
-### Buyer Safety
+### Buyer safety
 
 The normal buyer funding and payment flow does not require the buyer to hold
 ETH: sellers submit payment authorizations, and relayers can sweep incoming USDC
-from the buyer's hot wallet into deposits. Direct on-chain actions, such as
+from the buyer's hot wallet into deposits for a fixed fee. Buyers can also fund
+with a card, without holding crypto beforehand. Direct on-chain actions, such as
 manual deposits or withdrawals by an operator, require gas from their sender.
 
-### ANTS Rewards and Policies
+### ANTS rewards and policies
 
 USDC pays for service; ANTS rewards are separate. From epoch 22 (September 10,
 2026), rewards depend on recognized usage and seller-pool stake. Configured
 policies can exclude usage from rewards without reversing its payment. The
 historical wash-trading policy relies on SP1 proofs whose block references are
 authenticated against Base history.
-See [Reward Policies](/docs/reward-policies) for how the rule works.
+See [Reward policies](/docs/reward-policies) for how the rule works and [Payments](/docs/payments) for the full payment protocol.
 
-## Who Buys
+## Who buys
 
 **Developers and agents seeking better economics.** Multi-model access with lower fees, more sellers competing on price, and access to services centralized platforms do not carry.
 
@@ -129,7 +134,7 @@ See [Reward Policies](/docs/reward-policies) for how the rule works.
 
 **Users in underserved markets.** Frontier model access at competitive rates where direct API access is limited or payment methods are not accepted.
 
-## Compliance and Risk
+## Compliance and risk
 
 Antseed is open peer-to-peer software. The protocol may remain technically accessible from many jurisdictions, but technical access does not mean legal permission. Users and Providers are solely responsible for sanctions, export-control, AML/CFT, tax, data-protection, AI, consumer-protection, and other legal compliance in their jurisdictions. Interfaces or hosted services may apply restrictions where technically possible or legally required.
 

@@ -1,0 +1,490 @@
+---
+id: faq
+slug: /faq
+title: Frequently asked questions
+sidebar_label: FAQ
+description: Common questions about Antseed, covering the Gateway Console, privacy, models, payments, setup and providers.
+---
+
+import Head from '@docusaurus/Head';
+
+export const faqLd = {
+  "@context": "https://schema.org",
+  "@type": "FAQPage",
+  "mainEntity": [
+    {
+      "@type": "Question",
+      "name": "What is Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Antseed is a peer-to-peer network for AI services. Independent providers offer models, agents and specialized services, and buyers reach them directly over an encrypted connection, without a central platform in the middle. The protocol handles discovery, routing, reputation and payment settlement."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How is this different from centralized AI chat products?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "A centralized product is one company's platform on top of its own or a partner's models. Antseed is open infrastructure: your requests go peer-to-peer to whichever provider best fits your preferences for price, trust and capability, and no single company sits in the request path. Existing tools that speak the OpenAI or Anthropic API connect without code changes."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is Antseed open source?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. The protocol, CLI, desktop app and node implementation are open source on GitHub. Anyone can inspect the code, run a node or build on the protocol."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Who runs the Antseed network?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The independent peers that join it. Antseed is open peer-to-peer software; no single hosted service controls every node, provider, model, output, log or data practice."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What is the Gateway Console?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The Gateway Console is the web app of your own Antseed gateway, served at /console. It lets you create API keys, set budgets and routing policies, fund workspaces, chat, and see usage and logs. The gateway runs on your machine or server; there is no hosted Antseed account behind it. See the Quickstart."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need a server to use the Gateway Console?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. antseed gateway start runs the gateway and its console on your own computer at http://localhost:8379/console. A computer only serves keys while it is on, so for a team or always-on access, install the gateway on a Linux server with one command. See Install and Run a gateway on a server."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do API keys and budgets work?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Each person or app gets its own gateway API key. A key can have spend limits, a list of allowed models, and its own routing policy, and every request through it is logged. When a key reaches its limit, the gateway refuses further requests with 402. See Gateway API and Budgets."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I pay by card?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. In the Gateway Console, Wallet & Funding offers card checkout and USDC on Base by QR code or address. The desktop app also has card checkout where available in your region. You do not need to own crypto beforehand. See Funding."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Is my data private on Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Antseed is designed for anonymous access without a central account, platform-issued API key, or centralized chat database. Requests route peer-to-peer, so providers generally see a peer/wallet rather than a platform identity account, and TEE providers can add hardware-backed confidentiality where available. This is not a promise that every piece of data is hidden from every participant: independent providers and supporting infrastructure may process data needed to deliver and settle requests, and public-chain activity remains visible on-chain."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can providers see my prompts?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Standard providers can. TEE-verified providers cannot — the hardware prevents it even if the operator wanted to look. When paying for a TEE-verified request, you receive a cryptographic attestation proving the enclave was genuine."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Antseed log my requests?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Antseed the protocol does not create a central request log, but independent providers, nodes, interfaces, RPC providers, analytics tools, or other infrastructure may log or observe data. Each provider has its own data handling practices. Prefer TEE-verified providers where stronger confidentiality is required."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can a provider see what I send?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I verify a provider's TEE?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Your buyer node checks it on your machine, against Intel's own certificate chain, with no third party in between and no special hardware on your side. The check happens after a provider is picked and before any payment. Verification is on by default and best-effort; run antseed buyer start --verifiers antseed-verifier --require-verifier to refuse any provider that does not pass."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What does a passing TEE check prove, and what does it not?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "It proves the provider node runs inside a genuine Intel TDX enclave, that the quote was minted fresh for your request and is bound to the exact peer you are paying, and it can report whether the provider's GPUs run NVIDIA Confidential Computing. It proves the environment, not the model: whether the model is what the provider claims is a separate check, done by fingerprinting."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What AI services are available on Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Whatever providers choose to offer: open and fine-tuned models, image and video generation, agents and specialized services. Availability depends on who is online. See the network page or GET /v1/models on your buyer."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I use closed-source models on Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "If a provider offers one, yes; the protocol is model-agnostic. Providers are responsible for complying with their upstream providers' terms, and reselling subscription credentials is not allowed."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What if an Antseed service goes offline?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Requests that name only a model fail over to the next eligible provider after a retryable failure. A conversation prefers the provider that served it before, but switches when that provider is unavailable or no longer eligible. A pinned provider (<peerId>@<model>) never switches automatically."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Do I need to sign up or create an account to use Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. There is no Antseed account. Run a gateway, the desktop app or the CLI buyer, and request any model on the network. If you run a gateway, you create its users yourself; sign-in uses passkeys, wallets or your own identity provider."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do I install Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "For the Gateway Console, install the CLI and start a gateway: npm install -g @antseed/cli antseed gateway start For a single computer with a UI, download the desktop app from antseed.com. For scripts, antseed buyer start runs just the local buyer proxy. See Install."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does Antseed work with Claude Code, Codex, or other AI tools?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes. Antseed serves the OpenAI Chat Completions, OpenAI Responses and Anthropic Messages APIs, so tools that let you set a base URL work without code changes. The desktop app connects Claude Code, Codex, OpenCode and others from Connected apps, and the CLI has antseed claude, antseed codex and antseed opencode wrappers."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What operating systems does Antseed support?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The desktop app runs on macOS (Apple Silicon and Intel), Windows and Linux. The CLI and gateway run anywhere Node.js 20 or later runs, and the server installer supports Linux with systemd."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Are there usage limits on Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The network has no quotas: you pay per request and keep going while you have credits. On a gateway, you can set your own spend limits per key, member or workspace. Top up by card or with USDC on Base."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Should I use the Gateway Console, the desktop app or the CLI?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Use the Gateway Console for API keys, budgets, usage logs, team access or access from other machines. Use the desktop app when one person wants a UI and one-click setup for local coding tools. Use the CLI buyer alone for scripts and headless machines. See Choose your path."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Does my tool or agent need an API key?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Through a gateway, yes: each tool uses a gateway API key, which carries its budget and permissions. The local buyer proxy on localhost:8377 does not check keys, so tools that require one can use any placeholder such as antseed. A tunnel endpoint uses a generated key."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How does Antseed choose the provider for each request?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "For a request that names only a model, your buyer picks the cheapest provider that passes your minimum trust score (60 by default) and price caps; trust only breaks ties, and providers that recently failed are tried last. TEE verification is not required unless you turn it on. To use one provider, put <peerId>@<model> in the model field. See Routing and catalog."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Can I become an Antseed provider?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Yes, without permission or partnership. Providers are expected to add value, such as TEE-secured inference, agents, skills, fine-tuned models or managed products. See Become a provider."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How does pricing work on Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Providers set their own prices, per million tokens or per image or video. Prices are visible in GET /v1/models, antseed network browse and the console's Models page before you send a request."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do providers get paid on Antseed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Buyers deposit USDC into the Antseed deposits contract on Base. For each session, the buyer signs a capped reservation, and as requests complete it signs a running total of what it owes. The seller settles that total on-chain. If a seller disappears, the buyer can close the channel and recover the rest after a 15-minute grace period. See Payments."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Where do protocol fees go?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "The payment channels contract takes a protocol fee from each settled amount, deducted from the seller's payout and sent to the protocol reserve. It is set to 4% on Base mainnet (the contract source default is 2%) and capped at 10% by the contract. The reserve may fund ecosystem uses such as grants, incentives or buy-and-burn. No fee use, burn, distribution, token value or return is promised."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Are seller ANTS incentives claimable now?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "ANTS rewards are separate from USDC payments. They depend on recognized usage, seller-pool power and the reward policies. Rewards from before the current program use the legacy claim contracts."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Are ANTS incentives guaranteed?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "No. Paying for service does not guarantee ANTS rewards. Missing pool power or a wash-trading flag can exclude usage from rewards, and withdrawing staked ANTS before the lock ends incurs a penalty. See Recognized usage."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How do invites and referrals work?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Referrals are invite-only. A wallet with at least 1 USDC of buying or selling in the previous week gets 3 single-use invites, plus one per 10 USDC, up to 20 a week. Each invite is a link that works once, for a new wallet only, and expires 4 weeks after the week it was created. Redeem it from the link, in the desktop app, or with antseed referral redeem; it binds with your first paid or free request. For 12 weeks you and your inviter split your referral share 50/50, then the inviter keeps earning alone. Self-invites are rejected, including from a wallet that shares your authorized wallet."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "How can a provider offer AI models below lab price?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Providers compete. Some run open models on their own hardware; others sell capacity they legitimately hold. Providers must build their own service on top of upstream APIs and comply with upstream terms."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Why would a provider use Antseed instead of building their own API?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Distribution. A provider plugs into existing demand: buyers, discovery, reputation and on-chain settlement come with the network, so there is no billing stack to build and no payment risk to carry."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "What happens when LLMs become so good that anyone can do anything?",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Costs fall and more people can run capable models on their own hardware, and those people can become providers, so supply grows. Results still differ: the value is in what you build on top, such as skills, workflows, domain expertise and agent orchestration."
+      }
+    },
+    {
+      "@type": "Question",
+      "name": "Isn't this just like P2P file sharing? Netflix killed that.",
+      "acceptedAnswer": {
+        "@type": "Answer",
+        "text": "Netflix and Spotify won because people will pay a simple subscription for a clean UI. Agents do not care about a UI, a brand or a familiar platform. They need the service, the price and the reliability, and on those an open network with no middleman competes well."
+      }
+    }
+  ]
+};
+
+<Head>
+  <script type="application/ld+json">{JSON.stringify(faqLd)}</script>
+</Head>
+
+# Frequently asked questions
+
+## General
+
+### What is Antseed?
+
+Antseed is a peer-to-peer network for AI services. Independent providers offer models, agents and specialized services, and buyers reach them directly over an encrypted connection, without a central platform in the middle. The protocol handles discovery, routing, reputation and payment settlement.
+
+### How is this different from centralized AI chat products?
+
+A centralized product is one company's platform on top of its own or a partner's models. Antseed is open infrastructure: your requests go peer-to-peer to whichever provider best fits your preferences for price, trust and capability, and no single company sits in the request path. Existing tools that speak the OpenAI or Anthropic API connect without code changes.
+
+### Is Antseed open source?
+
+Yes. The protocol, CLI, desktop app and node implementation are open source on [GitHub](https://github.com/AntSeed/antseed). Anyone can inspect the code, run a node or build on the protocol.
+
+### Who runs the Antseed network?
+
+The independent peers that join it. Antseed is open peer-to-peer software; no single hosted service controls every node, provider, model, output, log or data practice.
+
+## Gateway Console
+
+### What is the Gateway Console?
+
+The Gateway Console is the web app of your own Antseed gateway, served at `/console`. It lets you create API keys, set budgets and routing policies, fund workspaces, chat, and see usage and logs. The gateway runs on your machine or server; there is no hosted Antseed account behind it. See the [Quickstart](/docs/quickstart).
+
+### Do I need a server to use the Gateway Console?
+
+No. `antseed gateway start` runs the gateway and its console on your own computer at `http://localhost:8379/console`. A computer only serves keys while it is on, so for a team or always-on access, install the gateway on a Linux server with one command. See [Install](/docs/install#gateway) and [Run a gateway on a server](/docs/gateway/server).
+
+### How do API keys and budgets work?
+
+Each person or app gets its own gateway API key. A key can have spend limits, a list of allowed models, and its own routing policy, and every request through it is logged. When a key reaches its limit, the gateway refuses further requests with `402`. See [Gateway API](/docs/gateway/api) and [Budgets](/docs/gateway/budgets).
+
+### Can I pay by card?
+
+Yes. In the Gateway Console, **Wallet & Funding** offers card checkout and USDC on Base by QR code or address. The desktop app also has card checkout where available in your region. You do not need to own crypto beforehand. See [Funding](/docs/gateway/funding).
+
+## Privacy
+
+### Is my data private?
+
+Privacy on Antseed works in two layers:
+
+**Layer 1 — Anonymous access (default).** Antseed is designed for use without a central account, sign-up, or platform-issued API key. Requests route peer-to-peer, so providers generally see a peer/wallet rather than a platform identity account.
+
+**Layer 2 — TEE-verified providers.** These run inside Trusted Execution Environments (Intel TDX, AMD SEV) — hardware enclaves that can reduce what the node operator can see. This is cryptographic proof, not just a policy promise. TEE provider verification is being rolled out in a future release.
+
+Antseed's privacy model is architectural rather than account-based: users can route requests without a central identity account, platform-issued API key, or centralized chat database, and TEE providers can add hardware-backed confidentiality where available. It is not, however, a promise that every piece of data is hidden from every participant. Independent providers and supporting infrastructure may process data needed to deliver and settle requests, and public-chain activity remains visible on-chain. Users should choose providers and routes appropriate to the sensitivity of their work.
+
+Most users are well-served by no-account routing. Journalists, lawyers, security researchers, and anyone handling sensitive data should carefully choose providers and prefer TEE routes where available.
+
+### Can providers see my prompts?
+
+Standard providers can. TEE-verified providers cannot — the hardware prevents it even if the operator wanted to look. When paying for a TEE-verified request, you receive a cryptographic attestation proving the enclave was genuine.
+
+### Does Antseed log my requests?
+
+Antseed the protocol does not create a central request log, but independent providers, nodes, interfaces, RPC providers, analytics tools, or other infrastructure may log or observe data. Each provider has its own data handling practices. Prefer TEE-verified providers where stronger confidentiality is required.
+
+### Can a provider see what I send?
+
+Requests route peer-to-peer with no platform in the middle, so a provider sees a peer and a wallet, not an account. A standard provider can read the prompt it serves; a TEE-verified provider cannot, and you get an attestation to prove it. See the [privacy page](/privacy) for a side-by-side of what each kind of provider sees.
+
+### How do I verify a provider's TEE?
+
+Your buyer node checks it on your machine, against Intel's own certificate chain, with no third party in between and no special hardware on your side. The check happens after a provider is picked and before any payment, so attestation is free. Verification is on by default and best-effort; run `antseed buyer start --verifiers antseed-verifier --require-verifier` to refuse any provider that does not pass, and the request then fails with a 502 naming the failed claims instead of being quietly routed elsewhere. `antseed network browse` shows which providers advertise a verifier. See [Verify a provider's TEE](/docs/verify-tee).
+
+### What does a passing TEE check prove, and what does it not?
+
+It proves the provider node runs inside a genuine Intel TDX enclave, that the quote was minted fresh for your request and is bound to the exact peer you are paying (so replayed or borrowed quotes fail), and it can report whether the provider's GPUs run NVIDIA Confidential Computing. It proves the environment, not the model: whether the model is what the provider claims is a separate check, done by fingerprinting. See [how model verification works](/blog/model-verification-fingerprint-swarm).
+
+
+## Services and availability
+
+### What AI services are available on Antseed?
+
+Whatever providers choose to offer: open and fine-tuned models, image and video generation, agents and specialized services. Availability depends on who is online. See the [network page](/network) or `GET /v1/models` on your buyer.
+
+### Can I use closed-source models on Antseed?
+
+If a provider offers one, yes; the protocol is model-agnostic. Providers are responsible for complying with their upstream providers' terms, and reselling subscription credentials is not allowed.
+
+### What if an Antseed service goes offline?
+
+Requests that name only a model fail over to the next eligible provider after a retryable failure. A conversation prefers the provider that served it before, but switches when that provider is unavailable or no longer eligible. A pinned provider (`<peerId>@<model>`) never switches automatically.
+
+## Setup and usage
+
+### Do I need to sign up or create an account to use Antseed?
+
+No. There is no Antseed account. Run a gateway, the desktop app or the CLI buyer, and request any model on the network. If you run a gateway, you create its users yourself; sign-in uses passkeys, wallets or your own identity provider.
+
+### How do I install Antseed?
+
+For the Gateway Console, install the CLI and start a gateway:
+
+```bash
+npm install -g @antseed/cli
+antseed gateway start
+```
+
+For a single computer with a UI, download the desktop app from [antseed.com](https://antseed.com). For scripts, `antseed buyer start` runs just the local buyer proxy. See [Install](/docs/install).
+
+### Does Antseed work with Claude Code, Codex, or other AI tools?
+
+Yes. Antseed serves the OpenAI Chat Completions, OpenAI Responses and Anthropic Messages APIs, so tools that let you set a base URL work without code changes. The desktop app connects Claude Code, Codex, OpenCode and others from **Connected apps**, and the CLI has `antseed claude`, `antseed codex` and `antseed opencode` wrappers.
+
+### What operating systems does Antseed support?
+
+The desktop app runs on macOS (Apple Silicon and Intel), Windows and Linux. The CLI and gateway run anywhere Node.js 20 or later runs, and the server installer supports Linux with systemd.
+
+### Are there usage limits on Antseed?
+
+The network has no quotas: you pay per request and keep going while you have credits. On a gateway, you can set your own spend limits per key, member or workspace. Top up by card or with USDC on Base.
+
+### Should I use the Gateway Console, the desktop app or the CLI?
+
+Use the Gateway Console for API keys, budgets, usage logs, team access or access from other machines. Use the desktop app when one person wants a UI and one-click setup for local coding tools. Use the CLI buyer alone for scripts and headless machines. See [Choose your path](/docs/#choose-your-path).
+
+### Does my tool or agent need an API key?
+
+Through a gateway, yes: each tool uses a gateway API key, which carries its budget and permissions. The local buyer proxy on `localhost:8377` does not check keys, so tools that require one can use any placeholder such as `antseed`. A tunnel endpoint uses a generated key.
+
+### How does Antseed choose the provider for each request?
+
+For a request that names only a model, your buyer picks the cheapest provider that passes your minimum trust score (60 by default) and price caps; trust only breaks ties, and providers that recently failed are tried last. TEE verification is not required unless you turn it on. To use one provider, put `<peerId>@<model>` in the model field. See [Routing and catalog](/docs/api/routing) and, for the exact ranking, the [router plugin API](/docs/router-api).
+
+## Providers and economics
+
+### Can I become an Antseed provider?
+
+Yes, without permission or partnership. Providers are expected to add value, such as TEE-secured inference, agents, skills, fine-tuned models or managed products. See [Become a provider](/docs/provide).
+
+### How does pricing work on Antseed?
+
+Providers set their own prices, per million tokens or per image or video. Prices are visible in `GET /v1/models`, `antseed network browse` and the console's **Models** page before you send a request.
+
+### How do providers get paid on Antseed?
+
+Buyers deposit USDC into the Antseed deposits contract on Base. For each session, the buyer signs a capped reservation, and as requests complete it signs a running total of what it owes. The seller settles that total on-chain. If a seller disappears, the buyer can close the channel and recover the rest after a 15-minute grace period. See [Payments](/docs/payments).
+
+### Where do protocol fees go?
+
+The payment channels contract takes a protocol fee from each settled amount, deducted from the seller's payout and sent to the protocol reserve. It is set to 4% on Base mainnet (the contract source default is 2%) and capped at 10% by the contract. The reserve may fund ecosystem uses such as grants, incentives or buy-and-burn. No fee use, burn, distribution, token value or return is promised.
+
+### Are seller ANTS incentives claimable now?
+
+ANTS rewards are separate from USDC payments. They depend on recognized usage, seller-pool power and the [reward policies](/docs/reward-policies). Rewards from before the current program use the [legacy claim contracts](/docs/legacy-emissions).
+
+### Are ANTS incentives guaranteed?
+
+No. Paying for service does not guarantee ANTS rewards. Missing pool power or a wash-trading flag can exclude usage from rewards, and withdrawing staked ANTS before the lock ends incurs a penalty. See [Recognized usage](/docs/recognized-usage).
+
+### How do invites and referrals work?
+
+Referrals are invite-only and two-sided. A wallet earns invites from its activity: at least 1 USDC of buying or selling in the previous week gives 3 single-use invites, plus one per 10 USDC, up to 20 a week. Each invite is a link (`https://antseed.com/invite/<invite>`) that works once, only for a new wallet, and expires 4 weeks after the week it was created.
+
+Redeem one from the link, in the desktop app's invite field (Rewards, Preferences or onboarding), or with `antseed referral redeem <invite>`. It binds with your first paid or free request. For the next 12 weeks you and your inviter split your referral share of ANTS 50/50; after that the inviter keeps earning alone. Self-invites are rejected, including from a wallet that shares your authorized wallet. See [Referrals and Invites](/docs/provide/referrals).
+
+### How can a provider offer AI models below lab price?
+
+Providers compete. Some run open models on their own hardware; others sell capacity they legitimately hold. Providers must build their own service on top of upstream APIs and comply with upstream terms.
+
+### Why would a provider use Antseed instead of building their own API?
+
+Distribution. A provider plugs into existing demand: buyers, discovery, reputation and on-chain settlement come with the network, so there is no billing stack to build and no payment risk to carry.
+
+## The bigger picture
+
+### What happens when LLMs become so good that anyone can do anything?
+
+Costs fall and more people can run capable models on their own hardware, and those people can become providers, so supply grows. Results still differ: the value is in what you build on top, such as skills, workflows, domain expertise and agent orchestration.
+
+### Isn't this just like P2P file sharing? Netflix killed that.
+
+Netflix and Spotify won because people will pay a simple subscription for a clean UI. Agents do not care about a UI, a brand or a familiar platform. They need the service, the price and the reliability, and on those an open network with no middleman competes well.
+
+## Still have questions?
+
+Ask in the [Antseed Telegram community](https://t.me/antseed) or open an issue on [GitHub](https://github.com/AntSeed/antseed).

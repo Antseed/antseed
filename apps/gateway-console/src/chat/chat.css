@@ -1,0 +1,88 @@
+/*
+ * Tailwind for the chat page only (shadcn AI Elements under src/chat). No
+ * global preflight: the rest of the console keeps its own styles. The small
+ * reset below applies inside `.gc-chat` and to shadcn's portaled parts, and
+ * shadcn's colours come from the console's palette (as --sc-* tokens), so the
+ * chat follows light and dark mode.
+ */
+/* Utilities must win over the reset below. */
+@layer theme, base, components, utilities;
+@import 'tailwindcss/theme.css' layer(theme);
+@import 'tailwindcss/utilities.css' layer(utilities) source(none);
+@import 'tw-animate-css';
+
+@source '.';
+@source '../pages/Chat.tsx';
+/* Streamdown (the Markdown renderer in MessageResponse) styles with Tailwind classes of its own. */
+@source '../../../../node_modules/streamdown/dist';
+
+/* The console's dark mode: an explicit choice, or the system's when none is set. */
+@custom-variant dark {
+  &:where([data-theme='dark'] *) { @slot; }
+  @media (prefers-color-scheme: dark) { &:where(:root:not([data-theme='light']) *) { @slot; } }
+}
+
+/* Shadcn parts Radix portals to <body> (dialogs, menus, tooltips) all carry data-slot: they get the reset too. */
+@layer base {
+  :where(.gc-chat, [data-slot]), :where(.gc-chat, [data-slot]) *, :where(.gc-chat, [data-slot]) ::before, :where(.gc-chat, [data-slot]) ::after { box-sizing: border-box; border: 0 solid; border-color: var(--sc-border); }
+  :where(.gc-chat, [data-slot]) :where(p, h1, h2, h3, h4, ol, ul, pre, blockquote, figure) { margin: 0; }
+  :where(.gc-chat, [data-slot]) :where(button, input, textarea, select) { font: inherit; color: inherit; background: transparent; }
+  :where(.gc-chat, [data-slot]) :where(button) { cursor: pointer; }
+  :where(.gc-chat, [data-slot]) :where(img, svg, video) { display: block; max-width: 100%; }
+  :where(.gc-chat, [data-slot]) :where(*) { outline-color: color-mix(in oklab, var(--sc-ring) 50%, transparent); }
+}
+
+:root {
+  --sc-background: var(--page-bg);
+  --sc-foreground: var(--text-primary);
+  --sc-card: var(--card-bg);
+  --sc-popover: var(--card-bg);
+  --sc-primary: var(--accent);
+  --sc-primary-foreground: var(--accent-contrast);
+  --sc-muted: var(--box-bg);
+  --sc-muted-foreground: var(--text-muted);
+  --sc-destructive: var(--danger);
+  --sc-border: var(--border);
+  --sc-input: var(--border-2);
+  --sc-ring: var(--focus);
+  --sc-radius: 0.625rem;
+}
+.gc-chat { color: var(--sc-foreground); }
+
+/* shadcn's colour names, read from the --sc-* tokens above (namespaced: the console has its own --accent, --border…). */
+@theme inline {
+  --color-background: var(--sc-background);
+  --color-foreground: var(--sc-foreground);
+  --color-card: var(--sc-card);
+  --color-card-foreground: var(--sc-foreground);
+  --color-popover: var(--sc-popover);
+  --color-popover-foreground: var(--sc-foreground);
+  --color-primary: var(--sc-primary);
+  --color-primary-foreground: var(--sc-primary-foreground);
+  --color-secondary: var(--sc-muted);
+  --color-secondary-foreground: var(--sc-foreground);
+  --color-muted: var(--sc-muted);
+  --color-muted-foreground: var(--sc-muted-foreground);
+  --color-accent: var(--sc-muted);
+  --color-accent-foreground: var(--sc-foreground);
+  --color-destructive: var(--sc-destructive);
+  --color-border: var(--sc-border);
+  --color-input: var(--sc-input);
+  --color-ring: var(--sc-ring);
+  /* Semantic accents (free offers, TEE) from the console's own palette. */
+  --color-success: var(--as-success);
+  --color-info: var(--as-info);
+  --radius-sm: calc(var(--sc-radius) - 4px);
+  --radius-md: calc(var(--sc-radius) - 2px);
+  --radius-lg: var(--sc-radius);
+  --radius-xl: calc(var(--sc-radius) + 4px);
+}
+
+/*
+ * The console's global focus outline (app.scss) is unlayered, so it beats the
+ * shadcn utilities above: inputs that sit inside a bordered shell (the model
+ * and peer search, the composer) would get a second, offset ring. Their shell
+ * shows focus instead.
+ */
+[data-slot='command-input']:focus-visible,
+[data-slot='input-group-control']:focus-visible { outline: none; }

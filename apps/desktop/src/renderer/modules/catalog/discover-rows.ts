@@ -1,4 +1,4 @@
-import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, TrustBreakdown } from '../../core/state';
+import type { ChatServiceOptionEntry, DiscoverRow, ServiceCapabilitiesView, TrustBreakdown, VideoOptionsView } from '../../core/state';
 import type { DiscoverVerificationLink } from '../../core/state';
 import { isTextCapableRow } from './model-capabilities';
 import { normalizeAdvertisedVerifierIds } from '@antseed/node/verifier-capabilities';
@@ -114,6 +114,7 @@ function normalizeCapabilities(value: unknown): ServiceCapabilitiesView | null {
     const result = [...new Set(candidate.filter((item): item is string => typeof item === 'string' && item.length > 0))];
     return result.length > 0 ? result : undefined;
   };
+  const video = normalizeVideoOptions(raw.video);
   const normalized: ServiceCapabilitiesView = {
     ...(positiveInteger(raw.contextWindow) ? { contextWindow: positiveInteger(raw.contextWindow) } : {}),
     ...(positiveInteger(raw.maxOutputTokens) ? { maxOutputTokens: positiveInteger(raw.maxOutputTokens) } : {}),
@@ -123,8 +124,33 @@ function normalizeCapabilities(value: unknown): ServiceCapabilitiesView | null {
     ...(typeof raw.toolUse === 'boolean' ? { toolUse: raw.toolUse } : {}),
     ...(typeof raw.structuredOutput === 'boolean' ? { structuredOutput: raw.structuredOutput } : {}),
     ...(stringList(raw.supportedParameters) ? { supportedParameters: stringList(raw.supportedParameters) } : {}),
+    ...(video ? { video } : {}),
   };
   return Object.keys(normalized).length > 0 ? normalized : null;
+}
+
+function normalizeVideoOptions(value: unknown): VideoOptionsView | undefined {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return undefined;
+  const raw = value as Record<string, unknown>;
+  const strings = (candidate: unknown): string[] | undefined => {
+    if (!Array.isArray(candidate)) return undefined;
+    const result = [...new Set(candidate.filter((item): item is string => typeof item === 'string' && item.length > 0))];
+    return result.length > 0 ? result : undefined;
+  };
+  const durations = Array.isArray(raw.durationsSeconds)
+    ? [...new Set(raw.durationsSeconds.filter((item): item is number => (
+      typeof item === 'number' && Number.isFinite(item) && item > 0
+    )))].sort((a, b) => a - b)
+    : [];
+  const video: VideoOptionsView = {
+    ...(durations.length > 0 ? { durationsSeconds: durations } : {}),
+    ...(strings(raw.resolutions) ? { resolutions: strings(raw.resolutions) } : {}),
+    ...(strings(raw.aspectRatios) ? { aspectRatios: strings(raw.aspectRatios) } : {}),
+    ...(strings(raw.inputs) ? { inputs: strings(raw.inputs) } : {}),
+    ...(strings(raw.requiredInputs) ? { requiredInputs: strings(raw.requiredInputs) } : {}),
+    ...(typeof raw.audio === 'boolean' ? { audio: raw.audio } : {}),
+  };
+  return Object.keys(video).length > 0 ? video : undefined;
 }
 
 function normalizeHttpsUrl(value: unknown): string | null {
@@ -173,6 +199,10 @@ export function normalizeDiscoverRow(raw: unknown): DiscoverRow | null {
       : (typeof r.inputUsdPerMillion === 'number' ? r.inputUsdPerMillion : null),
     minImageUsdPerImage: typeof r.minImageUsdPerImage === 'number' ? r.minImageUsdPerImage : null,
     maxImageUsdPerImage: typeof r.maxImageUsdPerImage === 'number' ? r.maxImageUsdPerImage : null,
+    minVideoUsdPerSecond: nonNegative(r.minVideoUsdPerSecond),
+    maxVideoUsdPerSecond: nonNegative(r.maxVideoUsdPerSecond),
+    minVideoUsdPerVideo: nonNegative(r.minVideoUsdPerVideo),
+    maxVideoUsdPerVideo: nonNegative(r.maxVideoUsdPerVideo),
     lifetimeSessions: Number(r.lifetimeSessions) || 0,
     lifetimeRequests: Number(r.lifetimeRequests) || 0,
     lifetimeInputTokens: Number(r.lifetimeInputTokens) || 0,

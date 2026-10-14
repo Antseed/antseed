@@ -79,6 +79,16 @@ contract AntseedStatsV2Test is Test {
         );
     }
 
+    /// v4 SpendingAuth metadata: 7 static words (adds the video counters) + services array (+ optional tail).
+    function _v4(uint256 inTok, uint256 outTok, uint256 req, bool withTail) internal view returns (bytes memory) {
+        uint256[] memory services = new uint256[](0);
+        if (!withTail) return abi.encode(uint256(4), inTok, outTok, req, uint256(0), uint256(0), uint256(0), services);
+        return abi.encode(
+            uint256(4), inTok, outTok, req, uint256(0), uint256(0), uint256(0), services,
+            clientId, inviteEpoch, inviteIndex, inviteR, inviteVs
+        );
+    }
+
     /// FreeUsage v1 metadata: 4 static words + services array (+ optional tail).
     function _free(uint256 inTok, uint256 outTok, uint256 req, bool withTail) internal view returns (bytes memory) {
         uint256[] memory services = new uint256[](1);
@@ -104,11 +114,13 @@ contract AntseedStatsV2Test is Test {
     }
 
     function test_decodeAttribution_detectsTailOnBothLayouts() public view {
+        _assertTail(stats.decodeAttribution(_v4(1, 2, 3, true)));
         _assertTail(stats.decodeAttribution(_v3(1, 2, 3, true)));
         _assertTail(stats.decodeAttribution(_free(1, 2, 3, true)));
     }
 
     function test_decodeAttribution_zeroWithoutTail() public view {
+        _assertEmpty(stats.decodeAttribution(_v4(1, 2, 3, false)));
         _assertEmpty(stats.decodeAttribution(_v3(1, 2, 3, false)));
         _assertEmpty(stats.decodeAttribution(_free(1, 2, 3, false)));
         _assertEmpty(stats.decodeAttribution(abi.encode(uint256(1), uint256(1), uint256(2), uint256(3))));

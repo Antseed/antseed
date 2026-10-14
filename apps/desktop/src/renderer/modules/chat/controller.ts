@@ -362,7 +362,8 @@ export function initChatModule({
     }
 
     try {
-      const result = await bridge.creditsGetInfo();
+      // Decides whether a 402 can be retried right away: never from cache.
+      const result = await bridge.creditsGetInfo({ fresh: true });
       if (!result.ok || !result.data) {
         return parseFloat(uiState.creditsAvailableUsdc || '0');
       }
@@ -375,6 +376,9 @@ export function initChatModule({
       uiState.creditsWalletUsdc = result.data.walletUsdc;
       uiState.creditsTotalOwnedUsdc = result.data.totalOwnedUsdc;
       uiState.creditsCreditLimitUsdc = result.data.creditLimitUsdc;
+      if (result.data.minFirstDepositUsdc != null) uiState.creditsMinFirstDepositUsdc = result.data.minFirstDepositUsdc;
+      if (result.data.depositFeeUsdc != null) uiState.creditsDepositFeeUsdc = result.data.depositFeeUsdc;
+      uiState.creditsBalanceKnown = result.data.balanceKnown ?? true;
       uiState.creditsEvmAddress = result.data.evmAddress;
       uiState.creditsOperatorAddress = result.data.operatorAddress ?? null;
       return parseFloat(result.data.availableUsdc || '0');
@@ -1634,7 +1638,9 @@ export function initChatModule({
         // it — re-picking here would flatten a pin back to auto.
         setProvisionalDefaultModel(null);
       }
-      if (!selectedRouteModel || selectedRouteEntry?.kind === 'image' || provisionalDefaultModel !== null) {
+      if (!selectedRouteModel
+        || (selectedRouteEntry != null && selectedRouteEntry.kind !== 'text')
+        || provisionalDefaultModel !== null) {
         adoptDefaultVprModel();
       }
       // Keep the buyer proxy's default route on the current selection. Runs

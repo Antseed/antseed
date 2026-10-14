@@ -34,7 +34,8 @@ interface IAntseedStatsAttributionUsage {
  *           head word S+5  bytes32 inviteVs     EIP-2098 compact signature vs
  *           then the services array (length word + elements)
  *
- *         where S is the number of static head words before the offset (5 for
+ *         where S is the number of static head words before the offset (7 for
+ *         SpendingAuth metadata v4, 5 for
  *         SpendingAuth metadata v3, 4 for v1/v2 and FreeUsage v1). In ABI
  *         terms the metadata is `abi.encode(<head words>, uint256[] services,
  *         bytes32 clientId, uint256 inviteEpoch, uint256 inviteIndex,
@@ -70,6 +71,9 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     }
 
     // ─── Constants ──────────────────────────────────────────────────
+    /// @dev SpendingAuth metadata v4 head: version, in, out, requests, images, video generations, video seconds.
+    uint256 private constant METADATA_V4 = 4;
+    uint256 private constant V4_STATIC_WORDS = 7;
     /// @dev SpendingAuth metadata v3 head: version, in, out, requests, images.
     uint256 private constant METADATA_V3 = 3;
     uint256 private constant V3_STATIC_WORDS = 5;
@@ -199,7 +203,9 @@ contract AntseedStatsV2 is IAntseedStats, Ownable {
     function _decodeAttribution(bytes calldata metadata) internal pure returns (Attribution memory a) {
         if (metadata.length < 32) return a;
         uint256 version = uint256(bytes32(metadata[0:32]));
-        uint256 staticWords = version == METADATA_V3 ? V3_STATIC_WORDS : LEGACY_STATIC_WORDS;
+        uint256 staticWords = version == METADATA_V4
+            ? V4_STATIC_WORDS
+            : version == METADATA_V3 ? V3_STATIC_WORDS : LEGACY_STATIC_WORDS;
         uint256 offsetWord = staticWords * 32;
         // Head (with tail) plus the services length word.
         if (metadata.length < offsetWord + (TAIL_WORDS + 2) * 32) return a;

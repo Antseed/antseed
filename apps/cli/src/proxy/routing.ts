@@ -9,6 +9,7 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
   extractRequestBodyFields,
   inferProviderDefaultServiceApiProtocols,
+  isNativeVideoProtocol,
   selectTargetProtocolForRequest,
   type ServiceApiProtocol,
   type TargetProtocolSelection,
@@ -231,6 +232,7 @@ function selectAdvertisedServiceByProtocol(
         || protocol === 'openai-responses'
         || protocol === 'openai-images'
         || protocol === 'typesafe-systemone'
+        || isNativeVideoProtocol(protocol)
       ))
     } else if (offer.protocol) {
       supportedProtocols = [offer.protocol]
@@ -283,6 +285,7 @@ export function resolvePeerRoutePlan(
   if (requestedService?.trim()) {
     const exactPlan = selectAdvertisedServiceByProtocol(peer, candidates, requestProtocol, requestedService)
     if (exactPlan) return exactPlan
+    if (isNativeVideoProtocol(requestProtocol)) return null
     const hasAdvertisedCanonicalOffer = candidates.some(
       (provider) => findAdvertisedServiceOffer(peer, provider, requestedService) !== null,
     )

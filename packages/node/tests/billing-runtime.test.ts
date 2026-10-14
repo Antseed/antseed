@@ -69,10 +69,13 @@ describe("unit billing runtime", () => {
         })),
       },
       {
-        requestedImages: 4,
-        model: "gpt-image-2",
-        size: "1024x1024",
-        quality: "low",
+        kind: "image",
+        image: {
+          requestedImages: 4,
+          model: "gpt-image-2",
+          size: "1024x1024",
+          quality: "low",
+        },
       },
     );
 
@@ -97,10 +100,13 @@ describe("unit billing runtime", () => {
         })),
       },
       {
-        requestedImages: 1,
-        model: "gpt-image-2",
-        size: "1024x1024",
-        quality: "low",
+        kind: "image",
+        image: {
+          requestedImages: 1,
+          model: "gpt-image-2",
+          size: "1024x1024",
+          quality: "low",
+        },
       },
     );
 
@@ -119,10 +125,13 @@ describe("unit billing runtime", () => {
         body: new TextEncoder().encode(JSON.stringify({ data: [{}, { b64_json: "" }] })),
       },
       {
-        requestedImages: 2,
-        model: "gpt-image-2",
-        size: "1024x1024",
-        quality: "low",
+        kind: "image",
+        image: {
+          requestedImages: 2,
+          model: "gpt-image-2",
+          size: "1024x1024",
+          quality: "low",
+        },
       },
     );
 
@@ -313,11 +322,14 @@ describe("unit billing runtime", () => {
       unitLimits: { output_images: 1 },
     });
     expect(captured.requestFacts).toEqual({
-      model: "gpt-image-2",
-      size: "1024x1024",
-      quality: "low",
-      requestedImages: 1,
-      promptTokens: 1,
+      kind: "image",
+      image: {
+        model: "gpt-image-2",
+        size: "1024x1024",
+        quality: "low",
+        requestedImages: 1,
+        promptTokens: 1,
+      },
     });
   });
 
@@ -369,11 +381,14 @@ describe("unit billing runtime", () => {
       unitLimits: { output_images: 2 },
     });
     expect(captured.requestFacts).toEqual({
-      model: "gpt-image-2",
-      size: "1024x1024",
-      quality: "auto",
-      requestedImages: 2,
-      promptTokens: 4,
+      kind: "image",
+      image: {
+        model: "gpt-image-2",
+        size: "1024x1024",
+        quality: "auto",
+        requestedImages: 2,
+        promptTokens: 4,
+      },
     });
   });
 

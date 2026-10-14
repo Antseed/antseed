@@ -96,7 +96,14 @@ function renderEvent(spinner: Ora, event: DepositWatchEvent): boolean {
       spinner.text = `Sweeping ${formatUsdc(BigInt(event.amountBaseUnits ?? '0'))} USDC into your deposits balance...`
       return false
     case 'deferred':
-      spinner.text = 'Deposit deferred: your deposits balance is at its credit limit. Funds stay in the wallet and sweep when headroom frees up.'
+      if (event.reason === 'below-minimum') {
+        const have = BigInt(event.amountBaseUnits ?? '0')
+        const need = BigInt(event.minRequiredBaseUnits ?? '0')
+        const shortfall = need > have ? need - have : 0n
+        spinner.text = `Waiting for more USDC: the wallet holds ${formatUsdc(have)} USDC but a deposit needs ${formatUsdc(need)} USDC (minimum plus relay fee). Send ${formatUsdc(shortfall)} USDC more.`
+      } else {
+        spinner.text = 'Deposit deferred: your deposits balance is at its credit limit. Funds stay in the wallet and sweep when headroom frees up.'
+      }
       return false
     case 'error':
       spinner.text = `${event.error ?? 'Sweep attempt failed'} (retrying automatically)`

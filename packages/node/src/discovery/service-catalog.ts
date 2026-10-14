@@ -1,12 +1,15 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
+import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
+import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 
 export type CatalogServiceProtocol =
   | 'anthropic-messages'
   | 'openai-chat-completions'
   | 'openai-responses'
   | 'openai-images'
-  | 'typesafe-systemone';
+  | 'typesafe-systemone'
+  | NativeVideoProtocol;
 
 export type CatalogServiceCapabilities = {
   contextWindow?: number;
@@ -17,6 +20,7 @@ export type CatalogServiceCapabilities = {
   toolUse?: boolean;
   structuredOutput?: boolean;
   supportedParameters?: string[];
+  video?: VideoOptions;
 };
 
 export type NetworkServiceCatalogPeer = {
@@ -58,9 +62,10 @@ export type NetworkServiceCatalogPeer = {
 };
 
 /** `decision`: System One models return typed answers, not text or images. */
-export type NetworkServiceOfferType = 'text' | 'image' | 'decision';
+export type NetworkServiceOfferType = 'text' | 'image' | 'decision' | 'video';
 
 export type NetworkServiceOffer = {
+  unitBillingModels?: NonNullable<NetworkServiceCatalogPeer['providerServiceUnitBillingModels']>[string]['services'][string];
   advertisedVerifierIds?: string[];
   serviceId: string;
   provider: string;
@@ -85,6 +90,7 @@ const VALID_PROTOCOLS = new Set<string>([
   'openai-responses',
   'openai-images',
   'typesafe-systemone',
+  ...NATIVE_VIDEO_PROTOCOLS,
 ]);
 
 export function inferServiceProtocol(provider: string): Exclude<CatalogServiceProtocol, 'openai-images'> | null {
@@ -176,7 +182,9 @@ export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): N
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];
         const categories = peer.providerServiceCategories?.[provider]?.services?.[serviceId];
         const protocol = resolveServiceProtocol(protocols, provider);
-        const type: NetworkServiceOfferType = protocol === 'typesafe-systemone'
+        const type: NetworkServiceOfferType = isNativeVideoProtocol(protocol)
+          ? 'video'
+          : protocol === 'typesafe-systemone'
           ? 'decision'
           : protocol === 'openai-images' || capabilities?.outputs?.includes('image')
             ? 'image'
@@ -194,9 +202,10 @@ export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): N
           peerId: peer.peerId,
           ...(peer.displayName ? { displayName: peer.displayName } : {}),
           ...(peer.reputationScore !== undefined ? { reputationScore: peer.reputationScore } : {}),
-          ...(pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
-          ...(pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
-          ...(pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
+          ...(type !== 'video' && pricing.inputUsdPerMillion !== undefined ? { inputUsdPerMillion: pricing.inputUsdPerMillion } : {}),
+          ...(type !== 'video' && pricing.outputUsdPerMillion !== undefined ? { outputUsdPerMillion: pricing.outputUsdPerMillion } : {}),
+          ...(type !== 'video' && pricing.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion } : {}),
+          ...(type === 'video' ? { unitBillingModels: peer.providerServiceUnitBillingModels?.[provider]?.services[serviceId] } : {}),
           ...resolveImagePriceRange(peer, provider, serviceId),
         });
       }

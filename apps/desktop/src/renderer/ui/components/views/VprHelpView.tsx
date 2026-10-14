@@ -899,7 +899,7 @@ export function VprHelpView({ onSelectView }: Props) {
         <div className={styles.section}>
           <p className={styles.sectionLabel}>Legal</p>
           <VprCard>
-            <button type="button" className={styles.row} onClick={() => openExternal('https://antseed.com/terms-of-service#16-privacy-and-data')}>
+            <button type="button" className={styles.row} onClick={() => openExternal('https://antseed.com/terms-of-service#62-sharing-data-with-ai-services')}>
               <span className={styles.rowLabel}>Privacy Policy</span>
               <HugeiconsIcon icon={ArrowUpRight01Icon} size={16} strokeWidth={2} className={styles.rowGlyph} />
             </button>

@@ -103,58 +103,61 @@ export class SellerFreeTierLimiter {
   }
 
   consume(input: FreeTierConsumeInput): FreeTierDecision {
+    return this._evaluate(input, input.service);
+  }
+
+  /** Check channel-open admission without consuming an inference request. */
+  check(input: Omit<FreeTierConsumeInput, 'service'>): FreeTierDecision {
+    return this._evaluate(input, null);
+  }
+
+  private _evaluate(input: Omit<FreeTierConsumeInput, 'service'>, service: string | null): FreeTierDecision {
     const nowMs = input.nowMs ?? Date.now();
     const buyerAddress = peerIdToAddress(input.buyerPeerId).toLowerCase();
     const remoteIp = normalizeRemoteIp(input.remoteIp);
+    const usage = {
+      buyerAddress,
+      remoteIp,
+      maxRequestsPerAddress: this.maxRequestsPerAddress,
+      maxRequestsPerIp: this.maxRequestsPerIp,
+      windowMs: this.windowMs,
+      nowMs,
+    };
     const decision = this._storage
-      ? this._storage.consumeFreeTierRequest({
-        buyerAddress,
-        remoteIp,
-        service: input.service,
-        maxRequestsPerAddress: this.maxRequestsPerAddress,
-        maxRequestsPerIp: this.maxRequestsPerIp,
-        windowMs: this.windowMs,
-        nowMs,
-      })
-      : this._consumeInMemory(buyerAddress, remoteIp, nowMs);
+      ? (service === null
+        ? this._storage.checkFreeTierRequest(usage)
+        : this._storage.consumeFreeTierRequest({ ...usage, service }))
+      : this._evaluateInMemory(buyerAddress, remoteIp, nowMs, service !== null);
     return { ...decision, buyerAddress, remoteIp };
   }
 
-  private _consumeInMemory(buyerAddress: string, remoteIp: string | null, nowMs: number): FreeTierConsumption {
+  private _evaluateInMemory(buyerAddress: string, remoteIp: string | null, nowMs: number, consume: boolean): FreeTierConsumption {
     const windowStart = nowMs - this.windowMs;
-    const buckets: number[][] = [];
+    const buckets = new Map<string, number[]>();
     const checks: FreeTierLimitCheck[] = [];
     const track = (kind: FreeTierLimitCheck['kind'], key: string, limit: number): void => {
-      const timestamps = this._bucket(key, windowStart);
-      buckets.push(timestamps);
+      const timestamps = (this._inMemoryUsage.get(key) ?? []).filter((timestamp) => timestamp >= windowStart);
+      buckets.set(key, timestamps);
       checks.push({ kind, limit, count: timestamps.length, oldestTimestamp: timestamps[0] ?? null });
     };
     if (this.maxRequestsPerAddress !== null) track('address', `address:${buyerAddress}`, this.maxRequestsPerAddress);
     if (this.maxRequestsPerIp !== null && remoteIp !== null) track('ip', `ip:${remoteIp}`, this.maxRequestsPerIp);
 
     const decision = evaluateFreeTierLimits(checks, this.windowMs, nowMs);
-    if (decision.allowed) {
-      for (const timestamps of buckets) timestamps.push(nowMs);
-    }
-    return decision;
-  }
-
-  private _bucket(key: string, windowStart: number): number[] {
-    let timestamps = this._inMemoryUsage.get(key);
-    if (!timestamps) {
+    if (decision.allowed && consume) {
       this._pruneExpiredBuckets(windowStart);
-      if (this._inMemoryUsage.size >= MAX_IN_MEMORY_KEYS) {
+      const newKeys = [...buckets.keys()].filter((key) => !this._inMemoryUsage.has(key)).length;
+      if (this._inMemoryUsage.size + newKeys > MAX_IN_MEMORY_KEYS) {
         throw new Error('free-tier limiter capacity reached while persistent metering is unavailable');
       }
-      timestamps = [];
-      this._inMemoryUsage.set(key, timestamps);
+      // Commit both buckets together: pruning while creating the IP bucket
+      // must not remove the address bucket before its first request is added.
+      for (const [key, timestamps] of buckets) {
+        timestamps.push(nowMs);
+        this._inMemoryUsage.set(key, timestamps);
+      }
     }
-    let firstActive = 0;
-    while (firstActive < timestamps.length && timestamps[firstActive]! < windowStart) {
-      firstActive += 1;
-    }
-    if (firstActive > 0) timestamps.splice(0, firstActive);
-    return timestamps;
+    return decision;
   }
 
   private _pruneExpiredBuckets(windowStart: number): void {

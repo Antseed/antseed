@@ -30,12 +30,31 @@ export interface TokenPricingUsdPerMillion {
 
 export const SERVICE_CAPABILITY_MODALITIES = ["text", "image", "audio", "video", "pdf"] as const;
 export type ServiceCapabilityModality = (typeof SERVICE_CAPABILITY_MODALITIES)[number];
+export const VIDEO_INPUT_KINDS = ["first_frame", "last_frame", "reference_image", "video", "reference_video", "audio"] as const;
+export type VideoInputKind = (typeof VIDEO_INPUT_KINDS)[number];
+
+/**
+ * Values a video model accepts. Absent lists mean the seller did not announce
+ * that option; buyers must not guess from absence. `inputs` is the complete
+ * list of accepted media inputs (empty means text only), and `requiredInputs`
+ * must be supplied on every create.
+ */
+export interface VideoOptions {
+  durationsSeconds?: number[];
+  resolutions?: string[];
+  aspectRatios?: string[];
+  inputs?: VideoInputKind[];
+  requiredInputs?: VideoInputKind[];
+  audio?: boolean;
+}
 
 /**
  * Per-service model capability hints announced by sellers. Every field is
  * optional: absent means unknown, so buyers fall back to their own defaults.
  */
 export interface ServiceCapabilities {
+  /** Options accepted by a native video model. */
+  video?: VideoOptions;
   /** Total context window in tokens. */
   contextWindow?: number;
   /** Maximum output tokens per response. */
@@ -62,9 +81,44 @@ export interface ServiceCapabilities {
 export const MAX_CAPABILITY_TOKEN_COUNT = 1_000_000_000;
 export const MAX_CAPABILITY_SUPPORTED_PARAMETERS = 32;
 export const MAX_CAPABILITY_PARAMETER_LENGTH = 32;
+export const MAX_VIDEO_OPTION_VALUES = 64;
+export const MAX_VIDEO_OPTION_LENGTH = 32;
 /** Lowercase snake_case, matching OpenAI-style request body field names. */
 const CAPABILITY_PARAMETER_PATTERN = /^[a-z][a-z0-9_]*$/;
 const SERVICE_CAPABILITY_MODALITY_SET = new Set<string>(SERVICE_CAPABILITY_MODALITIES);
+const VIDEO_INPUT_KIND_SET = new Set<string>(VIDEO_INPUT_KINDS);
+const VIDEO_OPTION_PATTERN = /^[A-Za-z0-9:._-]+$/;
+
+function validateVideoOptions(video: VideoOptions): string[] {
+  const errors: string[] = [];
+  if (!video || typeof video !== "object" || Array.isArray(video)) return ["video must be an object"];
+  const unique = (field: string, values: unknown, valid: (value: unknown) => boolean, allowEmpty = false) => {
+    if (values === undefined) return;
+    if (!Array.isArray(values) || (!allowEmpty && values.length === 0) || values.length > MAX_VIDEO_OPTION_VALUES) {
+      errors.push(`video.${field} must contain ${allowEmpty ? 0 : 1}-${MAX_VIDEO_OPTION_VALUES} values`);
+      return;
+    }
+    const seen = new Set<unknown>();
+    for (const value of values) {
+      if (!valid(value)) errors.push(`Invalid video.${field} value ${JSON.stringify(value)}`);
+      else if (seen.has(value)) errors.push(`Duplicate video.${field} value ${JSON.stringify(value)}`);
+      seen.add(value);
+    }
+  };
+  unique("durationsSeconds", video.durationsSeconds, value => typeof value === "number" && Number.isInteger(value) && value > 0 && value <= 3600);
+  for (const field of ["resolutions", "aspectRatios"] as const) {
+    unique(field, video[field], value => typeof value === "string" && value.length <= MAX_VIDEO_OPTION_LENGTH && VIDEO_OPTION_PATTERN.test(value));
+  }
+  for (const field of ["inputs", "requiredInputs"] as const) {
+    unique(field, video[field], value => typeof value === "string" && VIDEO_INPUT_KIND_SET.has(value), field === "inputs");
+  }
+  if (video.inputs && video.requiredInputs?.some(input => !video.inputs!.includes(input))) errors.push("video.requiredInputs must also be listed in video.inputs");
+  if (video.audio !== undefined && typeof video.audio !== "boolean") errors.push("video.audio must be a boolean");
+  const known = new Set(["durationsSeconds", "resolutions", "aspectRatios", "inputs", "requiredInputs", "audio"]);
+  for (const key of Object.keys(video)) if (!known.has(key)) errors.push(`Unsupported video option ${key}`);
+  if (Object.keys(video).length === 0) errors.push("video must announce at least one option");
+  return errors;
+}
 
 /**
  * Field-level validation for one service's capability entry. Shared by the
@@ -73,6 +127,7 @@ const SERVICE_CAPABILITY_MODALITY_SET = new Set<string>(SERVICE_CAPABILITY_MODAL
  */
 export function validateServiceCapabilityFields(caps: ServiceCapabilities): string[] {
   const errors: string[] = [];
+  if (caps.video !== undefined) errors.push(...validateVideoOptions(caps.video));
   for (const key of ["contextWindow", "maxOutputTokens"] as const) {
     const value = caps[key];
     if (value === undefined) continue;

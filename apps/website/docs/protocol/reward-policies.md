@@ -1,19 +1,17 @@
 ---
-sidebar_position: 7
 slug: /reward-policies
-title: Reward Policies
+title: Reward policies
+description: How points policies, including the historical wash-trading filter, decide which paid usage earns ANTS rewards.
 hide_title: true
 ---
 
-# Reward Policies
+# Reward policies
 
 Payment and rewards answer different questions. USDC settlement pays a seller
 for authorized service usage. Reward policies decide how that usage contributes
 to ANTS rewards. A paid request can settle successfully and earn no reward points.
 
-The recognized-usage reward model starts at **epoch 22, September 10, 2026 at
-09:54:21 UTC**, after the registry cutover. See [Recognized Usage and ANTS
-Rewards](./recognized-usage.md) for staking, allocations, and contract addresses.
+See [Recognized usage and ANTS rewards](/docs/recognized-usage) for staking and allocations, and [Contract addresses](/docs/contracts) for the policy contracts.
 
 ## Where policies apply
 
@@ -53,7 +51,7 @@ rules and its ability to execute reliably.
 
 ## Historical wash-trading policy
 
-M001 registers `AntseedWashTradingPointsPolicy`. For each usage record, it asks
+The points registry on Base mainnet runs `AntseedWashTradingPointsPolicy`. For each usage record, it asks
 the pinned `AntseedWashTradingRegistry` whether the seller is a proven wash
 trader. If yes, it returns zero buyer and seller points. Otherwise, it leaves
 both amounts unchanged.
@@ -97,7 +95,7 @@ been resolved.
   as a staker in other pools.
 
 This is a reward filter, not a principal-slashing mechanism. The separate
-[legacy claim policy](./legacy-emissions.md#locked-seller-rewards-m002) controls
+[legacy claim policy](/docs/legacy-emissions#locked-seller-rewards-m002) controls
 releases from the old locked-rewards pool.
 
 Recording evidence and enabling enforcement are separate: accounting must use

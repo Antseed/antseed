@@ -33,7 +33,7 @@ const SALT = '0x' + 'ab'.repeat(32);
 
 describe('EIP-712 golden vectors', () => {
   it('pins ZERO_METADATA_HASH', () => {
-    expect(ZERO_METADATA_HASH).toBe('0xd26da485bf13b78f40dee0909067460d0d8d2510431238d75f7971400b85e0e3');
+    expect(ZERO_METADATA_HASH).toBe('0xea67a9fe192b3a98fe0460402ec9f4f1a5a2eaa14cc5bbf0e2ea0eebba976867');
   });
 
   it('pins channelId derivation', () => {
@@ -53,7 +53,7 @@ describe('EIP-712 golden vectors', () => {
       services: [],
     };
     expect(computeMetadataHash(metadata)).toBe(
-      '0xb9b176a3f2735a8160329e354c7ba2f0a84b39258c479b441702c3126210301c',
+      '0x37c9aeed7c4a64a210f75b6162b61172843844237cdb69df5275a19fc824d62e',
     );
     // Omitted cumulativeOutputImages encodes identically to an explicit zero.
     expect(computeMetadataHash({ ...metadata, cumulativeOutputImages: 0n })).toBe(
@@ -62,6 +62,16 @@ describe('EIP-712 golden vectors', () => {
     expect(computeMetadataHash({ ...metadata, cumulativeOutputImages: 2n })).not.toBe(
       computeMetadataHash(metadata),
     );
+    expect(computeMetadataHash({
+      ...metadata,
+      cumulativeVideoGenerations: 0n,
+      cumulativeVideoSeconds: 0n,
+    })).toBe(computeMetadataHash(metadata));
+    expect(computeMetadataHash({
+      ...metadata,
+      cumulativeVideoGenerations: 1n,
+      cumulativeVideoSeconds: 8n,
+    })).not.toBe(computeMetadataHash(metadata));
     // Sorted service entries change the hash deterministically.
     const withService = {
       ...metadata,
@@ -73,6 +83,8 @@ describe('EIP-712 golden vectors', () => {
         cumulativeOutputTokens: 567n,
         cumulativeRequestCount: 3n,
         cumulativeOutputImages: 2n,
+        cumulativeVideoGenerations: 1n,
+        cumulativeVideoSeconds: 8n,
       }],
     };
     expect(encodeMetadata(withService)).not.toBe(encodeMetadata(metadata));
@@ -161,14 +173,14 @@ describe('metadata attribution tail', () => {
     expect(clientAgentId(clientId)).toBe(42n);
     const coder = AbiCoder.defaultAbiCoder();
     const legacy = coder.decode(['uint256', 'uint256', 'uint256', 'uint256'], encoded);
-    expect(legacy.map(String)).toEqual(['3', '100', '40', '2']);
-    const v3 = coder.decode(
-      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256',
-        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages)[]'],
+    expect(legacy.map(String)).toEqual(['4', '100', '40', '2']);
+    const v4 = coder.decode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
+        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
       encoded,
     );
-    expect(v3[5].length).toBe(1);
-    expect(String(v3[5][0].cumulativeCachedInputTokens)).toBe('10');
+    expect(v4[7].length).toBe(1);
+    expect(String(v4[7][0].cumulativeCachedInputTokens)).toBe('10');
   });
 
   it('keeps the client with zero invite words once bound', () => {
@@ -186,6 +198,18 @@ describe('metadata attribution tail', () => {
       encoded,
     );
     expect(legacy.map((v) => (Array.isArray(v) ? v.length : String(v)))).toEqual(['1', '100', '40', '2', 1]);
+  });
+
+  it('decodes the tail on every head layout', () => {
+    const coder = AbiCoder.defaultAbiCoder();
+    const tail = attributionTailAbi({ clientId, invite });
+    const heads: Array<[bigint, bigint[]]> = [[4n, [1n, 2n, 3n, 0n, 0n, 0n]], [3n, [1n, 2n, 3n, 0n]], [1n, [1n, 2n, 3n]]];
+    for (const [version, words] of heads) {
+      const types = Array(words.length + 1).fill('uint256');
+      const withTail = coder.encode([...types, 'uint256[]', ...tail.types], [version, ...words, [], ...tail.values]);
+      expect(decodeMetadataAttribution(withTail)).toEqual({ clientId, invite });
+      expect(decodeMetadataAttribution(coder.encode([...types, 'uint256[]'], [version, ...words, []]))).toBeNull();
+    }
   });
 
   it('ignores the retired two-word referrer tail', () => {

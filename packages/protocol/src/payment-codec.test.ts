@@ -21,6 +21,16 @@ describe('payment payload codec', () => {
       reserveSalt: '0x' + 'ee'.repeat(32),
       reserveMaxAmount: '500000',
       reserveDeadline: 1900000000,
+      reserveBatch: {
+        cumulativeAmount: '325000',
+        metadataHash: '0x' + '11'.repeat(32),
+        metadata: '0x' + '22'.repeat(64),
+        spendingAuthSig: '0x' + '33'.repeat(65),
+        maxAmount: '4200000',
+        deadline: 1900000001,
+        reserveAuthSig: '0x' + '44'.repeat(65),
+      },
+      oneOffRequestId: 'req-video',
     };
     expect(decodeSpendingAuth(encodeSpendingAuth(payload))).toEqual(payload);
   });
@@ -49,6 +59,12 @@ describe('payment payload codec', () => {
       requestId: 'req-2',
       inputUsdPerMillion: 3000,
       outputUsdPerMillion: 15000,
+      code: 'one_off_channel_required' as const,
+      oneOffPlan: {
+        openingReserveAmount: '1000000',
+        requiredCumulativeAmount: '650000',
+        requestCost: '4200000',
+      },
     };
     expect(decodePaymentRequired(encodePaymentRequired(required))).toMatchObject(required);
     const ack = { channelId: '0x' + 'ab'.repeat(32) };

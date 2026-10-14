@@ -9,7 +9,7 @@ import {
   DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS,
   DEFAULT_BUYER_REQUEST_TIMEOUT_MS,
 } from './defaults.js';
-import { loadConfig } from './loader.js';
+import { configFromObject, loadConfig } from './loader.js';
 import { createDefaultConfig } from './defaults.js';
 import { deriveDisplayNameFromPeerId, shouldDeriveDisplayName } from './identity-display-name.js';
 
@@ -750,6 +750,16 @@ test('loadConfig rejects invalid seller gasCheck minBalanceEth', async () => {
   );
 });
 
+test('loadConfig preserves seller freeUsage setting', async () => {
+  await withTempConfig(
+    JSON.stringify({ seller: { freeUsage: { recordBatchSize: 64, recordFlushIntervalMs: 900_000 } } }),
+    async (configPath) => {
+      const config = await loadConfig(configPath);
+      assert.deepEqual(config.seller.freeUsage, { recordBatchSize: 64, recordFlushIntervalMs: 900_000 });
+    }
+  );
+});
+
 test('loadConfig preserves seller freeTier setting', async () => {
   await withTempConfig(
     JSON.stringify({
@@ -780,6 +790,29 @@ test('loadConfig rejects invalid seller freeTier limits', async () => {
   }
 });
 
+test('loadConfig preserves seller restrictedCountries, including the [] opt-out', async () => {
+  for (const restrictedCountries of [['IR', 'RU'], []]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { restrictedCountries } }),
+      async (configPath) => {
+        const config = await loadConfig(configPath);
+        assert.deepEqual(config.seller.restrictedCountries, restrictedCountries);
+      }
+    );
+  }
+});
+
+test('loadConfig rejects invalid seller restrictedCountries', async () => {
+  for (const restrictedCountries of ['IR', ['ir'], ['IRN'], [1]]) {
+    await withTempConfig(
+      JSON.stringify({ seller: { restrictedCountries } }),
+      async (configPath) => {
+        await assert.rejects(async () => loadConfig(configPath), /seller\.restrictedCountries/);
+      }
+    );
+  }
+});
+
 test('loadConfig preserves seller agentDir setting', async () => {
   await withTempConfig(
     JSON.stringify({
@@ -792,4 +825,11 @@ test('loadConfig preserves seller agentDir setting', async () => {
       assert.equal(config.seller.agentDir, '/etc/antseed/my-agent');
     }
   );
+});
+
+test('buyer.verifier is read and validated like the rest of the config', () => {
+  assert.deepEqual(configFromObject({ buyer: { verifier: { require: true, prefer: ['antseed-verifier'] } } }).buyer.verifier, { require: true, prefer: ['antseed-verifier'] });
+  assert.equal(configFromObject({}).buyer.verifier, undefined);
+  assert.throws(() => configFromObject({ buyer: { verifier: { enabled: false, require: true } } }), /buyer\.verifier\.enabled cannot be false/);
+  assert.throws(() => configFromObject({ buyer: { verifier: { prefer: 'x' } } }), /buyer\.verifier\.prefer/);
 });
