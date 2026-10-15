@@ -13,7 +13,7 @@ auth='authorization: Bearer antseed-desktop'
 # Video models, from what each seller advertises. frames=yes lists image-to-video models;
 # frames=ref lists reference-to-video models (images guide the subject or style, not the first frame);
 # frames=no lists text-to-video models (only when the user asked to skip frames).
-# id, frames, audio (yes / no / ? = not advertised), max height (px), max seconds, from $/s (lowest resolution; higher costs more), sellers(reputation).
+# id, frames, audio (yes / no / ? = not advertised), max height (px), max seconds, from price (lowest resolution; higher costs more: `$/s` per second, `$/clip` per video), sellers(reputation).
 curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" | jq -r --arg frames "${frames:-yes}" '
   def px: ascii_downcase | if . == "4k" then 2160 elif . == "2k" then 1440
           else (capture("(?<n>[0-9]+)").n | tonumber) end;
@@ -21,11 +21,16 @@ curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=videos" | jq -r 
   | ([$v[].inputs // [] | .[]] | unique) as $in
   | (if $in | index("first_frame") then "yes" elif $in | index("reference_image") then "ref" else "no" end) as $kind
   | select($kind == $frames)
-  | [.id, (if $in | index("last_frame") then "first+last" elif $kind == "yes" then "first" elif $kind == "ref" then "ref" else "text" end),
+  | (($in | index("last_frame")) or any(.peers[].capabilities.supportedParameters // [] | .[];
+      IN("end_image_url", "tail_image_url", "last_frame_url", "last_image_url"))) as $last
+  | [.id, (if $kind == "yes" and $last then "first+last" elif $kind == "yes" then "first" elif $kind == "ref" then "ref" else "text" end),
      (if any($v[]; .audio == true) then "yes" elif all($v[]; .audio == false) then "no" else "?" end),
      ([$v[].resolutions // [] | .[] | px] | max // "?"),
      ([$v[].durationsSeconds // [] | .[]] | max // "?"),
-     ([.peers[] | .unitBillingModels[.protocol].components[]? | select(.unit == "video_seconds") | .priceUsd] | min // "?"),
+     ([.peers[] | .unitBillingModels[.protocol].components[]?] as $c
+      | ([$c[] | select(.unit == "video_seconds") | .priceUsd] | min) as $s
+      | ([$c[] | select(.unit == "video_generations") | .priceUsd] | min) as $g
+      | if $s then "$\($s)/s" elif $g then "$\($g)/clip" else "?" end),
      ([.peers[] | "\(.displayName // .peerId[0:8])(\(.reputationScore // 0 | floor))"] | join(" "))]
   | map(tostring) | @tsv'
 
@@ -48,7 +53,7 @@ Match the user's model case-insensitively against `id` and `aliases`. Several fa
 
 ## Price
 
-Lists the sellers that support every chosen option, with their price, cheapest first. Set `last_frame=yes` when a last frame is sent, `refs=yes` when reference images are sent, and `aspect_ratio` to the agreed video ratio (for example `16:9`). A seller is left out when its pricing has no component for the chosen resolution (the buyer refuses that request), when a last frame is sent and it does not advertise `last_frame` (Venice accepts `end_image_url` at create and fails the job later), when reference images are sent and it does not advertise `reference_image` (or they are not sent and it requires them), or when it lists `aspectRatios` without the chosen ratio. A seller that lists no `aspectRatios` is kept. `sendRatio` says whether to send `aspect_ratio` to that seller ([Aspect ratio](#aspect-ratio)), and `fields` is the seller's field list.
+Lists the sellers that support every chosen option, with their price, cheapest first. Set `last_frame=yes` when a last frame is sent, `refs=yes` when reference images are sent, and `aspect_ratio` to the agreed video ratio (for example `16:9`). A seller is left out when its pricing has no component for the chosen resolution (the buyer refuses that request), when a last frame is sent and it neither advertises `last_frame` nor lists an end-frame field in `fields` (Venice accepts `end_image_url` at create and fails the job later), when reference images are sent and it does not advertise `reference_image` (or they are not sent and it requires them), or when it lists `aspectRatios` without the chosen ratio. A seller that lists no `aspectRatios` is kept. `sendRatio` says whether to send `aspect_ratio` to that seller ([Aspect ratio](#aspect-ratio)), and `fields` is the seller's field list.
 
 ```bash
 jq --argjson dur "$duration" --arg res "${resolution:-}" \
@@ -57,7 +62,9 @@ jq --argjson dur "$duration" --arg res "${resolution:-}" \
    | .capabilities.video as $v | .serviceId as $svc
    | select(($v.durationsSeconds // [$dur]) | index($dur))
    | select($res == "" or (($v.resolutions // [$res]) | index($res)))
-   | select($last != "yes" or ($v.inputs // [] | index("last_frame")))
+   | select($last != "yes" or ($v.inputs // [] | index("last_frame"))
+            or any(.capabilities.supportedParameters // [] | .[];
+                   IN("end_image_url", "tail_image_url", "last_frame_url", "last_image_url")))
    | select(if $refs == "yes" then ($v.inputs // [] | index("reference_image")) != null
             else ($v.requiredInputs // [] | index("reference_image")) == null end)
    | select($ratio == "" or (($v.aspectRatios // [$ratio]) | index($ratio)))
@@ -82,7 +89,7 @@ An empty list means no seller supports the options. Choose an advertised duratio
 
 One rule for every model: send `aspect_ratio` only when the chosen seller lists that ratio in `aspectRatios` and, if it lists `fields`, lists `aspect_ratio` there too (`sendRatio: true` in [Price](#price)). Otherwise do not send it, and the frame's shape sets the video's shape. Image-to-video models that take the ratio from the frame, such as Seedance, list no ratios, so the rule covers them. If a job fails and `peer_message` names `aspect_ratio`, the seller needs it even though it lists none: ask, then create again with the frame's ratio. Reference images do not set the shape, so a reference-to-video video gets the default ratio when `aspect_ratio` is not sent; pick a seller with `sendRatio: true`.
 
-So the frame must already have the video's shape. Make frames at the agreed ratio, then check each saved frame with `frame_size` and fix a wrong one with `fit_frame` ([Frame shape](#frame-shape)).
+So the frame must already have the video's shape. Ask for the agreed ratio when making frames, then always check each saved frame with `frame_size` and crop it with `fit_frame` ([Frame shape](#frame-shape)).
 
 ## Frame shape
 
@@ -100,7 +107,7 @@ frame_size() {
 }
 ```
 
-Image sellers do not always return the requested shape (for example 1:1 or 4:3 instead of 16:9). `fit_frame` center-crops a frame to a ratio and leaves one within 1% of it unchanged. Write the output with the same extension as the source. Show the cropped frame to the user; if the crop cuts off the subject, make the frame again instead. When no image tool is found, `fit_frame` fails: tell the user and ask whether to install one.
+Image models often ignore the requested ratio (for example flux-2-pro returns 4:3 when asked for 16:9), so run `fit_frame` on every frame as a normal step, not only when something looks wrong. `fit_frame` center-crops a frame to a ratio and leaves one within 1% of it unchanged. Write the output with the same extension as the source. Show the cropped frame to the user; if the crop cuts off the subject, make the frame again instead. When no image tool is found, `fit_frame` fails: tell the user and ask whether to install one.
 
 ```bash
 # fit_frame <image> <W:H> <out>
@@ -242,7 +249,7 @@ else
 fi
 ```
 
-A missing job id after an HTTP answer means the create failed and nothing started. Show the error to the user and fix the field `peer_message` names. Do not create again without asking. With no answer at all (HTTP `000`, for example a dropped connection), the job may have started at the seller: tell the user, and do not create again unless they agree to risk paying for a second video. If it was rejected for size, use the `shrink_frame` fallback in [Frames as data URLs](#frames-as-data-urls). The `-H 'Expect:'` stops curl from sending `Expect: 100-continue` on bodies over 1 MiB, which makes sellers fail with "fetch failed".
+A missing job id after an HTTP answer means the create failed, nothing started, and nothing was charged. Show the error to the user and fix the field `peer_message` names. Do not create again without asking. With no answer at all (HTTP `000`, for example a dropped connection), the job may have started at the seller: tell the user, and do not create again unless they agree to risk paying for a second video. If it was rejected for size, use the `shrink_frame` fallback in [Frames as data URLs](#frames-as-data-urls). The `-H 'Expect:'` stops curl from sending `Expect: 100-continue` on bodies over 1 MiB, which makes sellers fail with "fetch failed".
 
 ## Wait and save
 
@@ -295,10 +302,40 @@ fi
 
 After the video is saved, delete the job file unless the user wants to keep it; while it exists, a new create with the same output name is refused. If the loop ends without a video, tell the user the job id and the last HTTP status; for `000`, `429`, or `5xx`, run this block again later to resume. A job that failed at the seller is not charged.
 
+## Multi-clip videos
+
+For a video longer than one clip, make the clips one after another, each from the previous clip's last frame, then join them. Each clip is its own approved, paid video: show the user the price for every clip up front, and create the next clip only after the previous one is saved.
+
+1. Make clip 1 as usual, with its own output name (`clip1.mp4`, so its job file is `clip1.job.json`).
+2. Take clip 1's last frame and crop it to the video's ratio. Video models can return a size slightly off the ratio (for example 736x400 for 16:9), so crop it like any frame:
+
+   ```bash
+   ffmpeg -loglevel error -y -sseof -0.5 -i clip1.mp4 -update 1 -frames:v 1 clip1-last.jpg
+   fit_frame clip1-last.jpg 16:9 clip2-first.jpg
+   ```
+
+3. Make clip 2 with `clip2-first.jpg` as its first frame and `output=clip2.mp4`. Its prompt continues the motion and camera from where clip 1 ends ([prompting.md](prompting.md#image-to-video-the-frame-already-sets-the-look)). Repeat for more clips.
+4. Join the clips. Some MP4s (Venice) carry an attached cover image as an extra stream, which breaks a plain `ffmpeg -c copy` join, so map only the first video and audio streams:
+
+   ```bash
+   printf "file '%s'\n" "$PWD"/clip1.mp4 "$PWD"/clip2.mp4 > clips.txt
+   ffmpeg -loglevel error -y -f concat -safe 0 -i clips.txt -map 0:v:0 -map '0:a:0?' -c copy final.mp4
+   ```
+
+   If the clips differ in size, frame rate, or codec, or the joined video stutters at the cut, re-encode instead:
+
+   ```bash
+   ffmpeg -loglevel error -y -i clip1.mp4 -i clip2.mp4 \
+     -filter_complex "[0:v:0][0:a:0][1:v:0][1:a:0]concat=n=2:v=1:a=1[v][a]" -map "[v]" -map "[a]" final.mp4
+   ```
+
+   For clips without sound, drop the audio parts (`'0:a:0?'` is already optional; in the re-encode use `[0:v:0][1:v:0]concat=n=2:v=1:a=0[v]` and `-map "[v]"`).
+
 ## Errors
 
 On a failed create or wait, `error.peer_message` carries the seller's reason, including the field it rejected. Fix that field; another seller or model usually rejects it too.
 
+- `400` on create whose `peer_message` names fields, for example "Unrecognized key(s) in object: 'bogus_field'; aspect_ratio: This model does not support aspect_ratio": the seller rejected the body, no job started, and nothing was charged. Remove or fix each named field and ask before creating again. The buyer only logs a warning for a field the seller does not list and still forwards it, so this `400` is where an unlisted field shows up. `error.code` can be empty, with the seller's reason in `error.type`.
 - `402`: the buyer needs more deposited USDC or payment-channel capacity.
 - `402 one_off_channel_required`: buyers before `@antseed/cli@0.1.171` hit this; update the buyer. Each failed attempt leaves a funded channel that `antseed buyer channels request-close <channelId>` releases.
 - Price above $5.00, or "above the configured limit": choose a shorter duration or lower resolution.

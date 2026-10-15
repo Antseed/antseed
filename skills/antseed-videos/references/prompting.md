@@ -34,8 +34,7 @@ Reference images keep a subject or style consistent; they do not set the opening
 
 ## Frame prompts (for antseed-images)
 
-Make frames at the video's aspect ratio. The frame's shape sets the video's shape whenever `aspect_ratio` is not sent ([requests.md](requests.md#aspect-ratio)). Image sellers may return a different shape, so check each saved frame and crop a wrong one with `fit_frame` before the video step; a frame with the wrong shape is not reliably handled, as some models keep its shape and others reframe it.
-
+Ask for the video's aspect ratio when making frames. The frame's shape sets the video's shape whenever `aspect_ratio` is not sent ([requests.md](requests.md#aspect-ratio)). Image models often ignore the requested ratio, so crop every saved frame with `fit_frame` before the video step; this is the normal path, not a fallback. Keep the subject near the center of the frame prompt so the crop does not cut it off. A frame with the wrong shape is not reliably handled: some video models keep its shape and others reframe it.
 
 - A frame is a still: framing (wide, medium, close-up), subject pose, background, light, at one instant.
 - First and last frames share the same style phrase, subject wording, setting, and aspect ratio, and differ only in pose, position, or framing.
