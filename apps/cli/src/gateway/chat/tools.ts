@@ -37,8 +37,12 @@ export const SHELL_TOOL = 'run_command'
 export interface ChatToolOptions {
   /** The chat's scratch directory (created on first use). */
   sandboxDir: string
-  /** Offer run_command (org admins). */
+  /** Offer run_command (org admins who switched it on). */
   allowShell: boolean
+  /** Offer web_search and web_fetch (default true; the chat's Web switch). */
+  web?: boolean
+  /** Offer the scratch-directory file tools (default true; the chat's Files switch). */
+  files?: boolean
   /**
    * Tool call ids of run_command calls the user approved in this request:
    * run_command refuses any other call, whatever the agent loop decides.
@@ -56,7 +60,8 @@ export function chatTools(options: ChatToolOptions): ToolSet {
   const fetchImpl = options.fetchImpl ?? fetch
   const fetchPageImpl: PinnedFetch = options.fetchImpl ? (url, _addresses, init) => fetchImpl(url, init) : fetchPinned
   const resolveHost = options.resolveHost ?? (async (host: string) => (await lookup(host, { all: true })).map((entry) => entry.address))
-  const tools: ToolSet = {
+  const tools: ToolSet = {}
+  if (options.web !== false) Object.assign(tools, {
     web_fetch: tool({
       description: 'Fetch a public web page (http or https) and return its readable text. Use it to read pages found with web_search or given by the user.',
       inputSchema: z.object({ url: z.string().describe('Absolute http(s) URL') }),
@@ -67,6 +72,8 @@ export function chatTools(options: ChatToolOptions): ToolSet {
       inputSchema: z.object({ query: z.string().min(1), limit: z.number().int().min(1).max(10).optional() }),
       execute: async ({ query, limit }) => searchWeb(query, limit ?? 6, options.braveApiKey ?? null, fetchImpl),
     }),
+  })
+  if (options.files !== false) Object.assign(tools, {
     list_files: tool({
       description: 'List files in the chat\'s scratch directory (or a subdirectory of it).',
       inputSchema: z.object({ path: z.string().optional().describe('Directory relative to the scratch directory; defaults to its root') }),
@@ -82,7 +89,7 @@ export function chatTools(options: ChatToolOptions): ToolSet {
       inputSchema: z.object({ path: z.string(), content: z.string() }),
       execute: async ({ path, content }) => writeSandboxFile(options.sandboxDir, path, content),
     }),
-  }
+  })
   if (options.allowShell) {
     tools[SHELL_TOOL] = tool({
       description: `Run a shell command in the chat's scratch directory on the gateway host (/bin/sh, ${COMMAND_TIMEOUT_MS / 1000} s timeout). Returns exit code, stdout and stderr. The user approves each command before it runs; if they deny one, do not retry it.`,
