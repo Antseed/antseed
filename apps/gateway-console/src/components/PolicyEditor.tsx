@@ -2,6 +2,10 @@ import { useId, useMemo, useState, type ReactNode } from 'react'
 import { Alert, Button, ConfirmDialog, Disclosure, Segmented, SelectField, Switch, TextField } from '@antseed/ui'
 import type { Peer, PeerList, RoutingPolicy, RoutingSort } from '../api/types'
 import { modelsFromPeers, useBuyerLimits } from '../lib/queries'
+import { useConsole } from '../app/context'
+import { canOpen } from '../lib/nav'
+import { href, linkHandler } from '../lib/router'
+import { Icon } from './icons'
 import {
   buyerPolicy, draftToPolicy, emptyDraft, mergeTemplate, POLICY_TEMPLATES, SORT_LABELS, templateConflicts, templateDraft, templatePolicy,
   type DraftRoute, type PolicyDraft, type TemplateId,
@@ -54,6 +58,12 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
   const aboveLabel = buyer && parent ? 'the buyer config and the levels above' : buyer ? 'the buyer config' : parent ? 'the levels above' : ''
   const floorSource = (key: 'minTrustScore' | 'minReputation') =>
     buyer?.[key] !== undefined && buyer[key] === above?.[key] ? 'The buyer config' : 'The levels above'
+  // The buyer's floor is changed in Settings → Buyer, by whoever may open Settings.
+  const { viewer } = useConsole()
+  const changeBuyerFloor = canOpen('settings', viewer)
+    ? <a className="gc-link" href={href('settings?tab=buyer')} onClick={linkHandler('settings?tab=buyer')}>Change</a>
+    : null
+  const floorAction = (key: 'minTrustScore' | 'minReputation') => (floorSource(key) === 'The buyer config' ? changeBuyerFloor : null)
   const showReputation = hasReputationData(peers) || value.minReputation !== '' || above?.minReputation !== undefined
 
   function applyTemplate(id: TemplateId) {
@@ -124,7 +134,7 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
         <section className="gc-policy__section">
           <h3>Quality and ranking</h3>
           <Slider label="Minimum trust score" value={value.minTrustScore} onChange={(next) => set('minTrustScore', next)}
-            floor={above?.minTrustScore} floorSource={floorSource('minTrustScore')} />
+            floor={above?.minTrustScore} floorSource={floorSource('minTrustScore')} floorAction={floorAction('minTrustScore')} />
           <div className="gc-policy__switches">
             <Switch checked={value.requireTee || !!above?.requireTee} disabled={!!above?.requireTee}
               onChange={(next) => set('requireTee', next)} label="TEE sellers only" />
@@ -179,7 +189,7 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
         {showReputation && (
           <Disclosure title="Reputation" summary={value.minReputation !== '' ? `≥ ${value.minReputation}` : above?.minReputation !== undefined ? `Inherit (≥ ${above.minReputation})` : 'Inherit'} defaultOpen={disabled && value.minReputation !== ''}>
             <Slider label="Minimum reputation" value={value.minReputation} onChange={(next) => set('minReputation', next)}
-              floor={above?.minReputation} floorSource={floorSource('minReputation')} />
+              floor={above?.minReputation} floorSource={floorSource('minReputation')} floorAction={floorAction('minReputation')} />
           </Disclosure>
         )}
       </div>
@@ -197,19 +207,20 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
 /**
  * A 0–100 score slider. Policies can clear it back to "Inherit"; the buyer's
  * own settings always hold a value (`clearable={false}`), and `hint` goes
- * under it. `floor` is the minimum already required above this level: an
- * inheriting slider sits on it, and a value at or under it is flagged as
- * having no effect.
+ * under it. `floor` is the minimum already required above this level: the
+ * slider cannot go under it (it says it is locked there, with `floorAction`
+ * as the way to change the floor itself), and an inheriting slider sits on it.
  */
-export function Slider({ label, value, onChange, clearable = true, hint, floor, floorSource = 'The levels above' }: {
+export function Slider({ label, value, onChange, clearable = true, hint, floor, floorSource = 'The levels above', floorAction }: {
   label: string; value: string; onChange: (value: string) => void; clearable?: boolean; hint?: ReactNode
-  floor?: number; floorSource?: string
+  floor?: number; floorSource?: string; floorAction?: ReactNode
 }) {
   const labelId = useId()
   const enabled = value !== ''
   const hasFloor = floor !== undefined && floor > 0
   const redundant = hasFloor && enabled && Number(value) <= floor
-  const shown = enabled ? value : hasFloor ? `${floor} inherited` : 'Inherit'
+  // A saved value under the floor has no effect: the slider shows the floor it is locked at.
+  const shown = redundant ? String(floor) : enabled ? value : hasFloor ? `${floor} inherited` : 'Inherit'
   return (
     <div className="gc-slider">
       <div className="gc-slider__head">
@@ -217,13 +228,17 @@ export function Slider({ label, value, onChange, clearable = true, hint, floor, 
         <span className={enabled ? 'gc-slider__value' : 'gc-slider__value gc-slider__value--inherit'}>{shown}</span>
       </div>
       <div className="gc-inline">
-        <input type="range" min={0} max={100} step={5} value={enabled ? Number(value) : hasFloor ? floor : 0} aria-labelledby={labelId}
-          onChange={(event) => onChange(event.target.value)} />
+        <input type="range" min={0} max={100} step={5} value={enabled ? Math.max(Number(value), hasFloor ? floor : 0) : hasFloor ? floor : 0} aria-labelledby={labelId}
+          onChange={(event) => onChange(String(Math.max(Number(event.target.value), hasFloor ? floor : 0)))} />
         {clearable && enabled && <Button variant="ghost" size="sm" onClick={() => onChange('')}>Clear</Button>}
       </div>
-      {redundant
-        ? <span className="as-field__hint gc-override"><span className="gc-attention" aria-hidden="true" />{floorSource} already requires ≥ {floor}. No effect.</span>
-        : hasFloor && <span className="as-field__hint">{floorSource} requires ≥ {floor}. Only a higher value narrows it.</span>}
+      {hasFloor && (enabled && !redundant
+        ? <span className="as-field__hint">{floorSource} requires ≥ {floor}. Only a higher value narrows it.</span>
+        : (
+          <span className="as-field__hint gc-override">
+            <Icon.lock size={12} /> Locked at {floor} by {floorSource.replace(/^The /, 'the ')}.{floorAction ? <> {floorAction}</> : null}
+          </span>
+        ))}
       {hint && <span className="as-field__hint">{hint}</span>}
     </div>
   )

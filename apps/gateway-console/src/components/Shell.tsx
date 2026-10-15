@@ -7,9 +7,9 @@ import { useTheme, type ThemeChoice } from '../app/theme'
 import { ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
 import { useWalletAttention } from '../lib/attention'
+import { useStatus } from '../lib/queries'
 import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
-import { AntDots } from './AntDots'
 import { ExposureBanner } from './ExposureBanner'
 import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
@@ -171,6 +171,12 @@ function AccountMenu({ onAccount, onTour, onSignOut }: { onAccount: () => void; 
   )
 }
 
+/** The version of the gateway (its Antseed CLI) at the foot of the nav. */
+function GatewayVersion() {
+  const version = useStatus().data?.version
+  return version ? <p className="gc-version">Antseed v{version}</p> : null
+}
+
 export function Shell({ page, children }: { page: PageId; children: ReactNode }) {
   const [menuOpen, setMenuOpen] = useState(false)
   // `?account=1` opens the account dialog, e.g. after a failed provider link sends the member back.
@@ -206,7 +212,7 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
           <div className="gc-topbar__strip"><GatewayEndpoint /></div>
         </header>
         <div className="gc-body">
-          <aside className="gc-rail"><Nav current={current} /><AntDots /></aside>
+          <aside className="gc-rail"><Nav current={current} /><GatewayVersion /></aside>
           <main id="gc-main" className="gc-main" tabIndex={-1}>
             {migrating ? <Suspense fallback={<LoadingRows rows={6} />}><MigratePage /></Suspense> : <><ExposureBanner />{children}</>}
           </main>
@@ -214,6 +220,7 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
       </div>
       <Drawer isOpen={menuOpen} onClose={() => setMenuOpen(false)} side="left" title={<Brand to={null} />} className="gc-mobile-nav">
         <Nav current={current} onNavigate={() => setMenuOpen(false)} />
+        <GatewayVersion />
       </Drawer>
       <AccountModal isOpen={accountOpen} onClose={() => setAccountOpen(false)} />
     </>

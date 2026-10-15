@@ -6,8 +6,16 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- CLI gateway console chat: one slim bar at the top shows the model, **Auto** or the pinned seller, and what this chat has cost. Prices and why Auto picked a seller (its ranking, the minimum trust, a cheaper seller it skips and why) show on hover. Each answer has one quiet line with the seller, its trust and the cost, plus **Pin** and **Try another seller**, which answers again with the next-ranked seller. Web, Files and Shell are switches in the message box, and the gateway only gives the agent the tools that are switched on. Shell, for organization admins, starts off. The help text, the paying key and the seller colour dots no longer take space above the chat.
+- CLI gateway console: the gateway's version shows at the foot of the navigation, instead of the dot ant.
+
 ### Fixed
 
+- CLI gateway console: after a payment, **Wallet & Funding** shows **Pending** while the USDC moves into the available balance, checks again every few seconds, and says **Payment received** when it lands. Before, the balance stayed at $0.00 until the page was reloaded.
+- CLI gateway console: a routing policy's minimum trust (and reputation) slider can no longer go below the floor set in the buyer config. It says it is locked there, with a **Change** link to **Settings → Buyer** for admins. Before, it could be set lower with no effect, so a seller without a trust score, such as a new TEE seller, stayed filtered out.
+- Gateway: when a spend limit refuses a request before it is fully spent, the error now says how much is left and that requests still running or not yet charged hold part of it, instead of saying the limit was reached. The error's `limit` object adds `remaining_usd` and `held_usd`.
 - CLI gateway console: the Chat page opens about twice as fast. Its code now downloads while the console checks your sign-in instead of after, and the Markdown and code highlighting for answers load separately. Answers show as plain text until those arrive.
 - CLI gateway console: while an answer is in progress, the chat shows **Thinking…** whenever nothing else is moving: before the first part arrives, and between steps, such as after a tool call finishes and before the model continues. Before, the chat sat still for a few seconds.
 - CLI gateway console: on phones the web chat now stays put like a messaging app. The page no longer scrolls, the top bar stays at the top, only the conversation scrolls, and the message box stays at the bottom of the screen, above the on-screen keyboard.

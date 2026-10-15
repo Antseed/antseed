@@ -726,21 +726,38 @@ export class GatewayServer {
  * 402 is the status a client-facing payment flow will answer with, so a key
  * that hits its cap already gets the shape a top-up offer can extend.
  */
-function spendLimitError(breach: LimitBreach) {
+export function spendLimitError(breach: LimitBreach) {
   const label = breach.period === 'total' ? 'lifetime' : breach.period
   const level = breach.level ?? 'key'
+  const remaining = Math.max(0, breach.limitUsdc - breach.spentUsdc)
   return {
     type: 'insufficient_quota',
     code: 'spend_limit_reached',
-    message: `${budgetHolder(level)} reached its ${label} spend limit of ${formatUsdc(breach.limitUsdc)}.`,
+    message: spendLimitMessage(budgetHolder(level), label, breach, remaining),
     limit: {
       level,
       period: breach.period,
       limit_usd: usdcToDecimalString(breach.limitUsdc),
       spent_usd: usdcToDecimalString(breach.spentUsdc),
+      remaining_usd: usdcToDecimalString(remaining),
+      held_usd: usdcToDecimalString(breach.heldUsdc),
       resets_at: breach.resetsAt === null ? null : new Date(breach.resetsAt).toISOString(),
     },
   }
+}
+
+/**
+ * A limit is also refused before it is spent: requests still running (or not yet charged) hold up to
+ * the per-request maximum each, so a small cap can be full while little is spent. Say so, with what is left.
+ */
+function spendLimitMessage(holder: string, label: string, breach: LimitBreach, remaining: number): string {
+  const limit = formatUsdc(breach.limitUsdc)
+  if (remaining === 0) return `${holder} reached its ${label} spend limit of ${limit}.`
+  const held = breach.heldUsdc > 0
+    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it`
+    : ''
+  return `${holder} has ${formatUsdc(remaining)} left of its ${label} spend limit of ${limit} (${formatUsdc(breach.spentUsdc)} spent)${held}. `
+    + 'The next request could cost more than what is left, so it was not sent. Try again once running requests are charged, or raise the limit.'
 }
 
 function budgetHolder(level: NonNullable<LimitBreach['level']>): string {
