@@ -4122,7 +4122,10 @@ export class BuyerProxy {
     // Video responses are JSON job objects or a streamed MP4, never SSE.
     const wantsStreaming = clientWantsStreaming && !videoRoute
     if (videoRoute?.action === 'retrieve') {
-      await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, { signal, pinned: true }), requestSignal)
+      // The seller hands a job only to the buyer that created it: retrieve with the same wallet.
+      await downloadVideo(requestForPeer, res, (request, callbacks, signal) => this._node.sendRequestStream(selectedPeer, request, callbacks, {
+        signal, pinned: true, ...(buyerIdentity ? { buyerIdentity } : {}),
+      }), requestSignal)
       return { done: true }
     }
     const peerResponseProtocol = selectedRoutePlan.selection?.targetProtocol ?? requestProtocol

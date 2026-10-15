@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI buyer: a video job created with a workspace wallet (`x-antseed-buyer-identity`, as the gateway sends for workspace keys) is now retrieved with that same wallet. Retrieve used the default wallet, so the seller answered "Video job not found" and the video could not be downloaded.
 - CLI gateway: video models can be used through the gateway. It now passes the buyer's native video job routes (`/api/v1/video/queue` and `/retrieve`, `/fal/v1/video/queue` and `/retrieve`) to the buyer, and the video's spend counts against the key's limits. Before, these returned `404`.
 
 ### Added

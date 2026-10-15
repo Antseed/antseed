@@ -78,7 +78,7 @@ curl https://gateway.example.com/fal/v1/video/retrieve \
   -d '{"model":"<peerId>@<fal-video-endpoint>","request_id":"<request_id>"}' -o result.out
 ```
 
-Retrieve goes to the seller that accepted the job. The video is paid once, on the retrieve that delivers the MP4, and that spend counts against the key's limits. See [Video jobs](/docs/connect/api#video-jobs) for the request fields.
+Retrieve goes to the seller that accepted the job. The video is paid once, on the retrieve that delivers the MP4, and that spend counts against the key's limits. See [Video jobs](/docs/api#video-jobs) for the request fields.
 
 To attribute requests to your own end users, send the OpenAI-style `user` field in the body, or an `x-antseed-end-user` header. The gateway records it in the request log and does not forward the header.
 
