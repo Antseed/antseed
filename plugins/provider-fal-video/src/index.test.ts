@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { falAppId, falInputParameters } from './index.js';
+import plugin, { falAppId, falInputParameters, withFrameInputs } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -73,6 +73,24 @@ it('reads the input field names from the fal schema', () => {
   expect(falInputParameters(schema(V3, { Prompt: {} }), V3)).toBeNull();
   expect(falInputParameters(schema(V3, Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`field_${i}`, {}]))), V3)).toBeNull();
   expect(falInputParameters(null, V3)).toBeNull();
+});
+
+it('adds the frame inputs an endpoint\'s fields take to the announced video inputs', () => {
+  expect(withFrameInputs({ video: { inputs: ['first_frame'] }, supportedParameters: ['image_url', 'prompt', 'tail_image_url'] }).video?.inputs)
+    .toEqual(['first_frame', 'last_frame']);
+  expect(withFrameInputs({ video: { inputs: [] }, supportedParameters: ['end_image_url', 'start_image_url'] }).video?.inputs)
+    .toEqual(['first_frame', 'last_frame']);
+  const unknown = { supportedParameters: ['image_url', 'tail_image_url'] };
+  expect(withFrameInputs(unknown)).toBe(unknown);
+  const textOnly = { video: { inputs: [] }, supportedParameters: ['prompt'] };
+  expect(withFrameInputs(textOnly)).toBe(textOnly);
+});
+
+it('announces last_frame for a Kling endpoint whose fal schema has tail_image_url', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json(schema(V3, { prompt: {}, image_url: {}, tail_image_url: {} }))));
+  const provider = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { video: { inputs: ['first_frame'] } } }) }) as Provider;
+  await provider.init!();
+  expect(provider.serviceCapabilities?.[V3]?.video?.inputs).toEqual(['first_frame', 'last_frame']);
 });
 
 it('advertises each endpoint\'s fal input fields and forwards the body unchanged', async () => {

@@ -41,7 +41,7 @@ This stage has two approvals, because frames cost money.
 
 **2b. Frames.**
 
-1. Generate each frame with the `antseed-images` skill and the approved image model. Check the saved frame's shape with `frame_size` ([references/requests.md](references/requests.md#frame-shape)), not by opening the image; if it does not match the agreed ratio, crop it with `fit_frame` and show the cropped frame, or redo it if the crop cuts off the subject.
+1. Generate each frame with the `antseed-images` skill and the approved image model. Image models often ignore the requested ratio, so always run `fit_frame` on each saved frame ([references/requests.md](references/requests.md#frame-shape)); it checks the shape without opening the image and crops only when needed. Show the cropped frame, or redo it if the crop cuts off the subject.
 2. Show each saved frame: in Antseed Desktop, call `show_media`; elsewhere, give its path.
 3. Ask: "Is the first frame right, or should I redo it? And the last frame?" Redo a frame, with an adjusted prompt if needed, until the user approves.
 
@@ -60,11 +60,13 @@ If the user uploads frames, skip making them: get their paths (in Antseed Deskto
 
 After "go", queue the video once, save the job file, wait, and save the MP4 ([references/requests.md](references/requests.md)). Show the finished video (in Antseed Desktop, call `show_media`) and report the path, model, duration, resolution, and price.
 
+For a video longer than the model's longest clip, plan it as several clips in Stage 3 (price each one), then make them one at a time, each starting from the previous clip's last frame, and join them ([references/requests.md](references/requests.md#multi-clip-videos)).
+
 ## Rules
 
 - **One create per approved video.** Right after the create, write the job file. If a job file exists, resume it; never create again without asking. Videos are charged when the finished MP4 is delivered, so a failed or rejected create costs nothing, but a repeated create wastes the seller's upstream cost, holds deposited USDC for a while, and is charged too if it is also downloaded.
 - Status checks and downloads use the saved job id and never create jobs.
-- Send only values the seller advertises, under the field names the seller lists in `fields`; never assume a field a seller does not list. Send `aspect_ratio` only when the chosen seller lists that ratio; otherwise the frame sets the shape. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
+- Send only values the seller advertises, under the field names the seller lists in `fields`; never assume a field a seller does not list. The buyer does not block an unlisted field; it forwards it, and the seller rejects the create with `400`. Send `aspect_ratio` only when the chosen seller lists that ratio; otherwise the frame sets the shape. Never send `audio: true`: models with audio make sound by default, and some fail the job when `audio` is set. Send `audio: false` only when the user wants a silent video.
 - Always send the create to the chosen seller, as `<peerId>@<model>` (the cheapest compatible seller from the price step).
 - After a failed create or job, read `error.peer_message` and fix the field it names. Do not switch models or sellers on your own; ask first. Before an approved retry, rename `<name>.job.json` to `<name>.failed.job.json`.
 - Never print base64 media, signed URLs, authorization headers, private keys, or full API responses. Keep the buyer proxy on loopback.

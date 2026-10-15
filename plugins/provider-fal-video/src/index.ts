@@ -48,6 +48,25 @@ export function falInputParameters(schema: Record<string, unknown> | null, endpo
   return parameters.length > 0 && validateServiceCapabilityFields({ supportedParameters: parameters }).length === 0 ? parameters : null;
 }
 
+const FRAME_INPUT_FIELDS = {
+  first_frame: ['image_url', 'start_image_url', 'first_frame_url', 'first_image_url'],
+  last_frame: ['end_image_url', 'tail_image_url', 'last_frame_url', 'last_image_url'],
+} as const;
+
+/**
+ * Adds the frame inputs an endpoint's fields take (for example Kling's
+ * `tail_image_url`) to the seller's announced video inputs. Leaves unannounced
+ * inputs unknown, because `inputs` is read as the complete list.
+ */
+export function withFrameInputs(capabilities: ServiceCapabilities): ServiceCapabilities {
+  const parameters = capabilities.supportedParameters ?? [];
+  const inputs = capabilities.video?.inputs;
+  if (!inputs) return capabilities;
+  const added = (Object.keys(FRAME_INPUT_FIELDS) as (keyof typeof FRAME_INPUT_FIELDS)[])
+    .filter(input => !inputs.includes(input) && FRAME_INPUT_FIELDS[input].some(field => parameters.includes(field)));
+  return added.length > 0 ? { ...capabilities, video: { ...capabilities.video, inputs: [...inputs, ...added] } } : capabilities;
+}
+
 /** fal's queue status and result URLs use only `owner/alias`, not the endpoint's sub-path. */
 export function falAppId(endpointId: string): string {
   return endpointId.split('/').slice(0, 2).join('/');
@@ -191,6 +210,7 @@ const plugin: AntseedProviderPlugin = {
           // Unknown input fields: buyers fall back to the common names.
         }
       }));
+      for (const service of services) serviceCapabilities[service] = withFrameInputs(serviceCapabilities[service]!);
     };
 
     const route = (request: SerializedHttpRequest) => {
