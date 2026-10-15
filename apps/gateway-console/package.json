@@ -1,6 +1,6 @@
 {
   "name": "@antseed/gateway-console",
-  "version": "0.1.5",
+  "version": "0.1.6",
   "description": "Antseed gateway console: the web app the gateway serves at /console",
   "type": "module",
   "files": [
