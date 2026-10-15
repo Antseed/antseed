@@ -6,6 +6,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Fixed
+
+- CLI gateway: video models can be used through the gateway. It now passes the buyer's native video job routes (`/api/v1/video/queue` and `/retrieve`, `/fal/v1/video/queue` and `/retrieve`) to the buyer, and the video's spend counts against the key's limits. Before, these returned `404`.
+
 ### Added
 
 - CLI gateway console: **Deposits** on Wallet & Funding lists every deposit credited to a workspace, checked against its transaction on Base, with where the USDC came from. Workspace admins can **Approve** a deposit, which records who approved it, when, and an optional note, and is audited. Each deposit has a printable confirmation to save as a PDF for the books. Deposits made before this release can be added by their transaction. The buyer now records each credited deposit, and its control API adds `GET /_antseed/deposits/history`.

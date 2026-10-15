@@ -98,8 +98,14 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
           outputImages: '0',
         })
       }
+      if (req.url?.endsWith('/video/retrieve')) {
+        // A finished video: the MP4 streams back, with no usage in it.
+        res.writeHead(200, { 'content-type': 'video/mp4', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'seller' })
+        res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(4096)]))
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
-      res.end(JSON.stringify({ ok: true }))
+      res.end(JSON.stringify(req.url?.endsWith('/video/queue') ? { queue_id: 'job-1' } : { ok: true }))
     })
   })
   const port = await listen(server)
@@ -368,6 +374,31 @@ test('gateway exposes only authenticated supported API routes', async () => {
     ])
     // Every forwarded request carries a gateway tag, never the client's.
     assert.ok(buyer.captured.every((entry) => entry.tag?.startsWith('gw_')))
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('gateway passes native video jobs to the buyer and books their spend to the key', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 250_000 })
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    for (const base of ['/api/v1/video', '/fal/v1/video']) {
+      const queued = await request(gateway.port, `${base}/queue`, { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant"}' })
+      assert.equal(queued.status, 200)
+      assert.equal(JSON.parse(queued.body).queue_id, 'job-1')
+      const video = await request(gateway.port, `${base}/retrieve`, { method: 'POST', key: secret, body: base.startsWith('/fal') ? '{"model":"seedance","request_id":"job-1"}' : '{"model":"seedance","queue_id":"job-1"}' })
+      assert.equal(video.status, 200)
+      assert.ok(video.body.includes('ftypisom'), 'the MP4 streams through')
+    }
+    assert.equal((await request(gateway.port, '/v1/videos', { method: 'POST', key: secret, body: '{}' })).status, 404)
+    assert.deepEqual(buyer.captured.map(({ url }) => url), ['/api/v1/video/queue', '/api/v1/video/retrieve', '/fal/v1/video/queue', '/fal/v1/video/retrieve'])
+    await gateway.feed.pollOnce()
+    assert.equal(store.periodSpend(key.id).total, 1_000_000)
   } finally {
     await gateway.stop()
     await buyer.close()

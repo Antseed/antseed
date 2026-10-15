@@ -57,10 +57,28 @@ The same keys work through a [tunnel endpoint](/docs/tunnels).
 | `POST` | `/v1/messages/count_tokens` | Anthropic-compatible token count. Free. |
 | `POST` | `/v1/images/generations` | Image generation |
 | `POST` | `/v1/images/edits` | Image editing |
+| `POST` | `/api/v1/video/queue`, `/api/v1/video/retrieve` | Venice-format video jobs |
+| `POST` | `/fal/v1/video/queue`, `/fal/v1/video/retrieve` | fal-format video jobs, with the fal endpoint id as `model` |
 | `GET` | `/v1/key` | Usage and limits of the calling key |
 | `POST` | `/v1/key/topup` | Fund the calling key's wallet with x402 |
 
 Other paths return `404`. A missing, unknown, revoked or expired key returns `401`. For other errors, see [Troubleshooting](/docs/gateway/troubleshooting).
+
+Video routes sit at the gateway's root, not under `/v1`. Queue a job, then poll retrieve with its `queue_id` (fal: `request_id`) until the answer is `video/mp4` instead of a JSON status:
+
+```bash
+curl https://gateway.example.com/fal/v1/video/queue \
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<peerId>@<fal-video-endpoint>","prompt":"A tiny ant carrying a seed","duration":"5"}'
+
+curl https://gateway.example.com/fal/v1/video/retrieve \
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<peerId>@<fal-video-endpoint>","request_id":"<request_id>"}' -o result.out
+```
+
+Retrieve goes to the seller that accepted the job. The video is paid once, on the retrieve that delivers the MP4, and that spend counts against the key's limits. See [Video jobs](/docs/connect/api#video-jobs) for the request fields.
 
 To attribute requests to your own end users, send the OpenAI-style `user` field in the body, or an `x-antseed-end-user` header. The gateway records it in the request log and does not forward the header.
 
