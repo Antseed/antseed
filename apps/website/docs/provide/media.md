@@ -55,6 +55,15 @@ A routing service ranks other sellers for a buyer request; it does not serve inf
 
 The ranking price is separate from the token price of the seller that serves the inference. Errors and malformed rankings are not billed. Older buyers reject announcements containing `completed_requests`, so run routing services on separate peers until buyers upgrade. See [Model Routing](/docs/model-routing).
 
+To offer routing without building a router, run the `default-router` plugin. It answers the routing endpoints itself, ranks the best free models on the network by their live Artificial Analysis score, and is free by default:
+
+```bash
+antseed config seller add-provider router --plugin default-router
+antseed config seller add-service router default-router --input 0 --output 0
+```
+
+Free rankings count toward `seller.freeTier` like any other free service.
+
 ## Image services
 
 The `openai` plugin serves the OpenAI Images API (`/v1/images/generations`, and `/v1/images/edits` when the service accepts image input). It advertises a service as an image service when the upstream model ID belongs to a known image model family, such as `qwen-image`, `flux-2-…`, `seedream-v4…`, `hunyuan-image-…`, `z-image-…` or `gpt-image-…`. Image services behind OpenRouter are not advertised.
