@@ -836,6 +836,13 @@ body {
   color: var(--as-danger);
 }
 
+/* Single-choice menus (a switcher): a check column, then the label and an optional muted line. */
+.as-action-menu__item--choice { display: flex; align-items: flex-start; gap: 0.5rem; }
+.as-action-menu__check { flex: 0 0 auto; display: inline-flex; width: 14px; padding-top: 0.125rem; color: var(--as-text-primary); }
+.as-action-menu__text { display: flex; flex-direction: column; gap: 0.0625rem; min-width: 0; }
+.as-action-menu__label { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.as-action-menu__description { color: var(--as-text-muted); font-size: 0.75rem; }
+
 /* ── Page blocks: header, panel, stat tile, empty state, details, code ── */
 
 .as-sr {
