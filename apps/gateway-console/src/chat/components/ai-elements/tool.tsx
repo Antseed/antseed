@@ -17,9 +17,16 @@ import {
   XCircleIcon,
 } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
-import { isValidElement } from "react";
+import { isValidElement, lazy, Suspense } from "react";
 
-import { CodeBlock } from "./code-block";
+
+// Shiki is heavy: tool input and output highlight once it has loaded, and show as plain text until then.
+const HighlightedCode = lazy(() => import("./code-block").then((module) => ({ default: module.CodeBlock })));
+const CodeBlock = ({ code, language }: { code: string; language: "json" }) => (
+  <Suspense fallback={<pre className="overflow-x-auto whitespace-pre-wrap break-all p-4 font-mono text-xs">{code}</pre>}>
+    <HighlightedCode code={code} language={language} />
+  </Suspense>
+);
 
 export type ToolProps = ComponentProps<typeof Collapsible>;
 

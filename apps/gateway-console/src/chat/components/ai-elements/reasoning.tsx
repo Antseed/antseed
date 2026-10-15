@@ -6,7 +6,6 @@ import {
   CollapsibleContent,
   CollapsibleTrigger,
 } from "@/chat/components/ui/collapsible";
-import { streamdownPlugins, streamdownRehypePlugins } from "@/chat/lib/streamdown";
 import { cn } from "@/chat/lib/utils";
 import { BrainIcon, ChevronDownIcon } from "lucide-react";
 import type { ComponentProps, ReactNode } from "react";
@@ -20,7 +19,7 @@ import {
   useRef,
   useState,
 } from "react";
-import { Streamdown } from "streamdown";
+import { Markdown } from "./markdown";
 
 import { Shimmer } from "./shimmer";
 
@@ -211,7 +210,7 @@ export const ReasoningContent = memo(
       )}
       {...props}
     >
-      <Streamdown plugins={streamdownPlugins} rehypePlugins={streamdownRehypePlugins}>{children}</Streamdown>
+      <Markdown>{children}</Markdown>
     </CollapsibleContent>
   )
 );

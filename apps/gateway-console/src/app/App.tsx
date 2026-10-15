@@ -7,29 +7,40 @@ import { Shell } from '../components/Shell'
 import { ErrorAlert, LoadingRows } from '../components/ui'
 import { canOpen, movedPagePath, viewerFor, type PageId, NAV_ITEMS } from '../lib/nav'
 import { useMe } from '../lib/queries'
-import { navigate, useLocation } from '../lib/router'
+import { navigate, parseLocation, useLocation } from '../lib/router'
 import { EnrollPage, LoginPage } from '../pages/Auth'
 import { ConsoleContext, pickWorkspace, rememberedWorkspace, rememberWorkspace, type ConsoleContextValue } from './context'
 
-const pages: Record<PageId, ComponentType> = {
-  overview: lazy(() => import('../pages/Overview')),
-  chat: lazy(() => import('../pages/Chat')),
-  activity: lazy(() => import('../pages/Activity')),
-  logs: lazy(() => import('../pages/Logs')),
-  keys: lazy(() => import('../pages/Keys')),
-  members: lazy(() => import('../pages/Members')),
-  workspaces: lazy(() => import('../pages/Workspaces')),
-  wallet: lazy(() => import('../pages/Wallet')),
-  rewards: lazy(() => import('../pages/Rewards')),
-  referrals: lazy(() => import('../pages/Referrals')),
-  builders: lazy(() => import('../pages/Builders')),
-  providers: lazy(() => import('../pages/Providers')),
-  models: lazy(() => import('../pages/Models')),
-  routing: lazy(() => import('../pages/Routing')),
-  presets: lazy(() => import('../pages/Presets')),
-  audit: lazy(() => import('../pages/Audit')),
-  settings: lazy(() => import('../pages/Settings')),
+const loaders: Record<PageId, () => Promise<{ default: ComponentType }>> = {
+  overview: () => import('../pages/Overview'),
+  chat: () => import('../pages/Chat'),
+  activity: () => import('../pages/Activity'),
+  logs: () => import('../pages/Logs'),
+  keys: () => import('../pages/Keys'),
+  members: () => import('../pages/Members'),
+  workspaces: () => import('../pages/Workspaces'),
+  wallet: () => import('../pages/Wallet'),
+  rewards: () => import('../pages/Rewards'),
+  referrals: () => import('../pages/Referrals'),
+  builders: () => import('../pages/Builders'),
+  providers: () => import('../pages/Providers'),
+  models: () => import('../pages/Models'),
+  routing: () => import('../pages/Routing'),
+  presets: () => import('../pages/Presets'),
+  audit: () => import('../pages/Audit'),
+  settings: () => import('../pages/Settings'),
 }
+const pages = {} as Record<PageId, ComponentType>
+for (const id of Object.keys(loaders) as PageId[]) pages[id] = lazy(loaders[id])
+
+// Download the opened page's code while the session is checked, instead of after; then Chat in the
+// background, the page people open most. Imports are cached, so the lazy pages reuse these downloads.
+const opened = parseLocation(window.location.pathname).page
+if (isPageId(opened)) void loaders[opened]().catch(() => undefined)
+const prefetchChat = () => { void loaders.chat().catch(() => undefined) }
+if ('requestIdleCallback' in window) window.requestIdleCallback(prefetchChat, { timeout: 4000 })
+else setTimeout(prefetchChat, 2000)
+
 const KeyHolderView = lazy(() => import('../pages/KeyHolder'))
 
 const queryClient = new QueryClient({
