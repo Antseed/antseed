@@ -1,5 +1,5 @@
 import { randomUUID } from 'node:crypto';
-import { writeBuyerRoute } from './buyer-route.js';
+import { checkBuyerRoute, forgetBuyerRoute, isBuyerRouteKnown, writeBuyerRoute, type ExternalBuyerRouteChange } from './buyer-route.js';
 import { isRoutingSelection } from '@antseed/node';
 import { readFile } from 'node:fs/promises';
 import { getNetworkStats } from '../runtime/fetch-network-stats.js';
@@ -90,6 +90,8 @@ import type {
 import type { FirstModelShownSignal } from '../../shared/telemetry.js';
 
 augmentChatToolPath();
+
+const BUYER_ROUTE_WATCH_INTERVAL_MS = 15_000;
 
 /**
  * Programmatic surface over the chat engine for non-renderer frontends
@@ -1025,9 +1027,36 @@ export function registerPiChatHandlers({
     }
   };
 
-  ipcMain.handle('chat:set-buyer-default-route', async (_event, payload: { selection?: unknown }) => (
-    setBuyerDefaultRoute(payload?.selection)
-  ));
+  // Routers saved in the buyer proxy by other clients (CLI, gateway, another
+  // window, a restart) win over the desktop selection; main pushes them on the
+  // same event the Telegram bridge uses for model changes.
+  const emitBuyerRouteChange = (change: ExternalBuyerRouteChange | null): boolean => {
+    if (!change) return false;
+    sendToRenderer('chat:default-route-changed', 'router' in change
+      ? { peerId: '', service: '', provider: null, router: change.router }
+      : { peerId: change.peerId, service: change.service, provider: null });
+    return true;
+  };
+
+  const buyerRouteWatch = setInterval(() => {
+    if (!isBuyerRuntimeRunning()) {
+      forgetBuyerRoute();
+      return;
+    }
+    void resolveProxyPort(configPath).then(checkBuyerRoute).then(emitBuyerRouteChange).catch(() => forgetBuyerRoute());
+  }, BUYER_ROUTE_WATCH_INTERVAL_MS);
+  buyerRouteWatch.unref?.();
+
+  ipcMain.handle('chat:set-buyer-default-route', async (_event, payload: { selection?: unknown }) => {
+    if (!isBuyerRouteKnown()) {
+      try {
+        if (emitBuyerRouteChange(await checkBuyerRoute(await resolveProxyPort(configPath)))) return { ok: true };
+      } catch {
+        forgetBuyerRoute();
+      }
+    }
+    return setBuyerDefaultRoute(payload?.selection);
+  });
 
   ipcMain.handle('chat:get-routing-services', async () => {
     try {

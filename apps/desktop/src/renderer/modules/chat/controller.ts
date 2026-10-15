@@ -11,6 +11,7 @@ import { bestFreeVprRouteReputation, chooseBestVprRoute, filterRoutableVprRoutes
 import { routesForSelectedModel } from '../catalog/view-models.js';
 import { saveVprRouteSelection } from '../routing/preferences.js';
 import { syncBuyerDefaultRoute } from '../routing/proxy-sync.js';
+import { adoptExternalVprRouter } from '../routing/select-router.js';
 import { clearVprModelPin, saveVprModelPins, setVprModelPin } from '../routing/model-pins.js';
 import {
   applyOpenRouterBaselines,
@@ -3120,12 +3121,17 @@ export function initChatModule({
     }
 
     if (bridge.onChatDefaultRouteChanged) {
-      // A non-renderer frontend (the Telegram bridge's /model) moved the
-      // sticky model selection. Adopt it exactly as a dropdown pick would —
+      // A non-renderer frontend moved the sticky selection: the Telegram
+      // bridge's /model, or a route saved in the buyer proxy by another client.
+      // Adopt it exactly as a dropdown pick would —
       // minus the active-conversation rebind, which main already applied to
       // its own conversation — so the next catalog poll re-posts the new
       // route instead of stomping it with the stale selection.
       bridge.onChatDefaultRouteChanged((data) => {
+        if (data.router) {
+          if (adoptExternalVprRouter(uiState, data.router)) setProvisionalDefaultModel(null);
+          return;
+        }
         const peerId = typeof data.peerId === 'string' ? data.peerId.trim() : '';
         const serviceId = normalizeChatServiceId(data.service);
         if (!serviceId) return;

@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Desktop: the AI VPN now follows a router saved in the buyer proxy by another client (the CLI, a gateway, another window, or a proxy restart that loads saved config). The app checks the proxy's saved route every 15 seconds and before its first route update, and adopts a different router with its cost/quality setting (shown on the nearest of Best quality, Balanced and Lowest cost; unset is the router default) and allowed models, through the same update path the Telegram bridge uses for models. Adopted routes are not written back. An unreachable proxy or an empty saved route leaves the current selection unchanged.
 - Website: the homepage "Tokens processed" stat now counts free-tier tokens as well as paid ones, from Antscan's new `/api/totals` endpoint, matching the explorer. It falls back to paid tokens only if that endpoint is unavailable.
 
 ### Documentation

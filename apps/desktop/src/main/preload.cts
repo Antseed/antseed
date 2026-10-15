@@ -415,8 +415,8 @@ const api = {
     ipcRenderer.on('chat:conversation-title-updated', listener);
     return () => ipcRenderer.off('chat:conversation-title-updated', listener);
   },
-  onChatDefaultRouteChanged(handler: (data: { peerId: string; service: string; provider: string | null }) => void): () => void {
-    const listener = (_: unknown, data: { peerId: string; service: string; provider: string | null }) => handler(data);
+  onChatDefaultRouteChanged(handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../shared/routing-selection.js').DesktopRouterSelection }) => void): () => void {
+    const listener = (_: unknown, data: { peerId: string; service: string; provider: string | null; router?: import('../shared/routing-selection.js').DesktopRouterSelection }) => handler(data);
     ipcRenderer.on('chat:default-route-changed', listener);
     return () => ipcRenderer.off('chat:default-route-changed', listener);
   },

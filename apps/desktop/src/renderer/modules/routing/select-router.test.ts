@@ -4,7 +4,7 @@ import { createInitialUiState } from '../../core/state';
 import { initStore } from '../../core/store';
 import { createDesktopRouterSelection } from '../../../shared/routing-selection';
 import { loadVprRouterSettings, loadVprRouteSelection } from './preferences';
-import { selectVprRouter, updateVprRouterSettings } from './select-router';
+import { adoptExternalVprRouter, selectVprRouter, updateVprRouterSettings } from './select-router';
 
 const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' };
 const model = { provider: 'openai', serviceId: 'model-a' };
@@ -122,5 +122,19 @@ test('storage failures do not silently apply unpersisted settings', () => {
   const previous = state.vprRouteSelection;
   vi.stubGlobal('localStorage', { setItem: () => { throw new Error('Storage full'); } });
   assert.throws(() => updateVprRouterSettings(undefined, state, service, 9), /Storage full/);
+  assert.equal(state.vprRouteSelection, previous);
+});
+
+test('a router saved outside the app replaces the selection and its settings without writing back', () => {
+  const state = createInitialUiState();
+  initStore(state);
+  state.vprRouteSelection = { model: { provider: 'openai', serviceId: 'model-a', label: 'Model A', categories: [] }, mode: 'auto', peerId: null };
+  const router = createDesktopRouterSelection(service, 8, [model]);
+  assert.equal(adoptExternalVprRouter(state, router), true);
+  assert.deepEqual(state.vprRouteSelection, { model: null, mode: 'auto', peerId: null, router });
+  assert.deepEqual(loadVprRouteSelection(createInitialUiState().vprRouteSelection), state.vprRouteSelection);
+  assert.deepEqual(loadVprRouterSettings(service), router);
+  const previous = state.vprRouteSelection;
+  assert.equal(adoptExternalVprRouter(state, { ...router, costQualityTradeoff: 11 }), false);
   assert.equal(state.vprRouteSelection, previous);
 });

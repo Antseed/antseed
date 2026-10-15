@@ -358,7 +358,7 @@ export type DesktopBridge = {
   chatGetRoutingServices?: () => Promise<{ ok: boolean; services?: import('../../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }>;
   chatSetBuyerDefaultRoute?: (payload: { selection: import('../../shared/routing-selection.js').DesktopRoutingSelection }) => Promise<{ ok: boolean; error?: string }>;
   chatSyncModelPicker?: (payload: import('../../shared/model-picker.js').ModelPickerSnapshot) => Promise<{ ok: boolean }>;
-  onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null }) => void) => () => void;
+  onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../../shared/routing-selection.js').DesktopRouterSelection }) => void) => () => void;
   chatAiGetProxyStatus?: () => Promise<{ ok: boolean; data: { running: boolean; port: number } }>;
   apiTryProxyRequest?: (params: {
     port: number;

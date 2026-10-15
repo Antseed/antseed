@@ -43,6 +43,11 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const [savedAllowedModels, setAllowedModels] = useState<RouterAllowedModel[] | undefined>(initialSettings?.allowedModels);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
+  useEffect(() => {
+    if (!active || !snapshot.selected) return;
+    setCostQualityTradeoff(snapshot.selected.costQualityTradeoff);
+    setAllowedModels(snapshot.selected.allowedModels);
+  }, [active, snapshot.selected]);
   const supported = current?.catalog;
   const catalogError = current?.catalogError ?? null;
   const catalog = useMemo(() => (supported?.models ?? []).flatMap(model => projectRowsToVprModelCatalog(
