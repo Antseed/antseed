@@ -21,11 +21,13 @@ import { Button } from '@/chat/components/ui/button'
 import { cn } from '@/chat/lib/utils'
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from '@/chat/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/chat/components/ai-elements/message'
+import { loadMarkdown } from '@/chat/components/ai-elements/markdown'
 import {
   ModelSelector, ModelSelectorContent, ModelSelectorEmpty, ModelSelectorGroup, ModelSelectorInput, ModelSelectorItem, ModelSelectorList, ModelSelectorName, ModelSelectorTrigger,
 } from '@/chat/components/ai-elements/model-selector'
 import { PromptInput, PromptInputBody, PromptInputFooter, PromptInputSubmit, PromptInputTextarea, PromptInputTools, type PromptInputMessage } from '@/chat/components/ai-elements/prompt-input'
 import { Reasoning, ReasoningContent, ReasoningTrigger } from '@/chat/components/ai-elements/reasoning'
+import { Shimmer } from '@/chat/components/ai-elements/shimmer'
 import { Suggestion } from '@/chat/components/ai-elements/suggestion'
 import { Tool, ToolContent, ToolHeader, ToolInput, ToolOutput, type ToolPart } from '@/chat/components/ai-elements/tool'
 
@@ -163,6 +165,22 @@ function PriceTag({ offer }: { offer: { inputUsdPerMillion: number | null; outpu
 }
 
 /** Who wrote a message: "You", or the seller(s) that answered with the model. */
+/**
+ * While a turn runs, whether nothing on screen is moving: before the answer's first part, or between
+ * steps (a tool call finished, or a text or reasoning part ended, and the model is working on the next).
+ */
+function isWaitingForModel(message: ChatMessage | undefined): boolean {
+  if (!message || message.role !== 'assistant') return true
+  const last = message.parts.filter((part) => part.type !== 'step-start').at(-1)
+  if (!last) return true
+  if (last.type === 'text' || last.type === 'reasoning') return last.state !== 'streaming'
+  if (last.type === 'dynamic-tool' || last.type.startsWith('tool-')) {
+    const { state } = last as ToolPart
+    return state === 'output-available' || state === 'output-error' || state === 'output-denied'
+  }
+  return false
+}
+
 function MessageAuthor({ message, streaming, initials }: { message: ChatMessage; streaming: boolean; initials: string }) {
   if (message.role === 'user') {
     return (
@@ -517,6 +535,8 @@ export default function Chat() {
   const threads = useQuery({ queryKey: qk.chatThreads(workspace.id), queryFn: () => api.chat.threads(workspace.id) })
   const context = useQuery({ queryKey: qk.chatContext(workspace.id), queryFn: () => api.chat.context(workspace.id), staleTime: 30_000 })
   const fillRef = useFillViewport<HTMLDivElement>()
+  // The Markdown renderer is a separate download: start it now so answers render fully from the first one.
+  useEffect(() => { void loadMarkdown().catch(() => undefined) }, [])
   // The open conversation; a new one gets its id here and is saved on the gateway with its first answer.
   const [chatId, setChatId] = useState<string>(() => load(`chat:${storageScope}`, newChatId()))
   const [historyOpen, setHistoryOpen] = useState(false)
@@ -745,6 +765,9 @@ export default function Chat() {
                 </Message>
               )
             })}
+          {busy && isWaitingForModel(messages.at(-1)) && (
+            <div className="-mt-4 text-muted-foreground text-sm" role="status"><Shimmer duration={1}>Thinking…</Shimmer></div>
+          )}
           {error && (
             <div className="rounded-lg border border-destructive/40 bg-destructive/5 p-3 text-sm">
               {/out of AntSeed credits|insufficient_deposits/i.test(error.message)
