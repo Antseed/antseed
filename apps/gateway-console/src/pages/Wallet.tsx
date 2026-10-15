@@ -1,4 +1,4 @@
-import { lazy, Suspense, useEffect, useState } from 'react'
+import { lazy, Suspense, useEffect, useRef, useState } from 'react'
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { Alert, Button, DataTable, LoadingRows, Modal, useToast } from '@antseed/ui'
 import { api, errorMessage } from '../api'
@@ -17,7 +17,7 @@ import { isOrgAdmin } from '../lib/nav'
 import { qk, useChain, useWallet } from '../lib/queries'
 import { useOperator } from '../lib/operator'
 import {
-  channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, isEntireBalanceLocked, isOpenChannel, pendingSpend, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
+  channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, isDepositPending, isEntireBalanceLocked, isOpenChannel, pendingSpend, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
 } from '../lib/channels'
 import { AddFunds } from '../wallet/AddFunds'
 import { OperatorPanel, type OperatorAction } from '../wallet/OperatorPanel'
@@ -184,6 +184,8 @@ function BalancePanel({ wallet, workspaceId, onWithdraw }: { wallet: WalletInfo;
   const channels = useOpenChannels(workspaceId)
   const pending = channels.data ? pendingSpend(channels.data) : null
   const showChannels = () => document.getElementById('gc-channels')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  const pendingDeposit = isDepositPending(wallet)
+  useDepositReceived(wallet, pendingDeposit)
   return (
     <Panel title="Balance" actions={<Button size="sm" variant="outline" onClick={onWithdraw}>Withdraw</Button>}>
       {isEntireBalanceLocked(wallet) && (
@@ -197,15 +199,38 @@ function BalancePanel({ wallet, workspaceId, onWithdraw }: { wallet: WalletInfo;
         <Figure label="Authorized, not yet charged" value={pending === null ? '…' : formatUsd(pending)} />
         <Figure label="Credit limit" value={wallet.creditLimit === null ? 'None' : formatUsd(wallet.creditLimit)} />
       </div>
-      {usdcToNumber(wallet.walletUsdc) > 0 && (
-        <p className="gc-fineprint gc-wallet-meta">{formatUsd(wallet.walletUsdc)} in the wallet, not deposited yet. {walletUsdcMessage(wallet)}</p>
-      )}
+      {pendingDeposit
+        ? (
+          <p className="gc-wallet-meta gc-pending" role="status">
+            <span className="gc-attention" aria-hidden="true" />
+            <span><strong>Pending: {formatUsd(wallet.walletUsdc)}</strong> arrived in the workspace wallet and is moving into the available balance. This page updates by itself.</span>
+          </p>
+        )
+        : usdcToNumber(wallet.walletUsdc) > 0 && (
+          <p className="gc-fineprint gc-wallet-meta">{formatUsd(wallet.walletUsdc)} in the wallet, not deposited yet. {walletUsdcMessage(wallet)}</p>
+        )}
       <p className="gc-fineprint gc-wallet-meta">
         Workspace wallet <Mono title={wallet.address}>{shortId(wallet.address)}</Mono> <CopyButton iconOnly value={wallet.address} label="Copy address" />
         <span aria-hidden="true">·</span> Authorized spend is charged from channel reserves when sellers settle. Withdrawals go to the authorized wallet below.
       </p>
     </Panel>
   )
+}
+
+/** Says so once a pending payment has moved into the available balance (the wallet is polled while it is pending). */
+function useDepositReceived(wallet: WalletInfo, pending: boolean) {
+  const toast = useToast()
+  const waiting = useRef<number | null>(null)
+  useEffect(() => {
+    if (pending) {
+      waiting.current ??= usdcToNumber(wallet.available)
+      return
+    }
+    if (waiting.current === null) return
+    const added = usdcToNumber(wallet.available) - waiting.current
+    waiting.current = null
+    if (added > 0) toast(`Payment received: ${formatUsd(String(added))} added to the available balance`)
+  }, [pending, wallet.available, toast])
 }
 
 /** Withdrawals are signed by, and paid to, the authorized wallet; the dialog says so and gates on it. */

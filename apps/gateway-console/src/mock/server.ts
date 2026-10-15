@@ -760,7 +760,11 @@ const routes: Array<[string, string, Handler]> = [
 
   ['GET', '/workspaces/:id/wallet', ({ params }) => {
     const { workspace: ws } = requireWorkspace(params['id']!, 'admin')
-    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available: ws.isDefault ? '231.540000' : '0.120000', reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
+    // ?deposit=pending: $9.81 waits in the wallet for 8 seconds after load, then moves into the credits.
+    const pendingDeposit = new URLSearchParams(window.location.search).get('deposit') === 'pending'
+    const landed = pendingDeposit && performance.now() > 8_000
+    const available = ws.isDefault ? (landed ? '241.350000' : '231.540000') : '0.120000'
+    return { buyerIdentity: ws.buyerIdentity, address: ws.walletAddress, available, reserved: ws.isDefault ? '15.000000' : '0.000000', walletUsdc: pendingDeposit && !landed && ws.isDefault ? '9.810000' : '0.000000', creditLimit: '5000.000000', operator: currentOperator(ws, currentMember()), deposit: mockDepositWatch() }
   }],
   ['POST', '/workspaces/:id/wallet/card-link', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); return { url: `https://antseed-pay.com/?address=${fakeAddress(1)}&currency=USD&amount=${body?.amountUsd ?? 10}&integration=${body?.provider === 'stripe' ? 'stripe' : 'crossmint'}` } }],
   ['POST', '/workspaces/:id/wallet/watch', ({ params, body }) => { requireWorkspace(params['id']!, 'admin'); if (body.mode === 'active') depositDemoStartedAt ??= Date.now(); return { ...mockDepositWatch(), mode: body.mode } }],

@@ -1,6 +1,7 @@
 import { useQuery } from '@tanstack/react-query'
 import { api, type ApiClient } from '../api'
 import type { Workspace } from '../api/types'
+import { isDepositPending } from './channels'
 
 /**
  * Query keys. One key holds one shape: the first segment groups a resource
@@ -94,7 +95,13 @@ export function usePresets(workspaceId: string, enabled = true) {
 }
 
 export function useWallet(workspaceId: string, enabled = true) {
-  return useQuery({ queryKey: qk.wallet(workspaceId), queryFn: () => api.wallet.get(workspaceId), enabled })
+  return useQuery({
+    queryKey: qk.wallet(workspaceId),
+    queryFn: () => api.wallet.get(workspaceId),
+    enabled,
+    // While a payment is moving into the credits, check again until it lands, so nobody has to reload.
+    refetchInterval: (query) => (query.state.data && isDepositPending(query.state.data) ? 5_000 : false),
+  })
 }
 
 export function useGatewayPolicy() {

@@ -707,3 +707,5 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-section-card__body { color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.4; }
 .gc-section-card__chevron { flex: 0 0 auto; align-self: center; color: var(--as-text-muted); }
 @media (max-width: 640px) { .gc-setup { flex-direction: column; align-items: stretch; } }
+/* A payment on its way into the credits: amber dot + one line, emphasised so it does not read as a failed payment. */
+.gc-pending { color: var(--as-text-primary); font-size: 0.8125rem; flex-wrap: nowrap; align-items: baseline; .gc-attention { transform: translateY(-1px); } }
