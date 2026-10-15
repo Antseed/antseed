@@ -189,7 +189,7 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
 
   return (
     <>
-      <div className="gc-app">
+      <div className="gc-app" data-page={current ?? undefined}>
         <a className="gc-skip" href="#gc-main">Skip to content</a>
         <header className="gc-topbar">
           <div className="gc-topbar__inner">
