@@ -709,3 +709,9 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 @media (max-width: 640px) { .gc-setup { flex-direction: column; align-items: stretch; } }
 /* A payment on its way into the credits: amber dot + one line, emphasised so it does not read as a failed payment. */
 .gc-pending { color: var(--as-text-primary); font-size: 0.8125rem; flex-wrap: nowrap; align-items: baseline; .gc-attention { transform: translateY(-1px); } }
+/* An alert at the top of a panel, above its figures. */
+.gc-panel-alert { margin-bottom: 1.25rem; }
+/* A section someone was just sent to: a brief ring so the jump is visible even without scrolling. */
+.gc-flash { animation: gc-flash 1.6s ease-out; border-radius: var(--as-radius-lg); outline-offset: 0.625rem; }
+@keyframes gc-flash { 0%, 30% { outline: 2px solid var(--as-warning); } 100% { outline: 2px solid transparent; } }
+@media (prefers-reduced-motion: reduce) { .gc-flash { animation: none; } }

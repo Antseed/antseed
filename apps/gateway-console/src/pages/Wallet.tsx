@@ -183,15 +183,37 @@ function Channels({ workspaceId, canCooperate, onAuthorize }: { workspaceId: str
 function BalancePanel({ wallet, workspaceId, onWithdraw }: { wallet: WalletInfo; workspaceId: string; onWithdraw: () => void }) {
   const channels = useOpenChannels(workspaceId)
   const pending = channels.data ? pendingSpend(channels.data) : null
-  const showChannels = () => document.getElementById('gc-channels')?.scrollIntoView({ behavior: 'smooth', block: 'start' })
+  // Takes you to the channels and to the action: one open channel opens its menu (Close channel), several focus the first.
+  // Scrolling alone looked like nothing happened when the table was already on screen.
+  const showChannels = () => {
+    const section = document.getElementById('gc-channels')
+    if (!section) return
+    section.scrollIntoView({ behavior: 'smooth', block: 'start' })
+    section.classList.remove('gc-flash')
+    void section.offsetWidth
+    section.classList.add('gc-flash')
+    // After the scroll: the menu closes when the page scrolls under it.
+    let done = false
+    const act = () => {
+      if (done) return
+      done = true
+      const menus = section.querySelectorAll<HTMLButtonElement>('[aria-haspopup="menu"]')
+      if (menus.length === 1) menus[0]!.click()
+      else menus[0]?.focus({ preventScroll: true })
+    }
+    window.addEventListener('scrollend', act, { once: true })
+    window.setTimeout(act, 700)
+  }
   const pendingDeposit = isDepositPending(wallet)
   useDepositReceived(wallet, pendingDeposit)
   return (
     <Panel title="Balance" actions={<Button size="sm" variant="outline" onClick={onWithdraw}>Withdraw</Button>}>
       {isEntireBalanceLocked(wallet) && (
+        <div className="gc-panel-alert">
         <Alert tone="warning" title="The whole balance is reserved in channels" action={<Button size="sm" variant="outline" onClick={showChannels}>Manage channels</Button>}>
           Nothing is available for new sellers or withdrawals. Close channels you no longer use to return their unused reserve, or add funds.
         </Alert>
+        </div>
       )}
       <div className="gc-grid gc-grid--4 gc-figures">
         <Figure label="Available" value={formatUsd(wallet.available)} strong />
