@@ -144,7 +144,7 @@ Streaming responses carry only the request id, seller identity and price headers
 |---|---|---|
 | 400 | `missing_routing_target` | The request has no model and no pin. |
 | 400 | `no_default_route` | `model: "antseed"` was sent but the desktop app has no model selected. |
-| 400 | `invalid_routing` | The body's `routing` object is malformed, or `cost_quality_tradeoff` is not an integer from 0 to 10. |
+| 400 | `invalid_routing` | A routing service serves the request and the body's `routing` object is malformed, or `cost_quality_tradeoff` is not an integer from 0 to 10. On other requests a `routing` object is removed and ignored. |
 | 422 | `no_eligible_candidates` | A routing service was named, but no allowed model is left for it to rank. Nothing was charged. |
 | 402 | `insufficient_deposits` | Not enough USDC deposited. Run `antseed buyer deposit`. |
 | 413 | `upload_body_too_large` | The request is larger than the seller's upload limit. |

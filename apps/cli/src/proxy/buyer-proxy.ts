@@ -3429,17 +3429,16 @@ export class BuyerProxy {
     }
 
     // Per-request routing options (`routing` in the body) are read here and
-    // stripped, so they never reach a seller, whatever the model.
+    // stripped, so they never reach a seller, whatever the model. A malformed
+    // `routing` is reported only when a router serves the request.
     let routingOptions: RequestRoutingOptions = {}
+    let invalidRouting: string | null = null
     if (method === 'POST' && isCompletionRequestPath(path)) {
       const taken = takeRoutingOptions(serializedReq)
-      if (taken.kind === 'invalid') {
-        sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'invalid_routing', message: taken.message, param: 'routing' } })
-        return
-      }
       if (taken.kind === 'options') {
         serializedReq = taken.request
         routingOptions = taken.options
+        invalidRouting = taken.invalid ?? null
       }
     }
 
@@ -3557,6 +3556,10 @@ export class BuyerProxy {
 
     // Both paths return an inference answer; only the router path buys a recommendation first.
     if (activeSelection && useModelRouter) {
+      if (invalidRouting) {
+        sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'invalid_routing', message: invalidRouting, param: 'routing' } })
+        return
+      }
       const refusal = await this._routerRefusal(activeSelection, requestPolicy)
       if (refusal) {
         log(`Routing service refused before ranking: ${refusal.error.message}`)

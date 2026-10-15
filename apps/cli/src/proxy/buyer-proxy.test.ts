@@ -721,6 +721,17 @@ test('an invalid body routing object is rejected before routing', async () => {
   assert.equal(calls.requests.length, 0)
 })
 
+test('an invalid body routing object is dropped, not rejected, when no router serves the request', async () => {
+  const { proxy, peers, calls } = makePinnedRouterFixture()
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: {
+    model: `${peers[0]!.peerId}@model-a`, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 11 },
+  } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests.length, 1)
+  assert.equal('routing' in JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString()), false)
+})
+
 test('a pinned service that is not the peer\'s routing service is a normal seller pin', async () => {
   const { proxy, peers, calls } = makePinnedRouterFixture()
   const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: `${peers[1]!.peerId}@model-a`, messages: [{ role: 'user', content: 'Hello' }] } }))
