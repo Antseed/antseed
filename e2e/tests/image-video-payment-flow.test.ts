@@ -3,7 +3,8 @@ import OpenAI from 'openai';
 import { randomBytes } from 'node:crypto';
 import { crc32, deflateSync } from 'node:zlib';
 import { ANTSEED_UPLOAD_THRESHOLD_BYTES } from '../../packages/protocol/src/http.js';
-import { MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
+import { MockOpenAIChatProvider, MockOpenAIImageProvider } from './helpers/mock-openai-provider.js';
+import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { usePaymentNetwork } from './helpers/payment-network.js';
 import veniceVideoPlugin from '../../plugins/provider-venice-video/src/index.js';
 import falVideoPlugin from '../../plugins/provider-fal-video/src/index.js';
@@ -345,4 +346,65 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
     expect(network.buyerNode!.buyerPaymentManager?.getActiveSession(discoveredSeller.peerId)).toBeNull();
     expect(network.buyerNode!.buyerPaymentManager?.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
   }, 30_000);
+
+  it('pins a routing service as the model for a gateway key and attributes the rank and inference spend to it', async () => {
+    await setupRpc();
+    const rankBodies: any[] = [];
+    const routing: Provider = {
+      name: 'alpha',
+      services: ['alpha-route'],
+      pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+      serviceUnitBillingModels: { 'alpha-route': { 'model-routing': {
+        version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
+      } } },
+      maxConcurrency: 5,
+      getCapacity: () => ({ current: 0, max: 5 }),
+      async handleRequest(req: SerializedHttpRequest): Promise<SerializedHttpResponse> {
+        const json = (value: unknown) => ({ requestId: req.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(value)) });
+        if (req.method === 'GET' && req.path === '/v1/routing/models') {
+          return json({ object: 'list', data: [{ id: 'gpt-4.1', object: 'model' }] });
+        }
+        const body = JSON.parse(Buffer.from(req.body).toString());
+        rankBodies.push(body);
+        return json({ id: 'rank-1', object: 'routing.ranking', created: 1, router: { id: 'alpha', version: '1' },
+          ranked: [{ candidate_id: body.routing.candidates[0].id }] });
+      },
+    };
+    const chatProvider = new MockOpenAIChatProvider();
+    const { port, discoveredSeller } = await setupProxyNetwork(routing, [chatProvider]);
+    const { SPEND_ATTRIBUTION_HEADER } = await import('../../apps/cli/src/proxy/spend-attribution.js');
+    const base = `http://127.0.0.1:${port}`;
+
+    const routers = await (await fetch(`${base}/v1/models?type=router`)).json() as any;
+    expect(routers.data.map((entry: any) => entry.peers[0].model)).toEqual([`${discoveredSeller.peerId}@alpha-route`]);
+
+    const chat = (body: Record<string, unknown>) => fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', [SPEND_ATTRIBUTION_HEADER]: 'gw_key1' },
+      body: JSON.stringify({ messages: [{ role: 'user', content: 'Summarise the contract.' }], ...body }),
+    });
+    const response = await chat({ model: `${discoveredSeller.peerId}@alpha-route`, routing: { cost_quality_tradeoff: 7 } });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(((await response.json()) as any).choices[0].message.content).toBe('Hello from OpenAI mock!');
+    expect(rankBodies).toHaveLength(1);
+    expect(rankBodies[0].routing.cost_quality_tradeoff).toBe(7);
+    expect(chatProvider.requestCount).toBe(1);
+    expect(JSON.parse(Buffer.from(chatProvider.lastRequest!.body).toString())).not.toHaveProperty('routing');
+
+    const offline = await chat({ model: `${'e'.repeat(40)}@alpha-route` });
+    expect(offline.status).toBe(502);
+    expect(await offline.text()).toContain('(seller or routing service) is not reachable right now');
+    expect((await chat({ model: `${discoveredSeller.peerId}@alpha-route`, routing: { unknown: 1 } })).status).toBe(400);
+    expect(rankBodies).toHaveLength(1);
+
+    const bpm = network.buyerNode!.buyerPaymentManager!;
+    await vi.waitFor(() => expect(bpm.getCumulativeAmount(discoveredSeller.peerId)).toBeGreaterThan(1_000n));
+    const cumulative = bpm.getCumulativeAmount(discoveredSeller.peerId);
+    await vi.waitFor(async () => {
+      const page = await (await fetch(`${base}/_antseed/attributed-spend?after=0`)).json() as any;
+      expect(page.events.every((event: any) => event.tag === 'gw_key1')).toBe(true);
+      expect(page.events.reduce((sum: bigint, event: any) => sum + BigInt(event.amountUsdc), 0n)).toBe(cumulative);
+    });
+  }, 60_000);
 });

@@ -6,7 +6,7 @@ import { buildRoutingServices } from './routing-services.js';
 import { RoutingModelsCache } from './router-execution.js';
 
 const node = { sendRequest: async () => { throw new Error('unused'); } };
-const client = { listModels: async () => ['openai/gpt-5'], selectRoute: async () => null };
+const client = { listModels: async () => [{ id: 'openai/gpt-5' }], selectRoute: async () => null };
 
 function peer(): PeerInfo {
   const peerId = 'a'.repeat(40) as PeerInfo['peerId'];
@@ -55,7 +55,7 @@ test('discovery caches listModels, surfaces failures and recovers without stale 
   const routingClient = { ...client, listModels: async () => {
     calls++;
     if (fail) throw new Error('Router models unavailable (503)');
-    return ['openai/gpt-5'];
+    return [{ id: 'openai/gpt-5' }];
   } };
   const cache = new RoutingModelsCache(60_000);
   const found = (await buildRoutingServices([peer()], routingClient, node, cache))[0]!;

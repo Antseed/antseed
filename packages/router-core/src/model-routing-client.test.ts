@@ -42,7 +42,7 @@ describe('ModelRoutingClient', () => {
     const client = new ModelRoutingClient()
     const sendRequest = vi.fn(async (_peer: PeerInfo, serviceRequest: SerializedHttpRequest) =>
       ({ requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: encode(modelsResponse) }))
-    expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual(['model-a', 'model-b'])
+    expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual([{ id: 'model-a' }, { id: 'model-b' }])
     expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/models', headers: { accept: 'application/json' } })
     sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ ...modelsResponse, data: 'model-a' }) })
     await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('models response')
@@ -137,7 +137,7 @@ describe('ModelRoutingClient', () => {
     await expect(problem.client.selectRoute(request(), [peer], problem.context)).rejects.toThrow('None of the 1 candidates fit.')
   })
 
-  it('reuses a same-turn recommendation, but not after the text, tradeoff or candidates change', async () => {
+  it('reuses a same-turn recommendation, but not after the text or tradeoff change', async () => {
     const state = setup()
     await state.client.selectRoute(request(), [peer], state.context)
     await state.client.selectRoute(request(), [peer], state.context)
@@ -147,9 +147,23 @@ describe('ModelRoutingClient', () => {
     state.context.costQualityTradeoff = 1
     await state.client.selectRoute(request('New turn'), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(3)
-    state.context.candidates = [...state.context.candidates, { ...state.context.candidates[0]!, serviceId: 'model-b' }]
-    await state.client.selectRoute(request('New turn'), [peer], state.context)
-    expect(state.sendRequest).toHaveBeenCalledTimes(4)
+  })
+
+  it('reuses a same-turn recommendation when the candidates change, and ranks again only when no saved pick is usable', async () => {
+    const state = setup()
+    const first = state.context.candidates[0]!
+    const other = { ...first, serviceId: 'model-b', peerId: 'c'.repeat(40) }
+    state.context.candidates = [first, other]
+    await state.client.selectRoute(request(), [peer], state.context)
+    expect(state.sendRequest).toHaveBeenCalledTimes(1)
+    // A peer refresh between the user turn and its tool-result follow-up reorders and adds sellers.
+    state.context.candidates = [{ ...other, peerId: 'd'.repeat(40) }, other, first]
+    await state.client.selectRoute(request(), [peer], state.context)
+    expect(state.sendRequest).toHaveBeenCalledTimes(1)
+    // Every seller the saved ranking picked is gone: the turn has nothing to reuse.
+    state.accepted.mockReturnValueOnce(false)
+    await state.client.selectRoute(request(), [peer], state.context)
+    expect(state.sendRequest).toHaveBeenCalledTimes(2)
   })
 
   it('validates before sending: user text, candidates, tradeoff and a model-routing service', async () => {

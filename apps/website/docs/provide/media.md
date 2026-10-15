@@ -55,7 +55,7 @@ A routing service ranks other sellers for a buyer request; it does not serve inf
 
 The ranking price is separate from the token price of the seller that serves the inference. Errors and malformed rankings are not billed. Older buyers reject announcements containing `completed_requests`, so run routing services on separate peers until buyers upgrade. See [Model Routing](/docs/model-routing).
 
-To offer routing without building a router, run the `default-router` plugin. It answers the routing endpoints itself, ranks the best free models on the network by their live Artificial Analysis score, and is free by default:
+To offer routing without building a router, run the `default-router` plugin. It answers the routing endpoints itself, lists `*` so buyers send candidates from their own catalog, ranks the free ones by their live Artificial Analysis score, and is free by default:
 
 ```bash
 antseed config seller add-provider router --plugin default-router

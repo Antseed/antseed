@@ -1,8 +1,12 @@
 import { describe, expect, it } from 'vitest'
 import { routerModelResolver } from './router-model-names.js'
 
+const ids = (...names: string[]) => names.map(id => ({ id }))
+const free = { input: 0, cache_read: 0, output: 0 }
+const paid = { input: 1, cache_read: 0.1, output: 4 }
+
 describe('routerModelResolver', () => {
-  const resolve = routerModelResolver(['anthropic/claude-opus-5', 'openai/gpt-5', 'claude-opus-5:free'])
+  const resolve = routerModelResolver(ids('anthropic/claude-opus-5', 'openai/gpt-5', 'claude-opus-5:free'))
 
   it('prefers an exact router model name', () => {
     expect(resolve('openai/gpt-5')).toBe('openai/gpt-5')
@@ -20,5 +24,31 @@ describe('routerModelResolver', () => {
 
   it('returns undefined when the router lists no matching model', () => {
     expect(resolve('mistral-large')).toBeUndefined()
+  })
+
+  it('passes every service ID through when the router lists *', () => {
+    const any = routerModelResolver(ids('*'))
+    expect(any('mistral-large')).toBe('mistral-large')
+    expect(any('anthropic/claude-opus-5', paid)).toBe('anthropic/claude-opus-5')
+  })
+
+  it('still maps pinned names alongside *', () => {
+    const pinned = routerModelResolver(ids('*', 'anthropic/claude-opus-5'))
+    expect(pinned('claude-opus-5')).toBe('anthropic/claude-opus-5')
+    expect(pinned('mistral-large')).toBe('mistral-large')
+  })
+
+  it('drops candidates priced above the matched entry max_pricing', () => {
+    const freeOnly = routerModelResolver([{ id: '*', max_pricing: free }, { id: 'glm-5', max_pricing: free }, { id: 'gpt-5' }])
+    expect(freeOnly('qwen3-8b', free)).toBe('qwen3-8b')
+    expect(freeOnly('qwen3-8b', paid)).toBeUndefined()
+    expect(freeOnly('glm-5', paid)).toBeUndefined()
+    expect(freeOnly('gpt-5', paid)).toBe('gpt-5')
+  })
+
+  it('limits only the price fields max_pricing names', () => {
+    const cheapInput = routerModelResolver([{ id: '*', max_pricing: { input: 1 } }])
+    expect(cheapInput('m', paid)).toBe('m')
+    expect(cheapInput('m', { ...paid, input: 2 })).toBeUndefined()
   })
 })

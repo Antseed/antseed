@@ -1,61 +1,46 @@
 import { randomUUID } from 'node:crypto';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import {
+  MODEL_ROUTING_ANY_MODEL,
   MODEL_ROUTING_MODELS_PATH,
   MODEL_ROUTING_RANK_PATH,
   ROUTING_PROBLEM_TYPES,
   routingProblemBody,
   validateRoutingRankRequest,
   type RoutingCandidateV1,
+  type RoutingModelEntryV1,
 } from '@antseed/node';
 import { canonicalModelKey } from '@antseed/node/model-identity';
 
 export const DEFAULT_ROUTER_ID = 'antseed-default-router';
 export const DEFAULT_ROUTER_VERSION = '0.1.0';
-export const DEFAULT_STATS_URL = 'https://network.antseed.com/stats';
 export const DEFAULT_SCORES_URL = 'https://modelgrep.com/api/v1/models';
 export const DEFAULT_REFRESH_MS = 6 * 60 * 60_000;
 
-const CHAT_PROTOCOLS = new Set(['openai-chat-completions', 'anthropic-messages', 'openai-responses', 'openai-completions']);
 /** Deployment suffixes that do not change the model: `-fast`, `-pro`, quantisations, dates. */
+const FREE_PRICING = { input: 0, cache_read: 0, output: 0 };
 const VARIANT_SUFFIX = /[-_.:](?:free|fast|ultrafast|fast-api|highspeed|turbo|preview|exl\d|fp\d+|nvfp\d|bf16|int\d|awq|gguf|instruct|it|\d{4}|\d{6,8})$/i;
 const SCORE_PAGE_SIZE = 200;
 const MAX_SCORE_PAGES = 10;
 
 export type ScoreMetric = 'intelligence' | 'coding';
 
-type TokenPrice = { inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number };
-type StatsProvider = {
-  services?: string[];
-  defaultPricing?: TokenPrice;
-  servicePricing?: Record<string, TokenPrice>;
-  serviceApiProtocols?: Record<string, string[]>;
-};
-export type NetworkStats = { peers?: Array<{ providers?: StatsProvider[] }> };
-
 type ScoredModel = { id?: unknown; benchmarks?: { artificial_analysis?: Record<string, unknown> | null } | null };
 export type ScoresPage = { data?: ScoredModel[]; meta?: { has_more?: boolean; next_offset?: number } };
 
-export type DefaultRouterOptions = {
+export type FreeModelRouterOptions = {
   /** Which Artificial Analysis index to rank by. */
   metric?: ScoreMetric;
   /** Seller-preferred models, best first. They outrank every scored model. */
   preferredModels?: string[];
   /** Also rank paid candidates, after every free one, cheapest first. */
   includePaid?: boolean;
-  /** Network snapshot used to list free models. Empty disables model discovery. */
-  statsUrl?: string;
   /** modelgrep-compatible model list with Artificial Analysis scores. Empty disables scores. */
   scoresUrl?: string;
   refreshMs?: number;
   fetch?: typeof fetch;
   now?: () => number;
 };
-
-const isFreePrice = (price: TokenPrice | undefined): boolean => !!price
-  && (price.inputUsdPerMillion ?? 0) === 0
-  && (price.outputUsdPerMillion ?? 0) === 0
-  && (price.cachedInputUsdPerMillion ?? 0) === 0;
 
 const isFreeCandidate = (candidate: RoutingCandidateV1): boolean =>
   candidate.pricing.input === 0 && candidate.pricing.output === 0 && candidate.pricing.cache_read === 0;
@@ -72,23 +57,6 @@ export function modelKeys(id: string): string[] {
     name = stripped;
   }
   return keys;
-}
-
-/** Free chat models in a network stats snapshot, one name per canonical model, in first-seen order. */
-export function freeNetworkModels(stats: NetworkStats): string[] {
-  const models = new Map<string, string>();
-  for (const peer of stats.peers ?? []) {
-    for (const provider of peer.providers ?? []) {
-      for (const service of provider.services ?? []) {
-        const protocols = provider.serviceApiProtocols?.[service];
-        if (protocols && !protocols.some(protocol => CHAT_PROTOCOLS.has(protocol))) continue;
-        if (!isFreePrice(provider.servicePricing?.[service] ?? provider.defaultPricing)) continue;
-        const key = canonicalModelKey(service);
-        if (key && !models.has(key)) models.set(key, service);
-      }
-    }
-  }
-  return [...models.values()];
 }
 
 /** Scores by canonical model key from modelgrep pages. Models without the metric are left out. */
@@ -115,14 +83,13 @@ function problem(requestId: string, statusCode: number, type: string, title: str
 
 /**
  * AntSeed's default model router: a suggest-only IRP router that sends buyers to the best
- * free model on the network. It answers both IRP endpoints itself and forwards nothing.
+ * free model among their candidates. It answers both IRP endpoints itself and forwards nothing.
  *
  * Free candidates are ranked by their live Artificial Analysis score (via modelgrep). Models
  * without a score are still ranked, after every scored model. Candidates of equal score keep
  * the buyer's order, which already reflects its trust and failure history.
  */
-export class DefaultRouter {
-  private models: string[] = [];
+export class FreeModelRouter {
   private scores = new Map<string, number>();
   private loadedAt = -Infinity;
   private refreshing: Promise<void> | null = null;
@@ -130,7 +97,7 @@ export class DefaultRouter {
   private readonly fetchImpl: typeof fetch;
   private readonly now: () => number;
 
-  constructor(private readonly options: DefaultRouterOptions = {}) {
+  constructor(private readonly options: FreeModelRouterOptions = {}) {
     this.preferred = [...new Set(options.preferredModels ?? [])];
     this.fetchImpl = options.fetch ?? fetch;
     this.now = options.now ?? Date.now;
@@ -140,26 +107,21 @@ export class DefaultRouter {
     await this.refresh();
   }
 
-  /** `GET /v1/routing/models`: preferred models, then free network models, best scored first. */
-  async listModels(): Promise<string[]> {
-    await this.refreshIfStale();
-    const score = this.scorer();
-    const seen = new Set<string>();
-    return [...this.preferred, ...this.models.map((model, index) => ({ model, index, score: score(model) }))
-      .sort((a, b) => b.score - a.score || a.index - b.index)
-      .map(({ model }) => model)]
-      .filter(model => {
-        const key = canonicalModelKey(model);
-        if (seen.has(key)) return false;
-        seen.add(key);
-        return true;
-      });
+  /**
+   * `GET /v1/routing/models`: `*` (any model the buyer sends) plus the seller's preferred
+   * models. Candidates come from the buyer's own catalog, so no network-wide list is needed.
+   * Unless paid candidates are ranked, every entry carries a zero `max_pricing` so buyers
+   * send only free candidates.
+   */
+  listModels(): RoutingModelEntryV1[] {
+    return [MODEL_ROUTING_ANY_MODEL, ...this.preferred]
+      .map(id => (this.options.includePaid ? { id } : { id, max_pricing: { ...FREE_PRICING } }));
   }
 
   async handleRequest(request: SerializedHttpRequest): Promise<SerializedHttpResponse> {
     const path = request.path.split('?')[0];
     if (request.method === 'GET' && path === MODEL_ROUTING_MODELS_PATH) {
-      return json(request.requestId, 200, { object: 'list', data: (await this.listModels()).map(id => ({ id, object: 'model' })) });
+      return json(request.requestId, 200, { object: 'list', data: this.listModels().map(entry => ({ ...entry, object: 'model' })) });
     }
     if (request.method === 'POST' && path === MODEL_ROUTING_RANK_PATH) return this.rank(request);
     return problem(request.requestId, 404, ROUTING_PROBLEM_TYPES.invalidRequest, 'Not found', `${request.method} ${path} is not a routing endpoint.`);
@@ -220,12 +182,11 @@ export class DefaultRouter {
     if (this.now() - this.loadedAt >= (this.options.refreshMs ?? DEFAULT_REFRESH_MS)) await this.refresh();
   }
 
-  /** Refresh models and scores independently; a failed source keeps its last good data. */
+  /** Refresh scores; a failed fetch keeps the last good scores (or ranks by buyer order). */
   private refresh(): Promise<void> {
     this.refreshing ??= (async () => {
-      const [models, scores] = await Promise.allSettled([this.fetchModels(), this.fetchScores()]);
-      if (models.status === 'fulfilled' && models.value) this.models = models.value;
-      if (scores.status === 'fulfilled' && scores.value) this.scores = scores.value;
+      const scores = await this.fetchScores().catch(() => null);
+      if (scores) this.scores = scores;
       this.loadedAt = this.now();
     })().finally(() => { this.refreshing = null; });
     return this.refreshing;
@@ -235,11 +196,6 @@ export class DefaultRouter {
     const response = await this.fetchImpl(url, { signal: AbortSignal.timeout(10_000), headers: { accept: 'application/json' } });
     if (!response.ok) throw new Error(`${url} returned HTTP ${response.status}`);
     return await response.json() as T;
-  }
-
-  private async fetchModels(): Promise<string[] | null> {
-    const url = this.options.statsUrl ?? DEFAULT_STATS_URL;
-    return url ? freeNetworkModels(await this.fetchJson<NetworkStats>(url)) : null;
   }
 
   private async fetchScores(): Promise<Map<string, number> | null> {

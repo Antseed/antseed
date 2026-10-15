@@ -1,26 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import { isFreeUnitBillingModel, type SerializedHttpRequest } from '@antseed/node';
-import plugin, { DefaultRouter, freeNetworkModels, modelKeys, parseScores } from './index.js';
-
-const stats = {
-  peers: [
-    { providers: [{
-      services: ['glm-4.7-flash', 'qwen2.5-coder-7b', 'flux-image', 'GLM-5.3-Flash-EXL3'],
-      defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-      serviceApiProtocols: {
-        'glm-4.7-flash': ['openai-chat-completions'],
-        'qwen2.5-coder-7b': ['openai-chat-completions'],
-        'flux-image': ['openai-images'],
-        'GLM-5.3-Flash-EXL3': ['openai-chat-completions'],
-      },
-    }] },
-    { providers: [{
-      services: ['gpt-5.5', 'qwen3.6-27b'],
-      defaultPricing: { inputUsdPerMillion: 1.25, outputUsdPerMillion: 10 },
-      servicePricing: { 'qwen3.6-27b': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
-    }] },
-  ],
-};
+import plugin, { FreeModelRouter, modelKeys, parseScores } from './index.js';
 
 const scorePages = [
   {
@@ -40,10 +20,9 @@ const scorePages = [
   },
 ];
 
-function stubFetch(routes: { stats?: unknown; scores?: unknown[] | Error } = {}) {
+function stubFetch(routes: { scores?: unknown[] | Error } = {}) {
   return vi.fn(async (input: string | URL | Request) => {
     const url = new URL(String(input));
-    if (url.hostname === 'stats.test') return new Response(JSON.stringify(routes.stats ?? stats));
     if (url.hostname === 'scores.test') {
       if (routes.scores instanceof Error) throw routes.scores;
       const pages = routes.scores ?? scorePages;
@@ -53,7 +32,7 @@ function stubFetch(routes: { stats?: unknown; scores?: unknown[] | Error } = {})
   }) as unknown as typeof fetch & ReturnType<typeof vi.fn>;
 }
 
-const urls = { statsUrl: 'https://stats.test/stats', scoresUrl: 'https://scores.test/api/v1/models' };
+const urls = { scoresUrl: 'https://scores.test/api/v1/models' };
 
 const request = (method: string, path: string, body?: unknown): SerializedHttpRequest => ({
   requestId: 'r1', method, path, headers: { 'content-type': 'application/json' },
@@ -72,10 +51,6 @@ const rankBody = (candidates: ReturnType<typeof candidate>[]) => ({
 const rankedIds = (body: Uint8Array): string[] => decode(body).ranked.map((entry: { candidate_id: string }) => entry.candidate_id);
 
 describe('helpers', () => {
-  it('lists free chat models from the network snapshot', () => {
-    expect(freeNetworkModels(stats)).toEqual(['glm-4.7-flash', 'qwen2.5-coder-7b', 'GLM-5.3-Flash-EXL3', 'qwen3.6-27b']);
-  });
-
   it('reads the chosen Artificial Analysis metric and skips missing scores', () => {
     const coding = parseScores(scorePages, 'coding');
     expect([...coding.values()]).toEqual([50, 53.7]);
@@ -88,17 +63,38 @@ describe('helpers', () => {
   });
 });
 
-describe('DefaultRouter', () => {
-  it('lists free network models, best live score first and unscored last', async () => {
-    const router = new DefaultRouter({ ...urls, fetch: stubFetch() });
+describe('FreeModelRouter', () => {
+  it('lists * plus the seller-preferred models, free only, without any network fetch', async () => {
+    const fetchMock = stubFetch();
+    const router = new FreeModelRouter({ ...urls, preferredModels: ['qwen2.5-coder-7b'], fetch: fetchMock });
     const response = await router.handleRequest(request('GET', '/v1/routing/models'));
     expect(response.statusCode).toBe(200);
-    expect(decode(response.body).data.map((entry: { id: string }) => entry.id))
-      .toEqual(['GLM-5.3-Flash-EXL3', 'qwen3.6-27b', 'glm-4.7-flash', 'qwen2.5-coder-7b']);
+    const free = { input: 0, cache_read: 0, output: 0 };
+    expect(decode(response.body).data).toEqual([
+      { id: '*', object: 'model', max_pricing: free },
+      { id: 'qwen2.5-coder-7b', object: 'model', max_pricing: free },
+    ]);
+    expect(fetchMock).not.toHaveBeenCalled();
+  });
+
+  it('drops the price limit when paid candidates are ranked too', async () => {
+    const router = new FreeModelRouter({ scoresUrl: '', includePaid: true });
+    const response = await router.handleRequest(request('GET', '/v1/routing/models'));
+    expect(decode(response.body).data).toEqual([{ id: '*', object: 'model' }]);
+  });
+
+  it('ranks any free model the buyer sends, including ones no list ever named', async () => {
+    const router = new FreeModelRouter({ scoresUrl: '' });
+    const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
+      candidate('new@a', 'brand-new-model-9b'),
+      candidate('other@b', 'another-unlisted-model'),
+    ])));
+    expect(response.statusCode).toBe(200);
+    expect(rankedIds(response.body)).toEqual(['new@a', 'other@b']);
   });
 
   it('ranks free candidates by live score, keeps buyer order within a model, and puts unscored last', async () => {
-    const router = new DefaultRouter({ ...urls, fetch: stubFetch() });
+    const router = new FreeModelRouter({ ...urls, fetch: stubFetch() });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
       candidate('small@a', 'qwen2.5-coder-7b'),
       candidate('paid@b', 'gpt-5.5', 1.25, 10),
@@ -114,7 +110,7 @@ describe('DefaultRouter', () => {
   });
 
   it('ranks by coding score when asked', async () => {
-    const router = new DefaultRouter({ ...urls, metric: 'coding', fetch: stubFetch() });
+    const router = new FreeModelRouter({ ...urls, metric: 'coding', fetch: stubFetch() });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
       candidate('flash@a', 'GLM-5.3-Flash-EXL3'),
       candidate('qwen@b', 'qwen3.6-27b'),
@@ -123,7 +119,7 @@ describe('DefaultRouter', () => {
   });
 
   it('puts seller-preferred models first', async () => {
-    const router = new DefaultRouter({ ...urls, preferredModels: ['qwen2.5-coder-7b'], fetch: stubFetch() });
+    const router = new FreeModelRouter({ ...urls, preferredModels: ['qwen2.5-coder-7b'], fetch: stubFetch() });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
       candidate('qwen@a', 'qwen3.6-27b'),
       candidate('small@b', 'qwen2.5-coder-7b'),
@@ -132,7 +128,7 @@ describe('DefaultRouter', () => {
   });
 
   it('keeps buyer order when scores are unavailable', async () => {
-    const router = new DefaultRouter({ ...urls, fetch: stubFetch({ scores: new Error('offline') }) });
+    const router = new FreeModelRouter({ ...urls, fetch: stubFetch({ scores: new Error('offline') }) });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
       candidate('small@a', 'qwen2.5-coder-7b'),
       candidate('qwen@b', 'qwen3.6-27b'),
@@ -146,20 +142,23 @@ describe('DefaultRouter', () => {
     let scoresUp = true;
     const fetchMock = vi.fn(async (input: string | URL | Request) => {
       const url = new URL(String(input));
-      if (url.hostname === 'stats.test') return new Response(JSON.stringify(stats));
       if (!scoresUp) throw new Error('offline');
       return new Response(JSON.stringify(scorePages[Number(url.searchParams.get('offset')) ? 1 : 0]));
     });
-    const router = new DefaultRouter({ ...urls, fetch: fetchMock as unknown as typeof fetch, refreshMs: 1_000, now: () => now });
+    const router = new FreeModelRouter({ ...urls, fetch: fetchMock as unknown as typeof fetch, refreshMs: 1_000, now: () => now });
     await router.init();
     scoresUp = false;
     now = 5_000;
-    expect((await router.listModels())[0]).toBe('GLM-5.3-Flash-EXL3');
+    const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
+      candidate('small@a', 'glm-4.7-flash'),
+      candidate('flash@b', 'GLM-5.3-Flash-EXL3'),
+    ])));
+    expect(rankedIds(response.body)).toEqual(['flash@b', 'small@a']);
     expect(fetchMock.mock.calls.some(([input]) => new URL(String(input)).searchParams.get('offset') === '2')).toBe(true);
   });
 
   it('ranks paid candidates after free ones, cheapest first, when asked', async () => {
-    const router = new DefaultRouter({ statsUrl: '', scoresUrl: '', includePaid: true });
+    const router = new FreeModelRouter({ scoresUrl: '', includePaid: true });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([
       candidate('pricey@a', 'gpt-5.5', 1.25, 10),
       candidate('cheap@b', 'deepseek-v4-flash', 0.1, 0.2),
@@ -169,14 +168,14 @@ describe('DefaultRouter', () => {
   });
 
   it('answers 422 when no candidate is free', async () => {
-    const router = new DefaultRouter({ statsUrl: '', scoresUrl: '' });
+    const router = new FreeModelRouter({ scoresUrl: '' });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', rankBody([candidate('paid@a', 'gpt-5.5', 1, 1)])));
     expect(response.statusCode).toBe(422);
     expect(decode(response.body).type).toBe('urn:irp:problem:no-scorable-candidate');
   });
 
   it('answers 400 for malformed rank requests', async () => {
-    const router = new DefaultRouter({ statsUrl: '', scoresUrl: '' });
+    const router = new FreeModelRouter({ scoresUrl: '' });
     const response = await router.handleRequest(request('POST', '/v1/routing/rank', { routing: {} }));
     expect(response.statusCode).toBe(400);
     expect(response.headers['content-type']).toBe('application/problem+json');
@@ -184,7 +183,7 @@ describe('DefaultRouter', () => {
 });
 
 describe('provider-default-router plugin', () => {
-  const offline = { DEFAULT_ROUTER_STATS_URL: '', DEFAULT_ROUTER_SCORES_URL: '' };
+  const offline = { DEFAULT_ROUTER_SCORES_URL: '' };
 
   it('advertises one free model-routing service by default', () => {
     const provider = plugin.createProvider(offline) as Awaited<ReturnType<typeof plugin.createProvider>>;

@@ -2,6 +2,8 @@ import { describe, expect, it } from 'vitest';
 import {
   isCostQualityTradeoff,
   parseRoutingModelsResponse,
+  parseRoutingModelEntries,
+  withinRoutingPricing,
   parseRoutingProblem,
   routingProblemBody,
   findRoutingService,
@@ -31,6 +33,20 @@ describe('model-routing models (IRP §4)', () => {
     expect(parseRoutingModelsResponse({ object: 'list', data: [{ id: 'kimi-k3', object: 'model', owned_by: 'x' }], extra: { 'r.example': {} } }))
       .toEqual(['kimi-k3']);
     expect(parseRoutingModelsResponse({ object: 'list', data: [] })).toEqual([]);
+  });
+
+  it('keeps max_pricing on model entries and checks prices against it', () => {
+    expect(parseRoutingModelEntries({ object: 'list', data: [
+      { id: '*', object: 'model', max_pricing: { input: 0, output: 0, extra: 1 } },
+      { id: 'kimi-k3', object: 'model' },
+    ] })).toEqual([{ id: '*', max_pricing: { input: 0, output: 0 } }, { id: 'kimi-k3' }]);
+    for (const max_pricing of [{ input: -1 }, { output: '0' }, 0]) {
+      expect(() => parseRoutingModelEntries({ object: 'list', data: [{ id: '*', object: 'model', max_pricing }] })).toThrow('max_pricing');
+    }
+    const price = { input: 1, cache_read: 0.1, output: 4 };
+    expect(withinRoutingPricing(price, undefined)).toBe(true);
+    expect(withinRoutingPricing(price, { input: 1 })).toBe(true);
+    expect(withinRoutingPricing(price, { output: 3 })).toBe(false);
   });
 
   it('rejects malformed lists', () => {

@@ -19,7 +19,7 @@ A [router plugin](/docs/router-api) is local buyer policy. A routing service is 
 
 | Endpoint | Cost | Purpose |
 | --- | --- | --- |
-| `GET /v1/routing/models` | Free, rate limited | Models the router can score |
+| `GET /v1/routing/models` | Free; the router limits its own list | Models the router can score |
 | `POST /v1/routing/rank` | One completed request | Ranks the buyer's allowed candidates for one user turn |
 
 A seller advertises a routing service with the `model-routing` API protocol and offers **at most one** routing service. Buyers ignore peers that advertise more than one.
@@ -37,6 +37,10 @@ A seller advertises a routing service with the `model-routing` API protocol and 
 ```
 
 Buyers cache the list for 60 seconds and only send candidates whose model the router lists. A seller service matches a listed model exactly, or otherwise by canonical model key, so `claude-opus-5` can match `anthropic/claude-opus-5`.
+
+A router that scores any model it is sent lists the wildcard `{ "id": "*", "object": "model" }`. Buyers then send every allowed candidate under its seller's service ID; names that match a model the router also lists keep the router's spelling.
+
+Any entry can carry `max_pricing` (USD per 1M tokens: `input`, `cache_read`, `output`). Buyers skip candidates priced above it, so a router that only ranks free models lists `{ "id": "*", "object": "model", "max_pricing": { "input": 0, "cache_read": 0, "output": 0 } }`.
 
 ## Rank request
 
@@ -102,6 +106,8 @@ Routers use IRP problem details (`application/problem+json`).
 | 503 | `urn:irp:problem:unavailable` | Fail the turn; `Retry-After` may be set |
 
 ## Buyer flow
+
+A buyer uses a routing service by sending `"model": "<routerPeerId>@<routerServiceId>"` to its local `/v1` API, or by selecting it in the desktop app. See [Use a routing service](/docs/api/routing#use-a-routing-service).
 
 1. Fetch the routing service's model list.
 2. Build candidates from eligible sellers whose models the router lists.

@@ -16,7 +16,7 @@ const request: SerializedHttpRequest = {
 }
 const candidates = () => eligibleRouterCandidates(request, [peer], [], null, () => true)
 
-const listAll = async () => ['model-a', 'model-b']
+const listAll = async () => [{ id: 'model-a' }, { id: 'model-b' }]
 const routingService = { peerId: peer.peerId, provider: 'routing-vendor', serviceId: 'route' }
 const routerSelection = { kind: 'router' as const, service: routingService }
 const unusedNode = { sendRequest: async () => { throw new Error('unused') } }
@@ -58,7 +58,7 @@ test('router model lists restrict candidates, are cached, and refresh once after
   let unrankableOnce = false
   const seen: string[][] = []
   const client: ModelRoutingClientApi = {
-    async listModels() { listCalls++; return [...models] },
+    async listModels() { listCalls++; return models.map(id => ({ id })) },
     async selectRoute(_request, _peers, context) {
       seen.push(context.candidates.map(candidate => candidate.serviceId))
       if (unrankableOnce) { unrankableOnce = false; throw new RouterCannotRankError('cannot rank') }
@@ -77,13 +77,36 @@ test('router model lists restrict candidates, are cached, and refresh once after
   assert.deepEqual(await executeRouterSelection(args), [{ serviceId: 'model-a', provider: 'openai' }])
   assert.equal(listCalls, 2)
   models = ['model-z']
-  await assert.rejects(executeRouterSelection({ ...args, modelsCache: new RoutingModelsCache() }), /supported by this router/)
+  const fresh = new RoutingModelsCache()
+  await assert.rejects(executeRouterSelection({ ...args, modelsCache: fresh }), /can be ranked by this router/)
+  // Nothing to rank is not the model list's fault: the cached list is kept, not refetched.
+  const callsBefore = listCalls
+  await assert.rejects(executeRouterSelection({ ...args, modelsCache: fresh }), /can be ranked by this router/)
+  assert.equal(listCalls, callsBefore)
+})
+
+test('a * entry with max_pricing sends only candidates within the limit', async () => {
+  const sent: string[] = []
+  const client: ModelRoutingClientApi = {
+    listModels: async () => [{ id: '*', max_pricing: { input: 0, cache_read: 0, output: 0 } }],
+    async selectRoute(_request, _peers, context) {
+      sent.push(...context.candidates.map(candidate => candidate.serviceId))
+      return [{ serviceId: 'free-model' }]
+    },
+  }
+  const base = candidates()[0]!
+  const free = { ...base, serviceId: 'free-model', inputUsdPerMillion: 0, outputUsdPerMillion: 0 }
+  const paidCache = { ...free, serviceId: 'paid-cache', cachedInputUsdPerMillion: 0.1 }
+  const args = { node: unusedNode, client, request, peers: [peer], conversationKey: null, signal: new AbortController().signal, selection: routerSelection }
+  await executeRouterSelection({ ...args, candidates: [base, free, paidCache] })
+  assert.deepEqual(sent, ['free-model'])
+  await assert.rejects(executeRouterSelection({ ...args, candidates: [base] }), /can be ranked by this router/)
 })
 
 test('seller model names are sent under the router\'s own name for that model', async () => {
   const sent: Array<[string, string | undefined]> = []
   const client: ModelRoutingClientApi = {
-    listModels: async () => ['anthropic/claude-opus-5', 'openai/gpt-5'],
+    listModels: async () => [{ id: 'anthropic/claude-opus-5' }, { id: 'openai/gpt-5' }],
     async selectRoute(_request, _peers, context) {
       for (const candidate of context.candidates) sent.push([candidate.serviceId, candidate.routerModel])
       return [{ serviceId: 'claude-opus-5' }]
@@ -100,14 +123,14 @@ test('concurrent model lists share one request and refresh after invalidation or
   let calls = 0
   let release!: () => void
   const gate = new Promise<void>(resolve => { release = resolve })
-  const client: Pick<ModelRoutingClientApi, 'listModels'> = { async listModels() { calls++; await gate; return ['model-a'] } }
+  const client: Pick<ModelRoutingClientApi, 'listModels'> = { async listModels() { calls++; await gate; return [{ id: 'model-a' }] } }
   const modelsCache = new RoutingModelsCache()
   const pending = Promise.all([1, 2, 3].map(() => modelsCache.get(client, routingService, [peer], unusedNode)))
   release()
   const results = await pending
   assert.equal(calls, 1)
-  results[0]!.push('mutated')
-  assert.deepEqual(await modelsCache.get(client, routingService, [peer], unusedNode), ['model-a'])
+  results[0]!.push({ id: 'mutated' })
+  assert.deepEqual(await modelsCache.get(client, routingService, [peer], unusedNode), [{ id: 'model-a' }])
   assert.equal(calls, 1)
   modelsCache.invalidate(routingService)
   await modelsCache.get(client, routingService, [peer], unusedNode)
@@ -123,7 +146,7 @@ test('model-list requests are free control-plane calls to the selected routing p
   const client: ModelRoutingClientApi = {
     async listModels(target, peers, context) {
       await context.sendRequest(peers.find(entry => entry.peerId === target.peerId)!, { ...request, requestId: 'models', method: 'GET', path: '/v1/routing/models' })
-      return ['model-a']
+      return [{ id: 'model-a' }]
     },
     async selectRoute() { return [{ serviceId: 'model-a' }] },
   }
@@ -159,7 +182,7 @@ test('model allowlists restrict routing candidates and returned recommendations'
   await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels } }), /no eligible recommendation/)
   const before = calls
   for (const blocked of [[], [{ provider: 'missing', serviceId: 'model-a' }]]) {
-    await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels: blocked } }), /model allowlist/)
+    await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels: blocked } }), /model allow list/)
   }
   assert.equal(calls, before)
 })
@@ -167,7 +190,7 @@ test('model allowlists restrict routing candidates and returned recommendations'
 test('the selection tradeoff is passed to the routing client, and omitted when unset', async () => {
   const seen: Array<number | undefined> = []
   const client: ModelRoutingClientApi = {
-    listModels: async () => ['model-a'],
+    listModels: async () => [{ id: 'model-a' }],
     async selectRoute(_request, _peers, context) {
       seen.push(context.costQualityTradeoff)
       assert.equal('costQualityTradeoff' in context, context.costQualityTradeoff !== undefined)

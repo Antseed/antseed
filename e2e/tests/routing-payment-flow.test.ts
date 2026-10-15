@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from 'vitest';
 import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
+import { MockOpenAIChatProvider } from './helpers/mock-openai-provider.js';
 import { usePaymentNetwork } from './helpers/payment-network.js';
 import defaultRouterPlugin from '../../plugins/provider-default-router/src/index.js';
 
@@ -53,7 +54,7 @@ describe('model-routing payment flow over buyer proxy', () => {
 
   it('serves default-router rankings without opening a payment channel', async () => {
     await setupRpc();
-    const defaultRouter = defaultRouterPlugin.createProvider({ DEFAULT_ROUTER_STATS_URL: '', DEFAULT_ROUTER_SCORES_URL: '' }) as Provider;
+    const defaultRouter = defaultRouterPlugin.createProvider({ DEFAULT_ROUTER_SCORES_URL: '' }) as Provider;
     const { discoveredSeller } = await setupProxyNetwork(defaultRouter);
     const paymentEvents: string[] = [];
     network.buyerNode!.on('payment:required', () => paymentEvents.push('required'));
@@ -75,4 +76,47 @@ describe('model-routing payment flow over buyer proxy', () => {
     expect(network.rpcCallLog.some((call) => call.method === 'eth_sendRawTransaction')).toBe(false);
     expect(network.buyerNode!.buyerPaymentManager?.getVerifiedCost(discoveredSeller.peerId)).toBe(0n);
   }, 30_000);
+
+  it('routes a buyer-proxy chat through the default router to a free model it never listed, sending only free candidates', async () => {
+    await setupRpc();
+    const defaultRouter = defaultRouterPlugin.createProvider({ DEFAULT_ROUTER_SCORES_URL: '' }) as Provider;
+    const paidChat = new MockOpenAIChatProvider();
+    const freeBackend = new MockOpenAIChatProvider();
+    const freeChat: Provider = {
+      name: 'free-chat',
+      services: ['unlisted-free-model-7b'],
+      serviceApiProtocols: { 'unlisted-free-model-7b': ['openai-chat-completions'] },
+      pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
+      maxConcurrency: 5,
+      getCapacity: () => ({ current: 0, max: 5 }),
+      handleRequest: (req) => freeBackend.handleRequest(req),
+    };
+    const rankedModels: string[][] = [];
+    const routeRequest = defaultRouter.handleRequest.bind(defaultRouter);
+    defaultRouter.handleRequest = async (req) => {
+      if (req.method === 'POST') rankedModels.push(JSON.parse(Buffer.from(req.body).toString()).routing.candidates.map((candidate: { model: string }) => candidate.model));
+      return routeRequest(req);
+    };
+    const { port, discoveredSeller } = await setupProxyNetwork(defaultRouter, [paidChat, freeChat]);
+    const base = `http://127.0.0.1:${port}`;
+
+    const routerModels = await network.buyerNode!.sendRequest(discoveredSeller, {
+      requestId: crypto.randomUUID(), method: 'GET', path: '/v1/routing/models', headers: {}, body: new Uint8Array(),
+    });
+    expect(JSON.parse(Buffer.from(routerModels.body).toString()).data)
+      .toEqual([{ id: '*', object: 'model', max_pricing: { input: 0, cache_read: 0, output: 0 } }]);
+
+    const response = await fetch(`${base}/v1/chat/completions`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ model: `${discoveredSeller.peerId}@default-router`, messages: [{ role: 'user', content: 'hi' }] }),
+    });
+    expect(response.status, await response.clone().text()).toBe(200);
+    expect(((await response.json()) as any).choices[0].message.content).toBe('Hello from OpenAI mock!');
+    expect(rankedModels).toEqual([['unlisted-free-model-7b']]);
+    expect(freeBackend.requestCount).toBe(1);
+    expect(paidChat.requestCount).toBe(0);
+    expect(JSON.parse(Buffer.from(freeBackend.lastRequest!.body).toString()).model).toBe('unlisted-free-model-7b');
+    expect(network.rpcCallLog.some((call) => call.method === 'eth_sendRawTransaction')).toBe(false);
+  }, 60_000);
 });

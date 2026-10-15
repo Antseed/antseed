@@ -429,7 +429,7 @@ test('persisted chat overrides route after reload and fail closed when the route
   assert.equal(captured[0]!.costQualityTradeoff, selection.costQualityTradeoff)
   client.listModels = listModelsWith(['model-z'])
   ;(proxy as any)._routingModels.invalidate(selection.service)
-  assert.equal((await request('chat-a')).statusCode, 502)
+  assert.equal((await request('chat-a')).statusCode, 422)
   assert.equal(captured.length, 1)
   await (proxy as any)._conversations.flush()
 })
@@ -463,6 +463,281 @@ test('chat and buyer selection changes leave in-flight requests using their orig
     pending.finish()
   }
   for (const response of await Promise.all([first, second, inherited])) assert.equal(response.statusCode, 200)
+})
+
+/** A peer advertising one `model-routing` service, `alpha-route`. */
+function makeRoutingPeer(seed: string): PeerInfo {
+  const peer = makePeer(seed, ['alpha'])
+  peer.metadata = {
+    peerId: peer.peerId, version: 12, timestamp: Date.now(), signature: '', region: 'test',
+    providers: [{ provider: 'alpha', services: ['alpha-route'], maxConcurrency: 1, currentLoad: 0,
+      defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+      serviceUnitBillingModels: { 'alpha-route': { 'model-routing': {
+        version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
+      } } },
+    }],
+  } as NonNullable<PeerInfo['metadata']>
+  return peer
+}
+
+function makePinnedRouterFixture() {
+  const fixture = makeRankedRoutingFixture([200, 200, 200])
+  const routingPeer = makeRoutingPeer('d')
+  const peers = [...fixture.peers, routingPeer]
+  ;(fixture.proxy as any)._getPeers = async () => peers
+  setDefaultModel(fixture.proxy, null)
+  const captured: RouteSelectionContext[] = []
+  const select = fixture.client.selectRoute!
+  fixture.client.selectRoute = (request, routingPeers, context) => {
+    captured.push(context)
+    return select(request, routingPeers, context)
+  }
+  const target = { peerId: routingPeer.peerId, provider: 'alpha', serviceId: 'alpha-route' }
+  return { ...fixture, routingPeer, captured, target, model: `${routingPeer.peerId}@alpha-route` }
+}
+
+test('a routing service pinned as the model ranks and serves the request without any buyer router selection', async () => {
+  const { proxy, peers, calls, captured, target, model } = makePinnedRouterFixture()
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 1)
+  assert.deepEqual(captured[0]!.routingService, target)
+  assert.equal(captured[0]!.costQualityTradeoff, undefined)
+  assert.equal(calls.requests.length, 1)
+  assert.equal(calls.requests[0]!.peer.peerId, peers[0]!.peerId)
+  assert.equal(JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString()).model, 'model-a')
+})
+
+test('the body routing object sets the tradeoff for a pinned router and never reaches a seller', async () => {
+  const { proxy, calls, captured, model } = makePinnedRouterFixture()
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: {
+    model, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 7 },
+  } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(captured[0]!.costQualityTradeoff, 7)
+  const sent = JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString())
+  assert.equal('routing' in sent, false)
+
+  const direct = await invokeProxy(proxy, makeProxyRequest({ body: {
+    model: `${calls.requests[0]!.peer.peerId}@model-b`, messages: [{ role: 'user', content: 'Hi' }], routing: { cost_quality_tradeoff: 2 },
+  } }))
+  assert.equal(direct.statusCode, 200, direct.body)
+  assert.equal(calls.routing, 1)
+  const pinned = JSON.parse(Buffer.from(calls.requests.at(-1)!.request.body).toString())
+  assert.equal(pinned.model, 'model-b')
+  assert.equal('routing' in pinned, false)
+})
+
+test('the body routing tradeoff overrides the buyer default router tradeoff', async () => {
+  const { proxy, captured } = makePinnedRouterFixture()
+  setRouter(proxy, { kind: 'router', service: { peerId: 'd'.repeat(40), provider: 'alpha', serviceId: 'alpha-route' }, costQualityTradeoff: 1 })
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: {
+    model: 'antseed', messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 9 },
+  } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(captured[0]!.costQualityTradeoff, 9)
+})
+
+test('a pinned router without a routing object uses the saved settings for that router only', async () => {
+  const { proxy, peers, captured, target, model } = makePinnedRouterFixture()
+  setRouter(proxy, { kind: 'router', service: target, costQualityTradeoff: 3, allowedModels: [{ provider: 'openai', serviceId: 'model-b' }] })
+  const saved = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(saved.statusCode, 200, saved.body)
+  assert.equal(captured[0]!.costQualityTradeoff, 3)
+  assert.deepEqual([...new Set(captured[0]!.candidates.map((candidate) => candidate.serviceId))], ['model-b'])
+
+  const overridden = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 9 } } }))
+  assert.equal(overridden.statusCode, 200, overridden.body)
+  assert.equal(captured[1]!.costQualityTradeoff, 9)
+  assert.deepEqual([...new Set(captured[1]!.candidates.map((candidate) => candidate.serviceId))], ['model-b'])
+
+  setRouter(proxy, { kind: 'router', service: { ...target, peerId: 'e'.repeat(40) }, costQualityTradeoff: 3, allowedModels: [{ provider: 'openai', serviceId: 'model-b' }] })
+  const other = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(other.statusCode, 200, other.body)
+  assert.equal(captured[2]!.costQualityTradeoff, undefined)
+  assert.ok(captured[2]!.candidates.some((candidate) => candidate.serviceId === 'model-a'))
+  assert.ok(peers.length > 0)
+})
+
+test('a router pinned as the default route serves the antseed alias through that router', async () => {
+  const { proxy, peers, calls, captured, target, model } = makePinnedRouterFixture()
+  setDefaultModel(proxy, model)
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: 'antseed', messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 6 } } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 1)
+  assert.deepEqual(captured[0]!.routingService, target)
+  assert.equal(captured[0]!.costQualityTradeoff, 6)
+  assert.equal(calls.requests[0]!.peer.peerId, peers[0]!.peerId)
+  assert.equal(JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString()).model, 'model-a')
+})
+
+test('a chat pinned to a router is ranked on every turn, through the alias and the system proxy', async (context) => {
+  const fixture = makePinnedRouterFixture()
+  const { proxy, calls, captured, target, model } = fixture
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-router-pin-'))
+  const store = new ConversationStore(directory)
+  context.after(async () => { await store.flush(); await rm(directory, { recursive: true, force: true }) })
+  ;(proxy as any)._conversations = store
+  ;(proxy as any)._mergeStateFile = async () => {}
+  setDefaultModel(proxy, 'model-b')
+  store.touch({ tool: 'vpr', sessionKey: 'chat-r' })
+  const pin = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/conversations/update',
+    body: { id: 'vpr:chat-r', pinnedModel: model, peerSource: 'user' } }))
+  assert.equal(pin.statusCode, 200, pin.body)
+  const turn = (headers: Record<string, string>, requestModel: string) => invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-vpr-session-id': 'chat-r', ...headers },
+    body: { model: requestModel, messages: [{ role: 'user', content: 'Hello' }] },
+  }))
+  assert.equal((await turn({}, 'antseed')).statusCode, 200)
+  assert.equal((await turn({}, 'antseed')).statusCode, 200)
+  assert.equal((await turn({ [SYSTEM_ROUTED_MODEL_HEADER]: '1' }, 'old-connect-model')).statusCode, 200)
+  assert.equal(calls.routing, 3)
+  for (const context of captured) assert.deepEqual(context.routingService, target)
+  for (const sent of calls.requests) assert.equal(JSON.parse(Buffer.from(sent.request.body).toString()).model, 'model-a')
+  assert.equal(store.get('vpr:chat-r')?.pinnedModel, model)
+})
+
+test('a chat\'s own router wins over a router pinned as the default route', async (context) => {
+  const { proxy, peers, routingPeer, calls, captured, model } = makePinnedRouterFixture()
+  const chatRouter = makeRoutingPeer('e')
+  const allPeers = [...peers, routingPeer, chatRouter]
+  ;(proxy as any)._getPeers = async () => allPeers
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-router-chat-'))
+  const store = new ConversationStore(directory)
+  context.after(async () => { await store.flush(); await rm(directory, { recursive: true, force: true }) })
+  ;(proxy as any)._conversations = store
+  ;(proxy as any)._mergeStateFile = async () => {}
+  setDefaultModel(proxy, model)
+  store.touch({ tool: 'vpr', sessionKey: 'chat-b' })
+  const chatSelection = chatRouterSelection('e', 9)
+  const update = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/conversations/update',
+    body: { id: 'vpr:chat-b', routingSelection: chatSelection } }))
+  assert.equal(update.statusCode, 200, update.body)
+  const turn = (session?: string) => invokeProxy(proxy, makeProxyRequest({
+    headers: session ? { 'x-vpr-session-id': session } : {},
+    body: { model: 'antseed', messages: [{ role: 'user', content: 'Hello' }] },
+  }))
+  const chatTurn = await turn('chat-b')
+  assert.equal(chatTurn.statusCode, 200, chatTurn.body)
+  const plain = await turn()
+  assert.equal(plain.statusCode, 200, plain.body)
+  assert.deepEqual(captured.map((entry) => [entry.routingService.peerId, entry.costQualityTradeoff]),
+    [[chatRouter.peerId, 9], [routingPeer.peerId, undefined]])
+  assert.equal(calls.routing, 2)
+})
+
+test('an automatic chat route never turns a seller into a router pin', async (context) => {
+  const { proxy, calls } = makePinnedRouterFixture()
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-router-auto-'))
+  const store = new ConversationStore(directory)
+  context.after(async () => { await store.flush(); await rm(directory, { recursive: true, force: true }) })
+  ;(proxy as any)._conversations = store
+  setDefaultModel(proxy, 'model-b')
+  const response = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-vpr-session-id': 'chat-plain' },
+    body: { model: 'antseed', messages: [{ role: 'user', content: 'Hello' }] },
+  }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 0)
+})
+
+test('routers are listed under /v1/models?type=router only, with the model that pins them', async () => {
+  const { proxy, routingPeer } = makePinnedRouterFixture()
+  const all = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models' }))).body)
+  assert.equal(all.data.some((entry: { type: string }) => entry.type === 'router'), false)
+  const routers = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models?type=router' }))
+  assert.equal(routers.statusCode, 200, routers.body)
+  const data = JSON.parse(routers.body).data
+  assert.equal(data.length, 1)
+  assert.equal(data[0].id, 'alpha-route')
+  assert.equal(data[0].type, 'router')
+  assert.deepEqual(data[0].peers.map((peer: { model: string; priceUsdPerRequest: number; models: string[] }) => [peer.model, peer.priceUsdPerRequest, peer.models]),
+    [[`${routingPeer.peerId}@alpha-route`, 0.001, ['model-a', 'model-b']]])
+})
+
+test('a pinned router that is offline is reported unreachable, and one with nothing to rank answers 422, before any purchase', async () => {
+  const { proxy, calls, target } = makePinnedRouterFixture()
+  const offline = await invokeProxy(proxy, makeProxyRequest({ body: { model: `${'e'.repeat(40)}@alpha-route`, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(offline.statusCode, 502, offline.body)
+  assert.match(offline.body, /\(seller or routing service\) is not reachable right now/)
+
+  setRouter(proxy, { kind: 'router', service: target, allowedModels: [{ provider: 'openai', serviceId: 'model-z' }] })
+  const empty = await invokeProxy(proxy, makeProxyRequest({ body: { model: `${target.peerId}@alpha-route`, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(empty.statusCode, 422, empty.body)
+  assert.equal(JSON.parse(empty.body).error.code, 'no_eligible_candidates')
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests.length, 0)
+})
+
+test('a pinned router missing from the peer cache is found after one refresh, not taken for a seller', async () => {
+  const { proxy, peers, calls, routingPeer, model } = makePinnedRouterFixture()
+  const refreshes: boolean[] = []
+  let cached = peers
+  ;(proxy as any)._getPeers = async (options?: { forceRefresh?: boolean }) => {
+    refreshes.push(options?.forceRefresh === true)
+    if (options?.forceRefresh) cached = [...peers, routingPeer]
+    return cached
+  }
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 1)
+  assert.equal(refreshes.includes(true), true)
+})
+
+test('a router below the buyer minimum reputation is refused before any ranking is bought, and not listed', async () => {
+  const { proxy, calls, routingPeer, model } = makePinnedRouterFixture()
+  routingPeer.reputationScore = 10
+  routingPeer.onChainReputationScore = 10
+  ;(proxy as any)._minPeerReputation = 50
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(response.statusCode, 403, response.body)
+  const error = JSON.parse(response.body).error
+  assert.equal(error.code, 'peer_not_allowed')
+  assert.match(error.message, /buyer config: reputation 10 below 50/)
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests.length, 0)
+  const routers = JSON.parse((await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/v1/models?type=router' }))).body)
+  assert.deepEqual(routers.data, [])
+})
+
+test('a router is not held to required verification, which attests inference, not rankings', async () => {
+  const { proxy, calls, model } = makePinnedRouterFixture()
+  ;(proxy as any)._verifier = { require: true, prefer: ['antseed-verifier'] }
+  ;(proxy as any)._verifyPeer = async () => ({ ok: true, verified: true })
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 1)
+})
+
+test('an invalid body routing object is rejected before routing', async () => {
+  const { proxy, calls, model } = makePinnedRouterFixture()
+  for (const routing of [{ cost_quality_tradeoff: 11 }, { cost_quality_tradeoff: 2.5 }, { cost_quality_tradeoff: '5' }, { candidates: [] }, [], 'cheap']) {
+    const response = await invokeProxy(proxy, makeProxyRequest({ body: { model, messages: [{ role: 'user', content: 'Hello' }], routing } }))
+    assert.equal(response.statusCode, 400, response.body)
+    assert.equal(JSON.parse(response.body).error.code, 'invalid_routing')
+  }
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests.length, 0)
+})
+
+test('an invalid body routing object is dropped, not rejected, when no router serves the request', async () => {
+  const { proxy, peers, calls } = makePinnedRouterFixture()
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: {
+    model: `${peers[0]!.peerId}@model-a`, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 11 },
+  } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests.length, 1)
+  assert.equal('routing' in JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString()), false)
+})
+
+test('a pinned service that is not the peer\'s routing service is a normal seller pin', async () => {
+  const { proxy, peers, calls } = makePinnedRouterFixture()
+  const response = await invokeProxy(proxy, makeProxyRequest({ body: { model: `${peers[1]!.peerId}@model-a`, messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests[0]!.peer.peerId, peers[1]!.peerId)
 })
 
 test('routing selection carries the tradeoff, rejects invalid values and preserves model mode', async () => {
@@ -1382,7 +1657,7 @@ function makeProxyResponse(): {
 const TEST_ROUTER_MODELS = ['model-a', 'model-b', 'gpt-4o']
 
 function listModelsWith(models = TEST_ROUTER_MODELS): ModelRoutingClientApi['listModels'] {
-  return async () => [...models]
+  return async () => models.map(id => ({ id }))
 }
 
 function makeBuyerProxyWithPeers(
