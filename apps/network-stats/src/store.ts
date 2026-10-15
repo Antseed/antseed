@@ -68,8 +68,10 @@ export class SqliteStore {
   private _upsertSeller!: Database.Statement<[number, string, string, string, number, number, number, number | null, number | null, number]>;
   private _selectBuyer!: Database.Statement<[number, string], BuyerOrChannelRow>;
   private _upsertBuyer!: Database.Statement<[number, string, string, string, string, number, number, number]>;
-  private _selectChannel!: Database.Statement<[number, string], BuyerOrChannelRow & { buyer: string }>;
-  private _upsertChannel!: Database.Statement<[number, string, string, string, string, string, number, number, number]>;
+  private _selectChannel!: Database.Statement<[number, string], BuyerOrChannelRow & { buyer: string; last_contract_address: string | null }>;
+  private _upsertChannel!: Database.Statement<[number, string, string, string, string, string, number, number, number, string]>;
+  private _selectOtherCheckpoint!: Database.Statement<[string, string], { contract_address: string }>;
+  private _backfillChannelContract!: Database.Statement<[string]>;
   private _selectSellerTotals!: Database.Statement<[number], SellerTotalsRow>;
   private _selectAllSellerTotals!: Database.Statement<[], SellerTotalsRow>;
   private _countBuyers!: Database.Statement<[number], { c: number }>;
@@ -128,6 +130,14 @@ export class SqliteStore {
         PRIMARY KEY (chain_id, contract_address)
       );
     `);
+    // Which stats contract last reported each channel. A fresh stats contract
+    // (AntseedStats -> AntseedStatsV2) re-emits every open channel's full
+    // cumulative as its first delta; knowing the channel came from another
+    // contract lets applyBatch net that out instead of double-counting.
+    const channelColumns = this.db.prepare<[], { name: string }>('PRAGMA table_info(seller_channel_totals)').all();
+    if (!channelColumns.some((column) => column.name === 'last_contract_address')) {
+      this.db.exec('ALTER TABLE seller_channel_totals ADD COLUMN last_contract_address TEXT');
+    }
 
     this._selectCheckpoint = this.db.prepare(
       'SELECT last_block, last_block_timestamp FROM indexer_checkpoint WHERE chain_id = ? AND contract_address = ?',
@@ -165,14 +175,22 @@ export class SqliteStore {
     );
 
     this._selectChannel = this.db.prepare(
-      'SELECT buyer, total_input_tokens, total_output_tokens, total_request_count, settlement_count, first_settled_block FROM seller_channel_totals WHERE agent_id = ? AND channel_id = ?',
+      'SELECT buyer, total_input_tokens, total_output_tokens, total_request_count, settlement_count, first_settled_block, last_contract_address FROM seller_channel_totals WHERE agent_id = ? AND channel_id = ?',
     );
 
     this._upsertChannel = this.db.prepare(
       `INSERT OR REPLACE INTO seller_channel_totals
          (agent_id, channel_id, buyer, total_input_tokens, total_output_tokens, total_request_count,
-          settlement_count, first_settled_block, last_settled_block)
-       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+          settlement_count, first_settled_block, last_settled_block, last_contract_address)
+       VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)`,
+    );
+
+    this._selectOtherCheckpoint = this.db.prepare(
+      'SELECT contract_address FROM indexer_checkpoint WHERE chain_id = ? AND contract_address <> ? ORDER BY last_block DESC LIMIT 1',
+    );
+
+    this._backfillChannelContract = this.db.prepare(
+      'UPDATE seller_channel_totals SET last_contract_address = ? WHERE last_contract_address IS NULL',
     );
 
     this._selectSellerTotals = this.db.prepare(
@@ -218,8 +236,17 @@ export class SqliteStore {
     blockTimestamps?: Map<number, number>,
     newCheckpointTimestamp?: number | null,
   ): void {
+    const contract = contractAddress.toLowerCase();
     this.db.transaction(() => {
-      for (const event of events) {
+      // First pass for a new stats contract on this chain: rows written before
+      // the column existed belong to the contract indexed until now.
+      if (this._selectCheckpoint.get(chainId, contract) === undefined) {
+        const previous = this._selectOtherCheckpoint.get(chainId, contract);
+        if (previous) this._backfillChannelContract.run(previous.contract_address);
+      }
+
+      for (const rawEvent of events) {
+        const event = this._netCutoverReport(contract, rawEvent);
         // uint256 → number narrowing. In practice agentIds are sequential and small,
         // but the ERC-8004 IdentityRegistry is uint256, so guard against a pathological
         // future value that would silently collide or miss the PK lookup.
@@ -297,16 +324,40 @@ export class SqliteStore {
           prevChannelSettlements + 1,
           prevChannelFirstBlock,
           event.blockNumber,
+          contract,
         );
       }
 
       this._upsertCheckpoint.run(
         chainId,
-        contractAddress.toLowerCase(),
+        contract,
         newCheckpoint,
         newCheckpointTimestamp ?? null,
       );
     })();
+  }
+
+  /**
+   * A stats contract has no snapshot for a channel it has never seen, so the
+   * first MetadataRecorded it emits for a channel that was open across a
+   * cutover carries the channel's full cumulative counters as the "delta".
+   * When the channel was last reported by a different contract, net out what
+   * is already indexed so totals keep counting real growth only.
+   */
+  private _netCutoverReport(contract: string, event: DecodedMetadataRecorded): DecodedMetadataRecorded {
+    if (event.agentId > BigInt(Number.MAX_SAFE_INTEGER)) return event;
+    const existing = this._selectChannel.get(Number(event.agentId), event.channelId.toLowerCase());
+    if (!existing || existing.last_contract_address === null || existing.last_contract_address === contract) return event;
+    const net = (reported: bigint, indexed: string): bigint => {
+      const already = BigInt(indexed);
+      return reported > already ? reported - already : 0n;
+    };
+    return {
+      ...event,
+      inputTokens: net(event.inputTokens, existing.total_input_tokens),
+      outputTokens: net(event.outputTokens, existing.total_output_tokens),
+      requestCount: net(event.requestCount, existing.total_request_count),
+    };
   }
 
   /** Returns last indexed block + block timestamp, or null if no checkpoint. */

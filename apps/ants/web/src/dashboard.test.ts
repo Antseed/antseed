@@ -22,7 +22,7 @@ vi.mock('@antseed/ui', async original => ({
   Modal: ({ children, title, subtitle, isOpen }: { children: ReactNode; title: ReactNode; subtitle?: ReactNode; isOpen: boolean }) => isOpen ? createElement('section', { role: 'dialog' }, createElement('h2', null, title), subtitle, children) : null,
 }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => { state.keys.push(key); return { data: key ? state.data[key] ?? null : null, error: key === 'pools' ? state.poolsError : null, loading: key === 'pools' && state.loadingPools, partial: key === 'pools' && state.partialPools, reconciling: key === 'pools' && state.reconcilingPools, refresh: () => {} }; } }));
-vi.mock('./jobs', () => ({ useJobs: () => ({ running: false, start: () => {}, toasts: [], dismissToast: () => {}, drawerOpen: false, setDrawerOpen: () => {} }) }));
+vi.mock('./jobs', () => ({ useJobs: () => ({ running: false, start: () => {}, toasts: [], dismissToast: () => {}, drawerOpen: false, setDrawerOpen: () => {} }), useJobList: () => [] }));
 vi.mock('./wallet', () => ({ BuyerWalletAction: () => createElement('button', null, 'Connect wallet'), WalletControls: () => createElement('button', null, 'Wallet') }));
 
 const context = {

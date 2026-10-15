@@ -28,6 +28,19 @@ export function asStringArray(value: unknown, fallback: string[]): string[] {
   return value.filter((item): item is string => typeof item === 'string' && item.trim().length > 0);
 }
 
+const RPC_TROUBLE = /rate limit|too many requests|\b429\b|\b50[234]\b|timeout|timed out|ETIMEDOUT|ECONNREFUSED|ECONNRESET|ENOTFOUND|network error|failed to detect network|could not detect network|missing revert data|SERVER_ERROR|NETWORK_ERROR|TIMEOUT|fetch failed|every rpc endpoint|indexer|antscan/i;
+
+/**
+ * One short line for errors shown in the UI: chain RPC and explorer trouble
+ * (rate limits, timeouts, unreachable endpoints) becomes a friendly retry
+ * hint instead of raw text like "http://127.0.0.1:8547 is rate limiting
+ * requests"; anything else keeps its message.
+ */
+export function friendlyNetworkError(error: unknown): string {
+  const message = asErrorMessage(error);
+  return RPC_TROUBLE.test(message) ? 'The network is busy right now. Try again in a minute.' : message;
+}
+
 export function asErrorMessage(error: unknown): string {
   if (error instanceof Error && error.message.trim().length > 0) {
     return error.message;

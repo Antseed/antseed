@@ -178,6 +178,23 @@ describe('BuyerPaymentManager', () => {
     expect((sent.metadata as string).length).toBe(2 + 9 * 64);
   });
 
+  it('authorizeSpending hashes the attributed initial metadata it sends', async () => {
+    const attributed = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { attribution: { clientId: '0x' + '00'.repeat(31) + '2a', invite: { epoch: 42n, index: 7n, r: '0x' + '11'.repeat(32), vs: '0x' + '22'.repeat(32) } } }),
+      store,
+    );
+    attributed.setSigner(Wallet.createRandom());
+    const channelId = await attributed.authorizeSpending(fakePeerId('seller-peer-attr'), mux, 50_000n, TEST_PRICING);
+
+    expect(channelId).toMatch(/^0x[0-9a-f]{64}$/);
+    const sent = mux.sentSpendingAuths[0] as Record<string, string>;
+    // Five extra tail words: the seller pre-checks keccak(metadata) == metadataHash
+    // before it verifies the ReserveAuth, so a stale zero hash rejects every open.
+    expect(sent.metadata.length).toBe(2 + 14 * 64); // 7 v4 head words + offset + 5 tail words + services length
+    expect(sent.metadataHash).toBe(keccak256(sent.metadata));
+  });
+
   it('does not transmit ReserveAuth when durable persistence fails', async () => {
     const persistenceError = new Error('durable write failed');
     Object.assign(store, {

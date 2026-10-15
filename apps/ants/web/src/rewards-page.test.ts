@@ -1,14 +1,14 @@
 import { createElement } from 'react';
 import { renderToStaticMarkup } from 'react-dom/server';
 import { beforeEach, describe, expect, it, vi } from 'vitest';
-import type { PoolView, RewardsView } from '../../src/api-types';
+import type { BuildersView, PoolView, RefereeView, ReferralView, ReferredBuyersView, RewardsView } from '../../src/api-types';
 import { AppContext, type AppValue } from './app-context';
 import type { ActionButtonProps } from './components/Confirm';
 import { RewardsPage } from './pages/Rewards';
 
-const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false }));
+const state = vi.hoisted(() => ({ rewards: null as RewardsView | null, pools: [] as PoolView[], actions: [] as ActionButtonProps[], configReady: true, configLoading: false, configError: null as string | null, rewardsLoading: false, rewardsError: null as string | null, reconciling: false, builders: null as BuildersView | null, referral: null as ReferralView | null, referredBuyers: null as ReferredBuyersView | null, referee: null as RefereeView | null }));
 vi.mock('./data', () => ({ usePageData: (key: string | null) => ({
-  data: key === 'rewards' ? state.rewards : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
+  data: key === 'rewards' ? state.rewards : key === 'referrals' ? state.referral : key === 'referrals:buyers' ? state.referredBuyers : key === 'referrals:referee' ? state.referee : key?.startsWith('builders:') ? state.builders : key === 'pools' ? { pools: state.pools } : key === 'positions:current' && state.configReady ? { config: { minStakeEpochs: 1, maxStakeEpochs: 104, stakeActivationDelay: 1 } } : null,
   error: key === 'rewards' ? state.rewardsError : key === 'positions:current' ? state.configError : null,
   loading: key === 'rewards' ? state.rewardsLoading : key === 'positions:current' && state.configLoading,
   reconciling: key === 'rewards' && state.reconciling,
@@ -52,6 +52,10 @@ beforeEach(() => {
   state.rewardsLoading = false;
   state.rewardsError = null;
   state.reconciling = false;
+  state.builders = null;
+  state.referral = null;
+  state.referredBuyers = null;
+  state.referee = null;
   state.rewards = {
     scope: 'all', currentEpoch: 23, firstRewardedEpoch: 22, total: ants(2200),
     staker: { total: ants(100), positions: [] },
@@ -395,5 +399,119 @@ describe('reward row actions and confirmations', () => {
     state.rewards!.locked.claimable = '0';
     render();
     expect(action('Withdraw released seller rewards').disabled).toBe(true);
+  });
+
+  it('lists builder agents with per-agent claims, enabled only for a registered agent with a payable reward', () => {
+    state.builders = { available: true, agents: [
+      { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: ants(3), claimableEpochs: [20, 21] },
+      { agentId: 9, owner: pool, owned: false, firstParty: null, payable: '0', claimableEpochs: [] },
+      { agentId: 404, owner: null, owned: false, firstParty: null, payable: ants(1), claimableEpochs: [21] },
+    ] };
+    const html = render();
+    expect(html).toContain('Builders program');
+    expect(html).toContain('Antseed CLI · agent #5');
+    expect(action('Claim builder rewards · agent #5')).toMatchObject({ disabled: false, body: { agentId: 5 }, path: '/api/builders/claim' });
+    expect(action('Claim builder rewards · agent #9').disabled).toBe(true);
+    expect(action('Claim builder rewards · agent #404').disabled).toBe(true);
+    expect(action('Register client agent').path).toBe('/api/builders/register');
+  });
+
+  it('totals only the builder rewards this wallet owns', () => {
+    state.builders = { available: true, agents: [
+      { agentId: 5, owner: wallet, owned: true, firstParty: 'cli', payable: ants(4), claimableEpochs: [21] },
+      { agentId: 1234, owner: pool, owned: false, firstParty: null, payable: ants(7), claimableEpochs: [21] },
+    ] };
+    const html = render();
+    const card = html.slice(html.indexOf('Builders program'));
+    expect(card).toContain('<div class="hero-value">4<span class="unit">ANTS</span>');
+  });
+
+  it('hides the builders program when the chain has no client rewards contract', () => {
+    state.builders = { available: false, agents: [] };
+    expect(render()).not.toContain('Builders program');
+  });
+
+  it('lists referred buyers with the points, pending points and ANTS earned each brought in', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 2, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
+    state.referredBuyers = { available: true, buyers: [
+      { buyer: pool, boundEpoch: 4, points: '12500', ants: ants(3), pendingPoints: '0' },
+      { buyer: wallet, boundEpoch: 9, points: '250', ants: '0', pendingPoints: '250' },
+    ] };
+    const html = render();
+    const card = html.slice(html.indexOf('Referral rewards'), html.indexOf('Builders program') > 0 ? html.indexOf('Builders program') : undefined);
+    expect(card).toContain('>Buyer</th>');
+    // The table sums claimed and payable, unlike the "payable now" headline.
+    expect(card).toMatch(/>Earned<\/th>/);
+    expect(card).toMatch(/>Pending<\/th>/);
+    expect(card).toContain(`title="${pool}"`);
+    expect(card).toContain('12,500');
+    expect(card).toMatch(/>3(\.0+)? ANTS<\/td>/);
+    // Usage still in an open week shows as pending points, not as nothing earned.
+    expect(card).toContain('>250 pts</td>');
+  });
+
+  it('shows an empty referred-buyers table until someone joins', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+    state.referredBuyers = { available: true, buyers: [] };
+    expect(render()).toContain('No referred buyers yet.');
+  });
+
+  it('hides the referral card and its table when referrals are not configured', () => {
+    state.referral = { available: false, payable: '0', claimableEpochs: [], referredCount: 0, invites: null };
+    state.referredBuyers = { available: false, buyers: [] };
+    const html = render();
+    expect(html).not.toContain('Referral rewards');
+    expect(html).not.toContain('No referred buyers yet.');
+  });
+
+  it('offers a single-use invite with the invites left this week', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 1, left: 4 } };
+    const html = render();
+    const card = html.slice(html.indexOf('Referral rewards'));
+    expect(card).toContain('Create invite');
+    expect(card).toContain('of 5 left this week');
+    expect(card).not.toContain('?ref=');
+  });
+
+  it('explains why no invites can be created without last week\'s activity', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 0, used: 0, left: 0 } };
+    const card = render().slice(render().indexOf('Referral rewards'));
+    expect(card).toContain('Invites unlock after at least 1 USDC of usage or sales in the previous week.');
+    expect(card).toMatch(/<button[^>]*disabled=""[^>]*><span class="btn__label">Create invite<\/span>/);
+  });
+
+  it('points browser-wallet sessions to the CLI instead of failing to sign', () => {
+    state.referral = { available: true, payable: '0', claimableEpochs: [], referredCount: 0, invites: { epoch: 23, quota: 5, used: 0, left: 5 } };
+    const original = context.config.browserWallet;
+    context.config.browserWallet = true;
+    try {
+      expect(render()).toContain('antseed referral invite');
+    } finally { context.config.browserWallet = original; }
+  });
+
+  it('shows the invite bonus next to buyer rewards with a claim', () => {
+    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(6), claimableEpochs: [20, 21] };
+    const html = render();
+    const card = html.slice(html.indexOf('Buyer rewards'));
+    expect(card).toContain('Invite bonus');
+    expect(card).toContain('10 weeks left');
+    expect(card).toContain(`title="${pool}"`);
+    const claim = action('Claim invite bonus');
+    expect(claim.path).toBe('/api/referrals/referee/claim');
+    expect(claim.disabled).toBe(false);
+  });
+
+  it('counts the invite bonus in the buyer rewards headline', () => {
+    const before = render();
+    expect(before).toContain('1,250');
+    state.referee = { available: true, referrer: pool, boundEpoch: 20, windowEnd: 32, weeksLeft: 10, payable: ants(300), claimableEpochs: [20] };
+    expect(render()).toContain('1,550');
+  });
+
+  it('hides the invite bonus when unbound or the window ended with nothing payable', () => {
+    state.referee = { available: true, referrer: null, boundEpoch: null, windowEnd: null, weeksLeft: null, payable: '0', claimableEpochs: [] };
+    expect(render()).not.toContain('Invite bonus');
+    state.referee = { available: true, referrer: pool, boundEpoch: 1, windowEnd: 13, weeksLeft: 0, payable: '0', claimableEpochs: [] };
+    expect(render()).not.toContain('Invite bonus');
   });
 });

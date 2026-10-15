@@ -788,6 +788,15 @@ export class SellerPaymentManager {
             && !await this._validateRetainedChannel(buyerPeerId, channelId, cumulativeAmount, disconnectMarker)) {
             return 'rejected';
           }
+          // Same cumulative, different metadata: the buyer re-signed after
+          // its attribution changed (an invite redeemed mid-session). The
+          // seller settles with whatever blob it holds, so keep the fresher one.
+          this._adoptResignedAuth(channelId, {
+            spendingAuthSig: payload.spendingAuthSig,
+            cumulativeAmount,
+            metadataHash: payload.metadataHash,
+            metadata: payload.metadata,
+          });
           debugLog(`[SellerPayment] Idempotent SpendingAuth (same cumulative=${cumulativeAmount}) — accepted`);
           this._acknowledgeRetainedChannel(buyerPeerId, channelId, paymentMux, disconnectMarker);
           return 'accepted';
@@ -2251,6 +2260,7 @@ export class SellerPaymentManager {
   private _adoptBuyerCloseAuth(channelId: string, buyerAuth: LatestAuth): void {
     const current = this._latestAuth.get(channelId);
     if (current && current.spendingAuthSig.length > 0 && current.cumulativeAmount >= buyerAuth.cumulativeAmount) {
+      this._adoptResignedAuth(channelId, buyerAuth);
       return;
     }
 
@@ -2277,6 +2287,29 @@ export class SellerPaymentManager {
       `[SellerPayment] Adopted buyer-supplied close auth for ${channelId.slice(0, 18)}... ` +
       `cumulative=${buyerAuth.cumulativeAmount} (was ${current?.cumulativeAmount ?? 0n})`,
     );
+  }
+
+  /**
+   * Replace the held auth with one signed for the same cumulative but a
+   * different metadata blob. The buyer only re-signs an unchanged cumulative
+   * when its attribution tail changed, and that tail reaches chain solely
+   * through the metadata the seller submits with settle()/close().
+   */
+  private _adoptResignedAuth(channelId: string, auth: LatestAuth): void {
+    const current = this._latestAuth.get(channelId);
+    if (!current || current.cumulativeAmount !== auth.cumulativeAmount) return;
+    if (current.metadataHash.toLowerCase() === auth.metadataHash.toLowerCase()) return;
+
+    this._latestAuth.set(channelId, auth);
+    const stored = this._channelStore.getChannel(channelId);
+    if (stored) {
+      stored.latestBuyerSig = auth.spendingAuthSig;
+      stored.latestSpendingAuthSig = auth.spendingAuthSig;
+      stored.latestMetadata = auth.metadata;
+      stored.updatedAt = Date.now();
+      this._channelStore.upsertChannel(stored);
+    }
+    debugLog(`[SellerPayment] Adopted re-signed metadata at cumulative=${auth.cumulativeAmount} for ${channelId.slice(0, 18)}...`);
   }
 
   // ── CloseRequested handling ───────────────────────────────────

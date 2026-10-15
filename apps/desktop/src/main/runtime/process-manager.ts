@@ -326,6 +326,11 @@ export function buildCliChildEnv(
   } else {
     childEnv['ANTSEED_SKIP_PLUGIN_UPDATE_CHECK'] = '1';
   }
+  // Lets the CLI pick Desktop's ERC-8004 client agent id from chain config for
+  // the attribution it appends to signed settlement metadata.
+  if (!childEnv['ANTSEED_CLIENT_KIND']?.trim()) {
+    childEnv['ANTSEED_CLIENT_KIND'] = 'desktop';
+  }
   return childEnv;
 }
 

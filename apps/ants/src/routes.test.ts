@@ -7,7 +7,8 @@ import type { AntsContext } from './service/context.js';
 import { IndexerSyncingError } from './read-state.js';
 
 const service = vi.hoisted(() => ({
-  previewWithdraw: vi.fn(), registerBinding: vi.fn(), rewards: vi.fn(), poolsView: vi.fn(),
+  previewWithdraw: vi.fn(), registerBinding: vi.fn(), rewards: vi.fn(), poolsView: vi.fn(), builders: vi.fn(), referredBuyers: vi.fn(),
+  referral: vi.fn(), refereeBonus: vi.fn(), createInvite: vi.fn(),
 }));
 vi.mock('./service/index.js', async (original) => ({
   ...await original<typeof import('./service/index.js')>(), ...service,
@@ -146,5 +147,49 @@ describe('dashboard API', () => {
     const response = await setup().inject('/api/rewards');
     expect(response.statusCode).toBe(400);
     expect(response.json()).toEqual({ ok: false, error: 'RPC temporarily unavailable' });
+  });
+
+  it('normalizes builder agent ids so one id set shares one cached read', async () => {
+    const app = setup(true);
+    service.builders.mockResolvedValue({ available: true, agents: [] });
+    await app.inject('/api/builders?agentIds=9,3,abc,3,-1');
+    await app.inject('/api/builders?agentIds=3,9');
+    expect(service.builders).toHaveBeenCalledTimes(1);
+    expect(service.builders.mock.calls[0]![1]).toEqual([3, 9]);
+  });
+
+  it('serves referred buyers from one cached Antscan read', async () => {
+    const app = setup(true);
+    const view = { available: true, buyers: [{ buyer: '0xabc', boundEpoch: 3, points: '10', ants: '5', pendingPoints: '0' }] };
+    service.referredBuyers.mockResolvedValue(view);
+    expect((await app.inject('/api/referrals/buyers')).json()).toEqual({ ok: true, data: view });
+    await app.inject('/api/referrals/buyers');
+    expect(service.referredBuyers).toHaveBeenCalledTimes(1);
+  });
+
+  it('passes the data dir to the referral card and serves the referee bonus', async () => {
+    const app = setup(true);
+    service.referral.mockResolvedValue({ available: false });
+    service.refereeBonus.mockResolvedValue({ available: true, referrer: null });
+    expect((await app.inject('/api/referrals')).json()).toEqual({ ok: true, data: { available: false } });
+    expect(service.referral.mock.calls[0]![1]).toBeNull();
+    expect((await app.inject('/api/referrals/referee')).json()).toEqual({ ok: true, data: { available: true, referrer: null } });
+  });
+
+  it('creates an invite directly, and refuses in read-only mode', async () => {
+    const created = { invite: 'abc', link: 'https://antseed.com/invite/abc', epoch: 30, index: 0, quota: 3, left: 2, expiresEpoch: 34 };
+    service.createInvite.mockResolvedValue(created);
+    const app = setup();
+    expect((await app.inject({ method: 'POST', url: '/api/referrals/invite' })).json()).toEqual({ ok: true, data: created });
+    const readOnly = setup(true);
+    expect((await readOnly.inject({ method: 'POST', url: '/api/referrals/invite' })).statusCode).toBe(403);
+    expect(service.createInvite).toHaveBeenCalledTimes(1);
+  });
+
+  it('reports why an invite could not be created', async () => {
+    service.createInvite.mockRejectedValue(new Error('Invites unlock after at least 1 USDC of usage or sales in the previous week.'));
+    const response = await setup().inject({ method: 'POST', url: '/api/referrals/invite' });
+    expect(response.statusCode).toBe(400);
+    expect(response.json().error).toContain('1 USDC');
   });
 });
