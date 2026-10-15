@@ -299,6 +299,26 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE gateway_requests ADD COLUMN served_free INTEGER NOT NULL DEFAULT 0;
   `,
+  // Deposits credited to a workspace wallet, as verified on-chain, and who approved each one (deposit confirmations).
+  `
+  CREATE TABLE deposits (
+    tx_hash TEXT PRIMARY KEY,
+    workspace_id TEXT NOT NULL,
+    wallet TEXT NOT NULL,
+    kind TEXT NOT NULL CHECK (kind IN ('relay', 'direct')),
+    credited_usdc INTEGER NOT NULL,
+    fee_usdc INTEGER NOT NULL DEFAULT 0,
+    block_number INTEGER NOT NULL,
+    block_time INTEGER NOT NULL,
+    sources TEXT NOT NULL DEFAULT '[]',
+    approved_by_id TEXT,
+    approved_by_label TEXT,
+    approved_at INTEGER,
+    approval_note TEXT,
+    recorded_at INTEGER NOT NULL
+  );
+  CREATE INDEX deposits_workspace ON deposits(workspace_id, block_time);
+  `,
   // Pinned requests (`<peerId>@<model>`) recorded the pin in the model: keep the model, and the pin as the seller when none was reported.
   [splitPinnedModelSql('gateway_requests'), splitPinnedModelSql('request_rollups'), splitPinnedModelSql('ledger_entries')].join('\n'),
 ]
