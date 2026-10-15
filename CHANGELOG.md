@@ -12,6 +12,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Documentation
 
+- Website: blog post "Routing Is Becoming a Market" (`/blog/routing-is-becoming-a-market`) on routers that pick the model and seller for each request, an open, permissionless market of routing services with the first routers from Levanto Labs, Decision Models and Antseed, and the Inference Routing Protocol co-developed with Levanto Labs.
 - Website: refresh the existing gateway announcement with the Gateway Console title and hero, a Console section with demo screenshots, and browser setup instructions while preserving the original URL and gateway guide.
 
 ### Added
