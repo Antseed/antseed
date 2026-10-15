@@ -461,6 +461,107 @@ export interface ChainInfo {
   contracts: Record<string, string>
 }
 
+// ── Referrals & builders ────────────────────────────────────────────────
+
+// GET    /workspaces/:id/referrals            → Referrals        (workspace admins)
+// POST   /workspaces/:id/referrals/invites    → CreatedInvite    (signed off-chain with the workspace wallet; no transaction)
+// POST   /workspaces/:id/referrals/redeem     { invite } → Referrals   (400 `invalid_invite` with the reason)
+// DELETE /workspaces/:id/referrals/redeem     → Referrals        (drops an invite that is not bound yet)
+// GET    /builders                            → Builders         (org admins)
+// PUT    /builders                            { agentId: number | null } → Builders (+ restartRequired)
+//
+// Counts, invites and payable amounts come from the chain's explorer
+// (Antscan); `available` is false when referrals or the explorer are not
+// configured for the chain. Claims are sent from the browser: every claim is
+// permissionless and the contracts pick the recipient.
+
+export interface InviteAllowance {
+  epoch: number
+  quota: number
+  used: number
+  left: number
+}
+
+export interface ReferredBuyer {
+  buyer: string
+  boundEpoch: number | null
+  /** Weighted usage points credited to the workspace for this buyer. */
+  points: string
+  /** ANTS earned from this buyer, claimed plus payable now. */
+  ants: string
+  /** Points in epochs that are not claimable yet. */
+  pendingPoints: string
+}
+
+export interface Referee {
+  /** The workspace wallet as an invited buyer: no invite, carrying one until it binds, or bound. */
+  state: 'none' | 'invited' | 'bound'
+  referrer: string | null
+  /** The invite the buyer carries in its signed metadata until a settlement binds it. */
+  pendingInvite: string | null
+  /** First epoch the carried invite no longer works in. */
+  inviteExpiresEpoch: number | null
+  boundEpoch: number | null
+  /** Last epoch of the 12-epoch bonus window. */
+  windowEnd: number | null
+  weeksLeft: number | null
+  /** Bonus ANTS payable now; paid to the workspace's authorized wallet. */
+  payableAnts: string
+  claimableEpochs: number[]
+  /** False once the wallet is no longer new to Antseed, so no invite can bind it; null when unknown. */
+  canRedeem: boolean | null
+}
+
+export interface Referrals {
+  available: boolean
+  address: string
+  /** This epoch's invite allowance; null when the explorer does not report it. */
+  invites: InviteAllowance | null
+  referredCount: number
+  /** Referral ANTS payable now; paid to the authorized wallet, or the workspace wallet when none is set. */
+  payableAnts: string
+  claimableEpochs: number[]
+  buyers: ReferredBuyer[]
+  referee: Referee
+}
+
+export interface CreatedInvite {
+  invite: string
+  link: string
+  epoch: number
+  index: number
+  quota: number
+  left: number
+  /** First epoch the invite no longer works in. */
+  expiresEpoch: number
+}
+
+export interface BuilderAgent {
+  agentId: number
+  /** ERC-8004 owner the builder rewards are paid to; null when the id is not registered. */
+  owner: string | null
+  /** The chain's own client (Antseed CLI / Desktop) when this is one of its ids. */
+  firstParty: 'cli' | 'desktop' | null
+  payableAnts: string
+  claimableEpochs: number[]
+}
+
+export interface Builders {
+  available: boolean
+  /** The client agent set for this gateway (`buyer.clientAgentId`); null when unset. */
+  agentId: number | null
+  /**
+   * What the buyer signs into settlement metadata: ANTSEED_CLIENT_AGENT_ID
+   * (`env`), the configured id (`config`), the chain's Antseed CLI id
+   * (`default`), or nothing (`none`).
+   */
+  effective: { agentId: number | null; source: 'env' | 'config' | 'default' | 'none' }
+  /** The effective agent's registration and rewards; null when none. */
+  agent: BuilderAgent | null
+  /** Set by PUT when the buyer could not restart itself to apply the change. */
+  restartRequired?: boolean
+}
+
 // ── Chat ────────────────────────────────────────────────────────────────
 
 // Members (their "Web chat" key pays) and API-key sessions (`antseed chat`; that key pays):

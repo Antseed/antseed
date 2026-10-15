@@ -143,7 +143,7 @@ export function seed() {
   }
   const chain: ChainInfo = {
     chainId: 84532, name: 'Base Sepolia', rpcUrl: 'https://sepolia.base.org', explorerUrl: 'https://sepolia.basescan.org',
-    contracts: { usdc: fakeAddress(101), deposits: fakeAddress(102), usageRewards: fakeAddress(103), channels: fakeAddress(104) },
+    contracts: { usdc: fakeAddress(101), deposits: fakeAddress(102), usageRewards: fakeAddress(103), channels: fakeAddress(104), referrals: fakeAddress(106), clientRewards: fakeAddress(107) },
   }
   const authConfig: AuthConfig = settings.auth
   const actions = ['key.create', 'workspace.policy.update', 'invite.create', 'routing.default.update', 'key.revoke', 'settings.buyer.update', 'peer_list.update']

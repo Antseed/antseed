@@ -517,22 +517,27 @@ export async function updateBuyerSettings(
     return { changed: true, restartRequired: false }
   }
   ctx.log('console: buyer settings changed; restarting the buyer')
-  let restartRequired = false
+  const restartRequired = await requestBuyerRestart(ctx, buyer)
+  return { changed: true, restartRequired }
+}
+
+/**
+ * Ask the buyer to restart so it re-reads the config file. True when the
+ * operator has to restart it (the buyer is not supervised, or not reachable).
+ */
+export async function requestBuyerRestart(ctx: Pick<ServiceContext, 'log'>, buyer: BuyerClient): Promise<boolean> {
   try {
     const response = await buyer('/_antseed/restart', { method: 'POST' })
-    if (!response.ok) {
-      const answer = await response.json().catch(() => null) as { error?: unknown } | null
-      // A buyer that is not supervised cannot restart itself: the operator has to.
-      restartRequired = true
-      ctx.log(answer?.error === 'restart_unsupported'
-        ? 'console: the buyer cannot restart itself (not supervised); restart it to apply the new settings'
-        : `console: buyer restart request answered HTTP ${response.status}`)
-    }
+    if (response.ok) return false
+    const answer = await response.json().catch(() => null) as { error?: unknown } | null
+    // A buyer that is not supervised cannot restart itself: the operator has to.
+    ctx.log(answer?.error === 'restart_unsupported'
+      ? 'console: the buyer cannot restart itself (not supervised); restart it to apply the new settings'
+      : `console: buyer restart request answered HTTP ${response.status}`)
   } catch (error) {
-    restartRequired = true
     ctx.log(`console: buyer restart request failed: ${errorMessage(error)}`)
   }
-  return { changed: true, restartRequired }
+  return true
 }
 
 /**

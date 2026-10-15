@@ -21,6 +21,7 @@ import { samePeerId } from '../lib/peer-id'
 import { combinePolicies, expandLists } from '../lib/policy-match'
 import { fakeAddress, mockNetworkModels, seed } from './data'
 import { mockChatModels, mockChatStream, mockChatThread, mockChatThreads, mockDeleteChatThread } from './chat'
+import { mockBuilders, mockClearInvite, mockCreateInvite, mockRedeem, mockReferrals, mockSetBuilderAgent } from './referrals'
 import { mockOperatorState, OPERATOR_SCENARIOS, scenarioOperator, type OperatorScenario } from './operator'
 
 type Handler = (ctx: { params: Record<string, string>; query: URLSearchParams; body: any }) => unknown
@@ -798,6 +799,36 @@ const routes: Array<[string, string, Handler]> = [
   }],
   ['GET', '/workspaces/:id/rewards', ({ params }) => { const { workspace, member } = requireWorkspace(params['id']!, 'admin'); return { address: workspace.walletAddress, pendingAnts: '44.75', claimedAnts: '0', epochs: [{ epoch: 12, pendingAnts: '0', claimed: true }, { epoch: 13, pendingAnts: '21.25', claimed: false }, { epoch: 14, pendingAnts: '20', claimed: false }], legacy: { pendingAnts: '3.5', contract: fakeAddress(105), epochs: [0, 1, 2, 3, 4, 5, 6, 7, 8, 9, 10, 11] }, operator: currentOperator(workspace, member) } }],
   ['GET', '/chain', () => db.chain],
+  ['GET', '/workspaces/:id/referrals', ({ params }) => { const { workspace } = requireWorkspace(params['id']!, 'admin'); return mockReferrals(workspace.id, workspace.walletAddress ?? fakeAddress(9)) }],
+  ['POST', '/workspaces/:id/referrals/invites', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    const created = mockCreateInvite(workspace.id)
+    if (!created) throw new MockError(409, 'no_invites_left', 'All 5 invites for this week are taken. More unlock next week.', { quota: 5 })
+    audit('referral.invite', { kind: 'workspace', id: workspace.id, label: workspace.name }, { epoch: created.epoch, index: created.index })
+    return created
+  }],
+  ['POST', '/workspaces/:id/referrals/redeem', ({ params, body }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    const refusal = mockRedeem(workspace.id, String(body?.invite ?? '').trim())
+    if (refusal) throw new MockError(400, 'invalid_invite', refusal)
+    audit('referral.redeem', { kind: 'workspace', id: workspace.id, label: workspace.name })
+    return mockReferrals(workspace.id, workspace.walletAddress ?? fakeAddress(9))
+  }],
+  ['DELETE', '/workspaces/:id/referrals/redeem', ({ params }) => {
+    const { workspace } = requireWorkspace(params['id']!, 'admin')
+    mockClearInvite(workspace.id)
+    return mockReferrals(workspace.id, workspace.walletAddress ?? fakeAddress(9))
+  }],
+  ['GET', '/builders', () => { requireOrgAdmin(); return mockBuilders() }],
+  ['PUT', '/builders', ({ body }) => {
+    requireOrgAdmin()
+    const agentId = body?.agentId ?? null
+    if (agentId !== null && (!Number.isSafeInteger(agentId) || agentId <= 0)) throw new MockError(400, 'invalid_agent', 'agentId must be a positive integer ERC-8004 agent id, or null to clear it.')
+    if (agentId === 999) throw new MockError(400, 'agent_not_registered', 'Agent 999 is not registered in the ERC-8004 identity registry.')
+    mockSetBuilderAgent(agentId)
+    audit('builders.update', { kind: 'settings', id: 'builders', label: 'Builders program' }, { agentId })
+    return mockBuilders()
+  }],
 
   ['GET', '/peers', () => db.peers],
   ['GET', '/models', () => mockNetworkModels(db.peers)],

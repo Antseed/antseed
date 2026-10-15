@@ -1,7 +1,7 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, Builders, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, CreatedInvite, DepositWatch, Enrollment,
   GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
-  RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
+  Referrals, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
 
@@ -40,6 +40,9 @@ export const ERROR_COPY: Record<string, string> = {
   last_credential: 'You cannot remove your only sign-in method, or you could not sign in again. Add another passkey or wallet first.',
   credential_exists: 'This passkey or wallet is already registered.',
   max_keys_reached: 'You already have as many keys as you are allowed. Revoke one, or ask an admin to raise your limit.',
+  referrals_unavailable: 'Referrals are not available on this network yet.',
+  already_bound: 'This wallet is already bound to a referrer. A referral binding is permanent.',
+  agent_not_registered: 'That agent id is not registered in the ERC-8004 identity registry. Register an agent first, then use its id.',
 }
 
 export function errorMessage(error: unknown): string {
@@ -221,6 +224,18 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       closeChannel: (workspaceId: string, peerId: string) => post<{ ok: true }>(`/workspaces/${id(workspaceId)}/channels/close`, { peerId }),
       rewards: (workspaceId: string) => get<Rewards>(`/workspaces/${id(workspaceId)}/rewards`),
       chain: () => get<ChainInfo>('/chain'),
+    },
+    referrals: {
+      /** `fresh` skips the gateway's one-minute cache (after a claim). */
+      get: (workspaceId: string, fresh = false) => get<Referrals>(`/workspaces/${id(workspaceId)}/referrals`, { fresh: fresh ? 1 : undefined }),
+      /** Signed off-chain with the workspace wallet; `no_invites_left` when the epoch's allowance is used up. */
+      createInvite: (workspaceId: string) => post<CreatedInvite>(`/workspaces/${id(workspaceId)}/referrals/invites`),
+      /** `invalid_invite` carries the contract's reason (already used, expired, not a new buyer…). */
+      redeem: (workspaceId: string, invite: string) => post<Referrals>(`/workspaces/${id(workspaceId)}/referrals/redeem`, { invite }),
+      clearInvite: (workspaceId: string) => request<Referrals>('DELETE', `/workspaces/${id(workspaceId)}/referrals/redeem`),
+      builders: (fresh = false) => get<Builders>('/builders', { fresh: fresh ? 1 : undefined }),
+      /** Restarts the buyer; `restartRequired` when it cannot restart itself. */
+      setBuilderAgent: (agentId: number | null) => put<Builders>('/builders', { agentId }),
     },
     chat: {
       /** Text models for the chat, tool-capable first, each with the peers offering it. */

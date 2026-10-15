@@ -5,8 +5,14 @@
  */
 
 import { describe, it, expect } from 'vitest';
-import { Wallet, verifyTypedData } from 'ethers';
+import { AbiCoder, Wallet, ZeroHash, keccak256, verifyTypedData } from 'ethers';
 import {
+  attributionTailAbi,
+  clientAgentId,
+  clientIdFromAgentId,
+  decodeMetadataAttribution,
+  encodeFreeUsageMetadata,
+  encodeMetadata,
   SPENDING_AUTH_TYPES,
   RESERVE_AUTH_TYPES,
   ZERO_METADATA_HASH,
@@ -112,5 +118,106 @@ describe('connection auth signing', () => {
     const sig = signUtf8(wallet, payload);
     expect(verifyUtf8(peerId, payload, sig)).toBe(true);
     expect(verifyUtf8(peerId, payload + 'tampered', sig)).toBe(false);
+  });
+});
+
+describe('metadata attribution tail', () => {
+  const clientId = clientIdFromAgentId(42);
+  // Fixed vectors from packages/contracts (AntseedReferralsTest.test_inviteSignatureVector
+  // and AntseedStatsV2Test.test_attributionTailVector).
+  const invite = {
+    epoch: 42n,
+    index: 7n,
+    r: '0xd802ee5a16750afbabae3b72ff1d3fd4b0e020078f532d083845ef4abd2c8eda',
+    vs: '0x446c5c2a3057d6654b49e84d192c62a787ff15082d4748ae083e366b78e80755',
+  };
+  const METADATA_VECTOR_HASH = '0x60bd1b80e739efcf89d9cbd9a1c0e8fe9b562dbcbfb8434e12f799cb1d272d1e';
+  const base = {
+    cumulativeInputTokens: 100n,
+    cumulativeOutputTokens: 40n,
+    cumulativeRequestCount: 2n,
+    cumulativeOutputImages: 1n,
+    services: [{
+      serviceId: '0x' + 'ab'.repeat(32),
+      cumulativeAmount: 5n,
+      cumulativeInputTokens: 100n,
+      cumulativeCachedInputTokens: 10n,
+      cumulativeOutputTokens: 40n,
+      cumulativeRequestCount: 2n,
+      cumulativeOutputImages: 1n,
+    }],
+  };
+
+  it('matches the AntseedStatsV2 tail vector byte for byte', () => {
+    // The contract vector uses a uint256[] services array ([5]); the tail
+    // words that follow it are what this package encodes.
+    const tail = attributionTailAbi({ clientId: clientIdFromAgentId(42), invite });
+    const encoded = AbiCoder.defaultAbiCoder().encode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256[]', ...tail.types],
+      [3n, 1000n, 200n, 3n, 0n, [5n], ...tail.values],
+    );
+    expect((encoded.length - 2) / 2).toBe(13 * 32);
+    expect(keccak256(encoded)).toBe(METADATA_VECTOR_HASH);
+    expect(decodeMetadataAttribution(encoded)).toEqual({ clientId, invite });
+  });
+
+  it('is omitted when no attribution is set', () => {
+    expect(encodeMetadata(base)).toBe(encodeMetadata({ ...base, attribution: {} }));
+    expect(decodeMetadataAttribution(encodeMetadata(base))).toBeNull();
+    expect(decodeMetadataAttribution(encodeFreeUsageMetadata(base))).toBeNull();
+  });
+
+  it('round-trips on SpendingAuth metadata without disturbing legacy decoders', () => {
+    const encoded = encodeMetadata({ ...base, attribution: { clientId, invite } });
+    expect(decodeMetadataAttribution(encoded)).toEqual({ clientId, invite });
+    expect(clientAgentId(clientId)).toBe(42n);
+    const coder = AbiCoder.defaultAbiCoder();
+    const legacy = coder.decode(['uint256', 'uint256', 'uint256', 'uint256'], encoded);
+    expect(legacy.map(String)).toEqual(['4', '100', '40', '2']);
+    const v4 = coder.decode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256',
+        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount,uint256 cumulativeOutputImages,uint256 cumulativeVideoGenerations,uint256 cumulativeVideoSeconds)[]'],
+      encoded,
+    );
+    expect(v4[7].length).toBe(1);
+    expect(String(v4[7][0].cumulativeCachedInputTokens)).toBe('10');
+  });
+
+  it('keeps the client with zero invite words once bound', () => {
+    const encoded = encodeMetadata({ ...base, attribution: { clientId } });
+    expect(decodeMetadataAttribution(encoded)).toEqual({ clientId, invite: null });
+  });
+
+  it('round-trips on FreeUsage metadata with an invite and no client', () => {
+    const encoded = encodeFreeUsageMetadata({ ...base, attribution: { invite } });
+    expect(decodeMetadataAttribution(encoded)).toEqual({ clientId: ZeroHash, invite });
+    const coder = AbiCoder.defaultAbiCoder();
+    const legacy = coder.decode(
+      ['uint256', 'uint256', 'uint256', 'uint256',
+        'tuple(bytes32 serviceId,uint256 cumulativeAmount,uint256 cumulativeInputTokens,uint256 cumulativeCachedInputTokens,uint256 cumulativeOutputTokens,uint256 cumulativeRequestCount)[]'],
+      encoded,
+    );
+    expect(legacy.map((v) => (Array.isArray(v) ? v.length : String(v)))).toEqual(['1', '100', '40', '2', 1]);
+  });
+
+  it('decodes the tail on every head layout', () => {
+    const coder = AbiCoder.defaultAbiCoder();
+    const tail = attributionTailAbi({ clientId, invite });
+    const heads: Array<[bigint, bigint[]]> = [[4n, [1n, 2n, 3n, 0n, 0n, 0n]], [3n, [1n, 2n, 3n, 0n]], [1n, [1n, 2n, 3n]]];
+    for (const [version, words] of heads) {
+      const types = Array(words.length + 1).fill('uint256');
+      const withTail = coder.encode([...types, 'uint256[]', ...tail.types], [version, ...words, [], ...tail.values]);
+      expect(decodeMetadataAttribution(withTail)).toEqual({ clientId, invite });
+      expect(decodeMetadataAttribution(coder.encode([...types, 'uint256[]'], [version, ...words, []]))).toBeNull();
+    }
+  });
+
+  it('ignores the retired two-word referrer tail', () => {
+    const coder = AbiCoder.defaultAbiCoder();
+    const retired = coder.encode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256[]', 'address', 'bytes32'],
+      [3n, 1n, 2n, 3n, 0n, [], '0x' + '11'.repeat(20), clientId],
+    );
+    expect(decodeMetadataAttribution(retired)).toBeNull();
   });
 });
