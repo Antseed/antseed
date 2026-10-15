@@ -1,15 +1,29 @@
-import { buildNetworkServiceOffers, evaluateUnitBilling, MODEL_ROUTING_PROTOCOL, validateUnitBillingModelForProtocolV1, type AntseedNode, type PeerInfo } from '@antseed/node'
+import { buildNetworkServiceOffers, evaluateUnitBilling, MODEL_ROUTING_PROTOCOL, validateUnitBillingModelForProtocolV1, type AntseedNode, type PeerInfo, type RoutingServiceTarget } from '@antseed/node'
 import { routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
 import { RoutingModelsCache } from './router-execution.js'
+
+/** The one `model-routing` service a peer advertises, or null when it advertises none or several (buyers skip those). */
+export function routingServiceOf(peer: PeerInfo): { provider: NonNullable<PeerInfo['metadata']>['providers'][number]; serviceId: string } | null {
+  const routingServices = (peer.metadata?.providers ?? []).flatMap(provider => provider.services
+    .filter(serviceId => provider.serviceApiProtocols?.[serviceId]?.includes(MODEL_ROUTING_PROTOCOL))
+    .map(serviceId => ({ provider, serviceId })))
+  return routingServices.length === 1 ? routingServices[0]! : null
+}
+
+/** The routing service a `<peerId>@<serviceId>` pin names, when that peer advertises it as its `model-routing` service. */
+export function findPinnedRoutingService(peers: PeerInfo[], peerId: string, serviceId: string): RoutingServiceTarget | null {
+  const peer = peers.find(candidate => candidate.peerId.toLowerCase() === peerId.toLowerCase())
+  const routing = peer ? routingServiceOf(peer) : null
+  if (!peer || !routing || routing.serviceId.trim().toLowerCase() !== serviceId.trim().toLowerCase()) return null
+  return { peerId: peer.peerId, provider: routing.provider.provider, serviceId: routing.serviceId }
+}
 
 export async function buildRoutingServices(peers: PeerInfo[], client: ModelRoutingClientApi, node: Pick<AntseedNode, 'sendRequest'>, modelsCache = new RoutingModelsCache()) {
   const offers = buildNetworkServiceOffers(peers)
   const services = peers.flatMap(peer => {
-    const routingServices = (peer.metadata?.providers ?? []).flatMap(provider => provider.services
-      .filter(serviceId => provider.serviceApiProtocols?.[serviceId]?.includes(MODEL_ROUTING_PROTOCOL))
-      .map(serviceId => ({ provider, serviceId })))
-    if (routingServices.length !== 1) return []
-    const { provider, serviceId } = routingServices[0]!
+    const routing = routingServiceOf(peer)
+    if (!routing) return []
+    const { provider, serviceId } = routing
     try {
       const target = { peerId: peer.peerId, provider: provider.provider, serviceId }
       const model = provider.serviceUnitBillingModels?.[serviceId]?.[MODEL_ROUTING_PROTOCOL]

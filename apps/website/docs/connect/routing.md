@@ -30,18 +30,47 @@ Some details that affect the result:
 
 Routing preferences live in `buyer.routingPreferences`; see [Buyer configuration](/docs/buyer-config#routing-preferences). On a gateway, routing policies narrow them per workspace, member, key or preset; see [Routing policies](/docs/gateway/routing).
 
-## Routing services
+## Use a routing service
 
-A routing service is a paid ranking service offered by another peer. When selected, it ranks the sellers your local policy already allows; the buyer then sends the inference to the top seller and falls back to later ranked sellers on retryable errors. See [Model Routing](/docs/model-routing).
+A routing service is a paid ranking service offered by another peer. It ranks the sellers your policy already allows; the buyer then sends the inference to the top seller and falls back to later ranked sellers on retryable errors. See [Model Routing](/docs/model-routing).
+
+Name the router as the model, the same way you pin a seller:
 
 ```bash
-curl http://127.0.0.1:8377/_antseed/routing-services
-curl -X POST http://127.0.0.1:8377/_antseed/route \
+curl http://localhost:8377/v1/chat/completions \
   -H 'content-type: application/json' \
-  -d '{"router":{"service":{"peerId":"<routerPeerId>","provider":"<provider>","serviceId":"<serviceId>"},"costQualityTradeoff":3}}'
+  -d '{
+    "model": "<routerPeerId>@<routerServiceId>",
+    "messages": [{"role": "user", "content": "Summarise this contract"}],
+    "routing": {"cost_quality_tradeoff": 7}
+  }'
 ```
 
-`costQualityTradeoff` is optional: `0` favors quality, `10` the cheapest acceptable candidate, and the router default is `5`. Routing charges count toward the conversation's spend, and tool-loop continuations of the same turn reuse the ranking. A routing service receives the conversation, so select only routers you trust with that content.
+- `routing.cost_quality_tradeoff` is optional: `0` favors quality, `10` the cheapest acceptable candidate. Without it, the router uses its default, `5`.
+- `routing` is removed before anything reaches a seller. On a request that does not name a router, it is ignored.
+- The answer is a normal completion from the chosen seller; `x-antseed-peer-id` says which seller served it.
+- Each ranking is charged by the router, and counts toward the request's spend (on a gateway, the API key's budget).
+- The router must pass the same rules as a pinned seller before its ranking is paid: your `minPeerReputation` and, on a gateway, the key's allowed models, seller lists, minimum trust and reputation, and TEE requirement. Token price caps do not apply to a router. A refused router answers `403`; an offline one answers `502`, like an offline seller.
+
+List routers with `GET /v1/models?type=router`. Each entry's `peers[].model` is the value to send, with the router's price per request and the models it can rank:
+
+```bash
+curl -s 'http://localhost:8377/v1/models?type=router' | jq '.data[].peers[] | {model, priceUsdPerRequest, models}'
+```
+
+### Saved router settings
+
+The buyer can also keep one router as its default, set from the desktop app or with `POST /_antseed/route`:
+
+```bash
+curl -X POST http://127.0.0.1:8377/_antseed/route \
+  -H 'content-type: application/json' \
+  -d '{"router":{"service":{"peerId":"<routerPeerId>","provider":"<provider>","serviceId":"<serviceId>"},"costQualityTradeoff":3,"allowedModels":[{"provider":"<provider>","serviceId":"<model>"}]}}'
+```
+
+`"model": "antseed"` then uses that router. A request that names the saved router without a `routing` object uses its saved tradeoff and model list; a `routing.cost_quality_tradeoff` in the request wins over the saved one. A request naming any other router gets the router's defaults. `GET /_antseed/routing-services` lists routers with their exact `service` targets.
+
+A routing service receives the conversation, so use only routers you trust with that content.
 
 ## The model catalog: `/v1/models`
 

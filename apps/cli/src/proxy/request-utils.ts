@@ -1,4 +1,4 @@
-import { shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { isCostQualityTradeoff, shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
@@ -399,4 +399,49 @@ export function rewritePeerPinnedServiceInBody(
 
   const { body: rewritten, headers: updatedHeaders } = encodeRewrittenJsonBody(obj, headers)
   return { body: rewritten, headers: updatedHeaders, pinnedPeerId: parsed.peerId }
+}
+
+/** Per-request routing options: the body's optional `routing` object. */
+export interface RequestRoutingOptions {
+  /** 0 (best quality) to 10 (cheapest); unset leaves the router's default (5). */
+  costQualityTradeoff?: number
+}
+
+const ROUTING_OPTION_KEYS = new Set(['cost_quality_tradeoff'])
+
+/**
+ * Reads and removes the body's `routing` object, so it never reaches a seller.
+ * `routing` is `{ cost_quality_tradeoff?: 0-10 }` and only applies when the
+ * request's model is a routing service; other requests drop it.
+ */
+export function takeRoutingOptions(
+  request: SerializedHttpRequest,
+): { kind: 'none' } | { kind: 'options'; request: SerializedHttpRequest; options: RequestRoutingOptions } | { kind: 'invalid'; message: string } {
+  if (!getHeader(request.headers, 'content-type').toLowerCase().includes('application/json') || request.body.length === 0) {
+    return { kind: 'none' }
+  }
+  const obj = parseJsonObject(request.body)
+  if (!obj || !('routing' in obj)) return { kind: 'none' }
+  const routing = obj['routing']
+  delete obj['routing']
+  const options: RequestRoutingOptions = {}
+  if (routing !== null && routing !== undefined) {
+    if (typeof routing !== 'object' || Array.isArray(routing)) {
+      return { kind: 'invalid', message: '`routing` must be an object: { "cost_quality_tradeoff": 0-10 }.' }
+    }
+    const fields = routing as Record<string, unknown>
+    const unknown = Object.keys(fields).filter(key => !ROUTING_OPTION_KEYS.has(key))
+    if (unknown.length > 0) {
+      return { kind: 'invalid', message: `Unknown \`routing\` field(s): ${unknown.join(', ')}. Supported: cost_quality_tradeoff.` }
+    }
+    const tradeoff = fields['cost_quality_tradeoff']
+    if (tradeoff !== undefined && tradeoff !== null) {
+      if (!isCostQualityTradeoff(tradeoff)) {
+        return { kind: 'invalid', message: '`routing.cost_quality_tradeoff` must be an integer from 0 (best quality) to 10 (cheapest).' }
+      }
+      options.costQualityTradeoff = tradeoff
+    }
+  }
+  const { body, headers } = encodeRewrittenJsonBody(obj, request.headers)
+  return { kind: 'options', request: { ...request, body, headers }, options }
 }

@@ -145,6 +145,8 @@ export async function executeRouterSelection(args: {
   signal: AbortSignal;
   modelsCache?: RoutingModelsCache;
   onRoutingRequest?: (requestId: string) => void;
+  /** Buyer identity that pays for the ranking (a gateway key's wallet); the default identity when unset. */
+  buyerIdentity?: string;
 }): Promise<RouteRecommendation[]> {
   const { node, client, request, peers, conversationKey, signal } = args
   const routingService = args.selection.service
@@ -156,13 +158,13 @@ export async function executeRouterSelection(args: {
     const allowed = args.candidates
       .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
         model.provider === candidate.provider && model.serviceId === candidate.serviceId))
-    if (!allowed.length && allowedModels !== undefined) throw new Error('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
+    if (!allowed.length && allowedModels !== undefined) throw new NoEligibleCandidatesError('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
     // Send only models the router lists, named the way the router names them.
     const candidates: RouteCandidate[] = allowed.flatMap(({ peer: _peer, ...candidate }) => {
       const model = routerModel(candidate.serviceId)
       return model ? [{ ...candidate, routerModel: model }] : []
     })
-    if (!candidates.length) throw new Error('No eligible allowed models are supported by this router')
+    if (!candidates.length) throw new NoEligibleCandidatesError('No eligible allowed models are supported by this router')
     const { costQualityTradeoff } = args.selection
     const routes = await untilAborted(signal, client.selectRoute(request, peers, {
       signal, conversationKey, candidates, routingService,
@@ -174,7 +176,7 @@ export async function executeRouterSelection(args: {
         // Routing and inference are separate purchases, so they need separate billing IDs.
         if (!serviceRequest.requestId || serviceRequest.requestId === request.requestId) throw new Error('Routing purchases require a distinct request ID')
         args.onRoutingRequest?.(serviceRequest.requestId)
-        return node.sendRequest(peer, serviceRequest, { ...options, signal })
+        return node.sendRequest(peer, serviceRequest, { ...options, signal, ...(args.buyerIdentity ? { buyerIdentity: args.buyerIdentity } : {}) })
       },
     }))
     signal.throwIfAborted()
@@ -187,6 +189,7 @@ export async function executeRouterSelection(args: {
   } catch (error) {
     modelsCache.invalidate(routingService)
     // IRP 422: our cached model list may be stale. Refresh it and retry once; failed ranks are not charged.
+    if (error instanceof NoEligibleCandidatesError) throw error
     if (error instanceof RouterCannotRankError) {
       try {
         return await attempt()
@@ -198,6 +201,9 @@ export async function executeRouterSelection(args: {
     throw error
   }
 }
+
+/** No candidate is left to rank once the buyer's, the key's and the router's model limits apply; nothing was paid. */
+export class NoEligibleCandidatesError extends Error {}
 
 /** Stop waiting when `signal` aborts, even if the client ignores it (so timeouts always apply). */
 function untilAborted<T>(signal: AbortSignal, promise: Promise<T>): Promise<T> {
