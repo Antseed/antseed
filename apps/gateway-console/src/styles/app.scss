@@ -257,16 +257,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   > svg { flex: 0 0 auto; color: var(--as-text-muted); }
 }
 .gc-ws__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gc-ws--select { cursor: pointer; padding-right: 0.375rem;
-  &:hover { background: var(--as-bg-muted); }
-  &:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.gc-ws-wrap { display: inline-flex; min-width: 0; }
+.gc-ws--select { cursor: pointer; padding-right: 0.375rem; border: 0; background: transparent; font: inherit;
+  &:hover, &[aria-expanded="true"] { background: var(--as-bg-muted); }
+  &:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 }
-.gc-ws__select {
-  appearance: none; border: 0; padding: 0; background: transparent; color: inherit; font: inherit;
-  min-width: 0; max-width: 13rem; overflow: hidden; text-overflow: ellipsis; cursor: pointer; outline: none;
-  option { color: initial; }
-}
-.gc-ws__chevron { pointer-events: none; }
+.gc-ws__role { flex: 0 0 auto; padding: 0 0.375rem; border-radius: 999px; background: var(--as-bg-muted); color: var(--as-text-secondary); font-size: 0.6875rem; font-weight: 500; line-height: 1.25rem; }
+.gc-ws--select:hover .gc-ws__role, .gc-ws--select[aria-expanded="true"] .gc-ws__role { background: var(--as-bg-surface); }
+.gc-ws__chevron { flex: 0 0 auto; color: var(--as-text-muted); }
 
 .gc-account { position: relative; }
 .gc-user { display: inline-flex; padding: 0.125rem; border: 0; border-radius: 999px; background: transparent; cursor: pointer; }
@@ -616,7 +614,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .gc-topbar .gc-brand__full { display: none; }
   .gc-topbar .gc-brand__mark { display: block !important; }
   .gc-ws { max-width: 11rem; }
-  .gc-ws__select { max-width: 8.5rem; }
 }
 @media (max-width: 520px) {
   .gc-grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; }

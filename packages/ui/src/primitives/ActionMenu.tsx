@@ -6,6 +6,10 @@ export interface ActionMenuItem {
   onSelect: () => void;
   tone?: 'default' | 'danger';
   disabled?: boolean;
+  /** A second, muted line under the label. */
+  description?: ReactNode;
+  /** Set on every item to make a single-choice menu: the checked one shows a check mark. */
+  checked?: boolean;
 }
 
 export interface ActionMenuProps {
@@ -15,6 +19,12 @@ export interface ActionMenuProps {
   /** Trigger content; a vertical "more" icon by default. */
   trigger?: ReactNode;
   className?: string;
+  /** 'icon' (default) styles the trigger as an icon button; 'plain' leaves it to `className`, for a text trigger. */
+  triggerStyle?: 'icon' | 'plain';
+  /** Which edge of the trigger the menu lines up with: 'end' (default) or 'start'. */
+  align?: 'start' | 'end';
+  /** Menu width in px (default 176). */
+  width?: number;
 }
 
 function MoreIcon() {
@@ -29,12 +39,20 @@ function MoreIcon() {
 
 const MENU_WIDTH = 176;
 
+function CheckIcon() {
+  return (
+    <svg width="14" height="14" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2.2" strokeLinecap="round" strokeLinejoin="round" aria-hidden="true">
+      <path d="M20 6 9 17l-5-5" />
+    </svg>
+  );
+}
+
 /**
  * A kebab menu for row actions. The list renders in a portal with fixed
  * positioning, so scrolling table wrappers never clip it. Arrow keys move,
  * Escape closes and returns focus to the trigger.
  */
-export function ActionMenu({ label, items, trigger, className }: ActionMenuProps) {
+export function ActionMenu({ label, items, trigger, className, triggerStyle = 'icon', align = 'end', width = MENU_WIDTH }: ActionMenuProps) {
   const entries = items.filter(Boolean) as ActionMenuItem[];
   const [open, setOpen] = useState(false);
   const [position, setPosition] = useState<CSSProperties>({});
@@ -50,11 +68,14 @@ export function ActionMenu({ label, items, trigger, className }: ActionMenuProps
   useLayoutEffect(() => {
     if (!open || !triggerRef.current) return;
     const rect = triggerRef.current.getBoundingClientRect();
-    const height = entries.length * 34 + 10;
+    const height = entries.reduce((sum, item) => sum + (item.description ? 50 : 34), 10);
     const below = rect.bottom + 4 + height <= window.innerHeight;
-    const left = Math.max(8, Math.min(rect.right - MENU_WIDTH, window.innerWidth - MENU_WIDTH - 8));
+    const left = Math.max(8, Math.min(align === 'start' ? rect.left : rect.right - width, window.innerWidth - width - 8));
     setPosition(below ? { top: rect.bottom + 4, left } : { top: Math.max(8, rect.top - 4 - height), left });
-    menuRef.current?.querySelector<HTMLElement>('[role="menuitem"]:not([disabled])')?.focus();
+    // A single-choice menu opens on the current choice.
+    const start = menuRef.current?.querySelector<HTMLElement>('[aria-checked="true"]:not([disabled])')
+      ?? menuRef.current?.querySelector<HTMLElement>('[role^="menuitem"]:not([disabled])');
+    start?.focus();
   }, [open, entries.length]);
 
   useEffect(() => {
@@ -78,7 +99,7 @@ export function ActionMenu({ label, items, trigger, className }: ActionMenuProps
   if (entries.length === 0) return null;
 
   function onMenuKey(event: KeyboardEvent<HTMLDivElement>) {
-    const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role="menuitem"]:not([disabled])') ?? [])];
+    const buttons = [...(menuRef.current?.querySelectorAll<HTMLButtonElement>('[role^="menuitem"]:not([disabled])') ?? [])];
     const index = buttons.indexOf(document.activeElement as HTMLButtonElement);
     if (event.key === 'Escape') {
       event.preventDefault();
@@ -106,9 +127,9 @@ export function ActionMenu({ label, items, trigger, className }: ActionMenuProps
       <button
         ref={triggerRef}
         type="button"
-        className={['as-icon-button', 'as-action-menu__trigger', className].filter(Boolean).join(' ')}
+        className={[triggerStyle === 'icon' ? 'as-icon-button' : null, 'as-action-menu__trigger', className].filter(Boolean).join(' ')}
         aria-label={label}
-        title={label}
+        title={triggerStyle === 'icon' ? label : undefined}
         aria-haspopup="menu"
         aria-expanded={open}
         aria-controls={open ? menuId : undefined}
@@ -132,7 +153,7 @@ export function ActionMenu({ label, items, trigger, className }: ActionMenuProps
           role="menu"
           aria-label={label}
           className="as-action-menu"
-          style={{ ...position, width: MENU_WIDTH }}
+          style={{ ...position, width }}
           onKeyDown={onMenuKey}
           onClick={(event) => event.stopPropagation()}
         >
@@ -140,16 +161,21 @@ export function ActionMenu({ label, items, trigger, className }: ActionMenuProps
             <button
               key={index}
               type="button"
-              role="menuitem"
+              role={item.checked === undefined ? 'menuitem' : 'menuitemradio'}
+              aria-checked={item.checked}
               tabIndex={-1}
               disabled={item.disabled}
-              className={item.tone === 'danger' ? 'as-action-menu__item as-action-menu__item--danger' : 'as-action-menu__item'}
+              className={['as-action-menu__item', item.tone === 'danger' ? 'as-action-menu__item--danger' : null, item.checked !== undefined ? 'as-action-menu__item--choice' : null].filter(Boolean).join(' ')}
               onClick={() => {
                 close(true);
                 item.onSelect();
               }}
             >
-              {item.label}
+              {item.checked !== undefined && <span className="as-action-menu__check">{item.checked ? <CheckIcon /> : null}</span>}
+              <span className="as-action-menu__text">
+                <span className="as-action-menu__label">{item.label}</span>
+                {item.description && <span className="as-action-menu__description">{item.description}</span>}
+              </span>
             </button>
           ))}
         </div>,

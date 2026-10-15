@@ -1,6 +1,6 @@
 import { lazy, Suspense, useEffect, useRef, useState, type ReactNode } from 'react'
 import { useQueryClient } from '@tanstack/react-query'
-import { Drawer, IconButton, LoadingRows, Logo, LogoMark } from '@antseed/ui'
+import { ActionMenu, Drawer, IconButton, LoadingRows, Logo, LogoMark } from '@antseed/ui'
 import { api } from '../api'
 import { useConsole } from '../app/context'
 import { useTheme, type ThemeChoice } from '../app/theme'
@@ -42,17 +42,27 @@ function WorkspaceSwitcher() {
   if (me.workspaces.length <= 1) {
     return <span className="gc-ws" title="Workspace" data-tour="workspace"><Icon.workspaces size={14} /><span className="gc-ws__name">{workspace.name}</span>{marker}</span>
   }
+  // The whole trigger opens the menu (the old native select ignored clicks on its chevron).
+  const currentRole = me.workspaces.find((entry) => entry.workspace.id === workspace.id)?.role
   return (
-    <label className="gc-ws gc-ws--select" data-tour="workspace">
-      <Icon.workspaces size={14} />
-      <select className="gc-ws__select" value={workspace.id} onChange={(event) => setWorkspaceId(event.target.value)} aria-label="Switch workspace">
-        {me.workspaces.map(({ workspace: ws, role }) => (
-          <option key={ws.id} value={ws.id}>{ws.name}{role === 'admin' ? ' (admin)' : ''}{ws.id !== workspace.id && missingOperator.has(ws.id) ? ' · no authorized wallet' : ''}</option>
-        ))}
-      </select>
-      {marker}
-      <Icon.down size={14} className="gc-ws__chevron" />
-    </label>
+    <span data-tour="workspace" className="gc-ws-wrap">
+      <ActionMenu label={`Workspace: ${workspace.name}. Switch workspace`} triggerStyle="plain" align="start" width={260} className="gc-ws gc-ws--select"
+        trigger={(
+          <>
+            <Icon.workspaces size={14} />
+            <span className="gc-ws__name">{workspace.name}</span>
+            {currentRole === 'admin' && <span className="gc-ws__role">admin</span>}
+            {marker}
+            <Icon.down size={14} className="gc-ws__chevron" />
+          </>
+        )}
+        items={me.workspaces.map(({ workspace: ws, role }) => ({
+          label: ws.name,
+          description: [role === 'admin' ? 'Admin' : 'Member', ws.id !== workspace.id && missingOperator.has(ws.id) ? 'no authorized wallet' : null].filter(Boolean).join(' · '),
+          checked: ws.id === workspace.id,
+          onSelect: () => { if (ws.id !== workspace.id) setWorkspaceId(ws.id) },
+        }))} />
+    </span>
   )
 }
 
