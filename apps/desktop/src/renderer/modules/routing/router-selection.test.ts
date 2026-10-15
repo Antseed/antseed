@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict';
 import { afterEach, test, vi } from 'vitest';
-import { createDesktopRouterSelection, isDesktopRouterSelection, normalizeRouterAllowedModels, routerAutoModelLabel } from '../../../shared/routing-selection';
+import { createDesktopRouterSelection, isDesktopRouterSelection, normalizeRouterAllowedModels, routerAutoModelLabel, routerDisplayName, routerSellerName } from '../../../shared/routing-selection';
 import { loadVprRouteSelection, saveVprRouteSelection, VPR_ROUTE_SELECTION_STORAGE_KEY } from './preferences';
 import { createInitialUiState } from '../../core/state';
 
@@ -63,10 +63,17 @@ test('Malformed targets are not restored as paid router selections', () => {
 });
 
 test('router picker label names the selected router, falling back while it is undiscovered', () => {
-  const offer = { peerId: 'd'.repeat(40), provider: 'sandbox-levanto', serviceId: 'levanto-route', label: 'Levanto', priceMicroUsdc: '1000' };
+  const offer = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'levanto-route', label: 'GesundAI', priceMicroUsdc: '1000' };
   const router = createDesktopRouterSelection(offer);
   assert.equal(routerAutoModelLabel(router, [offer]), 'Levanto · Auto model');
   assert.equal(routerAutoModelLabel(router, []), 'Router · Auto model');
-  assert.equal(routerAutoModelLabel(router, [{ ...offer, label: '  ' }]), 'Router · Auto model');
   assert.equal(routerAutoModelLabel(router, [{ ...offer, peerId: 'e'.repeat(40) }]), 'Router · Auto model');
+});
+
+test('router rows name the router and the seller offering it', () => {
+  const offer = { peerId: 'd'.repeat(40), provider: 'default-router', serviceId: 'default-router', label: 'GesundAI', priceMicroUsdc: '0' };
+  assert.equal(routerDisplayName(offer), 'Default Router');
+  assert.equal(routerSellerName(offer), 'GesundAI');
+  assert.equal(routerSellerName({ ...offer, label: 'default-router' }), 'dddddddd...dddd');
+  assert.equal(routerSellerName({ ...offer, label: ' ' }), 'dddddddd...dddd');
 });

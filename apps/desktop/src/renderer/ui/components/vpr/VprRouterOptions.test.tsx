@@ -12,7 +12,7 @@ vi.mock('../../hooks/useActions', () => ({ useActions: () => ({ selectVprRouter:
 
 test.each([false, true])('router menus separate routers from models with visible headings (chat=%s)', (forConversation) => {
   const state = createInitialUiState();
-  state.vprRoutingServices = [{ peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route', label: 'Auto Router', priceMicroUsdc: '0' }];
+  state.vprRoutingServices = [{ peerId: 'd'.repeat(40), provider: 'auto-router', serviceId: 'route', label: 'GesundAI', priceMicroUsdc: '0' }];
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterOptions forConversation={forConversation} />);
   assert.ok(markup.includes(`class="${dropdownStyles.modelDropdownSection}">Routers</div>`));
@@ -49,13 +49,13 @@ test.each([false, true])('router rows use one standard tag and omit units for fr
 });
 
 test.each(['0', '1000'])('chat router uses the model picker layout and pricing (%s)', (priceMicroUsdc) => {
-  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'route', label: 'Auto Router', priceMicroUsdc };
+  const service = { peerId: 'd'.repeat(40), provider: 'auto-router', serviceId: 'route', label: 'GesundAI', priceMicroUsdc };
   const markup = renderToStaticMarkup(<VprRouterRow service={service} chat active onClick={() => {}} />);
   assert.ok(markup.includes(`class="${dropdownStyles.modelDropdownItem} ${dropdownStyles.active}"`));
   assert.ok(markup.includes(`class="${dropdownStyles.itemTopRow}"`));
   assert.ok(markup.includes(`class="${dropdownStyles.itemName}"`));
   assert.ok(markup.includes(`class="${dropdownStyles.imageBadge}">Router</span>`));
-  assert.ok(markup.includes(`class="${dropdownStyles.itemMeta}"><span class="${rowStyles.peerMeta}" title="fake-levanto">fake-levanto</span>`));
+  assert.ok(markup.includes(`class="${dropdownStyles.itemMeta}"><span class="${rowStyles.peerMeta}" title="GesundAI">GesundAI</span>`));
   assert.match(markup, />Auto Router</);
   assert.match(markup, /role="option" aria-selected="true"/);
   assert.equal((markup.match(/>Router</g) ?? []).length, 1);
@@ -64,10 +64,22 @@ test.each(['0', '1000'])('chat router uses the model picker layout and pricing (
 });
 
 test.each([false, true])('model and home rows put seller before price on the second line (menu=%s)', menu => {
-  const service = { peerId: 'd'.repeat(40), provider: 'fake-levanto', serviceId: 'route', label: 'Auto Router', priceMicroUsdc: '0' };
+  const service = { peerId: 'd'.repeat(40), provider: 'default-router', serviceId: 'default-router', label: 'GesundAI', priceMicroUsdc: '0' };
   const markup = renderToStaticMarkup(<VprRouterRow service={service} menu={menu} onClick={() => {}} />);
-  assert.ok(markup.includes(`class="${rowStyles.metaLine}"><span class="${rowStyles.peerMeta}" title="fake-levanto">fake-levanto</span>`));
-  assert.ok(markup.indexOf('>fake-levanto<') < markup.indexOf('>Free<'));
+  assert.match(markup, />Default Router</);
+  assert.ok(markup.includes(`class="${rowStyles.metaLine}"><span class="${rowStyles.peerMeta}" title="GesundAI">GesundAI</span>`));
+  assert.ok(markup.indexOf('>GesundAI<') < markup.indexOf('>Free<'));
+});
+
+test('routers offered by several sellers stay distinguishable by seller', () => {
+  const state = createInitialUiState();
+  const free = { provider: 'default-router', serviceId: 'default-router', priceMicroUsdc: '0' };
+  state.vprRoutingServices = [{ ...free, peerId: 'a'.repeat(40), label: 'GesundAI' }, { ...free, peerId: 'b'.repeat(40), label: 'default-router' }];
+  initStore(state);
+  const markup = renderToStaticMarkup(<VprRouterOptions />);
+  assert.equal((markup.match(/>Default Router</g) ?? []).length, 2);
+  assert.match(markup, />GesundAI</);
+  assert.match(markup, />bbbbbbbb\.\.\.bbbb</);
 });
 
 test('fixed-model chats do not mark the global router as their active selection', () => {

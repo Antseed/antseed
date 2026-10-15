@@ -1,7 +1,7 @@
 import { useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { HierarchyIcon, InformationCircleIcon } from '@hugeicons/core-free-icons';
-import { normalizeRouterAllowedModels, routingServiceKey, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
+import { normalizeRouterAllowedModels, routerDisplayName, routerSellerName, routingServiceKey, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
 import { useUiSelector, shallowEqual } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { projectRowsToVprModelCatalog } from '../../../modules/catalog/model-catalog';
@@ -68,7 +68,6 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const checkedKeys = useMemo(() => new Set((allowedModels ?? catalog).map(modelKey)), [allowedModels, catalog]);
   const visible = catalog.filter(entry => `${entry.label} ${entry.serviceId} ${entry.provider}`.toLowerCase().includes(search.trim().toLowerCase()));
   const noAvailableModels = !!supported && !catalog.some(model => checkedKeys.has(modelKey(model)));
-  const label = current?.label ?? service.label;
   function updateSettings(nextCostQualityTradeoff: number | undefined, nextAllowedModels: RouterAllowedModel[] | undefined): void {
     nextAllowedModels = normalizeRouterAllowedModels(nextAllowedModels, availableModels);
     setCostQualityTradeoff(nextCostQualityTradeoff);
@@ -97,9 +96,9 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
           <div className={modelStyles.headText}>
             <div className={modelStyles.titleLine}>
               <HugeiconsIcon icon={HierarchyIcon} size={20} className={styles.logo} />
-              <h1 className={styles.title}>{label}</h1>
+              <h1 className={styles.title}>{routerDisplayName(service)}</h1>
             </div>
-            <div className={modelStyles.badgeRow}><span className={modelStyles.modelTag}>Router</span></div>
+            <div className={modelStyles.badgeRow}><span className={modelStyles.modelTag}>Router</span><span>{routerSellerName(current ?? service)}</span></div>
           </div>
           <button type="button" className={modelStyles.use} aria-label={active ? 'Selected router' : 'Use router'}
             disabled={active || !current || !supported || !!catalogError || noAvailableModels}

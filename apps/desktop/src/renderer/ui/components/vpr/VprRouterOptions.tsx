@@ -1,6 +1,6 @@
 import { HugeiconsIcon } from '@hugeicons/react';
 import { ArrowRight01Icon, HierarchyIcon, Tick02Icon } from '@hugeicons/core-free-icons';
-import { routingServiceKey, type RoutingServiceEntry } from '../../../../shared/routing-selection';
+import { routerDisplayName, routerSellerName, routingServiceKey, type RoutingServiceEntry } from '../../../../shared/routing-selection';
 import { useUiSelector } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import styles from '../chat/VprModelDropdown.module.scss';
@@ -14,17 +14,19 @@ export function routerPriceLabel(priceMicroUsdc: string): string {
 export function VprRouterRow({ service, active = false, menu = false, chat = false, onClick }: {
   service: RoutingServiceEntry; active?: boolean; menu?: boolean; chat?: boolean; onClick: () => void;
 }) {
+  const name = routerDisplayName(service);
+  const seller = routerSellerName(service);
   if (chat) return <button type="button" role="option" aria-selected={active}
     className={`${styles.modelDropdownItem}${active ? ` ${styles.active}` : ''}`} onClick={onClick}>
     <span className={styles.itemTopRow}>
       <span className={styles.itemNameGroup}>
         <HugeiconsIcon icon={HierarchyIcon} size={16} className={rowStyles.logo} />
-        <span className={styles.itemName} title={service.label}>{service.label}</span>
+        <span className={styles.itemName} title={name}>{name}</span>
       </span>
       <span className={styles.itemPricing}>{routerPriceLabel(service.priceMicroUsdc)}{Number(service.priceMicroUsdc) > 0 && ' / request'}</span>
     </span>
     <span className={styles.itemMeta}>
-      <span className={rowStyles.peerMeta} title={service.provider}>{service.provider}</span>
+      <span className={rowStyles.peerMeta} title={seller}>{seller}</span>
       <span className={styles.imageBadge}>Router</span>
     </span>
   </button>;
@@ -34,11 +36,11 @@ export function VprRouterRow({ service, active = false, menu = false, chat = fal
     <span className={rowStyles.rowMain}>
       <span className={rowStyles.titleLine}>
         <HugeiconsIcon icon={HierarchyIcon} size={16} className={rowStyles.logo} />
-        <span className={rowStyles.label} title={service.label}>{service.label}</span>
+        <span className={rowStyles.label} title={name}>{name}</span>
         <span className={rowStyles.modelTag}>Router</span>
       </span>
       <span className={rowStyles.metaLine}>
-        <span className={rowStyles.peerMeta} title={service.provider}>{service.provider}</span>
+        <span className={rowStyles.peerMeta} title={seller}>{seller}</span>
         <span className={rowStyles.metaDivider} aria-hidden="true">·</span>
         <span className={rowStyles.metaPrice}>{routerPriceLabel(service.priceMicroUsdc)}{Number(service.priceMicroUsdc) > 0 && <> <span className={rowStyles.perTok}>/ request</span></>}</span>
       </span>

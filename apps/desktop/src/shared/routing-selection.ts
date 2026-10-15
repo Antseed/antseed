@@ -1,4 +1,5 @@
 import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node';
+import { preferredModelDisplayName } from '@antseed/node/model-identity';
 
 export type { RoutingServiceTarget } from '@antseed/node';
 
@@ -37,11 +38,22 @@ export function routingServiceKey(service: RoutingServiceTarget): string {
   return `${service.peerId}:${service.provider}:${service.serviceId}`;
 }
 
-/** Picker label for an active router: its discovered name, or a generic label while it is undiscovered. */
+/** Router name from the routing provider, e.g. "Default Router" for `default-router`. */
+export function routerDisplayName(service: Pick<RoutingServiceEntry, 'provider'>): string {
+  return preferredModelDisplayName(service.provider);
+}
+
+/** Seller offering the router: its display name, or a short peer id when it advertises none. */
+export function routerSellerName(service: Pick<RoutingServiceEntry, 'peerId' | 'provider' | 'label'>): string {
+  const name = service.label.trim();
+  return name && name !== service.provider ? name : `${service.peerId.slice(0, 8)}...${service.peerId.slice(-4)}`;
+}
+
+/** Picker label for an active router: its router name, or a generic label while it is undiscovered. */
 export function routerAutoModelLabel(router: DesktopRouterSelection | undefined, services: readonly RoutingServiceEntry[]): string {
   const key = router ? routingServiceKey(router.service) : null;
-  const label = key ? services.find(service => routingServiceKey(service) === key)?.label.trim() : undefined;
-  return `${label || 'Router'} · Auto model`;
+  const service = key ? services.find(entry => routingServiceKey(entry) === key) : undefined;
+  return `${service ? routerDisplayName(service) : 'Router'} · Auto model`;
 }
 
 export function normalizeRouterAllowedModels(allowedModels: RouterAllowedModel[] | undefined, availableModels?: RouterAllowedModel[]): RouterAllowedModel[] | undefined {

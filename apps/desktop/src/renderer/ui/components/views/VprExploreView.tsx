@@ -33,7 +33,7 @@ import { availableModelFamilies } from '../../../modules/catalog/model-families'
 import { loadFavoriteModels } from '../../../modules/catalog/favorites';
 import { availableModelTags } from '../../../modules/catalog/model-metadata';
 import { setVprModelPageTarget, setVprRouterPageTarget } from '../../../modules/catalog/model-page-target';
-import { routingServiceKey } from '../../../../shared/routing-selection';
+import { routerDisplayName, routerSellerName, routingServiceKey } from '../../../../shared/routing-selection';
 import { VprRouterRow } from '../vpr/VprRouterOptions';
 import { selectFavoriteVprCatalog } from '../../../modules/catalog/recommended';
 import { shallowEqual, useUiSelector } from '../../hooks/useUiSelector';
@@ -165,7 +165,7 @@ export function VprExploreView({ onSelectView }: Props) {
     if (kinds.length && !kinds.includes('kind:router')) return false;
     if (listInputs.types.some((value) => value.startsWith('tag:')) || listInputs.families.length || listInputs.teeFilter === 'tee') return false;
     if (listInputs.types.includes('free') && Number(service.priceMicroUsdc) !== 0) return false;
-    return `${service.label} ${service.provider} ${service.serviceId} router`.toLowerCase().includes(listInputs.search.trim().toLowerCase());
+    return `${routerDisplayName(service)} ${routerSellerName(service)} ${service.provider} ${service.serviceId} router`.toLowerCase().includes(listInputs.search.trim().toLowerCase());
   });
   const selectedEntry = selectedModel
     ? findCatalogEntry(snap.catalog, selectedModel.provider, selectedModel.serviceId)

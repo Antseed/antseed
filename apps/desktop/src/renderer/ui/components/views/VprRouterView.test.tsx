@@ -77,7 +77,8 @@ test('Models lists a router with the same row structure and a Router tag', () =>
   state.vprRoutingServices = [service];
   initStore(state);
   const markup = renderToStaticMarkup(<VprExploreView />);
-  assert.match(markup, /Test Levanto/);
+  assert.match(markup, />Levanto</);
+  assert.match(markup, />Test Levanto</);
   assert.match(markup, />Router</);
   assert.doesNotMatch(markup, /aria-label="Routing services"/);
   assert.equal(markup.split(`class="${rowStyles.list}"`).length - 1, 1);
