@@ -10,6 +10,10 @@ This project uses selective package publishing. Each release entry lists the pub
 
 - CLI gateway console: **Deposits** on Wallet & Funding lists every deposit credited to a workspace, checked against its transaction on Base, with where the USDC came from. Workspace admins can **Approve** a deposit, which records who approved it, when, and an optional note, and is audited. Each deposit has a printable confirmation to save as a PDF for the books. Deposits made before this release can be added by their transaction. The buyer now records each credited deposit, and its control API adds `GET /_antseed/deposits/history`.
 
+### Fixed
+
+- CLI gateway console: **Logs** and **Activity** show the model as the model and the seller by name. A request that pinned a seller (`<peerId>@<model>`) is recorded as its model with that seller, so it no longer shows the peer id as the model or counts as a separate model in Activity. Requests recorded before are corrected when the gateway upgrades. The Seller column is always shown, and model-list requests show their endpoint instead of a model.
+
 ### Changed
 
 - CLI gateway console chat: one slim bar at the top shows the model, **Auto** or the pinned seller, and what this chat has cost. Prices and why Auto picked a seller (its ranking, the minimum trust, a cheaper seller it skips and why) show on hover. Each answer has one quiet line with the seller, its trust and the cost, plus **Pin** and **Try another seller**, which answers again with the next-ranked seller. Web, Files and Shell are switches in the message box, and the gateway only gives the agent the tools that are switched on. Shell, for organization admins, starts off. The help text, the paying key and the seller colour dots no longer take space above the chat.
