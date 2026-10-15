@@ -650,6 +650,16 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 /* Chat: the page fills the viewport below the top bar; the conversation scrolls, the prompt stays put. */
 .gc-chat-page { height: calc(100vh - var(--gc-topbar-h) - 4.5rem); min-height: 28rem; }
 .gc-chat-conversation { flex: 1 1 auto; min-height: 0; }
+/* Phones: the chat takes the whole screen below the top bar; the gateway URL strip is left out (Overview and Keys show it). */
+@media (max-width: 640px) {
+  .gc-app[data-page="chat"] {
+    --gc-topbar-h: var(--gc-topbar-row);
+    .gc-topbar__strip { display: none; }
+    .gc-main { padding: 0.25rem 0 0.75rem; }
+  }
+  .gc-chat-page { min-height: 20rem; }
+}
+.gc-chat-history .as-drawer__body { display: flex; flex-direction: column; gap: 0.125rem; }
 
 /* First-run tour (driver.js): its popover on the console's surface, type and buttons; monochrome like the rest. */
 .driver-popover.gc-tour {

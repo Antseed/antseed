@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI gateway console: the web chat on phones is now a clean, full-height chat. It has one slim row (saved chats, the model, a new chat button), the seller picker sits in the composer, and the explanations and the gateway URL strip are left out. Saved conversations, which phones could not reach before, open in a drawer, and the suggested prompts wrap instead of running off screen. On every screen size the chat now reaches the bottom of the window instead of leaving a gap below the composer.
 - Website: the homepage "Tokens processed" stat now counts free-tier tokens as well as paid ones, from Antscan's new `/api/totals` endpoint, matching the explorer. It falls back to paid tokens only if that endpoint is unavailable.
 
 ### Documentation

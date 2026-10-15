@@ -3,7 +3,8 @@ import { useEffect, useLayoutEffect, useMemo, useRef, useState, type ReactNode }
 import { useQuery, useQueryClient } from '@tanstack/react-query'
 import { useChat } from '@ai-sdk/react'
 import { DefaultChatTransport, lastAssistantMessageIsCompleteWithApprovalResponses, type UIMessage } from 'ai'
-import { CheckIcon, ChevronsUpDownIcon, KeyRoundIcon, MessageSquarePlusIcon, ServerIcon, ShuffleIcon, Trash2Icon } from 'lucide-react'
+import { CheckIcon, ChevronsUpDownIcon, KeyRoundIcon, MessageSquarePlusIcon, MessagesSquareIcon, ServerIcon, ShuffleIcon, Trash2Icon } from 'lucide-react'
+import { Drawer } from '@antseed/ui'
 import { API_BASE, CSRF_HEADER, api } from '../api'
 import type { ApiKey, ChatMessageMetadata, ChatModel, ChatModelPeer, ChatThread, RoutePreview } from '../api/types'
 import {
@@ -17,6 +18,7 @@ import { useConsoleMutation } from '../lib/mutations'
 import { formatRelative, formatTokens, formatUsd, shortId } from '../lib/format'
 import { href, linkHandler } from '../lib/router'
 import { Button } from '@/chat/components/ui/button'
+import { cn } from '@/chat/lib/utils'
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from '@/chat/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/chat/components/ai-elements/message'
 import {
@@ -66,9 +68,12 @@ function useFillViewport<T extends HTMLElement>() {
     if (!element) return undefined
     const fit = () => {
       const top = element.getBoundingClientRect().top + window.scrollY
-      // Whatever the page puts below the chat (its bottom padding) must fit too.
-      const below = Math.max(0, document.documentElement.scrollHeight - (top + element.offsetHeight))
-      const height = `${Math.max(448, window.innerHeight - top - below)}px`
+      // The page's bottom padding must fit too. Measured from the padding, not the document: the main area
+      // stretches to the window, so the document's height would count the gap this chat leaves and keep it.
+      const main = element.closest('main')
+      const below = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0
+      // Phones keep a lower floor: their screen is the limit, and the composer must stay in view.
+      const height = `${Math.max(window.innerWidth <= 640 ? 320 : 448, window.innerHeight - top - below)}px`
       if (element.style.height !== height) element.style.height = height
     }
     fit()
@@ -243,7 +248,7 @@ function priceRange(offer: { inputUsdPerMillion: number | null; outputUsdPerMill
   return `${price(offer.inputUsdPerMillion)} / ${price(offer.outputUsdPerMillion)} per M`
 }
 
-function ModelPicker({ models, value, onChange }: { models: ChatModel[]; value: ChatModel | null; onChange: (id: string) => void }) {
+function ModelPicker({ models, value, onChange, className }: { models: ChatModel[]; value: ChatModel | null; onChange: (id: string) => void; className?: string }) {
   const [open, setOpen] = useState(false)
   const [filters, toggle] = useStoredSet<ModelFilter>('model-filters')
   const [sort, setSort] = useStored<ModelSort>('model-sort', 'popular')
@@ -251,11 +256,11 @@ function ModelPicker({ models, value, onChange }: { models: ChatModel[]; value: 
   return (
     <ModelSelector open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger asChild>
-        <Button variant="outline" size="sm" className="max-w-80 justify-between gap-2">
+        <Button variant="outline" size="sm" className={cn('max-w-80 justify-between gap-2', className)}>
           <span className="truncate">{value ? value.name : 'Pick a model'}</span>
           {value && value.inputUsdPerMillion !== null && (value.free
             ? <Pill tone="free">Free offers</Pill>
-            : <span className="text-muted-foreground text-xs">from {priceRange(value)}</span>)}
+            : <span className="text-muted-foreground text-xs max-sm:hidden">from {priceRange(value)}</span>)}
           <ChevronsUpDownIcon className="size-3.5 opacity-60" />
         </Button>
       </ModelSelectorTrigger>
@@ -322,8 +327,11 @@ function autoSummary(pick: ReturnType<typeof autoPick>, model: ChatModel | null,
   )
 }
 
-function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded }: {
+function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded, className, compact = false }: {
   model: ChatModel | null
+  className?: string
+  /** The phone layout: a quiet chip in the composer, without the price. */
+  compact?: boolean
   value: string | null
   onChange: (peerId: string | null) => void
   preview: RoutePreview | undefined
@@ -342,12 +350,12 @@ function PeerPicker({ model, value, onChange, preview, previewLoading, unfunded 
   return (
     <ModelSelector open={open} onOpenChange={setOpen}>
       <ModelSelectorTrigger asChild>
-        <Button variant="outline" size="sm" className="max-w-96 justify-between gap-2" disabled={!model}>
+        <Button variant={compact ? 'ghost' : 'outline'} size={compact ? 'xs' : 'sm'} className={cn('max-w-96 justify-between gap-2', className)} disabled={!model}>
           {pinned ? <span className="size-2 rounded-full" style={{ background: peerColor(pinned.peerId) }} aria-hidden="true" /> : <ShuffleIcon className="size-3.5" />}
           <span className="truncate">
             {pinned ? peerLabel(pinned) : <>Auto{pickedPeer ? <span className="text-muted-foreground"> · {pickedPeer.name ?? shortId(pickedPeer.peerId)}</span> : ''}</>}
           </span>
-          {(pinned ?? pickedPeer) && <PriceTag offer={(pinned ?? pickedPeer)!} />}
+          {(pinned ?? pickedPeer) && !compact && <PriceTag offer={(pinned ?? pickedPeer)!} />}
           <ChevronsUpDownIcon className="size-3.5 opacity-60" />
         </Button>
       </ModelSelectorTrigger>
@@ -441,6 +449,30 @@ function ToolCall({ part, onApproval }: { part: ToolPart; onApproval: ((id: stri
   )
 }
 
+/** Saved conversations: the sidebar on wide screens, a drawer on phones. */
+function ThreadList({ threads, loading, activeId, onOpen, onRemove }: {
+  threads: ChatThread[]
+  loading: boolean
+  activeId: string
+  onOpen: (threadId: string) => void
+  onRemove: (threadId: string) => void
+}) {
+  if (threads.length === 0) return <p className="px-2 py-3 text-muted-foreground text-xs">{loading ? 'Loading…' : 'Your conversations show up here.'}</p>
+  return threads.map((thread) => (
+    <div key={thread.id} className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${thread.id === activeId ? 'bg-muted' : 'hover:bg-muted/60'}`}>
+      <button type="button" className="min-w-0 flex-1 text-left" onClick={() => onOpen(thread.id)} title={thread.title}>
+        <span className="block truncate">{thread.title}</span>
+        <span className="block truncate text-muted-foreground text-xs">{formatRelative(thread.updatedAt)}{thread.model ? ` · ${thread.model}` : ''}{thread.peerId ? ` · ${shortId(thread.peerId)}` : ''}</span>
+      </button>
+      {/* Always visible on touch screens, which have no hover. */}
+      <button type="button" className="rounded p-1 text-muted-foreground hover:text-foreground focus-visible:opacity-100 md:opacity-0 md:group-hover:opacity-100"
+        aria-label={`Delete "${thread.title}"`} onClick={() => onRemove(thread.id)}>
+        <Trash2Icon className="size-3.5" />
+      </button>
+    </div>
+  ))
+}
+
 /**
  * The gateway's web chat: Vercel AI SDK's useChat with the AI Elements
  * components (the shadcn AI chatbot). The agent loop and its tools run in the
@@ -460,6 +492,7 @@ export default function Chat() {
   const fillRef = useFillViewport<HTMLDivElement>()
   // The open conversation; a new one gets its id here and is saved on the gateway with its first answer.
   const [chatId, setChatId] = useState<string>(() => load(`chat:${storageScope}`, newChatId()))
+  const [historyOpen, setHistoryOpen] = useState(false)
   const model = models.data?.find((entry) => entry.id === modelId)
     ?? (modelId ? models.data?.find((entry) => modelKey(entry.id) === modelKey(modelId)) : undefined) ?? null
   // A model no seller offers any more (sellers drop one while busy): the chat moves on and says so.
@@ -560,12 +593,14 @@ export default function Chat() {
     void sendMessage({ text })
   }
   const open = (threadId: string) => {
+    setHistoryOpen(false)
     if (threadId === chatId || busy) return
     clearError()
     setMessages([])
     setChatId(threadId)
   }
   const newChat = () => {
+    setHistoryOpen(false)
     stop()
     clearError()
     setMessages([])
@@ -589,32 +624,30 @@ export default function Chat() {
           <MessageSquarePlusIcon className="size-3.5" /> New chat
         </Button>
         <div className="min-h-0 flex-1 overflow-y-auto">
-          {(threads.data ?? []).length === 0
-            ? <p className="px-2 py-3 text-muted-foreground text-xs">{threads.isLoading ? 'Loading…' : 'Your conversations show up here.'}</p>
-            : (threads.data ?? []).map((thread) => (
-              <div key={thread.id} className={`group flex items-center gap-1 rounded-md px-2 py-1.5 text-sm ${thread.id === chatId ? 'bg-muted' : 'hover:bg-muted/60'}`}>
-                <button type="button" className="min-w-0 flex-1 text-left" onClick={() => open(thread.id)} title={thread.title}>
-                  <span className="block truncate">{thread.title}</span>
-                  <span className="block truncate text-muted-foreground text-xs">{formatRelative(thread.updatedAt)}{thread.model ? ` · ${thread.model}` : ''}{thread.peerId ? ` · ${shortId(thread.peerId)}` : ''}</span>
-                </button>
-                <button type="button" className="rounded p-1 text-muted-foreground opacity-0 hover:text-foreground group-hover:opacity-100 focus-visible:opacity-100"
-                  aria-label={`Delete "${thread.title}"`} onClick={() => remove.mutate(thread.id)}>
-                  <Trash2Icon className="size-3.5" />
-                </button>
-              </div>
-            ))}
+          <ThreadList threads={threads.data ?? []} loading={threads.isLoading} activeId={chatId} onOpen={open} onRemove={(id) => remove.mutate(id)} />
         </div>
       </aside>
-      <div className="flex min-w-0 flex-1 flex-col gap-3">
-      <div className="flex flex-wrap items-center gap-2">
-        <h1 className="mr-auto font-semibold text-xl">Chat</h1>
-        <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null); setGoneModel(null) }} />
-        <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded} />
-        <Button variant="ghost" size="sm" className="md:hidden" onClick={newChat} disabled={messages.length === 0 && !busy}>
-          <MessageSquarePlusIcon className="size-3.5" /> New
+      <Drawer isOpen={historyOpen} onClose={() => setHistoryOpen(false)} side="left" title="Chats" className="gc-chat gc-chat-history">
+        <Button variant="outline" size="sm" className="mb-2 w-full justify-start gap-2" onClick={newChat}>
+          <MessageSquarePlusIcon className="size-3.5" /> New chat
+        </Button>
+        <ThreadList threads={threads.data ?? []} loading={threads.isLoading} activeId={chatId} onOpen={open} onRemove={(id) => remove.mutate(id)} />
+      </Drawer>
+      <div className="flex min-w-0 flex-1 flex-col gap-3 max-sm:gap-2">
+      {/* Phones get one quiet row (chats, model, new chat); the seller picker moves into the composer and the explanations are left out. */}
+      <div className="flex flex-wrap items-center gap-2 max-sm:flex-nowrap max-sm:gap-1">
+        <Button variant="ghost" size="icon-sm" className="shrink-0 md:hidden" onClick={() => setHistoryOpen(true)} aria-label="Chats">
+          <MessagesSquareIcon className="size-4" />
+        </Button>
+        <h1 className="mr-auto font-semibold text-xl max-sm:sr-only">Chat</h1>
+        <ModelPicker models={models.data ?? []} value={model} onChange={(id) => { setModelId(id); setPeerId(null); setGoneModel(null) }}
+          className="max-sm:mx-auto max-sm:min-w-0 max-sm:border-transparent max-sm:bg-transparent max-sm:font-semibold max-sm:shadow-none max-sm:dark:border-transparent max-sm:dark:bg-transparent" />
+        <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded} className="max-sm:hidden" />
+        <Button variant="ghost" size="sm" className="shrink-0 md:hidden max-sm:size-8 max-sm:p-0" onClick={newChat} disabled={messages.length === 0 && !busy} aria-label="New chat">
+          <MessageSquarePlusIcon className="size-4" /> <span className="max-sm:sr-only">New</span>
         </Button>
       </div>
-      <p className="text-muted-foreground text-xs">
+      <p className="text-muted-foreground text-xs max-sm:hidden">
         {peerId && model
           ? <>Every turn goes to <span className="font-medium text-foreground">{peerLabel(model.peers.find((p) => p.peerId === peerId) ?? { peerId, name: null })}</span>. Each answer shows the peer that served it.</>
           : <>The gateway routes each turn to the best offer for {model?.name ?? 'the model'}; each answer shows the seller that served it, and you can pin one to always use it.</>}
@@ -633,21 +666,25 @@ export default function Chat() {
           </Notice>
         </p>
       )}
-      {!peerId && <p className="text-muted-foreground text-xs">{autoSummary(autoPick(preview.data), model, preview.isLoading, unfunded)}</p>}
-      <p className="text-muted-foreground text-xs">
+      {!peerId && <p className="text-muted-foreground text-xs max-sm:hidden">{autoSummary(autoPick(preview.data), model, preview.isLoading, unfunded)}</p>}
+      <p className="text-muted-foreground text-xs max-sm:hidden">
         <PaidBy apiKey={context.data?.key} workspaceName={context.data?.workspaceName ?? workspace.name} chatCost={chatCost} />
       </p>
 
-      <Conversation className="gc-chat-conversation rounded-xl border bg-card">
-        <ConversationContent>
+      <Conversation className="gc-chat-conversation rounded-xl border bg-card max-sm:rounded-none max-sm:border-0 max-sm:bg-transparent">
+        {/* Edge to edge on phones, like the messaging apps: the page's own gutter is enough. */}
+        <ConversationContent className="max-sm:gap-6 max-sm:px-0">
           {messages.length === 0
             ? (
               <ConversationEmptyState>
-                <div className="flex max-w-2xl flex-col items-center gap-2 text-center">
+                <div className="flex w-full min-w-0 max-w-2xl flex-col items-center gap-2 text-center">
                   <h3 className="font-medium text-base">Ask anything</h3>
                   <p className="text-muted-foreground text-sm">The agent can search and read the web and keep files in this chat's scratch space on the gateway.</p>
                   <div className="mt-3 flex flex-wrap justify-center gap-2">
-                    {suggestions.map((text) => <Suggestion key={text} suggestion={text} onClick={(value) => send({ text: value })} />)}
+                    {suggestions.map((text) => (
+                      <Suggestion key={text} suggestion={text} onClick={(value) => send({ text: value })}
+                        className="h-auto min-h-8 max-w-full whitespace-normal py-1.5 max-sm:w-full max-sm:rounded-xl max-sm:text-left" />
+                    ))}
                   </div>
                 </div>
               </ConversationEmptyState>
@@ -706,13 +743,15 @@ export default function Chat() {
         <ConversationScrollButton />
       </Conversation>
 
-      <PromptInput onSubmit={send}>
+      <PromptInput onSubmit={send} className="max-sm:[&_[data-slot=input-group]]:rounded-3xl">
         <PromptInputBody>
-          <PromptInputTextarea placeholder={model ? `Message ${model.name}…` : 'Loading models…'} />
+          <PromptInputTextarea placeholder={model ? `Message ${model.name}…` : 'Loading models…'} className="max-sm:min-h-10" />
         </PromptInputBody>
         <PromptInputFooter>
-          <PromptInputTools>
-            <span className="px-2 text-muted-foreground text-xs">
+          <PromptInputTools className="min-w-0">
+            <PeerPicker model={model} value={peerId} onChange={setPeerId} preview={preview.data} previewLoading={preview.isLoading} unfunded={unfunded}
+              compact className="min-w-0 max-w-[65vw] text-muted-foreground sm:hidden" />
+            <span className="px-2 text-muted-foreground text-xs max-sm:hidden">
               {model ? (model.toolUse ? 'Web search, web pages and scratch files' : 'This model cannot use tools; plain chat') : ''}
               {model?.toolUse && isOrgAdmin(viewer) ? ', plus a shell that asks before each command (admins)' : ''}
             </span>
