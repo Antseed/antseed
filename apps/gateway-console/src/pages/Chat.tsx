@@ -21,6 +21,7 @@ import { Button } from '@/chat/components/ui/button'
 import { cn } from '@/chat/lib/utils'
 import { Conversation, ConversationContent, ConversationEmptyState, ConversationScrollButton } from '@/chat/components/ai-elements/conversation'
 import { Message, MessageContent, MessageResponse } from '@/chat/components/ai-elements/message'
+import { loadMarkdown } from '@/chat/components/ai-elements/markdown'
 import {
   ModelSelector, ModelSelectorContent, ModelSelectorEmpty, ModelSelectorGroup, ModelSelectorInput, ModelSelectorItem, ModelSelectorList, ModelSelectorName, ModelSelectorTrigger,
 } from '@/chat/components/ai-elements/model-selector'
@@ -517,6 +518,8 @@ export default function Chat() {
   const threads = useQuery({ queryKey: qk.chatThreads(workspace.id), queryFn: () => api.chat.threads(workspace.id) })
   const context = useQuery({ queryKey: qk.chatContext(workspace.id), queryFn: () => api.chat.context(workspace.id), staleTime: 30_000 })
   const fillRef = useFillViewport<HTMLDivElement>()
+  // The Markdown renderer is a separate download: start it now so answers render fully from the first one.
+  useEffect(() => { void loadMarkdown().catch(() => undefined) }, [])
   // The open conversation; a new one gets its id here and is saved on the gateway with its first answer.
   const [chatId, setChatId] = useState<string>(() => load(`chat:${storageScope}`, newChatId()))
   const [historyOpen, setHistoryOpen] = useState(false)
