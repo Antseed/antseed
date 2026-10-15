@@ -57,30 +57,57 @@ function estimate(cost: number | null | undefined): string {
   return `≈ ${formatUsd(cost ?? 0)}`
 }
 
+const PHONE = '(max-width: 640px)'
+
 /**
  * Sizes the chat to the window below its own top edge (banners above it vary),
  * so the composer stays on screen and only the conversation scrolls.
+ *
+ * Phones lay the page out in CSS instead (see `.gc-app[data-page="chat"]`): the app is pinned to the
+ * visible viewport, which this keeps in `--gc-vvh`/`--gc-vvtop` so the composer stays above the
+ * on-screen keyboard and the browser's toolbars, like a messaging app.
  */
 function useFillViewport<T extends HTMLElement>() {
   const ref = useRef<T>(null)
   useLayoutEffect(() => {
     const element = ref.current
     if (!element) return undefined
+    const root = document.documentElement
+    const phone = window.matchMedia(PHONE)
+    const viewport = window.visualViewport
     const fit = () => {
+      if (phone.matches) {
+        if (element.style.height) element.style.height = ''
+        if (viewport) {
+          root.style.setProperty('--gc-vvh', `${viewport.height}px`)
+          root.style.setProperty('--gc-vvtop', `${viewport.offsetTop}px`)
+        }
+        return
+      }
       const top = element.getBoundingClientRect().top + window.scrollY
       // The page's bottom padding must fit too. Measured from the padding, not the document: the main area
       // stretches to the window, so the document's height would count the gap this chat leaves and keep it.
       const main = element.closest('main')
       const below = main ? parseFloat(getComputedStyle(main).paddingBottom) || 0 : 0
-      // Phones keep a lower floor: their screen is the limit, and the composer must stay in view.
-      const height = `${Math.max(window.innerWidth <= 640 ? 320 : 448, window.innerHeight - top - below)}px`
+      const height = `${Math.max(448, window.innerHeight - top - below)}px`
       if (element.style.height !== height) element.style.height = height
     }
     fit()
     const observer = new ResizeObserver(fit)
     observer.observe(document.body)
     window.addEventListener('resize', fit)
-    return () => { observer.disconnect(); window.removeEventListener('resize', fit) }
+    phone.addEventListener('change', fit)
+    viewport?.addEventListener('resize', fit)
+    viewport?.addEventListener('scroll', fit)
+    return () => {
+      observer.disconnect()
+      window.removeEventListener('resize', fit)
+      phone.removeEventListener('change', fit)
+      viewport?.removeEventListener('resize', fit)
+      viewport?.removeEventListener('scroll', fit)
+      root.style.removeProperty('--gc-vvh')
+      root.style.removeProperty('--gc-vvtop')
+    }
   }, [])
   return ref
 }
