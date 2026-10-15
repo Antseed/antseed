@@ -1646,7 +1646,7 @@ function makeProxyResponse(): {
 const TEST_ROUTER_MODELS = ['model-a', 'model-b', 'gpt-4o']
 
 function listModelsWith(models = TEST_ROUTER_MODELS): ModelRoutingClientApi['listModels'] {
-  return async () => [...models]
+  return async () => models.map(id => ({ id }))
 }
 
 function makeBuyerProxyWithPeers(

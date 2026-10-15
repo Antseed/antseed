@@ -38,6 +38,10 @@ A seller advertises a routing service with the `model-routing` API protocol and 
 
 Buyers cache the list for 60 seconds and only send candidates whose model the router lists. A seller service matches a listed model exactly, or otherwise by canonical model key, so `claude-opus-5` can match `anthropic/claude-opus-5`.
 
+A router that scores any model it is sent lists the wildcard `{ "id": "*", "object": "model" }`. Buyers then send every allowed candidate under its seller's service ID; names that match a model the router also lists keep the router's spelling.
+
+Any entry can carry `max_pricing` (USD per 1M tokens: `input`, `cache_read`, `output`). Buyers skip candidates priced above it, so a router that only ranks free models lists `{ "id": "*", "object": "model", "max_pricing": { "input": 0, "cache_read": 0, "output": 0 } }`.
+
 ## Rank request
 
 ```json

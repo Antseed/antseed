@@ -1,5 +1,5 @@
 import { buildNetworkServiceOffers, evaluateUnitBilling, MODEL_ROUTING_PROTOCOL, validateUnitBillingModelForProtocolV1, type AntseedNode, type PeerInfo, type RoutingServiceTarget } from '@antseed/node'
-import { routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
+import { candidatePricing, routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
 import { RoutingModelsCache } from './router-execution.js'
 
 /** The one `model-routing` service a peer advertises, or null when it advertises none or several (buyers skip those). */
@@ -38,11 +38,18 @@ export async function buildRoutingServices(peers: PeerInfo[], client: ModelRouti
     const service = { ...target, label: peer.displayName || target.provider, sellerName: peer.displayName || target.provider, priceMicroUsdc }
     try {
       const resolveModel = routerModelResolver(await modelsCache.get(client, target, peers, node))
-      const models = [...new Map(offers.filter(offer => offer.type === 'text' && resolveModel(offer.serviceId))
+      const models = [...new Map(offers.filter(offer => offer.type === 'text' && resolveModel(offer.serviceId, offerPricing(offer)))
         .map(({ provider, serviceId }) => [JSON.stringify([provider, serviceId]), { provider, serviceId }])).values()]
       return { ...service, catalog: { models }, catalogExpiresAt: modelsCache.expiresAt(target), catalogError: undefined }
     } catch (error) {
       return { ...service, catalog: undefined, catalogExpiresAt: undefined, catalogError: error instanceof Error ? error.message : 'Router models unavailable' }
     }
   }))
+}
+
+/** Candidate pricing for an offer, when it has token prices; the router's price limits only apply to priced offers. */
+function offerPricing(offer: { inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number }) {
+  if (offer.inputUsdPerMillion === undefined || offer.outputUsdPerMillion === undefined) return undefined
+  return candidatePricing({ inputUsdPerMillion: offer.inputUsdPerMillion, outputUsdPerMillion: offer.outputUsdPerMillion,
+    ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}) })
 }

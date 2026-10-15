@@ -42,7 +42,7 @@ describe('ModelRoutingClient', () => {
     const client = new ModelRoutingClient()
     const sendRequest = vi.fn(async (_peer: PeerInfo, serviceRequest: SerializedHttpRequest) =>
       ({ requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: encode(modelsResponse) }))
-    expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual(['model-a', 'model-b'])
+    expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual([{ id: 'model-a' }, { id: 'model-b' }])
     expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/models', headers: { accept: 'application/json' } })
     sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ ...modelsResponse, data: 'model-a' }) })
     await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('models response')

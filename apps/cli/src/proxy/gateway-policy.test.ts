@@ -677,7 +677,7 @@ function makeRoutingPeer(seed: string): PeerInfo {
 
 function routerClient(recommend: PeerInfo, contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []) {
   return {
-    listModels: async () => ['gpt-5'],
+    listModels: async () => [{ id: 'gpt-5' }],
     async selectRoute(_request: SerializedHttpRequest, _peers: PeerInfo[], context: any) {
       contexts.push(context)
       // Pay for the ranking through the buyer's send path, as the real client does.

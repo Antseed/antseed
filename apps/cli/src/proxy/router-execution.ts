@@ -1,10 +1,10 @@
 import { QueryClient } from '@tanstack/query-core'
-import { buildNetworkServiceOffers, isModelRouteEligible, type AntseedNode, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
+import { buildNetworkServiceOffers, isModelRouteEligible, type AntseedNode, type RoutingModelEntryV1, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
 import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node'
-import { RouterCannotRankError, routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
+import { candidatePricing, RouterCannotRankError, routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
 
 const MODELS_TIMEOUT_MS = 5_000
 
@@ -20,7 +20,7 @@ export class RoutingModelsCache {
 
   constructor(private readonly ttlMs = 60_000) {}
 
-  async get(client: Pick<ModelRoutingClientApi, 'listModels'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<string[]> {
+  async get(client: Pick<ModelRoutingClientApi, 'listModels'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RoutingModelEntryV1[]> {
     const models = await this.queries.fetchQuery({
       queryKey: modelsKey(target),
       staleTime: this.ttlMs,
@@ -35,7 +35,7 @@ export class RoutingModelsCache {
         })
       },
     })
-    return [...models]
+    return structuredClone(models)
   }
 
   invalidate(target: RoutingServiceTarget): void {
@@ -159,9 +159,9 @@ export async function executeRouterSelection(args: {
       .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
         model.provider === candidate.provider && model.serviceId === candidate.serviceId))
     if (!allowed.length && allowedModels !== undefined) throw new NoEligibleCandidatesError('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
-    // Send only models the router lists, named the way the router names them.
+    // Send only models the router lists, within its price limits, named the way the router names them.
     const candidates: RouteCandidate[] = allowed.flatMap(({ peer: _peer, ...candidate }) => {
-      const model = routerModel(candidate.serviceId)
+      const model = routerModel(candidate.serviceId, candidatePricing(candidate))
       return model ? [{ ...candidate, routerModel: model }] : []
     })
     if (!candidates.length) throw new NoEligibleCandidatesError('No eligible allowed models are supported by this router')

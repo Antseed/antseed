@@ -1,16 +1,15 @@
 import type { AntseedProviderPlugin, Provider } from '@antseed/node';
 import { MODEL_ROUTING_PROTOCOL } from '@antseed/node';
-import { DEFAULT_REFRESH_MS, DEFAULT_SCORES_URL, DEFAULT_STATS_URL, DefaultRouter, type ScoreMetric } from './default-router.js';
+import { DEFAULT_REFRESH_MS, DEFAULT_SCORES_URL, FreeModelRouter, type ScoreMetric } from './free-model-router.js';
 
 export {
-  DefaultRouter,
+  FreeModelRouter,
   DEFAULT_ROUTER_ID,
   DEFAULT_ROUTER_VERSION,
-  freeNetworkModels,
   modelKeys,
   parseScores,
-} from './default-router.js';
-export type { DefaultRouterOptions, NetworkStats, ScoreMetric, ScoresPage } from './default-router.js';
+} from './free-model-router.js';
+export type { FreeModelRouterOptions, ScoreMetric, ScoresPage } from './free-model-router.js';
 
 const DEFAULT_SERVICE = 'default-router';
 
@@ -19,8 +18,8 @@ const csv = (raw: string | undefined): string[] =>
 
 /**
  * AntSeed's default routing provider. It advertises one `model-routing` service and answers
- * the IRP endpoints itself: it lists the free models on the network and ranks free sellers by
- * live Artificial Analysis scores. Rankings are free unless the seller sets a price.
+ * the IRP endpoints itself: it lists `*` (any model the buyer sends) and ranks the buyer's free
+ * candidates by live Artificial Analysis scores. Rankings are free unless the seller sets a price.
  */
 const plugin: AntseedProviderPlugin = {
   name: 'default-router',
@@ -34,9 +33,8 @@ const plugin: AntseedProviderPlugin = {
     { key: 'DEFAULT_ROUTER_METRIC', label: 'Ranking Metric', type: 'string', required: false, default: 'intelligence', description: 'Artificial Analysis index to rank by: intelligence or coding' },
     { key: 'DEFAULT_ROUTER_MODELS', label: 'Preferred Models', type: 'string[]', required: false, description: 'Models to prefer, best first. They outrank every scored model.' },
     { key: 'DEFAULT_ROUTER_INCLUDE_PAID', label: 'Include Paid', type: 'boolean', required: false, default: false, description: 'Also rank paid candidates, after free ones and cheapest first' },
-    { key: 'DEFAULT_ROUTER_STATS_URL', label: 'Network Stats URL', type: 'string', required: false, default: DEFAULT_STATS_URL, description: 'Network snapshot used to list free models; empty disables discovery' },
     { key: 'DEFAULT_ROUTER_SCORES_URL', label: 'Model Scores URL', type: 'string', required: false, default: DEFAULT_SCORES_URL, description: 'modelgrep-compatible model scores; empty ranks by buyer order only' },
-    { key: 'DEFAULT_ROUTER_REFRESH_SECONDS', label: 'Refresh Interval', type: 'number', required: false, default: DEFAULT_REFRESH_MS / 1000, description: 'How often to refresh models and scores' },
+    { key: 'DEFAULT_ROUTER_REFRESH_SECONDS', label: 'Refresh Interval', type: 'number', required: false, default: DEFAULT_REFRESH_MS / 1000, description: 'How often to refresh model scores' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Max Concurrency', type: 'number', required: false, default: 50, description: 'Max concurrent ranking requests' },
   ],
 
@@ -54,11 +52,10 @@ const plugin: AntseedProviderPlugin = {
     const maxConcurrency = Number.parseInt(config['ANTSEED_MAX_CONCURRENCY'] ?? '50', 10);
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
 
-    const router = new DefaultRouter({
+    const router = new FreeModelRouter({
       metric,
       preferredModels: csv(config['DEFAULT_ROUTER_MODELS']),
       includePaid: config['DEFAULT_ROUTER_INCLUDE_PAID']?.trim().toLowerCase() === 'true',
-      statsUrl: config['DEFAULT_ROUTER_STATS_URL']?.trim() ?? DEFAULT_STATS_URL,
       scoresUrl: config['DEFAULT_ROUTER_SCORES_URL']?.trim() ?? DEFAULT_SCORES_URL,
       refreshMs: refreshSeconds * 1000,
     });

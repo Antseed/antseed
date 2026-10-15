@@ -5,8 +5,10 @@ request. The router only ranks; the buyer still sends the inference to the
 chosen seller and pays that seller normally.
 
 The wire format is [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md)
-(IRP) **suggest-only mode**, unchanged: plain IRP paths and bodies, with no AntSeed
-headers or fields. Seller identity stays on the buyer.
+(IRP) **suggest-only mode**: plain IRP paths and bodies, with no AntSeed headers.
+The one AntSeed addition is the optional `max_pricing` member on model-list entries
+(see [Models](#models)); IRP clients ignore unknown members, so the wire format stays
+compatible. Seller identity stays on the buyer.
 
 A routing seller advertises a service with API protocol `model-routing` and
 a completed-request unit billing model (see
@@ -44,6 +46,30 @@ seller's service ID matches a listed model exactly or, failing that, by its
 canonical model key, the same matching the savings baselines use. If several listed
 models share a key, the first one listed wins. AntSeed routers run in
 suggest-only mode, so entries carry no `candidates`.
+
+A router that scores whatever it is sent lists the wildcard `*`:
+
+```json
+{ "object": "list", "data": [{ "id": "*", "object": "model" }] }
+```
+
+Buyers then send every allowed candidate, each named by its seller's service ID.
+`*` can sit next to named models; a service ID that matches a named model
+(exactly or by canonical key) is still sent under that name. A wildcard router
+must still answer `422` (`urn:irp:problem:no-scorable-candidate`) when it cannot rank anything it
+was sent. The model list then comes from the buyer's own catalog, so the router
+does not need any network-wide view of which models exist.
+
+Any entry, `*` included, can carry `max_pricing` (USD per 1M tokens, same fields as a
+candidate's `pricing`). Buyers do not send a candidate through that entry when any
+price is above the limit; an omitted field means no limit. A router that only ranks
+free models lists:
+
+```json
+{ "object": "list", "data": [
+  { "id": "*", "object": "model", "max_pricing": { "input": 0, "cache_read": 0, "output": 0 } }
+] }
+```
 
 ## Rank
 
@@ -140,8 +166,8 @@ Non-success responses are not charged, so the 422 retry is free.
 ## Buyer flow
 
 1. List the selected routing service's models (cached for 60 seconds).
-2. Build candidates from eligible sellers whose model is listed, named the way the
-   router lists it.
+2. Build candidates from eligible sellers whose model is listed (or matched by `*`)
+   within the entry's `max_pricing`, named the way the router lists it.
 3. Call rank with the buyer's `cost_quality_tradeoff`, if set.
 4. Validate the response (a well-formed ranking is billed as one completed request) and
    send the inference to the first ranked candidate. Later candidates are fallbacks for

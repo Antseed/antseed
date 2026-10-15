@@ -5,7 +5,7 @@ import {
   MODEL_ROUTING_PROTOCOL,
   MODEL_ROUTING_RANK_PATH,
   detectRequestServiceApiProtocol,
-  parseRoutingModelsResponse,
+  parseRoutingModelEntries,
   parseRoutingProblem,
   renderRequestBodyAsOpenAIChat,
   validateRoutingRankRequest,
@@ -17,6 +17,8 @@ import {
   type RoutingCandidateV1,
   type RoutingModelsContext,
   type RoutingInferenceRequestV1,
+  type RoutingModelEntryV1,
+  type RoutingPricingV1,
   type RoutingRankRequestV1,
   type RoutingServiceTarget,
   type RoutingUsageObservation,
@@ -116,6 +118,15 @@ export class RouterCannotRankError extends Error {
  * 128 characters become a SHA-256 of the same string. The buyer always maps IDs back through the
  * candidates it sent and never parses them.
  */
+/** IRP candidate pricing; sellers without a cached-input price bill cache reads at the input price. */
+export function candidatePricing(candidate: Pick<RouteCandidate, 'inputUsdPerMillion' | 'outputUsdPerMillion' | 'cachedInputUsdPerMillion'>): RoutingPricingV1 {
+  return {
+    input: candidate.inputUsdPerMillion,
+    cache_read: candidate.cachedInputUsdPerMillion ?? candidate.inputUsdPerMillion,
+    output: candidate.outputUsdPerMillion,
+  }
+}
+
 export function routingCandidateId(candidate: Pick<RouteCandidate, 'peerId' | 'provider' | 'serviceId'>): string {
   const id = `${candidate.provider}:${candidate.serviceId}@${candidate.peerId}`
   return id.length <= MAX_ROUTING_CANDIDATE_ID_LENGTH ? id : `sha256:${createHash('sha256').update(id).digest('hex')}`
@@ -123,7 +134,7 @@ export function routingCandidateId(candidate: Pick<RouteCandidate, 'peerId' | 'p
 
 /**
  * Buyer side of `model-routing`, AntSeed's binding of Inference Routing Protocol suggest-only mode:
- * - `listModels`: free `GET /v1/routing/models`; the models the router can score.
+ * - `listModels`: free `GET /v1/routing/models`; the models the router can score, with any `max_pricing`.
  * - `selectRoute`: paid `POST /v1/routing/rank` once per user turn; the router orders the buyer's allowed candidates.
  * - `recordUsage`: observed prompt-cache reuse, sent to the router with later candidates.
  * It never sends inference; the buyer proxy dispatches the returned recommendations.
@@ -136,7 +147,7 @@ export class ModelRoutingClient {
     this.observations.record(observation)
   }
 
-  async listModels(target: RoutingServiceTarget, peers: PeerInfo[], context: RoutingModelsContext): Promise<string[]> {
+  async listModels(target: RoutingServiceTarget, peers: PeerInfo[], context: RoutingModelsContext): Promise<RoutingModelEntryV1[]> {
     const response = await context.sendRequest(findRouterPeer(peers, target), {
       requestId: randomUUID(), method: 'GET', path: MODEL_ROUTING_MODELS_PATH,
       headers: { accept: 'application/json' },
@@ -144,7 +155,7 @@ export class ModelRoutingClient {
     })
     context.signal.throwIfAborted()
     if (response.statusCode < 200 || response.statusCode >= 300) throw routerFailure('models', response.statusCode, response.body)
-    return parseRoutingModelsResponse(decodeJson(response.body))
+    return parseRoutingModelEntries(decodeJson(response.body))
   }
 
   async selectRoute(request: SerializedHttpRequest, peers: PeerInfo[], context: RouteSelectionContext): Promise<RouteRecommendation[] | null> {
@@ -186,12 +197,7 @@ export class ModelRoutingClient {
           return {
             id: routingCandidateId(candidate),
             model: candidate.routerModel ?? candidate.serviceId,
-            // Sellers without a cached-input price bill cache reads at the input price.
-            pricing: {
-              input: candidate.inputUsdPerMillion,
-              cache_read: candidate.cachedInputUsdPerMillion ?? candidate.inputUsdPerMillion,
-              output: candidate.outputUsdPerMillion,
-            },
+            pricing: candidatePricing(candidate),
             // Absent means 0, so only send what was observed.
             ...(cacheReadTokens > 0 ? { expected_usage: { cache_read_tokens: cacheReadTokens } } : {}),
           }

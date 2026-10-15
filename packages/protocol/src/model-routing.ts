@@ -9,6 +9,8 @@
 export const MODEL_ROUTING_PROTOCOL = 'model-routing';
 /** IRP §4: the router's supported models (free on AntSeed). */
 export const MODEL_ROUTING_MODELS_PATH = '/v1/routing/models';
+/** `GET /v1/routing/models` entry meaning the router scores any model the buyer sends. */
+export const MODEL_ROUTING_ANY_MODEL = '*';
 /** IRP §5: suggest-only ranking (one completed request on AntSeed). */
 export const MODEL_ROUTING_RANK_PATH = '/v1/routing/rank';
 export const ROUTING_RANKING_OBJECT = 'routing.ranking';
@@ -17,10 +19,19 @@ export const MAX_ROUTING_CANDIDATE_ID_LENGTH = 128;
 /** IRP default when `cost_quality_tradeoff` is absent. */
 export const DEFAULT_COST_QUALITY_TRADEOFF = 5;
 
+/** USD per 1M tokens, as on a candidate. */
+export type RoutingPricingV1 = { input: number; cache_read: number; output: number };
+
+/**
+ * A `GET /v1/routing/models` entry. AntSeed extension: on the `*` entry, `max_pricing` caps
+ * the candidates the buyer sends through it; an omitted field means no limit.
+ */
+export type RoutingModelEntryV1 = { id: string; max_pricing?: Partial<RoutingPricingV1> };
+
 /** IRP §4 `GET /v1/routing/models` response. */
 export type RoutingModelsResponseV1 = {
   object: 'list';
-  data: Array<{ id: string; object: 'model' }>;
+  data: Array<RoutingModelEntryV1 & { object: 'model' }>;
 };
 
 /** IRP §3.2 candidate. */
@@ -28,7 +39,7 @@ export type RoutingCandidateV1 = {
   id: string;
   model: string;
   /** USD per 1M tokens. */
-  pricing: { input: number; cache_read: number; output: number };
+  pricing: RoutingPricingV1;
   /** Absent means 0 cache reads. */
   expected_usage?: { cache_read_tokens?: number };
 };
@@ -131,15 +142,37 @@ export function findRoutingService(
 
 /** Validate `GET /v1/routing/models` and return the model IDs. Unknown members are ignored (IRP §2). */
 export function parseRoutingModelsResponse(value: unknown): string[] {
+  return parseRoutingModelEntries(value).map(entry => entry.id);
+}
+
+/**
+ * Validate `GET /v1/routing/models` and return its entries, keeping `max_pricing` where a
+ * router sets it. Unknown members are ignored (IRP §2).
+ */
+export function parseRoutingModelEntries(value: unknown): RoutingModelEntryV1[] {
   if (!object(value) || value.object !== 'list' || !Array.isArray(value.data)) {
     throw new Error('Invalid routing models response: expected an IRP model list');
   }
-  const models = value.data.map(entry => {
+  const entries = value.data.map((entry): RoutingModelEntryV1 => {
     if (!object(entry) || entry.object !== 'model' || !text(entry.id)) throw new Error('Invalid routing models response: each model needs an id');
-    return entry.id;
+    if (entry.max_pricing === undefined) return { id: entry.id };
+    const limit = entry.max_pricing;
+    if (!object(limit) || (['input', 'cache_read', 'output'] as const).some(key => limit[key] !== undefined && !price(limit[key]))) {
+      throw new Error('Invalid routing models response: max_pricing needs non-negative prices');
+    }
+    const maxPricing: Partial<RoutingPricingV1> = {};
+    for (const key of ['input', 'cache_read', 'output'] as const) {
+      if (limit[key] !== undefined) maxPricing[key] = limit[key] as number;
+    }
+    return { id: entry.id, max_pricing: maxPricing };
   });
-  if (new Set(models).size !== models.length) throw new Error('Invalid routing models response: duplicate model id');
-  return models;
+  if (new Set(entries.map(entry => entry.id)).size !== entries.length) throw new Error('Invalid routing models response: duplicate model id');
+  return entries;
+}
+
+/** Whether `pricing` is within `limit`; an omitted limit field allows any price. */
+export function withinRoutingPricing(pricing: RoutingPricingV1, limit: Partial<RoutingPricingV1> | undefined): boolean {
+  return !limit || (['input', 'cache_read', 'output'] as const).every(key => limit[key] === undefined || pricing[key] <= limit[key]!);
 }
 
 function validateCandidate(value: unknown): asserts value is RoutingCandidateV1 {
