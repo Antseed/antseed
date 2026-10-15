@@ -103,6 +103,8 @@ Routers use IRP problem details (`application/problem+json`).
 
 ## Buyer flow
 
+A buyer uses a routing service by sending `"model": "<routerPeerId>@<routerServiceId>"` to its local `/v1` API, or by selecting it in the desktop app. See [Use a routing service](/docs/api/routing#use-a-routing-service).
+
 1. Fetch the routing service's model list.
 2. Build candidates from eligible sellers whose models the router lists.
 3. Pay for one ranking and send the inference to the first candidate.

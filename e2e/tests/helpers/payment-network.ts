@@ -310,7 +310,7 @@ export function usePaymentNetwork(label: string) {
     mockChannelActive = false;
   }
 
-  async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType): Promise<{
+  async function setupProxyNetwork<ProviderType extends Provider = MockOpenAIImageProvider>(provider?: ProviderType, extraProviders: Provider[] = []): Promise<{
     provider: ProviderType;
     port: number;
     discoveredSeller: PeerInfo;
@@ -331,6 +331,7 @@ export function usePaymentNetwork(label: string) {
     });
     network.sellerNode = sellerNode;
     sellerNode.registerProvider(sellerProvider);
+    for (const extra of extraProviders) sellerNode.registerProvider(extra);
     await sellerNode.start();
 
     buyerDataDir = await mkdtemp(join(tmpdir(), `antseed-buyer-${label}-pay-`));

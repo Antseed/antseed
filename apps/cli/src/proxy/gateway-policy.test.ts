@@ -7,6 +7,7 @@ import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
 import { BUYER_IDENTITY_HEADER } from './request-utils.js'
+import { SPEND_ATTRIBUTION_HEADER } from './spend-attribution.js'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_FILE,
@@ -655,4 +656,126 @@ test('a seller that answers with an error does not become the chat\'s route', as
   const res = await chat(h, { 'x-antseed-chat-session-id': 'thread-err' })
   assert.equal(res.status, 400)
   assert.equal((h.proxy as any)._conversations.get('antseed-chat:thread-err')?.pinnedModel ?? null, null)
+})
+
+function makeRoutingPeer(seed: string): PeerInfo {
+  return {
+    peerId: seed.repeat(40) as PeerInfo['peerId'],
+    lastSeen: Date.now(),
+    providers: ['alpha'],
+    onChainReputationScore: 90,
+    metadata: {
+      peerId: seed.repeat(40), version: 12, timestamp: Date.now(), signature: '', region: 'test',
+      providers: [{ provider: 'alpha', services: ['alpha-route'], maxConcurrency: 1, currentLoad: 0,
+        defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+        serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+        serviceUnitBillingModels: { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+      }],
+    } as unknown as NonNullable<PeerInfo['metadata']>,
+  }
+}
+
+function routerClient(recommend: PeerInfo, contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []) {
+  return {
+    listModels: async () => ['gpt-5'],
+    async selectRoute(_request: SerializedHttpRequest, _peers: PeerInfo[], context: any) {
+      contexts.push(context)
+      // Pay for the ranking through the buyer's send path, as the real client does.
+      await context.sendRequest(_peers.find((peer) => peer.peerId === context.routingService.peerId)!,
+        { requestId: `rank-${contexts.length}`, method: 'POST', path: '/v1/routing/rank', headers: {}, body: new Uint8Array() })
+      const routes = [{ serviceId: 'gpt-5', peerId: recommend.peerId, provider: 'openai' }]
+      assert.equal(context.acceptRecommendations(routes), true)
+      return routes
+    },
+  }
+}
+
+test('a pinned routing service ranks only the sellers the key policy allows and is paid by the key identity', async (t) => {
+  const router = makeRoutingPeer('d')
+  const contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [cheap, pricey, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
+  ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', ...withPolicy({ blockedPeerIds: [pricey.peerId] }), [BUYER_IDENTITY_HEADER]: 'team-a' },
+    body: JSON.stringify({ model: `${router.peerId}@alpha-route`, messages: [{ role: 'user', content: 'Hello' }], routing: { cost_quality_tradeoff: 8 } }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  assert.equal(contexts.length, 1)
+  assert.equal(contexts[0]!.costQualityTradeoff, 8)
+  assert.deepEqual(contexts[0]!.candidates.map((candidate) => candidate.peerId), [cheap.peerId])
+  assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.buyerIdentity]), [[router.peerId, 'team-a'], [cheap.peerId, 'team-a']])
+})
+
+test('a pinned routing service the key policy blocks is refused before any ranking is bought', async (t) => {
+  const router = makeRoutingPeer('d')
+  const contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
+  const res = await chat(h, withPolicy({ blockedPeerIds: [router.peerId] }), `${router.peerId}@alpha-route`)
+  assert.equal(res.status, 403)
+  assert.equal(((await res.json()) as any).error.code, 'peer_not_allowed')
+  assert.equal(contexts.length, 0)
+  assert.equal(h.dispatched.length, 0)
+})
+
+test('a pinned routing service is held to the key policy\'s seller rules and model allow list, but not its token price caps', async (t) => {
+  const router = makeRoutingPeer('d')
+  const contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
+  const model = `${router.peerId}@alpha-route`
+
+  const lowTrust = await chat(h, withPolicy({ minReputation: 95 }), model)
+  assert.equal(lowTrust.status, 403)
+  const lowTrustError = ((await lowTrust.json()) as any).error
+  assert.equal(lowTrustError.code, 'peer_not_allowed')
+  assert.match(lowTrustError.message, /reputation 90 below 95/)
+
+  const notAllowed = await chat(h, withPolicy({ allowedModels: ['gpt-5'] }), model)
+  assert.equal(notAllowed.status, 403)
+  assert.equal(((await notAllowed.json()) as any).error.code, 'model_not_allowed')
+  assert.equal(contexts.length, 0)
+  assert.equal(h.dispatched.length, 0)
+
+  const tee = await chat(h, withPolicy({ requireTee: true }), model)
+  assert.equal(tee.status, 403)
+  assert.match(((await tee.json()) as any).error.message, /no TEE/)
+  assert.equal(contexts.length, 0)
+
+  const capped = await chat(h, withPolicy({ maxInputUsdPerMillion: 5, maxOutputUsdPerMillion: 5 }), model)
+  assert.equal(capped.status, 200, await capped.text())
+  assert.equal(contexts.length, 1)
+})
+
+test('spend on a pinned router, ranking and inference, is attributed to the gateway key', async (t) => {
+  const router = makeRoutingPeer('d')
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap) as any })
+  const feed = (h.proxy as any)._spendAttribution
+  const send = (h.proxy as any)._node.sendRequest
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string }) => {
+    feed.record({ requestId: request.requestId, sellerPeerId: peer.peerId, amountUsdc: peer.peerId === router.peerId ? '1000' : '25000',
+      inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' })
+    return send(peer, request, options)
+  }
+  const res = await fetch(`${h.url}/v1/chat/completions`, {
+    method: 'POST',
+    headers: { 'content-type': 'application/json', [SPEND_ATTRIBUTION_HEADER]: 'gw_key1' },
+    body: JSON.stringify({ model: `${router.peerId}@alpha-route`, messages: [{ role: 'user', content: 'Hello' }] }),
+  })
+  assert.equal(res.status, 200, await res.text())
+  const events = feed.page(0).events as Array<{ tag: string; sellerPeerId: string; amountUsdc: string }>
+  assert.deepEqual(events.map((event) => [event.tag, event.sellerPeerId, event.amountUsdc]),
+    [['gw_key1', router.peerId, '1000'], ['gw_key1', cheap.peerId, '25000']])
+})
+
+test('/v1/models?type=router lists only routers the key policy allows, with only its allowed models', async (t) => {
+  const router = makeRoutingPeer('d')
+  const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap) as any })
+  const list = async (policy: RoutingPolicy) => {
+    const res = await fetch(`${h.url}/v1/models?type=router`, { headers: withPolicy(policy) })
+    assert.equal(res.status, 200)
+    return ((await res.json()) as any).data as Array<{ id: string; peers: Array<{ models: string[] | null }> }>
+  }
+  assert.deepEqual((await list({ allowedModels: ['alpha-route', 'gpt-5'] })).map((entry) => [entry.id, entry.peers[0]!.models]), [['alpha-route', ['gpt-5']]])
+  assert.deepEqual(await list({ allowedModels: ['gpt-5'] }), [])
+  assert.deepEqual(await list({ blockedPeerIds: [router.peerId] }), [])
 })
