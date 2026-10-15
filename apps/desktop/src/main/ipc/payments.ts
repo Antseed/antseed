@@ -1,6 +1,6 @@
 import { readBuyerRewardsSummary } from '../staking/buyer-rewards.js';
-import { CREDITS_FRESH_MS, REWARDS_ERROR_FRESH_MS, REWARDS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
 import { friendlyNetworkError } from '../utils.js';
+import { CREDITS_FRESH_MS, REWARDS_ERROR_FRESH_MS, REWARDS_FRESH_MS, cachedRead, invalidateChainReads, readKeys, refreshFresh } from '../payments/read-cache.js';
 import { resolveStakingChain } from '../staking/configuration.js';
 import { readConfig } from '../runtime/config-io.js';
 import { ACTIVE_CONFIG_PATH } from '../runtime/active-config.js';
@@ -61,6 +61,7 @@ import {
 } from '../payments/portal.js';
 import { closeCheckoutWindows, openCheckoutPopup } from '../payments/checkout-window.js';
 import { resolveCardProviderUrl, signAntseedPayUrl } from '@antseed/payments/card-link';
+import { createPeerPayCheckout } from '../payments/peer-pay.js';
 import { getMainWindow } from '../ui/window.js';
 import {
   lookupPeer,
@@ -139,7 +140,7 @@ export function registerPaymentsIpc(): void {
       const identity = getSecureIdentity();
       if (!identity) return { ok: false, error: 'Identity not available' };
       const providers = await readCardProviders();
-      // The chooser's fixed lineup (Meridian, Antseed Pay) must resolve even
+      // The chooser's fixed lineup (Meridian, Antseed Pay, Peer Pay) must resolve even
       // when a legacy config overrides the provider list with other entries.
       const provider = opts?.providerId
         ? providers.find((entry) => entry.id === opts.providerId)
@@ -148,7 +149,19 @@ export function registerPaymentsIpc(): void {
       if (!provider) return { ok: false, error: 'card-not-configured' };
 
       const amount = Number(opts?.amountUsdc);
-      const amountStr = Number.isFinite(amount) && amount > 0 ? String(amount) : '';
+      const hasAmount = Number.isFinite(amount) && amount > 0;
+      if (provider.id === 'peer-pay') {
+        if (!hasAmount) return { ok: false, error: 'Enter an amount before opening Peer Pay' };
+        const checkoutUrl = await createPeerPayCheckout({
+          endpoint: provider.url,
+          address: identity.wallet.address,
+          amount: opts?.amountUsdc ?? '',
+        }, identity.wallet);
+        if (isDev) console.log('[payments] Peer Pay checkout created');
+        openCheckoutPopup(checkoutUrl, getMainWindow());
+        return { ok: true };
+      }
+      const amountStr = hasAmount ? String(amount) : '';
       let parsed: URL;
       try {
         parsed = resolveCardProviderUrl(provider.url, identity.wallet.address, amountStr);

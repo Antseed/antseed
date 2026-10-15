@@ -41,7 +41,7 @@ When your node picks a seller that advertises verification, it runs the check be
 
 One more boundary matters. Verification code is security-critical, so your node only ever runs verifiers from a curated list, pinned to an exact version. A seller can advertise anything it likes; code outside your pinned list is never downloaded or run, and nobody upstream can silently change what checks run on your machine.
 
-Details: [Verify a seller's TEE](/docs/guides/verify-tee) · [The protocol specification (AIP-3)](https://github.com/AntSeed/AIPs/blob/main/AIPS/aip-3.md)
+Details: [Verify a seller's TEE](/docs/verify-tee) · [The protocol specification (AIP-3)](https://github.com/AntSeed/AIPs/blob/main/AIPS/aip-3.md)
 
 ## What the first verifier proves
 
@@ -55,7 +55,7 @@ Together, the two proofs say: *the node you are about to pay is a genuine Intel 
 
 Beyond those two, the verifier reports additional evidence your node can use in its routing decisions: whether the seller's downstream inference provider also runs in genuine sealed hardware, whether that provider's GPUs run NVIDIA Confidential Computing (checked against NVIDIA's own attestation service), and whether the software inside the compartment matches a list of measurements you approve. And none of it is tied to one vendor — pointing a seller at a different confidential-computing provider is a configuration change, not new code. The whole chain has been validated end-to-end on real Intel TDX hardware, including against a live third-party provider.
 
-Details: [Run a TEE-attested seller](/docs/guides/tee-provider)
+Details: [Run a TEE-attested seller](/docs/provide/tee)
 
 ## What attestation does — and doesn't — prove
 
@@ -73,6 +73,6 @@ Any buyer can demand verified hardware today with one flag:
 antseed buyer start --verifiers antseed-verifier --require-verifier
 ```
 
-Two new guides walk through both sides: [running a TEE-attested seller](/docs/guides/tee-provider) — provisioning the hardware, loading the prover, wiring a confidential inference provider behind it — and [verifying a seller's TEE](/docs/guides/verify-tee) — the policy flags, what each check means, and how to read a verdict.
+Two new guides walk through both sides: [running a TEE-attested seller](/docs/provide/tee) — provisioning the hardware, loading the prover, wiring a confidential inference provider behind it — and [verifying a seller's TEE](/docs/verify-tee) — the policy flags, what each check means, and how to read a verdict.
 
 The claim underneath all of this is the same one the rest of Antseed makes. Confidential AI that asks you to trust the operator's dashboard isn't confidential — it's outsourced. Here, the hardware's proof, Intel's certificates, the verifier code your node runs, and the protocol that carries the challenge are all public and inspectable. You don't have to take the label on faith — and that's precisely the point.

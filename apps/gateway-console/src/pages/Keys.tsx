@@ -212,7 +212,8 @@ export default function Keys() {
   const scope = useScopeFilter()
   const admin = isWorkspaceAdmin(viewer)
   const members = useWorkspaceMembers(workspace.id, admin)
-  const [editing, setEditing] = useState<ApiKey | 'new' | null>(null)
+  // `?new=1` (the Overview's "Create API key") opens the create dialog.
+  const [editing, setEditing] = useState<ApiKey | 'new' | null>(() => (new URLSearchParams(window.location.search).get('new') === '1' ? 'new' : null))
   const [secret, setSecret] = useState<{ key: ApiKey; secret: string } | null>(null)
   const [confirm, setConfirm] = useState<KeyAction | null>(null)
   const [showRevoked, setShowRevoked] = useState(false)

@@ -1,5 +1,7 @@
 import { existsSync } from 'node:fs'
 import { isIP } from 'node:net'
+import { PASSPHRASE_ENV } from '@antseed/node'
+import { storedWalletKeys } from '../buyer-identities/store.js'
 import type { GatewayExposure } from './console-api/types.js'
 
 /** What the host looks like; read once at start-up, injectable for tests. */
@@ -122,4 +124,21 @@ export function detectExposure(input: { publicUrl: string | null; listenHost: st
     reasons.push(`It runs on ${where}: keys work only while this computer is on, awake and online.`)
   }
   return { mode, publicUrl, listenHost: listenHost ?? null, reachableFromInternet, personalComputer, reasons }
+}
+
+/**
+ * One line for start-up when wallet keys sit in the data dir unencrypted;
+ * null when every stored key is encrypted. `passphraseSet` says whether
+ * ANTSEED_PASSPHRASE (or its file) is configured, which changes the advice.
+ */
+export async function unencryptedWalletWarning(dataDir: string, passphraseSet: boolean): Promise<string | null> {
+  const plaintext: string[] = []
+  for (const key of await storedWalletKeys(dataDir)) {
+    if (await key.store.format().catch(() => null) === 'plaintext') plaintext.push(key.name)
+  }
+  if (plaintext.length === 0) return null
+  const fix = passphraseSet
+    ? 'run `antseed buyer identity protect --all`'
+    : `set ${PASSPHRASE_ENV} and run \`antseed buyer identity protect --all\``
+  return `Wallet keys are stored unencrypted (${plaintext.join(', ')}); to encrypt them at rest, ${fix}.`
 }

@@ -13,8 +13,19 @@
  */
 import { buildReceiveAuthorization, makeUsdcDomain } from '@antseed/node'
 import type { Identity, SweepReceiptPayload, SweepRequestPayload } from '@antseed/node'
+import { log } from './request-utils.js'
 
 export type DepositWatchPhase = 'deferred' | 'received' | 'sweeping' | 'credited' | 'error'
+
+/**
+ * Why a sweep is waiting instead of running.
+ * below-minimum — the wallet can't cover the relay fee plus the contract's
+ *   first-deposit floor (or, once funded, more than the fee). More USDC must
+ *   arrive before anything moves.
+ * credit-limit — the deposits balance is at the buyer's credit limit; the
+ *   wallet tops up automatically as spending frees headroom.
+ */
+export type DepositDeferReason = 'below-minimum' | 'credit-limit'
 
 export interface DepositWatchEvent {
   /** Monotonic per-watcher counter so pollers can forward each event exactly once. */
@@ -23,13 +34,18 @@ export interface DepositWatchEvent {
   amountBaseUnits?: string
   txHash?: string
   error?: string
+  /** Set on 'deferred' events. */
+  reason?: DepositDeferReason
+  /** below-minimum only: the wallet balance a sweep needs (fee included). */
+  minRequiredBaseUnits?: string
   at: number
 }
 
 /**
  * active — a deposit flow is on screen (desktop view, gateway console or
- *   `antseed deposit`). Callers re-request it as a heartbeat; without one for
- *   `DEPOSIT_WATCH_ACTIVE_TTL_MS` it falls back to background on its own.
+ *   `antseed deposit`). The gateway console re-requests it as a heartbeat and
+ *   without one for `DEPOSIT_WATCH_ACTIVE_TTL_MS` it falls back to background
+ *   on its own; other callers keep it until they demote it.
  * background — the flow closed; card/Fun deliveries can land minutes later,
  *   so keep a slow poll until the linger window passes with an empty wallet.
  * idle — the daemon's resting cadence (auto-sweep on): watch forever, cheaply.
@@ -51,6 +67,8 @@ export interface DepositWatcherDepositsReader {
   getUSDCBalance(address: string): Promise<bigint>
   getBuyerBalance(address: string): Promise<{ available: bigint; reserved: bigint }>
   getBuyerCreditLimit(address: string): Promise<bigint>
+  /** The contract's first-deposit floor; the constant fallback covers readers without it. */
+  getMinBuyerDeposit?(): Promise<bigint>
 }
 
 /** The relay surface the watcher needs; DepositRelayClient satisfies it. */
@@ -95,23 +113,22 @@ export interface DepositWatchScheduler {
   schedule(watcher: DepositWatcher, intervalMs: number | null, options?: { pollNow?: boolean }): void
 }
 
-// Every tick is a chain read; the shared loop batches all wallets due in a
-// tick into one Multicall3 call, and these cadences keep a public RPC happy.
-export const DEPOSIT_WATCH_ACTIVE_INTERVAL_MS = 6_000
-export const DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS = 30_000
-export const DEPOSIT_WATCH_IDLE_INTERVAL_MS = 60_000
-/** Active mode lapses to background unless promoted again within this window. */
+export const DEPOSIT_WATCH_ACTIVE_INTERVAL_MS = 2_000
+export const DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS = 15_000
+export const DEPOSIT_WATCH_IDLE_INTERVAL_MS = 30_000
+/** A gateway console's active watch lapses to background unless promoted again within this window. */
 export const DEPOSIT_WATCH_ACTIVE_TTL_MS = 5 * 60_000
 // How long the background watch keeps polling an empty wallet before falling
 // back to idle (or stopping). Any activity re-arms it.
 const DEPOSIT_WATCH_LINGER_MS = 30 * 60_000
 const SWEEP_AUTH_VALIDITY_SECS = 3_600
 const SWEEP_CONFIRM_TIMEOUT_MS = 120_000
-const SWEEP_POLL_INTERVAL_MS = 2_000
+const SWEEP_POLL_INTERVAL_MS = 1_000
 // After a failed/incomplete sweep the funds stay in the wallet; retry on the
 // watcher tick once this cooldown passes instead of hammering the network.
 const SWEEP_RETRY_COOLDOWN_MS = 60_000
-// AntseedDeposits enforces a 1 USDC minimum first deposit (net of the fee).
+// AntseedDeposits enforces a minimum first deposit (net of the fee). Read
+// from the contract; this is the fallback when the read fails.
 const MIN_FIRST_DEPOSIT_BASE_UNITS = 1_000_000n
 // Minimum top-up when the sweep is clamped by the credit-limit headroom.
 // Without a floor, a wallet holding more than the remaining headroom would
@@ -126,7 +143,13 @@ function sleep(ms: number): Promise<void> {
 export class DepositWatcher {
   private readonly _deps: DepositWatcherDeps
   private _timer: NodeJS.Timeout | null = null
+  /**
+   * The two kinds of active hold: the gateway console's heartbeat (a TTL that
+   * runs out) and the desktop's / `antseed deposit`'s (held until demoted).
+   * The watch stays active while either holds.
+   */
   private _activeExpiry: NodeJS.Timeout | null = null
+  private _heldUntilDemoted = false
   private _mode: DepositWatchMode = 'off'
   private _lingerDeadline = 0
   private _lastBalance = 0n
@@ -135,6 +158,7 @@ export class DepositWatcher {
   private _lastEvent: DepositWatchEvent | null = null
   private _seq = 0
   private _stopped = false
+  private _minFirstDeposit: bigint | null = null
 
   constructor(deps: DepositWatcherDeps) {
     this._deps = deps
@@ -160,62 +184,70 @@ export class DepositWatcher {
 
   /**
    * A deposit flow is on screen: poll fast, sweep existing funds promptly.
-   * Lapses to background after `ttlMs` unless promoted again (a page that
-   * closed without demoting must not keep the fast poll forever); null keeps
-   * it active until demoted, for an in-process flow that owns the watcher.
+   * With `ttlMs` (the gateway console) it lapses to background unless
+   * promoted again, so a page that closed without demoting does not keep the
+   * fast poll forever; without it, it stays active until demoted.
    */
-  promote(ttlMs: number | null = DEPOSIT_WATCH_ACTIVE_TTL_MS): void {
+  promote(ttlMs: number | null = null): void {
     if (this._stopped) return
-    this._setMode('active', DEPOSIT_WATCH_ACTIVE_INTERVAL_MS)
-    if (ttlMs !== null) {
-      this._activeExpiry = setTimeout(() => {
-        this._activeExpiry = null
-        if (this._mode === 'active') this.demote()
-      }, ttlMs)
-      this._activeExpiry.unref?.()
+    this._setMode('active', DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, { pollNow: true })
+    if (ttlMs === null) {
+      this._heldUntilDemoted = true
+      return
     }
-    if (this._deps.scheduler) this._deps.scheduler.schedule(this, DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, { pollNow: true })
-    else void this._poll()
+    this._clearActiveExpiry()
+    this._activeExpiry = setTimeout(() => {
+      this._activeExpiry = null
+      if (this._mode === 'active' && !this._heldUntilDemoted) this._toBackground()
+    }, ttlMs)
+    this._activeExpiry.unref?.()
   }
 
   /**
    * The deposit flow closed: don't stop — deliveries (card/Fun purchases) can
    * land minutes later. Keep polling at the background cadence; once the
    * linger window passes with an empty wallet, fall back to the idle cadence
-   * (or stop when idle polling is disabled).
+   * (or stop when idle polling is disabled). Releases only the hold taken
+   * without a TTL: a gateway console's heartbeat keeps the watch active.
    */
   demote(): void {
-    this._lingerDeadline = Date.now() + DEPOSIT_WATCH_LINGER_MS
-    this._setMode('background', DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS)
+    this._heldUntilDemoted = false
+    if (this._mode === 'active' && this._activeExpiry) return
+    this._toBackground()
   }
 
   /** Start the daemon's resting watch (auto-sweep). */
   startIdle(): void {
-    this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS)
-    if (this._deps.scheduler) this._deps.scheduler.schedule(this, this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS, { pollNow: true })
-    else void this._poll()
+    this._setMode('idle', this._deps.idleIntervalMs ?? DEPOSIT_WATCH_IDLE_INTERVAL_MS, { pollNow: true })
   }
 
   stop(): void {
     this._stopped = true
-    this._clearTimer()
-    this._mode = 'off'
-    this._deps.scheduler?.schedule(this, null)
+    this._rest()
+  }
+
+  private _toBackground(): void {
+    this._clearActiveExpiry()
+    this._lingerDeadline = Date.now() + DEPOSIT_WATCH_LINGER_MS
+    this._setMode('background', DEPOSIT_WATCH_BACKGROUND_INTERVAL_MS)
   }
 
   /** Stop polling until promoted again (auto-sweep off: nothing to watch once the flow is over). */
   private _rest(): void {
     this._clearTimer()
+    this._clearActiveExpiry()
+    this._heldUntilDemoted = false
     this._mode = 'off'
     this._deps.scheduler?.schedule(this, null)
   }
 
-  private _setMode(mode: Exclude<DepositWatchMode, 'off'>, intervalMs: number): void {
+  /** Poll every `intervalMs`; `pollNow` also polls right away (debounced by a shared loop). */
+  private _setMode(mode: Exclude<DepositWatchMode, 'off'>, intervalMs: number, options: { pollNow?: boolean } = {}): void {
     if (this._stopped) return
     this._clearTimer()
     this._mode = mode
     if (this._deps.scheduler) {
-      this._deps.scheduler.schedule(this, intervalMs)
+      this._deps.scheduler.schedule(this, intervalMs, options)
       return
     }
     this._timer = setInterval(() => { void this._poll() }, intervalMs)
@@ -223,6 +255,7 @@ export class DepositWatcher {
     // overlapping polls harmless, so unref keeps the timer from holding the
     // process open in one-shot commands.
     this._timer.unref?.()
+    if (options.pollNow) void this._poll()
   }
 
   private _clearTimer(): void {
@@ -230,6 +263,9 @@ export class DepositWatcher {
       clearInterval(this._timer)
       this._timer = null
     }
+  }
+
+  private _clearActiveExpiry(): void {
     if (this._activeExpiry) {
       clearTimeout(this._activeExpiry)
       this._activeExpiry = null
@@ -295,31 +331,40 @@ export class DepositWatcher {
   private async _sweepOnce(): Promise<void> {
     const { depositsClient, relayClient, address, wallet } = this._deps
 
-    const [usdcBalance, deposits, creditLimit, fee] = await Promise.all([
+    const [usdcBalance, deposits, creditLimit, fee, minFirstDeposit] = await Promise.all([
       depositsClient.getUSDCBalance(address),
       depositsClient.getBuyerBalance(address),
       depositsClient.getBuyerCreditLimit(address),
       relayClient.fee(),
+      this._readMinFirstDeposit(),
     ])
 
     const depositsBalance = deposits.available + deposits.reserved
-    // Below the sweepable minimum (fee, plus the contract's 1 USDC first-
-    // deposit floor) — keep waiting; more USDC may still be on the way.
-    const minRequired = depositsBalance === 0n ? MIN_FIRST_DEPOSIT_BASE_UNITS + fee : fee + 1n
-    if (usdcBalance < minRequired) return
+    // Below the sweepable minimum (fee, plus the contract's first-deposit
+    // floor) — keep waiting; more USDC may still be on the way. Say so, so
+    // the UI can ask for the shortfall instead of spinning on "preparing".
+    const minRequired = depositsBalance === 0n ? minFirstDeposit + fee : fee + 1n
+    if (usdcBalance < minRequired) {
+      this._emitDeferred({
+        reason: 'below-minimum',
+        amountBaseUnits: usdcBalance.toString(),
+        minRequiredBaseUnits: minRequired.toString(),
+      })
+      return
+    }
 
     // Deposits caps the credited balance at the buyer's credit limit; a net
     // amount past it would revert the whole sweep, so clamp and leave the
     // rest in the wallet for a later sweep.
     const headroom = creditLimit > depositsBalance ? creditLimit - depositsBalance : 0n
     if (headroom === 0n) {
-      this._emit({ phase: 'deferred' })
+      this._emitDeferred({ reason: 'credit-limit' })
       return
     }
     // Headroom-clamped top-up: wait until at least MIN_TOPUP_BASE_UNITS of
     // headroom is free instead of sweeping fee-heavy slivers repeatedly.
     if (usdcBalance - fee > headroom && headroom < MIN_TOPUP_BASE_UNITS) {
-      this._emit({ phase: 'deferred' })
+      this._emitDeferred({ reason: 'credit-limit' })
       return
     }
     let amount = usdcBalance
@@ -401,6 +446,31 @@ export class DepositWatcher {
     }
   }
 
+  /** Emit a deferral once — the 60s retry would otherwise repeat it forever. */
+  private _emitDeferred(event: Omit<DepositWatchEvent, 'seq' | 'at' | 'phase'>): void {
+    const last = this._lastEvent
+    if (
+      last?.phase === 'deferred'
+      && last.reason === event.reason
+      && last.amountBaseUnits === event.amountBaseUnits
+      && last.minRequiredBaseUnits === event.minRequiredBaseUnits
+    ) return
+    this._emit({ phase: 'deferred', ...event })
+  }
+
+  private async _readMinFirstDeposit(): Promise<bigint> {
+    if (this._minFirstDeposit !== null) return this._minFirstDeposit
+    const { depositsClient } = this._deps
+    if (!depositsClient.getMinBuyerDeposit) return MIN_FIRST_DEPOSIT_BASE_UNITS
+    try {
+      this._minFirstDeposit = await depositsClient.getMinBuyerDeposit()
+      return this._minFirstDeposit
+    } catch (err) {
+      log(`MIN_BUYER_DEPOSIT read failed, assuming ${MIN_FIRST_DEPOSIT_BASE_UNITS} base units: ${err instanceof Error ? err.message : String(err)}`)
+      return MIN_FIRST_DEPOSIT_BASE_UNITS // transient — re-read next sweep
+    }
+  }
+
   // Source of truth is on-chain: a matching SweepExecuted relay event, the
   // consumed EIP-3009 authorization, or the deposits-balance increase. Relayer
   // receipts only surface the txHash faster; zero receipts must be tolerated.
@@ -431,15 +501,12 @@ export class DepositWatcher {
         }
       }
 
-      // Issued together so a batching provider sends them as one request.
-      const [authorizationUsed, current] = await Promise.all([
-        relayClient.isAuthorizationUsed(this._deps.usdcAddress, address, authNonce).catch(() => false),
-        depositsClient.getBuyerBalance(address).catch(() => null),
-      ])
+      const authorizationUsed = await relayClient.isAuthorizationUsed(this._deps.usdcAddress, address, authNonce).catch(() => false)
       if (authorizationUsed) {
         return { credited: expectedNet, ...(txHash ? { txHash } : {}) }
       }
 
+      const current = await depositsClient.getBuyerBalance(address).catch(() => null)
       if (current && current.available + current.reserved >= initialTotal + expectedNet) {
         return { credited: current.available + current.reserved - initialTotal, ...(txHash ? { txHash } : {}) }
       }

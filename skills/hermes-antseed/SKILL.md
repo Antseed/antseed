@@ -288,6 +288,6 @@ Then send a prompt through Hermes and watch the buyer log — you should see a c
 ## References
 
 - Antseed integration page: `https://antseed.com/integrations/hermes/`
-- Antseed public tunnel guide: `https://antseed.com/docs/guides/public-tunnels`
+- Antseed public tunnel guide: `https://antseed.com/docs/tunnels`
 - Hermes Agent provider documentation: `https://hermes-agent.nousresearch.com/docs/integrations/providers`
 - Hermes Agent source: `https://github.com/NousResearch/hermes-agent`

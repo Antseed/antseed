@@ -6,6 +6,7 @@ import { join } from 'node:path'
 import test, { type TestContext } from 'node:test'
 import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
 import { BuyerProxy, type BuyerBalanceReader, type BuyerProxyConfig } from './buyer-proxy.js'
+import { BUYER_IDENTITY_HEADER } from './request-utils.js'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_FILE,
@@ -32,12 +33,17 @@ function makePeer(seed: string, opts: { input: number; output: number; trust: nu
 interface Harness {
   proxy: BuyerProxy
   url: string
-  dispatched: Array<{ peerId: string; headers: Record<string, string> }>
+  dispatched: Array<{ peerId: string; headers: Record<string, string>; buyerIdentity?: string }>
 }
 
 async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<BuyerProxyConfig> = {}, withSecret = true): Promise<Harness> {
   const dataDir = await mkdtemp(join(tmpdir(), 'antseed-gateway-policy-'))
-  t.after(() => rm(dataDir, { recursive: true, force: true }))
+  let proxy: BuyerProxy | undefined
+  // Conversation writes land in the data dir: let them finish before removing it.
+  t.after(async () => {
+    await (proxy as any)?._conversations.flush()
+    await rm(dataDir, { recursive: true, force: true })
+  })
   if (withSecret) {
     await mkdir(join(dataDir, 'gateway'), { recursive: true })
     await writeFile(join(dataDir, GATEWAY_CONTROL_SECRET_FILE), `${SECRET}\n`, { mode: 0o600 })
@@ -46,12 +52,12 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
   const node = {
     router: { allowsPeerForPolicy: () => true, onResult: () => {} },
     buyerIdentities: () => [{ name: 'default', address: '0x' + '1'.repeat(40) }],
-    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest) => {
-      dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    sendRequest: async (peer: PeerInfo, request: SerializedHttpRequest, options?: { buyerIdentity?: string }) => {
+      dispatched.push({ peerId: peer.peerId, headers: request.headers, buyerIdentity: options?.buyerIdentity })
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
-  const proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
+  proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -84,6 +90,23 @@ test('an authenticated policy filters automatic routing and both headers are str
   assert.equal(h.dispatched[0]?.peerId, cheap.peerId)
   assert.equal(h.dispatched[0]?.headers[GATEWAY_CONTROL_HEADER], undefined)
   assert.equal(h.dispatched[0]?.headers[ROUTING_POLICY_HEADER], undefined)
+})
+
+test('/v1/models under a gateway policy lists only the models and sellers the policy allows', async (t) => {
+  const h = await startHarness(t, [cheap, pricey])
+  const list = async (headers: Record<string, string> = {}) => {
+    const res = await fetch(`${h.url}/v1/models`, { headers })
+    assert.equal(res.status, 200)
+    const body = await res.json() as { data: Array<{ id: string; peers: Array<{ peerId: string }> }> }
+    return body.data.map((model) => [model.id, model.peers.map((peer) => peer.peerId).sort()])
+  }
+  assert.deepEqual(await list(), [['gpt-5', [cheap.peerId, pricey.peerId]]])
+  assert.deepEqual(await list(withPolicy({ blockedPeerIds: [pricey.peerId] })), [['gpt-5', [cheap.peerId]]])
+  assert.deepEqual(await list(withPolicy({ maxInputUsdPerMillion: 5 })), [['gpt-5', [cheap.peerId]]])
+  assert.deepEqual(await list(withPolicy({ allowedModels: ['other-model'] })), [])
+  assert.deepEqual(await list(withPolicy({ modelRoutes: { 'gpt-5': { peerIds: [pricey.peerId], strict: true } } })), [['gpt-5', [pricey.peerId]]])
+  const forged = await fetch(`${h.url}/v1/models`, { headers: { [GATEWAY_CONTROL_HEADER]: 'nope', [ROUTING_POLICY_HEADER]: encodePolicyHeader({ allowedModels: [] }) } })
+  assert.equal(forged.status, 401)
 })
 
 test('sort modes change which seller is tried first', async (t) => {
@@ -269,7 +292,7 @@ test('restart is refused with restart_unsupported when the buyer is not supervis
   assert.equal(((await res.json()) as any).error, 'restart_unsupported')
 })
 
-test('a config reload re-applies the env min-reputation override', async (t) => {
+test('a config reload keeps the startup min reputation, which the router plugin also enforces until restart', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-reload-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   const configPath = join(dir, 'config.json')
@@ -285,12 +308,12 @@ test('a config reload re-applies the env min-reputation override', async (t) => 
   assert.equal((h.proxy as any)._minPeerReputation, 65)
   delete process.env['ANTSEED_BUYER_MIN_REPUTATION']
   await (h.proxy as any)._reloadRoutingPreferences()
-  assert.equal((h.proxy as any)._minPeerReputation, 10)
+  assert.equal((h.proxy as any)._minPeerReputation, 65)
 })
 
 test('restart requires gateway auth, answers 202 and then runs the shutdown hook', async (t) => {
   let restarts = 0
-  const h = await startHarness(t, [cheap], { onRestartRequested: () => { restarts += 1 } })
+  const h = await startHarness(t, [cheap], { onRestartRequested: () => { restarts += 1 }, minRestartIntervalMs: 0 })
   const denied = await fetch(`${h.url}/_antseed/restart`, { method: 'POST' })
   assert.equal(denied.status, 401)
   assert.equal(restarts, 0)
@@ -298,6 +321,17 @@ test('restart requires gateway auth, answers 202 and then runs the shutdown hook
   assert.equal(accepted.status, 202)
   await new Promise((resolve) => setTimeout(resolve, 20))
   assert.equal(restarts, 1)
+})
+
+test('a restart is refused with 429 until the minimum interval since the buyer started has passed', async (t) => {
+  let restarts = 0
+  const h = await startHarness(t, [cheap], { onRestartRequested: () => { restarts += 1 } })
+  const refused = await fetch(`${h.url}/_antseed/restart`, { method: 'POST', headers: { [GATEWAY_CONTROL_HEADER]: SECRET } })
+  assert.equal(refused.status, 429)
+  assert.equal(((await refused.json()) as any).error, 'restart_too_soon')
+  assert.ok(Number(refused.headers.get('retry-after')) > 0)
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  assert.equal(restarts, 0)
 })
 
 test('balances reads chain state per identity and caches it', async (t) => {
@@ -358,6 +392,37 @@ test('deposit watcher status and mode are addressable per identity', async (t) =
   assert.equal((await fetch(`${h.url}/_antseed/deposits/status?identity=nobody`)).status, 404)
 })
 
+test('paying as a non-default buyer identity requires the gateway control secret once one exists', async (t) => {
+  const h = await startHarness(t, [cheap])
+  ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
+  const identity = { [BUYER_IDENTITY_HEADER]: 'Team-A' }
+
+  const refused = await chat(h, identity)
+  assert.equal(refused.status, 401)
+  assert.equal(((await refused.json()) as any).error.code, 'gateway_auth_required')
+  assert.equal((await chat(h, { ...identity, [GATEWAY_CONTROL_HEADER]: 'wrong' })).status, 401)
+  assert.equal(h.dispatched.length, 0)
+
+  assert.equal((await chat(h, { ...identity, [GATEWAY_CONTROL_HEADER]: SECRET })).status, 200)
+  assert.equal(h.dispatched[0]?.buyerIdentity, 'team-a')
+  assert.equal(h.dispatched[0]?.headers[BUYER_IDENTITY_HEADER], undefined)
+
+  // The default wallet needs no secret, named or not.
+  assert.equal((await chat(h, { [BUYER_IDENTITY_HEADER]: 'default' })).status, 200)
+  assert.equal((await chat(h)).status, 200)
+  assert.equal(h.dispatched[2]?.buyerIdentity, undefined)
+
+  const close = await fetch(`${h.url}/_antseed/channels/close`, { method: 'POST', body: JSON.stringify({ peerId: cheap.peerId, identity: 'team-a' }) })
+  assert.equal(close.status, 401)
+})
+
+test('without a control secret a loopback caller may still pay as a non-default buyer identity', async (t) => {
+  const h = await startHarness(t, [cheap], {}, false)
+  ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
+  assert.equal((await chat(h, { [BUYER_IDENTITY_HEADER]: 'team-a' })).status, 200)
+  assert.equal(h.dispatched[0]?.buyerIdentity, 'team-a')
+})
+
 test('verification snapshot accepts the gateway control secret', async (t) => {
   const h = await startHarness(t, [cheap])
   ;(h.proxy as any)._teeControl.ready = true
@@ -394,8 +459,10 @@ test('the buyer\'s own limits are judged once, by its router, not again by a gat
   assert.equal(h.dispatched[1]?.peerId, pricey.peerId)
 })
 
-// The gateway console is the authority for its keys: under a gateway policy
-// the buyer's routing preferences only rank, and never exclude.
+// The buyer's routing preferences are the top level of the policy chain for
+// automatic routing: a gateway policy narrows them and never loosens them.
+// Pins are judged by the gateway policy and the hard limits only, as without
+// a gateway.
 const prefs60 = { preferFreePeers: false, maxInputUsdPerMillion: 25, minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [] }
 const trust58 = makePeer('d', { input: 1, output: 1, trust: 58 })
 
@@ -409,23 +476,25 @@ test('a pin through a gateway default with an unrelated model route ignores the 
   assert.equal((await chat(h, {}, `${trust58.peerId}@gpt-5`)).status, 200)
 })
 
-test('a workspace minTrustScore below the buyer preference is the one that applies', async (t) => {
-  const h = await startHarness(t, [trust58], { routingPreferences: { ...prefs60, blockedPeerIds: [trust58.peerId] } })
-  // Without a gateway policy the buyer's own preferences still exclude it, as on main.
-  const direct = await chat(h)
-  assert.notEqual(direct.status, 200)
-  assert.equal(h.dispatched.length, 0)
-
-  const res = await chat(h, withPolicy({ minTrustScore: 5 }))
-  assert.equal(res.status, 200)
-  assert.equal(h.dispatched[0]?.peerId, trust58.peerId)
+test('a gateway policy cannot loosen the buyer trust minimum or its block list', async (t) => {
+  const h = await startHarness(t, [trust58, cheap, pricey], { routingPreferences: { ...prefs60, blockedPeerIds: [pricey.peerId] } })
+  // A lower gateway minimum changes nothing: the buyer's 60 still holds, and so does its block list.
+  assert.equal((await chat(h, withPolicy({ minTrustScore: 5, sort: 'price' }))).status, 200)
+  assert.equal(h.dispatched[0]?.peerId, cheap.peerId)
 
   const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ minTrustScore: 5 }) })
-  const body = await preview.json() as { candidates: Array<{ peerId: string; eligible: boolean }> }
-  assert.equal(body.candidates[0]?.eligible, true)
+  const body = await preview.json() as { candidates: Array<{ peerId: string; eligible: boolean; reasons: string[] }>; buyer: RoutingPolicy }
+  const byId = new Map(body.candidates.map((candidate) => [candidate.peerId, candidate]))
+  assert.deepEqual(byId.get(trust58.peerId)?.reasons, ['buyer config: trust 58 below 60'])
+  assert.deepEqual(byId.get(pricey.peerId)?.reasons, ['buyer config: blocked'])
+  assert.equal(byId.get(cheap.peerId)?.eligible, true)
+  assert.deepEqual(body.buyer, { blockedPeerIds: [pricey.peerId.toLowerCase()], minTrustScore: 60 })
 
-  const stricter = await chat(h, withPolicy({ minTrustScore: 70 }))
-  assert.notEqual(stricter.status, 200)
+  // A stricter gateway minimum narrows further, reported at the gateway level.
+  const stricter = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({ minTrustScore: 75 }) })
+  const stricterBody = await stricter.json() as { candidates: Array<{ peerId: string; reasons: string[] }> }
+  const cheapVerdict = stricterBody.candidates.find((candidate) => candidate.peerId === cheap.peerId)
+  assert.deepEqual(cheapVerdict?.reasons, ['trust 70 below 75'])
 })
 
 test('hard buyer limits still apply to pins under a gateway policy and are named in the reason', async (t) => {
@@ -438,7 +507,7 @@ test('hard buyer limits still apply to pins under a gateway policy and are named
   assert.equal((await chat(h, { ...withPolicy({ minTrustScore: 5 }), 'x-antseed-pin-peer': pricey.peerId })).status, 200)
 
   const preview = await fetch(`${h.url}/_antseed/route-preview?model=gpt-5`, { headers: withPolicy({}) })
-  assert.deepEqual(((await preview.json()) as any).buyer, { minReputation: 80 })
+  assert.deepEqual(((await preview.json()) as any).buyer, { minReputation: 80, minTrustScore: 60 })
 })
 
 test('router-enforced buyer limits are labelled in the preview', async (t) => {
@@ -454,9 +523,136 @@ test('router-enforced buyer limits are labelled in the preview', async (t) => {
   assert.deepEqual(byId.get(cheap.peerId)?.reasons, ['buyer config: reputation 30 below 40'])
 })
 
-test('under a gateway policy a cheap low-trust seller is ranked, not excluded', async (t) => {
-  const free = makePeer('e', { input: 0, output: 0, trust: 20 })
-  const h = await startHarness(t, [cheap, free], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+test('under a gateway policy the buyer trust minimum still excludes, and its free-first still ranks', async (t) => {
+  const lowTrustFree = makePeer('e', { input: 0, output: 0, trust: 20 })
+  const free = makePeer('f', { input: 0, output: 0, trust: 65 })
+  const h = await startHarness(t, [cheap, lowTrustFree], { routingPreferences: { ...prefs60, preferFreePeers: true } })
   await chat(h, withPolicy({ minTrustScore: 5 }))
-  assert.equal(h.dispatched[0]?.peerId, free.peerId)
+  assert.equal(h.dispatched[0]?.peerId, cheap.peerId)
+
+  const h2 = await startHarness(t, [cheap, free, lowTrustFree], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  await chat(h2, withPolicy({ sort: 'trust' }))
+  assert.equal(h2.dispatched[0]?.peerId, free.peerId)
+  // `preferFreePeers: false` means "not set" in a policy, so the buyer's
+  // free-first stays on; a gateway can turn it on, not off.
+  const h3 = await startHarness(t, [cheap, free, lowTrustFree], { routingPreferences: { ...prefs60, preferFreePeers: true } })
+  await chat(h3, withPolicy({ sort: 'trust', preferFreePeers: false }))
+  assert.equal(h3.dispatched[0]?.peerId, free.peerId)
+})
+
+test('the attributed-spend feed is readable only with the gateway control secret', async (t) => {
+  const h = await startHarness(t, [cheap])
+  assert.equal((await fetch(`${h.url}/_antseed/attributed-spend?after=0`)).status, 401)
+  assert.equal((await fetch(`${h.url}/_antseed/attributed-spend?after=0`, { headers: { [GATEWAY_CONTROL_HEADER]: 'wrong' } })).status, 401)
+  const res = await fetch(`${h.url}/_antseed/attributed-spend?after=0`, { headers: { [GATEWAY_CONTROL_HEADER]: SECRET } })
+  assert.equal(res.status, 200)
+  assert.equal(((await res.json()) as any).ok, true)
+})
+
+test('without a control secret the attributed-spend feed stays readable and unacknowledged', async (t) => {
+  const h = await startHarness(t, [cheap], {}, false)
+  const res = await fetch(`${h.url}/_antseed/attributed-spend?after=0`, { headers: { [GATEWAY_CONTROL_HEADER]: 'from-another-data-dir' } })
+  assert.equal(res.status, 200)
+  assert.equal(((await res.json()) as any).ok, true)
+})
+
+test('latency is measured per seller and model', async (t) => {
+  const h = await startHarness(t, [cheap])
+  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'gpt-5', 100)
+  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'GPT-5', 200)
+  ;(h.proxy as any)._recordPeerLatency(cheap.peerId, 'big-model', 5000)
+  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), 130)
+  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'big-model'), 5000)
+  assert.equal((h.proxy as any)._peerLatency(cheap.peerId, 'other'), null)
+})
+
+test('gateway-policy automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const other = makePeer('b', { input: 2, output: 2, trust: 90 })
+  const h = await startHarness(t, [paid, other, free])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    if (peer.peerId === free.peerId) {
+      return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
+    }
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const gatewayPolicy = withPolicy({ sort: 'trust' })
+  const res = await chat(h, { ...gatewayPolicy, 'x-antseed-chat-session-id': 'thread-1' })
+  assert.equal(res.status, 200)
+  // The paid seller refused; the other paid one is skipped; the free one answered.
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [paid.peerId, free.peerId])
+  const conversation = (h.proxy as any)._conversations.get('antseed-chat:thread-1')
+  assert.match(conversation?.pinnedModel ?? '', new RegExp(`^${free.peerId}@`))
+
+  // With no free seller left, the buyer's 402 reaches the client and no route is remembered.
+  const h2 = await startHarness(t, [paid])
+  ;(h2.proxy as any)._node.sendRequest = (h.proxy as any)._node.sendRequest
+  const refused = await chat(h2, { ...gatewayPolicy, 'x-antseed-chat-session-id': 'thread-2' })
+  assert.equal(refused.status, 402)
+  assert.equal((h2.proxy as any)._conversations.get('antseed-chat:thread-2')?.pinnedModel ?? null, null)
+})
+
+test('without a gateway policy a 402 reaches the client from the first seller, as before', async (t) => {
+  const paid = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const free = makePeer('e', { input: 0, output: 0, trust: 70 })
+  const h = await startHarness(t, [paid, free])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    return {
+      requestId: request.requestId, statusCode: 402,
+      headers: { 'content-type': 'application/json', 'x-antseed-fault-attribution': 'buyer' },
+      body: Buffer.from('{"error":"payment_required","code":"insufficient_deposits"}'),
+    }
+  }
+  const res = await chat(h)
+  assert.equal(res.status, 402)
+  assert.equal(h.dispatched.length, 1)
+})
+
+test('model_not_found moves to the next seller with or without a gateway policy', async (t) => {
+  const stale = makePeer('a', { input: 1, output: 1, trust: 95 })
+  const serving = makePeer('b', { input: 2, output: 2, trust: 90 })
+  const h = await startHarness(t, [stale, serving])
+  ;(h.proxy as any)._refreshPeersNow = async () => {}
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    const notServed = peer.peerId === stale.peerId
+    return {
+      requestId: request.requestId,
+      statusCode: notServed ? 400 : 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify(notServed
+        ? { error: { message: 'Service "gpt-5" is not served by this peer.', type: 'invalid_request_error', code: 'model_not_found' } }
+        : {})),
+    }
+  }
+  const viaGateway = await chat(h, withPolicy({ sort: 'trust' }))
+  assert.equal(viaGateway.status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [stale.peerId, serving.peerId])
+
+  h.dispatched.length = 0
+  const plain = await chat(h)
+  assert.equal(plain.status, 200)
+  assert.deepEqual(h.dispatched.map((entry) => entry.peerId), [stale.peerId, serving.peerId])
+})
+
+test('a seller that answers with an error does not become the chat\'s route', async (t) => {
+  const h = await startHarness(t, [cheap])
+  ;(h.proxy as any)._node.sendRequest = async (peer: PeerInfo, request: SerializedHttpRequest) => {
+    h.dispatched.push({ peerId: peer.peerId, headers: request.headers })
+    return {
+      requestId: request.requestId, statusCode: 400,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{"error":{"message":"bad request","type":"invalid_request_error"}}'),
+    }
+  }
+  const res = await chat(h, { 'x-antseed-chat-session-id': 'thread-err' })
+  assert.equal(res.status, 400)
+  assert.equal((h.proxy as any)._conversations.get('antseed-chat:thread-err')?.pinnedModel ?? null, null)
 })

@@ -145,7 +145,6 @@ export class SpendAttributionFeed {
   track(requestId: string, tag: string): void {
     if (!this._db.open) return
     const now = this._now()
-    this._pruneTags.run(now - TAG_RETENTION_MS)
     this._prune(now)
     this._track.run(requestId, tag, now)
   }

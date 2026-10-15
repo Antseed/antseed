@@ -9,7 +9,8 @@ import { registerWalletRoutes } from './console-api/handlers/wallet.js'
 import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.js'
 import { apiKeyDto, memberDto } from './console-api/serialize.js'
 import { createConsoleApi, type ConsoleRegistrar } from './console-api/server.js'
-import { registerRecoveryRoutes } from './console-recovery.js'
+import { recoveryRouteRegistrar } from './console-recovery.js'
+import { chatRouteRegistrar } from './chat/routes.js'
 import { removeCredential, requireMemberRecord } from './services/members.js'
 import type { GatewayConsoleContext, GatewayConsoleHandle } from './runtime.js'
 import type { ApiKeyRecord, MemberRecord } from './store.js'
@@ -20,11 +21,11 @@ export { CONSOLE_LOCATION_SETTING, consoleBaseUrl, normalizePublicUrl, readConso
 /**
  * `DELETE /members/:id/credentials/:credentialId`: org admins manage
  * anyone's sign-in methods (an owner's only another owner), and a member
- * their own. A member's last one stays, which would lock them out, unless an
- * org owner removes it from another member. Every removal is audited and
+ * their own (after a fresh sign-in). A member's last one stays, which would
+ * lock them out, unless an org owner removes it from another member. Every removal is audited and
  * ends the member's other sessions (all of them when someone else removed it).
  */
-function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredential' | 'credentialsFor'>): ConsoleRegistrar {
+function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredential' | 'credentialsFor' | 'requireFreshSignIn'>): ConsoleRegistrar {
   return (router: ConsoleRouter, deps: ConsoleDeps) => {
     router.add('DELETE', '/members/:id/credentials/:credentialId', async (request) => {
       const { principal, params } = request
@@ -33,6 +34,8 @@ function registerCredentialRoutes(auth: Pick<ConsoleAuthService, 'deleteCredenti
       let callerIsOwner = false
       if (self) {
         activeMember(deps.store, principal)
+        // Like adding one: a stolen session must not strip the member's other sign-in methods.
+        await auth.requireFreshSignIn(request, principal)
       } else {
         requireOrgAdmin(principal, deps.store)
         callerIsOwner = activeMember(deps.store, principal)?.orgRole === 'owner'
@@ -85,13 +88,14 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       x402Enabled: context.x402Enabled,
       trustCloudflareHeaders: options.trustCloudflareHeaders === true,
     }
-    const deps: ConsoleDeps = { ...base, ...(context.listenHost ? { listenHost: context.listenHost } : {}) }
+    const deps: ConsoleDeps = { ...base, listenHost: context.listenHost }
     const auth = createConsoleAuth(base, {
       ...(options.env ? { env: options.env } : {}),
       presentMember: (member, credentials) => memberDto({ ...deps, memberCredentials: () => credentials }, member as MemberRecord),
       presentKey: (key) => apiKeyDto(store, key as ApiKeyRecord),
     })
     deps.memberCredentials = (memberId) => auth.credentialsFor(memberId)
+    let gatewayPort = 0
     deps.authConfig = () => auth.authConfig()
     const api = createConsoleApi(deps, auth, [
       ...coreConsoleRegistrars,
@@ -99,14 +103,16 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
       registerReferralRoutes,
       registerNetworkRoutes,
       registerCredentialRoutes(auth),
-      registerRecoveryRoutes,
+      recoveryRouteRegistrar((memberId) => auth.createEnrollment(memberId)),
+      chatRouteRegistrar({ gatewayPort: () => gatewayPort, braveApiKey: (options.env ?? process.env)['ANTSEED_BRAVE_API_KEY']?.trim() || null }),
     ], options.distDir ? { distDir: options.distDir } : {})
 
     return {
       handle: (req, res) => api.handle(req, res),
       listening(port) {
+        gatewayPort = port
         auth.setGatewayPort(port)
-        store.setSetting(CONSOLE_LOCATION_SETTING, { publicUrl: options.publicUrl, port, host: context.listenHost ?? '127.0.0.1' } satisfies ConsoleLocation)
+        store.setSetting(CONSOLE_LOCATION_SETTING, { publicUrl: options.publicUrl, port, host: context.listenHost } satisfies ConsoleLocation)
       },
       setupLink() {
         return auth.authConfig().setupRequired ? auth.createSetupLink() : null

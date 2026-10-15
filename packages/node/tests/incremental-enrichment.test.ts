@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from 'vitest';
-import { AntseedNode, ON_CHAIN_STATS_TTL_MS, type PeerInfo } from '../src/node.js';
+import { AntseedNode, ON_CHAIN_STATS_MISS_TTL_MS, ON_CHAIN_STATS_TTL_MS, type PeerInfo } from '../src/node.js';
 import { GITHUB_VERIFICATION_PROOF_TYPE } from '../src/discovery/github-verification.js';
 import * as publicJson from '../src/reputation/public-json.js';
 
@@ -20,6 +20,20 @@ function signals(overrides: Record<string, unknown> = {}) {
   };
 }
 
+/**
+ * A trust client whose `read` mock returns the signals by seller; sellers it
+ * leaves out count as confirmed unregistered (no agent id), unless `failed`
+ * lists them as failed reads.
+ */
+function trustClient(read: (sellers: string[]) => Promise<Map<string, unknown>>, failed: readonly string[] = []) {
+  return {
+    readWithMisses: async (sellers: string[]) => {
+      const result = await read(sellers);
+      return { signals: result, unregistered: new Set(sellers.filter((seller) => !result.has(seller) && !failed.includes(seller))) };
+    },
+  };
+}
+
 describe('AntseedNode incremental discovery enrichment', () => {
   it('emits an enriched peer update after a partial metadata-only discovery event', async () => {
     const node = new AntseedNode({ role: 'buyer' });
@@ -29,7 +43,7 @@ describe('AntseedNode incremental discovery enrichment', () => {
     node.on('peers:discovered', discovered);
     (node as any)._started = true;
     const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
-    (node as any)._trustSignalsClient = { read };
+    (node as any)._trustSignalsClient = trustClient(read);
 
     (node as any)._queuePartialPeerEnrichment([peer]);
     await (node as any)._partialPeerEnrichmentChain;
@@ -56,7 +70,7 @@ describe('AntseedNode incremental discovery enrichment', () => {
     const fresh = makePeer('c'.repeat(40));
     fresh.onChainStatsFetchedAt = Date.now();
     const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
-    (node as any)._trustSignalsClient = { read };
+    (node as any)._trustSignalsClient = trustClient(read);
 
     await (node as any)._enrichPeersWithOnChainStats([...stale, fresh]);
 
@@ -69,7 +83,7 @@ describe('AntseedNode incremental discovery enrichment', () => {
   it('reuses a fresh read for newly built PeerInfo objects of the same peer', async () => {
     const node = new AntseedNode({ role: 'buyer' });
     const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
-    (node as any)._trustSignalsClient = { read };
+    (node as any)._trustSignalsClient = trustClient(read);
 
     await (node as any)._enrichPeersWithOnChainStats([makePeer('a'.repeat(40))]);
     // A later discovery cycle rebuilds the PeerInfo without on-chain fields.
@@ -87,13 +101,13 @@ describe('AntseedNode incremental discovery enrichment', () => {
     expect(read).toHaveBeenCalledTimes(2);
   });
 
-  it('re-reads a peer once the on-chain stats TTL (10 min) has passed', async () => {
+  it('re-reads a peer once the on-chain stats TTL (2 min) has passed', async () => {
     vi.useFakeTimers();
     try {
       const node = new AntseedNode({ role: 'buyer' });
       const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
-      (node as any)._trustSignalsClient = { read };
-      expect(ON_CHAIN_STATS_TTL_MS).toBe(600_000);
+      (node as any)._trustSignalsClient = trustClient(read);
+      expect(ON_CHAIN_STATS_TTL_MS).toBe(120_000);
       await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
       vi.advanceTimersByTime(ON_CHAIN_STATS_TTL_MS - 1_000);
       await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
@@ -106,6 +120,63 @@ describe('AntseedNode incremental discovery enrichment', () => {
     }
   });
 
+  it('re-checks a peer without an agent id after the shorter miss TTL', async () => {
+    vi.useFakeTimers();
+    try {
+      const node = new AntseedNode({ role: 'buyer' });
+      const read = vi.fn(async () => new Map());
+      (node as any)._trustSignalsClient = trustClient(read);
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      vi.advanceTimersByTime(ON_CHAIN_STATS_MISS_TTL_MS - 1_000);
+      await (node as any)._enrichPeersWithOnChainStats([makePeer()]);
+      expect(read).toHaveBeenCalledTimes(1);
+      vi.advanceTimersByTime(2_000);
+      read.mockImplementationOnce(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+      const registered = makePeer();
+      await (node as any)._enrichPeersWithOnChainStats([registered]);
+      expect(read).toHaveBeenCalledTimes(2);
+      expect(registered.onChainAgentId).toBe(123);
+    } finally {
+      vi.useRealTimers();
+    }
+  });
+
+  it('reads a peer again at once when its seller contract changes', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+    (node as any)._trustSignalsClient = trustClient(read);
+    (node as any)._sellerAddressResolver = { resolveSellerAddress: async (peerId: string, metadata?: { sellerContract?: string }) => metadata?.sellerContract ?? `0x${peerId}` };
+    const withContract = (contract: string): PeerInfo => ({ ...makePeer(), metadata: { sellerContract: contract } as unknown as PeerInfo['metadata'] });
+    await (node as any)._enrichPeersWithOnChainStats([withContract('0x' + '1'.repeat(40))]);
+    await (node as any)._enrichPeersWithOnChainStats([withContract('0x' + '1'.repeat(40))]);
+    expect(read).toHaveBeenCalledTimes(1);
+    await (node as any)._enrichPeersWithOnChainStats([withContract('0x' + '2'.repeat(40))]);
+    expect(read).toHaveBeenCalledTimes(2);
+  });
+
+  it('resolves seller addresses a few at a time instead of all at once', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+    (node as any)._trustSignalsClient = trustClient(read);
+    let inFlight = 0;
+    let maxInFlight = 0;
+    (node as any)._sellerAddressResolver = {
+      resolveSellerAddress: async (peerId: string) => {
+        inFlight++;
+        maxInFlight = Math.max(maxInFlight, inFlight);
+        await new Promise((resolve) => setTimeout(resolve, 1));
+        inFlight--;
+        return `0x${peerId}`;
+      },
+    };
+    const peers = Array.from({ length: 40 }, (_, index) => makePeer(index.toString(16).padStart(40, '0')));
+    await (node as any)._enrichPeersWithOnChainStats(peers);
+    expect(maxInFlight).toBeLessThanOrEqual(8);
+    expect(read).toHaveBeenCalledTimes(1);
+    expect(read.mock.calls[0]![0]).toHaveLength(40);
+    expect(peers.every((peer) => peer.onChainAgentId === 123)).toBe(true);
+  });
+
   it('merges partial discovery batches queued during a read into one batched read', async () => {
     const node = new AntseedNode({ role: 'buyer' });
     (node as any)._started = true;
@@ -115,7 +186,7 @@ describe('AntseedNode incremental discovery enrichment', () => {
       if (read.mock.calls.length === 1) await gate;
       return new Map(sellers.map((seller) => [seller, signals()]));
     });
-    (node as any)._trustSignalsClient = { read };
+    (node as any)._trustSignalsClient = trustClient(read);
     const discovered = vi.fn();
     node.on('peers:discovered', discovered);
 
@@ -142,22 +213,40 @@ describe('AntseedNode incremental discovery enrichment', () => {
     peer.onChainChannelCount = 1_208;
     peer.onChainReputationScore = 80;
     peer.onChainStatsFetchedAt = previousFetchedAt;
-    (node as any)._trustSignalsClient = { read: vi.fn().mockRejectedValue(new Error('transient RPC failure')) };
+    (node as any)._trustSignalsClient = trustClient(vi.fn().mockRejectedValue(new Error('transient RPC failure')));
     await (node as any)._enrichPeersWithOnChainStats([peer]);
     expect(peer.onChainChannelCount).toBe(1_208);
     expect(peer.onChainReputationScore).toBe(80);
     expect(peer.onChainStatsFetchedAt).toBe(previousFetchedAt);
 
-    (node as any)._trustSignalsClient = { read: vi.fn().mockResolvedValue(new Map()) };
+    (node as any)._trustSignalsClient = trustClient(vi.fn().mockResolvedValue(new Map()));
     await (node as any)._enrichPeersWithOnChainStats([peer]);
     expect(peer.onChainReputationScore).toBe(80);
     expect(peer.onChainStatsFetchedAt).toBe(previousFetchedAt);
   });
 
+  it('does not cache a failed agent-id read as "no agent id"', async () => {
+    const node = new AntseedNode({ role: 'buyer' });
+    const address = 'a'.repeat(40);
+    const read = vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])));
+    (node as any)._trustSignalsClient = trustClient(read);
+    await (node as any)._enrichPeersWithOnChainStats([makePeer(address)]);
+    // Expire the cached read so the next pass reads again, and fail it.
+    (node as any)._onChainStatsCache.get(address).fetchedAt -= ON_CHAIN_STATS_TTL_MS;
+    const failing = vi.fn(async () => new Map());
+    (node as any)._trustSignalsClient = trustClient(failing, [`0x${address}`, address]);
+    const rediscovered = makePeer(address);
+    await (node as any)._enrichPeersWithOnChainStats([rediscovered]);
+    // The previous snapshot is still shown, and the next pass retries at once.
+    expect(rediscovered.onChainAgentId).toBe(123);
+    await (node as any)._enrichPeersWithOnChainStats([makePeer(address)]);
+    expect(failing).toHaveBeenCalledTimes(2);
+  });
+
   it('zeroes the score of a proven wash trader', async () => {
     const node = new AntseedNode({ role: 'buyer' });
     const peer = makePeer();
-    (node as any)._trustSignalsClient = { read: vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals({ washFlagged: true, washShareBps: 6_000 })]))) };
+    (node as any)._trustSignalsClient = trustClient(vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals({ washFlagged: true, washShareBps: 6_000 })]))));
     await (node as any)._enrichPeersWithOnChainStats([peer]);
     expect(peer.onChainWashFlagged).toBe(true);
     expect(peer.onChainReputationScore).toBe(0);
@@ -244,9 +333,7 @@ describe('AntseedNode incremental discovery enrichment', () => {
         })),
       }],
     }) };
-    (node as any)._trustSignalsClient = {
-      read: vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()])))
-    };
+    (node as any)._trustSignalsClient = trustClient(vi.fn(async (sellers: string[]) => new Map(sellers.map((seller) => [seller, signals()]))));
     try {
       (node as any)._started = true;
       (node as any)._queueExternalVerification([peer]);

@@ -69,6 +69,10 @@ contract AntseedAttributionRewardsTest is Test {
     address private x1 = address(0xB1);
     address private x2 = address(0xB2);
     address private x3 = address(0xB3);
+    // Referrer rewards are paid only to an operator.
+    address private r1Operator = address(0xC1);
+    address private honestOperator = address(0xC2);
+    address private r2Operator = address(0xC3);
 
     function setUp() public {
         gate = new EmissionsGateMock();
@@ -79,6 +83,9 @@ contract AntseedAttributionRewardsTest is Test {
         ledger = new AntseedAttributionUsage(address(accounting), address(identity), address(deposits), stats);
         referrals = new AntseedReferrals(address(gate), address(accounting), address(deposits), address(ledger), stats);
         ledger.setReferrals(address(referrals));
+        deposits.setOperator(r1, r1Operator);
+        deposits.setOperator(honest, honestOperator);
+        deposits.setOperator(r2, r2Operator);
 
         _bind(x1, 0xA1);
         _bind(x2, 0xA2);
@@ -128,13 +135,13 @@ contract AntseedAttributionRewardsTest is Test {
         referrals.claim(r2, 20);
 
         referrals.claim(honest, 20);
-        assertEq(gate.balanceOf(honest), uint256(100 ether) * 100 / 202);
-        assertEq(gate.balanceOf(r1), uint256(100 ether) / 202);
+        assertEq(gate.balanceOf(honestOperator), uint256(100 ether) * 100 / 202);
+        assertEq(gate.balanceOf(r1Operator), uint256(100 ether) / 202);
 
         gate.setCurrentEpoch(23);
         gate.setBudget(address(referrals), 21, 50 ether);
         referrals.claim(r2, 21);
-        assertEq(gate.balanceOf(r2), 25 ether); // x3 settled in its window: the referee holds the other half
+        assertEq(gate.balanceOf(r2Operator), 25 ether); // x3 settled in its window: the referee holds the other half
     }
 }
 
@@ -167,6 +174,7 @@ contract AntseedReferralProgramIntegrationTest is Test {
     address private buyerOperator = address(0x0B0B0);
     address private newcomer = address(0x2E3);
     address private newcomerOperator = address(0x2E30);
+    address private referrerOperator = address(0x0E3);
     bytes32 private channelId;
     Invite private none;
 
@@ -186,6 +194,7 @@ contract AntseedReferralProgramIntegrationTest is Test {
         stats.setAttributionUsage(address(ledger));
         deposits.setOperator(buyer, buyerOperator);
         deposits.setOperator(newcomer, newcomerOperator);
+        deposits.setOperator(referrer, referrerOperator); // referrer rewards are paid only to an operator
         accounting.setBuyerPoints(19, referrer, 50e6); // the referrer spent 50 USDC last epoch: 8 invites
     }
 
@@ -240,7 +249,7 @@ contract AntseedReferralProgramIntegrationTest is Test {
         assertEq(referrals.pendingRefereeReward(buyer, 20), 50 ether);
         referrals.claim(referrer, 20);
         referrals.claimReferee(buyer, 20);
-        assertEq(gate.balanceOf(referrer), 50 ether);
+        assertEq(gate.balanceOf(referrerOperator), 50 ether);
         assertEq(gate.balanceOf(buyerOperator), 50 ether);
         assertEq(gate.balanceOf(buyer), 0);
         assertEq(gate.minted(address(referrals), 20), 100 ether);
@@ -255,7 +264,7 @@ contract AntseedReferralProgramIntegrationTest is Test {
         gate.setBudget(address(referrals), after_, 100 ether);
         assertEq(referrals.pendingRefereeReward(buyer, after_), 0);
         referrals.claim(referrer, after_);
-        assertEq(gate.balanceOf(referrer), 150 ether);
+        assertEq(gate.balanceOf(referrerOperator), 150 ether);
         assertEq(gate.minted(address(referrals), after_), 100 ether);
     }
 
@@ -285,11 +294,11 @@ contract AntseedReferralProgramIntegrationTest is Test {
         referrals.claim(buyer, 21); // distinct keys: both roles pay out, each to the operator
         assertEq(gate.balanceOf(buyerOperator), 30 ether);
         referrals.claimReferee(buyer, 21);
-        referrals.claim(referrer, 21); // no operator: the referrer wallet itself
+        referrals.claim(referrer, 21);
         referrals.claimReferee(newcomer, 21);
         assertEq(gate.balanceOf(buyer), 0); // a buyer hot wallet never receives funds
         assertEq(gate.balanceOf(buyerOperator), 35 ether);
-        assertEq(gate.balanceOf(referrer), 5 ether);
+        assertEq(gate.balanceOf(referrerOperator), 5 ether);
         assertEq(gate.balanceOf(newcomerOperator), 30 ether);
         assertEq(gate.minted(address(referrals), 21), 70 ether);
     }

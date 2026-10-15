@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { randomBytes } from 'node:crypto';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
-import { Wallet } from 'ethers';
+import { AbiCoder, Wallet } from 'ethers';
 import { BuyerPaymentManager } from '../src/payments/buyer-payment-manager.js';
 import { BuyerPaymentNegotiator } from '../src/payments/buyer-payment-negotiator.js';
 import { SellerPaymentManager } from '../src/payments/seller-payment-manager.js';
@@ -555,6 +555,23 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.buyer.getCumulativeAmount(h.peer.peerId)).toBe(CHAT_DELIVERED);
   });
 
+  it.each(['flat', 'per-second'] as const)('counts the delivered video in signed metadata for %s pricing', async (videoPricing) => {
+    const h = setup({ videoPricing });
+    await openChannelWithChat(h);
+    expect((await h.send(h.videoRequest('video-counted'))).statusCode).toBe(200);
+    await h.settle();
+    expect((await h.send(h.retrieveRequest('download-counted', 'job-1'))).statusCode).toBe(200);
+    await h.settle();
+
+    expect(h.close).toHaveBeenCalledOnce();
+    const [, , , , , videoGenerations, videoSeconds] = AbiCoder.defaultAbiCoder().decode(
+      ['uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256', 'uint256'],
+      h.close.mock.calls[0]![3] as string,
+    );
+    expect(videoGenerations).toBe(1n);
+    expect(videoSeconds).toBe(5n);
+  });
+
   it('runs two videos in parallel on two separate channels', async () => {
     const h = setup();
     await openChannelWithChat(h);
@@ -620,6 +637,32 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);
     expect(h.chain.get(channelId)).toMatchObject({ status: 2 });
     expect(h.buyer.getOneOffChannelForRequest(h.peer.peerId, 'video-1')).toBeNull();
+  });
+
+  it('retries a failed close of a rejected video on the next timeout check', async () => {
+    const h = setup({ createResponse: 'rejected' });
+    // The first close reaches an RPC node that has not seen the reserve yet.
+    const landOnChain = h.close.getMockImplementation()!;
+    h.close.mockImplementationOnce(async () => {
+      throw new Error('execution reverted: ChannelNotActive');
+    });
+
+    const response = await h.send(h.videoRequest('video-1'));
+    await h.settle();
+
+    expect(response.statusCode).toBe(400);
+    const { channelId } = onlyOneOff(h);
+    expect(h.close).toHaveBeenCalledOnce();
+    expect(h.chain.get(channelId)).toMatchObject({ status: 1 });
+
+    h.close.mockImplementation(landOnChain);
+    await h.seller.checkTimeouts();
+
+    expect(h.close).toHaveBeenCalledTimes(2);
+    expect(h.close.mock.calls[1]![1]).toBe(channelId);
+    expect(h.close.mock.calls[1]![2]).toBe(SERIOUS_FEE);
+    expect(h.chain.get(channelId)).toMatchObject({ status: 2 });
+    expect(h.seller.isOneOffChannel(channelId)).toBe(false);
   });
 
   it('releases the whole reserve and does not send the create when topUp reverts', async () => {

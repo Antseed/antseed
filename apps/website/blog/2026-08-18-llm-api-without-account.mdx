@@ -86,7 +86,7 @@ Sorted by ascending friction, not alphabetically. "What you hand over instead" i
 |---|---|---|---|---|---|
 | [Pollinations](https://github.com/pollinations/pollinations/blob/main/APIDOCS.md) (text endpoint) | No | IP address, no persistent ID | Free | Partial (simple GET endpoint) | Their newer `/v1` endpoint now wants a bearer key |
 | [LLM7](https://github.com/chigwell/llm7.io) | No (`unused` as key) | IP address, shared rate bucket | Free | Yes | 30 RPM anonymous; email gets you 120 RPM |
-| [Antseed](/docs/guides/payments) | No (funded wallet instead) | A public, pseudonymous wallet address | USDC pre-deposit — card or crypto | Yes | No account, but real money up front |
+| [Antseed](/docs/provide/payments) | No (funded wallet instead) | A public, pseudonymous wallet address | USDC pre-deposit — card or crypto | Yes | No account, but real money up front |
 | [Puter](https://developer.puter.com/tutorials/free-llm-api/) | No for the developer | The end user's own Puter login | End user pays via their account | No (custom SDK) | The "no account" is yours, not your users' |
 | [OpenRouter](https://openrouter.ai) free tier | Yes (email, GitHub, or Google) | An email or federated identity | Free, rate-limited | Yes | 20 req/min, 1,000/day; no card needed |
 | [Groq](https://console.groq.com) | Yes (email, verified) | A verified email address | Free tier, no card | Yes | Email verification step before first key |
@@ -147,7 +147,7 @@ curl http://localhost:8377/v1/chat/completions \
 
 No API key header is checked by the local proxy. Tools that insist on sending one can send any placeholder string and it will be ignored.
 
-Payment settles in USDC on Base mainnet: [install the Antseed CLI](/docs/install), then pre-deposit before your first paid request. [How USDC settlement works](/docs/guides/payments) covers the crypto-native funding paths — exchange withdrawal, another wallet, a card on-ramp — and the desktop app separately offers a built-in card checkout that funds the same balance without you needing to already hold crypto. Prices are quoted per provider as `inputUsdPerMillion` and `outputUsdPerMillion`, and providers can set either to zero. One detail worth knowing: any address can fund a node's deposit — a team treasury, a hardware wallet, an exchange withdrawal — without that funding source ever touching the node's private key.
+Payment settles in USDC on Base mainnet: [install the Antseed CLI](/docs/install), then pre-deposit before your first paid request. [How USDC settlement works](/docs/provide/payments) covers the crypto-native funding paths — exchange withdrawal, another wallet, a card on-ramp — and the desktop app separately offers a built-in card checkout that funds the same balance without you needing to already hold crypto. Prices are quoted per provider as `inputUsdPerMillion` and `outputUsdPerMillion`, and providers can set either to zero. One detail worth knowing: any address can fund a node's deposit — a team treasury, a hardware wallet, an exchange withdrawal — without that funding source ever touching the node's private key.
 
 State the cost of admission plainly: you need a funded balance — card or crypto — before Antseed does anything for you. That's the trade for not needing a login.
 

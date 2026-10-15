@@ -1,8 +1,8 @@
 import { loadConfig } from '../../config/loader.js'
 import { isRoutingPolicy, policyAllowsModel, type RoutingPolicy } from '../../routing-policy/policy.js'
 import { buyerJson, optionalBuyerJson, type BuyerClient } from '../console-api/handlers/network-buyer.js'
-import { enrichCandidates, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
-import type { BuyerLimits, Peer, RoutePreview } from '../console-api/types.js'
+import { enrichCandidates, mapNetworkModels, mapPeers, type PeerStat } from '../console-api/handlers/network-mapping.js'
+import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../console-api/types.js'
 import { resolvePolicy, type PolicyTarget } from '../policy-resolver.js'
 import type { GatewayStore } from '../store.js'
 
@@ -23,6 +23,20 @@ export async function listNetworkPeers(store: GatewayStore, buyer: BuyerClient, 
   ])
   const stats = store.peerStats(now - DAY_MS) as PeerStat[]
   return mapPeers({ peers, health, verification, stats, now })
+}
+
+/**
+ * Every model on the network, as the buyer's own `GET /v1/models` lists it
+ * without a routing policy (like `listNetworkPeers`), with each offer's
+ * verification, trust and latency from the peer list. The peer list is
+ * enrichment only: when it fails the models still answer.
+ */
+export async function listNetworkModels(store: GatewayStore, buyer: BuyerClient, now: number): Promise<NetworkModel[]> {
+  const [models, peers] = await Promise.all([
+    buyerJson(buyer, '/v1/models'),
+    listNetworkPeers(store, buyer, now).catch((): Peer[] => []),
+  ])
+  return mapNetworkModels(models, peers)
 }
 
 /**
@@ -60,10 +74,10 @@ export async function previewRoute(
 }
 
 /**
- * The buyer's hard limits, which apply under every gateway policy: max
- * pricing defaults (from the config file), min reputation and a required
- * verifier (as the running buyer reports them, else from the config). Its
- * routing preferences are not limits: gateway policies replace them.
+ * The buyer's config level, which every gateway policy narrows: max pricing
+ * defaults (from the config file), min reputation, a required verifier and
+ * routing preferences (as the running buyer reports them, else from the
+ * config).
  */
 export async function readBuyerLimits(configPath: string | null, live: unknown): Promise<BuyerLimits> {
   const reported = isRoutingPolicy(live) ? live : null
@@ -72,15 +86,21 @@ export async function readBuyerLimits(configPath: string | null, live: unknown):
     try {
       const config = await loadConfig(configPath)
       const pricing = config.buyer.maxPricing.defaults
-      // Same reading as `GET /settings`; `--require-verifier` is a flag only the running buyer knows.
-      const buyerConfig = config.buyer as typeof config.buyer & { routingPolicy?: { requireVerified?: boolean }; requireVerifier?: boolean }
+      // `buyer.verifier` as `GET /settings` reads it; start flags only the running buyer knows.
+      const verifier = config.buyer.verifier
       fromConfig = {
         minPeerReputation: config.buyer.minPeerReputation,
-        requireVerifier: Boolean(buyerConfig.requireVerifier ?? buyerConfig.routingPolicy?.requireVerified),
+        requireVerifier: verifier?.enabled !== false && verifier?.require === true,
         maxPricing: {
           inputUsdPerMillion: pricing.inputUsdPerMillion,
           outputUsdPerMillion: pricing.outputUsdPerMillion,
           cachedInputUsdPerMillion: pricing.cachedInputUsdPerMillion ?? null,
+        },
+        routingPreferences: {
+          minTrustScore: config.buyer.routingPreferences.minTrustScore,
+          allowedPeerIds: [...config.buyer.routingPreferences.allowedPeerIds],
+          blockedPeerIds: [...config.buyer.routingPreferences.blockedPeerIds],
+          preferFreePeers: config.buyer.routingPreferences.preferFreePeers,
         },
       }
     } catch {
@@ -91,6 +111,14 @@ export async function readBuyerLimits(configPath: string | null, live: unknown):
     minPeerReputation: reported ? reported.minReputation ?? 0 : fromConfig?.minPeerReputation ?? 0,
     requireVerifier: reported ? reported.requireVerified === true : fromConfig?.requireVerifier ?? false,
     maxPricing: fromConfig?.maxPricing ?? null,
+    routingPreferences: reported
+      ? {
+          minTrustScore: reported.minTrustScore ?? 0,
+          allowedPeerIds: reported.allowedPeerIds ?? [],
+          blockedPeerIds: reported.blockedPeerIds ?? [],
+          preferFreePeers: reported.preferFreePeers === true,
+        }
+      : fromConfig?.routingPreferences ?? null,
   }
 }
 
@@ -100,7 +128,7 @@ export async function buyerLimits(configPath: string | null, buyer: BuyerClient)
   return readBuyerLimits(configPath, preview?.['buyer'])
 }
 
-/** The buyer's hard limits as a policy, for the preview's `buyer` source. */
+/** The buyer's config as a policy, for the preview's `buyer` source. */
 export function buyerLimitsPolicy(limits: BuyerLimits): RoutingPolicy | null {
   const policy: RoutingPolicy = {}
   if (limits.minPeerReputation > 0) policy.minReputation = limits.minPeerReputation
@@ -109,6 +137,13 @@ export function buyerLimitsPolicy(limits: BuyerLimits): RoutingPolicy | null {
     policy.maxInputUsdPerMillion = limits.maxPricing.inputUsdPerMillion
     policy.maxOutputUsdPerMillion = limits.maxPricing.outputUsdPerMillion
     if (limits.maxPricing.cachedInputUsdPerMillion !== null) policy.maxCachedInputUsdPerMillion = limits.maxPricing.cachedInputUsdPerMillion
+  }
+  const prefs = limits.routingPreferences
+  if (prefs) {
+    if (prefs.minTrustScore > 0) policy.minTrustScore = prefs.minTrustScore
+    if (prefs.allowedPeerIds.length > 0) policy.allowedPeerIds = [...prefs.allowedPeerIds]
+    if (prefs.blockedPeerIds.length > 0) policy.blockedPeerIds = [...prefs.blockedPeerIds]
+    if (prefs.preferFreePeers) policy.preferFreePeers = true
   }
   return Object.keys(policy).length > 0 ? policy : null
 }

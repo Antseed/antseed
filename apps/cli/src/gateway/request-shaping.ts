@@ -12,9 +12,12 @@ export function presetSlug(model: string | null): string | null {
  * Applies a preset to a JSON request body: the preset's model replaces
  * `@preset/<slug>`, its params sit under the client's own, and its system
  * prompt goes before the client's for chat, messages and responses shapes.
+ * A `service` field is dropped: the buyer routes by it before `model`, so it
+ * would route around the preset's model.
  */
 export function applyPreset(body: Record<string, unknown>, preset: PresetRecord, routePrefix: string): Record<string, unknown> {
   const merged: Record<string, unknown> = { ...preset.params, ...body, model: preset.model }
+  delete merged['service']
   const prompt = preset.systemPrompt?.trim()
   if (!prompt) return merged
   if (routePrefix === '/v1/chat/completions') {
@@ -39,10 +42,24 @@ export function extractEndUser(body: Record<string, unknown> | null, header: str
   return value ? value.slice(0, MAX_END_USER_LENGTH) : null
 }
 
-/** The `model` field of a multipart form (image edits), without a full parser. */
-export function sniffMultipartModel(body: Buffer, contentType: string | undefined): string | null {
+/** A text field of a multipart form (image edits), without a full parser; `model` by default. */
+export function sniffMultipartModel(body: Buffer, contentType: string | undefined, field: 'model' | 'service' = 'model'): string | null {
   if (!contentType?.toLowerCase().startsWith('multipart/form-data')) return null
   const text = body.subarray(0, 4 * 1024 * 1024).toString('latin1')
-  const match = /content-disposition:\s*form-data;\s*name="model"[^\r\n]*\r\n(?:[^\r\n]+\r\n)*\r\n([^\r\n]*)\r\n/i.exec(text)
+  const match = new RegExp(`content-disposition:\\s*form-data;\\s*name="${field}"[^\\r\\n]*\\r\\n(?:[^\\r\\n]+\\r\\n)*\\r\\n([^\\r\\n]*)\\r\\n`, 'i').exec(text)
   return match ? Buffer.from(match[1]!, 'latin1').toString('utf8').slice(0, 200) : null
+}
+
+/**
+ * The model the buyer will route the request to, the way it reads it
+ * (`service ?? model`, trimmed; see `extractRequestedService` in
+ * proxy/request-utils.ts): a `service` field wins over `model`, and one that
+ * is not a usable name leaves the request without a model. The gateway's
+ * model allow list and its accounting use this, not `model` alone.
+ */
+export function effectiveRequestModel(parsed: Record<string, unknown> | null, body: Buffer, contentType: string | undefined): string | null {
+  const raw = parsed
+    ? parsed['service'] ?? parsed['model']
+    : sniffMultipartModel(body, contentType, 'service') ?? sniffMultipartModel(body, contentType)
+  return typeof raw === 'string' && raw.trim() ? raw.trim() : null
 }

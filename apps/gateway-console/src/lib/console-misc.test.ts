@@ -6,7 +6,7 @@ import { fromDateInput, toDateInput } from './dates'
 import { HEARTBEAT_MS, startDepositHeartbeat } from './deposit-watch'
 import { duplicateInviteWarnings } from './members'
 import { assertSameMember, reauthWithWallet, withReauth } from './reauth'
-import { buyerSettingsErrors } from './settings'
+import { buyerSettingsErrors, isOverridden, numberFieldError, peerIdsError, splitEntries, urlsError } from './settings'
 
 describe('budget warnings and runway', () => {
   const limits = { daily: '10.000000', weekly: '100.000000', monthly: null, total: null }
@@ -30,6 +30,21 @@ describe('buyer settings validation', () => {
       output: 'Use a number of 0 or more.', cached: 'Use a number of 0 or more.', reputation: 'At most 100.',
     })
     expect(buyerSettingsErrors({ input: '1', output: '2', cached: '', reputation: '0' })).toEqual({})
+  })
+
+  it('checks every other buyer field', () => {
+    expect(numberFieldError('', { required: true })).toBe('Required.')
+    expect(numberFieldError('')).toBeUndefined()
+    expect(numberFieldError('500', { min: 1_000, integer: true })).toBe('Use 1000 or more.')
+    expect(numberFieldError('1.5', { integer: true })).toBe('Use a whole number.')
+    expect(numberFieldError('2', { max: 1 })).toBe('At most 1.')
+    expect(splitEntries(' a\n\nb, c ')).toEqual(['a', 'b', 'c'])
+    expect(peerIdsError(['0x' + 'a'.repeat(40), 'b'.repeat(40)])).toBeUndefined()
+    expect(peerIdsError(['nope'])).toBe('"nope" is not a 40-character hex seller id.')
+    expect(urlsError(['https://rpc.example/…'])).toBeUndefined()
+    expect(urlsError(['ftp://x'])).toBe('"ftp://x" is not an http(s) URL.')
+    expect(isOverridden(['verifier'], 'verifier.require')).toBe(true)
+    expect(isOverridden(['maxPricing.inputUsdPerMillion'], 'maxPricing.outputUsdPerMillion')).toBe(false)
   })
 })
 

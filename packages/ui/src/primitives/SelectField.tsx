@@ -23,7 +23,7 @@ export function SelectField({ label, hint, error, options, onChange, className, 
   return (
     <label className={fieldClasses(className, size)} htmlFor={selectId}>
       {label && <span className="as-field__label">{label}</span>}
-      <select id={selectId} className={inputClasses('as-field__select', false)} onChange={(event) => onChange(event.target.value)} {...rest}>
+      <select id={selectId} className={inputClasses('as-field__select')} onChange={(event) => onChange(event.target.value)} {...rest}>
         {options.map((option) => (
           <option key={option.value} value={option.value} disabled={option.disabled}>{option.label}</option>
         ))}

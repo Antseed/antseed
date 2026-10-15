@@ -10,7 +10,7 @@ import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, decodePolicyHeader } fro
 import { GatewayAccounting } from './accounting.js'
 import { OBSERVABILITY_SETTING } from './observability.js'
 import { GATEWAY_ROUTING_SETTING } from './policy-resolver.js'
-import { GatewayServer } from './server.js'
+import { GATEWAY_INTERNAL_KEY_HEADER, GatewayServer } from './server.js'
 import { SpendFeedPoller } from './spend-feed.js'
 import { GatewayStore } from './store.js'
 
@@ -33,6 +33,11 @@ async function fakeBuyer(options: { costUsdc?: number } = {}) {
     req.on('end', () => {
       captured.push({ url: req.url ?? '', headers: req.headers, body: Buffer.concat(chunks).toString('utf8') })
       const requestId = `req-${++counter}`
+      if (req.url === '/v1/models') {
+        res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId })
+        res.end(JSON.stringify({ object: 'list', data: [{ id: 'good-model', aliases: [] }, { id: 'other', aliases: ['other-model'] }, { id: 'GOOD', aliases: ['good-model-v2'] }] }))
+        return
+      }
       const tag = req.headers[SPEND_ATTRIBUTION_HEADER] as string | undefined
       if (tag && options.costUsdc) {
         feed.track(requestId, tag)
@@ -160,6 +165,49 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
   }
 })
 
+test('allowedModels and the request log use the model the buyer routes by (service before model)', async () => {
+  const ctx = await setup()
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const smuggled = await ctx.send(secret, '/v1/chat/completions', { model: 'good-model', service: 'other-model' })
+    assert.equal(smuggled.status, 403, 'an allowed model cannot carry a disallowed service')
+    assert.equal(smuggled.body.error.code, 'model_not_allowed')
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'good-model', service: '' })).status, 403, 'a blank service routes nowhere the allow list knows')
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { service: ' good-model ' })).status, 200)
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'other-model', service: 'good-model' })).status, 200)
+    assert.equal(ctx.buyer.captured.length, 2)
+    assert.deepEqual(ctx.store.listRequests({ keyId: key.id }).map((row) => row.model), ['good-model', 'good-model'])
+
+    // A preset's model is what is bought: a client `service` cannot route around it.
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    ctx.store.createPreset({ slug: 'p', name: 'P', workspaceId: null, model: 'good-model', routingPolicy: null, systemPrompt: null, params: {} })
+    assert.equal((await ctx.send(open.secret, '/v1/chat/completions', { model: 'x', service: '@preset/p' })).status, 200)
+    const forwarded = JSON.parse(ctx.buyer.captured[2]!.body)
+    assert.equal(forwarded.model, 'good-model')
+    assert.equal(forwarded.service, undefined)
+    assert.equal(ctx.store.listRequests({ keyId: open.key.id })[0]!.model, 'good-model')
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('/v1/models lists only the models the key may use, even when the buyer is not sent the policy', async () => {
+  const ctx = await setup({ controlSecret: null })
+  try {
+    const listModels = async (secret: string) => {
+      const response = await fetch(`http://127.0.0.1:${ctx.port}/v1/models`, { headers: { authorization: `Bearer ${secret}` } })
+      assert.equal(response.status, 200)
+      return ((await response.json()) as { data: Array<{ id: string }> }).data.map((entry) => entry.id)
+    }
+    const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model', 'good-model-v2'] } })
+    assert.deepEqual(await listModels(limited.secret), ['good-model', 'GOOD'])
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    assert.deepEqual(await listModels(open.secret), ['good-model', 'other', 'GOOD'])
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('@preset/<slug> rewrites the request and narrows the policy', async () => {
   const ctx = await setup()
   try {
@@ -281,6 +329,20 @@ test('requests under /console go to the console handler before API-key auth', as
   }
 })
 
+test('a non-default buyer identity always goes to the buyer with the control secret', async () => {
+  const ctx = await setup()
+  try {
+    const team = ctx.store.createKey({ label: 'team', buyerIdentity: 'team-a', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(team.secret, '/v1/chat/completions', { model: 'm' })).status, 200)
+    const headers = ctx.buyer.captured[0]!.headers
+    assert.equal(headers[BUYER_IDENTITY_HEADER], 'team-a')
+    assert.equal(headers[GATEWAY_CONTROL_HEADER], 'control-secret')
+    assert.equal(headers[ROUTING_POLICY_HEADER], undefined)
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('a policy that changes nothing is not sent, so the request routes as with no policy at all', async () => {
   const ctx = await setup()
   try {
@@ -317,6 +379,35 @@ test('a failure after admission answers 500 and releases the hold', async () => 
     assert.equal(row!.status, 500)
     assert.equal(ctx.buyer.captured.length, 0)
     ctx.store.getSetting = getSetting
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('the gateway itself can call /v1 as a key by id with the control secret; nobody else can, and the header never reaches the buyer', async () => {
+  const ctx = await setup()
+  try {
+    const { key } = ctx.store.createKey({ label: 'chat', limits: NO_LIMITS, expiresAt: null })
+    const body = { model: 'm', messages: [] }
+    const asKey = { [GATEWAY_INTERNAL_KEY_HEADER]: key.id }
+    // A key id alone, or with a wrong secret, is not a key.
+    assert.equal((await ctx.send('', '/v1/chat/completions', body, asKey)).status, 401)
+    assert.equal((await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'nope' })).status, 401)
+    const ok = await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'control-secret' })
+    assert.equal(ok.status, 200)
+    const forwarded = ctx.buyer.captured.at(-1)!
+    assert.equal(forwarded.headers[GATEWAY_INTERNAL_KEY_HEADER], undefined)
+    // Accounted to that key like any request with it.
+    assert.equal(ctx.store.getKey(key.id)!.lastUsedAt !== null, true)
+    // From anyone else the header is ignored: a valid Bearer key still works and is the key used.
+    const { secret: clientSecret, key: clientKey } = ctx.store.createKey({ label: 'client', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(clientSecret, '/v1/chat/completions', body, asKey)).status, 200)
+    assert.equal((await ctx.send(clientSecret, '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'nope' })).status, 200)
+    assert.equal(ctx.store.listRequests({ keyId: clientKey.id }).length, 2)
+    assert.equal(ctx.buyer.captured.at(-1)!.headers[GATEWAY_INTERNAL_KEY_HEADER], undefined)
+    // A revoked key stops working this way too.
+    ctx.store.revokeKey(key.id)
+    assert.equal((await ctx.send('', '/v1/chat/completions', body, { ...asKey, [GATEWAY_CONTROL_HEADER]: 'control-secret' })).status, 401)
   } finally {
     await ctx.close()
   }

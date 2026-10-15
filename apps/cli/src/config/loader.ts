@@ -422,6 +422,9 @@ function mergeSellerConfig(
     ...(normalizeSellerHealthCheck(value['healthCheck'], defaults.healthCheck)),
     ...(normalizeSellerGasCheck(value['gasCheck'], defaults.gasCheck)),
     ...(normalizeSellerFreeTier(value['freeTier'], defaults.freeTier)),
+    ...(value['restrictedCountries'] !== undefined
+      ? { restrictedCountries: value['restrictedCountries'] as string[] }
+      : {}),
     ...(normalizeSellerFreeUsage(value['freeUsage'], defaults.freeUsage)),
   };
 }
@@ -516,6 +519,7 @@ function mergeBuyerConfig(
       autoSweep: defaults.autoSweep,
       ...(defaults.clientAgentId !== undefined ? { clientAgentId: defaults.clientAgentId } : {}),
       ...(normalizeBuyerVerification(undefined, defaults.verification)),
+      ...(defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
     };
   }
   const clientAgentId = normalizeClientAgentId(value['clientAgentId'], defaults.clientAgentId);
@@ -553,6 +557,9 @@ function mergeBuyerConfig(
     ),
     ...(clientAgentId !== undefined ? { clientAgentId } : {}),
     ...(normalizeBuyerVerification(value['verification'], defaults.verification)),
+    ...(value['verifier'] !== undefined
+      ? { verifier: value['verifier'] as NonNullable<AntseedConfig['buyer']['verifier']> }
+      : defaults.verifier ? { verifier: structuredClone(defaults.verifier) } : {}),
   };
 }
 
@@ -596,6 +603,15 @@ export async function loadConfig(configPath: string): Promise<AntseedConfig> {
     return createDefaultConfig();
   }
 
+  return configFromObject(parsedRaw);
+}
+
+/**
+ * A parsed config file's object merged over the defaults and validated,
+ * exactly as `loadConfig` reads it. Throws when the result is invalid, so an
+ * edit can be checked before it is written.
+ */
+export function configFromObject(parsedRaw: unknown): AntseedConfig {
   const defaults = createDefaultConfig();
   const parsed = isRecord(parsedRaw) ? parsedRaw : {};
 

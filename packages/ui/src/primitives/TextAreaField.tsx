@@ -12,7 +12,7 @@ export function TextAreaField({ label, hint, error, className, id, mono, ...rest
   const autoId = useId();
   const fieldId = id ?? autoId;
   return (
-    <label className={fieldClasses(className, 'md')} htmlFor={fieldId}>
+    <label className={fieldClasses(className)} htmlFor={fieldId}>
       {label && <span className="as-field__label">{label}</span>}
       <textarea id={fieldId} className={inputClasses('as-field__textarea', mono)} aria-invalid={error ? true : undefined} {...rest} />
       <FieldMessage error={error} hint={hint} />

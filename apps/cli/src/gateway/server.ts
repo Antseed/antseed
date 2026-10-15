@@ -1,19 +1,21 @@
+import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
-import { newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
+import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
+import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
 import { BUDGET_PERIODS, type LimitBreach } from './limits.js'
 import { formatUsdc, optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from './money.js'
 import { OtlpExporter, observabilitySettings } from './observability.js'
 import { isEmptyPolicy, resolvePolicy } from './policy-resolver.js'
-import { END_USER_HEADER, applyPreset, extractEndUser, presetSlug, sniffMultipartModel } from './request-shaping.js'
+import { END_USER_HEADER, applyPreset, effectiveRequestModel, extractEndUser, presetSlug } from './request-shaping.js'
 import { ResponseUsageReader } from './response-usage.js'
-import type { SpendFeedState } from './spend-feed.js'
+import { SPEND_FEED_UNAUTHORIZED_HINT, type SpendFeedState } from './spend-feed.js'
 import {
   PAYMENT_REQUIRED_HEADER,
   PAYMENT_RESPONSE_HEADER,
@@ -30,6 +32,13 @@ import {
   type X402Facilitator,
 } from './x402.js'
 import type { ApiKeyRecord, GatewayStore, PresetRecord, RequestError } from './store.js'
+
+/**
+ * The gateway's own components (the console chat agent) call `/v1` as a key
+ * by its id, without its secret: this header plus the control secret, from
+ * loopback only. Stripped from everything forwarded to the buyer.
+ */
+export const GATEWAY_INTERNAL_KEY_HEADER = 'x-antseed-gateway-key'
 
 const HOP_BY_HOP = new Set([
   'connection',
@@ -53,6 +62,12 @@ const MAX_ERROR_MESSAGE_CHARS = 500
 const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
+/** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */
+const SPEND_FEED_UNAVAILABLE_MESSAGES: Record<Exclude<SpendFeedState, 'reporting'>, string> = {
+  unsupported: 'The buyer for this API key does not report spend; upgrade it to enforce spend limits',
+  unauthorized: `The buyer for this API key does not report spend to this gateway; ${SPEND_FEED_UNAUTHORIZED_HINT}`,
+  unreachable: 'The buyer for this API key is not reachable',
+}
 const KEY_INFO_PATH = '/v1/key'
 const TOPUP_PATH = '/v1/key/topup'
 
@@ -89,7 +104,7 @@ interface ForwardedRequest {
   path: string
   /** The canonical path, query included, sent to the buyer. */
   buyerPath: string
-  /** `buyerPath` without the query, as recorded and exported. */
+  /** `buyerPath` without the query (the route's prefix), as recorded and exported. */
   requestPath: string
   model: string | null
   endUser: string | null
@@ -97,6 +112,11 @@ interface ForwardedRequest {
   body: Buffer
   /** The routing policy and the secret that vouches for it; empty without a policy. */
   policyHeaders: Record<string, string>
+  /**
+   * For `GET /v1/models` under a model allow list: the policy the listing is
+   * narrowed to here, since without a control secret the buyer never sees it.
+   */
+  modelListPolicy: RoutingPolicy | null
 }
 
 export interface GatewayServerOptions {
@@ -240,7 +260,9 @@ export class GatewayServer {
     if (!body) return sendBodyTooLarge(res)
     const contentType = req.headers['content-type']
     let parsed = parseJsonBody(body, contentType)
-    let model = requestModel(parsed, body, contentType)
+    // What the buyer routes by (`service ?? model`), so the allow list and
+    // the request log see the model that is actually bought.
+    let model = effectiveRequestModel(parsed, body, contentType)
 
     // `model: "@preset/<slug>"` runs the workspace's (or org's) preset.
     const slug = presetSlug(model)
@@ -270,12 +292,13 @@ export class GatewayServer {
       method,
       path,
       buyerPath: route.path,
-      requestPath: route.path.split('?')[0]!,
+      requestPath: route.prefix,
       model: model ? model.slice(0, 200) : null,
       endUser: extractEndUser(parsed, firstHeader(req.headers[END_USER_HEADER]) || undefined),
       startedAt: Date.now(),
       body,
       policyHeaders: policy.headers,
+      modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
     }
     try {
       this._options.store.startRequest({
@@ -302,8 +325,7 @@ export class GatewayServer {
   /** The request's active API key and who it is accounted to; answers 401 itself otherwise. */
   private _authenticate(req: http.IncomingMessage, res: http.ServerResponse, requestLine: string): { key: ApiKeyRecord; context: KeyContext } | null {
     const store = this._options.store
-    const secret = parseBearerToken(req.headers.authorization)
-    const key = secret ? store.findKeyBySecret(secret) : null
+    const key = this._requestKey(req)
     if (!key || key.status !== 'active') {
       this._log(`gateway rejected authentication: ${requestLine}`)
       if (key) sendUnauthorized(res, 'key_revoked', 'API key has been revoked')
@@ -323,16 +345,36 @@ export class GatewayServer {
     return { key, context: { member, workspace: store.getWorkspace(key.workspaceId) } }
   }
 
+  /**
+   * The key a request names: by id for the gateway's own components (see
+   * GATEWAY_INTERNAL_KEY_HEADER), else by its Bearer secret. The id header is
+   * only honored from an internal caller; from anyone else it is ignored, so
+   * it can neither stand in for a key nor block a valid Bearer one.
+   */
+  private _requestKey(req: http.IncomingMessage): ApiKeyRecord | null {
+    const internalKeyId = firstHeader(req.headers[GATEWAY_INTERNAL_KEY_HEADER])
+    if (internalKeyId && this._internalCaller(req)) return this._options.store.getKey(internalKeyId)
+    const secret = parseBearerToken(req.headers.authorization)
+    return secret ? this._options.store.findKeyBySecret(secret) : null
+  }
+
+  /** A request from the gateway process itself: loopback, carrying the control secret. */
+  private _internalCaller(req: http.IncomingMessage): boolean {
+    const expected = this._options.controlSecret
+    const sent = firstHeader(req.headers[GATEWAY_CONTROL_HEADER])
+    if (!expected || !sent || !isLoopback(req.socket.remoteAddress)) return false
+    const a = Buffer.from(sent)
+    const b = Buffer.from(expected)
+    return a.length === b.length && timingSafeEqual(a, b)
+  }
+
   /** Whether the buyer reports spend, refreshing the feed once; answers 503 itself when it does not. */
   private async _spendFeedReporting(res: http.ServerResponse): Promise<boolean> {
     if (this._options.spendFeedState() === 'reporting') return true
     await this._options.refreshSpendFeed()
     const state = this._options.spendFeedState()
     if (state === 'reporting') return true
-    const message = state === 'unsupported'
-      ? 'The buyer for this API key does not report spend; upgrade it to enforce spend limits'
-      : 'The buyer for this API key is not reachable'
-    sendError(res, 503, 'api_error', 'spend_tracking_unavailable', message)
+    sendError(res, 503, 'api_error', 'spend_tracking_unavailable', SPEND_FEED_UNAVAILABLE_MESSAGES[state])
     return false
   }
 
@@ -350,7 +392,7 @@ export class GatewayServer {
     context: KeyContext,
     preset: PresetRecord | null,
     model: string | null,
-  ): { allowed: false } | { allowed: true; headers: Record<string, string> } {
+  ): { allowed: false } | { allowed: true; headers: Record<string, string>; policy: RoutingPolicy } {
     const { policy } = resolvePolicy(this._options.store, { key, preset, member: context.member, workspace: context.workspace })
     if ((route.paid || model) && !policyAllowsModel(policy, model)) {
       sendError(res, 403, 'permission_error', 'model_not_allowed', model
@@ -359,7 +401,7 @@ export class GatewayServer {
       return { allowed: false }
     }
     const routed = meaningfulPolicy(policy)
-    if (isEmptyPolicy(routed)) return { allowed: true, headers: {} }
+    if (isEmptyPolicy(routed)) return { allowed: true, headers: {}, policy }
     const controlSecret = this._options.controlSecret ?? null
     const sellersRestricted = restrictsSellers(routed)
     if (!controlSecret && sellersRestricted) {
@@ -370,8 +412,8 @@ export class GatewayServer {
       sendError(res, 503, 'api_error', 'buyer_policy_unsupported', "The buyer does not apply this API key's routing policy; upgrade it or check the gateway control secret")
       return { allowed: false }
     }
-    if (!controlSecret) return { allowed: true, headers: {} }
-    return { allowed: true, headers: { [ROUTING_POLICY_HEADER]: encodePolicyHeader(routed), [GATEWAY_CONTROL_HEADER]: controlSecret } }
+    if (!controlSecret) return { allowed: true, headers: {}, policy }
+    return { allowed: true, headers: { [ROUTING_POLICY_HEADER]: encodePolicyHeader(routed), [GATEWAY_CONTROL_HEADER]: controlSecret }, policy }
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
@@ -405,6 +447,7 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let reportedLatency: number | null = null
+      let servedFree = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
@@ -420,7 +463,7 @@ export class GatewayServer {
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser })
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser, servedFree })
           const usage = usageReader?.result() ?? null
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
@@ -441,7 +484,12 @@ export class GatewayServer {
       headers['content-length'] = String(body.length)
       headers['x-antseed-system-proxy-source'] = tunnelRequestSource(req.headers)
       headers[SPEND_ATTRIBUTION_HEADER] = tag
-      if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
+      if (key.buyerIdentity !== DEFAULT_BUYER_IDENTITY) {
+        headers[BUYER_IDENTITY_HEADER] = key.buyerIdentity
+        // The buyer lets only its gateway pay from a non-default wallet.
+        const controlSecret = this._options.controlSecret
+        if (controlSecret) headers[GATEWAY_CONTROL_HEADER] = controlSecret
+      }
 
       const upstream = http.request({
         hostname: '127.0.0.1',
@@ -454,6 +502,7 @@ export class GatewayServer {
         const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
         sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
         reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
+        servedFree = freeSellerPricing(upstreamRes.headers)
         if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
         if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
         else if (request.model !== null) usageReader = readUsage(upstreamRes, (message) => this._log(message))
@@ -462,11 +511,23 @@ export class GatewayServer {
           if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
         }
         responseHeaders.connection = 'close'
+        upstreamRes.once('error', () => finish!(status, buyerRequestId))
+        res.once('close', () => finish!(status, buyerRequestId))
+        const modelListPolicy = request.modelListPolicy
+        if (modelListPolicy && status === 200) {
+          const chunks: Buffer[] = []
+          upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+          upstreamRes.once('end', () => {
+            const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
+            res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
+            res.end(listing)
+            finish!(status, buyerRequestId)
+          })
+          return
+        }
         res.writeHead(status, responseHeaders)
         upstreamRes.pipe(res)
         upstreamRes.once('end', () => finish!(status, buyerRequestId))
-        upstreamRes.once('error', () => finish!(status, buyerRequestId))
-        res.once('close', () => finish!(status, buyerRequestId))
       })
 
       upstream.on('error', (error) => {
@@ -629,8 +690,10 @@ export class GatewayServer {
     const spent = this._options.store.spendByPeriod({ keyId: key.id })
     const usage = this._options.store.usageStats(key.id)
     const buyerAddress = await this._options.identityAddress(key.buyerIdentity).catch(() => null)
+    // The caps admission enforces: the lower of the admins' and the owner's.
+    const caps = effectiveKeyLimits(key)
     const limits = Object.fromEntries(BUDGET_PERIODS.map((period) => {
-      const limit = key.limits[period]
+      const limit = caps[period]
       return [period, {
         limit_usd: optionalUsdcToDecimalString(limit),
         spent_usd: usdcToDecimalString(spent[period]),
@@ -734,12 +797,6 @@ function jsonObject(value: unknown): Record<string, unknown> | null {
   return value && typeof value === 'object' && !Array.isArray(value) ? value as Record<string, unknown> : null
 }
 
-/** The request's `model`: the JSON body's field, else a multipart form's. */
-function requestModel(parsed: Record<string, unknown> | null, body: Buffer, contentType: string | undefined): string | null {
-  if (!parsed) return sniffMultipartModel(body, contentType)
-  return typeof parsed['model'] === 'string' ? parsed['model'] : null
-}
-
 /**
  * Error code and message of a failed response: the OpenAI/Anthropic envelope
  * (`{ error: { code | type, message } }`, `{ error: "…" }`), a top-level
@@ -794,20 +851,50 @@ function readUsage(stream: http.IncomingMessage, log: (message: string) => void)
 }
 
 /** The buyer's own latency measurement, when it sent a usable one. */
+/**
+ * Whether the seller's advertised prices (the buyer's pricing headers) are
+ * all zero: a free seller, for which the buyer never reports spend. Unknown
+ * input or output prices are not free.
+ */
+function freeSellerPricing(headers: http.IncomingHttpHeaders): boolean {
+  const price = (name: string): number | null => {
+    const value = firstHeader(headers[name])
+    const amount = Number(value)
+    return value && Number.isFinite(amount) ? amount : null
+  }
+  const cached = price('x-antseed-cached-input-usd-per-million')
+  return price('x-antseed-input-usd-per-million') === 0 && price('x-antseed-output-usd-per-million') === 0 && (cached === null || cached === 0)
+}
+
 function latencyHeader(value: string): number | null {
   const latency = Number(value)
   return value && Number.isFinite(latency) && latency >= 0 ? Math.floor(latency) : null
 }
+
+/**
+ * Client headers never forwarded: the gateway sets its own `host` and
+ * `content-length`, and the key (never the client) decides who pays, how
+ * spend is tagged and which sellers may serve.
+ */
+const STRIPPED_HEADERS = new Set([
+  'host',
+  'content-length',
+  SPEND_ATTRIBUTION_HEADER,
+  BUYER_IDENTITY_HEADER,
+  ROUTING_POLICY_HEADER,
+  GATEWAY_CONTROL_HEADER,
+  GATEWAY_INTERNAL_KEY_HEADER,
+  END_USER_HEADER,
+])
 
 /** Client headers passed on to the buyer, minus everything the key (not the client) decides. */
 function forwardedHeaders(incoming: http.IncomingHttpHeaders): http.OutgoingHttpHeaders {
   const headers: http.OutgoingHttpHeaders = {}
   for (const [name, value] of Object.entries(incoming)) {
     const normalized = name.toLowerCase()
-    if (normalized === 'host' || normalized === 'authorization' || normalized === 'cookie') continue
-    // The key decides who pays, how spend is tagged and which sellers may serve, never the client.
-    if (normalized === 'content-length' || normalized === SPEND_ATTRIBUTION_HEADER || normalized === BUYER_IDENTITY_HEADER) continue
-    if (normalized === ROUTING_POLICY_HEADER || normalized === GATEWAY_CONTROL_HEADER || normalized === END_USER_HEADER) continue
+    // The client's key authenticated it to this gateway; its other
+    // credentials are never needed downstream (see credential-headers.ts).
+    if (isClientCredentialHeader(normalized) || STRIPPED_HEADERS.has(normalized)) continue
     if (normalized.startsWith('x-forwarded-') || HOP_BY_HOP.has(normalized)) continue
     headers[name] = value
   }
@@ -836,12 +923,32 @@ function tunnelRequestSource(headers: http.IncomingHttpHeaders): string {
   return product.startsWith('cursor') ? 'cursor' : 'public-tunnel'
 }
 
+function isLoopback(address: string | undefined): boolean {
+  return address === '127.0.0.1' || address === '::1' || address === '::ffff:127.0.0.1'
+}
+
 function firstHeader(value: string | string[] | undefined): string {
   return Array.isArray(value) ? value[0] ?? '' : value ?? ''
 }
 
 function normalizeSource(value: string): string {
   return value.trim().toLowerCase().replace(/[^a-z0-9.]+/g, '-').replace(/^-+|-+$/g, '').slice(0, 64)
+}
+
+/** A `/v1/models` listing without the models the policy does not allow (matched by id or alias). */
+function filterModelList(body: Buffer, policy: RoutingPolicy): Buffer {
+  let listing: { data?: unknown }
+  try {
+    listing = JSON.parse(body.toString('utf8')) as { data?: unknown }
+  } catch {
+    return body
+  }
+  if (!listing || !Array.isArray(listing.data)) return body
+  listing.data = listing.data.filter((entry: { id?: unknown; aliases?: unknown }) => {
+    const names = [entry?.id, ...(Array.isArray(entry?.aliases) ? entry.aliases : [])]
+    return names.some((name) => typeof name === 'string' && policyAllowsModel(policy, name))
+  })
+  return Buffer.from(JSON.stringify(listing), 'utf8')
 }
 
 function canonicalizeRoute(method: string, path: string): CanonicalRoute | null {

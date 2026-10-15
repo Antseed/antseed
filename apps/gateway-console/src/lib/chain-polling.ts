@@ -10,13 +10,23 @@ export const CHAIN_POLL_MS = 30_000
 
 type VisibilityDoc = Pick<Document, 'visibilityState' | 'addEventListener' | 'removeEventListener'>
 
+type PollingOptions = {
+  /** Floor for `intervalMs`; lower it only for data the gateway serves without a chain call per refresh. */
+  minIntervalMs?: number
+  doc?: VisibilityDoc
+}
+
 /**
- * Calls `refresh` every `intervalMs` while the page is visible. A hidden tab
- * does not poll; it refreshes once when it becomes visible again. Returns a
- * stop function.
+ * Calls `refresh` every `intervalMs` (never faster than `minIntervalMs`) while
+ * the page is visible. A hidden tab does not poll; it refreshes once when it
+ * becomes visible again. Returns a stop function.
  */
-export function startVisiblePolling(refresh: () => void, intervalMs: number = CHAIN_POLL_MS, doc: VisibilityDoc = document): () => void {
-  const every = Math.max(intervalMs, CHAIN_POLL_MS)
+export function startVisiblePolling(
+  refresh: () => void,
+  intervalMs: number = CHAIN_POLL_MS,
+  { minIntervalMs = CHAIN_POLL_MS, doc = document }: PollingOptions = {},
+): () => void {
+  const every = Math.max(intervalMs, minIntervalMs)
   let timer: ReturnType<typeof setInterval> | undefined
   const start = () => {
     clearInterval(timer)
@@ -39,12 +49,12 @@ export function startVisiblePolling(refresh: () => void, intervalMs: number = CH
   }
 }
 
-/** Re-fetches a chain-backed query every 30 s (or slower) while the tab is visible. */
-export function useVisiblePolling(queryKey: QueryKey, intervalMs: number = CHAIN_POLL_MS): void {
+/** Re-fetches a query every `intervalMs` (30 s or slower unless `minIntervalMs` says otherwise) while the tab is visible. */
+export function useVisiblePolling(queryKey: QueryKey, intervalMs: number = CHAIN_POLL_MS, minIntervalMs: number = CHAIN_POLL_MS): void {
   const queryClient = useQueryClient()
   const key = JSON.stringify(queryKey)
   useEffect(
-    () => startVisiblePolling(() => void queryClient.invalidateQueries({ queryKey: JSON.parse(key) as QueryKey }), intervalMs),
-    [key, intervalMs, queryClient],
+    () => startVisiblePolling(() => void queryClient.invalidateQueries({ queryKey: JSON.parse(key) as QueryKey }), intervalMs, { minIntervalMs }),
+    [key, intervalMs, minIntervalMs, queryClient],
   )
 }

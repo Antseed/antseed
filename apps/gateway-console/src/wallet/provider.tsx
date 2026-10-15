@@ -7,12 +7,18 @@ import type { ChainInfo } from '../api/types'
 import { isDarkNow } from '../app/theme'
 import '@rainbow-me/rainbowkit/styles.css'
 
-import { ANTSEED_RAINBOWKIT_NEUTRAL } from '@antseed/wallet-config'
+import { ANTSEED_RAINBOWKIT_NEUTRAL, BASE_PUBLIC_RPC_URLS } from '@antseed/wallet-config'
 import { WALLETCONNECT_PROJECT_ID } from '../config'
 
-function toChain(info: ChainInfo): Chain {
-  if (info.chainId === base.id) return info.rpcUrl ? { ...base, rpcUrls: { default: { http: [info.rpcUrl] } } } : base
+/**
+ * The gateway never hands the browser its own RPC URL; `rpcUrl` is a public
+ * endpoint or null. Base falls back to the shared public list, Base Sepolia to
+ * wagmi's default; any other chain without one has no RPC for the browser.
+ */
+function toChain(info: ChainInfo): Chain | null {
+  if (info.chainId === base.id) return { ...base, rpcUrls: { default: { http: info.rpcUrl ? [info.rpcUrl] : [...BASE_PUBLIC_RPC_URLS] } } }
   if (info.chainId === baseSepolia.id) return info.rpcUrl ? { ...baseSepolia, rpcUrls: { default: { http: [info.rpcUrl] } } } : baseSepolia
+  if (!info.rpcUrl) return null
   return defineChain({
     id: info.chainId,
     name: info.name,
@@ -25,11 +31,13 @@ function toChain(info: ChainInfo): Chain {
 const configs = new Map<string, Config>()
 
 /** One wagmi config per chain, reused across mounts so the wallet connection survives page changes. */
-function configFor(info: ChainInfo | null): Config {
+function configFor(info: ChainInfo | null): Config | null {
   const key = info ? `${info.chainId}:${info.rpcUrl}` : 'signin'
   let config = configs.get(key)
   if (!config) {
-    const chains: [Chain, ...Chain[]] = info ? [toChain(info)] : [base, baseSepolia]
+    const chain = info ? toChain(info) : null
+    if (info && !chain) return null
+    const chains: [Chain, ...Chain[]] = chain ? [chain] : [base, baseSepolia]
     config = getDefaultConfig({
       appName: 'Antseed Console',
       projectId: WALLETCONNECT_PROJECT_ID,
@@ -55,6 +63,7 @@ const RainbowRoot = RainbowKitProvider as unknown as ComponentType<{ theme: Retu
 /** Wallet connection for browser-signed actions. Pass the gateway's chain, or null for sign-in only. */
 export function WalletProvider({ chain, children }: { chain: ChainInfo | null; children: ReactNode }) {
   const config = useMemo(() => configFor(chain), [chain])
+  if (!config) return <p className="gc-muted">Wallet actions are not available on {chain?.name ?? 'this chain'}: the gateway has no public RPC for it.</p>
   // Neutral: the accent follows the console's own primary-button tokens.
   const theme = isDarkNow() ? darkTheme(ANTSEED_RAINBOWKIT_NEUTRAL) : lightTheme(ANTSEED_RAINBOWKIT_NEUTRAL)
   return <WagmiRoot config={config}><RainbowRoot theme={theme}>{children}</RainbowRoot></WagmiRoot>

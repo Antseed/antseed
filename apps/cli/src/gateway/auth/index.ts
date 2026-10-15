@@ -80,9 +80,13 @@ export interface ConsoleAuthService extends ConsoleAuth {
    * and ends the member's sessions, except `keepSessionId` (the caller's own).
    */
   deleteCredential(memberId: string, credentialId: string, keepSessionId?: string | null): boolean
+  /** A short-lived ticket for registering a sign-in method for `memberId` (recovery links). */
+  createEnrollment(memberId: string): string
+  /** Refuses (403 `reauth_required`) unless the member's sign-in is recent; for sensitive changes to their own account. */
+  requireFreshSignIn(request: ConsoleRequest, principal: Principal | null): Promise<void>
 }
 
-type LoginError = 'not_invited' | 'not_linked' | 'disabled' | 'invalid_enrollment'
+type LoginError = 'not_invited' | 'not_linked' | 'disabled' | 'invalid_enrollment' | 'credential_exists'
 
 export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = {}): ConsoleAuthService {
   const { store } = deps
@@ -205,22 +209,21 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   async function authenticate(req: http.IncomingMessage): Promise<Principal | null> {
-    const bearer = parseBearerToken(headerValue(req, 'authorization') ?? undefined)
-    if (bearer?.startsWith(ADMIN_TOKEN_PREFIX)) {
-      if (store.findAdminTokenBySecret) {
-        const token = store.findAdminTokenBySecret(bearer)
-        if (!token || token.revokedAt !== null) return null
-        if (typeof token.expiresAt === 'number' && token.expiresAt <= deps.now()) return null
-        // A token is only as good as its creator's role (null: created from the CLI).
-        if (token.createdBy) {
-          const creator = store.getMember(token.createdBy)
-          if (!creator || creator.status !== 'active' || (creator.orgRole !== 'owner' && creator.orgRole !== 'admin')) return null
-        }
-        store.touchAdminToken?.(token.id)
-        return { kind: 'token', tokenId: token.id, scope: token.scope }
+    const authorization = headerValue(req, 'authorization') ?? undefined
+    if (authorization?.startsWith('Bearer ')) {
+      // Bearer requests skip the CSRF header check, so they never fall back to the session cookie.
+      const bearer = parseBearerToken(authorization)
+      if (!bearer?.startsWith(ADMIN_TOKEN_PREFIX)) return null
+      const token = store.findAdminTokenBySecret(bearer)
+      if (!token || token.revokedAt !== null) return null
+      if (typeof token.expiresAt === 'number' && token.expiresAt <= deps.now()) return null
+      // A token is only as good as its creator's role (null: created from the CLI).
+      if (token.createdBy) {
+        const creator = store.getMember(token.createdBy)
+        if (!creator || creator.status !== 'active' || (creator.orgRole !== 'owner' && creator.orgRole !== 'admin')) return null
       }
-      const token = db.findAdminToken(bearer)
-      return token ? { kind: 'token', tokenId: token.id, scope: token.scope } : null
+      store.touchAdminToken?.(token.id)
+      return { kind: 'token', tokenId: token.id, scope: token.scope }
     }
 
     const cookie = readCookie(req, SESSION_COOKIE)
@@ -269,6 +272,8 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
     if (bindCredential) {
       const credential = db.findOidc(identity.issuer, identity.subject)
       if (credential) {
+        // Linking or enrolling an account another member already signs in with must not switch to that member.
+        if (enrollmentMemberId && credential.member_id !== enrollmentMemberId) return { error: 'credential_exists' }
         const member = store.getMember(credential.member_id)
         if (!member) return { error: 'not_invited' }
         if (member.status !== 'active') return { error: 'disabled' }
@@ -287,7 +292,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (!member) return { error: 'invalid_enrollment' }
       if (member.status === 'disabled') return { error: 'disabled' }
       if (member.status === 'invited') {
-        const activated = activateWithInvite(member.id)
+        const activated = activateWithInvite(member.id, req)
         return activated ? bind(activated) : { error: 'not_invited' }
       }
       return bind(member)
@@ -298,7 +303,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (byEmail.status === 'invited') {
         // Only while their invite is live: an expired or cancelled invite
         // must not turn into access because the email still matches.
-        const activated = activateWithInvite(byEmail.id)
+        const activated = activateWithInvite(byEmail.id, req)
         return activated ? bind(activated) : { error: 'not_invited' }
       }
       return bindCredential ? { error: 'not_linked' } : { member: byEmail }
@@ -314,10 +319,12 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   /** Activates an invited member by consuming their newest live (unexpired, unused) invite; null when there is none. */
-  function activateWithInvite(memberId: string): AuthMember | null {
+  function activateWithInvite(memberId: string, req: http.IncomingMessage | null): AuthMember | null {
     const now = deps.now()
     const hash = store.liveInviteHash(memberId, now)
-    return hash ? store.consumeInvite(hash, now) : null
+    const member = hash ? store.consumeInvite(hash, now) : null
+    if (member && req) recordAudit(req, { kind: 'member', id: member.id, label: member.label }, 'auth.invite_accept')
+    return member
   }
 
   /** New active member in the Default workspace as role member. */
@@ -421,18 +428,6 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
 
   // ── Helpers for routes ──────────────────────────────────────────────────
 
-  /** Why an invite token did not work, read from the gateway store's invites table when there is one. */
-  function inviteState(tokenHash: string): 'used' | 'expired' | 'unknown' {
-    try {
-      const row = store.database.prepare('SELECT used_at, expires_at FROM invites WHERE token_hash = ?').get(tokenHash) as { used_at: number | null; expires_at: number } | undefined
-      if (!row) return 'unknown'
-      if (row.used_at !== null) return 'used'
-      return row.expires_at <= deps.now() ? 'expired' : 'unknown'
-    } catch {
-      return 'unknown'
-    }
-  }
-
   function rpFor(req: http.IncomingMessage): { origin: string; hostname: string; host: string } {
     const rp = requestOrigin(req, publicUrl)
     if (!rp) throw new ConsoleError(400, 'public_url_required', 'Set the gateway public URL to sign in from another host.')
@@ -480,9 +475,27 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   }
 
   /**
-   * Adding a sign-in method from an existing session needs a recent sign-in
-   * (FRESH_SIGN_IN_MS), so a stolen session cookie can't plant its own
-   * credential. Sessions confirm through `/auth/reauth/*`; Cloudflare Access
+   * Registers a sign-in method through an enrollment and uses the enrollment
+   * up. An invited member's invite is consumed in the same transaction, so a
+   * sign-up that fails before this point leaves the invite link usable.
+   */
+  function enrollCredential(req: http.IncomingMessage, enrollment: string, credential: NewCredential): { member: AuthMember; credential: CredentialRow } {
+    return db.transaction(() => {
+      const memberId = db.consumeEnrollment(enrollment)
+      let member = memberId ? store.getMember(memberId) : null
+      if (!member) throw new ConsoleError(400, 'invalid_enrollment', 'This sign-up link has expired. Ask for a new one.')
+      if (member.status === 'invited') {
+        member = activateWithInvite(member.id, req)
+        if (!member) throw new ConsoleError(400, 'invite_expired', 'This invite link has expired. Ask for a new one.')
+      }
+      return { member, credential: addCredential(req, member, credential, 'enrollment') }
+    })
+  }
+
+  /**
+   * Adding or removing a sign-in method from an existing session needs a
+   * recent sign-in (FRESH_SIGN_IN_MS), so a stolen session cookie can't plant
+   * its own credential or lock the member out. Sessions confirm through `/auth/reauth/*`; Cloudflare Access
    * principals have no session row, so their Access token must be fresh.
    */
   async function requireFreshSignIn(request: ConsoleRequest, principal: Principal | null): Promise<void> {
@@ -505,7 +518,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
     }
     const signIn = sessionSignIn(store.database, principal.sessionId)
     if (!signIn || now - signIn.authenticatedAt > FRESH_SIGN_IN_MS) {
-      throw new ConsoleError(403, 'reauth_required', 'Confirm it\'s you (passkey or wallet) before adding a sign-in method, then retry.')
+      throw new ConsoleError(403, 'reauth_required', 'Confirm it\'s you (passkey or wallet) before changing your sign-in methods, then retry.')
     }
   }
 
@@ -550,7 +563,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
           counter: stored.counter ?? 0,
           transports: parseTransports(stored.transports),
         },
-        requireUserVerification: false,
+        requireUserVerification: true,
       })
     } catch (error) {
       throw new ConsoleError(401, 'passkey_invalid', `Passkey sign-in failed: ${errorMessage(error)}`)
@@ -622,10 +635,11 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
   /** Setup and invite links: each hands out an enrollment for registering a first sign-in method. */
   function registerClaimRoutes(router: ConsoleRouter): void {
     router.add('POST', '/auth/setup', signInFailures('setup', async ({ raw, body }) => {
-      const limited = limit(raw, 'setup')
-      if (limited) return limited
       const input = objectBody(body)
       const token = stringField(input, 'token')
+      // Per token, so guessing elsewhere can't lock the owner's link out.
+      const limited = limit(raw, `setup:${sha256Hex(token)}`)
+      if (limited) return limited
       if (!setupClaimable()) throw new ConsoleError(409, 'setup_complete', 'This console has already been claimed.')
       if (!db.consumeSetupToken(token)) throw new ConsoleError(400, 'invalid_token', 'This setup link is invalid, used or expired. Ask the gateway operator for a new one.')
       const owner = pendingSetupOwner() ?? store.createOwner({
@@ -643,15 +657,16 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       const tokenHash = sha256Hex(token)
       const limited = limit(raw, `invite:${tokenHash}`)
       if (limited) return limited
-      const member = store.consumeInvite(tokenHash, deps.now())
-      if (!member) {
-        const state = inviteState(tokenHash)
+      // The invite stays open until the first sign-in method is registered
+      // (enrollCredential), so the link can be opened again if sign-up fails.
+      const found = store.peekInvite(tokenHash, deps.now())
+      if (!found) {
+        const state = store.inviteState(tokenHash, deps.now())
         if (state === 'used') throw new ConsoleError(400, 'invite_used', 'This invite link was already used.')
         if (state === 'expired') throw new ConsoleError(400, 'invite_expired', 'This invite link has expired.')
         throw new ConsoleError(400, 'invalid_token', 'This invite link is invalid.')
       }
-      recordAudit(raw, { kind: 'member', id: member.id, label: member.label }, 'auth.invite_accept')
-      return enrollmentFor(member)
+      return enrollmentFor(found.member)
     }), PUBLIC)
   }
 
@@ -669,7 +684,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
         userID: new TextEncoder().encode(member.id),
         attestationType: 'none',
         excludeCredentials: memberPasskeys(member.id).map((row) => ({ id: row.webauthn_id!, transports: parseTransports(row.transports) })),
-        authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'preferred' },
+        authenticatorSelection: { residentKey: 'required', requireResidentKey: true, userVerification: 'required' },
       })
       db.saveChallenge(creation.challenge, 'register', member.id)
       return creation
@@ -695,7 +710,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
           expectedChallenge: challenge,
           expectedOrigin: rp.origin,
           expectedRPID: rp.hostname,
-          requireUserVerification: false,
+          requireUserVerification: true,
         })
       } catch (error) {
         throw new ConsoleError(400, 'passkey_invalid', `Passkey registration failed: ${errorMessage(error)}`)
@@ -703,25 +718,27 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (!verification.verified) throw new ConsoleError(400, 'passkey_invalid', 'Passkey registration could not be verified.')
       const { credential } = verification.registrationInfo
       if (db.findPasskey(credential.id)) throw new ConsoleError(409, 'credential_exists', 'This passkey is already registered.')
-      const added = addCredential(request.raw, member, {
+      const passkey: NewCredential = {
         kind: 'passkey',
         label: optionalString(input, 'label')?.slice(0, 80) ?? 'Passkey',
         webauthnId: credential.id,
         publicKey: credential.publicKey,
         counter: credential.counter,
         transports: credential.transports ?? [],
-      }, viaSession ? 'session' : 'enrollment')
-      if (enrollment) db.consumeEnrollment(enrollment)
-      const current = store.getMember(member.id) ?? member
-      if (viaSession) return me((request.principal ?? await authenticate(request.raw))!)
-      return startMemberSession(request, current, 'passkey', added.id)
+      }
+      if (viaSession) {
+        addCredential(request.raw, member, passkey, 'session')
+        return me((request.principal ?? await authenticate(request.raw))!)
+      }
+      const enrolled = enrollCredential(request.raw, enrollment!, passkey)
+      return startMemberSession(request, enrolled.member, 'passkey', enrolled.credential.id)
     }, PUBLIC)
 
     router.add('POST', '/auth/passkey/login/options', async ({ raw }) => {
       const limited = limit(raw)
       if (limited) return limited
       const rp = passkeyRp(raw)
-      const request = await generateAuthenticationOptions({ rpID: rp.hostname, userVerification: 'preferred' })
+      const request = await generateAuthenticationOptions({ rpID: rp.hostname, userVerification: 'required' })
       db.saveChallenge(request.challenge, 'login', null)
       return request
     }, PUBLIC)
@@ -790,11 +807,8 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
         addCredential(request.raw, member, { kind: 'wallet', label, address: signer }, 'session')
         return me(principal!)
       }
-      const memberId = db.consumeEnrollment(enrollment)
-      const member = memberId ? store.getMember(memberId) : null
-      if (!member) throw new ConsoleError(400, 'invalid_enrollment', 'This sign-up link has expired. Ask for a new one.')
-      const added = addCredential(request.raw, member, { kind: 'wallet', label, address: signer }, 'enrollment')
-      return startMemberSession(request, member, 'wallet', added.id)
+      const enrolled = enrollCredential(request.raw, enrollment, { kind: 'wallet', label, address: signer })
+      return startMemberSession(request, enrolled.member, 'wallet', enrolled.credential.id)
     }), PUBLIC)
   }
 
@@ -885,7 +899,7 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       if (passkeys.length === 0) throw new ConsoleError(400, 'no_passkey', 'You have no passkey. Confirm with your wallet instead.')
       const options = await generateAuthenticationOptions({
         rpID: rp.hostname,
-        userVerification: 'preferred',
+        userVerification: 'required',
         allowCredentials: passkeys.map((row) => ({ id: row.webauthn_id!, transports: parseTransports(row.transports) })),
       })
       // Bound to the member: a plain sign-in challenge (no member) can't be used here.
@@ -984,6 +998,10 @@ export function createConsoleAuth(deps: AuthDeps, options: ConsoleAuthOptions = 
       const deleted = db.deleteCredential(memberId, credentialId)
       if (deleted) db.deleteMemberSessionsExcept(memberId, keepSessionId)
       return deleted
+    },
+    requireFreshSignIn,
+    createEnrollment(memberId) {
+      return db.createEnrollment(memberId)
     },
     setGatewayPort(port) {
       gatewayPort = port

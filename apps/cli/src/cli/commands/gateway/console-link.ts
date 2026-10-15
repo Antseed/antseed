@@ -5,7 +5,7 @@ import { consoleBaseUrl, normalizePublicUrl, readConsoleLocation, type ConsoleLo
 import { activeOwners, createRecoveryLink } from '../../../gateway/console-recovery.js'
 import type { GatewayStore, MemberRecord } from '../../../gateway/store.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
-import { DEFAULT_GATEWAY_PORT, openGatewayStore, printJson } from './shared.js'
+import { DEFAULT_GATEWAY_PORT, printJson, withGateway } from './shared.js'
 
 export interface ConsoleLocationOptions {
   publicUrl?: string
@@ -77,35 +77,30 @@ export function registerGatewayConsoleLinkCommand(gateway: Command): void {
     .option('--recover', 'once the console has an owner: print a one-time recovery link that lets an existing member add a sign-in method (e.g. after moving to a new domain)', false)
     .option('--member <id|email>', 'with --recover: the member to recover (default: the owner)')
     .option('--json', 'print machine-readable JSON', false)
-    .action((options: ConsoleLocationOptions & { json: boolean; recover: boolean; member?: string }) => {
-      const { store } = openGatewayStore(gateway)
-      try {
-        const location = resolveConsoleLocation(store, options)
-        const url = `${consoleBaseUrl(location)}/console`
-        if (options.recover) {
-          printRecoveryLink(store, location, url, options)
-          return
-        }
-        const setupLink = createSetupLink(store, location)
-        if (options.json) {
-          printJson({ url, setupRequired: setupLink !== null, setupLink })
-          return
-        }
-        if (setupLink) {
-          console.log(`${chalk.bold('Console setup link')} (single use, valid for 1 hour):`)
-          console.log(`  ${setupLink}`)
-          console.log(chalk.dim('Open it in a browser to claim the console as its owner. Running this again replaces the link.'))
-          if (!location.publicUrl) {
-            console.log(chalk.dim(`On a remote server, forward the port first: ssh -N -L ${location.port}:127.0.0.1:${location.port} <user>@<server>`))
-          }
-          return
-        }
-        console.log(`${chalk.bold('Console:')} ${url}`)
-        console.log(chalk.dim('The console already has an owner. Sign in there; invite people from its Members page or with'))
-        console.log(chalk.dim('  antseed gateway member invite --label <name> --email <email>'))
-        console.log(chalk.dim('Lost your sign-in (e.g. passkeys after a domain change)? antseed gateway console-link --recover'))
-      } finally {
-        store.close()
+    .action((options: ConsoleLocationOptions & { json: boolean; recover: boolean; member?: string }, cmd: Command) => withGateway(cmd, ({ store }) => {
+      const location = resolveConsoleLocation(store, options)
+      const url = `${consoleBaseUrl(location)}/console`
+      if (options.recover) {
+        printRecoveryLink(store, location, url, options)
+        return
       }
-    })
+      const setupLink = createSetupLink(store, location)
+      if (options.json) {
+        printJson({ url, setupRequired: setupLink !== null, setupLink })
+        return
+      }
+      if (setupLink) {
+        console.log(`${chalk.bold('Console setup link')} (single use, valid for 1 hour):`)
+        console.log(`  ${setupLink}`)
+        console.log(chalk.dim('Open it in a browser to claim the console as its owner. Running this again replaces the link.'))
+        if (!location.publicUrl) {
+          console.log(chalk.dim(`On a remote server, forward the port first: ssh -N -L ${location.port}:127.0.0.1:${location.port} <user>@<server>`))
+        }
+        return
+      }
+      console.log(`${chalk.bold('Console:')} ${url}`)
+      console.log(chalk.dim('The console already has an owner. Sign in there; invite people from its Members page or with'))
+      console.log(chalk.dim('  antseed gateway member invite --label <name> --email <email>'))
+      console.log(chalk.dim('Lost your sign-in (e.g. passkeys after a domain change)? antseed gateway console-link --recover'))
+    }))
 }

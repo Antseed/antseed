@@ -1,10 +1,10 @@
 import { isRoutingPolicy, normalizePolicy, type RoutingPolicy } from '../../routing-policy/policy.js'
 import { BUDGET_PERIODS, periodStart, type BudgetLimits } from '../limits.js'
 import { optionalUsdcToDecimalString, parseUsdToUsdc, usdcToDecimalString } from '../money.js'
-import type { ApiKeyRecord, GatewayStore, MemberRecord, WorkspaceRecord } from '../store.js'
+import type { ApiKeyRecord, GatewayStore, KeyUsageSummary, MemberRecord, WorkspaceRecord } from '../store.js'
 import type { ConsoleDeps } from './deps.js'
 import { ConsoleError } from './router.js'
-import type { ApiKey, Member, SpendLimits, Workspace, WorkspaceSummary } from './types.js'
+import type { ApiKey, Member, MemberSummary, SpendLimits, Workspace, WorkspaceSummary } from './types.js'
 
 export function badRequest(message: string, code = 'invalid_request'): ConsoleError {
   return new ConsoleError(400, code, message)
@@ -140,9 +140,16 @@ export function memberDto(deps: ConsoleDeps, member: MemberRecord): Member {
   }
 }
 
-export function apiKeyDto(store: GatewayStore, key: ApiKeyRecord, now = Date.now()): ApiKey {
-  const usage = store.usageStats(key.id)
-  const month = store.usageStats(key.id, periodStart('monthly', now))
+export function memberSummaryDto(member: MemberRecord): MemberSummary {
+  return { id: member.id, label: member.label, orgRole: member.orgRole, status: member.status }
+}
+
+/** Usage for `apiKeyDto`, for many keys at once: this month's spend is since the start of `now`'s month. */
+export function keyUsageForDtos(store: GatewayStore, keyIds: readonly string[], now = Date.now()): Map<string, KeyUsageSummary> {
+  return store.keyUsageSummaries(keyIds, periodStart('monthly', now))
+}
+
+export function apiKeyDto(store: GatewayStore, key: ApiKeyRecord, now = Date.now(), usage = keyUsageForDtos(store, [key.id], now).get(key.id)!): ApiKey {
   return {
     id: key.id,
     label: key.label,
@@ -159,7 +166,7 @@ export function apiKeyDto(store: GatewayStore, key: ApiKeyRecord, now = Date.now
     expiresAt: key.expiresAt,
     createdAt: key.createdAt,
     lastUsedAt: key.lastUsedAt,
-    usage: { requests: usage.requests, spent: usdcToDecimalString(usage.spentUsdc), spentThisMonth: usdcToDecimalString(month.spentUsdc) },
+    usage: { requests: usage.requests, spent: usdcToDecimalString(usage.spentUsdc), spentThisMonth: usdcToDecimalString(usage.spentSinceUsdc) },
   }
 }
 

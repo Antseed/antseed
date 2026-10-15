@@ -14,8 +14,3 @@ export const DEPOSITS_ABI = parseAbi([
   'function setOperator(address buyer, address operator, uint256 nonce, bytes buyerSig) external',
   'function transferOperator(address buyer, address newOperator) external',
 ])
-
-/** AntseedUsageRewards: the operator claims a buyer's reward one epoch at a time. */
-export const USAGE_REWARDS_CLAIM_ABI = parseAbi([
-  'function claimBuyerReward(address buyer, uint256 epoch) external',
-])

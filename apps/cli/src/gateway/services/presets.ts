@@ -52,9 +52,17 @@ function checkPresetPolicy(ctx: ServiceContext, workspaceId: string | null, poli
   ))
 }
 
+/**
+ * Slugs are unique within their scope, and a workspace preset may not reuse
+ * an org-wide preset's slug: the org preset would win (see
+ * `findPresetBySlug`), so the workspace one could never be called.
+ */
 function assertSlugFree(ctx: ServiceContext, slug: string, workspaceId: string | null, exceptId?: string): void {
-  const clash = ctx.store.listPresets().some((preset) => preset.id !== exceptId && preset.slug === slug && preset.workspaceId === workspaceId)
-  if (clash) throw new ConsoleError(409, 'preset_exists', `A preset named "${slug}" already exists here`)
+  const others = ctx.store.listPresets().filter((preset) => preset.id !== exceptId && preset.slug === slug)
+  if (others.some((preset) => preset.workspaceId === workspaceId)) throw new ConsoleError(409, 'preset_exists', `A preset named "${slug}" already exists here`)
+  if (workspaceId !== null && others.some((preset) => preset.workspaceId === null)) {
+    throw new ConsoleError(409, 'preset_exists', `An organization-wide preset is already named "${slug}"`)
+  }
 }
 
 export function requirePresetRecord(ctx: Pick<ServiceContext, 'store'>, id: string): PresetRecord {

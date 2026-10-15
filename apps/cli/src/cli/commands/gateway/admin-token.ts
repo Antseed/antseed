@@ -4,7 +4,7 @@ import Table from 'cli-table3'
 import type { AdminTokenRecord } from '../../../gateway/store.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 import { createAdminToken, DEFAULT_TOKEN_DAYS, MAX_TOKEN_DAYS, revokeAdminToken } from '../../../gateway/services/tokens.js'
-import { isoOrNull, openGatewayStore, printJson, withGateway } from './shared.js'
+import { isoOrNull, printJson, withGateway } from './shared.js'
 
 const DAY_MS = 24 * 60 * 60 * 1000
 
@@ -56,35 +56,30 @@ export function registerGatewayAdminTokenCommands(gateway: Command): void {
   adminToken.command('list')
     .description('List active management tokens')
     .option('--json', 'print machine-readable JSON', false)
-    .action((options: { json: boolean }) => {
-      const { store } = openGatewayStore(adminToken)
-      try {
-        const tokens = store.listAdminTokens()
-        if (options.json) {
-          printJson(tokens.map(tokenJson))
-          return
-        }
-        if (tokens.length === 0) {
-          console.log(chalk.dim('No management tokens. Create one with `antseed gateway admin-token create --label <name>`.'))
-          return
-        }
-        const table = new Table({ head: ['Id', 'Label', 'Token', 'Scope', 'Created', 'Expires', 'Last used'] })
-        for (const token of tokens) {
-          table.push([
-            token.id,
-            token.label,
-            token.hint,
-            token.scope,
-            new Date(token.createdAt).toISOString().slice(0, 10),
-            token.expiresAt === null ? 'never' : `${new Date(token.expiresAt).toISOString().slice(0, 10)}${token.expiresAt <= Date.now() ? ' (expired)' : ''}`,
-            token.lastUsedAt === null ? '-' : new Date(token.lastUsedAt).toISOString().replace('T', ' ').slice(0, 16),
-          ])
-        }
-        console.log(table.toString())
-      } finally {
-        store.close()
+    .action((options: { json: boolean }, cmd: Command) => withGateway(cmd, ({ store }) => {
+      const tokens = store.listAdminTokens()
+      if (options.json) {
+        printJson(tokens.map(tokenJson))
+        return
       }
-    })
+      if (tokens.length === 0) {
+        console.log(chalk.dim('No management tokens. Create one with `antseed gateway admin-token create --label <name>`.'))
+        return
+      }
+      const table = new Table({ head: ['Id', 'Label', 'Token', 'Scope', 'Created', 'Expires', 'Last used'] })
+      for (const token of tokens) {
+        table.push([
+          token.id,
+          token.label,
+          token.hint,
+          token.scope,
+          new Date(token.createdAt).toISOString().slice(0, 10),
+          token.expiresAt === null ? 'never' : `${new Date(token.expiresAt).toISOString().slice(0, 10)}${token.expiresAt <= Date.now() ? ' (expired)' : ''}`,
+          token.lastUsedAt === null ? '-' : new Date(token.lastUsedAt).toISOString().replace('T', ' ').slice(0, 16),
+        ])
+      }
+      console.log(table.toString())
+    }))
 
   adminToken.command('revoke')
     .description('Revoke a management token immediately')

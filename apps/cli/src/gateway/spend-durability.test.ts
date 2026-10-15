@@ -262,6 +262,9 @@ test('usage uses ledger tokens when the spend has them, else the response tokens
   // Spend without token counts leaves gw_b on its response tokens.
   spend('gw_b', 'spend:x:2', 4, [0, 0, 0], t0 + 6)
   assert.deepEqual([totals().inputTokens, totals().cachedInputTokens, totals().outputTokens, totals().spentUsdc], [158, 40, 29, 14])
+  // The key's own stats (GET /v1/key) count tokens the same way.
+  const stats = store.usageStats(key.id)
+  assert.deepEqual([stats.inputTokens, stats.cachedInputTokens, stats.outputTokens, stats.spentUsdc], [158, 40, 29, 14])
 
   const rows = new Map(store.listRequests({ ...filter, limit: 10 }).map((row) => [row.tag, row]))
   assert.deepEqual([rows.get('gw_a')!.inputTokens, rows.get('gw_a')!.outputTokens, rows.get('gw_a')!.costPending], [101, 21, false])
@@ -278,6 +281,49 @@ test('only model requests that did not fail wait for a cost', (context) => {
   store.finishRequest('gw_nomodel', { status: 200, buyerRequestId: null })
   const pending = Object.fromEntries(store.listRequests({ keyIds: null, keyId: key.id, limit: 10 }).map((row) => [row.tag, row.costPending]))
   assert.deepEqual(pending, { gw_flight: true, gw_failed: false, gw_nomodel: false })
+})
+
+/** A fake buyer answering every request with `pricing` headers and never reporting spend (as for a free seller). */
+async function pricedBuyer(pricing: Record<string, string>) {
+  const server = http.createServer((req, res) => {
+    req.resume()
+    req.on('end', () => {
+      res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-peer-id': 'seller', ...pricing })
+      res.end(JSON.stringify({ choices: [], usage: { prompt_tokens: 5, completion_tokens: 2 } }))
+    })
+  })
+  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', () => resolve()))
+  return { port: (server.address() as { port: number }).port, stop: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+}
+
+test('a request a free seller served costs $0 and is not pending; a priced or unpriced one stays pending', async (context) => {
+  const { dir, cleanup } = tempDir('antseed-gateway-')
+  const store = new GatewayStore(dir)
+  context.after(() => { store.close(); cleanup() })
+  const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+  const cases: Array<[string, Record<string, string>, boolean]> = [
+    ['free', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-cached-input-usd-per-million': '0' }, true],
+    ['free, no cached price', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0' }, true],
+    ['paid output', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '2' }, false],
+    ['paid cache reads', { 'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0', 'x-antseed-cached-input-usd-per-million': '0.1' }, false],
+    ['no prices', {}, false],
+  ]
+  const seen = new Set<string>()
+  for (const [name, pricing, free] of cases) {
+    const buyer = await pricedBuyer(pricing)
+    const gateway = await gatewayFor(store, buyer.port)
+    try {
+      assert.equal((await postJson(gateway.port, secret, { model: 'test-model', messages: [] })).status, 200)
+    } finally {
+      await gateway.stop()
+      await buyer.stop()
+    }
+    const row = listRequestPage(store, { keyIds: null }).requests.find((entry) => !seen.has(entry.tag))
+    seen.add(row!.tag)
+    assert.equal(row!.spent, null, name)
+    assert.equal(row!.servedFree, free ? true : undefined, name)
+    assert.equal(row!.costPending, free ? undefined : true, name)
+  }
 })
 
 test('a usage report groups by hour or day and splits each group by model in one query', (context) => {
@@ -315,16 +361,4 @@ test('groupBy and splitBy parse together', () => {
   assert.throws(() => parseGrouping('day,model,key', null), /at most two/)
   assert.throws(() => parseGrouping('week', null), /groupBy must be one of/)
   assert.throws(() => parseGrouping('day', 'nope'), /splitBy must be one of/)
-})
-
-test('a database from an earlier draft of v3 gains the response usage columns', (context) => {
-  const { dir, cleanup } = tempDir('antseed-gateway-')
-  context.after(cleanup)
-  const store = new GatewayStore(dir)
-  store.database.exec('ALTER TABLE gateway_requests DROP COLUMN usage_input_tokens; ALTER TABLE gateway_requests DROP COLUMN usage_output_tokens')
-  store.close()
-  const reopened = new GatewayStore(dir)
-  context.after(() => reopened.close())
-  const columns = (reopened.database.prepare('PRAGMA table_info(gateway_requests)').all() as Array<{ name: string }>).map((column) => column.name)
-  for (const column of ['usage_input_tokens', 'usage_cached_input_tokens', 'usage_output_tokens']) assert.ok(columns.includes(column), column)
 })

@@ -1,6 +1,10 @@
 import assert from 'node:assert/strict'
+import { mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
 import { test } from 'node:test'
-import { addressScope, detectExposure, detectHostFacts, isPersonalComputer, type HostFacts } from './exposure.js'
+import { FileIdentityStore } from '@antseed/node'
+import { addressScope, detectExposure, detectHostFacts, isPersonalComputer, unencryptedWalletWarning, type HostFacts } from './exposure.js'
 
 const SERVER: HostFacts = { platform: 'linux', systemd: true, container: false }
 const MAC: HostFacts = { platform: 'darwin', systemd: false, container: false }
@@ -78,4 +82,21 @@ test('detectHostFacts reads systemd and container markers without network calls'
   assert.equal(detectHostFacts({ INVOCATION_ID: 'abc' }, () => false).systemd, true)
   assert.equal(detectHostFacts({}, (path) => path === '/.dockerenv').container, true)
   assert.equal(detectHostFacts({ KUBERNETES_SERVICE_HOST: '10.0.0.1' }, () => false).container, true)
+})
+
+test('start-up warns about wallet keys stored unencrypted, and stops once they are encrypted', async () => {
+  const dataDir = mkdtempSync(join(tmpdir(), 'antseed-wallet-warning-'))
+  try {
+    assert.equal(await unencryptedWalletWarning(dataDir, false), null, 'no keys, nothing to warn about')
+    writeFileSync(join(dataDir, 'identity.key'), '12'.repeat(32), { mode: 0o600 })
+    await new FileIdentityStore(join(dataDir, 'buyer-identities', 'team-a'), { passphrase: null }).save('34'.repeat(32))
+    const warning = await unencryptedWalletWarning(dataDir, false)
+    assert.match(warning ?? '', /stored unencrypted \(default, team-a\).*set ANTSEED_PASSPHRASE/)
+    assert.doesNotMatch(await unencryptedWalletWarning(dataDir, true) ?? '', /set ANTSEED_PASSPHRASE/)
+
+    for (const dir of [dataDir, join(dataDir, 'buyer-identities', 'team-a')]) await new FileIdentityStore(dir, { passphrase: 'correct horse' }).protect()
+    assert.equal(await unencryptedWalletWarning(dataDir, false), null)
+  } finally {
+    rmSync(dataDir, { recursive: true, force: true })
+  }
 })

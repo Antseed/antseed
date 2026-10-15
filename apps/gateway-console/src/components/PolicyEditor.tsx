@@ -1,16 +1,19 @@
-import { useId, useMemo, useState } from 'react'
+import { useId, useMemo, useState, type ReactNode } from 'react'
 import { Alert, Button, ConfirmDialog, Disclosure, Segmented, SelectField, Switch, TextField } from '@antseed/ui'
 import type { Peer, PeerList, RoutingPolicy, RoutingSort } from '../api/types'
-import { modelsFromPeers } from '../lib/queries'
+import { modelsFromPeers, useBuyerLimits } from '../lib/queries'
 import {
-  draftToPolicy, emptyDraft, mergeTemplate, POLICY_TEMPLATES, SORT_LABELS, templateConflicts, templateDraft, templatePolicy,
+  buyerPolicy, draftToPolicy, emptyDraft, mergeTemplate, POLICY_TEMPLATES, SORT_LABELS, templateConflicts, templateDraft, templatePolicy,
   type DraftRoute, type PolicyDraft, type TemplateId,
 } from '../lib/policy'
+import { formatPricePerMillion } from '../lib/format'
 import { combinePolicies, hasReputationData, matchingPeers } from '../lib/policy-match'
 import { ChipsInput, PeerPicker } from './PeerPicker'
 
-/** "Matches N of M sellers" for the draft combined with the levels above it; warns at zero. */
-function MatchSummary({ draft, parent, peers, lists }: { draft: PolicyDraft; parent?: RoutingPolicy | null; peers?: readonly Peer[]; lists: readonly PeerList[] }) {
+/** "Matches N of M sellers" for the draft combined with the buyer config and the levels above it; warns at zero. */
+function MatchSummary({ draft, parent, above, peers, lists }: {
+  draft: PolicyDraft; parent: RoutingPolicy | null; above: string; peers?: readonly Peer[]; lists: readonly PeerList[]
+}) {
   const result = useMemo(() => {
     if (!peers || peers.length === 0) return null
     let own: RoutingPolicy
@@ -22,11 +25,11 @@ function MatchSummary({ draft, parent, peers, lists }: { draft: PolicyDraft; par
   if (result.matched === 0) {
     return (
       <Alert tone="warning" title="No seller matches this policy">
-        With {parent ? 'the levels above and ' : ''}these settings, none of the {result.total} sellers this gateway sees can serve a request. Requests will fail until you loosen it.
+        With {above ? `${above} and ` : ''}these settings, none of the {result.total} sellers this gateway sees can serve a request. Requests will fail until you loosen it.
       </Alert>
     )
   }
-  return <p className="gc-muted" aria-live="polite">Matches {result.matched} of {result.total} sellers{parent ? ' after the levels above' : ''}.</p>
+  return <p className="gc-muted" aria-live="polite">Matches {result.matched} of {result.total} sellers{above ? ` after ${above}` : ''}.</p>
 }
 
 /**
@@ -45,7 +48,13 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
   const set = <K extends keyof PolicyDraft>(key: K, next: PolicyDraft[K]) => onChange({ ...value, [key]: next })
   const models = modelsFromPeers(peers as Peer[] | undefined)
   const listOptions = lists.map((list) => ({ value: list.id, label: `${list.name} (${list.peerIds.length})` }))
-  const showReputation = hasReputationData(peers) || value.minReputation !== ''
+  const buyer = buyerPolicy(useBuyerLimits().data)
+  // What this level narrows: the buyer's own config, then the gateway levels above it.
+  const above = useMemo(() => (buyer || parent ? combinePolicies(buyer, parent) : null), [buyer, parent])
+  const aboveLabel = buyer && parent ? 'the buyer config and the levels above' : buyer ? 'the buyer config' : parent ? 'the levels above' : ''
+  const floorSource = (key: 'minTrustScore' | 'minReputation') =>
+    buyer?.[key] !== undefined && buyer[key] === above?.[key] ? 'The buyer config' : 'The levels above'
+  const showReputation = hasReputationData(peers) || value.minReputation !== '' || above?.minReputation !== undefined
 
   function applyTemplate(id: TemplateId) {
     let template: Partial<PolicyDraft>
@@ -68,14 +77,15 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
 
   const capCount = [value.maxInputUsdPerMillion, value.maxOutputUsdPerMillion, value.maxCachedInputUsdPerMillion, value.maxImageUsdPerImage].filter((entry) => entry.trim() !== '').length
   const capField = (key: 'maxInputUsdPerMillion' | 'maxOutputUsdPerMillion' | 'maxCachedInputUsdPerMillion' | 'maxImageUsdPerImage', label: string) => (
-    <TextField size="sm" className="gc-num" label={label} inputMode="decimal" placeholder="No cap" value={value[key]}
+    <TextField size="sm" className="gc-num" label={label} inputMode="decimal" value={value[key]}
+      placeholder={above?.[key] !== undefined ? `≤ ${formatPricePerMillion(above[key]!)} above` : 'No cap'}
       onChange={(event) => set(key, event.target.value)} />
   )
 
   // Inline JSX, not nested components, so inputs keep focus across renders.
   const content = (
     <>
-      <MatchSummary draft={value} parent={parent} peers={peers} lists={lists} />
+      <MatchSummary draft={value} parent={above} above={aboveLabel} peers={peers} lists={lists} />
       {showTemplates && !disabled && (
         <div className="gc-policy__templates">
           <span className="gc-muted">Start from</span>
@@ -113,11 +123,19 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
 
         <section className="gc-policy__section">
           <h3>Quality and ranking</h3>
-          <Slider label="Minimum trust score" value={value.minTrustScore} onChange={(next) => set('minTrustScore', next)} />
+          <Slider label="Minimum trust score" value={value.minTrustScore} onChange={(next) => set('minTrustScore', next)}
+            floor={above?.minTrustScore} floorSource={floorSource('minTrustScore')} />
           <div className="gc-policy__switches">
-            <Switch checked={value.requireTee} onChange={(next) => set('requireTee', next)} label="TEE sellers only" />
-            <Switch checked={value.requireVerified} onChange={(next) => set('requireVerified', next)} label="Verified sellers only" />
+            <Switch checked={value.requireTee || !!above?.requireTee} disabled={!!above?.requireTee}
+              onChange={(next) => set('requireTee', next)} label="TEE sellers only" />
+            <Switch checked={value.requireVerified || !!above?.requireVerified} disabled={!!above?.requireVerified}
+              onChange={(next) => set('requireVerified', next)} label="Verified sellers only" />
           </div>
+          {(above?.requireTee || above?.requireVerified) && (
+            <span className="as-field__hint">
+              {above.requireTee && above.requireVerified ? 'TEE and verified sellers are' : above.requireTee ? 'TEE sellers are' : 'Verified sellers are'} already required above.
+            </span>
+          )}
           <div className="gc-policy__pair">
             <SelectField size="sm" label="Sort by" value={value.sort} onChange={(next) => set('sort', next as RoutingSort | '')}
               options={[{ value: '', label: 'Inherit' }, ...(Object.keys(SORT_LABELS) as RoutingSort[]).map((sort) => ({ value: sort, label: SORT_LABELS[sort] }))]} />
@@ -159,8 +177,9 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
           <div><Button variant="outline" size="sm" onClick={() => set('routes', [...value.routes, { model: '', peerIds: [], strict: false }])}>Add fallback chain</Button></div>
         </Disclosure>
         {showReputation && (
-          <Disclosure title="Reputation" summary={value.minReputation !== '' ? `≥ ${value.minReputation}` : 'Inherit'} defaultOpen={disabled && value.minReputation !== ''}>
-            <Slider label="Minimum reputation" value={value.minReputation} onChange={(next) => set('minReputation', next)} />
+          <Disclosure title="Reputation" summary={value.minReputation !== '' ? `≥ ${value.minReputation}` : above?.minReputation !== undefined ? `Inherit (≥ ${above.minReputation})` : 'Inherit'} defaultOpen={disabled && value.minReputation !== ''}>
+            <Slider label="Minimum reputation" value={value.minReputation} onChange={(next) => set('minReputation', next)}
+              floor={above?.minReputation} floorSource={floorSource('minReputation')} />
           </Disclosure>
         )}
       </div>
@@ -175,20 +194,37 @@ export function PolicyEditor({ value, onChange, peers, lists, showTemplates = tr
   return <div className="gc-policy">{content}</div>
 }
 
-function Slider({ label, value, onChange }: { label: string; value: string; onChange: (value: string) => void }) {
+/**
+ * A 0–100 score slider. Policies can clear it back to "Inherit"; the buyer's
+ * own settings always hold a value (`clearable={false}`), and `hint` goes
+ * under it. `floor` is the minimum already required above this level: an
+ * inheriting slider sits on it, and a value at or under it is flagged as
+ * having no effect.
+ */
+export function Slider({ label, value, onChange, clearable = true, hint, floor, floorSource = 'The levels above' }: {
+  label: string; value: string; onChange: (value: string) => void; clearable?: boolean; hint?: ReactNode
+  floor?: number; floorSource?: string
+}) {
   const labelId = useId()
   const enabled = value !== ''
+  const hasFloor = floor !== undefined && floor > 0
+  const redundant = hasFloor && enabled && Number(value) <= floor
+  const shown = enabled ? value : hasFloor ? `${floor} inherited` : 'Inherit'
   return (
     <div className="gc-slider">
       <div className="gc-slider__head">
         <span className="as-field__label" id={labelId}>{label}</span>
-        <span className="gc-slider__value">{enabled ? value : 'Inherit'}</span>
+        <span className={enabled ? 'gc-slider__value' : 'gc-slider__value gc-slider__value--inherit'}>{shown}</span>
       </div>
       <div className="gc-inline">
-        <input type="range" min={0} max={100} step={5} value={enabled ? Number(value) : 0} aria-labelledby={labelId}
+        <input type="range" min={0} max={100} step={5} value={enabled ? Number(value) : hasFloor ? floor : 0} aria-labelledby={labelId}
           onChange={(event) => onChange(event.target.value)} />
-        {enabled && <Button variant="ghost" size="sm" onClick={() => onChange('')}>Clear</Button>}
+        {clearable && enabled && <Button variant="ghost" size="sm" onClick={() => onChange('')}>Clear</Button>}
       </div>
+      {redundant
+        ? <span className="as-field__hint gc-override"><span className="gc-attention" aria-hidden="true" />{floorSource} already requires ≥ {floor}. No effect.</span>
+        : hasFloor && <span className="as-field__hint">{floorSource} requires ≥ {floor}. Only a higher value narrows it.</span>}
+      {hint && <span className="as-field__hint">{hint}</span>}
     </div>
   )
 }

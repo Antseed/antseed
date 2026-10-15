@@ -2,7 +2,7 @@ import { describe, expect, it } from 'vitest'
 import type { ChainInfo, Peer, UsageReport } from '../api/types'
 import { contractAddress, explorerTxUrl, isSetAddress, sameAddress, ZERO_ADDRESS } from './chain'
 import { headersToText, textToHeaders } from './headers'
-import { filterPeers, inputPrice, isFreePeer } from './peers'
+import { filterPeers, inputPrice, isFreePeer, priceRange } from './peers'
 import { isValidSlug, parseParams, slugify } from './presets'
 import { parseLocation } from './router'
 import { gatewayBaseUrl, keySnippets } from './snippets'
@@ -51,12 +51,12 @@ describe('presets', () => {
 
 describe('peers', () => {
   const peer = (id: string, overrides: Partial<Peer>): Peer => ({
-    peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, tee: false, stakeAnts: null,
+    peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, verificationLinks: [], tee: false, stakeAnts: null,
     usageShareBps: null, washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, requests24h: 0, ...overrides,
   })
   const svc = (service: string, price: number) => ({ provider: 'p', service, inputUsdPerMillion: price, outputUsdPerMillion: price, cachedInputUsdPerMillion: null, categories: [] })
   const peers = [
-    peer('0xfa1e01', { displayName: 'Alpha', tee: true, verified: true, services: [svc('m1', 2), svc('m2', 1)] }),
+    peer('0xfa1e01', { displayName: 'Alpha', tee: true, verified: true, verificationLinks: [{ kind: 'domain', label: 'alpha.example.com', href: 'https://alpha.example.com' }], services: [svc('m1', 2), svc('m2', 1)] }),
     peer('0xfa1e02', { displayName: 'Free', services: [svc('m1', 0)] }),
   ]
   it('computes prices per model', () => {
@@ -64,9 +64,16 @@ describe('peers', () => {
     expect(inputPrice(peers[0]!, 'm1')).toBe(2)
     expect(isFreePeer(peers[1]!)).toBe(true)
   })
+  it('spans a seller\'s prices across its models', () => {
+    const mixed = peer('0xfa1e03', { services: [svc('m1', 0), svc('m2', 3)] })
+    expect(priceRange(mixed, 'inputUsdPerMillion')).toEqual({ min: 0, max: 3 })
+    expect(priceRange(mixed, 'outputUsdPerMillion', 'm1')).toEqual({ min: 0, max: 0 })
+    expect(priceRange(peer('0xfa1e04', {}), 'inputUsdPerMillion')).toBeNull()
+  })
   it('filters', () => {
-    const base = { search: '', model: '', tee: false, verified: false, free: false }
+    const base = { search: '', model: '', tee: false, linked: false, free: false }
     expect(filterPeers(peers, { ...base, tee: true }).map((p) => p.displayName)).toEqual(['Alpha'])
+    expect(filterPeers(peers, { ...base, linked: true }).map((p) => p.displayName)).toEqual(['Alpha'])
     expect(filterPeers(peers, { ...base, free: true }).map((p) => p.displayName)).toEqual(['Free'])
     expect(filterPeers(peers, { ...base, model: 'm2' }).map((p) => p.displayName)).toEqual(['Alpha'])
     expect(filterPeers(peers, { ...base, search: 'fa1e02' }).map((p) => p.displayName)).toEqual(['Free'])
@@ -86,6 +93,10 @@ describe('routing and snippets', () => {
     expect(parseLocation('/console/keys', '?a=1', '#tok')).toMatchObject({ page: 'keys', rest: [], hash: 'tok' })
     expect(parseLocation('/console/').page).toBe('')
     expect(parseLocation('/console/setup').page).toBe('setup')
+  })
+  it('decodes path segments and keeps malformed ones as typed', () => {
+    expect(parseLocation('/console/providers/a%2Fb%20c').rest).toEqual(['a/b c'])
+    expect(parseLocation('/console/providers/%E0%A4%A').rest).toEqual(['%E0%A4%A'])
   })
   it('builds snippets against the gateway URL', () => {
     expect(gatewayBaseUrl('https://gw.example.com/', 'http://localhost')).toBe('https://gw.example.com')

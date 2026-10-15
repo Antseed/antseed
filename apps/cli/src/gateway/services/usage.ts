@@ -1,7 +1,7 @@
 import { badRequest, notFound } from '../console-api/serialize.js'
-import type { RequestDetail, RequestLogEntry, UsageReport, UsageTotals } from '../console-api/types.js'
+import type { RequestDetail, RequestLogEntry, UsageReport, UsageSplit, UsageTotals } from '../console-api/types.js'
 import { usdcToDecimalString } from '../money.js'
-import type { GatewayStore, RequestCursor, RequestLogFilter, RequestLogRow, UsageFilter, UsageGroupBy, UsageTotalsRow } from '../store.js'
+import type { GatewayStore, RequestCursor, RequestLogFilter, RequestLogRow, UsageFilter, UsageGroupBy, UsageSplitRow, UsageTotalsRow } from '../store.js'
 
 const USAGE_GROUP_BYS: readonly UsageGroupBy[] = ['hour', 'day', 'model', 'key', 'member', 'peer', 'workspace', 'user']
 const DAY_MS = 24 * 60 * 60 * 1000
@@ -97,6 +97,7 @@ export function requestDto(row: RequestLogRow): RequestLogEntry {
     outputTokens: row.outputTokens,
     errorCode: row.errorCode,
     errorMessage: row.errorMessage,
+    ...(row.servedFree ? { servedFree: true } : {}),
     ...(row.costPending ? { costPending: true } : {}),
   }
 }
@@ -145,16 +146,18 @@ export function usageReport(
     }
     return found
   }
+  const groupDto = (by: UsageGroupBy, row: UsageSplitRow): UsageSplit => {
+    if (row.others) return { group: row.group ?? '', label: `${row.others} other users`, others: row.others, ...totalsDto(row) }
+    return { group: row.group ?? '', label: label(by, row.group), ...totalsDto(row) }
+  }
   return {
     from,
     to,
     totals: totalsDto(report.totals),
     groups: groupBy
       ? report.groups.map((row) => ({
-        group: row.group ?? '',
-        label: label(groupBy, row.group),
-        ...totalsDto(row),
-        ...(splitBy ? { splits: (row.splits ?? []).map((part) => ({ group: part.group ?? '', label: label(splitBy, part.group), ...totalsDto(part) })) } : {}),
+        ...groupDto(groupBy, row),
+        ...(splitBy ? { splits: (row.splits ?? []).map((part) => groupDto(splitBy, part)) } : {}),
       }))
       : [],
   }

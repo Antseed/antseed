@@ -117,13 +117,15 @@ export function VprChatsView({ onSelectView: _onSelectView }: Props) {
   // never disappears from its own picker.
   const favorites = useMemo(loadFavoriteModels, [selectedId]);
   const models = useMemo(() => {
-    const favoriteEntries = selectFavoriteVprCatalog(snap.catalog, favorites);
-    const recommended = selectRecommendedVprCatalog(snap.catalog)
+    // Chats can't be pinned to video models (they run via the Videos skill).
+    const catalog = snap.catalog.filter((entry) => entry.kind !== 'video');
+    const favoriteEntries = selectFavoriteVprCatalog(catalog, favorites);
+    const recommended = selectRecommendedVprCatalog(catalog)
       .filter((entry) => !favorites.has(catalogEntryKey(entry)));
     const list = [...favoriteEntries, ...recommended];
     const pinnedServiceId = selected ? conversationPinnedServiceId(selected) : null;
     if (pinnedServiceId && !list.some((entry) => entry.serviceId === pinnedServiceId)) {
-      const pinnedEntry = snap.catalog.find((entry) => entry.serviceId === pinnedServiceId);
+      const pinnedEntry = catalog.find((entry) => entry.serviceId === pinnedServiceId);
       if (pinnedEntry) list.unshift(pinnedEntry);
     }
     return list;

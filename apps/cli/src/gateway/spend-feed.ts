@@ -7,9 +7,15 @@ const POLL_TIMEOUT_MS = 3_000
 /**
  * - `reporting`: the buyer answers and reports attributed spend.
  * - `unsupported`: a buyer answers but predates spend attribution.
+ * - `unauthorized`: the buyer answered but rejected the gateway's control
+ *   secret (different data dirs, or ANTSEED_GATEWAY_CONTROL_SECRET set on
+ *   one side only), so it will not hand out spend.
  * - `unreachable`: nothing answered on the buyer port.
  */
-export type SpendFeedState = 'reporting' | 'unsupported' | 'unreachable'
+export type SpendFeedState = 'reporting' | 'unsupported' | 'unauthorized' | 'unreachable'
+
+/** What to do about an `unauthorized` feed, for logs and error answers. */
+export const SPEND_FEED_UNAUTHORIZED_HINT = 'the buyer rejected the gateway control secret: run the gateway and the buyer with the same data dir, or set ANTSEED_GATEWAY_CONTROL_SECRET to the same value for both'
 
 export interface SpendFeedOptions {
   buyerPort: number
@@ -78,6 +84,10 @@ export class SpendFeedPoller {
         this._setState('unsupported')
         return
       }
+      if (response.status === 401 || response.status === 403) {
+        this._setState('unauthorized')
+        return
+      }
       if (!response.ok) {
         this._setState('unreachable')
         return
@@ -109,7 +119,9 @@ export class SpendFeedPoller {
   }
 
   private _setState(state: SpendFeedState): void {
-    if (this._state !== state) this._options.onLog?.(`spend feed: ${state}`)
+    if (this._state === state) return
     this._state = state
+    const hint = state === 'unauthorized' ? ` (${SPEND_FEED_UNAUTHORIZED_HINT})` : ''
+    this._options.onLog?.(`spend feed: ${state}${hint}`)
   }
 }

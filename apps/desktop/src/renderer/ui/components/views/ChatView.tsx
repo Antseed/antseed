@@ -28,7 +28,8 @@ import { WalkingAnt } from '../chat/WalkingAnt';
 import { ImageGenerationPlaceholder } from '../chat/ImageGenerationPlaceholder';
 import { SessionApprovalCard } from '../chat/SessionApprovalCard';
 import { ToolApprovalCard } from '../chat/ToolApprovalCard';
-import { LowBalanceWarning } from '../chat/LowBalanceWarning';
+import { FundingStatusNotice } from './FundingStatusNotice';
+import { useFundingStatus } from '../../hooks/useFundingStatus';
 import { VprModelDropdown } from '../chat/VprModelDropdown';
 import { SwitchServiceDialog } from '../chat/SwitchServiceDialog';
 import { LowReputationDialog } from '../chat/LowReputationDialog';
@@ -234,6 +235,11 @@ const chatViewCache: ChatViewCache = {
 };
 
 export function ChatView({ onSelectView }: ChatViewProps) {
+  // Blockers only (a deposit short of the minimum, credits all held in
+  // sessions); dismissing hides this one until the situation changes.
+  const funding = useFundingStatus();
+  const fundingKey = `${funding.kind}:${funding.title}`;
+  const [dismissedFundingKey, setDismissedFundingKey] = useState<string | null>(null);
   const snap = useUiSelector((state) => ({
     headlineBalanceUsdc: selectHeadlineBalanceUsdc(state),
     browserPreviewRequestId: state.browserPreviewRequestId,
@@ -247,7 +253,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatError: state.chatError,
     chatRoutingNotice: state.chatRoutingNotice,
     chatInputDisabled: state.chatInputDisabled,
-    chatLowBalanceWarning: state.chatLowBalanceWarning,
     chatMessages: state.chatMessages,
     chatOpeningConversationId: state.chatOpeningConversationId,
     chatPaymentApprovalAmount: state.chatPaymentApprovalAmount,
@@ -272,7 +277,6 @@ export function ChatView({ onSelectView }: ChatViewProps) {
     chatToolApprovalRequests: state.chatToolApprovalRequests,
     chatWorkspaceDefaultPath: state.chatWorkspaceDefaultPath,
     chatWorkspacePath: state.chatWorkspacePath,
-    creditsAvailableUsdc: state.creditsAvailableUsdc,
     discoverRows: state.discoverRows,
     vprModelCatalog: state.vprModelCatalog,
     vprRouteSelection: state.vprRouteSelection,
@@ -1395,6 +1399,7 @@ export function ChatView({ onSelectView }: ChatViewProps) {
               peerInfo={snap.chatPaymentApprovalPeerInfo}
               error={snap.chatPaymentApprovalError}
               onAddCredits={() => onSelectView?.('deposit')}
+              onManageSessions={() => onSelectView?.('activity')}
               onRetry={() => actions.retryAfterPayment()}
               onCancel={() => actions.rejectPaymentSession()}
             />
@@ -1419,11 +1424,16 @@ export function ChatView({ onSelectView }: ChatViewProps) {
             {attachmentError && <div className={styles.chatError}>{attachmentError}</div>}
             {voiceError && <div className={styles.chatError}>{voiceError}</div>}
             {attachmentWarning && <div className={styles.chatWarning}>{attachmentWarning}</div>}
-            <LowBalanceWarning
-              visible={snap.chatLowBalanceWarning}
-              availableUsdc={snap.creditsAvailableUsdc}
-              onAddCredits={() => onSelectView?.('deposit')}
-            />
+            {dismissedFundingKey !== fundingKey ? (
+              <FundingStatusNotice
+                variant="strip"
+                status={funding}
+                includeInfo={false}
+                onAddFunds={() => onSelectView?.('deposit')}
+                onManageSessions={() => onSelectView?.('activity')}
+                onDismiss={() => setDismissedFundingKey(fundingKey)}
+              />
+            ) : null}
             <ToolApprovalCard
               request={activeToolApprovalRequest}
               pendingCount={activeToolApprovalRequests.length}

@@ -34,8 +34,8 @@ function resolveRouteTarget(uiState: RendererUiState): VprRouteTarget | null {
   ));
   // Connected apps and the buyer's default alias currently issue text/chat
   // requests. Leave their existing route untouched when AI VPN selects an image
-  // model; chat's per-conversation selection remains the text fallback.
-  if (selectedEntry?.kind === 'image') return null;
+  // or video model; chat's per-conversation selection remains the text fallback.
+  if (selectedEntry && selectedEntry.kind !== 'text') return null;
   const canonicalServiceId = selectedEntry?.serviceId ?? selection.model.serviceId;
   const modelRoutes = routesForSelectedModel(uiState.vprRoutableRows, selection.model);
   const unrestrictedRoutes = modelRoutes.filter((candidate) => !CODING_ONLY_SUFFIX_RE.test(candidate.serviceId));

@@ -4,7 +4,7 @@ import { AuthDb } from './auth/db.js'
 import { recoveryTarget } from '../cli/commands/gateway/console-link.js'
 import { FakeConsoleAuth, addActiveMember, call, startConsole, tempDataDir, testDeps } from './console-api/test-support.js'
 import type { Enrollment } from './console-api/types.js'
-import { consumeRecoveryToken, createRecoveryLink, RECOVERY_TTL_MS, registerRecoveryRoutes } from './console-recovery.js'
+import { consumeRecoveryToken, createRecoveryLink, RECOVERY_TTL_MS, recoveryRouteRegistrar } from './console-recovery.js'
 
 const LOCATION = { publicUrl: 'https://llm.example.com', port: 8379 }
 
@@ -12,7 +12,8 @@ async function harness() {
   const { dir, store, cleanup } = tempDataDir()
   let now = Date.now()
   const deps = testDeps(store, dir, { now: () => now })
-  const server = await startConsole(deps, new FakeConsoleAuth(), [registerRecoveryRoutes])
+  const enrollments = new AuthDb(store.database, () => now)
+  const server = await startConsole(deps, new FakeConsoleAuth(), [recoveryRouteRegistrar((memberId) => enrollments.createEnrollment(memberId))])
   const recover = (token: unknown) => call(server.port, 'POST', '/console/api/auth/recover', { body: { token } })
   return {
     store,

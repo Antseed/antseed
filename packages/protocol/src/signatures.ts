@@ -250,9 +250,7 @@ export function attributionTailAbi(attribution: UsageAttribution | undefined): {
 export function decodeMetadataAttribution(encoded: string): { clientId: string; invite: ReferralInvite | null } | null {
   const coder = AbiCoder.defaultAbiCoder();
   const [version] = coder.decode(['uint256'], encoded) as unknown as [bigint];
-  // v4 metadata carries seven static words (adds the two video counters), v3
-  // five (adds cumulativeOutputImages), v1/v2 and FreeUsage v1 four.
-  const staticWords = version === METADATA_VERSION ? 7 : version === 3n ? 5 : 4;
+  const staticWords = metadataStaticWords(version);
   const headWords = staticWords + 1 + ATTRIBUTION_TAIL_TYPES.length;
   // Head (with tail) plus the services length word.
   if ((encoded.length - 2) / 64 < headWords + 1) return null;
@@ -264,6 +262,17 @@ export function decodeMetadataAttribution(encoded: string): { clientId: string; 
     clientId: word(0),
     invite: invite.r === ZeroHash && invite.vs === ZeroHash ? null : invite,
   };
+}
+
+/**
+ * Static head words before the services-array offset, by metadata version:
+ * v4 adds the two video counters, v3 adds cumulativeOutputImages, v1/v2 (and
+ * FreeUsage v1) carry version, in, out and requests. Mirrors AntseedStatsV2.
+ */
+export function metadataStaticWords(version: bigint): number {
+  if (version === 4n) return 7;
+  if (version === 3n) return 5;
+  return 4;
 }
 
 export interface SpendingAuthMetadata {

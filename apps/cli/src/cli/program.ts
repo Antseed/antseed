@@ -5,6 +5,7 @@ import { registerConfigCommand } from './commands/config/index.js';
 import { registerNetworkCommands } from './commands/network/index.js';
 import { registerIdentityCommands } from './commands/identity/index.js';
 import { registerAgentCommand } from './commands/agent.js';
+import { registerChatCommand } from './commands/chat.js';
 import { registerDevCommand } from './commands/dev.js';
 import { registerPaymentsCommand } from './commands/payments.js';
 import { registerDepositAlias } from './commands/buyer/deposit.js';
@@ -14,6 +15,7 @@ import { registerSystemProxyCommands } from './commands/system-proxy/index.js';
 import { registerTunnelCommands } from './commands/tunnel/index.js';
 import { registerGatewayCommands } from './commands/gateway/index.js';
 import { registerAntsCommands } from './commands/ants/index.js';
+import { registerAppsCommands } from './commands/apps/index.js';
 import { registerReferralCommands } from './commands/referral.js';
 
 import pkg from '../../package.json' with { type: 'json' };
@@ -37,6 +39,7 @@ export function createProgram(): Command {
   registerIdentityCommands(program);
   registerDevCommand(program);
   registerAgentCommand(program);
+  registerChatCommand(program);
   registerPaymentsCommand(program);
   registerDepositAlias(program);
   registerMetricsCommand(program);
@@ -45,6 +48,7 @@ export function createProgram(): Command {
   registerTunnelCommands(program);
   registerGatewayCommands(program);
   registerAntsCommands(program);
+  registerAppsCommands(program);
   registerReferralCommands(program);
 
   return program;

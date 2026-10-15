@@ -579,7 +579,9 @@ export class ProcessManager {
     return { ...state };
   }
 
-  async runCliCommand(args: string[], mode: RuntimeMode = 'connect'): Promise<CliCommandResult> {
+  /** `logStdout: false` keeps stdout out of the runtime log (for output that carries secrets). */
+  async runCliCommand(args: string[], mode: RuntimeMode = 'connect', options: { logStdout?: boolean } = {}): Promise<CliCommandResult> {
+    const logStdout = options.logStdout !== false;
     const cliExecution = resolveCliExecution();
     const executable = cliExecution.executable;
     const executableArgs = [...cliExecution.executableArgsPrefix, ...args];
@@ -614,6 +616,7 @@ export class ProcessManager {
 
       child.stdout.on('data', (chunk: string) => {
         stdout += chunk;
+        if (!logStdout) return;
         stdoutTail += chunk;
         const lines = stdoutTail.split(/\r?\n/);
         stdoutTail = lines.pop() ?? '';
@@ -659,7 +662,7 @@ export class ProcessManager {
         const exitCode = code ?? 1;
         if (exitCode !== 0) {
           const reason = signal ? `signal=${signal}` : `code=${String(exitCode)}`;
-          const detail = stderr.trim() || stdout.trim();
+          const detail = stderr.trim() || (logStdout ? stdout.trim() : '');
           rejectCommand(
             new Error(
               detail.length > 0

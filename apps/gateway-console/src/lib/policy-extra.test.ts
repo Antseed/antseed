@@ -11,7 +11,7 @@ const B = '0xfa1e00000000000000000000000000000000000b'
 
 function peer(id: string, overrides: Partial<Peer> = {}): Peer {
   return {
-    peerId: id, displayName: null, trustScore: 80, reputationScore: null, verified: false, tee: false, stakeAnts: null, usageShareBps: null,
+    peerId: id, displayName: null, trustScore: 80, reputationScore: null, verified: false, verificationLinks: [], tee: false, stakeAnts: null, usageShareBps: null,
     washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, requests24h: 0,
     services: [{ provider: 'p', service: 'kimi-k2', inputUsdPerMillion: 1, outputUsdPerMillion: 3, cachedInputUsdPerMillion: null, categories: [] }],
     ...overrides,

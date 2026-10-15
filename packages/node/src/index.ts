@@ -68,9 +68,25 @@ export {
   type Identity,
   type IdentityStore,
   FileIdentityStore,
+  type FileIdentityStoreOptions,
   hexToBytes,
   bytesToHex,
 } from './p2p/identity.js';
+export {
+  PASSPHRASE_ENV,
+  PASSPHRASE_FILE_ENV,
+  MIN_PASSPHRASE_LENGTH,
+  assertNewIdentityPassphrase,
+  deriveScryptKey,
+  encryptIdentityKey,
+  decryptIdentityKey,
+  identityEnvelopeAddress,
+  isIdentityEnvelope,
+  resolveIdentityPassphrase,
+  setIdentityPassphrase,
+  identityPassphraseEnv,
+  type ScryptParams,
+} from './p2p/identity-envelope.js';
 export { DHTNode, DEFAULT_DHT_CONFIG } from './discovery/dht-node.js';
 export { MAX_SERVICES_PER_PROVIDER, MAX_SERVICE_NAME_LENGTH } from './discovery/metadata-validator.js';
 export { OFFICIAL_BOOTSTRAP_NODES, mergeBootstrapNodes, toBootstrapConfig } from './discovery/bootstrap.js';
@@ -358,7 +374,7 @@ export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
 export { UptimeTracker } from './reputation/uptime-tracker.js';
 export {
   computeTrustScore, historyCurve, trustScore, shareCurve, SHARE_CURVE_RANGE,
-  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS,
+  TRUST_HISTORY_CHANNEL_TARGET, TRUST_HISTORY_VOLUME_USDC_MICROS_TARGET, TRUST_WEIGHTS, TRUST_FREE_MODELS_BONUS,
   type TrustBreakdown,
 } from './reputation/trust-score.js';
 export {

@@ -188,7 +188,8 @@ const EXPLORERS: Record<number, string> = {
 
 /**
  * `ChainInfo` for the browser. The RPC URL is the chain's public default,
- * never the operator's configured endpoint, which often embeds an API key.
+ * never the operator's configured endpoint, which often embeds an API key
+ * or reaches a private node; a chain without a known default gets none.
  */
 export function chainInfo(chain: AntsChainConfig): ChainInfo {
   const contracts: Record<string, string> = {}
@@ -201,26 +202,13 @@ export function chainInfo(chain: AntsChainConfig): ChainInfo {
     const defaults = getChainConfig(chain.chainId)
     if (defaults.evmChainId === chain.evmChainId) rpcUrl = defaults.rpcUrl
   } catch {
-    // Unknown chain id: fall through to the configured URLs.
+    // Unknown chain id: no public default to offer.
   }
-  // Without a known public default, only a configured URL that cannot carry
-  // a key (no path, query or credentials, or a loopback node) is passed on.
-  rpcUrl ??= [chain.rpcUrl, ...(chain.fallbackRpcUrls ?? [])].find(isKeylessRpcUrl) ?? ''
   return {
     chainId: chain.evmChainId,
     name: chain.chainId,
     rpcUrl,
     explorerUrl: EXPLORERS[chain.evmChainId] ?? null,
     contracts,
-  }
-}
-
-function isKeylessRpcUrl(value: string): boolean {
-  try {
-    const url = new URL(value)
-    if (url.hostname === 'localhost' || url.hostname === '127.0.0.1' || url.hostname === '[::1]') return true
-    return url.protocol === 'https:' && !url.username && !url.password && !url.search && (url.pathname === '/' || url.pathname === '')
-  } catch {
-    return false
   }
 }

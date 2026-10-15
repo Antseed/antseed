@@ -1,5 +1,5 @@
 import { randomBytes } from 'node:crypto'
-import { linkSync, mkdirSync, readFileSync, unlinkSync, writeFileSync } from 'node:fs'
+import { linkSync, mkdirSync, readFileSync, rmSync, unlinkSync, writeFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import {
   GATEWAY_CONTROL_HEADER,
@@ -12,7 +12,7 @@ import {
 
 const BUYER_FETCH_TIMEOUT_MS = 5_000
 
-function readSecret(path: string): string | null {
+function readTrimmedFile(path: string): string | null {
   try {
     const value = readFileSync(path, 'utf8').trim()
     return value.length > 0 ? value : null
@@ -34,7 +34,7 @@ export function loadOrCreateControlSecret(dataDir: string): string {
   const fromEnv = process.env[GATEWAY_CONTROL_SECRET_ENV]?.trim()
   if (fromEnv) return fromEnv
   const path = join(dataDir, GATEWAY_CONTROL_SECRET_FILE)
-  const existing = readSecret(path)
+  const existing = readTrimmedFile(path)
   if (existing) return existing
   mkdirSync(dirname(path), { recursive: true })
   const secret = randomBytes(32).toString('hex')
@@ -45,12 +45,32 @@ export function loadOrCreateControlSecret(dataDir: string): string {
     return secret
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== 'EEXIST') throw error
-    const winner = readSecret(path)
+    const winner = readTrimmedFile(path)
     if (!winner) throw new Error(`${path} exists but is empty`)
     return winner
   } finally {
     try { unlinkSync(temp) } catch { /* already gone */ }
   }
+}
+
+const RUNNING_BUYER_PORT_FILE = join('gateway', 'buyer-port')
+
+/**
+ * Records the buyer port a running gateway forwards to, so gateway CLI
+ * commands reach the same buyer when it was started with `--buyer-port`.
+ * Returns a function that clears the record when the gateway stops.
+ */
+export function recordGatewayBuyerPort(dataDir: string, buyerPort: number): () => void {
+  const path = join(dataDir, RUNNING_BUYER_PORT_FILE)
+  mkdirSync(dirname(path), { recursive: true })
+  writeFileSync(path, `${buyerPort}\n`)
+  return () => { rmSync(path, { force: true }) }
+}
+
+/** The buyer port recorded by a running gateway, or null when none is running. */
+export function runningGatewayBuyerPort(dataDir: string): number | null {
+  const value = Number(readTrimmedFile(join(dataDir, RUNNING_BUYER_PORT_FILE)))
+  return Number.isInteger(value) && value > 0 ? value : null
 }
 
 /**

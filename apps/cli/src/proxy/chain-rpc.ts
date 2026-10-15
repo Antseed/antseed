@@ -7,7 +7,8 @@
  * - Identical reads in flight at once share one request.
  * - `eth_call`s issued together (a `Promise.all` of contract reads, one
  *   tick of the deposit watcher for N wallets) are folded into a single
- *   Multicall3 `aggregate3` call.
+ *   Multicall3 `aggregate3` call, for an allow-list of caller-independent
+ *   views (`BATCHABLE_SELECTORS`).
  * - Chain constants (`eth_chainId`, deployed contract code) are remembered.
  * - An endpoint that answers 429 / JSON-RPC -32005 / 5xx / a network error
  *   is skipped for an exponentially growing, jittered period and the call
@@ -75,6 +76,45 @@ const COALESCED_METHODS = new Set(['eth_call', 'eth_getCode', 'eth_getBalance', 
 const MULTICALL = new Interface([
   'function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)',
 ])
+/**
+ * The reads folded into Multicall3 batches (as declared in the USDC,
+ * AntseedDeposits and DepositRelay ABIs the buyer and gateway use, and the
+ * registry, emissions and usage-rewards reads behind the console's buyer
+ * rewards). Inside
+ * `aggregate3` a call runs with `msg.sender` = Multicall3, so only views whose
+ * answer does not depend on the caller belong here; any other `eth_call` is
+ * sent on its own.
+ */
+const BATCHABLE_SELECTORS = (() => {
+  const reads = new Interface([
+    'function balanceOf(address owner) view returns (uint256)',
+    'function name() view returns (string)',
+    'function version() view returns (string)',
+    'function DOMAIN_SEPARATOR() view returns (bytes32)',
+    'function getBuyerBalance(address buyer) view returns (uint256 available, uint256 reserved, uint256 lastActivityAt)',
+    'function getBuyerCreditLimit(address buyer) view returns (uint256)',
+    'function getOperator(address buyer) view returns (address)',
+    'function getOperatorNonce(address buyer) view returns (uint256)',
+    'function FEE() view returns (uint256)',
+    // Buyer rewards (`createRewardsReader`): protocol pointers and epoch configuration...
+    'function emissions() view returns (address)',
+    'function staking() view returns (address)',
+    'function currentEpoch() view returns (uint256)',
+    'function effectiveEpoch() view returns (uint256)',
+    'function genesis() view returns (uint256)',
+    'function epochDuration() view returns (uint256)',
+    'function EPOCH_DURATION() view returns (uint256)',
+    'function currentEmissionRate() view returns (uint256)',
+    'function sellerRewardsPool() view returns (address)',
+    // ...and the buyer's own rewards, which name the buyer.
+    'function buyerEpochClaimed(address buyer, uint256 epoch) view returns (bool)',
+    'function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)',
+    'function pendingEmissions(address account, uint256[] epochs) view returns (uint256 seller, uint256 buyer)',
+  ])
+  const selectors = new Set<string>()
+  reads.forEachFunction((fragment) => selectors.add(fragment.selector))
+  return selectors
+})()
 
 interface Endpoint {
   url: string
@@ -123,7 +163,9 @@ export class ChainRpcProvider extends JsonRpcProvider {
     this.batchWindowMs = options.batchWindowMs === undefined ? 5 : options.batchWindowMs
     this.maxBatchSize = options.maxBatchSize ?? 50
     this.backoffBaseMs = options.backoffBaseMs ?? 2_000
-    this.backoffMaxMs = options.backoffMaxMs ?? 5 * 60_000
+    // Capped at a minute: with a single endpoint, every read waits this out,
+    // and a sweep confirmation (two minutes) must outlive it.
+    this.backoffMaxMs = options.backoffMaxMs ?? 60_000
     this.multicallAddress = options.multicallAddress ?? MULTICALL3_ADDRESS
   }
 
@@ -188,6 +230,8 @@ export class ChainRpcProvider extends JsonRpcProvider {
     const [tx, block] = payload.params as [Record<string, unknown> | undefined, unknown]
     if (!tx || typeof tx !== 'object' || (block !== undefined && block !== 'latest')) return false
     if (typeof tx['to'] !== 'string' || tx['to'].toLowerCase() === this.multicallAddress.toLowerCase()) return false
+    const data = tx['data'] ?? tx['input']
+    if (typeof data !== 'string' || !BATCHABLE_SELECTORS.has(data.slice(0, 10).toLowerCase())) return false
     return Object.keys(tx).every((field) => field === 'to' || field === 'data' || field === 'input')
   }
 
@@ -214,13 +258,7 @@ export class ChainRpcProvider extends JsonRpcProvider {
 
   private async flush(batch: QueuedCall[]): Promise<void> {
     if (batch.length === 1 || !await this.multicallDeployed().catch(() => false)) {
-      await Promise.all(batch.map(async (call) => {
-        try {
-          call.resolve(await this.request(call.payload))
-        } catch (error) {
-          call.reject(error)
-        }
-      }))
+      await this.sendEach(batch)
       return
     }
     const data = MULTICALL.encodeFunctionData('aggregate3', [batch.map((call) => ({ target: call.tx.to, allowFailure: true, callData: call.tx.data }))])
@@ -228,7 +266,14 @@ export class ChainRpcProvider extends JsonRpcProvider {
     try {
       response = await this.transmit({ jsonrpc: '2.0', id: nextInternalId++, method: 'eth_call', params: [{ to: this.multicallAddress, data }, 'latest'] })
     } catch (error) {
-      for (const call of batch) call.reject(error)
+      // Every endpoint is backing off: the individual calls would fail the same way.
+      if (error instanceof RpcUnavailableError) {
+        for (const call of batch) call.reject(error)
+        return
+      }
+      // The endpoint refused the aggregate request itself (e.g. HTTP 400 or
+      // 413 on a large body): send one call each.
+      await this.sendEach(batch)
       return
     }
     const body = response as { result?: string; error?: unknown } | null
@@ -242,13 +287,7 @@ export class ChainRpcProvider extends JsonRpcProvider {
     }
     if (!decoded || decoded.length !== batch.length) {
       // The aggregate itself failed (gas cap, a node quirk): fall back to one call each.
-      await Promise.all(batch.map(async (call) => {
-        try {
-          call.resolve(await this.request(call.payload))
-        } catch (error) {
-          call.reject(error)
-        }
-      }))
+      await this.sendEach(batch)
       return
     }
     this.counters.batchedCalls += batch.length
@@ -258,6 +297,16 @@ export class ChainRpcProvider extends JsonRpcProvider {
         ? { id: call.payload.id, result: entry.returnData } as JsonRpcResult
         : { id: call.payload.id, error: { code: 3, message: 'execution reverted', data: entry.returnData } } as unknown as JsonRpcResult)
     })
+  }
+
+  private async sendEach(batch: QueuedCall[]): Promise<void> {
+    await Promise.all(batch.map(async (call) => {
+      try {
+        call.resolve(await this.request(call.payload))
+      } catch (error) {
+        call.reject(error)
+      }
+    }))
   }
 
   /** Multicall3 is probed once per process (its code is then cached like any other). */
@@ -402,7 +451,12 @@ export interface ChainRpcTarget {
 
 const shared = new Map<string, ChainRpcProvider>()
 
-/** The process's provider for a chain and endpoint list; built once, reused by every reader. */
+/**
+ * The process's provider for a chain and endpoint list; built once, reused by every reader.
+ * Batched reads run inside Multicall3, with `msg.sender` = Multicall3 rather
+ * than the zero address or a `from`: a read whose answer depends on the caller
+ * must not be added to `BATCHABLE_SELECTORS`.
+ */
 export function sharedChainProvider(chain: ChainRpcTarget, options?: ChainRpcOptions): ChainRpcProvider {
   const urls = [chain.rpcUrl, ...(chain.fallbackRpcUrls ?? [])]
   const key = `${chain.evmChainId}|${urls.join('|')}`

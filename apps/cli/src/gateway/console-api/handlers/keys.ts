@@ -8,6 +8,7 @@ import {
   asObject,
   confirmations,
   fullLimitsFromWire,
+  keyUsageForDtos,
   limitsFromWire,
   notFound,
   optionalBoolean,
@@ -19,14 +20,18 @@ import {
 
 type KeyAccess = 'none' | 'read' | 'owner' | 'admin'
 
-/** What the caller may do with a key: workspace admins manage it, its owner self-serves, a key session reads itself. */
+/**
+ * What the caller may do with a key: workspace admins manage it, its owner
+ * self-serves, a key session reads itself. A key without an owner is the org
+ * admins' (no member budget applies to it), so a workspace admin only reads it.
+ */
 function keyAccess(deps: ConsoleDeps, p: Principal | null, key: ApiKeyRecord): KeyAccess {
   if (!p) return 'none'
   if (p.kind === 'key') return p.keyId === key.id ? 'read' : 'none'
   if (isOrgAdmin(deps.store, p)) return 'admin'
   if (p.kind !== 'member') return 'none'
   const role = workspaceRole(deps.store, p, key.workspaceId)
-  if (role === 'admin') return 'admin'
+  if (role === 'admin') return key.ownerMemberId === null ? 'read' : 'admin'
   if (role === 'member' && key.ownerMemberId === p.memberId) return 'owner'
   return 'none'
 }
@@ -37,8 +42,21 @@ function requireKeyAccess(deps: ConsoleDeps, p: Principal | null, id: string, ne
   const access = keyAccess(deps, p, key)
   if (access === 'none') throw notFound('Key')
   const rank = { none: 0, read: 1, owner: 2, admin: 3 }
-  if (rank[access] < rank[needed]) throw new ConsoleError(403, 'forbidden', needed === 'admin' ? 'Only workspace admins can do this' : 'You cannot change this key')
+  if (rank[access] < rank[needed]) {
+    if (p?.kind === 'member' && key.ownerMemberId === null) throw new ConsoleError(403, 'forbidden', 'Only organization admins can change keys without an owner')
+    throw new ConsoleError(403, 'forbidden', needed === 'admin' ? 'Only workspace admins can do this' : 'You cannot change this key')
+  }
   return { key, access }
+}
+
+/**
+ * Member budgets only reach keys with an owner, so a key without one is the
+ * org admins' (and management tokens') to make; a workspace admin's keys
+ * belong to someone in the workspace.
+ */
+function requireOwnerlessAllowed(deps: ConsoleDeps, p: Principal | null, ownerMemberId: string | null | undefined): void {
+  if (ownerMemberId !== null || isOrgAdmin(deps.store, p)) return
+  throw new ConsoleError(403, 'forbidden', 'Only organization admins can have keys without an owner')
 }
 
 /**
@@ -46,8 +64,9 @@ function requireKeyAccess(deps: ConsoleDeps, p: Principal | null, id: string, ne
  * and revoke their own keys in workspaces they belong to, up to their
  * `maxKeys`; workspace admins manage every key in their workspace and may
  * create keys for its members; only admins turn on x402 top-ups or change a
- * key's owner. Rotation issues a new secret for the same key id and ends the
- * key's console sessions.
+ * key's owner; keys without an owner are the org admins' alone (workspace
+ * admins only see them). Rotation issues a new secret for the same key id
+ * and ends the key's console sessions.
  */
 export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): void {
   const { store } = deps
@@ -56,9 +75,11 @@ export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): voi
     const workspace = query.get('workspace')
     const member = query.get('member')
     if (principal?.kind === 'member') activeMember(store, principal)
-    return store.listKeys({ ...(workspace ? { workspaceId: workspace } : {}), ...(member ? { ownerMemberId: member } : {}) })
+    const keys = store.listKeys({ ...(workspace ? { workspaceId: workspace } : {}), ...(member ? { ownerMemberId: member } : {}) })
       .filter((key) => keyAccess(deps, principal, key) !== 'none')
-      .map((key) => apiKeyDto(store, key, deps.now()))
+    const now = deps.now()
+    const usage = keyUsageForDtos(store, keys.map((key) => key.id), now)
+    return keys.map((key) => apiKeyDto(store, key, now, usage.get(key.id)))
   }, { allow: ['member', 'token', 'key'] })
 
   router.add('POST', '/keys', async (request) => {
@@ -69,10 +90,12 @@ export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): voi
     requireWorkspaceAccess(store, principal, workspaceId)
     const admin = workspaceRole(store, principal, workspaceId) === 'admin'
     const self = principal?.kind === 'member' ? principal.memberId : null
+    const ownerMemberId = input['ownerMemberId'] !== undefined ? optionalString(input, 'ownerMemberId') ?? null : undefined
+    requireOwnerlessAllowed(deps, principal, ownerMemberId)
     const { key, secret } = createKey(deps, requestActor(deps, request), {
       label,
       workspaceId,
-      ...(input['ownerMemberId'] !== undefined ? { ownerMemberId: optionalString(input, 'ownerMemberId') ?? null } : {}),
+      ...(ownerMemberId !== undefined ? { ownerMemberId } : {}),
       ...(input['topupEnabled'] !== undefined ? { topupEnabled: optionalBoolean(input, 'topupEnabled') } : {}),
       ...(input['limits'] !== undefined ? { limits: fullLimitsFromWire(input['limits']) } : {}),
       ...(input['routingPolicy'] !== undefined ? { routingPolicy: policyFromWire(input['routingPolicy']) } : {}),
@@ -88,11 +111,13 @@ export function registerKeyRoutes(router: ConsoleRouter, deps: ConsoleDeps): voi
     const { principal, params, body } = request
     const input = asObject(body)
     const { key, access } = requireKeyAccess(deps, principal, params['id']!, 'owner')
+    const ownerMemberId = input['ownerMemberId'] !== undefined ? optionalString(input, 'ownerMemberId') ?? null : undefined
+    if (access === 'admin' && key.ownerMemberId !== null) requireOwnerlessAllowed(deps, principal, ownerMemberId)
     const updated = updateKey(deps, requestActor(deps, request), key.id, {
       ...(input['workspaceId'] !== undefined ? { workspaceId: input['workspaceId'] } : {}),
       ...(input['label'] !== undefined ? { label: requiredString(input, 'label') } : {}),
       ...(input['topupEnabled'] !== undefined ? { topupEnabled: optionalBoolean(input, 'topupEnabled') } : {}),
-      ...(input['ownerMemberId'] !== undefined ? { ownerMemberId: optionalString(input, 'ownerMemberId') ?? null } : {}),
+      ...(ownerMemberId !== undefined ? { ownerMemberId } : {}),
       ...(input['limits'] !== undefined ? { limits: limitsFromWire(input['limits']) } : {}),
       ...(input['routingPolicy'] !== undefined ? { routingPolicy: policyFromWire(input['routingPolicy']) } : {}),
       ...(input['ownerLimits'] !== undefined ? { ownerLimits: limitsFromWire(input['ownerLimits']) } : {}),

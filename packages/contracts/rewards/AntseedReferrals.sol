@@ -77,11 +77,11 @@ interface IAntseedReferralUsageLedger {
  *         referee window (`AntseedAttributionUsage.REFEREE_BONUS_EPOCHS`), to
  *         the buyer as referee too, so the two halve that buyer's share. A
  *         lone claimant takes the whole bucket, and every additional one
- *         dilutes it. Claims are per epoch and permissionless. Referrer
- *         rewards go to the referrer's Deposits operator when it has one,
- *         else to the referrer address (sellers and plain wallets); referee
- *         rewards go only to the buyer's operator. A buyer hot wallet never
- *         receives funds in either role.
+ *         dilutes it. Claims are per epoch and permissionless, and both roles
+ *         are paid only to the wallet's Deposits operator: a claim reverts
+ *         while the wallet has none, and can be retried once it has one. Any
+ *         wallet (buyer or seller) can set one with `Deposits.setOperator`.
+ *         A hot wallet never receives funds in either role.
  *         Referrer and referee claims use distinct keys, so one wallet may
  *         hold both roles.
  *
@@ -259,25 +259,24 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
 
     // ─── Referrer rewards ────────────────────────────────────────────
 
-    /// @notice Mint a referrer's share of an epoch's bucket to
-    ///         `referrerRecipient(referrer)`. Permissionless.
+    /// @notice Mint a referrer's share of an epoch's bucket to the
+    ///         referrer's Deposits operator. Permissionless; reverts while
+    ///         the referrer has no operator so the claim can be retried.
     function claim(address referrer, uint256 epoch) external nonReentrant whenNotPaused {
         _claimReferrer(
-            referrer, referrerRecipient(referrer), epoch, attributionUsage.referrerEpochPoints(epoch, referrer)
+            referrer, _operatorOf(referrer), epoch, attributionUsage.referrerEpochPoints(epoch, referrer)
         );
     }
 
-    /// @notice Where a referrer's rewards go: its Deposits operator when it
-    ///         has one (a buyer hot wallet never receives funds), else the
-    ///         referrer address itself (sellers and plain wallets).
+    /// @notice Where a referrer's rewards go: its Deposits operator, or
+    ///         zero while it has none (claims revert until one is set).
     function referrerRecipient(address referrer) public view returns (address) {
-        address operator = deposits.getOperator(referrer);
-        return operator != address(0) ? operator : referrer;
+        return deposits.getOperator(referrer);
     }
 
     /// @notice Claim several epochs at once; epochs with nothing to pay are skipped.
     function claimEpochs(address referrer, uint256[] calldata epochs) external nonReentrant whenNotPaused {
-        address recipient = referrerRecipient(referrer);
+        address recipient = _operatorOf(referrer);
         bytes32 key = _referrerKey(referrer);
         uint256 paid;
         for (uint256 i = 0; i < epochs.length; i++) {
@@ -303,12 +302,12 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
     ///         Deposits operator. Permissionless; reverts while the buyer has
     ///         no operator so the claim can be retried once it has one.
     function claimReferee(address buyer, uint256 epoch) external nonReentrant whenNotPaused {
-        _claimReferee(buyer, _refereeRecipient(buyer), epoch, attributionUsage.refereeEpochPoints(epoch, buyer));
+        _claimReferee(buyer, _operatorOf(buyer), epoch, attributionUsage.refereeEpochPoints(epoch, buyer));
     }
 
     /// @notice Claim several referee epochs at once; epochs with nothing to pay are skipped.
     function claimRefereeEpochs(address buyer, uint256[] calldata epochs) external nonReentrant whenNotPaused {
-        address recipient = _refereeRecipient(buyer);
+        address recipient = _operatorOf(buyer);
         bytes32 key = _refereeKey(buyer);
         uint256 paid;
         for (uint256 i = 0; i < epochs.length; i++) {
@@ -379,8 +378,9 @@ contract AntseedReferrals is AntseedEpochShareRewards, EIP712 {
         emit RefereeRewardClaimed(buyer, epoch, recipient, points, total, amount);
     }
 
-    function _refereeRecipient(address buyer) internal view returns (address recipient) {
-        recipient = deposits.getOperator(buyer);
+    /// @dev The only reward recipient for either role: the wallet's operator.
+    function _operatorOf(address wallet) internal view returns (address recipient) {
+        recipient = deposits.getOperator(wallet);
         if (recipient == address(0)) revert RewardRecipientUnavailable();
     }
 

@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { PeerList, RoutingPolicy } from '../api/types'
 import {
-  applyPeerAction, describeBuyerLimits, describePolicy, draftToPolicy, DraftError, emptyDraft, moveItem, policyOrNull, policyToDraft, POLICY_TEMPLATES, templatePolicy,
+  applyPeerAction, buyerPolicy, describeBuyerLimits, describePolicy, draftToPolicy, DraftError, emptyDraft, moveItem, policyOrNull, policyToDraft, POLICY_TEMPLATES, templatePolicy,
 } from './policy'
 
 const A = '0xfa1e000000000000000000000000000000000001'
@@ -124,10 +124,25 @@ describe('helpers', () => {
   })
 })
 
+describe('buyerPolicy', () => {
+  it('turns the buyer config into the top policy level, leaving unset limits out', () => {
+    expect(buyerPolicy(undefined)).toBeNull()
+    expect(buyerPolicy({
+      minPeerReputation: 0, requireVerifier: true,
+      maxPricing: { inputUsdPerMillion: 5, outputUsdPerMillion: 20, cachedInputUsdPerMillion: null },
+      routingPreferences: { minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [B], preferFreePeers: true },
+    })).toEqual({ requireVerified: true, maxInputUsdPerMillion: 5, maxOutputUsdPerMillion: 20, minTrustScore: 60, blockedPeerIds: [B] })
+  })
+})
+
 describe('describeBuyerLimits', () => {
-  it('lists the hard buyer limits, or nothing', () => {
-    expect(describeBuyerLimits({ minPeerReputation: 40, requireVerifier: true, maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null } }))
-      .toEqual(['reputation ≥ 40', 'verified sellers only', '≤ $15.00/M in', '≤ $60.00/M out'])
-    expect(describeBuyerLimits({ minPeerReputation: 0, requireVerifier: false, maxPricing: null })).toEqual([])
+  it('lists the buyer config, or nothing', () => {
+    expect(describeBuyerLimits({
+      minPeerReputation: 40,
+      requireVerifier: true,
+      maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null },
+      routingPreferences: { minTrustScore: 60, allowedPeerIds: [], blockedPeerIds: [A], preferFreePeers: true },
+    })).toEqual(['reputation ≥ 40', 'verified sellers only', '≤ $15.00/M in', '≤ $60.00/M out', 'trust ≥ 60', '1 blocked seller', 'free first'])
+    expect(describeBuyerLimits({ minPeerReputation: 0, requireVerifier: false, maxPricing: null, routingPreferences: null })).toEqual([])
   })
 })

@@ -293,6 +293,9 @@ contract AntseedReferralsTest is Test {
             keccak256(abi.encode(keccak256("Invite(uint256 issuedEpoch,uint256 index)"), issuedEpoch, index));
         bytes32 digest = keccak256(abi.encodePacked("\x19\x01", domainSeparator, structHash));
         assertEq(atFixed.INVITE_TYPEHASH(), keccak256("Invite(uint256 issuedEpoch,uint256 index)"));
+        assertEq(atFixed.INVITE_TYPEHASH(), 0x787424ddbd067db314529d6126aaa36d95cddd0034c3b0321ba23f851eaa52a8);
+        assertEq(domainSeparator, 0x7c61f7df600144621a276a74c7d6dcb93fdecf901357c79df42bcca8b8743495);
+        assertEq(structHash, 0x0fd739de67ca2598fb01ecdc42b4dbc8cc4aa98cca50e14e2af44bfcaa6cef83);
         assertEq(atFixed.inviteDigest(issuedEpoch, index), digest);
         assertEq(digest, 0x23a154885f1032c2161dc1e68d05535b819dbdeb17a51793c019bdfe30d4b4c9);
 
@@ -305,7 +308,17 @@ contract AntseedReferralsTest is Test {
 
     // ─── Rewards ─────────────────────────────────────────────────────
 
+    address private constant REFERRER_OPERATOR = address(0x0E1);
+    address private constant OTHER_OPERATOR = address(0x0E2);
+
+    /// @dev Referrer rewards are paid only to an operator.
+    function _withOperators() private {
+        deposits.setOperator(referrer, REFERRER_OPERATOR);
+        deposits.setOperator(otherReferrer, OTHER_OPERATOR);
+    }
+
     function test_loneReferrerTakesTheWholeBucketAndOthersDiluteIt() public {
+        _withOperators();
         ledger.credit(10, referrer, 30);
         gate.setBudget(address(referrals), 10, 100 ether);
         gate.setCurrentEpoch(12); // finalized plus one grace epoch
@@ -322,13 +335,13 @@ contract AntseedReferralsTest is Test {
         epochs[0] = 10;
         epochs[1] = 11;
         referrals.claimEpochs(referrer, epochs);
-        assertEq(gate.balanceOf(referrer), 175 ether);
+        assertEq(gate.balanceOf(REFERRER_OPERATOR), 175 ether);
         assertTrue(referrals.claimed(referrer, 10));
 
         // Late ledger credits never change a frozen denominator.
         ledger.credit(11, otherReferrer, 1000);
         referrals.claim(otherReferrer, 11);
-        assertEq(gate.balanceOf(otherReferrer), 25 ether);
+        assertEq(gate.balanceOf(OTHER_OPERATOR), 25 ether);
 
         vm.expectRevert(AntseedEpochShareRewards.AlreadyClaimed.selector);
         referrals.claim(referrer, 10);
@@ -337,6 +350,7 @@ contract AntseedReferralsTest is Test {
     }
 
     function test_epochsNeedAGraceEpochAndABucket() public {
+        _withOperators();
         ledger.credit(10, referrer, 1);
         gate.setCurrentEpoch(11);
         assertFalse(referrals.isClaimable(10));
@@ -349,10 +363,11 @@ contract AntseedReferralsTest is Test {
 
         gate.setBudget(address(referrals), 10, 5 ether);
         referrals.claim(referrer, 10);
-        assertEq(gate.balanceOf(referrer), 5 ether);
+        assertEq(gate.balanceOf(REFERRER_OPERATOR), 5 ether);
     }
 
     function test_epochWithoutPointsIsSweptToBurnAndReserve() public {
+        _withOperators();
         gate.setBudget(address(referrals), 10, 100 ether);
         gate.setCurrentEpoch(11);
         vm.expectRevert(AntseedEpochShareRewards.EpochNotClaimable.selector);
@@ -381,7 +396,7 @@ contract AntseedReferralsTest is Test {
         vm.expectRevert(AntseedEpochShareRewards.NothingToClaim.selector);
         referrals.settleEpochRemainder(11);
         referrals.claim(referrer, 11);
-        assertEq(gate.balanceOf(referrer), 100 ether);
+        assertEq(gate.balanceOf(REFERRER_OPERATOR), 100 ether);
     }
 
     function test_refereeAndReferrerSplitTheBucketWithDistinctKeys() public {
@@ -437,32 +452,36 @@ contract AntseedReferralsTest is Test {
         assertEq(gate.balanceOf(address(0x0FE)), 10 ether);
     }
 
-    function test_referrerRewardsPayTheOperatorWhenSetElseTheReferrer() public {
+    function test_referrerRewardsPayOnlyTheOperator() public {
         address operator = address(0x0FE);
         ledger.credit(10, referrer, 30);
         ledger.credit(10, otherReferrer, 10);
         gate.setBudget(address(referrals), 10, 100 ether);
         gate.setCurrentEpoch(12);
+        uint256[] memory epochs = new uint256[](1);
+        epochs[0] = 10;
 
-        // A buyer hot wallet referrer: paid to its operator, by anyone.
+        // No fallback to the referrer itself: both claim paths revert without an operator.
+        assertEq(referrals.referrerRecipient(referrer), address(0));
+        vm.expectRevert(AntseedReferrals.RewardRecipientUnavailable.selector);
+        referrals.claim(referrer, 10);
+        vm.expectRevert(AntseedReferrals.RewardRecipientUnavailable.selector);
+        referrals.claimEpochs(referrer, epochs);
+
+        // Once it has one, anyone may send the claim; the operator is paid.
         deposits.setOperator(referrer, operator);
         assertEq(referrals.referrerRecipient(referrer), operator);
         vm.expectEmit(true, true, true, true);
         emit AntseedReferrals.ReferralRewardClaimed(referrer, 10, operator, 30, 40, 75 ether);
         vm.prank(stranger);
-        referrals.claim(referrer, 10);
+        referrals.claimEpochs(referrer, epochs);
         assertEq(gate.balanceOf(operator), 75 ether);
         assertEq(gate.balanceOf(referrer), 0);
 
-        // A seller or plain wallet without an operator: paid to itself.
-        assertEq(referrals.referrerRecipient(otherReferrer), otherReferrer);
-        uint256[] memory epochs = new uint256[](1);
-        epochs[0] = 10;
-        vm.expectEmit(true, true, true, true);
-        emit AntseedReferrals.ReferralRewardClaimed(otherReferrer, 10, otherReferrer, 10, 40, 25 ether);
-        vm.prank(stranger);
-        referrals.claimEpochs(otherReferrer, epochs);
-        assertEq(gate.balanceOf(otherReferrer), 25 ether);
+        // Sellers and plain wallets too: never paid to the referring address.
+        vm.expectRevert(AntseedReferrals.RewardRecipientUnavailable.selector);
+        referrals.claim(otherReferrer, 10);
+        assertEq(gate.balanceOf(otherReferrer), 0);
     }
 
     function test_refereeRewardsPayOnlyTheOperator() public {

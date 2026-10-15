@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, Builders, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, CreatedInvite, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, Peer, PeerList, Preset,
+  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
   Referrals, RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -46,7 +46,7 @@ export const ERROR_COPY: Record<string, string> = {
 }
 
 export function errorMessage(error: unknown): string {
-  if (error instanceof ConsoleApiError && ERROR_COPY[error.code]) return ERROR_COPY[error.code]!
+  if (error instanceof ConsoleApiError && Object.hasOwn(ERROR_COPY, error.code)) return ERROR_COPY[error.code]!
   if (error instanceof Error) return error.message
   return typeof error === 'string' ? error : 'Something went wrong.'
 }
@@ -237,8 +237,20 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       /** Restarts the buyer; `restartRequired` when it cannot restart itself. */
       setBuilderAgent: (agentId: number | null) => put<Builders>('/builders', { agentId }),
     },
+    chat: {
+      /** Text models for the chat, tool-capable first, each with the peers offering it. */
+      models: (workspaceId: string) => get<ChatModel[]>('/chat/models', { workspace: workspaceId }),
+      /** The API key that pays for the caller's chat in the workspace, with its limits and usage. */
+      context: (workspaceId: string) => get<ChatContext>('/chat/context', { workspace: workspaceId }),
+      /** The caller's conversations in the workspace, newest first. */
+      threads: (workspaceId: string) => get<ChatThread[]>('/chat/threads', { workspace: workspaceId }),
+      thread: (workspaceId: string, threadId: string) => get<ChatThreadDetail>(`/chat/threads/${id(threadId)}`, { workspace: workspaceId }),
+      deleteThread: (workspaceId: string, threadId: string) => del(`/chat/threads/${id(threadId)}${buildQuery({ workspace: workspaceId })}`),
+    },
     network: {
       peers: () => get<Peer[]>('/peers'),
+      /** Every model on the network, unfiltered, with the sellers offering it. */
+      models: () => get<NetworkModel[]>('/models'),
       routePreview: (query: { model: string; workspace?: string; key?: string; member?: string; preset?: string }) => get<RoutePreview>('/route-preview', query),
       gatewayPolicy: () => get<RoutingPolicy>('/routing'),
       buyerLimits: () => get<BuyerLimits>('/routing/buyer-limits'),

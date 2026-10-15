@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
+import { chmodSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { test } from 'node:test'
@@ -47,6 +47,7 @@ test('console API: principals, CSRF, read tokens, body limits and JSON errors', 
     assert.equal((await call(server.port, 'GET', '/console/api/echo/a', { who: 'keyholder' })).status, 403, 'key sessions only where allowed')
     assert.equal((await call(server.port, 'GET', '/console/api/key-only', { who: 'keyholder' })).status, 200)
     assert.equal((await call(server.port, 'GET', '/console/api/nope', { who: 'admin' })).status, 404)
+    assert.equal((await call(server.port, 'GET', '/console/api/echo/%E0%A4%A', { who: 'admin' })).status, 404, 'a malformed escape is no route')
 
     const noCsrf = await call(server.port, 'POST', '/console/api/echo', { who: 'admin', body: { a: 1 }, csrf: false })
     assert.equal(noCsrf.status, 403)
@@ -120,6 +121,26 @@ test('console web app: assets, SPA fallback, caching, CSP and a missing build', 
   } finally {
     await server.close()
     await missing.close()
+    dist.cleanup()
+    cleanup()
+  }
+})
+
+test('a static file that cannot be read cuts the response short without crashing', { skip: process.getuid?.() === 0 && 'root reads any file' }, async () => {
+  const { dir, store, cleanup } = tempDataDir()
+  const dist = fakeDist()
+  const logs: string[] = []
+  const unreadable = join(dist.dir, 'assets', 'locked-abc123.js')
+  writeFileSync(unreadable, 'console.log(2)')
+  chmodSync(unreadable, 0o000)
+  const server = await startConsole(testDeps(store, dir, { log: (message: string) => logs.push(message) }), new FakeConsoleAuth(), [], { distDir: dist.dir })
+  try {
+    await assert.rejects(call(server.port, 'GET', '/console/assets/locked-abc123.js'))
+    assert.equal((await call(server.port, 'GET', '/console')).status, 200)
+    assert.ok(logs.some((line) => line.includes('could not serve')))
+  } finally {
+    await server.close()
+    chmodSync(unreadable, 0o600)
     dist.cleanup()
     cleanup()
   }

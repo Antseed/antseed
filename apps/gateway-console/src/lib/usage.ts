@@ -13,6 +13,16 @@ function dayKey(ms: number): string {
   return new Date(ms).toISOString().slice(0, 10)
 }
 
+/** The gateway folds the end users past its top ones into this group; `others` counts them. */
+export const OTHERS_GROUP = '\u0000others'
+
+/** A usage group's display name. */
+export function groupLabel(group: { group: string; label: string; others?: number }): string {
+  if (group.group !== OTHERS_GROUP) return group.label || group.group
+  if (group.others === undefined) return 'Other users'
+  return `${group.others} other ${group.others === 1 ? 'user' : 'users'}`
+}
+
 /** Daily spend points from a `groupBy=day` report, with zero-filled gaps across [from, to]. */
 export function dailySeries(report: UsageReport | undefined, from: number, to: number): Array<{ label: string; value: number; sub: string }> {
   const byDay = new Map<string, { spent: number; requests: number }>()
@@ -94,7 +104,7 @@ export function stackSeries(reports: Array<Pick<UsageReport, 'groups'> | undefin
   const totals = new Map<string, { label: string; total: number }>()
   for (const report of reports) {
     for (const group of report?.groups ?? []) {
-      const entry = totals.get(group.group) ?? { label: group.label || group.group, total: 0 }
+      const entry = totals.get(group.group) ?? { label: groupLabel(group), total: 0 }
       entry.total += metricValue(group, metric)
       totals.set(group.group, entry)
     }
@@ -196,13 +206,17 @@ export function columnRequests(columns: Array<{ groups: Array<Pick<UsageTotals, 
 export const COST_PENDING_MS = 10 * 60 * 1000
 
 /**
- * How a request's cost reads: its spend; `pending` while a model request
- * waits for the buyer to report spend; `not recorded` once it waited
- * `COST_PENDING_MS` (a free seller, or spend the buyer lost); null when
- * there is nothing to show (failed requests).
+ * How a request's cost reads: its spend; `free` when a free seller served
+ * it (no spend is ever reported); `pending` while a model request waits for
+ * the buyer to report spend; `not recorded` once it waited `COST_PENDING_MS`
+ * (spend the buyer lost); null when there is nothing to show (failed requests).
  */
-export function costStatus(entry: Pick<RequestLogEntry, 'spent' | 'costPending' | 'startedAt' | 'finishedAt'>, now: number): 'spent' | 'pending' | 'not-recorded' | null {
+export function costStatus(
+  entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt'>,
+  now: number,
+): 'spent' | 'free' | 'pending' | 'not-recorded' | null {
   if (entry.spent !== null) return 'spent'
+  if (entry.servedFree) return 'free'
   if (!entry.costPending) return null
   return now - (entry.finishedAt ?? entry.startedAt) < COST_PENDING_MS ? 'pending' : 'not-recorded'
 }

@@ -191,8 +191,7 @@ describe('BuyerPaymentManager', () => {
     const sent = mux.sentSpendingAuths[0] as Record<string, string>;
     // Five extra tail words: the seller pre-checks keccak(metadata) == metadataHash
     // before it verifies the ReserveAuth, so a stale zero hash rejects every open.
-    // v4 head: seven static words, the services offset, the tail, then the empty services array.
-    expect(sent.metadata.length).toBe(2 + 14 * 64);
+    expect(sent.metadata.length).toBe(2 + 14 * 64); // 7 v4 head words + offset + 5 tail words + services length
     expect(sent.metadataHash).toBe(keccak256(sent.metadata));
   });
 
@@ -1272,6 +1271,69 @@ describe('BuyerPaymentManager', () => {
       cumulativeRequestCount: 1n,
       cumulativeOutputImages: 0n,
     }]);
+  });
+
+  it('signPerRequestAuth does not charge again for a request already paid through NeedAuth', async () => {
+    const sellerPeerId = fakePeerId('seller-cost-dedup');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    // The seller's NeedAuth for the chat arrives first and is paid.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '20000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '20000', inputTokens: '1000', outputTokens: '1133',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+
+    // The post-response auth for the same chat (e.g. flushed before a close) must not add its cost again.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-1', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 20_000n, reportedInputTokens: 1000n, reportedOutputTokens: 1133n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(20_000n);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(20_000n);
+  });
+
+  it('signPerRequestAuth signs the remainder of a request NeedAuth capped at the reserve ceiling', async () => {
+    store.close();
+    store = new ChannelStore(tempDir);
+    manager = new BuyerPaymentManager(
+      identity,
+      makeConfig(tempDir, { maxReserveAmountUsdc: 100_000n, maxPerRequestUsdc: 100_000n }),
+      store,
+    );
+    manager.setSigner(Wallet.createRandom());
+
+    const sellerPeerId = fakePeerId('seller-cost-dedup-capped');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 100_000n);
+    manager.handleAuthAck(sellerPeerId, { channelId });
+
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-1', requiredCumulativeAmount: '60000', currentAcceptedCumulative: '0',
+      deposit: '1000000', lastRequestCost: '60000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(60_000n);
+
+    // chat-2 costs 50_000, but NeedAuth can only sign up to the 100_000 ceiling before topping up.
+    await manager.handleNeedAuth(sellerPeerId, {
+      channelId, requestId: 'chat-2', requiredCumulativeAmount: '110000', currentAcceptedCumulative: '60000',
+      deposit: '1000000', lastRequestCost: '50000',
+    }, mux);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(100_000n);
+
+    // The post-response auth (e.g. flushed before a close) signs the 10_000 NeedAuth left unsigned.
+    const { payload } = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(payload.cumulativeAmount)).toBe(110_000n);
+
+    // Once paid in full, a repeat must not charge it again.
+    const repeat = await manager.signPerRequestAuth(sellerPeerId, {
+      requestId: 'chat-2', inputBytes: new Uint8Array(), outputBytes: new Uint8Array(),
+      sellerClaimedCost: 50_000n,
+    });
+    expect(BigInt(repeat.payload.cumulativeAmount)).toBe(110_000n);
   });
 
   it('handleNeedAuth caps at reserve ceiling', async () => {

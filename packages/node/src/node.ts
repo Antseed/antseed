@@ -133,8 +133,17 @@ function applyTrust(peer: PeerInfo): void {
 }
 
 /** How long an on-chain trust read of a peer is reused before it is read again. */
-export const ON_CHAIN_STATS_TTL_MS = 10 * 60_000;
+export const ON_CHAIN_STATS_TTL_MS = 120_000;
+/**
+ * How long "no agent id" is remembered: short, so a seller that registers
+ * shows up with its trust score within a couple of minutes.
+ */
+export const ON_CHAIN_STATS_MISS_TTL_MS = 2 * 60_000;
 const ON_CHAIN_STATS_CACHE_MAX_ENTRIES = 4096;
+
+function sellerContractOf(p: PeerInfo): string | null {
+  return p.metadata?.sellerContract?.toLowerCase().replace(/^0x/, '') ?? null;
+}
 
 /** Copy one batched trust read onto a peer. */
 function applyTrustSignals(p: PeerInfo, read: TrustSignals, fetchedAt: number): void {
@@ -187,7 +196,7 @@ export interface NodePaymentsConfig {
   enabled?: boolean;
   /** Payment method used for settlement. Default: "crypto" */
   paymentMethod?: PaymentMethod;
-  /** Platform fee rate in [0,1]. Default: 0.05 */
+  /** @deprecated Ignored. The protocol fee is set on-chain (`PLATFORM_FEE_BPS` on AntseedChannels). */
   platformFeeRate?: number;
   /** Idle time before calling settle() to collect earnings (channel stays open). Default: 10 min. */
   settlementIdleMs?: number;
@@ -288,6 +297,8 @@ export interface NodeConfig {
   capabilities?: string[];
   /** Refuse plaintext TCP and unsigned SDP in both directions. Default false (legacy peers fall back to plaintext). */
   requireSecureTransport?: boolean;
+  /** Seller only: inbound sockets whose remote address this returns false for are closed on accept. */
+  acceptInboundAddress?: (remoteAddress: string) => boolean;
   dataDir?: string;           // Default: ~/.antseed
   dhtPort?: number;           // Default: 6881 for seller, 0 for buyer
   signalingPort?: number;     // Default: 6882 for seller
@@ -474,7 +485,7 @@ export class AntseedNode extends EventEmitter {
    * than on the objects; peers read within ON_CHAIN_STATS_TTL_MS skip both
    * the seller-address resolution and the chain read.
    */
-  private _onChainStatsCache = new Map<PeerId, { signals: TrustSignals | null; fetchedAt: number }>();
+  private _onChainStatsCache = new Map<PeerId, { signals: TrustSignals | null; fetchedAt: number; sellerContract: string | null }>();
   /** Serializes non-blocking external claim verification for discovered peers. */
   private _externalVerificationChain: Promise<void> = Promise.resolve();
   private _identityHistoryCollector: IdentityHistoryCollector | undefined;
@@ -1144,7 +1155,9 @@ export class AntseedNode extends EventEmitter {
         continue;
       }
       const cached = this._onChainStatsCache.get(p.peerId);
-      if (cached && nowMs - cached.fetchedAt < ON_CHAIN_STATS_TTL_MS) {
+      // A changed seller contract resolves to another address: read again.
+      const cacheTtlMs = cached?.signals ? ON_CHAIN_STATS_TTL_MS : ON_CHAIN_STATS_MISS_TTL_MS;
+      if (cached && cached.sellerContract === sellerContractOf(p) && nowMs - cached.fetchedAt < cacheTtlMs) {
         if (cached.signals) {
           applyTrustSignals(p, cached.signals, cached.fetchedAt);
           peersWithCompleteStats.add(p);
@@ -1154,7 +1167,9 @@ export class AntseedNode extends EventEmitter {
       toResolve.push(p);
     }
     const stale: Array<{ peer: PeerInfo; address: string }> = [];
-    await Promise.all(toResolve.map(async (p) => {
+    // Resolving a seller contract's operator is an eth_call per peer (cached
+    // by the resolver), so they run one at a time.
+    for (const p of toResolve) {
       try {
         const address = resolver
           ? await resolver.resolveSellerAddress(p.peerId, p.metadata)
@@ -1163,14 +1178,15 @@ export class AntseedNode extends EventEmitter {
       } catch {
         // Unresolvable seller address: leave the previous snapshot in place.
       }
-    }));
+    }
     if (stale.length === 0) {
       this._applyTrust(peers, peersWithCompleteStats);
       return;
     }
     let signals: Map<string, TrustSignals>;
+    let unregistered: Set<string>;
     try {
-      signals = await client.read([...new Set(stale.map((entry) => entry.address))]);
+      ({ signals, unregistered } = await client.readWithMisses([...new Set(stale.map((entry) => entry.address))]));
     } catch (err) {
       debugWarn(`[Node] On-chain trust signal read failed: ${err instanceof Error ? err.message : err}`);
       this._applyTrust(peers, peersWithCompleteStats);
@@ -1180,12 +1196,21 @@ export class AntseedNode extends EventEmitter {
     this._pruneOnChainStatsCache(fetchedAt);
     for (const { peer: p, address } of stale) {
       const read = signals.get(address);
-      // A peer without an agent id (or a failed batch entry) keeps its
-      // previous complete snapshot, or stays unenriched when newly discovered.
-      this._onChainStatsCache.set(p.peerId, { signals: read ?? null, fetchedAt });
-      if (!read) continue;
-      applyTrustSignals(p, read, fetchedAt);
-      peersWithCompleteStats.add(p);
+      if (read) {
+        this._onChainStatsCache.set(p.peerId, { signals: read, fetchedAt, sellerContract: sellerContractOf(p) });
+        applyTrustSignals(p, read, fetchedAt);
+        peersWithCompleteStats.add(p);
+      } else if (unregistered.has(address)) {
+        this._onChainStatsCache.set(p.peerId, { signals: null, fetchedAt, sellerContract: sellerContractOf(p) });
+      } else {
+        // The read failed (e.g. a throttled call): nothing is cached, so the
+        // next pass retries it, and a previous snapshot is still shown.
+        const previous = this._onChainStatsCache.get(p.peerId);
+        if (previous?.signals && previous.sellerContract === sellerContractOf(p)) {
+          applyTrustSignals(p, previous.signals, previous.fetchedAt);
+          peersWithCompleteStats.add(p);
+        }
+      }
     }
     this._applyTrust(peers, peersWithCompleteStats);
   }
@@ -1873,6 +1898,7 @@ export class AntseedNode extends EventEmitter {
     // Create ConnectionManager and start listening
     this._connectionManager = await ConnectionManager.init(undefined, {
       requireSecureTransport: this._config.requireSecureTransport,
+      ...(this._config.acceptInboundAddress ? { acceptInboundAddress: this._config.acceptInboundAddress } : {}),
     });
     this._connectionManager.setLocalIdentity(identity);
     this._connectionManager.on("error", (err: Error) => {

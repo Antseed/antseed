@@ -1133,6 +1133,9 @@ export class BuyerPaymentManager {
     };
   }
 
+  // Send SpendingAuth via PaymentMux — reserve carries ReserveAuth sig.
+  // The hash must cover the metadata actually sent: with attribution set the
+  // zero metadata carries a client / invite tail, so it is not ZERO_METADATA_HASH.
   private _sendOpeningReserveAuth(
     paymentMux: PaymentMux,
     terms: NewChannelTerms,
@@ -1141,8 +1144,6 @@ export class BuyerPaymentManager {
     metadata: SpendingAuthMetadata,
     extra: Partial<SpendingAuthPayload> = {},
   ): void {
-    // The hash must cover the metadata actually sent: with attribution set the
-    // zero metadata carries a client / invite tail, so it is not ZERO_METADATA_HASH.
     paymentMux.sendSpendingAuth({
       channelId: terms.channelId,
       cumulativeAmount: '0',
@@ -1487,8 +1488,17 @@ export class BuyerPaymentManager {
     // If cost is 0, the cumulative amount stays the same — no spending auth needed
     // but we still sign one to keep the seller's session alive.
 
-    // Advance cumulative amount by the accepted cost, then add overdraft headroom
-    // for the next request (so the seller has budget to serve it).
+    // NeedAuth may have counted this response first; its cost is then already
+    // in the verified cost and (unless NeedAuth was capped at the reserve
+    // ceiling) the signed cumulative. Charge only the part it left unsigned,
+    // so the request is neither paid twice nor left short before a close.
+    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
+    if (alreadyCounted) {
+      acceptedCost = this._serviceTokensCounted.unpaid(responseStats.requestId);
+      verifiedCostDelta = 0n;
+    }
+
+    // Advance cumulative amount by the accepted cost.
     // maxSignable already caps at reserve ceiling, so one cap is sufficient
     const prevAmount = this._cumulativeAmount.get(sellerPeerId) ?? 0n;
     const previousVerifiedCost = this._verifiedCost.get(sellerPeerId) ?? 0n;
@@ -1501,22 +1511,24 @@ export class BuyerPaymentManager {
     if (newAmount < prevAmount) newAmount = prevAmount;
     const signedDelta = newAmount - prevAmount;
 
-    // Update cumulative metadata. NeedAuth may have counted this response
-    // first, so deduplicate the response's service amount and usage together.
-    const alreadyCounted = this._serviceTokensCounted.has(responseStats.requestId);
+    // Update cumulative metadata, deduplicating usage for a response NeedAuth already counted.
     const newMeta = this._advanceUsageMetadata(
       this._metadata.get(sellerPeerId),
       responseStats.service,
-      normalizeRequestUsageDelta({
+      {
+        ...normalizeRequestUsageDelta({
+          amount: signedDelta,
+          inputTokens: estimatedInputTokens,
+          cachedInputTokens: estimatedCachedInputTokens,
+          outputTokens: estimatedOutputTokens,
+          requests: 1n,
+          outputImages: estimatedOutputImages,
+          videoGenerations: estimatedVideoGenerations,
+          videoSeconds: estimatedVideoSeconds,
+        }, { deliveredResponse: true, alreadyCounted }),
+        // Any remainder of a NeedAuth-counted request is still this service's amount.
         amount: signedDelta,
-        inputTokens: estimatedInputTokens,
-        cachedInputTokens: estimatedCachedInputTokens,
-        outputTokens: estimatedOutputTokens,
-        requests: 1n,
-        outputImages: estimatedOutputImages,
-        videoGenerations: estimatedVideoGenerations,
-        videoSeconds: estimatedVideoSeconds,
-      }, { deliveredResponse: true, alreadyCounted }),
+      },
     );
     debugLog(
       `[BuyerPayment] signPerRequestAuth #${newMeta.cumulativeRequestCount}: ` +
@@ -1552,7 +1564,11 @@ export class BuyerPaymentManager {
     this._cumulativeAmount.set(sellerPeerId, newAmount);
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (!alreadyCounted) this._serviceTokensCounted.mark(responseStats.requestId);
+    if (alreadyCounted) {
+      this._serviceTokensCounted.pay(responseStats.requestId, signedDelta);
+    } else {
+      this._serviceTokensCounted.mark(responseStats.requestId);
+    }
     this._reportSpend({
       sellerPeerId,
       requestId: responseStats.requestId ?? null,
@@ -1843,7 +1859,9 @@ export class BuyerPaymentManager {
     );
     this._verifiedCost.set(sellerPeerId, nextVerifiedCost);
     this._metadata.set(sellerPeerId, newMeta);
-    if (deliveredResponse && !alreadyCounted) this._serviceTokensCounted.mark(payload.requestId);
+    if (deliveredResponse && !alreadyCounted) {
+      this._serviceTokensCounted.mark(payload.requestId, acceptedServiceCost - serviceAmountDelta);
+    }
     this._reportSpend({
       sellerPeerId,
       requestId: payload.requestId ?? null,
@@ -2122,7 +2140,7 @@ export class BuyerPaymentManager {
     try {
       const observed = billing.observedUnitUsage ?? await this._waitForObservedUnitUsage(requestId, OBSERVED_UNIT_USAGE_WAIT_MS);
       validateUnitBillingUsage(billing.unitModel, billing.context, payload.billingUsage, state.price, this._costTolerance, observed);
-      usage = unitUsageFromReport(payload.billingUsage);
+      usage = observed ?? unitUsageFromReport(payload.billingUsage);
     } catch (err) {
       debugWarn(`[BuyerPayment] One-off NeedAuth billingUsage rejected: ${err instanceof Error ? err.message : err}`);
       return;

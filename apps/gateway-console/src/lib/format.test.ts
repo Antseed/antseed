@@ -1,5 +1,5 @@
 import { describe, expect, it } from 'vitest'
-import { describeLimits, formatDuration, formatPricePerMillion, formatUsd, parseUsdInput, periodStart, shortId, usdcForInput, usdcToNumber } from './format'
+import { describeLimits, formatDuration, formatPricePerMillion, formatPriceRange, formatUsd, parseUsdInput, periodStart, shortId, usdcForInput, usdcToNumber } from './format'
 import { draftToLimits, limitsToDraft } from './limits'
 import { formatAnts } from './ants'
 
@@ -42,7 +42,16 @@ describe('money formatting', () => {
     expect(formatPricePerMillion(0.125)).toBe('$0.125')
     expect(formatPricePerMillion(3)).toBe('$3.00')
     expect(formatPricePerMillion(0.2)).toBe('$0.20')
+    expect(formatPricePerMillion(0.0003)).toBe('$0.0003')
+    expect(formatPricePerMillion(0.00012)).toBe('$0.00012')
     expect(formatPricePerMillion(null)).toBe('—')
+  })
+  it('formats a price range, Free only when every price is zero', () => {
+    expect(formatPriceRange({ min: 0, max: 0 })).toBe('Free')
+    expect(formatPriceRange({ min: 3, max: 3 })).toBe('$3.00')
+    expect(formatPriceRange({ min: 0, max: 3 })).toBe('$0–$3.00')
+    expect(formatPriceRange({ min: 0.125, max: 15 })).toBe('$0.125–$15.00')
+    expect(formatPriceRange(null)).toBe('—')
   })
   it('formats ANTS amounts', () => {
     expect(formatAnts('41.25')).toBe('41.25 ANTS')

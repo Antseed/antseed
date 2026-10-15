@@ -196,8 +196,8 @@ How it works:
   working 4 weeks after the week it was created (counting that week).
   For 12 weeks after the invite binds, you and the new user split their usage
   share 50/50; after that the inviter keeps earning alone.
-  Claim on the ANTS dashboard (antseed ants). Rewards go to the authorized
-  wallet (an inviter without one is paid directly).`)
+  Claim on the ANTS dashboard (antseed ants). Rewards are paid only to the
+  authorized wallet, for the inviter and the new user alike.`)
 
   referralCmd
     .command('invite')

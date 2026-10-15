@@ -48,13 +48,18 @@ type RewardSigner = Parameters<SellerPoolsRewardsClient['claimStakerRewardsBatch
  * `stakerPositionIds` enumeration) plus any `includeIds` the caller knows
  * about, typically positions closed by split, merge, or move that an indexer
  * reported; those keep their earned rewards but leave the enumeration.
+ * `includeIds` are hints: ids the chain says another wallet owns (e.g. a
+ * position NFT transferred away) are dropped, not treated as an error.
  */
 export async function previewPoolRewards(pools: PoolReader, rewards: PoolRewards, address: string, positionId?: number, options: { includeIds?: number[] } = {}) {
-  const positions = positionId === undefined
-    ? await pools.positionsBatch([...new Set([...await pools.allStakerPositionIds(address), ...(options.includeIds ?? [])])])
-    : [await pools.position(positionId)];
-  for (const position of positions) {
-    if (position.owner.toLowerCase() !== address.toLowerCase()) throw new Error(`Position ${position.id} is not owned by this wallet.`);
+  const owned = (position: { owner: string }) => position.owner.toLowerCase() === address.toLowerCase();
+  let positions;
+  if (positionId === undefined) {
+    positions = (await pools.positionsBatch([...new Set([...await pools.allStakerPositionIds(address), ...(options.includeIds ?? [])])])).filter(owned);
+  } else {
+    const position = await pools.position(positionId);
+    if (!owned(position)) throw new Error(`Position ${position.id} is not owned by this wallet.`);
+    positions = [position];
   }
   const amounts = await rewards.previewStakerRewards(positions.map((position) => position.id));
   return positions.map((position, index) => ({ id: position.id, agentId: position.agentId, amount: amounts[index]!, closedAtEpoch: position.closedAtEpoch }));

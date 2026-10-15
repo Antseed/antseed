@@ -20,6 +20,13 @@ import {
 import type { AssistantMessage, AssistantMessageEvent, Message } from '@mariozechner/pi-ai';
 import { createBrowserPreviewTool, createStartDevServerTool } from './dev-tools.js';
 import { webFetchTool } from './web-fetch.js';
+import {
+  createChatImagePathTool,
+  createShowMediaTool,
+  GET_CHAT_IMAGE_PATH_TOOL_NAME,
+  resolveBundledChatSkillPaths,
+  SHOW_MEDIA_TOOL_NAME,
+} from './media-tools.js';
 import { buildVprSystemPrompt } from './system-prompt.js';
 import {
   classifyChatStreamFailure,
@@ -63,6 +70,7 @@ import {
   makeProxyService,
   fetchProxyConversationRoute,
   normalizePaymentBody,
+  paymentRequiredAmount,
   resolveProxyPort,
   resolveSystemPrompt,
   PROXY_RUNTIME_API_KEY,
@@ -193,6 +201,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     }
 
     const proxyPort = await resolveProxyPort(configPath);
+    process.env['ANTSEED_PROXY_URL'] = `http://127.0.0.1:${String(proxyPort)}`;
     const runtimeRunning = isBuyerRuntimeRunning();
     let proxyAvailable = await isProxyAvailable(proxyPort);
     if (!proxyAvailable && ensureBuyerRuntimeStarted) {
@@ -386,6 +395,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       cwd: chatWorkspaceDir,
       agentDir: CHAT_AGENT_DIR,
       settingsManager,
+      additionalSkillPaths: resolveBundledChatSkillPaths(),
       extensionFactories: [toolApprovalExtension],
       systemPrompt: buildVprSystemPrompt(userSystemPrompt, chatWorkspaceDir, permissionMode),
     });
@@ -402,6 +412,8 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
         webFetchTool,
         createBrowserPreviewTool(sendToRenderer),
         createStartDevServerTool(sendToRenderer),
+        createShowMediaTool(conversationId, chatWorkspaceDir),
+        createChatImagePathTool(conversationId),
       ],
       resourceLoader,
     });
@@ -412,6 +424,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
     session.setActiveToolsByName([
       'read', 'bash', 'edit', 'write', 'grep', 'find', 'ls',
       'web_fetch', 'open_browser_preview', 'start_dev_server',
+      SHOW_MEDIA_TOOL_NAME, GET_CHAT_IMAGE_PATH_TOOL_NAME,
     ]);
 
     await session.setModel(proxyModel);
@@ -676,7 +689,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             } else {
               cacheFallbackPaymentRequired(conversationId, suggestedAmount);
             }
-            paymentRequiredFailure = emitPaymentRequiredStreamError(conversationId, suggestedAmount);
+            paymentRequiredFailure = emitPaymentRequiredStreamError(
+              conversationId,
+              paymentRequiredAmount(paymentBody, suggestedAmount),
+            );
             const activeRun = activeRunsByConversation.get(conversationId);
             if (activeRun) void abortAndClearActiveRun(activeRun);
             return;
@@ -691,7 +707,10 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
               ? paymentBody.suggestedAmount : '100000';
             // Cache payment info so the approve IPC handler can build the SpendingAuth
             cachedPaymentRequired.set(conversationId, paymentBody);
-            paymentRequiredFailure = emitPaymentRequiredStreamError(conversationId, suggestedAmount);
+            paymentRequiredFailure = emitPaymentRequiredStreamError(
+              conversationId,
+              paymentRequiredAmount(paymentBody, suggestedAmount),
+            );
             const activeRun = activeRunsByConversation.get(conversationId);
             if (activeRun) void abortAndClearActiveRun(activeRun);
             return;
@@ -848,7 +867,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             cacheFallbackPaymentRequired(conversationId, amt);
           }
           pendingAssistantMessage = null;
-          const reason = emitPaymentRequiredStreamError(conversationId, amt);
+          const reason = emitPaymentRequiredStreamError(conversationId, paymentRequiredAmount(payBody, amt));
           finishTelemetry('failed', reason, lastText);
           return { ok: false, error: 'Payment required', stopReason: reason };
         }
@@ -941,7 +960,7 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
             suggestedAmount: amt,
           });
         }
-        const reason = emitPaymentRequiredStreamError(conversationId, amt);
+        const reason = emitPaymentRequiredStreamError(conversationId, paymentRequiredAmount(payBody, amt));
         finishTelemetry('failed', reason, message);
         return { ok: false, error: message, stopReason: reason };
       } else {

@@ -188,6 +188,11 @@ export interface SellerCLIConfig {
   gasCheck?: SellerGasCheckCLIConfig;
   /** Optional persistent per-address request limit for zero-priced services. */
   freeTier?: SellerFreeTierCLIConfig;
+  /**
+   * ISO country codes whose IPs are refused on connect (best effort: VPNs get
+   * through). Default: CU, IR, KP, SY, RU. Set `[]` to opt out.
+   */
+  restrictedCountries?: string[];
   /** Free-usage on-chain record batching: flush after N auths or N ms (default 16 / 900000). */
   freeUsage?: { recordBatchSize?: number; recordFlushIntervalMs?: number };
 }
@@ -230,6 +235,21 @@ export interface BuyerCLIConfig {
    * (Desktop sets its own via ANTSEED_CLIENT_KIND=desktop).
    */
   clientAgentId?: number;
+  /**
+   * Seller verification by verifier SDKs (e.g. TEE attestation). The
+   * `buyer start` flags `--no-verifier`, `--verifiers` and
+   * `--require-verifier` override it.
+   */
+  verifier?: BuyerVerifierConfig;
+}
+
+export interface BuyerVerifierConfig {
+  /** Verify sellers at all. Default: true. */
+  enabled?: boolean;
+  /** Ordered verifier SDK ids to verify with; empty uses the seller's trusted default. */
+  prefer?: string[];
+  /** Refuse to route to a seller no verifier verifies. Default: false. */
+  require?: boolean;
 }
 
 /**
@@ -238,8 +258,6 @@ export interface BuyerCLIConfig {
 export interface PaymentsCLIConfig {
   /** Preferred payment method */
   preferredMethod: 'crypto';
-  /** Platform fee rate (0-1) */
-  platformFeeRate: number;
   /** Minimum USDC per request in base units (seller). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
   /**

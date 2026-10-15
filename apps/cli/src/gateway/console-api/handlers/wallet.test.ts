@@ -171,8 +171,11 @@ test('card link signature recovers to the workspace wallet', async () => {
 test('card amount bounds', () => {
   assert.equal(cardAmountString('10.50'), '10.5')
   assert.equal(cardAmountString(1), '1')
-  assert.equal(cardAmountString(10_000), '10000')
-  for (const bad of [0, -5, 0.5, 10_001, 'abc', '', null, undefined, Number.NaN, Number.POSITIVE_INFINITY]) {
+  assert.equal(cardAmountString(200), '200')
+  assert.equal(cardAmountString('199.99'), '199.99')
+  assert.equal(cardAmountString('12.34'), '12.34')
+  assert.equal(cardAmountString('12.340'), '12.34')
+  for (const bad of [0, -5, 0.5, 200.01, 201, 10_000, 'abc', '', null, undefined, Number.NaN, Number.POSITIVE_INFINITY, 10.1234567, '10.125']) {
     assert.throws(() => cardAmountString(bad), Error, String(bad))
   }
 })
@@ -190,6 +193,7 @@ test('POST card-link signs with the workspace identity', async () => {
 test('POST card-link validates input and access', async () => {
   const router = setup()
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 0.25, provider: 'crossmint' }), 400, 'invalid_amount')
+  await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 10.1234567, provider: 'crossmint' }), 400, 'invalid_amount')
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', member, { amountUsd: 10, provider: 'paypal' }), 400, 'invalid_provider')
   await rejectsWith(call(router, 'POST', '/workspaces/ws_team/wallet/card-link', outsider, { amountUsd: 10, provider: 'crossmint' }), 403)
   const noKey = setup({ loadWallet: async () => null })
@@ -454,7 +458,7 @@ test('GET chain lists contracts and never leaks the configured RPC URL', async (
   assert.equal(chain.chainId, 8453)
   assert.equal(chain.name, 'base-mainnet')
   assert.equal(chain.explorerUrl, 'https://basescan.org')
-  assert.ok(!chain.rpcUrl.includes('SECRET'), chain.rpcUrl)
+  assert.ok(chain.rpcUrl && !chain.rpcUrl.includes('SECRET'), String(chain.rpcUrl))
   assert.equal(chain.contracts['deposits'], CHAIN.depositsContractAddress)
   assert.equal(chain.contracts['channels'], CHAIN.channelsContractAddress)
   assert.equal(chain.contracts['usdc'], CHAIN.usdcContractAddress)
@@ -462,11 +466,10 @@ test('GET chain lists contracts and never leaks the configured RPC URL', async (
   assert.equal(chain.contracts['explorerApiUrl'], undefined)
 })
 
-test('GET chain never passes on a keyed RPC URL for an unknown chain', () => {
+test('GET chain never passes on a configured RPC URL for an unknown chain', () => {
   const custom = { chainId: 'custom-chain', evmChainId: 999_999, rpcUrl: 'https://rpc.example.test/v2/SECRET', fallbackRpcUrls: ['https://public-rpc.example.test'] }
-  assert.equal(chainInfo(custom as AntsChainConfig).rpcUrl, 'https://public-rpc.example.test')
-  assert.equal(chainInfo({ ...custom, fallbackRpcUrls: [] } as AntsChainConfig).rpcUrl, '')
-  assert.equal(chainInfo({ ...custom, rpcUrl: 'http://127.0.0.1:8545', fallbackRpcUrls: [] } as AntsChainConfig).rpcUrl, 'http://127.0.0.1:8545')
+  assert.equal(chainInfo(custom as AntsChainConfig).rpcUrl, null)
+  assert.equal(chainInfo({ ...custom, rpcUrl: 'http://10.0.0.5:8545', fallbackRpcUrls: [] } as AntsChainConfig).rpcUrl, null)
 })
 
 // ── Operator authorization ───────────────────────────────────────────────

@@ -3,9 +3,9 @@ import { after, before, test } from 'node:test'
 import { decodePolicyHeader, GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, type RoutingPolicy } from '../../../routing-policy/policy.js'
 import type { ResolvedPolicy } from '../../policy-resolver.js'
 import { ConsoleRouter, type Principal } from '../router.js'
-import type { BuyerLimits, Peer, RoutePreview } from '../types.js'
+import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
-import { enrichCandidates, mapPeers, peerServices, teeVerifiedPeers } from './network-mapping.js'
+import { enrichCandidates, mapNetworkModels, mapPeers, peerServices, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
   fakeCanSeeWorkspace,
@@ -55,7 +55,12 @@ const PEERS_BODY = {
       capabilities: [],
       providerPricing: { anthropic: { defaults: { inputUsdPerMillion: 3, outputUsdPerMillion: 15 } } },
       onChainWashFlagged: true,
-      verificationResults: { verified: true, checkedAtMs: 1, domains: [], github: [] },
+      verificationResults: {
+        verified: true,
+        checkedAtMs: 1,
+        domains: [{ domain: 'Seller.Example.com', verified: true }, { domain: 'unchecked.example.com', verified: false }],
+        github: [{ username: 'fake-seller', repository: 'models', verified: true }, { username: 'bad name!', verified: true }],
+      },
       lastSeen: NOW - 60_000,
     },
   ],
@@ -75,13 +80,51 @@ const TEE_SNAPSHOT = {
   evidence: [{ peerId: PEER_A, verifierId: 'antseed-verifier', fingerprint: 'f', checkedAt: NOW - 1000, expiresAt: NOW + 60_000, sellerNodeVerified: true, claims: [] }],
 }
 
+// The buyer's `/v1/models`, trimmed to the fields the console reads.
+const MODELS_BODY = {
+  object: 'list',
+  data: [
+    {
+      id: 'open-model-a',
+      name: 'Open Model A',
+      aliases: ['open-model-a', 'open-model-a-latest'],
+      type: 'text',
+      context_length: 32_000,
+      peers: [
+        {
+          peerId: PEER_A, displayName: 'Fake TEE Seller', provider: 'openai', serviceId: 'open-model-a', protocol: 'openai-chat-completions', protocols: ['openai-chat-completions', 'openai-responses'],
+          type: 'text', advertisedVerifierIds: ['antseed-verifier'], capabilities: { contextWindow: 128_000, toolUse: true, inputs: ['text', 'image'] },
+          reputationScore: 61, effectiveReputationScore: 64, onChainReputationScore: 61, inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5, cachedInputUsdPerMillion: 0.1,
+        },
+        {
+          peerId: PEER_B, provider: 'anthropic', serviceId: 'Open-Model-A', protocol: null, protocols: [], type: 'text', capabilities: { contextWindow: 32_000, reasoning: false },
+          reputationScore: null, effectiveReputationScore: null, onChainReputationScore: null, inputUsdPerMillion: 0, outputUsdPerMillion: 0,
+        },
+      ],
+    },
+    {
+      id: 'open-image-model',
+      name: 'Open Image Model',
+      aliases: [],
+      type: 'image',
+      peers: [{ peerId: PEER_C, provider: 'fal', serviceId: 'open-image-model', protocol: null, protocols: [], type: 'image', reputationScore: 30, effectiveReputationScore: 30, onChainReputationScore: null, minImageUsdPerImage: 0.04, maxImageUsdPerImage: 0.02 }],
+    },
+    { name: 'no id' },
+  ],
+}
+
 let buyer: FakeBuyer
 let verificationAllowed = false
+let modelsStatus = 200
+let peersDown = false
 
 before(async () => {
   buyer = await startFakeBuyer({
-    'GET /_antseed/peers': () => ({ body: PEERS_BODY }),
+    'GET /_antseed/peers': () => (peersDown ? { status: 500, body: { error: 'boom' } } : { body: PEERS_BODY }),
     'GET /_antseed/peer-health': () => ({ body: HEALTH_BODY }),
+    'GET /v1/models': () => modelsStatus === 200
+      ? { body: MODELS_BODY }
+      : { status: modelsStatus, body: { error: 'Buyer is not ready yet.' } },
     'GET /_antseed/verification': () => verificationAllowed
       ? { body: TEE_SNAPSHOT }
       : { status: 403, body: { error: 'Local verification authorization required' } },
@@ -175,6 +218,7 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     reputationScore: 61,
     // No verification snapshot and no verified claims.
     verified: false,
+    verificationLinks: [],
     tee: true,
     stakeAnts: '1200',
     usageShareBps: 250,
@@ -185,6 +229,11 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     requests24h: 17,
   })
   assert.equal(b.verified, true)
+  // Only claims that checked out, sanitised, as links.
+  assert.deepEqual(b.verificationLinks, [
+    { kind: 'domain', label: 'seller.example.com', href: 'https://seller.example.com' },
+    { kind: 'github', label: '@fake-seller/models', href: 'https://github.com/fake-seller/models' },
+  ])
   assert.equal(b.tee, false)
   assert.equal(b.washFlagged, true)
   assert.equal(b.trustScore, null)
@@ -210,6 +259,94 @@ test('GET peers uses the TEE snapshot when the buyer shares it', async () => {
 test('GET peers still answers without peer health', () => {
   const peers = mapPeers({ peers: PEERS_BODY, health: null, verification: null, stats: [], now: NOW })
   assert.deepEqual(peers[1]!.health, { failureStreak: 0, coolingDownUntil: null })
+})
+
+// ── Models ───────────────────────────────────────────────────────────────
+
+test('network models merge the buyer catalog with the peer list', () => {
+  const peers = mapPeers({ peers: PEERS_BODY, health: HEALTH_BODY, verification: null, stats: [{ peerId: PEER_A, requests: 1, latencyMsP50: 840 }], now: NOW })
+  const [text, image] = mapNetworkModels(MODELS_BODY, peers) as [NetworkModel, NetworkModel]
+  assert.equal(mapNetworkModels(MODELS_BODY, peers).length, 2, 'entries without an id are skipped')
+  assert.deepEqual({ ...text, offers: text.offers.length }, {
+    id: 'open-model-a',
+    name: 'Open Model A',
+    aliases: ['open-model-a-latest'],
+    type: 'text',
+    contextLength: 128_000,
+    capabilities: ['toolUse', 'vision'],
+    sellers: 2,
+    inputUsdPerMillion: { min: 0, max: 0.5 },
+    outputUsdPerMillion: { min: 0, max: 1.5 },
+    free: true,
+    teeSellers: 1,
+    verifiedSellers: 1,
+    offers: 2,
+  })
+  assert.deepEqual(text.offers[0], {
+    peerId: PEER_A,
+    displayName: 'Fake TEE Seller',
+    serviceId: 'open-model-a',
+    provider: 'openai',
+    protocols: ['openai-chat-completions', 'openai-responses'],
+    inputUsdPerMillion: 0.5,
+    outputUsdPerMillion: 1.5,
+    cachedInputUsdPerMillion: 0.1,
+    usdPerImage: null,
+    contextLength: 128_000,
+    free: false,
+    reputationScore: 64,
+    trustScore: 72,
+    verified: false,
+    verificationLinks: [],
+    tee: true,
+    latencyMsP50: 840,
+  })
+  // B's name and verification come from the peer list; it keeps its own service id for pinning.
+  const b = text.offers[1]!
+  assert.deepEqual([b.serviceId, b.verified, b.free, b.trustScore, b.latencyMsP50], ['Open-Model-A', true, true, null, null])
+  assert.deepEqual(b.verificationLinks.map((link) => link.label), ['seller.example.com', '@fake-seller/models'])
+  // A seller the peer list does not know yet, priced per image.
+  assert.equal(image.type, 'image')
+  assert.equal(image.contextLength, null)
+  assert.equal(image.inputUsdPerMillion, null)
+  assert.deepEqual(image.offers[0]!.usdPerImage, { min: 0.02, max: 0.04 })
+  assert.deepEqual([image.offers[0]!.displayName, image.offers[0]!.verified, image.offers[0]!.free], [null, false, false])
+  assert.deepEqual(image.offers[0]!.verificationLinks, [])
+})
+
+test('GET models lists the unfiltered network catalog to members and tokens', async () => {
+  modelsStatus = 200
+  const router = setup()
+  const models = await call(router, 'GET', '/models', member) as NetworkModel[]
+  assert.deepEqual(models.map((model) => model.id), ['open-model-a', 'open-image-model'])
+  assert.equal(models[0]!.offers[0]!.latencyMsP50, 840)
+  const sent = lastRequest(buyer, (url) => url === '/v1/models')
+  assert.equal(sent?.headers[GATEWAY_CONTROL_HEADER], TEST_SECRET)
+  assert.equal(sent?.headers[ROUTING_POLICY_HEADER], undefined, 'no routing policy, like /peers')
+  assert.equal(router.match('GET', '/models')!.route.options.allow, router.match('GET', '/peers')!.route.options.allow)
+})
+
+test('GET models reports a buyer that is down or not ready', async () => {
+  modelsStatus = 503
+  try {
+    await rejectsWith(call(setup(), 'GET', '/models', member), 503, 'buyer_unavailable')
+  } finally {
+    modelsStatus = 200
+  }
+  const unreachable = setup({ buyer: () => Promise.reject(new Error('connect ECONNREFUSED')) })
+  await rejectsWith(call(unreachable, 'GET', '/models', member), 502, 'buyer_unreachable')
+})
+
+test('GET models still answers when the peer list fails', async () => {
+  peersDown = true
+  try {
+    const models = await call(setup(), 'GET', '/models', member) as NetworkModel[]
+    assert.equal(models.length, 2)
+    assert.equal(models[0]!.offers[1]!.verified, false)
+    assert.equal(models[0]!.offers[0]!.tee, true, 'TEE still comes from the offer')
+  } finally {
+    peersDown = false
+  }
 })
 
 // ── Route preview ────────────────────────────────────────────────────────

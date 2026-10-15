@@ -10,8 +10,9 @@ import { Badge, EmptyState, ErrorAlert, Figure, LoadingRows, PageHeader, PageLin
 import { formatDuration, formatNumber, formatUsd, periodStart, usdcToNumber } from '../lib/format'
 import { isWorkspaceAdmin } from '../lib/nav'
 import { budgetWarnings, runway } from '../lib/budget'
-import { qk, useStatus, useWallet, useWorkspace } from '../lib/queries'
-import type { SeriesMetric } from '../lib/usage'
+import { qk, useKeys, useStatus, useWallet, useWorkspace } from '../lib/queries'
+import { GetStarted } from '../components/GetStarted'
+import { groupLabel, type SeriesMetric } from '../lib/usage'
 
 const PERIODS: Array<{ period: Exclude<LimitPeriod, 'total'>; label: string }> = [
   { period: 'daily', label: 'Today' },
@@ -103,6 +104,7 @@ export default function Overview() {
   })
 
   const attention = useWalletAttention()
+  const keys = useKeys({ workspace: workspace.id })
   const limits: SpendLimits | null = detail.data?.limits ?? null
   const month = spend[2]?.data
   const spentIn = (index: number): number | null => {
@@ -111,6 +113,21 @@ export default function Overview() {
   }
   const warnings = budgetWarnings(limits, PERIODS.map(({ period }, index) => [period, spentIn(index)]))
   const funds = wallet.data && lastWeek.data ? runway(usdcToNumber(wallet.data.available), usdcToNumber(lastWeek.data.totals.spent), 7) : null
+
+  // A workspace that has served nothing yet gets the getting-started layout instead of empty charts.
+  // (no request this month, and none ever on any of its keys).
+  const quiet = month !== undefined && month.totals.requests === 0 && keys.data !== undefined && keys.data.every((key) => key.usage.requests === 0)
+  if (quiet) {
+    // The console's own "Web chat" keys are created on first chat; they are not the workspace's API keys.
+    const hasKeys = (keys.data ?? []).some((key) => key.status === 'active' && !key.label.startsWith('Web chat'))
+    return (
+      <div className="gc-page">
+        <PageHeader title={workspace.name} description="Nothing has run through this workspace yet. Here is where to start." />
+        <GetStarted hasKeys={keys.isLoading || hasKeys} fundsKnown={admin && wallet.data !== undefined}
+          funded={wallet.data ? usdcToNumber(wallet.data.available) > 0 : true} />
+      </div>
+    )
+  }
 
   return (
     <div className="gc-page">
@@ -192,7 +209,7 @@ function TopList({ report, loading, error, empty }: { report?: UsageReport; load
   if (loading) return <LoadingRows rows={4} height={22} />
   if (error) return <ErrorAlert error={error} />
   const items = (report?.groups ?? [])
-    .map((group) => ({ label: group.label || group.group, value: usdcToNumber(group.spent), sub: `${formatNumber(group.requests)} requests` }))
+    .map((group) => ({ label: groupLabel(group), value: usdcToNumber(group.spent), sub: `${formatNumber(group.requests)} requests` }))
     .filter((item) => item.value > 0)
     .sort((a, b) => b.value - a.value)
     .slice(0, 5)

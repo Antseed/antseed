@@ -111,3 +111,24 @@ test('forwards a POST download body and passes JSON status answers through', asy
     await new Promise<void>(resolve => server.close(() => resolve()))
   }
 })
+
+test('passes allowed seller error codes through and hides unknown ones', async () => {
+  const sellerError = (statusCode: number, code: string): SerializedHttpResponse => ({
+    requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ error: { code, message: 'internal detail' } })),
+  })
+  for (const [statusCode, code, expectedStatus, expectedCode] of [
+    [502, 'video_download_failed', 502, 'video_download_failed'],
+    [504, 'video_download_failed', 504, 'video_download_failed'],
+    [502, 'video_status_unavailable', 502, 'video_status_unavailable'],
+    [500, 'secret_internal_code', 502, 'video_download_unavailable'],
+  ] as const) {
+    await serve(async () => sellerError(statusCode, code), async url => {
+      const response = await fetch(url)
+      assert.equal(response.status, expectedStatus)
+      const body = await response.json() as { error: { code: string, message: string } }
+      assert.equal(body.error.code, expectedCode)
+      assert.equal(body.error.message, 'Video download unavailable')
+    })
+  }
+})

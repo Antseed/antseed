@@ -59,7 +59,7 @@ async function request(port: number, path: string, options: { method?: string; k
  */
 async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; reportIdentity?: string } = {}) {
   const feed = new SpendAttributionFeed()
-  const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string }> = []
+  const captured: Array<{ url: string; auth?: string; source?: string; tag?: string; identity?: string; headers: http.IncomingHttpHeaders }> = []
   let requestCounter = 0
   const server = http.createServer((req, res) => {
     if (req.url?.startsWith('/_antseed/attributed-spend')) {
@@ -82,6 +82,7 @@ async function fakeBuyer(options: { costUsdc?: number; spendFeed?: boolean; repo
         auth: req.headers.authorization,
         source: req.headers['x-antseed-system-proxy-source'] as string | undefined,
         tag,
+        headers: req.headers,
       })
       const requestId = `req-${++requestCounter}`
       if (tag && options.costUsdc) {
@@ -374,6 +375,36 @@ test('gateway exposes only authenticated supported API routes', async () => {
   }
 })
 
+test('gateway never forwards client credential headers to the buyer (#1104)', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Remote', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const res = await request(gateway.port, '/v1/messages', {
+      method: 'POST', key: secret, body: '{"model":"m"}',
+      headers: {
+        'x-api-key': 'sk-ant-real',
+        'x-goog-api-key': 'AIza-real',
+        'api-key': 'azure-real',
+        'proxy-authorization': 'Basic cHJveHk6c2VjcmV0',
+        cookie: 'session=real',
+        'anthropic-version': '2023-06-01',
+      },
+    })
+    assert.equal(res.status, 200)
+    const forwarded = buyer.captured[0]!.headers
+    for (const name of ['authorization', 'proxy-authorization', 'cookie', 'x-api-key', 'x-goog-api-key', 'api-key']) {
+      assert.equal(forwarded[name], undefined, `${name} must not reach the buyer`)
+    }
+    assert.equal(forwarded['anthropic-version'], '2023-06-01')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway rejects revoked and expired keys', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()
@@ -456,6 +487,36 @@ test('gateway settles reported spend per key and answers 402 once a cap is reach
     const stats = store.usageStats(limited.key.id)
     assert.equal(stats.failedRequests, 0)
     assert.equal(stats.inputTokens, 300)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('GET /v1/key reports the caps admission enforces: the lower of the admins\' and the owner\'s', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer({ costUsdc: 400_000 })
+  const shared = store.createKey({
+    label: 'Shared',
+    buyerIdentity: DEFAULT_BUYER_IDENTITY,
+    limits: { daily: 5_000_000, monthly: 2_000_000, total: null },
+    ownerLimits: { daily: 1_000_000, weekly: null, monthly: 3_000_000, total: null },
+    expiresAt: null,
+  })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: shared.secret, body: '{"model":"deepseek-v4-flash"}' })).status, 200)
+    await gateway.feed.pollOnce()
+    const { limits } = JSON.parse((await request(gateway.port, '/v1/key', { key: shared.secret })).body).data
+    // The owner's daily cap is the lower one.
+    assert.equal(limits.daily.limit_usd, '1.000000')
+    assert.equal(limits.daily.remaining_usd, '0.600000')
+    // The admins' monthly cap is the lower one.
+    assert.equal(limits.monthly.limit_usd, '2.000000')
+    assert.equal(limits.monthly.remaining_usd, '1.600000')
+    assert.equal(limits.total.limit_usd, null)
+    assert.equal(limits.total.remaining_usd, null)
   } finally {
     await gateway.stop()
     await buyer.close()

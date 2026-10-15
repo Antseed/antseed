@@ -114,12 +114,14 @@ contract AntseedStatsV2Test is Test {
     }
 
     function test_decodeAttribution_detectsTailOnBothLayouts() public view {
+        _assertTail(stats.decodeAttribution(_v4(1, 2, 3, true)));
         _assertTail(stats.decodeAttribution(_v3(1, 2, 3, true)));
         _assertTail(stats.decodeAttribution(_v4(1, 2, 3, true)));
         _assertTail(stats.decodeAttribution(_free(1, 2, 3, true)));
     }
 
     function test_decodeAttribution_zeroWithoutTail() public view {
+        _assertEmpty(stats.decodeAttribution(_v4(1, 2, 3, false)));
         _assertEmpty(stats.decodeAttribution(_v3(1, 2, 3, false)));
         _assertEmpty(stats.decodeAttribution(_v4(1, 2, 3, false)));
         _assertEmpty(stats.decodeAttribution(_free(1, 2, 3, false)));

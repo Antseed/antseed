@@ -147,6 +147,28 @@ test('only org-admin sessions change the OTLP endpoint or content logging; token
   }
 })
 
+test('turning content logging off forgets the request and response bodies already kept', async () => {
+  const h = await harness()
+  try {
+    const base = { otlpEndpoint: null, otlpHeaders: {}, logContent: true, retentionDays: null }
+    assert.equal((await h.as('owner', 'PUT', '/settings/observability', base)).status, 200)
+    const { key } = h.store.createKey({ label: 'Logged', limits: NO_LIMITS, expiresAt: null })
+    h.store.startRequest({ tag: 'gw_body', keyId: key.id, buyerIdentity: 'default', method: 'POST', path: '/v1/responses', model: 'm1', startedAt: Date.now() })
+    h.store.finishRequest('gw_body', { status: 200, buyerRequestId: null })
+    h.store.recordRequestContent('gw_body', { requestBody: 'PROMPT BODY', responseBody: 'ANSWER BODY' })
+    assert.equal((await h.as('owner', 'PUT', '/settings/observability', base)).status, 200)
+    assert.equal(((await h.as('owner', 'GET', '/requests/gw_body')).body as RequestDetail).requestBody, 'PROMPT BODY', 'unchanged while logging stays on')
+
+    assert.equal((await h.as('owner', 'PUT', '/settings/observability', { ...base, logContent: false })).status, 200)
+    const detail = (await h.as('owner', 'GET', '/requests/gw_body')).body as RequestDetail
+    assert.deepEqual([detail.requestBody, detail.responseBody], [null, null])
+    const entry = h.store.listAudit({ action: 'settings.observability.update' }).entries[0]
+    assert.equal(entry?.details?.['clearedBodies'], 1)
+  } finally {
+    await h.close()
+  }
+})
+
 test('concurrent buyer-settings PATCHes are serialized and a symlinked config is written through', async () => {
   const buyer = await fakeBuyer({ status: 202, body: { ok: true } })
   const h = await harness({ buyerPort: buyer.port })

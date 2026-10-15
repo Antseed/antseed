@@ -100,15 +100,14 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     const workspace = typeof options['workspace'] === 'string' ? requireWorkspace(store, options['workspace']) : null
     let identityName = workspace?.buyerIdentity ?? (typeof options['identity'] === 'string' ? options['identity'] : DEFAULT_BUYER_IDENTITY)
     let createdIdentity = false
-    if (workspace) {
-      // The workspace's identity already exists.
-    } else if (options['newIdentity']) {
+    // A workspace's identity already exists.
+    if (!workspace && options['newIdentity']) {
       const requested = typeof options['newIdentity'] === 'string'
         ? options['newIdentity']
         : await uniqueIdentityName(dataDir, slugifyIdentityName(label))
       identityName = (await createBuyerIdentity(dataDir, requested)).name
       createdIdentity = true
-    } else if (identityName !== DEFAULT_BUYER_IDENTITY && !await buyerIdentityExists(dataDir, identityName)) {
+    } else if (!workspace && identityName !== DEFAULT_BUYER_IDENTITY && !await buyerIdentityExists(dataDir, identityName)) {
       throw new Error(`Unknown buyer identity "${identityName}". Create it with \`antseed buyer identity create ${identityName}\` or use --new-identity.`)
     }
     const topupEnabled = options['allowTopup'] === true
@@ -169,7 +168,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       const workspaceNames = new Map(store.listWorkspaces().map((workspace) => [workspace.id, workspace.name]))
       const table = new Table({ head: ['Id', 'Label', 'Workspace', 'Identity', 'Status', 'Today', 'Month', 'Total', 'Limits', 'Last used'] })
       for (const record of keys) {
-        const spent = store.periodSpend(record.id)
+        const spent = store.spendByPeriod({ keyId: record.id })
         table.push([
           record.id,
           record.label,
@@ -251,7 +250,7 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     .option('--accept-narrowed', 'save owner caps above the admin caps (they never apply)', false)
     .option('--json', 'print machine-readable JSON', false)
     .action((id: string, options: Record<string, unknown>, cmd: Command) => withGateway(cmd, ({ store, ctx, actor }) => {
-      requireKey(store, id)
+      const before = requireKey(store, id)
       if (options['expiry'] === false && options['expiresInDays'] !== undefined) throw new Error('Use either --expires-in-days or --no-expiry.')
       const limits = parseLimitOptions(options)
       const ownerLimits = parseOwnerLimitOptions(options)
@@ -272,6 +271,9 @@ export function registerGatewayKeyCommands(gateway: Command): void {
         return
       }
       console.log(`Updated ${record.id} (${record.label}).`)
+      if (owner !== undefined && owner !== before.ownerMemberId && record.status === 'active') {
+        console.log(chalk.yellow(`The owner changed, so the old API key no longer works. Issue a new one with \`antseed gateway key rotate ${record.id}\`, or the new owner can rotate it in the console.`))
+      }
       console.log(`Admin limits: ${describeLimits(record)}`)
       console.log(`Owner limits: ${describeLimits({ limits: record.ownerLimits })}`)
     }))
@@ -338,11 +340,11 @@ export function registerGatewayKeyCommands(gateway: Command): void {
       .option('--layer <layer>', 'admin (default) or owner', 'admin'),
   )).action((id: string, options: Record<string, unknown>, cmd: Command) => withGateway(cmd, ({ store, ctx, actor }) => {
     const record = requireKey(store, id)
-    const owner = keyLayer(options['layer'])
-    const next = policyFromOptions(store, options, owner ? record.ownerRoutingPolicy : record.routingPolicy)
-    const updated = updateKey(ctx, actor, id, { ...(owner ? { ownerRoutingPolicy: next } : { routingPolicy: next }), ...confirmFlags(options) })
-    console.log(`${owner ? 'Owner' : 'Admin'} routing policy of ${updated.id} (${updated.label}):`)
-    for (const line of describePolicy(owner ? updated.ownerRoutingPolicy : updated.routingPolicy, store)) console.log(`  ${line}`)
+    const ownerLayer = isOwnerLayer(options['layer'])
+    const next = policyFromOptions(store, options, ownerLayer ? record.ownerRoutingPolicy : record.routingPolicy)
+    const updated = updateKey(ctx, actor, id, { ...(ownerLayer ? { ownerRoutingPolicy: next } : { routingPolicy: next }), ...confirmFlags(options) })
+    console.log(`${ownerLayer ? 'Owner' : 'Admin'} routing policy of ${updated.id} (${updated.label}):`)
+    for (const line of describePolicy(ownerLayer ? updated.ownerRoutingPolicy : updated.routingPolicy, store)) console.log(`  ${line}`)
   }))
 
   policy.command('clear')
@@ -351,9 +353,9 @@ export function registerGatewayKeyCommands(gateway: Command): void {
     .option('--layer <layer>', 'admin (default) or owner', 'admin')
     .action((id: string, options: { layer: string }, cmd: Command) => withGateway(cmd, ({ store, ctx, actor }) => {
       requireKey(store, id)
-      const owner = keyLayer(options.layer)
-      const updated = updateKey(ctx, actor, id, owner ? { ownerRoutingPolicy: null } : { routingPolicy: null })
-      console.log(`Cleared the ${owner ? 'owner' : 'admin'} routing policy of ${updated.id} (${updated.label}).`)
+      const ownerLayer = isOwnerLayer(options.layer)
+      const updated = updateKey(ctx, actor, id, ownerLayer ? { ownerRoutingPolicy: null } : { routingPolicy: null })
+      console.log(`Cleared the ${ownerLayer ? 'owner' : 'admin'} routing policy of ${updated.id} (${updated.label}).`)
     }))
 }
 
@@ -362,7 +364,8 @@ function ownerOption(store: GatewayStore, raw: string): string | null {
   return raw.trim().toLowerCase() === 'none' ? null : requireMember(store, raw).id
 }
 
-function keyLayer(raw: unknown): boolean {
+/** `--layer`: true for the owner layer, false for the admin layer (the default). */
+function isOwnerLayer(raw: unknown): boolean {
   const layer = String(raw ?? 'admin').trim().toLowerCase()
   if (layer !== 'admin' && layer !== 'owner') throw new Error('--layer must be admin or owner.')
   return layer === 'owner'

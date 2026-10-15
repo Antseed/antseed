@@ -62,24 +62,21 @@ export function Button({
     </>
   );
 
-  if (href !== undefined) {
-    const { onClick, title, id, style, ...ariaAndData } = rest;
-    const passthrough = Object.fromEntries(
-      Object.entries(ariaAndData).filter(([key]) => key.startsWith("aria-") || key.startsWith("data-")),
-    );
+  // A disabled link renders as a disabled <button> below: it must not navigate,
+  // and it picks up the same disabled styling as any other button.
+  if (href !== undefined && !rest.disabled) {
+    // Drop the attributes that only mean something on a <button>; everything
+    // else (handlers, aria-*, data-*, title, style...) applies to the link.
+    const { disabled, form, formAction, formEncType, formMethod, formNoValidate, formTarget, name, value, ...anchorProps } = rest;
     const safeRel = target === "_blank" ? rel ?? "noopener noreferrer" : rel;
     return (
       <a
+        {...(anchorProps as AnchorHTMLAttributes<HTMLAnchorElement>)}
         className={classes}
         href={href}
         download={download}
         target={target}
         rel={safeRel}
-        title={title}
-        id={id}
-        style={style}
-        onClick={onClick as unknown as AnchorHTMLAttributes<HTMLAnchorElement>["onClick"]}
-        {...passthrough}
       >
         {content}
       </a>

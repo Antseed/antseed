@@ -348,6 +348,7 @@ const DYNAMIC_KEYS = new Set([
   'seller.freeTier.windowMs',
   'seller.freeUsage.recordBatchSize',
   'seller.freeUsage.recordFlushIntervalMs',
+  'seller.restrictedCountries',
 ]);
 
 export function isDynamicKey(key: string): boolean {

@@ -50,6 +50,9 @@ Command-line interface and web dashboard for the AntSeed Network — a P2P netwo
 | `antseed referral invite` | Create a single-use invite link (`https://antseed.com/invite/<invite>`) signed by this wallet; shows invites left this week |
 | `antseed referral redeem <invite\|link>` | Check an invite for this wallet (new wallets only) and save it; the buyer daemon carries it until it binds |
 | `antseed referral status` | Your inviter, invite bonus (weeks left, payable), and the people you invited |
+| `antseed apps [--json]` / `antseed apps status [--json]` | List every supported connected app (OpenCode, Codex, Claude Code, Claude Desktop, Hermes, Droid, T3 Code, pi, GooeyPi, Crush, Goose, Zed) with installed / connected / config path. `--json` output carries `"schemaVersion": 1` |
+| `antseed apps connect <app> [--port <buyerPort>]` | Point the app's own config at the buyer proxy (default port: running buyer, then `buyer.proxyPort`, then 8377). Backs up the original to `<file>.antseed.bak`; also patches WSL installs on Windows. The app requests the `antseed` model, which needs a default route on the buyer (desktop model picker or `POST /_antseed/route`); connect warns when none is set |
+| `antseed apps disconnect <app>` | Remove only what AntSeed added, restoring replaced values. The desktop app's Connected apps screen reflects CLI connects and disconnects |
 | **Session** | |
 | `antseed buyer connection get` | Show current session state (pinned service, peer) |
 | `antseed buyer connection set` | Update service/peer overrides on a running proxy |
@@ -91,6 +94,8 @@ antseed seller start
 ### Buyer state isolation
 
 Buyer runtime state lives in the data directory, not just in the config file. By default that directory is `~/.antseed`, which contains `buyer.state.json`, SQLite databases, payment-channel state, and the fallback `identity.key`.
+
+To keep `identity.key` (and every `buyer-identities/<name>/identity.key`) encrypted at rest, set `ANTSEED_PASSPHRASE`, or `ANTSEED_PASSPHRASE_FILE` to a file whose first line is the passphrase (at least 12 characters to encrypt keys with). New keys are then written encrypted; `antseed buyer identity protect --all` encrypts existing ones and `antseed buyer identity unprotect --all --yes` reverses it. An encrypted key cannot be read without the passphrase. When neither variable is set, `buyer start`, `gateway start`, `buyer identity protect` and `unprotect` ask for it on the terminal when they need it, hidden and never stored; without a terminal they fail instead. `ANTSEED_IDENTITY_HEX` still overrides the default key.
 
 Use a separate data directory for each independent buyer node, service integration, test run, or concurrent process:
 
@@ -392,7 +397,7 @@ See [Reward Policies](../website/docs/protocol/reward-policies.md) for how usage
 points are adjusted and historical wash-trading evidence affects rewards.
 
 Looking for pre-migration USDC staking or rewards? See
-[Legacy emissions and claims](../website/docs/protocol/legacy-emissions.md).
+[Legacy emissions and claims](../website/docs/archive/legacy-emissions.md).
 The setup commands below use that legacy USDC interface; they do not create
 ANTS pool positions.
 
@@ -461,14 +466,14 @@ operator, so they are claimable here only when the node wallet is its own
 operator. Loop-proof artifacts come from the `antseed-loop-proof` host
 (`kind: antseed-wash-trading-seller-proof`); submission is resumable, so a
 partially authenticated proof can be re-submitted with the same file.
-The [staking guide](../website/docs/guides/staking.md) walks through the
+The [staking guide](../website/docs/provide/staking.md) walks through the
 dashboard tabs and how to read the pool table.
 
 ### Referrals
 
 Referrals are invite-only and two-sided: you and the new users you invite both
 earn bonus $ANTS from their usage. The
-[referrals guide](../website/docs/guides/referrals.md) covers Desktop and the
+[referrals guide](../website/docs/provide/referrals.md) covers Desktop and the
 dashboard too.
 
 **Quota.** Invites are earned by activity. Your quota for a week comes from
@@ -511,8 +516,8 @@ Then you earn bonus $ANTS on your usage for 12 weeks.
 **Rewards.** For 12 weeks after the binding the inviter and the new buyer
 split the buyer's referral share 50/50; after that the inviter keeps earning
 alone. The invitee's bonus is paid only to its authorized wallet (operator).
-The inviter's rewards go to its authorized wallet when it has one, otherwise to
-the inviting address itself (sellers and plain wallets). Claims are per week
+The inviter's rewards are paid only to its authorized wallet too, so an inviter
+(buyer or seller) needs one set before it can claim. Claims are per week
 and open in `antseed ants` (Desktop's Claim buttons open the same dashboard).
 
 **Status.** `antseed referral status` reads the binding, the bonus and your
@@ -694,7 +699,7 @@ Endpoints:
 /readyz
 ```
 
-See [Metrics](../../apps/website/docs/guides/metrics.md) for metric names, labels, and operational notes.
+See [Metrics](../../apps/website/docs/provide/metrics.md) for metric names, labels, and operational notes.
 
 ## Development
 

@@ -1,10 +1,10 @@
 import type Database from 'better-sqlite3'
 import { errorMessage } from './errors.js'
-import { AuthDb, randomToken, sha256Hex } from './auth/db.js'
+import { randomToken, sha256Hex } from './auth/db.js'
 import { RateLimiter, rateLimited } from './auth/http.js'
 import { requestIp } from './console-api/access.js'
-import type { ConsoleDeps } from './console-api/deps.js'
-import { ConsoleError, type ConsoleRouter } from './console-api/router.js'
+import { ConsoleError } from './console-api/router.js'
+import type { ConsoleRegistrar } from './console-api/server.js'
 import type { Enrollment } from './console-api/types.js'
 import { consoleBaseUrl, type ConsoleLocation } from './console-location.js'
 import type { GatewayStore, MemberRecord } from './store.js'
@@ -69,36 +69,39 @@ export function clearRecoveryTokens(db: Database.Database): void {
 
 /**
  * `POST /auth/recover { token }` (public): trades a recovery link for an
- * enrollment, which the console's usual sign-up screen uses to register a
- * passkey, wallet or SSO account for that member and sign them in.
+ * enrollment (from `createEnrollment`, the console auth's), which the
+ * console's usual sign-up screen uses to register a passkey, wallet or SSO
+ * account for that member and sign them in.
  */
-export function registerRecoveryRoutes(router: ConsoleRouter, deps: ConsoleDeps): void {
-  const limiter = new RateLimiter([{ limit: 10, ms: 60_000 }, { limit: 50, ms: 3_600_000 }], deps.now)
-  const auditRecovery = (ip: string | null, actor: { kind: 'member' | 'system'; id: string | null; label?: string | null }, action: string, details: Record<string, unknown> = {}): void => {
-    try {
-      deps.store.recordAudit({ actor, action, details, ip })
-    } catch (error) {
-      deps.log(`Console: AUDIT WRITE FAILED for ${action}: ${errorMessage(error)}`)
+export function recoveryRouteRegistrar(createEnrollment: (memberId: string) => string): ConsoleRegistrar {
+  return (router, deps) => {
+    const limiter = new RateLimiter([{ limit: 10, ms: 60_000 }, { limit: 50, ms: 3_600_000 }], deps.now)
+    const auditRecovery = (ip: string | null, actor: { kind: 'member' | 'system'; id: string | null; label?: string | null }, action: string, details: Record<string, unknown> = {}): void => {
+      try {
+        deps.store.recordAudit({ actor, action, details, ip })
+      } catch (error) {
+        deps.log(`Console: AUDIT WRITE FAILED for ${action}: ${errorMessage(error)}`)
+      }
     }
-  }
 
-  router.add('POST', '/auth/recover', async (request) => {
-    const ip = requestIp(request, deps)
-    const wait = limiter.hit(`ip:${ip ?? 'unknown'}`)
-    if (wait) return rateLimited(wait)
-    const token = request.body && typeof request.body === 'object' ? (request.body as { token?: unknown }).token : undefined
-    const memberId = typeof token === 'string' && token.length > 0 && token.length <= 200
-      ? consumeRecoveryToken(deps.store.database, token, deps.now())
-      : null
-    const member = memberId ? deps.store.getMember(memberId) : null
-    if (!member || member.status !== 'active') {
-      auditRecovery(ip, { kind: 'system', id: null }, 'auth.sign_in_failed', { method: 'recovery', code: 'invalid_token' })
-      throw new ConsoleError(400, 'invalid_token', 'This recovery link is invalid, used or expired. Create a new one on the gateway with `antseed gateway console-link --recover`.')
-    }
-    const enrollment = new AuthDb(deps.store.database, deps.now).createEnrollment(member.id)
-    auditRecovery(ip, { kind: 'member', id: member.id, label: member.label }, 'auth.recovery_claim')
-    deps.log(`Console: recovery link used for member ${member.id}; they are adding a sign-in method.`)
-    const result: Enrollment = { enrollment, label: member.label, orgRole: member.orgRole }
-    return result
-  }, { public: true })
+    router.add('POST', '/auth/recover', async (request) => {
+      const ip = requestIp(request, deps)
+      const wait = limiter.hit(`ip:${ip ?? 'unknown'}`)
+      if (wait) return rateLimited(wait)
+      const token = request.body && typeof request.body === 'object' ? (request.body as { token?: unknown }).token : undefined
+      const memberId = typeof token === 'string' && token.length > 0 && token.length <= 200
+        ? consumeRecoveryToken(deps.store.database, token, deps.now())
+        : null
+      const member = memberId ? deps.store.getMember(memberId) : null
+      if (!member || member.status !== 'active') {
+        auditRecovery(ip, { kind: 'system', id: null }, 'auth.sign_in_failed', { method: 'recovery', code: 'invalid_token' })
+        throw new ConsoleError(400, 'invalid_token', 'This recovery link is invalid, used or expired. Create a new one on the gateway with `antseed gateway console-link --recover`.')
+      }
+      const enrollment = createEnrollment(member.id)
+      auditRecovery(ip, { kind: 'member', id: member.id, label: member.label }, 'auth.recovery_claim')
+      deps.log(`Console: recovery link used for member ${member.id}; they are adding a sign-in method.`)
+      const result: Enrollment = { enrollment, label: member.label, orgRole: member.orgRole }
+      return result
+    }, { public: true })
+  }
 }

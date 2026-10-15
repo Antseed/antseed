@@ -113,7 +113,8 @@ describe('console auth: OIDC', () => {
   it('binds an invited member by verified email, then signs in by subject', async () => {
     issuer = await startFakeIssuer()
     harness = await startHarness({ publicUrl: PUBLIC_URL, env: oidcEnv({ ANTSEED_OIDC_LABEL: 'Acme SSO' }) })
-    const browser = harness.browser('gateway.example.test')
+    // Through the https proxy the public URL points at.
+    const browser = harness.browser('gateway.example.test', { 'x-forwarded-proto': 'https' })
     assert.deepEqual((await browser.request('GET', '/auth/config')).body.oidc, { label: 'Acme SSO' })
 
     const { member } = harness.store.invite({ label: 'Ravi', email: 'ravi@acme.example' })
@@ -153,6 +154,27 @@ describe('console auth: OIDC', () => {
     assert.equal(await signInWithProvider(harness.browser('gateway.example.test')), '/console/login?error=not_linked')
 
     assert.equal(await signInWithProvider(harness.browser('gateway.example.test'), '?enrollment=bogus'), '/console/login?error=invalid_enrollment')
+  })
+
+  it('refuses to link an account that is bound to another member, keeping the session', async () => {
+    issuer = await startFakeIssuer()
+    harness = await startHarness({ publicUrl: PUBLIC_URL, env: oidcEnv() })
+    const enroll = async (label: string, sub: string) => {
+      const browser = harness.browser('gateway.example.test')
+      const { member, token } = harness.store.invite({ label, email: null })
+      const enrollment = (await browser.request('POST', '/auth/invite', { token })).body.enrollment
+      issuer!.nextClaims = { sub, email: `${sub}@acme.example` }
+      assert.equal(await signInWithProvider(browser, `?enrollment=${enrollment}`), '/console')
+      return { member, browser }
+    }
+    const kim = await enroll('Kim', 'sub-kim')
+    const lee = await enroll('Lee', 'sub-lee')
+
+    issuer.nextClaims = { sub: 'sub-kim', email: 'sub-kim@acme.example' }
+    assert.equal(await signInWithProvider(lee.browser, '?link=1'), '/console/login?error=credential_exists')
+    assert.equal((await lee.browser.request('GET', '/auth/me')).body.me.member.id, lee.member.id)
+    assert.equal(harness.auth.credentialsFor(kim.member.id).length, 1)
+    assert.equal(harness.auth.credentialsFor(lee.member.id).length, 1)
   })
 
   it('auto-joins allowed domains into the Default workspace', async () => {

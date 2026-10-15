@@ -197,9 +197,33 @@ export function describePolicy(policy: RoutingPolicy | null | undefined): string
 }
 
 /**
- * The buyer's hard limits as short phrases, e.g. ["reputation ≥ 40",
- * "verified sellers only", "≤ $15.00/M in", "≤ $60.00/M out"]. Empty when none apply.
+ * The buyer's config as short phrases, e.g. ["reputation ≥ 40",
+ * "verified sellers only", "≤ $15.00/M in", "≤ $60.00/M out", "trust ≥ 60"].
+ * Empty when none apply.
  */
+/**
+ * The buyer's config as a policy, the top of the chain every gateway level
+ * narrows (hard limits plus the automatic-routing preferences).
+ */
+export function buyerPolicy(limits: BuyerLimits | null | undefined): RoutingPolicy | null {
+  if (!limits) return null
+  const policy: RoutingPolicy = {}
+  if (limits.minPeerReputation > 0) policy.minReputation = limits.minPeerReputation
+  if (limits.requireVerifier) policy.requireVerified = true
+  if (limits.maxPricing) {
+    policy.maxInputUsdPerMillion = limits.maxPricing.inputUsdPerMillion
+    policy.maxOutputUsdPerMillion = limits.maxPricing.outputUsdPerMillion
+    if (limits.maxPricing.cachedInputUsdPerMillion !== null) policy.maxCachedInputUsdPerMillion = limits.maxPricing.cachedInputUsdPerMillion
+  }
+  const prefs = limits.routingPreferences
+  if (prefs) {
+    if (prefs.minTrustScore > 0) policy.minTrustScore = prefs.minTrustScore
+    if (prefs.allowedPeerIds.length > 0) policy.allowedPeerIds = [...prefs.allowedPeerIds]
+    if (prefs.blockedPeerIds.length > 0) policy.blockedPeerIds = [...prefs.blockedPeerIds]
+  }
+  return policy
+}
+
 export function describeBuyerLimits(limits: BuyerLimits): string[] {
   const parts: string[] = []
   if (limits.minPeerReputation > 0) parts.push(`reputation ≥ ${limits.minPeerReputation}`)
@@ -208,6 +232,13 @@ export function describeBuyerLimits(limits: BuyerLimits): string[] {
     parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.inputUsdPerMillion)}/M in`)
     parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.outputUsdPerMillion)}/M out`)
     if (limits.maxPricing.cachedInputUsdPerMillion !== null) parts.push(`≤ ${formatPricePerMillion(limits.maxPricing.cachedInputUsdPerMillion)}/M cached`)
+  }
+  const prefs = limits.routingPreferences
+  if (prefs) {
+    if (prefs.minTrustScore > 0) parts.push(`trust ≥ ${prefs.minTrustScore}`)
+    if (prefs.allowedPeerIds.length > 0) parts.push(`only ${plural(prefs.allowedPeerIds.length, 'allowed seller')}`)
+    if (prefs.blockedPeerIds.length > 0) parts.push(plural(prefs.blockedPeerIds.length, 'blocked seller'))
+    if (prefs.preferFreePeers) parts.push('free first')
   }
   return parts
 }
@@ -274,7 +305,7 @@ export function templatePolicy(id: TemplateId, ownPeerIds: string[] = []): Routi
 export type PeerAction = 'allow' | 'block' | 'prefer' | 'clear'
 
 /**
- * Applies a Network-page row action to a scope's policy:
+ * Applies a Providers-page row action to a scope's policy:
  * allow adds the seller to the allow list (creating one restricts the scope to it),
  * block adds it to the block list, prefer puts it first in the model's fallback chain,
  * clear removes it everywhere. Never mutates the input.

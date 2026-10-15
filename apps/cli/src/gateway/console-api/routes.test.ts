@@ -119,6 +119,7 @@ test('workspaces: visibility, creation with a new wallet, budgets and membership
     await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { memberA: 403, memberB: 403, wsAdmin: 200 }, { name: 'Alpha 2' })
     await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { wsAdmin: 403, admin: 200 }, { limits: { daily: '1' } })
     await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { admin: 400 }, { buyerIdentity: 'other' })
+    await expectStatuses(as, 'PATCH', `/workspaces/${org.wsA.id}`, { wsAdmin: 403 }, { buyerIdentity: 'other', orgRoutingPolicy: null })
 
     await expectStatuses(as, 'GET', `/workspaces/${org.wsA.id}/members`, { memberA: 200, memberB: 403 })
     await expectStatuses(as, 'PUT', `/workspaces/${org.wsA.id}/members/${org.memberB.id}`, { memberA: 403, wsAdmin: 204 }, { role: 'member' })
@@ -132,6 +133,32 @@ test('workspaces: visibility, creation with a new wallet, budgets and membership
     const emptyResult = await as('admin', 'DELETE', `/workspaces/${org.wsB.id}`)
     assert.equal(emptyResult.status, 409)
     assert.equal((emptyResult.body as { error: { code: string } }).error.code, 'balance_unknown')
+  } finally {
+    await h.close()
+  }
+})
+
+test('workspace admins cannot remove or demote someone above them in the org', async () => {
+  const h = await harness()
+  const { org, as, store } = h
+  try {
+    store.setWorkspaceMember(org.wsA.id, org.admin.id, 'admin')
+    store.setWorkspaceMember(org.wsA.id, org.owner.id, 'admin')
+    const orgAdminKey = store.createKey({ label: 'Admin key', workspaceId: org.wsA.id, ownerMemberId: org.admin.id, limits: NO_LIMITS, expiresAt: null })
+    const path = (id: string) => `/workspaces/${org.wsA.id}/members/${id}`
+
+    await expectStatuses(as, 'PUT', path(org.admin.id), { wsAdmin: 403 }, { role: 'member' })
+    await expectStatuses(as, 'DELETE', path(org.admin.id), { wsAdmin: 403 })
+    await expectStatuses(as, 'DELETE', path(org.owner.id), { wsAdmin: 403, admin: 403, writer: 403 })
+    assert.equal(store.memberWorkspaceRoles(org.admin.id).get(org.wsA.id), 'admin')
+    assert.equal(store.getKey(orgAdminKey.key.id)!.status, 'active')
+    // Promoting is fine, and peers or those below are theirs to manage.
+    await expectStatuses(as, 'PUT', path(org.memberA.id), { wsAdmin: 204 }, { role: 'admin' })
+    await expectStatuses(as, 'PUT', path(org.memberA.id), { wsAdmin: 204 }, { role: 'member' })
+    await expectStatuses(as, 'PUT', path(org.owner.id), { admin: 204 }, { role: 'admin' })
+    await expectStatuses(as, 'PUT', path(org.admin.id), { admin: 204, writer: 204 }, { role: 'member' })
+    await expectStatuses(as, 'DELETE', path(org.admin.id), { owner: 204 })
+    assert.equal(store.getKey(orgAdminKey.key.id)!.status, 'revoked')
   } finally {
     await h.close()
   }
@@ -166,7 +193,7 @@ test('keys: self-service within maxKeys, admin powers, rotation and key sessions
     await expectStatuses(as, 'PATCH', `/keys/${key.id}`, { memberB: 404, keyholder: 403, memberA: 200 }, { label: 'Laptop 2' })
     await expectStatuses(as, 'PATCH', `/keys/${key.id}`, { memberA: 403 }, { topupEnabled: true })
     await expectStatuses(as, 'PATCH', `/keys/${key.id}`, { memberA: 400 }, { workspaceId: org.wsB.id })
-    await expectStatuses(as, 'PATCH', `/keys/${org.keyOther.key.id}`, { memberA: 404, wsAdmin: 200 }, { routingPolicy: { allowedModels: ['m'] } })
+    await expectStatuses(as, 'PATCH', `/keys/${org.keyOther.key.id}`, { memberA: 404, wsAdmin: 403, admin: 200 }, { routingPolicy: { allowedModels: ['m'] } })
 
     const rotated = await as('memberA', 'POST', `/keys/${key.id}/rotate`)
     assert.equal(rotated.status, 200)
@@ -176,8 +203,8 @@ test('keys: self-service within maxKeys, admin powers, rotation and key sessions
     assert.equal(h.store.findKeyBySecret(next.secret)?.id, key.id)
     assert.ok(h.auth.revokedKeys.includes(key.id))
 
-    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/revoke`, { memberA: 404, keyholder: 403, wsAdmin: 200 })
-    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/rotate`, { wsAdmin: 409 })
+    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/revoke`, { memberA: 404, keyholder: 403, wsAdmin: 403, admin: 200 })
+    await expectStatuses(as, 'POST', `/keys/${org.keyOther.key.id}/rotate`, { admin: 409 })
   } finally {
     await h.close()
   }
@@ -300,6 +327,8 @@ test('peer lists, presets, routing default, settings and status', async () => {
     await expectStatuses(as, 'PUT', '/routing', { memberA: 403, wsAdmin: 403, reader: 403, admin: 400 }, { sort: 'nope' })
     const put = await as('writer', 'PUT', '/routing', { blockedPeerIds: ['0xEE'], sort: 'price' })
     assert.equal(put.status, 200)
+    assert.deepEqual((await as('memberA', 'GET', '/routing')).body, { blockedPeerIds: ['ee'], sort: 'price' })
+    assert.equal((await as('writer', 'PUT', '/routing', 5)).status, 400, 'a non-object body does not clear the policy')
     assert.deepEqual((await as('memberA', 'GET', '/routing')).body, { blockedPeerIds: ['ee'], sort: 'price' })
 
     await expectStatuses(as, 'GET', '/settings', { memberA: 403, keyholder: 403, admin: 200, reader: 200 })

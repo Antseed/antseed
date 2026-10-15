@@ -7,7 +7,7 @@ import styles from './CommandChip.module.css';
  * `token` marks a long opaque part of the command (e.g. an invite) that may
  * break anywhere when wrapping; the rest wraps only at spaces.
  */
-export function CommandChip({command, size = 'lg', dark = false, token}: {command: string; size?: 'md' | 'lg'; dark?: boolean; token?: string}) {
+export function CommandChip({command, size = 'lg', dark = false, token, className}: {command: string; size?: 'md' | 'lg'; dark?: boolean; token?: string; className?: string}) {
   const [copied, setCopied] = useState(false);
   useEffect(() => {
     if (!copied) return undefined;
@@ -25,7 +25,7 @@ export function CommandChip({command, size = 'lg', dark = false, token}: {comman
   return (
     <button
       type="button"
-      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${copied ? styles.copied : ''}`}
+      className={`${styles.chip} ${size === 'md' ? styles.md : ''} ${dark ? styles.dark : ''} ${copied ? styles.copied : ''} ${className ?? ''}`}
       onClick={copy}
       aria-label={`Copy command: ${command}`}
       title="Copy to clipboard">

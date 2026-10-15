@@ -284,6 +284,8 @@ describe('gateway peer-list and preset', () => {
     await run('workspace', 'create', '--name', 'Team', '--identity', 'default')
     const promptFile = join(dataDir, 'prompt.txt')
     writeFileSync(promptFile, 'Answer briefly.\n')
+    // A workspace preset may come first; an org-wide one with its slug then wins, and a new one may not shadow it.
+    await run('preset', 'create', '--slug', 'brief', '--name', 'Team brief', '--model', 'open-model-b', '--workspace', 'Team')
     const preset = await runJson<{ id: string; slug: string; params: Record<string, unknown>; systemPrompt: string; routingPolicy: unknown; workspaceId: string | null }>(
       'preset', 'create', '--slug', 'brief', '--name', 'Brief', '--model', 'open-model-a', '--param', 'temperature=0.1', '--param', 'stop=END',
       '--system-prompt-file', promptFile, '--require-tee',
@@ -292,8 +294,8 @@ describe('gateway peer-list and preset', () => {
     assert.equal(preset.systemPrompt, 'Answer briefly.')
     assert.deepEqual(preset.routingPolicy, { requireTee: true })
     assert.equal(preset.workspaceId, null)
-    await run('preset', 'create', '--slug', 'brief', '--name', 'Team brief', '--model', 'open-model-b', '--workspace', 'Team')
     await assert.rejects(run('preset', 'create', '--slug', 'brief', '--name', 'x', '--model', 'm'), /already exists/)
+    await assert.rejects(run('preset', 'create', '--slug', 'brief', '--name', 'x', '--model', 'm', '--workspace', 'Team'), /already/)
     await assert.rejects(run('preset', 'show', 'brief'), /Several presets/)
     assert.equal((await runJson<{ id: string }>('preset', 'show', 'brief', '--workspace', 'org')).id, preset.id)
 
@@ -348,6 +350,7 @@ describe('gateway usage, logs, export and audit', () => {
     const lines = readFileSync(output, 'utf8').trim().split('\r\n')
     assert.equal(lines.length, 4)
     assert.match(lines[0]!, /^tag,startedAt,finishedAt,keyId/)
+    await assert.rejects(run('export', '--csv', '--output', join(dataDir, 'missing', 'usage.csv')), /ENOENT/)
 
     await run('routing', 'set', '--min-trust', '5')
     const audit = await runJson<{ entries: Array<{ action: string; actor: { kind: string } }> }>('audit', '--action', 'routing')

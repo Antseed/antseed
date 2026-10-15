@@ -168,11 +168,34 @@ describe('BuyerPaymentNegotiator', () => {
 
     it('falls back to the on-chain reserve when the AuthAck is lost', async () => {
       const { negotiator, bpm, getSession } = makeNegotiator({ acked: false });
+      let now = 1_000_000;
+      const clock = vi.spyOn(Date, 'now').mockImplementation(() => now);
+      bpm.waitForOneOffAck.mockImplementation(async () => {
+        now += 1_000;
+        return false;
+      });
 
-      await negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan());
+      try {
+        await negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan());
+      } finally {
+        clock.mockRestore();
+      }
 
       expect(getSession).toHaveBeenCalledWith(channelId);
       expect(bpm.confirmOneOffChannelOnChain).toHaveBeenCalledWith(channelId, 4_200_000n);
+      // The reserve was visible from the first read; the buyer still waited out the grace window.
+      expect(now - 1_000_000).toBeGreaterThanOrEqual(15_000);
+    });
+
+    it('waits for the AuthAck when the reserve is on-chain before the seller registers it', async () => {
+      const { negotiator, bpm, getSession } = makeNegotiator({ acked: false });
+      let polls = 0;
+      bpm.waitForOneOffAck.mockImplementation(async () => ++polls >= 3);
+
+      await negotiator.openOneOffChannelForRequest(peer, connection, requestId, plan());
+
+      expect(getSession).toHaveBeenCalledTimes(2);
+      expect(bpm.confirmOneOffChannelOnChain).not.toHaveBeenCalled();
     });
 
     it('refuses a second channel for a request whose channel is already confirmed', async () => {

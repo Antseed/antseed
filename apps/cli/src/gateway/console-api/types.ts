@@ -99,6 +99,9 @@ export interface Member {
   createdAt: number
 }
 
+/** What a plain workspace member sees of the others in their workspace. */
+export type MemberSummary = Pick<Member, 'id' | 'label' | 'orgRole' | 'status'>
+
 // GET    /members                       → Member[]                (org admins)
 // POST   /invites                       InviteInput               → Invite
 // GET    /invites                       → Invite[]
@@ -163,7 +166,7 @@ export interface Workspace extends WorkspaceSummary {
 // GET    /workspaces/:id                → Workspace
 // PATCH  /workspaces/:id                Partial<WorkspaceInput> → Workspace
 // DELETE /workspaces/:id                → 204 (refused while it has active keys or a balance)
-// GET    /workspaces/:id/members        → Array<{ member: Member; role: WorkspaceRole }>
+// GET    /workspaces/:id/members        → Array<{ member: Member; role: WorkspaceRole }> (MemberSummary for plain members)
 // PUT    /workspaces/:id/members/:memberId  { role } → 204
 // DELETE /workspaces/:id/members/:memberId  → 204
 export interface WorkspaceInput {
@@ -283,11 +286,15 @@ export interface UsageReport {
   from: number
   to: number
   totals: UsageTotals
-  groups: Array<{ group: string; label: string; splits?: UsageSplit[] } & UsageTotals>
+  groups: Array<UsageSplit & { splits?: UsageSplit[] }>
 }
 
-/** One part of a usage group when the report was split (`splitBy`). */
-export type UsageSplit = { group: string; label: string } & UsageTotals
+/**
+ * One part of a usage group when the report was split (`splitBy`). By end
+ * user, the users past the largest 100 come as one group with `others` set
+ * to how many it folds.
+ */
+export type UsageSplit = { group: string; label: string; others?: number } & UsageTotals
 
 export interface UsageTotals {
   requests: number
@@ -321,10 +328,12 @@ export interface RequestLogEntry {
   /** Error code and message from a failed response (gateway, buyer or seller). */
   errorCode: string | null
   errorMessage: string | null
+  /** Served by a free seller (all its advertised prices zero): the cost is $0 and no spend is reported. */
+  servedFree?: boolean
   /**
-   * A model request that did not fail and has no spend recorded yet: the
-   * buyer reports spend a moment after the response. If it stays pending
-   * for minutes the spend was not recorded (a free seller, or lost).
+   * A model request that did not fail, was not served free and has no spend
+   * recorded yet: the buyer reports spend a moment after the response. If it
+   * stays pending for minutes the spend was not recorded (lost).
    * Token counts meanwhile come from the response's own usage.
    */
   costPending?: boolean
@@ -446,7 +455,8 @@ export interface Rewards {
 export interface ChainInfo {
   chainId: number
   name: string
-  rpcUrl: string
+  /** The chain's public default RPC; null for a chain without one (never the operator's configured URL). */
+  rpcUrl: string | null
   explorerUrl: string | null
   contracts: Record<string, string>
 }
@@ -552,9 +562,95 @@ export interface Builders {
   restartRequired?: boolean
 }
 
+// ── Chat ────────────────────────────────────────────────────────────────
+
+// Members (their "Web chat" key pays) and API-key sessions (`antseed chat`; that key pays):
+// GET    /chat/models?workspace=<id>  → ChatModel[]
+// POST   /chat  { id, messages, model, peerId?, workspaceId? } → AI SDK UI message stream (SSE)
+//   id names the conversation; the stored conversation plus the last message is what the model sees.
+//   peerId pins the seller (sent to the buyer as `peerId@model`); without it the buyer routes.
+//   Each assistant message's metadata is a ChatMessageMetadata: the model and the peer(s) that answered.
+// GET    /chat/threads?workspace=<id> → ChatThread[]  (the caller's, newest first)
+// GET    /chat/threads/:id            → ChatThreadDetail
+// DELETE /chat/threads/:id            → 204
+export interface ChatThread {
+  id: string
+  title: string
+  model: string | null
+  /** The peer the conversation was pinned to, or null. */
+  peerId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ChatThreadDetail extends ChatThread {
+  /** AI SDK UIMessages; assistant messages carry ChatMessageMetadata. */
+  messages: unknown[]
+}
+
+export interface ChatModelPeer {
+  peerId: string
+  name: string | null
+  toolUse: boolean
+  reasoning: boolean
+  /** Takes images as input. */
+  vision: boolean
+  /** Advertises the TEE verifier (attested hardware). */
+  tee: boolean
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  /** Null when the peer advertises no cached-input price (cached tokens then cost the input price). */
+  cachedInputUsdPerMillion: number | null
+  reputation: number | null
+}
+
+export interface ChatMessageMetadata {
+  model: string
+  /** The peer the user pinned, or null for automatic routing. */
+  pinnedPeerId: string | null
+  /** The peer(s) that served the answer, one per model call (tool rounds can reach different peers when not pinned). */
+  peers: Array<{ peerId: string; name: string | null }>
+  /** Tokens over every model call of the answer so far. */
+  usage?: { inputTokens: number; cachedInputTokens: number; outputTokens: number }
+  /**
+   * Estimated cost in USD: each call's tokens at the serving peer's advertised
+   * prices. Null when a serving peer's price is unknown. The signed amount is
+   * in the request log once the buyer reports it.
+   */
+  costUsd?: number | null
+}
+
+// GET    /chat/context?workspace=<id> → ChatContext  (the key that pays for the caller's chat)
+export interface ChatContext {
+  /** The caller's "Web chat" key in the workspace (or, for a key session, that key), with its limits and usage. */
+  key: ApiKey
+  workspaceName: string
+}
+
+export interface ChatModel {
+  id: string
+  name: string
+  /** At least one offer supports tool calls (the agent's web and file tools). */
+  toolUse: boolean
+  reasoning: boolean
+  /** At least one offer takes images as input. */
+  vision: boolean
+  /** At least one offer is free (no input or output price). */
+  free: boolean
+  /** At least one offer advertises the TEE verifier. */
+  tee: boolean
+  offers: number
+  /** Cheapest offer's prices, USD per million tokens; null when not advertised. */
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  /** The sellers offering it, best reputation first. */
+  peers: ChatModelPeer[]
+}
+
 // ── Network & routing ───────────────────────────────────────────────────
 
 // GET  /peers                     → Peer[]
+// GET  /models                    → NetworkModel[]   (the buyer's `/v1/models`, unfiltered)
 // GET  /route-preview?model=&workspace=&key=&member=&preset=   → RoutePreview
 // GET  /routing/buyer-limits      → BuyerLimits
 // GET  /routing                   → RoutingPolicy   (gateway default)
@@ -564,6 +660,15 @@ export interface Builders {
 //   `usedBy: string[]`) when a policy that allows only this list's sellers
 //   would be left with none; resend with `confirmEmpty: true` (PATCH body) or
 //   `?confirmEmpty=true` (DELETE).
+/** A seller ownership claim the buyer verified, as a display-safe link. */
+export interface PeerVerificationLink {
+  kind: 'domain' | 'github'
+  /** `example.com`, `@user` or `@user/repo`. */
+  label: string
+  /** `https://<domain>` or `https://github.com/<user>[/<repo>]`. */
+  href: string
+}
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -580,6 +685,8 @@ export interface Peer {
   trustScore: number | null
   reputationScore: number | null
   verified: boolean
+  /** Verified domain and GitHub claims; empty when none checked out. */
+  verificationLinks: PeerVerificationLink[]
   tee: boolean
   stakeAnts: string | null
   usageShareBps: number | null
@@ -591,16 +698,80 @@ export interface Peer {
   requests24h: number
 }
 
+export type NetworkModelType = 'text' | 'image' | 'decision' | 'video'
+
+/** A feature at least one seller of the model advertises. */
+export type NetworkModelCapability = 'toolUse' | 'reasoning' | 'structuredOutput' | 'vision'
+
+/** One seller's offer of a network model. */
+export interface NetworkModelOffer {
+  peerId: string
+  displayName: string | null
+  /** The seller's own name for the model; pin it as `<peerId>@<serviceId>`. */
+  serviceId: string
+  provider: string
+  /** Wire APIs the seller serves the model on. */
+  protocols: string[]
+  inputUsdPerMillion: number | null
+  outputUsdPerMillion: number | null
+  cachedInputUsdPerMillion: number | null
+  /** Image models: price per image, cheapest to dearest; null when not advertised. */
+  usdPerImage: { min: number; max: number } | null
+  contextLength: number | null
+  free: boolean
+  /** The reputation routing ranks this offer by (0-100); null when unscored. */
+  reputationScore: number | null
+  trustScore: number | null
+  verified: boolean
+  /** The seller's verified domain and GitHub claims. */
+  verificationLinks: PeerVerificationLink[]
+  tee: boolean
+  /** Measured by this gateway over its recent requests. */
+  latencyMsP50: number | null
+}
+
+/** A model on the network, merged across the sellers that offer it (aliases included). */
+export interface NetworkModel {
+  id: string
+  name: string
+  aliases: string[]
+  type: NetworkModelType
+  /** Largest context window a seller advertises; null when none does. */
+  contextLength: number | null
+  capabilities: NetworkModelCapability[]
+  sellers: number
+  /** Cheapest to dearest across offers, USD per million tokens; null when no offer advertises one. */
+  inputUsdPerMillion: { min: number; max: number } | null
+  outputUsdPerMillion: { min: number; max: number } | null
+  /** At least one offer is free. */
+  free: boolean
+  teeSellers: number
+  verifiedSellers: number
+  /** In the buyer's routing order. */
+  offers: NetworkModelOffer[]
+}
+
 /**
- * Limits from the buyer's own config that apply to every request whatever
- * its policy. The buyer's routing preferences (trust minimum, allow/block
- * lists, preferFree, soft price cap) are not among them: a gateway policy
- * replaces those. `maxPricing` is null when the config cannot be read.
+ * The buyer's own config, the top level of every routing policy chain.
+ * Hard limits (`minPeerReputation`, `requireVerifier`, `maxPricing`) apply
+ * to every request, pinned ones included. `routingPreferences` (trust
+ * minimum, allow and block lists, free-first) apply to automatic routing:
+ * gateway levels narrow them like any other level and can never loosen
+ * them. `maxPricing` is null when the config cannot be read;
+ * `routingPreferences` is null when neither the buyer nor the config says.
  */
 export interface BuyerLimits {
   minPeerReputation: number
   requireVerifier: boolean
   maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null } | null
+  routingPreferences: BuyerRoutingPreferences | null
+}
+
+export interface BuyerRoutingPreferences {
+  minTrustScore: number
+  allowedPeerIds: string[]
+  blockedPeerIds: string[]
+  preferFreePeers: boolean
 }
 
 export interface RoutePreview {
@@ -609,8 +780,8 @@ export interface RoutePreview {
   policy: RoutingPolicy
   /**
    * Which levels contributed, top to bottom. The `buyer` entry holds the
-   * buyer's hard limits (`BuyerLimits` as a policy); they apply on top of
-   * `policy` and are not part of it.
+   * buyer's config (`BuyerLimits` as a policy); the buyer applies it on top
+   * of `policy`, which is the gateway levels only.
    */
   sources: Array<{ level: 'buyer' | 'gateway' | 'workspace-org' | 'workspace' | 'member' | 'key' | 'key-owner' | 'preset'; id: string | null; policy: RoutingPolicy | null }>
   modelAllowed: boolean
@@ -694,27 +865,83 @@ export interface GatewayExposure {
 
 export interface Settings {
   publicUrl: string | null
-  buyer: {
-    proxyPort: number
-    maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null }
-    minPeerReputation: number
-    requireVerifier: boolean
-  }
+  buyer: BuyerSettings
   observability: ObservabilitySettings
   auth: AuthConfig
   /**
-   * Set by `PATCH /settings/buyer` when the buyer could not restart itself
-   * (not supervised, or unreachable): the change is saved but applies only
-   * after the operator restarts it. `observability.otlpHeaders` values read
-   * "••••" for anyone but org-admin sessions; sending "••••" back keeps the
-   * stored value.
+   * Set by `PATCH /settings/buyer` when a change needs a buyer restart and
+   * the buyer could not restart itself (not supervised, or unreachable): the
+   * change is saved but applies only after the operator restarts it.
+   * `observability.otlpHeaders` values read "••••" for anyone but org-admin
+   * sessions; sending "••••" back keeps the stored value.
    */
   restartRequired?: boolean
 }
 
+/**
+ * Every buyer setting in the config file the buyer behind the gateway
+ * runs with. `routingPreferences` apply at once (the buyer reloads them);
+ * everything else needs a buyer restart, which `PATCH /settings/buyer`
+ * requests. `proxyPort` is read only: the gateway forwards to it.
+ */
+export interface BuyerSettings {
+  proxyPort: number
+  /** Hard price caps (defaults for every provider), USD per million tokens. */
+  maxPricing: { inputUsdPerMillion: number; outputUsdPerMillion: number; cachedInputUsdPerMillion: number | null }
+  /** Minimum seller reputation, 0–100, for every request (pins included). */
+  minPeerReputation: number
+  /** Automatic routing preferences; the top level of every routing policy. */
+  routingPreferences: {
+    minTrustScore: number
+    /** Soft input-price limit: sellers above it rank lower, never excluded. */
+    maxInputUsdPerMillion: number
+    allowedPeerIds: string[]
+    blockedPeerIds: string[]
+    preferFreePeers: boolean
+  }
+  /** Seller verification by verifier SDKs (e.g. TEE attestation). */
+  verifier: { enabled: boolean; prefer: string[]; require: boolean }
+  /** Kept for older clients: `verifier.require`. */
+  requireVerifier: boolean
+  payments: {
+    /** Sweep USDC arriving in the buyer wallets into deposits automatically. */
+    autoSweep: boolean
+    /** Most USDC authorized for a single request. */
+    maxPerRequestUsdc: number
+    /** Most USDC reserved for one payment channel. */
+    maxReserveUsdc: number
+    /** Base RPC endpoint; null uses the chain default. Path and query (API keys) are masked unless revealed. */
+    rpcUrl: string | null
+    fallbackRpcUrls: string[]
+  }
+  network: {
+    peerRefreshIntervalMs: number
+    metadataFetchTimeoutMs: number
+    requestTimeoutMs: number
+    maxStreamDurationMs: number
+    /** Leave per-service attribution out of signed request metadata. */
+    disableMetadataV2Services: boolean
+  }
+  /** Response-auth evidence sampling. */
+  evidence: { sampleRate: number | null; maxSampleBytes: number | null }
+  /**
+   * Setting paths (e.g. "maxPricing.inputUsdPerMillion", "verifier") the
+   * running buyer takes from its environment or start flags instead: editing
+   * them here is saved but has no effect until that override is removed.
+   * Empty when the buyer is unreachable.
+   */
+  overrides: string[]
+}
+
+/** A partial `BuyerSettings`: only the fields sent change. Lists replace the saved list. */
 export interface BuyerSettingsInput {
   maxPricing?: { inputUsdPerMillion?: number; outputUsdPerMillion?: number; cachedInputUsdPerMillion?: number | null }
   minPeerReputation?: number
+  routingPreferences?: Partial<BuyerSettings['routingPreferences']>
+  verifier?: Partial<BuyerSettings['verifier']>
+  payments?: Partial<BuyerSettings['payments']>
+  network?: Partial<BuyerSettings['network']>
+  evidence?: Partial<BuyerSettings['evidence']>
 }
 
 export interface ObservabilitySettings {

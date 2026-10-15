@@ -59,7 +59,17 @@ export function formatTokens(value: number): string {
 export function formatPricePerMillion(value: number | null | undefined): string {
   if (value === null || value === undefined) return '—'
   if (value === 0) return 'Free'
+  // Sub-cent prices keep two significant digits, so $0.0003 never reads $0.00.
+  if (value < 0.01) return `$${value.toLocaleString('en-US', { maximumSignificantDigits: 2 })}`
   return `$${value.toLocaleString('en-US', { minimumFractionDigits: 2, maximumFractionDigits: value < 1 ? 3 : 2 })}`
+}
+
+/** One price when all agree, else "min–max" (a free low end reads $0, so the range never says Free). */
+export function formatPriceRange(range: { min: number; max: number } | null): string {
+  if (!range) return '—'
+  if (range.min === range.max) return formatPricePerMillion(range.min)
+  const low = range.min === 0 ? '$0' : formatPricePerMillion(range.min)
+  return `${low}–${formatPricePerMillion(range.max)}`
 }
 
 export function formatLatency(ms: number | null | undefined): string {

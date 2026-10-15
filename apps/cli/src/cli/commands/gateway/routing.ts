@@ -5,6 +5,7 @@ import { resolvePolicy } from '../../../gateway/policy-resolver.js'
 import { previewRoute, type PreviewTarget } from '../../../gateway/services/network.js'
 import { gatewayDefaultPolicy, setGatewayDefaultPolicy } from '../../../gateway/services/routing.js'
 import type { GatewayStore } from '../../../gateway/store.js'
+import { formatUsdPerMillion } from '../network/pricing-format.js'
 import { printResolved } from './key.js'
 import { addConfirmOptions, addPolicyOptions, describePolicy, policyFromOptions } from './policy-options.js'
 import { addBuyerPortOption, printJson, requireKey, requireMember, requireWorkspace, withGateway } from './shared.js'
@@ -95,7 +96,7 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
       const levels = preview.sources.filter((source) => source.level !== 'buyer' && source.policy && Object.keys(source.policy).length > 0).map((source) => source.level)
       console.log(`${chalk.bold('Policy from:')} ${levels.length ? levels.join(' → ') : 'no gateway-side restrictions'}`)
       const buyerLimits = preview.sources.find((source) => source.level === 'buyer')?.policy
-      if (buyerLimits) console.log(`${chalk.bold('Buyer limits:')} ${describePolicy(buyerLimits, store).join('; ')} ${chalk.dim('(apply to every key)')}`)
+      if (buyerLimits) console.log(`${chalk.bold('Buyer config:')} ${describePolicy(buyerLimits, store).join('; ')} ${chalk.dim('(every key narrows it)')}`)
       const shown = preview.candidates.filter((candidate) => options.all || candidate.eligible)
       if (shown.length === 0) {
         console.log(chalk.yellow(preview.candidates.length ? 'No eligible seller; rerun with --all to see why.' : 'No seller offers this model right now.'))
@@ -107,8 +108,8 @@ export function registerGatewayRoutingCommands(gateway: Command): void {
           candidate.rank === null ? (candidate.eligible ? '-' : chalk.red('x')) : String(candidate.rank),
           candidate.peerId,
           candidate.displayName ?? '-',
-          candidate.inputUsdPerMillion ?? '-',
-          candidate.outputUsdPerMillion ?? '-',
+          formatUsdPerMillion(candidate.inputUsdPerMillion),
+          formatUsdPerMillion(candidate.outputUsdPerMillion),
           candidate.trustScore ?? '-',
           candidate.reasons.join('; ') || '-',
         ])

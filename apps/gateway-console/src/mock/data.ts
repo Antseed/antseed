@@ -1,5 +1,5 @@
 import type {
-  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
+  AdminToken, ApiKey, AuditEntry, AuthConfig, Channel, ChainInfo, Invite, Member, NetworkModel, NetworkModelOffer, Peer, PeerList, Preset, RequestDetail, RoutingPolicy, Settings, Workspace, WorkspaceRole,
 } from '../api/types'
 
 /** Obvious fake peer ids for the mock: 0xfa1e…0001 etc. */
@@ -64,6 +64,10 @@ export function seed() {
     trustScore: [92, 78, 88, 41, 65, null, 55, 83][index]!,
     reputationScore: [90, 74, 85, 50, 60, null, 52, 80][index]!,
     verified: index === 2 || index === 0,
+    // Obvious fake identities on example domains.
+    verificationLinks: index === 0
+      ? [{ kind: 'domain' as const, label: 'alpha.example.com', href: 'https://alpha.example.com' }, { kind: 'github' as const, label: '@fake-alpha', href: 'https://github.com/fake-alpha' }]
+      : index === 2 ? [{ kind: 'github' as const, label: '@fake-gamma/tee-node', href: 'https://github.com/fake-gamma/tee-node' }] : [],
     tee: index === 2,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
@@ -102,15 +106,17 @@ export function seed() {
     const startedAt = now - index * 37 * 60_000
     const input = 400 + ((index * 131) % 6000)
     const output = 50 + ((index * 71) % 1500)
-    // The newest request still waits for its spend; one an hour or so old never got any.
+    // The newest request still waits for its spend; one an hour or so old never got any; a few were served free.
     const costPending = index === 0 || index === 2
+    const servedFree = !failed && index % 13 === 4
     return {
       tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 900 + (index % 9) * 120, keyId: k.id, keyLabel: k.label,
       workspaceId: k.workspaceId, memberId: k.ownerMemberId, endUser: index % 4 === 0 ? `user-${index % 7}` : null, method: 'POST',
       path: index % 3 === 0 ? '/v1/messages' : '/v1/chat/completions', model: models[index % models.length]!, status: failed ? 502 : 200,
-      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90, spent: failed || costPending ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
+      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90, spent: failed || costPending || servedFree ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
       inputTokens: input, cachedInputTokens: index % 5 === 0 ? Math.floor(input / 2) : 0, outputTokens: failed ? 0 : output,
       ...(costPending ? { costPending: true } : {}),
+      ...(servedFree ? { servedFree: true } : {}),
       errorCode: failed ? 'seller_unavailable' : null,
       errorMessage: failed ? 'No seller accepted the request in time (fake seller timed out).' : null,
       requestBody: index % 6 === 0 ? JSON.stringify({ model: models[index % models.length], messages: [{ role: 'user', content: 'Summarise this fake ticket.' }] }) : null,
@@ -120,7 +126,18 @@ export function seed() {
   const gatewayPolicy: RoutingPolicy = { blockedPeerIds: [fakePeerId(7)], minTrustScore: 40 }
   const settings: Settings = {
     publicUrl: 'https://gateway.example.com',
-    buyer: { proxyPort: 8377, maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null }, minPeerReputation: 0, requireVerifier: false },
+    buyer: {
+      proxyPort: 8377,
+      maxPricing: { inputUsdPerMillion: 15, outputUsdPerMillion: 60, cachedInputUsdPerMillion: null },
+      minPeerReputation: 0,
+      routingPreferences: { minTrustScore: 60, maxInputUsdPerMillion: 25, allowedPeerIds: [], blockedPeerIds: [], preferFreePeers: false },
+      verifier: { enabled: true, prefer: [], require: false },
+      requireVerifier: false,
+      payments: { autoSweep: true, maxPerRequestUsdc: 0.3, maxReserveUsdc: 1, rpcUrl: 'https://base-mainnet.example.com/…', fallbackRpcUrls: [] },
+      network: { peerRefreshIntervalMs: 300_000, metadataFetchTimeoutMs: 2_000, requestTimeoutMs: 300_000, maxStreamDurationMs: 1_800_000, disableMetadataV2Services: false },
+      evidence: { sampleRate: null, maxSampleBytes: null },
+      overrides: ['network.metadataFetchTimeoutMs'],
+    },
     observability: { otlpEndpoint: null, otlpHeaders: {}, logContent: false, retentionDays: 30 },
     auth: { setupRequired: false, passkey: true, wallet: true, oidc: { label: 'Example SSO' }, cloudflareAccess: false, apiKeyLogin: true },
   }
@@ -149,4 +166,53 @@ export function seed() {
     }
   })
   return { audit, members, workspaces, workspaceMembers, keys, peers, peerLists, presets, invites, adminTokens, channels, requests, gatewayPolicy, settings, chain, authConfig }
+}
+
+const range = (values: Array<number | null>) => {
+  const known = values.filter((value): value is number => value !== null)
+  return known.length ? { min: Math.min(...known), max: Math.max(...known) } : null
+}
+
+/** `GET /models` for the mock: the sellers' text models, plus an image and a video model. */
+export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
+  const offers = new Map<string, NetworkModelOffer[]>()
+  for (const peer of peers) {
+    for (const service of peer.services) {
+      const free = service.inputUsdPerMillion === 0 && (service.outputUsdPerMillion ?? 0) === 0
+      const list = offers.get(service.service) ?? []
+      list.push({
+        peerId: peer.peerId, displayName: peer.displayName, serviceId: service.service, provider: service.provider,
+        protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
+        outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
+        contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
+        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+      })
+      offers.set(service.service, list)
+    }
+  }
+  const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
+    peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
+    cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
+    reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+  })), type]
+  const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
+    ...[...offers].map(([id, list]): [string, NetworkModelOffer[], NetworkModel['type']] => [id, list, 'text']),
+    media('flux-schnell', 'image', 0.003),
+    media('wan-2.2', 'video', 0.4),
+  ]
+  return entries.map(([id, list, type]) => {
+    const ranked = [...list].sort((a, b) => (b.reputationScore ?? -1) - (a.reputationScore ?? -1))
+    return {
+      id, name: id, aliases: id.includes('.') ? [id.replace(/\./g, '-')] : [], type,
+      contextLength: range(ranked.map((offer) => offer.contextLength))?.max ?? null,
+      capabilities: type === 'text' ? (id.includes('qwen3-coder') || id.includes('kimi') ? ['toolUse', 'structuredOutput'] : ['toolUse']) : [],
+      sellers: ranked.length,
+      inputUsdPerMillion: range(ranked.map((offer) => offer.inputUsdPerMillion)),
+      outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
+      free: ranked.some((offer) => offer.free),
+      teeSellers: ranked.filter((offer) => offer.tee).length,
+      verifiedSellers: ranked.filter((offer) => offer.verified).length,
+      offers: ranked,
+    }
+  })
 }

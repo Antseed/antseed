@@ -1,0 +1,291 @@
+/* ============================================================
+   PRODUCTS — gateway (ink card) then AI VPN (tinted card)
+   ============================================================ */
+.section {
+  position: relative;
+  padding: 160px 16px 96px;
+  background: var(--as-soil-1);
+}
+
+.inner {
+  max-width: 1200px;
+  margin: 0 auto;
+  display: flex;
+  flex-direction: column;
+  gap: 24px;
+}
+
+.inner > :first-child {
+  margin-bottom: 8px;
+}
+
+.inner > :first-child h2 {
+  font-weight: 600;
+}
+
+.card {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 48px;
+  padding: 56px;
+  border-radius: 28px;
+  box-sizing: border-box;
+  overflow: hidden;
+}
+
+.gatewayCard {
+  background: var(--as-ink);
+  color: #FFFFFF;
+}
+
+.vpnCard {
+  flex-wrap: wrap-reverse;
+  background: var(--as-soil-0);
+}
+
+/* ---------- copy column ---------- */
+.copy {
+  flex: 1 1 320px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 18px;
+  text-align: left;
+}
+
+.kicker {
+  margin: 0;
+  font-family: var(--as-font-data);
+  font-size: 12px;
+  line-height: 16px;
+  font-weight: 500;
+  letter-spacing: 0.06em;
+  text-transform: uppercase;
+  color: var(--as-green-deep);
+}
+
+.gatewayCard .kicker {
+  color: var(--as-primary-4);
+}
+
+.cardTitle {
+  margin: 0;
+  font-family: var(--as-font-display);
+  font-size: 40px;
+  line-height: 1.08;
+  font-weight: 600;
+  letter-spacing: -1px;
+  color: var(--as-heading);
+}
+
+.gatewayCard .cardTitle {
+  color: #FFFFFF;
+}
+
+.cardLead {
+  margin: 0;
+  font-size: 17px;
+  line-height: 1.55;
+  color: var(--as-text-2);
+}
+
+.gatewayCard .cardLead {
+  color: #B9CEC4;
+}
+
+.gatewayLead {
+  max-width: 345px;
+  font-size: 16px;
+}
+
+.points {
+  margin: 0;
+  padding: 0;
+  list-style: none;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+  font-size: 15px;
+  line-height: 22px;
+  color: var(--as-text);
+}
+
+.gatewayCard .points {
+  color: #E6F4EE;
+}
+
+.points li {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+}
+
+.check {
+  flex: none;
+}
+
+.check circle {
+  fill: var(--as-green-dim);
+}
+
+.check path {
+  stroke: var(--as-green-deep);
+}
+
+.gatewayCard .check circle {
+  fill: rgba(61, 199, 153, 0.18);
+}
+
+.gatewayCard .check path {
+  stroke: var(--as-primary-4);
+}
+
+.ctaRow {
+  margin-top: 8px;
+}
+
+/* DownloadCta centres itself; here it sits under left-aligned copy */
+.ctaRow > div {
+  align-items: flex-start;
+}
+
+.gatewayCta {
+  display: flex;
+  flex-direction: column;
+  align-items: flex-start;
+  gap: 8px;
+}
+
+.gatewayCard .gatewayCta span {
+  color: rgba(255, 255, 255, 0.7);
+}
+
+.gatewayCard .gatewayCta i {
+  background: rgba(61, 199, 153, 0.18);
+}
+
+.gatewayCard .gatewayCta i::after {
+  border-color: var(--as-primary-4);
+}
+
+.gatewayCard .greenBtn {
+  background: var(--as-green);
+  border-color: var(--as-green);
+  color: var(--as-ink);
+}
+
+.gatewayCard .greenBtn:hover {
+  background: var(--as-primary-4);
+  border-color: var(--as-primary-4);
+  color: var(--as-ink);
+}
+
+/* ---------- gateway console ---------- */
+.visual {
+  flex: 1.6 1 520px;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+
+.browser {
+  border-radius: 14px;
+  overflow: hidden;
+  background: #0B0B0B;
+  border: 1px solid #1E2A24;
+  box-shadow: 0 30px 60px -30px rgba(0, 0, 0, 0.7);
+}
+
+.browserBar {
+  position: relative;
+  height: 32px;
+  display: flex;
+  align-items: center;
+  padding: 0 14px;
+  background: #141414;
+  border-bottom: 1px solid #222;
+}
+
+.browserDots {
+  display: inline-flex;
+  gap: 6px;
+}
+
+.browserDots i {
+  width: 9px;
+  height: 9px;
+  border-radius: 50%;
+  background: #3A3A3A;
+}
+
+.browserUrl {
+  position: absolute;
+  left: 50%;
+  transform: translateX(-50%);
+  padding: 3px 14px;
+  border-radius: 6px;
+  background: #222;
+  color: #9A9A9A;
+  font-family: var(--as-font-data);
+  font-size: 11px;
+  line-height: 1.4;
+  white-space: nowrap;
+}
+
+/* holds the console's space before it mounts */
+.consoleSlot {
+  aspect-ratio: 760 / 500;
+  background: #0B0B0B;
+}
+
+/* ---------- AI VPN demo ---------- */
+.vpnVisual {
+  flex: 1.2 1 440px;
+  min-width: 0;
+  display: flex;
+  justify-content: center;
+}
+
+/* the compact HeroDemo scene is 660×924 */
+.vpnSlot {
+  width: 100%;
+  max-width: 400px;
+  aspect-ratio: 660 / 924;
+}
+
+@media (max-width: 640px) {
+  .section {
+    padding: 120px 16px 64px;
+  }
+
+  .card {
+    padding: 28px 20px;
+    border-radius: 20px;
+    gap: 28px;
+  }
+
+  .cardTitle {
+    font-size: 32px;
+  }
+
+  .gatewayLead {
+    max-width: none;
+  }
+
+  .visual,
+  .vpnVisual {
+    flex-basis: 100%;
+  }
+
+  .vpnSlot {
+    max-width: 300px;
+  }
+
+  .browserUrl {
+    font-size: 10px;
+    padding: 2px 10px;
+  }
+}

@@ -12,11 +12,6 @@ export function isLoopbackAddress(address: string | undefined | null): boolean {
   return normalized === '::1' || normalized.startsWith('127.')
 }
 
-function isLoopbackHostname(hostname: string): boolean {
-  const bare = hostname.replace(/^\[|\]$/g, '')
-  return bare === 'localhost' || isLoopbackAddress(bare)
-}
-
 /**
  * Client address for rate limiting, session records and the audit log.
  * Forwarding headers are trusted only from a loopback peer (Caddy /
@@ -73,17 +68,14 @@ function forwardedHttps(req: http.IncomingMessage): boolean {
   return isLoopbackAddress(req.socket.remoteAddress) && headerValue(req, 'x-forwarded-proto')?.split(',')[0]?.trim() === 'https'
 }
 
-/** Cookies drop `Secure` only for plain http straight to a loopback address (`antseed gateway` on a laptop). */
-function isPlainLoopbackHttp(req: http.IncomingMessage): boolean {
-  if (isEncrypted(req) || forwardedHttps(req)) return false
-  if (!isLoopbackAddress(req.socket.remoteAddress)) return false
-  const host = headerValue(req, 'host')
-  if (!host) return true
-  try {
-    return isLoopbackHostname(new URL(`http://${host}`).hostname)
-  } catch {
-    return false
-  }
+/**
+ * Cookies are `Secure` when the browser reached the console over https,
+ * directly or through a local proxy. On plain http (localhost, or a LAN
+ * address with `--host 0.0.0.0`) browsers drop `Secure` cookies, so sign-in
+ * could never stick.
+ */
+function isHttpsRequest(req: http.IncomingMessage): boolean {
+  return isEncrypted(req) || forwardedHttps(req)
 }
 
 export function readCookie(req: http.IncomingMessage, name: string): string | null {
@@ -102,7 +94,7 @@ export function readCookie(req: http.IncomingMessage, name: string): string | nu
 
 export function serializeCookie(req: http.IncomingMessage, name: string, value: string, options: { maxAgeSeconds: number; path: string; sameSite: 'Strict' | 'Lax' }): string {
   const parts = [`${name}=${value}`, 'HttpOnly', `SameSite=${options.sameSite}`, `Path=${options.path}`, `Max-Age=${options.maxAgeSeconds}`]
-  if (!isPlainLoopbackHttp(req)) parts.push('Secure')
+  if (isHttpsRequest(req)) parts.push('Secure')
   return parts.join('; ')
 }
 

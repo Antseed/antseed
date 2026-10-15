@@ -114,7 +114,7 @@ export function registerSellerSetupCommand(sellerCmd: Command): void {
       const rl = createInterface({ input: process.stdin, output: process.stdout });
 
       try {
-        console.log(chalk.bold('\nAntSeed Seller Setup\n'));
+        console.log(chalk.bold('\nAntseed seller setup\n'));
 
         const currentRpcUrl = config.payments.crypto?.rpcUrl;
         const rpcPrompt = currentRpcUrl

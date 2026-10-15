@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import { afterEach, describe, it } from 'node:test'
 import { Wallet } from 'ethers'
 import { SESSION_ABSOLUTE_MS, SESSION_IDLE_MS } from './db.js'
-import { sha256, SoftwarePasskey, startHarness, type Browser, type Harness } from './test-helpers.js'
+import { SoftwarePasskey, startHarness, type Browser, type Harness } from './test-helpers.js'
 
 let harness: Harness
 afterEach(async () => {
@@ -13,14 +13,14 @@ function setupToken(link: string): string {
   return link.slice(link.indexOf('#') + 1)
 }
 
-async function registerPasskey(browser: Browser, enrollment: string | undefined, passkey: SoftwarePasskey) {
+async function registerPasskey(browser: Browser, enrollment: string | undefined, passkey: SoftwarePasskey, overrides: { userVerified?: boolean } = {}) {
   const options = await browser.request('POST', '/auth/passkey/register/options', enrollment ? { enrollment } : {})
   assert.equal(options.status, 200, JSON.stringify(options.body))
   const origin = `http://${browser.host}`
-  return browser.request('POST', '/auth/passkey/register/verify', { enrollment, response: passkey.register(options.body, origin), label: 'Laptop' })
+  return browser.request('POST', '/auth/passkey/register/verify', { enrollment, response: passkey.register(options.body, origin, overrides), label: 'Laptop' })
 }
 
-async function loginPasskey(browser: Browser, passkey: SoftwarePasskey, overrides: { counter?: number } = {}) {
+async function loginPasskey(browser: Browser, passkey: SoftwarePasskey, overrides: { counter?: number; userVerified?: boolean } = {}) {
   const options = await browser.request('POST', '/auth/passkey/login/options', {})
   assert.equal(options.status, 200, JSON.stringify(options.body))
   return browser.request('POST', '/auth/passkey/login/verify', { response: passkey.login(options.body, `http://${browser.host}`, overrides) })
@@ -87,6 +87,31 @@ describe('console auth: setup and passkeys', () => {
     assert.equal(replay.body.error.code, 'passkey_invalid')
   })
 
+  it('requires user verification for passkey registration and sign-in', async () => {
+    harness = await startHarness()
+    const browser = harness.browser()
+    const setup = await browser.request('POST', '/auth/setup', { token: setupToken(harness.auth.createSetupLink()), email: 'owner@example.com' })
+    assert.equal(setup.status, 200, JSON.stringify(setup.body))
+
+    const registerOptions = await browser.request('POST', '/auth/passkey/register/options', { enrollment: setup.body.enrollment })
+    assert.equal(registerOptions.body.authenticatorSelection.userVerification, 'required')
+    const loginOptions = await harness.browser().request('POST', '/auth/passkey/login/options', {})
+    assert.equal(loginOptions.body.userVerification, 'required')
+
+    // Presence alone (no PIN or biometric) does not register a passkey...
+    const unverified = await registerPasskey(browser, setup.body.enrollment, new SoftwarePasskey(), { userVerified: false })
+    assert.equal(unverified.status, 400)
+    assert.equal(unverified.body.error.code, 'passkey_invalid')
+
+    // ...nor sign in with one.
+    const passkey = new SoftwarePasskey()
+    assert.equal((await registerPasskey(browser, setup.body.enrollment, passkey)).status, 200)
+    const login = await loginPasskey(harness.browser(), passkey, { userVerified: false })
+    assert.equal(login.status, 401)
+    assert.equal(login.body.error.code, 'passkey_invalid')
+    assert.equal((await loginPasskey(harness.browser(), passkey)).status, 200)
+  })
+
   it('only the newest setup link works, and an owner who never registered can re-claim', async () => {
     harness = await startHarness()
     const first = setupToken(harness.auth.createSetupLink())
@@ -127,6 +152,21 @@ describe('console auth: setup and passkeys', () => {
 })
 
 describe('console auth: invites and wallets', () => {
+  it('adds no sign-in method when the invite lapsed during sign-up', async () => {
+    harness = await startHarness()
+    const wallet = Wallet.createRandom()
+    const { member, token } = harness.store.invite({ label: 'Lee' })
+    const browser = harness.browser()
+    const enrollment = (await browser.request('POST', '/auth/invite', { token })).body.enrollment
+    for (const invite of harness.store.invites.values()) invite.expiresAt = harness.clock.now - 1
+    const message = (await browser.request('POST', '/auth/wallet/nonce', { address: wallet.address })).body.message
+    const refused = await browser.request('POST', '/auth/wallet/verify', { message, signature: await wallet.signMessage(message), enrollment })
+    assert.equal(refused.status, 400)
+    assert.equal(refused.body.error.code, 'invite_expired')
+    assert.equal(harness.auth.credentialsFor(member.id).length, 0)
+    assert.equal(harness.store.getMember(member.id)!.status, 'invited')
+  })
+
   it('consumes an invite once and signs in with a wallet', async () => {
     harness = await startHarness()
     const wallet = Wallet.createRandom()
@@ -136,7 +176,10 @@ describe('console auth: invites and wallets', () => {
     const invited = await browser.request('POST', '/auth/invite', { token })
     assert.equal(invited.status, 200)
     assert.equal(invited.body.label, 'Dana')
-    assert.equal((await harness.browser().request('POST', '/auth/invite', { token })).status, 400)
+    // Until a sign-in method is registered the invite stays open: opening it again (a refresh) still works.
+    const reopened = await harness.browser().request('POST', '/auth/invite', { token })
+    assert.equal(reopened.status, 200)
+    assert.equal(harness.store.getMember(member.id)!.status, 'invited')
 
     const nonce = await browser.request('POST', '/auth/wallet/nonce', { address: wallet.address })
     const message: string = nonce.body.message
@@ -147,6 +190,9 @@ describe('console auth: invites and wallets', () => {
     assert.equal(verified.status, 200, JSON.stringify(verified.body))
     assert.equal(verified.body.me.member.id, member.id)
     assert.deepEqual(verified.body.me.workspaces.map((entry: { workspace: { id: string }; role: string }) => [entry.workspace.id, entry.role]), [['ws_research', 'member']])
+    assert.equal(harness.store.getMember(member.id)!.status, 'active')
+    const used = await harness.browser().request('POST', '/auth/invite', { token })
+    assert.equal(used.body.error.code, 'invite_used')
 
     // The nonce is single use.
     const replay = await harness.browser().request('POST', '/auth/wallet/verify', { message, signature: await wallet.signMessage(message) })
@@ -205,22 +251,31 @@ describe('console auth: API keys, tokens and sessions', () => {
     assert.equal((await other.request('GET', '/auth/me')).status, 401)
   })
 
-  it('authenticates management tokens from the admin_tokens table, if it exists', async () => {
+  it('authenticates management tokens through the store', async () => {
     harness = await startHarness()
     const browser = harness.browser()
     const secret = 'antseed_admin_' + 'a'.repeat(43)
     assert.equal(await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` })), null)
 
-    harness.store.database.exec('CREATE TABLE admin_tokens (id TEXT PRIMARY KEY, label TEXT, token_hash TEXT UNIQUE, scope TEXT, created_at INTEGER, last_used_at INTEGER, revoked_at INTEGER)')
-    harness.store.database.prepare('INSERT INTO admin_tokens VALUES (?, ?, ?, ?, ?, NULL, NULL)').run('adm_1', 'CI', sha256(secret), 'read', 1)
+    harness.store.adminTokens.set(secret, { id: 'adm_1', scope: 'read', revokedAt: null, lastUsedAt: null })
     const principal = await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` }))
     assert.deepEqual(principal, { kind: 'token', tokenId: 'adm_1', scope: 'read' })
-    assert.notEqual(harness.store.database.prepare('SELECT last_used_at FROM admin_tokens').pluck().get(), null)
+    assert.notEqual(harness.store.adminTokens.get(secret)!.lastUsedAt, null)
     // Tokens have no /auth/me profile.
     assert.equal((await browser.request('GET', '/auth/me', undefined, { authorization: `Bearer ${secret}` })).status, 403)
 
-    harness.store.database.prepare('UPDATE admin_tokens SET revoked_at = 2').run()
+    harness.store.adminTokens.get(secret)!.revokedAt = 2
     assert.equal(await harness.auth.authenticate(fakeRequest({ authorization: `Bearer ${secret}` })), null)
+  })
+
+  it('never falls back to the session cookie when a bearer header is sent', async () => {
+    harness = await startHarness()
+    const browser = harness.browser()
+    await claimOwner(harness, browser)
+    assert.equal((await browser.request('GET', '/auth/me')).status, 200)
+    for (const authorization of ['Bearer not-a-management-token', 'Bearer antseed_admin_unknown']) {
+      assert.equal((await browser.request('GET', '/auth/me', undefined, { authorization })).status, 401, authorization)
+    }
   })
 
   it('expires idle and old sessions, rotates on login and logs out', async () => {
@@ -294,16 +349,28 @@ describe('console auth: rate limits and cookies', () => {
     assert.equal((await proxied.request('POST', '/auth/api-key', { key: 'antseed_guess_z' })).status, 401)
   })
 
-  it('marks cookies Secure behind https and off-loopback hosts', async () => {
+  it('limits setup attempts per token, not across every client', async () => {
+    harness = await startHarness()
+    const link = harness.auth.createSetupLink()
+    const token = link.slice(link.indexOf('#') + 1)
+    const guesser = harness.browser(undefined, { 'x-forwarded-for': '198.51.100.7' })
+    let last
+    for (let attempt = 0; attempt < 11; attempt += 1) last = await guesser.request('POST', '/auth/setup', { token: 'guess' })
+    assert.equal(last!.status, 429)
+    const owner = harness.browser(undefined, { 'x-forwarded-for': '203.0.113.9' })
+    assert.equal((await owner.request('POST', '/auth/setup', { token })).status, 200)
+  })
+
+  it('marks cookies Secure over https only, so plain-http LAN sign-in works', async () => {
     harness = await startHarness({ publicUrl: 'https://gateway.example.test' })
     const key = harness.store.addKey()
     const proxied = harness.browser('gateway.example.test', { 'x-forwarded-proto': 'https' })
     await proxied.request('POST', '/auth/api-key', { key: key.secret })
     assert.match(proxied.lastSetCookies[0]!, /; Secure/)
 
-    const publicHost = harness.browser('gateway.example.test')
-    await publicHost.request('POST', '/auth/api-key', { key: key.secret })
-    assert.match(publicHost.lastSetCookies[0]!, /; Secure/)
+    const lan = harness.browser('192.168.1.20:8379')
+    await lan.request('POST', '/auth/api-key', { key: key.secret })
+    assert.doesNotMatch(lan.lastSetCookies[0]!, /Secure/)
 
     const local = harness.browser(`127.0.0.1:${harness.port}`)
     await local.request('POST', '/auth/api-key', { key: key.secret })

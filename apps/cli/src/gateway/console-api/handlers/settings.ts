@@ -6,17 +6,19 @@ import type { Settings } from '../types.js'
 import { defaultBuyerClient } from './network-buyer.js'
 
 /**
- * OTLP header values can be credentials: only org-admin sessions read them;
- * management tokens (read scope included) see them masked.
+ * OTLP header values and RPC URLs can be credentials: only org-admin
+ * sessions read them; management tokens (read scope included) see them
+ * masked.
  */
 async function readSettings(deps: ConsoleDeps, principal: Principal | null = null): Promise<Settings> {
-  return readSettingsService(deps, { revealSecrets: principal?.kind === 'member' })
+  return readSettingsService(deps, { revealSecrets: principal?.kind === 'member', buyer: defaultBuyerClient(deps) })
 }
 
 /**
  * Settings (org admins; `GET /status` lives in status.ts); rules in
  * `services/settings.ts`. Changing the buyer settings rewrites the config
- * file in place and asks the buyer to restart (`POST /_antseed/restart`).
+ * file in place; the buyer reloads routing preferences by itself and is
+ * asked to restart for anything else (`POST /_antseed/restart`).
  */
 export function registerSettingsRoutes(router: ConsoleRouter, deps: ConsoleDeps): void {
   const { store } = deps

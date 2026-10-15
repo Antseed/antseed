@@ -92,6 +92,8 @@ export type NetworkModelBuildOptions = {
     cooldownUntil?: number | null
     failureStreak?: number | null
   }>
+  /** Only offers it accepts are listed (a gateway routing policy); a model left with none is omitted. */
+  offerFilter?: (offer: NetworkServiceOffer) => boolean
 }
 
 function normalizedModelAlias(serviceId: string): string {
@@ -208,7 +210,9 @@ export function buildNetworkModels(
     normalizedReputationByPeerId.set(peer.peerId, normalizedModelReputationScore(peer))
   }
 
-  const allOffers = buildNetworkServiceOffers(peers)
+  const offerFilter = options.offerFilter
+  const discoveredOffers = buildNetworkServiceOffers(peers)
+  const allOffers = offerFilter ? discoveredOffers.filter(offerFilter) : discoveredOffers
   const offersByPeerModel = new Map<string, NetworkServiceOffer[]>()
   for (const offer of allOffers) {
     const key = canonicalModelKey(offer.serviceId)

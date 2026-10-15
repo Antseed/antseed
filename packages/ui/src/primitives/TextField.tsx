@@ -12,11 +12,12 @@ export interface TextFieldProps extends Omit<InputHTMLAttributes<HTMLInputElemen
   mono?: boolean;
 }
 
-export function fieldClasses(className: string | undefined, size: FieldSize | undefined): string {
+export function fieldClasses(className?: string, size?: FieldSize): string {
   return ['as-field', size === 'sm' ? 'as-field--sm' : null, className].filter(Boolean).join(' ');
 }
 
-export function inputClasses(extra: string | null, mono: boolean | undefined): string {
+/** `extra` is the control's own modifier class (e.g. `as-field__select`). */
+export function inputClasses(extra?: string, mono?: boolean): string {
   return ['as-field__input', extra, mono ? 'as-field__input--mono' : null].filter(Boolean).join(' ');
 }
 
@@ -43,7 +44,7 @@ export function TextField({
   return (
     <label className={fieldClasses(className, size)} htmlFor={inputId}>
       {label && <span className="as-field__label">{label}</span>}
-      <input id={inputId} className={inputClasses(null, mono)} aria-invalid={error ? true : undefined} {...rest} />
+      <input id={inputId} className={inputClasses(undefined, mono)} aria-invalid={error ? true : undefined} {...rest} />
       <FieldMessage error={error} hint={hint} />
     </label>
   );

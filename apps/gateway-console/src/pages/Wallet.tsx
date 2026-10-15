@@ -237,7 +237,8 @@ export default function Wallet() {
   const { workspace, viewer } = useConsole()
   const wallet = useWallet(workspace.id)
   const chain = useChain()
-  const [dialog, setDialog] = useState<'fund' | 'withdraw' | null>(null)
+  // `?fund=1` (the Overview's "Add funds") opens the funding dialog.
+  const [dialog, setDialog] = useState<'fund' | 'withdraw' | null>(() => (new URLSearchParams(window.location.search).get('fund') === '1' ? 'fund' : null))
   const [operatorAction, setOperatorAction] = useState<OperatorAction | null>(null)
 
   return (

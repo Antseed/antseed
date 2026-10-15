@@ -24,6 +24,8 @@ const WalletFunding = lazy(() => import('./WalletFunding'))
 
 /** The desktop's presets: small first top-ups, any amount in the field. */
 const AMOUNT_PRESETS = ['5', '10', '25']
+/** The pay page refuses card links above this amount. */
+const CARD_MAX_USD = 200
 /** Hosted provider for USDC from other chains; it credits the buyer address it is given. */
 const MERIDIAN_URL = 'https://antseed.mrdn.finance/'
 
@@ -110,11 +112,12 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   useDepositWatchHeartbeat(workspaceId)
   // Only events after the dialog opened count; an old "credited" is not news.
   const baseline = useRef(wallet.deposit.event?.seq ?? 0)
-  // The status line follows the watcher: every 4 s while USDC is on its way, every 8 s otherwise (visible tab only; the gateway answers from caches).
+  // The status line follows the watcher: every 4 s while USDC is on its way, every 8 s otherwise (visible tab only).
+  // The gateway answers from caches, so this may poll below the 30 s chain floor.
   const inFlight = wallet.deposit.event !== null && wallet.deposit.event.seq > baseline.current && (wallet.deposit.event.phase === 'received' || wallet.deposit.event.phase === 'sweeping')
-  useVisiblePolling(qk.wallet(workspaceId), inFlight ? 4_000 : 8_000)
+  useVisiblePolling(qk.wallet(workspaceId), inFlight ? 4_000 : 8_000, 4_000)
   // The embedded checkout, closed once its USDC is credited (the desktop closes its checkout popup the same way).
-  const [checkout, setCheckout] = useState<{ url: string; provider: CardProvider } | null>(null)
+  const [checkout, setCheckout] = useState<{ url: string; origin: string; provider: CardProvider } | null>(null)
   const event = wallet.deposit.event
   const credited = event && event.seq > baseline.current && event.phase === 'credited' ? event : null
   useEffect(() => {
@@ -137,12 +140,14 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
   /** Signs the funding link on the gateway and opens the pay page in the checkout dialog. */
   async function openCard(provider: CardProvider) {
     if (!amountOk) { setNotice('Enter an amount of at least $1.'); return }
+    if (value > CARD_MAX_USD) { setNotice(`Card deposits are limited to $${CARD_MAX_USD}. Send more as USDC instead.`); return }
     setOpening(provider)
     setNotice(null)
     try {
       const { url } = await api.wallet.cardLink(workspaceId, value, provider)
-      if (!/^https:\/\//.test(url)) throw new Error('The gateway returned an invalid checkout link.')
-      setCheckout({ url, provider })
+      const origin = URL.canParse(url) ? new URL(url).origin : null
+      if (!origin?.startsWith('https://')) throw new Error('The gateway returned an invalid checkout link.')
+      setCheckout({ url, origin, provider })
     } catch (cause) {
       setNotice(errorMessage(cause))
     } finally {
@@ -210,13 +215,14 @@ export function AddFunds({ wallet, chain, workspaceId }: { wallet: WalletInfo; c
     <Modal isOpen={checkout !== null} onClose={() => setCheckout(null)} size="md" title="Secure checkout"
       bodyClassName="gc-checkout"
       subtitle={checkout && (
-        <>{checkout.provider === 'stripe' ? 'Card checkout by Stripe (US only).' : 'Card checkout by Crossmint.'} Closes by itself once the funds arrive.{' '}
+        <>{checkout.provider === 'stripe' ? 'Card checkout by Outerfound, powered by Stripe (US only).' : 'Card checkout by Crossmint.'} Closes by itself once the funds arrive.{' '}
           <a className="gc-link" href={checkout.url} target="_blank" rel="noopener noreferrer" onClick={() => setCheckout(null)}>Open in a new tab</a></>
       )}>
       {checkout && (
         <iframe className="gc-checkout__frame" src={checkout.url} title="Antseed Pay checkout"
-          // Card wallets (Apple Pay, Google Pay) inside the page's own Crossmint/Stripe frames need the Payment Request API delegated.
-          allow="payment *; clipboard-write" />
+          // Card wallets (Apple Pay, Google Pay) inside the page's own Crossmint/Stripe frames need the Payment Request API delegated:
+          // to the pay page's origin only, which passes it on to the frames it embeds.
+          allow={`payment ${checkout.origin}; clipboard-write`} />
       )}
     </Modal>
   )

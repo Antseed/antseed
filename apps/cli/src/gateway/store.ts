@@ -71,6 +71,54 @@ export interface WorkspaceRecord {
   createdAt: number
 }
 
+/** Whose chat history: a console member's, or an API key holder's (the CLI and key sessions). */
+export interface ChatThreadOwner {
+  kind: 'member' | 'key'
+  id: string
+  workspaceId: string
+}
+
+export interface ChatThreadSummary {
+  id: string
+  workspaceId: string
+  owner: { kind: 'member' | 'key'; id: string }
+  title: string
+  model: string | null
+  peerId: string | null
+  createdAt: number
+  updatedAt: number
+}
+
+export interface ChatThreadRecord extends ChatThreadSummary {
+  /** AI SDK UIMessages, as the web chat and `antseed chat` exchange them. */
+  messages: unknown[]
+}
+
+interface ChatThreadRow {
+  id: string
+  workspace_id: string
+  owner_kind: 'member' | 'key'
+  owner_id: string
+  title: string
+  model: string | null
+  peer_id: string | null
+  created_at: number
+  updated_at: number
+}
+
+function chatThreadSummary(row: ChatThreadRow): ChatThreadSummary {
+  return {
+    id: row.id,
+    workspaceId: row.workspace_id,
+    owner: { kind: row.owner_kind, id: row.owner_id },
+    title: row.title,
+    model: row.model,
+    peerId: row.peer_id,
+    createdAt: row.created_at,
+    updatedAt: row.updated_at,
+  }
+}
+
 export interface MemberRecord {
   id: string
   label: string
@@ -200,6 +248,15 @@ export interface RequestOutcome {
   sellerPeerId?: string | null
   latencyMs?: number | null
   endUser?: string | null
+  /** Served by a free seller (all advertised prices zero): no spend will be reported. */
+  servedFree?: boolean
+}
+
+/** What a key listing shows: lifetime requests and spend, and spend since a given time. */
+export interface KeyUsageSummary {
+  requests: number
+  spentUsdc: number
+  spentSinceUsdc: number
 }
 
 export interface KeyUsageStats {
@@ -248,8 +305,20 @@ export interface RequestError {
 
 export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'workspace' | 'user'
 
-/** A usage group, split further by a second grouping when one was asked for. */
-export type UsageGroupRow = { group: string | null; splits?: Array<{ group: string | null } & UsageTotalsRow> } & UsageTotalsRow
+/**
+ * A usage group, split further by a second grouping when one was asked for.
+ * `others` marks the row that folds the end users past the largest
+ * `MAX_USER_GROUPS` (its count of them); its group is `OTHER_USERS_GROUP`.
+ */
+export type UsageGroupRow = { group: string | null; others?: number; splits?: UsageSplitRow[] } & UsageTotalsRow
+export type UsageSplitRow = { group: string | null; others?: number } & UsageTotalsRow
+
+/**
+ * End users are whatever a key holder sends, so a report by user keeps the
+ * largest ones and folds the rest into one row.
+ */
+export const MAX_USER_GROUPS = 100
+export const OTHER_USERS_GROUP = '\u0000others'
 
 /** Token counts a response reported about itself (`inputTokens` includes cached input). */
 export interface ResponseTokenCounts {
@@ -288,9 +357,11 @@ export interface RequestLogRow {
   outputTokens: number
   errorCode: string | null
   errorMessage: string | null
+  /** Served by a free seller: its cost is $0 with no spend to wait for. */
+  servedFree: boolean
   /**
-   * A model request that did not fail but has no spend recorded yet (the
-   * buyer reports it a moment after the response, or never for a free seller).
+   * A model request that did not fail and was not served free, but has no
+   * spend recorded yet (the buyer reports it a moment after the response).
    */
   costPending: boolean
 }
@@ -329,12 +400,8 @@ type KeyRow = {
   last_used_at: number | null
 }
 
-type LimitColumns = {
-  daily_limit_usdc: number | null
-  weekly_limit_usdc: number | null
-  monthly_limit_usdc: number | null
-  total_limit_usdc: number | null
-}
+/** A row's cap columns (`daily_limit_usdc`, …), optionally prefixed (`owner_daily_limit_usdc`, …). */
+type LimitColumns<Prefix extends string = ''> = Record<`${Prefix}${BudgetPeriod}_limit_usdc`, number | null>
 
 type WorkspaceRow = LimitColumns & {
   id: string
@@ -411,12 +478,13 @@ function parseJson<T>(raw: string | null, fallback: T): T {
   }
 }
 
-function rowLimits(row: LimitColumns): BudgetLimits {
+function rowLimits<Prefix extends string = ''>(row: LimitColumns<Prefix>, prefix = '' as Prefix): BudgetLimits {
+  const limit = (period: BudgetPeriod) => row[`${prefix}${period}_limit_usdc` as `${Prefix}${BudgetPeriod}_limit_usdc`]
   return {
-    daily: row.daily_limit_usdc,
-    weekly: row.weekly_limit_usdc,
-    monthly: row.monthly_limit_usdc,
-    total: row.total_limit_usdc,
+    daily: limit('daily'),
+    weekly: limit('weekly'),
+    monthly: limit('monthly'),
+    total: limit('total'),
   }
 }
 
@@ -445,22 +513,6 @@ export class GatewayStore {
     this._db.pragma('foreign_keys = ON')
     for (const path of [file, `${file}-wal`, `${file}-shm`]) restrictMode(path, 0o600)
     this._migrate()
-    this._repairDraftSchema()
-  }
-
-  /**
-   * Databases that ran an earlier draft of the unshipped v3 migration lack
-   * the columns added to it since; add them. Drop once v3 ships.
-   */
-  private _repairDraftSchema(): void {
-    const columns = new Set((this._db.prepare('PRAGMA table_info(gateway_requests)').all() as Array<{ name: string }>).map((column) => column.name))
-    const missing = ['usage_input_tokens', 'usage_cached_input_tokens', 'usage_output_tokens'].filter((column) => !columns.has(column))
-    if (missing.length === 0) return
-    this._db.transaction(() => {
-      // Re-read under the write lock: another process may have added them.
-      const now = new Set((this._db.prepare('PRAGMA table_info(gateway_requests)').all() as Array<{ name: string }>).map((column) => column.name))
-      for (const column of missing) if (!now.has(column)) this._db.exec(`ALTER TABLE gateway_requests ADD COLUMN ${column} INTEGER`)
-    }).immediate()
   }
 
   /**
@@ -784,6 +836,14 @@ export class GatewayStore {
     return row?.token_hash ?? null
   }
 
+  /** Why an invite token is not usable: already used, expired, or unknown (also for a live one). */
+  inviteState(tokenHash: string, now: number): 'used' | 'expired' | 'unknown' {
+    const row = this._stmt('SELECT used_at, expires_at FROM invites WHERE token_hash = ?').get(tokenHash) as { used_at: number | null; expires_at: number } | undefined
+    if (!row) return 'unknown'
+    if (row.used_at !== null) return 'used'
+    return row.expires_at <= now ? 'expired' : 'unknown'
+  }
+
   /** Marks the invite used and its member active; null when the token is unknown, used or expired. */
   consumeInvite(tokenHash: string, now: number): MemberRecord | null {
     return this._db.transaction(() => {
@@ -1015,8 +1075,8 @@ export class GatewayStore {
   recordRequestOutcome(tag: string, outcome: RequestOutcome): void {
     this._stmt(`
       UPDATE gateway_requests SET seller_peer_id = COALESCE(?, seller_peer_id), latency_ms = COALESCE(?, latency_ms),
-        end_user = COALESCE(?, end_user) WHERE tag = ?
-    `).run(outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.endUser ?? null, tag)
+        end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?) WHERE tag = ?
+    `).run(outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag)
   }
 
   /**
@@ -1035,6 +1095,13 @@ export class GatewayStore {
     this._stmt(`
       UPDATE gateway_requests SET request_body = COALESCE(?, request_body), response_body = COALESCE(?, response_body) WHERE tag = ?
     `).run(content.requestBody ?? null, content.responseBody ?? null, tag)
+  }
+
+  /** Forgets every stored request and response body; for when content logging is turned off. */
+  clearRequestContent(): number {
+    return this._stmt(`
+      UPDATE gateway_requests SET request_body = NULL, response_body = NULL WHERE request_body IS NOT NULL OR response_body IS NOT NULL
+    `).run().changes
   }
 
   /**
@@ -1143,7 +1210,7 @@ export class GatewayStore {
       WITH page AS (
         SELECT r.tag, r.started_at, r.finished_at, r.key_id, k.label AS key_label, COALESCE(r.workspace_id, k.workspace_id) AS ws_id,
           r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.error_code, r.error_message,
-          r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
+          r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
           ${withBodies ? ', r.request_body, r.response_body' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
         ${whereClause(where)}
@@ -1163,6 +1230,7 @@ export class GatewayStore {
       // Ledger tokens when the spend reported any, else what the response said.
       const ledgerTokens = (row['in_tokens'] as number) + (row['cached_tokens'] as number) + (row['out_tokens'] as number) > 0
       const status = row['status'] as number | null
+      const servedFree = row['served_free'] === 1
       return {
       tag: row['tag'] as string,
       startedAt: row['started_at'] as number,
@@ -1184,7 +1252,8 @@ export class GatewayStore {
       outputTokens: ledgerTokens ? row['out_tokens'] as number : (row['usage_output_tokens'] as number | null) ?? 0,
       errorCode: row['error_code'] as string | null,
       errorMessage: row['error_message'] as string | null,
-      costPending: row['spent'] === null && row['model'] !== null && (status === null || status < 400),
+      servedFree,
+      costPending: row['spent'] === null && !servedFree && row['model'] !== null && (status === null || status < 400),
       ...(withBodies ? { requestBody: row['request_body'] as string | null, responseBody: row['response_body'] as string | null } : {}),
       }
     })
@@ -1218,9 +1287,7 @@ export class GatewayStore {
       FROM ledger_entries l ${whereClause(led.where)} GROUP BY g, s
     `).all(...led.params) as Array<{ g: string | null; s: string | null; spent: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }>
     const fallback = scopeSql(filter, REQUEST_COLUMNS)
-    fallback.where.push('r.usage_input_tokens IS NOT NULL', `NOT EXISTS (
-      SELECT 1 FROM ledger_entries t WHERE t.request_tag = r.tag AND t.kind = 'spend' AND t.input_tokens + t.cached_input_tokens + t.output_tokens > 0
-    )`)
+    fallback.where.push(REPORTED_TOKENS_ONLY_SQL)
     const responseRows = this._stmt(`
       SELECT ${select(REQUEST_COLUMNS)}, SUM(r.usage_input_tokens) AS input_tokens, COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
         COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
@@ -1266,11 +1333,11 @@ export class GatewayStore {
     const list: UsageGroupRow[] = [...groups].map(([group, entry]) => ({
       group,
       ...entry.totals,
-      ...(splitBy ? { splits: [...entry.splits].map(([split, part]) => ({ group: split, ...part })).sort(bySize) } : {}),
+      ...(splitBy ? { splits: capUserGroups(splitBy, [...entry.splits].map(([split, part]) => ({ group: split, ...part })).sort(bySize)) } : {}),
     }))
     if (isTimeGrouping(groupBy)) list.sort((a, b) => String(a.group).localeCompare(String(b.group)))
     else list.sort(bySize)
-    return { totals, groups: list }
+    return { totals, groups: capUserGroups(groupBy, list) }
   }
 
   // ── Ledger ──────────────────────────────────────────────────────────────
@@ -1357,15 +1424,57 @@ export class GatewayStore {
              COALESCE(SUM(output_tokens), 0) AS output_tokens
       FROM ledger_entries WHERE key_id = ? AND created_at >= ?
     `).get(keyId, since) as { spent: number; credited: number; input_tokens: number; cached_input_tokens: number; output_tokens: number }
+    // As in the usage report, requests without metered tokens count the response's own.
+    const reported = this._stmt(`
+      SELECT COALESCE(SUM(r.usage_input_tokens), 0) AS input_tokens,
+             COALESCE(SUM(r.usage_cached_input_tokens), 0) AS cached_input_tokens,
+             COALESCE(SUM(r.usage_output_tokens), 0) AS output_tokens
+      FROM gateway_requests r
+      WHERE r.key_id = ? AND r.started_at >= ? AND ${REPORTED_TOKENS_ONLY_SQL}
+    `).get(keyId, since) as { input_tokens: number; cached_input_tokens: number; output_tokens: number }
     return {
       requests: requests.requests + rolled.requests,
       failedRequests: requests.failed + rolled.failed,
       spentUsdc: ledger.spent,
       creditedUsdc: ledger.credited,
-      inputTokens: ledger.input_tokens,
-      cachedInputTokens: ledger.cached_input_tokens,
-      outputTokens: ledger.output_tokens,
+      inputTokens: ledger.input_tokens + reported.input_tokens,
+      cachedInputTokens: ledger.cached_input_tokens + reported.cached_input_tokens,
+      outputTokens: ledger.output_tokens + reported.output_tokens,
     }
+  }
+
+  /**
+   * Lifetime requests and spend, plus spend since `since`, for many keys in
+   * one grouped query per table (rather than `usageStats` per key). Every
+   * id asked for gets an entry.
+   */
+  keyUsageSummaries(keyIds: readonly string[], since: number): Map<string, KeyUsageSummary> {
+    const summaries = new Map<string, KeyUsageSummary>(keyIds.map((id) => [id, { requests: 0, spentUsdc: 0, spentSinceUsdc: 0 }]))
+    if (keyIds.length === 0) return summaries
+    const ids = JSON.stringify(keyIds)
+    const requests = this._stmt(`
+      SELECT key_id, COUNT(*) AS requests FROM gateway_requests
+      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+    `).all(ids) as Array<{ key_id: string; requests: number }>
+    const rolled = this._stmt(`
+      SELECT key_id, SUM(requests) AS requests FROM request_rollups
+      WHERE key_id IN (SELECT value FROM json_each(?)) GROUP BY key_id
+    `).all(ids) as Array<{ key_id: string; requests: number }>
+    for (const row of [...requests, ...rolled]) {
+      const summary = summaries.get(row.key_id)
+      if (summary) summary.requests += row.requests
+    }
+    const spend = this._stmt(`
+      SELECT key_id, -SUM(amount_usdc) AS spent, -SUM(CASE WHEN created_at >= ? THEN amount_usdc ELSE 0 END) AS spent_since
+      FROM ledger_entries WHERE key_id IN (SELECT value FROM json_each(?)) AND kind = 'spend' GROUP BY key_id
+    `).all(since, ids) as Array<{ key_id: string; spent: number; spent_since: number }>
+    for (const row of spend) {
+      const summary = summaries.get(row.key_id)
+      if (!summary) continue
+      summary.spentUsdc = row.spent
+      summary.spentSinceUsdc = row.spent_since
+    }
+    return summaries
   }
 
   // ── Peer lists ──────────────────────────────────────────────────────────
@@ -1413,11 +1522,15 @@ export class GatewayStore {
     return row ? toPreset(row) : null
   }
 
-  /** A workspace's own preset wins over an org-wide one with the same slug. */
+  /**
+   * An org-wide preset wins over a workspace's own with the same slug, so a
+   * workspace admin cannot replace an org-mandated preset (and its system
+   * prompt) for their workspace.
+   */
   findPresetBySlug(slug: string, workspaceId: string | null): PresetRecord | null {
     const row = this._stmt(`
       SELECT * FROM presets WHERE slug = ? AND (workspace_id IS NULL OR workspace_id = ?)
-      ORDER BY workspace_id IS NULL LIMIT 1
+      ORDER BY workspace_id IS NOT NULL LIMIT 1
     `).get(slug, workspaceId) as Record<string, unknown> | undefined
     return row ? toPreset(row) : null
   }
@@ -1550,6 +1663,35 @@ export class GatewayStore {
     }
   }
 
+  // ── Chat history ────────────────────────────────────────────────────────
+
+  /** A member's or a key's conversations in a workspace, newest first (without their messages). */
+  listChatThreads(owner: ChatThreadOwner, limit = 200): ChatThreadSummary[] {
+    return (this._stmt(`
+      SELECT id, workspace_id, owner_kind, owner_id, title, model, peer_id, created_at, updated_at FROM chat_threads
+      WHERE owner_kind = ? AND owner_id = ? AND workspace_id = ? ORDER BY updated_at DESC LIMIT ?
+    `).all(owner.kind, owner.id, owner.workspaceId, limit) as ChatThreadRow[]).map(chatThreadSummary)
+  }
+
+  getChatThread(id: string): ChatThreadRecord | null {
+    const row = this._stmt('SELECT * FROM chat_threads WHERE id = ?').get(id) as (ChatThreadRow & { messages: string }) | undefined
+    return row ? { ...chatThreadSummary(row), messages: parseJson<unknown[]>(row.messages, []) } : null
+  }
+
+  /** Creates or replaces a conversation; the owner and creation time of an existing one never change. */
+  saveChatThread(input: { id: string; owner: ChatThreadOwner; title: string; model: string | null; peerId: string | null; messages: unknown[] }): void {
+    const now = this._now()
+    this._stmt(`
+      INSERT INTO chat_threads (id, workspace_id, owner_kind, owner_id, title, model, peer_id, messages, created_at, updated_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ON CONFLICT (id) DO UPDATE SET title = excluded.title, model = excluded.model, peer_id = excluded.peer_id, messages = excluded.messages, updated_at = excluded.updated_at
+    `).run(input.id, input.owner.workspaceId, input.owner.kind, input.owner.id, input.title, input.model, input.peerId, JSON.stringify(input.messages), now, now)
+  }
+
+  deleteChatThread(id: string): boolean {
+    return this._stmt('DELETE FROM chat_threads WHERE id = ?').run(id).changes > 0
+  }
+
   // ── Settings ────────────────────────────────────────────────────────────
 
   /**
@@ -1610,6 +1752,13 @@ const MAX_ERROR_CODE = 100
 const MAX_ERROR_MESSAGE = 500
 /** A failed request: finished with an error status. One still in flight is not a failure. */
 const FAILED_SQL = '(r.finished_at IS NOT NULL AND (r.status IS NULL OR r.status >= 400))'
+/**
+ * A request whose tokens come only from its response: its spend recorded no
+ * token counts (free sellers record none), so the response's own count is used.
+ */
+const REPORTED_TOKENS_ONLY_SQL = `(r.usage_input_tokens IS NOT NULL AND NOT EXISTS (
+  SELECT 1 FROM ledger_entries t WHERE t.request_tag = r.tag AND t.kind = 'spend' AND t.input_tokens + t.cached_input_tokens + t.output_tokens > 0
+))`
 
 /** WHERE clauses shared by request-log, rollup and ledger queries. */
 function scopeSql(filter: UsageFilter, columns: ScopeColumns): { where: string[]; params: unknown[] } {
@@ -1647,6 +1796,17 @@ export function isTimeGrouping(groupBy: UsageGroupBy): boolean {
   return groupBy === 'day' || groupBy === 'hour'
 }
 
+/** Groups by end user past the largest `MAX_USER_GROUPS` (rows come sorted largest first), folded into one. */
+function capUserGroups<Row extends UsageSplitRow>(groupBy: UsageGroupBy, rows: Row[]): Row[] {
+  if (groupBy !== 'user' || rows.length <= MAX_USER_GROUPS) return rows
+  const rest = rows.slice(MAX_USER_GROUPS)
+  const other = { group: OTHER_USERS_GROUP, others: rest.length, ...emptyUsageTotals() }
+  for (const row of rest) {
+    for (const field of Object.keys(emptyUsageTotals()) as Array<keyof UsageTotalsRow>) other[field] += row[field]
+  }
+  return [...rows.slice(0, MAX_USER_GROUPS), other as Row]
+}
+
 function emptyUsageTotals(): UsageTotalsRow {
   return { requests: 0, failedRequests: 0, spentUsdc: 0, inputTokens: 0, cachedInputTokens: 0, outputTokens: 0 }
 }
@@ -1670,12 +1830,7 @@ function toKey(row: KeyRow): ApiKeyRecord {
     status: row.status,
     limits: rowLimits(row),
     routingPolicy: parsePolicy(row.routing_policy),
-    ownerLimits: {
-      daily: row.owner_daily_limit_usdc,
-      weekly: row.owner_weekly_limit_usdc,
-      monthly: row.owner_monthly_limit_usdc,
-      total: row.owner_total_limit_usdc,
-    },
+    ownerLimits: rowLimits(row, 'owner_'),
     ownerRoutingPolicy: parsePolicy(row.owner_routing_policy),
     topupEnabled: row.topup_enabled === 1,
     expiresAt: row.expires_at,

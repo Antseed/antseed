@@ -4,7 +4,7 @@ import { samePeerId } from './peer-id'
 import { applyPeerAction, type PeerAction } from './policy'
 
 /**
- * Where a Network-page Allow / Block / Prefer lands:
+ * Where a Providers-page Allow / Block / Prefer lands:
  * - gateway: the gateway default (org admins)
  * - workspace-org: the workspace's org policy (org admins)
  * - workspace: the workspace's own policy (workspace admins)

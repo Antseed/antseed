@@ -5,17 +5,21 @@ import { createConsoleAuth } from '../../../gateway/auth/index.js'
 import { readConsoleLocation } from '../../../gateway/console.js'
 import { observabilitySettings } from '../../../gateway/observability.js'
 import { listNetworkPeers } from '../../../gateway/services/network.js'
+import type { BuyerSettings, BuyerSettingsInput } from '../../../gateway/console-api/types.js'
 import { readSettings, setObservabilitySettings, updateBuyerSettings, type SettingsContext } from '../../../gateway/services/settings.js'
 import { sameRoutingModel } from '../../../routing-policy/policy.js'
 import { collect } from './policy-options.js'
 import { addBuyerPortOption, parseCountOrNone, parseOnOff, printJson, withGateway, type CliGateway } from './shared.js'
 
 async function settingsContext(gateway: CliGateway): Promise<SettingsContext> {
-  const auth = createConsoleAuth({ store: gateway.store, publicUrl: null, now: () => Date.now(), log: () => undefined }, { env: {} })
+  const publicUrl = readConsoleLocation(gateway.store)?.publicUrl ?? null
+  // SSO and Cloudflare Access come from this process's environment; the
+  // installed service reads its own EnvironmentFile, which a shell may not have.
+  const auth = createConsoleAuth({ store: gateway.store, publicUrl, now: () => Date.now(), log: () => undefined }, { env: process.env })
   return {
     ...gateway.ctx,
     configPath: gateway.configPath,
-    publicUrl: readConsoleLocation(gateway.store)?.publicUrl ?? null,
+    publicUrl,
     buyerPort: await gateway.buyerPort(),
     authConfig: () => auth.authConfig(),
   }
@@ -34,23 +38,43 @@ function endpointOption(raw: string): string | null {
 }
 
 export function registerGatewaySettingsCommands(gateway: Command): void {
-  const settings = gateway.command('settings').description('Gateway settings: buyer routing defaults and observability (OTLP export, content logging, retention)')
+  const settings = gateway.command('settings').description('Gateway settings: every buyer setting and observability (OTLP export, content logging, retention)')
 
   addBuyerPortOption(settings.command('show').description('Show the current settings'))
     .option('--reveal', 'show OTLP header values (they can be credentials)', false)
     .option('--json', 'print machine-readable JSON', false)
     .action((options: { reveal: boolean; json: boolean }, cmd: Command) => withGateway(cmd, async (gw) => {
-      const current = await readSettings(await settingsContext(gw), { revealSecrets: options.reveal })
+      const current = await readSettings(await settingsContext(gw), { revealSecrets: options.reveal, buyer: await gw.buyer() })
       if (options.json) {
         printJson(current)
         return
       }
       const { buyer, observability, auth } = current
+      const mark = (path: string): string => buyer.overrides.some((entry) => entry === path || entry.startsWith(`${path}.`) || path.startsWith(`${entry}.`))
+        ? chalk.yellow(' (set by the buyer\'s environment or flags)')
+        : ''
+      const list = (ids: string[]): string => (ids.length ? ids.join(', ') : 'none')
       console.log(chalk.bold('Buyer'))
-      console.log(`  Proxy port: ${buyer.proxyPort}`)
-      console.log(`  Max price: $${buyer.maxPricing.inputUsdPerMillion}/M in, $${buyer.maxPricing.outputUsdPerMillion}/M out${buyer.maxPricing.cachedInputUsdPerMillion === null ? '' : `, $${buyer.maxPricing.cachedInputUsdPerMillion}/M cached in`}`)
-      console.log(`  Min peer reputation: ${buyer.minPeerReputation}`)
-      console.log(`  Require verifier: ${buyer.requireVerifier ? 'yes' : 'no'}`)
+      console.log(`  Proxy port: ${buyer.proxyPort}${mark('proxyPort')}`)
+      console.log(`  Max price: $${buyer.maxPricing.inputUsdPerMillion}/M in${mark('maxPricing.inputUsdPerMillion')}, $${buyer.maxPricing.outputUsdPerMillion}/M out${mark('maxPricing.outputUsdPerMillion')}${buyer.maxPricing.cachedInputUsdPerMillion === null ? '' : `, $${buyer.maxPricing.cachedInputUsdPerMillion}/M cached in`}`)
+      console.log(`  Min peer reputation: ${buyer.minPeerReputation}${mark('minPeerReputation')}`)
+      console.log(chalk.bold('  Routing preferences') + chalk.dim(' (apply at once)'))
+      console.log(`    Min trust score: ${buyer.routingPreferences.minTrustScore}`)
+      console.log(`    Soft input-price limit: $${buyer.routingPreferences.maxInputUsdPerMillion}/M`)
+      console.log(`    Free sellers first: ${buyer.routingPreferences.preferFreePeers ? 'yes' : 'no'}`)
+      console.log(`    Allowed sellers: ${list(buyer.routingPreferences.allowedPeerIds)}`)
+      console.log(`    Blocked sellers: ${list(buyer.routingPreferences.blockedPeerIds)}`)
+      console.log(chalk.bold('  Verification') + mark('verifier'))
+      console.log(`    Enabled: ${buyer.verifier.enabled ? 'yes' : 'no'}, required: ${buyer.verifier.require ? 'yes' : 'no'}, verifiers: ${buyer.verifier.prefer.length ? buyer.verifier.prefer.join(', ') : 'seller default'}`)
+      console.log(`    Evidence sample rate: ${buyer.evidence.sampleRate ?? 'default'}, max sample bytes: ${buyer.evidence.maxSampleBytes ?? 'default'}`)
+      console.log(chalk.bold('  Payments'))
+      console.log(`    Auto-sweep: ${buyer.payments.autoSweep ? 'on' : 'off'}`)
+      console.log(`    Max per request: ${buyer.payments.maxPerRequestUsdc} USDC, max reserve: ${buyer.payments.maxReserveUsdc} USDC`)
+      console.log(`    RPC: ${buyer.payments.rpcUrl ?? 'chain default'}${mark('payments.rpcUrl')}${buyer.payments.fallbackRpcUrls.length ? `, fallbacks: ${buyer.payments.fallbackRpcUrls.join(', ')}` : ''}`)
+      console.log(chalk.bold('  Network'))
+      console.log(`    Peer refresh: ${buyer.network.peerRefreshIntervalMs} ms, metadata timeout: ${buyer.network.metadataFetchTimeoutMs} ms${mark('network.metadataFetchTimeoutMs')}`)
+      console.log(`    Request timeout: ${buyer.network.requestTimeoutMs} ms, max stream: ${buyer.network.maxStreamDurationMs} ms${mark('network.maxStreamDurationMs')}`)
+      console.log(`    Per-service metadata: ${buyer.network.disableMetadataV2Services ? 'off' : 'on'}${mark('network.disableMetadataV2Services')}`)
       console.log(chalk.bold('Observability'))
       console.log(`  OTLP export: ${observability.otlpEndpoint ?? 'off'}`)
       for (const [name, value] of Object.entries(observability.otlpHeaders)) console.log(`    ${name}: ${value}`)
@@ -59,7 +83,7 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
       console.log(chalk.bold('Console'))
       console.log(`  Public URL: ${current.publicUrl ?? '-'}`)
       console.log(`  Owner claimed: ${auth.setupRequired ? 'no (`antseed gateway console-link`)' : 'yes'}`)
-      console.log(`  Sign-in: ${[auth.passkey && 'passkey', auth.wallet && 'wallet', auth.oidc && `SSO (${auth.oidc.label})`, auth.cloudflareAccess && 'Cloudflare Access', auth.apiKeyLogin && 'API key (read-only)'].filter(Boolean).join(', ')}`)
+      console.log(`  Sign-in: ${[auth.passkey && 'passkey', auth.wallet && 'wallet', auth.oidc && `SSO (${auth.oidc.label})`, auth.cloudflareAccess && 'Cloudflare Access', auth.apiKeyLogin && 'API key (read-only)'].filter(Boolean).join(', ')}` + chalk.dim(' (SSO and Cloudflare Access as this shell\'s environment sets them; the gateway service may differ)'))
     }))
 
   settings.command('set-observability')
@@ -108,37 +132,159 @@ export function registerGatewaySettingsCommands(gateway: Command): void {
 
   addBuyerPortOption(
     settings.command('set-buyer')
-      .description('Change the buyer\'s routing defaults in the config file (in place) and restart the buyer to apply them')
-      .option('--max-input-price <usd>', 'default cap on input price, USD per million tokens')
-      .option('--max-output-price <usd>', 'default cap on output price, USD per million tokens')
-      .option('--max-cached-input-price <usd>', 'default cap on cached input price, USD per million tokens ("none" removes it)')
-      .option('--min-reputation <score>', 'minimum seller reputation, 0-100'),
+      .description('Change the buyer\'s settings in the config file (in place). Routing preferences apply at once; anything else restarts the buyer')
+      .option('--max-input-price <usd>', 'cap on input price, USD per million tokens')
+      .option('--max-output-price <usd>', 'cap on output price, USD per million tokens')
+      .option('--max-cached-input-price <usd>', 'cap on cached input price, USD per million tokens ("none" removes it)')
+      .option('--min-reputation <score>', 'minimum seller reputation, 0-100, for every request')
+      .option('--min-trust <score>', 'routing preference: minimum trust score, 0-100')
+      .option('--soft-max-input-price <usd>', 'routing preference: sellers above this input price rank lower')
+      .option('--prefer-free <state>', 'routing preference: free sellers first, on or off')
+      .option('--allow-peer <peerId>', 'routing preference: add a seller to the allow list (repeatable)', collect)
+      .option('--unallow-peer <peerId>', 'remove a seller from the allow list (repeatable)', collect)
+      .option('--clear-allowed', 'empty the allow list (any seller)', false)
+      .option('--block-peer <peerId>', 'routing preference: add a seller to the block list (repeatable)', collect)
+      .option('--unblock-peer <peerId>', 'remove a seller from the block list (repeatable)', collect)
+      .option('--clear-blocked', 'empty the block list', false)
+      .option('--verifier <state>', 'verify sellers with verifier SDKs, on or off')
+      .option('--verifiers <ids>', 'ordered, comma-separated verifier ids ("none": the seller\'s trusted default)')
+      .option('--require-verifier <state>', 'refuse sellers no verifier verifies, on or off')
+      .option('--evidence-sample-rate <rate>', 'share of responses kept as evidence, 0-1 ("none": default)')
+      .option('--evidence-max-bytes <bytes>', 'largest evidence sample ("none": default)')
+      .option('--auto-sweep <state>', 'sweep USDC arriving in the buyer wallets into deposits, on or off')
+      .option('--max-per-request-usdc <usdc>', 'most USDC authorized for one request')
+      .option('--max-reserve-usdc <usdc>', 'most USDC reserved for one payment channel')
+      .option('--rpc-url <url>', 'Base RPC endpoint ("none": the chain default)')
+      .option('--fallback-rpc-url <url>', 'fallback RPC endpoint (repeatable; replaces the list; "none" clears it)', collect)
+      .option('--peer-refresh-ms <ms>', 'how often the peer list is refreshed')
+      .option('--metadata-timeout-ms <ms>', 'timeout for each seller metadata fetch')
+      .option('--request-timeout-ms <ms>', 'timeout until a response starts')
+      .option('--max-stream-ms <ms>', 'longest streamed response')
+      .option('--per-service-metadata <state>', 'per-service attribution in signed request metadata, on or off'),
   )
     .option('--json', 'print machine-readable JSON', false)
-    .action((options: { maxInputPrice?: string; maxOutputPrice?: string; maxCachedInputPrice?: string; minReputation?: string; json: boolean }, cmd: Command) => withGateway(cmd, async (gw) => {
-      const maxPricing: Record<string, number | null> = {}
-      if (options.maxInputPrice !== undefined) maxPricing['inputUsdPerMillion'] = number(options.maxInputPrice, '--max-input-price')
-      if (options.maxOutputPrice !== undefined) maxPricing['outputUsdPerMillion'] = number(options.maxOutputPrice, '--max-output-price')
-      if (options.maxCachedInputPrice !== undefined) {
-        maxPricing['cachedInputUsdPerMillion'] = options.maxCachedInputPrice.trim().toLowerCase() === 'none' ? null : number(options.maxCachedInputPrice, '--max-cached-input-price')
-      }
-      const patch = {
-        ...(Object.keys(maxPricing).length ? { maxPricing } : {}),
-        ...(options.minReputation !== undefined ? { minPeerReputation: number(options.minReputation, '--min-reputation', 100) } : {}),
-      }
-      if (Object.keys(patch).length === 0) throw new Error('Nothing to change: pass --max-input-price, --max-output-price, --max-cached-input-price or --min-reputation.')
+    .action((options: SetBuyerOptions, cmd: Command) => withGateway(cmd, async (gw) => {
       const context = await settingsContext(gw)
-      const { restartRequired } = await updateBuyerSettings(context, gw.actor, patch, await gw.buyer())
-      const current = await readSettings(context)
+      const before = await readSettings(context)
+      const patch = buyerPatchFromOptions(options, before.buyer)
+      if (Object.keys(patch).length === 0) throw new Error('Nothing to change: pass at least one setting (see --help).')
+      const { changed, restartRequired } = await updateBuyerSettings(context, gw.actor, patch, await gw.buyer())
+      const current = await readSettings(context, { buyer: await gw.buyer() })
       if (options.json) {
-        printJson({ buyer: current.buyer, restartRequired })
+        printJson({ buyer: current.buyer, changed, restartRequired })
+        return
+      }
+      if (!changed) {
+        console.log(chalk.dim('Nothing changed.'))
         return
       }
       console.log(`Saved to ${gw.configPath}.`)
-      console.log(restartRequired
-        ? chalk.yellow('The buyer could not restart itself (not supervised, or not running): restart it to apply the new settings.')
-        : chalk.dim('The buyer is restarting to apply them.'))
+      const routingOnly = Object.keys(patch).every((key) => key === 'routingPreferences')
+      console.log(routingOnly
+        ? chalk.dim('The buyer applies routing preferences at once.')
+        : restartRequired
+          ? chalk.yellow('The buyer could not restart itself (not supervised, or not running): restart it to apply the new settings.')
+          : chalk.dim('The buyer is restarting to apply them.'))
+      const ignored = current.buyer.overrides
+      if (ignored.length > 0) console.log(chalk.yellow(`The buyer's environment or flags override: ${ignored.join(', ')}. Changes to those apply once the override is removed.`))
     }))
+}
+
+interface SetBuyerOptions {
+  maxInputPrice?: string
+  maxOutputPrice?: string
+  maxCachedInputPrice?: string
+  minReputation?: string
+  minTrust?: string
+  softMaxInputPrice?: string
+  preferFree?: string
+  allowPeer?: string[]
+  unallowPeer?: string[]
+  clearAllowed: boolean
+  blockPeer?: string[]
+  unblockPeer?: string[]
+  clearBlocked: boolean
+  verifier?: string
+  verifiers?: string
+  requireVerifier?: string
+  evidenceSampleRate?: string
+  evidenceMaxBytes?: string
+  autoSweep?: string
+  maxPerRequestUsdc?: string
+  maxReserveUsdc?: string
+  rpcUrl?: string
+  fallbackRpcUrl?: string[]
+  peerRefreshMs?: string
+  metadataTimeoutMs?: string
+  requestTimeoutMs?: string
+  maxStreamMs?: string
+  perServiceMetadata?: string
+  json: boolean
+}
+
+const isNone = (raw: string): boolean => raw.trim().toLowerCase() === 'none'
+
+function normalizePeer(raw: string): string {
+  return raw.trim().toLowerCase().replace(/^0x/, '')
+}
+
+/** A peer list after `--x-peer` additions, `--unx-peer` removals and `--clear-x`. */
+function editedList(current: string[], add: string[] | undefined, remove: string[] | undefined, clear: boolean): string[] | undefined {
+  if (!add && !remove && !clear) return undefined
+  const removed = new Set((remove ?? []).map(normalizePeer))
+  const base = clear ? [] : current.map(normalizePeer)
+  return [...new Set([...base, ...(add ?? []).map(normalizePeer)])].filter((peerId) => !removed.has(peerId))
+}
+
+/** The `set-buyer` flags as a settings patch (value checks happen in the service). */
+function buyerPatchFromOptions(options: SetBuyerOptions, current: BuyerSettings): BuyerSettingsInput {
+  const patch: BuyerSettingsInput = {}
+  const maxPricing: NonNullable<BuyerSettingsInput['maxPricing']> = {}
+  if (options.maxInputPrice !== undefined) maxPricing.inputUsdPerMillion = number(options.maxInputPrice, '--max-input-price')
+  if (options.maxOutputPrice !== undefined) maxPricing.outputUsdPerMillion = number(options.maxOutputPrice, '--max-output-price')
+  if (options.maxCachedInputPrice !== undefined) {
+    maxPricing.cachedInputUsdPerMillion = isNone(options.maxCachedInputPrice) ? null : number(options.maxCachedInputPrice, '--max-cached-input-price')
+  }
+  if (Object.keys(maxPricing).length) patch.maxPricing = maxPricing
+  if (options.minReputation !== undefined) patch.minPeerReputation = number(options.minReputation, '--min-reputation', 100)
+
+  const prefs: NonNullable<BuyerSettingsInput['routingPreferences']> = {}
+  if (options.minTrust !== undefined) prefs.minTrustScore = number(options.minTrust, '--min-trust', 100)
+  if (options.softMaxInputPrice !== undefined) prefs.maxInputUsdPerMillion = number(options.softMaxInputPrice, '--soft-max-input-price')
+  if (options.preferFree !== undefined) prefs.preferFreePeers = parseOnOff(options.preferFree, '--prefer-free')
+  const allowed = editedList(current.routingPreferences.allowedPeerIds, options.allowPeer, options.unallowPeer, options.clearAllowed)
+  if (allowed) prefs.allowedPeerIds = allowed
+  const blocked = editedList(current.routingPreferences.blockedPeerIds, options.blockPeer, options.unblockPeer, options.clearBlocked)
+  if (blocked) prefs.blockedPeerIds = blocked
+  if (Object.keys(prefs).length) patch.routingPreferences = prefs
+
+  const verifier: NonNullable<BuyerSettingsInput['verifier']> = {}
+  if (options.verifier !== undefined) verifier.enabled = parseOnOff(options.verifier, '--verifier')
+  if (options.requireVerifier !== undefined) verifier.require = parseOnOff(options.requireVerifier, '--require-verifier')
+  if (options.verifiers !== undefined) verifier.prefer = isNone(options.verifiers) ? [] : options.verifiers.split(',').map((id) => id.trim()).filter(Boolean)
+  if (Object.keys(verifier).length) patch.verifier = verifier
+
+  const evidence: NonNullable<BuyerSettingsInput['evidence']> = {}
+  if (options.evidenceSampleRate !== undefined) evidence.sampleRate = isNone(options.evidenceSampleRate) ? null : number(options.evidenceSampleRate, '--evidence-sample-rate', 1)
+  if (options.evidenceMaxBytes !== undefined) evidence.maxSampleBytes = isNone(options.evidenceMaxBytes) ? null : number(options.evidenceMaxBytes, '--evidence-max-bytes')
+  if (Object.keys(evidence).length) patch.evidence = evidence
+
+  const payments: NonNullable<BuyerSettingsInput['payments']> = {}
+  if (options.autoSweep !== undefined) payments.autoSweep = parseOnOff(options.autoSweep, '--auto-sweep')
+  if (options.maxPerRequestUsdc !== undefined) payments.maxPerRequestUsdc = number(options.maxPerRequestUsdc, '--max-per-request-usdc')
+  if (options.maxReserveUsdc !== undefined) payments.maxReserveUsdc = number(options.maxReserveUsdc, '--max-reserve-usdc')
+  if (options.rpcUrl !== undefined) payments.rpcUrl = isNone(options.rpcUrl) ? null : options.rpcUrl.trim()
+  if (options.fallbackRpcUrl !== undefined) payments.fallbackRpcUrls = options.fallbackRpcUrl.some(isNone) ? [] : options.fallbackRpcUrl.map((url) => url.trim())
+  if (Object.keys(payments).length) patch.payments = payments
+
+  const network: NonNullable<BuyerSettingsInput['network']> = {}
+  if (options.peerRefreshMs !== undefined) network.peerRefreshIntervalMs = number(options.peerRefreshMs, '--peer-refresh-ms')
+  if (options.metadataTimeoutMs !== undefined) network.metadataFetchTimeoutMs = number(options.metadataTimeoutMs, '--metadata-timeout-ms')
+  if (options.requestTimeoutMs !== undefined) network.requestTimeoutMs = number(options.requestTimeoutMs, '--request-timeout-ms')
+  if (options.maxStreamMs !== undefined) network.maxStreamDurationMs = number(options.maxStreamMs, '--max-stream-ms')
+  if (options.perServiceMetadata !== undefined) network.disableMetadataV2Services = !parseOnOff(options.perServiceMetadata, '--per-service-metadata')
+  if (Object.keys(network).length) patch.network = network
+  return patch
 }
 
 export function registerGatewayPeersCommand(gateway: Command): void {

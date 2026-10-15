@@ -200,6 +200,18 @@ describe('metadata attribution tail', () => {
     expect(legacy.map((v) => (Array.isArray(v) ? v.length : String(v)))).toEqual(['1', '100', '40', '2', 1]);
   });
 
+  it('decodes the tail on every head layout', () => {
+    const coder = AbiCoder.defaultAbiCoder();
+    const tail = attributionTailAbi({ clientId, invite });
+    const heads: Array<[bigint, bigint[]]> = [[4n, [1n, 2n, 3n, 0n, 0n, 0n]], [3n, [1n, 2n, 3n, 0n]], [1n, [1n, 2n, 3n]]];
+    for (const [version, words] of heads) {
+      const types = Array(words.length + 1).fill('uint256');
+      const withTail = coder.encode([...types, 'uint256[]', ...tail.types], [version, ...words, [], ...tail.values]);
+      expect(decodeMetadataAttribution(withTail)).toEqual({ clientId, invite });
+      expect(decodeMetadataAttribution(coder.encode([...types, 'uint256[]'], [version, ...words, []]))).toBeNull();
+    }
+  });
+
   it('ignores the retired two-word referrer tail', () => {
     const coder = AbiCoder.defaultAbiCoder();
     const retired = coder.encode(

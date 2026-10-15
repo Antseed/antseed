@@ -7,12 +7,14 @@ import { useTheme, type ThemeChoice } from '../app/theme'
 import { ROLE_LABELS, visibleNav, type PageId } from '../lib/nav'
 import { href, linkHandler, navigate, useLocation } from '../lib/router'
 import { useWalletAttention } from '../lib/attention'
+import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
 import { AntDots } from './AntDots'
 import { ExposureBanner } from './ExposureBanner'
+import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
 
-const DOCS_URL = 'https://antseed.com/docs/guides/gateway-console'
+const DOCS_URL = 'https://antseed.com/docs/gateway'
 
 /** `/console/migrate`: reached from the reachability banner, not the nav. */
 const MigratePage = lazy(() => import('../pages/Migrate'))
@@ -38,10 +40,10 @@ function WorkspaceSwitcher() {
   const { missingOperator, currentMissingOperator } = useWalletAttention()
   const marker = currentMissingOperator && <span className="gc-attention" role="img" aria-label={NO_OPERATOR} title={NO_OPERATOR} />
   if (me.workspaces.length <= 1) {
-    return <span className="gc-ws" title="Workspace"><Icon.workspaces size={14} /><span className="gc-ws__name">{workspace.name}</span>{marker}</span>
+    return <span className="gc-ws" title="Workspace" data-tour="workspace"><Icon.workspaces size={14} /><span className="gc-ws__name">{workspace.name}</span>{marker}</span>
   }
   return (
-    <label className="gc-ws gc-ws--select">
+    <label className="gc-ws gc-ws--select" data-tour="workspace">
       <Icon.workspaces size={14} />
       <select className="gc-ws__select" value={workspace.id} onChange={(event) => setWorkspaceId(event.target.value)} aria-label="Switch workspace">
         {me.workspaces.map(({ workspace: ws, role }) => (
@@ -75,7 +77,7 @@ function Nav({ current, onNavigate }: { current: PageId | null; onNavigate?: () 
           {items.filter((item) => item.group === group).map((item) => {
             const IconFor = Icon[item.id as keyof typeof Icon] ?? Icon.overview
             return (
-              <a key={item.id} href={href(item.id)} aria-current={item.id === current ? 'page' : undefined}
+              <a key={item.id} href={href(item.id)} aria-current={item.id === current ? 'page' : undefined} data-tour={`nav-${item.id}`}
                 className={item.id === current ? 'gc-nav__item gc-nav__item--on' : 'gc-nav__item'}
                 onClick={(event) => { linkHandler(item.id)(event); onNavigate?.() }}>
                 <IconFor size={16} />
@@ -129,7 +131,7 @@ function initials(label: string): string {
 }
 
 /** Avatar button with a small menu: who is signed in, account settings, sign out. */
-function AccountMenu({ onAccount, onSignOut }: { onAccount: () => void; onSignOut: () => void }) {
+function AccountMenu({ onAccount, onTour, onSignOut }: { onAccount: () => void; onTour: () => void; onSignOut: () => void }) {
   const { me } = useConsole()
   const [open, setOpen] = useState(false)
   const root = useRef<HTMLDivElement | null>(null)
@@ -147,7 +149,7 @@ function AccountMenu({ onAccount, onSignOut }: { onAccount: () => void; onSignOu
   const role = ROLE_LABELS[me.member.orgRole]
   const meta = me.member.email ? `${me.member.email} · ${role}` : role
   return (
-    <div className="gc-account" ref={root}>
+    <div className="gc-account" ref={root} data-tour="account">
       <button ref={trigger} type="button" className="gc-user" aria-haspopup="menu" aria-expanded={open}
         aria-label={`Your account: ${me.member.label}`} onClick={() => setOpen((value) => !value)}>
         <span className="gc-avatar" aria-hidden="true">{initials(me.member.label)}</span>
@@ -159,6 +161,7 @@ function AccountMenu({ onAccount, onSignOut }: { onAccount: () => void; onSignOu
             <div className="gc-account__meta">{meta}</div>
           </div>
           <button type="button" role="menuitem" className="gc-account__item" onClick={pick(onAccount)}><Icon.shield size={15} />Account and sign-in</button>
+          <button type="button" role="menuitem" className="gc-account__item" onClick={pick(onTour)}><Icon.compass size={15} />Take the tour</button>
           <a role="menuitem" className="gc-account__item" href={DOCS_URL} target="_blank" rel="noreferrer" onClick={() => setOpen(false)}><Icon.external size={15} />Documentation</a>
           <div className="gc-account__sep" />
           <button type="button" role="menuitem" className="gc-account__item" onClick={pick(onSignOut)}><Icon.logout size={15} />Sign out</button>
@@ -175,6 +178,14 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
   const logout = useSignOut()
   const migrating = useLocation().page === 'migrate'
   const current = migrating ? null : page
+  const { me, viewer } = useConsole()
+  // The walkthrough starts once per member on this browser, after the page has laid out.
+  useEffect(() => {
+    if (migrating || tourSeen(me.member.id)) return undefined
+    const timer = window.setTimeout(() => startTour(viewer, me.member.id), 600)
+    return () => window.clearTimeout(timer)
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [me.member.id])
 
   return (
     <>
@@ -187,10 +198,12 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
             <span className="gc-topbar__sep" aria-hidden="true">/</span>
             <WorkspaceSwitcher />
             <div className="gc-topbar__spacer" />
+            <GatewayEndpoint className="gc-endpoint--inline" />
             <a className="gc-topbar__link" href={DOCS_URL} target="_blank" rel="noreferrer">Docs</a>
             <ThemeToggle />
-            <AccountMenu onAccount={() => setAccountOpen(true)} onSignOut={() => void logout()} />
+            <AccountMenu onAccount={() => setAccountOpen(true)} onTour={() => startTour(viewer, me.member.id)} onSignOut={() => void logout()} />
           </div>
+          <div className="gc-topbar__strip"><GatewayEndpoint /></div>
         </header>
         <div className="gc-body">
           <aside className="gc-rail"><Nav current={current} /><AntDots /></aside>

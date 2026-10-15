@@ -1,5 +1,6 @@
 import { createWriteStream } from 'node:fs'
-import type { Writable } from 'node:stream'
+import { Readable, type Writable } from 'node:stream'
+import { pipeline } from 'node:stream/promises'
 import type { Command } from 'commander'
 import chalk from 'chalk'
 import Table from 'cli-table3'
@@ -217,14 +218,15 @@ export function registerGatewayActivityCommands(gateway: Command): void {
       const filter = logFilter(store, options)
       const out: Writable = options.output ? createWriteStream(options.output, { mode: 0o600 }) : process.stdout
       let rows = -1
-      for (const chunk of requestCsvChunks(store, filter)) {
-        rows += chunk.split('\r\n').length - 1
-        if (!out.write(chunk)) await new Promise<void>((resolve) => out.once('drain', resolve))
+      function* counted(): Generator<string> {
+        for (const chunk of requestCsvChunks(store, filter)) {
+          rows += chunk.split('\r\n').length - 1
+          yield chunk
+        }
       }
-      if (options.output) {
-        await new Promise<void>((resolve, reject) => out.end((error?: Error | null) => (error ? reject(error) : resolve())))
-        console.error(chalk.dim(`Wrote ${rows} request(s) to ${options.output}.`))
-      }
+      // pipeline rejects on a write error (e.g. an unwritable --output) instead of an unhandled 'error' event.
+      await pipeline(Readable.from(counted()), out, { end: Boolean(options.output) })
+      if (options.output) console.error(chalk.dim(`Wrote ${rows} request(s) to ${options.output}.`))
     }))
 
   gateway.command('audit')

@@ -379,3 +379,33 @@ test('cached input is clamped to the input it is a subset of', async () => {
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('a route change made while a request is in flight survives that request completing', async () => {
+  const dir = await makeDir()
+  try {
+    const store = new ConversationStore(dir)
+    const oldRoute = 'a'.repeat(40) + '@gpt-5'
+    const id = store.touch({ tool: 'codex', sessionKey: 's1', lastModel: oldRoute }).id
+    assert.equal(store.get(id)?.peerSource, 'auto')
+
+    // Request starts: the proxy captures the chat's pin.
+    const pinAtRouting = store.get(id)?.pinnedModel ?? null
+    // User switches the chat's model mid-flight.
+    store.setPinnedModel(id, 'claude-sonnet', 'auto')
+    // The old request then completes on the old route.
+    const recorded = store.recordRoutedModel(id, oldRoute, pinAtRouting)
+
+    assert.equal(recorded?.pinnedModel, 'claude-sonnet')
+    assert.equal(recorded?.peerSource, 'auto')
+    assert.equal(recorded?.lastModel, oldRoute)
+
+    // A request routed after the switch records its actual peer normally.
+    const nextRoute = 'b'.repeat(40) + '@claude-sonnet'
+    const next = store.recordRoutedModel(id, nextRoute, store.get(id)?.pinnedModel ?? null)
+    assert.equal(next?.pinnedModel, nextRoute)
+    assert.equal(next?.lastModel, nextRoute)
+    await store.flush()
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})

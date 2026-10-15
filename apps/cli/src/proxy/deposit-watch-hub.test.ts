@@ -75,7 +75,7 @@ test('ten watched wallets cost one RPC request per tick', async (t) => {
   assert.equal(hub.size, 0)
 })
 
-test('cadence: idle wallets poll together once a minute, a watched wallet every few seconds, no polling without auto-sweep', async (t) => {
+test('cadence: idle wallets poll together every 30 s, a watched wallet every 2 s, no polling without auto-sweep', async (t) => {
   const id = await identity(t)
   t.mock.timers.enable({ apis: ['setTimeout', 'Date'], now: 1_000_000 })
   const batches: string[][] = []
@@ -106,7 +106,7 @@ test('cadence: idle wallets poll together once a minute, a watched wallet every 
   manual[0]!.promote()
   await advance(60_000)
   const activeBatches = batches.length
-  assert.equal(DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, 6_000, 'active deposit watch polls the chain every 6 s')
+  assert.equal(DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, 2_000, 'active deposit watch polls the chain every 2 s')
   assert.ok(activeBatches >= 60_000 / DEPOSIT_WATCH_ACTIVE_INTERVAL_MS - 1 && activeBatches <= 60_000 / DEPOSIT_WATCH_ACTIVE_INTERVAL_MS + 1, `active polls: ${activeBatches}`)
   assert.ok(batches.every((batch) => batch.includes(wallets[8]!.toLowerCase())))
   assert.ok(!batches.flat().includes(wallets[9]!.toLowerCase()), 'the other auto-sweep-off wallet is never polled')

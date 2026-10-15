@@ -9,8 +9,8 @@ import { isOrgAdmin } from '../lib/nav'
 import { useStatus } from '../lib/queries'
 import '../styles/exposure.scss'
 
-const SERVER_GUIDE = 'https://antseed.com/docs/guides/gateway-server#move-a-local-gateway-to-a-server'
-const TUNNEL_GUIDE = 'https://antseed.com/docs/guides/public-tunnels'
+const SERVER_GUIDE = 'https://antseed.com/docs/gateway/migrate'
+const TUNNEL_GUIDE = 'https://antseed.com/docs/tunnels'
 
 const MODE_LABELS: Record<GatewayExposure['mode'], string> = { local: 'This computer only', lan: 'Your network only', public: 'Public' }
 
@@ -116,7 +116,7 @@ export default function MigratePage() {
           </Step>
           <Step n={5} title="Stop the gateway on this computer">
             <p>
-              Press Ctrl+C where <code>antseed gateway start</code> and <code>antseed buyer start</code> run (or quit the desktop app's gateway),
+              Press Ctrl+C where <code>antseed gateway start</code> runs, which also stops the buyer it started (stop a buyer you run yourself too, or quit the desktop app's gateway),
               then delete the bundle on both machines. Never run both gateways: two buyers paying from the same wallet conflict.
             </p>
             <CodeBlock code={commands.stop} label="Both machines" />

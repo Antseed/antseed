@@ -6,57 +6,67 @@ import { GatewayStore, type ApiKeyRecord, type MemberRecord, type WorkspaceRecor
 import type { GatewayTopupConfig } from '../../../gateway/runtime.js'
 import { AuthDb } from '../../../gateway/auth/db.js'
 import { loadConfig } from '../../../config/loader.js'
-import { loadOrCreateControlSecret } from '../../../gateway/buyer-control.js'
+import { portInUse } from '../../../gateway/bundle.js'
+import { loadOrCreateControlSecret, runningGatewayBuyerPort } from '../../../gateway/buyer-control.js'
+import { probeBuyerPolicySupport } from '../../../gateway/buyer-policy-probe.js'
+import { GatewayBuyer } from '../../../gateway/buyer-process.js'
 import { defaultBuyerClient, type BuyerClient } from '../../../gateway/console-api/handlers/network-buyer.js'
 import { ConsoleError } from '../../../gateway/console-api/router.js'
 import { CLI_ACTOR, PolicyProblemError, type Actor, type ServiceContext } from '../../../gateway/services/context.js'
 import { liveBuyerAddresses } from '../../../gateway/services/wallet-address.js'
+import { setupShutdownHandler } from '../../shutdown.js'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
 
 export const DEFAULT_GATEWAY_PORT = 8379
 
-const LIMIT_OPTION_FLAGS: Record<BudgetPeriod, string> = {
-  daily: '--daily-limit <usd>',
-  weekly: '--weekly-limit <usd>',
-  monthly: '--monthly-limit <usd>',
-  total: '--total-limit <usd>',
-}
+/**
+ * Descriptions of the spend-cap flags per period: `--daily-limit` … for the
+ * admin layer, `--owner-daily-limit` … for the key owner's layer.
+ */
+const LIMIT_OPTIONS: ReadonlyArray<{ period: BudgetPeriod; admin: string; owner: string }> = [
+  { period: 'daily', admin: 'spend cap per UTC day in USD', owner: 'owner-layer cap per UTC day in USD' },
+  { period: 'weekly', admin: 'spend cap per UTC week (from Monday) in USD', owner: 'owner-layer cap per UTC week in USD' },
+  { period: 'monthly', admin: 'spend cap per UTC calendar month in USD', owner: 'owner-layer cap per UTC month in USD' },
+  { period: 'total', admin: 'lifetime spend cap in USD', owner: 'owner-layer lifetime cap in USD' },
+]
 
-const LIMIT_OPTION_KEYS: Record<BudgetPeriod, string> = {
-  daily: 'dailyLimit',
-  weekly: 'weeklyLimit',
-  monthly: 'monthlyLimit',
-  total: 'totalLimit',
+const CLEARABLE_SUFFIX = ' ("none" removes it)'
+
+/** Commander's key for a limit flag: `--daily-limit` → `dailyLimit`, `--owner-daily-limit` → `ownerDailyLimit`. */
+function limitOptionKey(period: BudgetPeriod, owner: boolean): string {
+  return owner ? `owner${period[0]!.toUpperCase()}${period.slice(1)}Limit` : `${period}Limit`
 }
 
 export function addLimitOptions(cmd: Command, clearable: boolean): Command {
-  const suffix = clearable ? ' ("none" removes it)' : ''
+  const suffix = clearable ? CLEARABLE_SUFFIX : ''
+  for (const { period, admin } of LIMIT_OPTIONS) cmd.option(`--${period}-limit <usd>`, `${admin}${suffix}`)
   return cmd
-    .option(LIMIT_OPTION_FLAGS.daily, `spend cap per UTC day in USD${suffix}`)
-    .option(LIMIT_OPTION_FLAGS.weekly, `spend cap per UTC week (from Monday) in USD${suffix}`)
-    .option(LIMIT_OPTION_FLAGS.monthly, `spend cap per UTC calendar month in USD${suffix}`)
-    .option(LIMIT_OPTION_FLAGS.total, `lifetime spend cap in USD${suffix}`)
+}
+
+/** The key owner's own caps (`--owner-daily-limit` …), which only narrow the admin caps. */
+export function addOwnerLimitOptions(cmd: Command): Command {
+  for (const { period, owner } of LIMIT_OPTIONS) cmd.option(`--owner-${period}-limit <usd>`, `${owner}${CLEARABLE_SUFFIX}`)
+  return cmd
 }
 
 /** Only the periods the user passed; "none" maps to null (no cap). */
 export function parseLimitOptions(options: Record<string, unknown>): Partial<BudgetLimits> {
-  return limitsFromOptions(options, LIMIT_OPTION_KEYS)
+  return limitsFromOptions(options, false)
 }
 
-function limitsFromOptions(options: Record<string, unknown>, keys: Record<BudgetPeriod, string>): Partial<BudgetLimits> {
+export function parseOwnerLimitOptions(options: Record<string, unknown>): Partial<BudgetLimits> {
+  return limitsFromOptions(options, true)
+}
+
+function limitsFromOptions(options: Record<string, unknown>, owner: boolean): Partial<BudgetLimits> {
   const limits: Partial<BudgetLimits> = {}
-  for (const period of BUDGET_PERIODS) {
-    const raw = options[keys[period]]
+  for (const { period } of LIMIT_OPTIONS) {
+    const raw = options[limitOptionKey(period, owner)]
     if (typeof raw !== 'string') continue
     limits[period] = raw.trim().toLowerCase() === 'none' ? null : parseUsdToUsdc(raw)
   }
   return limits
-}
-
-export function openGatewayStore(cmd: Command): { store: GatewayStore; dataDir: string } {
-  const { dataDir } = getGlobalOptions(cmd)
-  return { store: new GatewayStore(dataDir), dataDir }
 }
 
 export function describeLimits(record: { limits: BudgetLimits }): string {
@@ -89,9 +99,9 @@ export interface CliGateway {
   configPath: string
   ctx: ServiceContext
   actor: Actor
-  /** The local buyer's control API (buyer port from `--buyer-port`, else the config). */
+  /** The local buyer's control API, on `buyerPort()`. */
   buyer(): Promise<BuyerClient>
-  /** The buyer port the gateway forwards to: `--buyer-port`, else the config's `buyer.proxyPort`. */
+  /** The buyer port: `--buyer-port`, else the running gateway's, else the config's `buyer.proxyPort`. */
   buyerPort(): Promise<number>
 }
 
@@ -101,7 +111,7 @@ export const gatewayCliRuntime: { buyerAddresses: (buyerPort: number) => Promise
 }
 
 export function addBuyerPortOption(cmd: Command): Command {
-  return cmd.option('--buyer-port <number>', 'port of the running buyer (default: buyer.proxyPort from config)', parsePositiveInteger)
+  return cmd.option('--buyer-port <number>', 'port of the running buyer (default: the running gateway\'s buyer, else buyer.proxyPort from config)', parsePositiveInteger)
 }
 
 /** Opens the store, runs `fn` and closes it; service errors become plain CLI errors with flag hints. */
@@ -110,7 +120,8 @@ export async function withGateway<T>(cmd: Command, fn: (gateway: CliGateway) => 
   const store = new GatewayStore(dataDir)
   const sessions = new AuthDb(store.database, () => Date.now())
   const option = (cmd.opts() as { buyerPort?: number }).buyerPort
-  const buyerPort = async (): Promise<number> => option ?? (await loadConfig(configPath)).buyer.proxyPort
+  const buyerPort = async (): Promise<number> =>
+    option ?? runningGatewayBuyerPort(dataDir) ?? (await loadConfig(configPath)).buyer.proxyPort
   const gateway: CliGateway = {
     store,
     dataDir,
@@ -143,23 +154,25 @@ export async function withGateway<T>(cmd: Command, fn: (gateway: CliGateway) => 
   }
 }
 
+/** The confirmation a service error asks for (by its code), as the CLI flag that sends it. */
+const CONFIRM_FLAGS: Record<string, { field: string; flag: string }> = {
+  empty_allow_list: { field: 'send confirmEmpty: true', flag: 'pass --confirm-empty' },
+  narrowed: { field: 'send acceptNarrowed: true', flag: 'pass --accept-narrowed' },
+}
+
 /** Service errors in CLI terms: confirmations become the matching flags. */
 function cliError(error: unknown): unknown {
+  if (!(error instanceof ConsoleError)) return error
+  let message: string
   if (error instanceof PolicyProblemError) {
-    const message = error.message
-      .replace('send confirmEmpty: true', 'pass --confirm-empty')
-      .replace('send acceptNarrowed: true', 'pass --accept-narrowed')
+    const confirm = CONFIRM_FLAGS[error.code]
+    const hinted = confirm ? error.message.replace(confirm.field, confirm.flag) : error.message
     const effective = error.body.error['effectiveRoutingPolicy']
-    const wrapped = new Error(effective ? `${message}\nEffective policy: ${JSON.stringify(effective)}` : message)
-    ;(wrapped as Error & { code?: string }).code = error.code
-    return wrapped
+    message = effective ? `${hinted}\nEffective policy: ${JSON.stringify(effective)}` : hinted
+  } else {
+    message = error.message.endsWith('.') ? error.message : `${error.message}.`
   }
-  if (error instanceof ConsoleError) {
-    const wrapped = new Error(error.message.endsWith('.') ? error.message : `${error.message}.`)
-    ;(wrapped as Error & { code?: string }).code = error.code
-    return wrapped
-  }
-  return error
+  return Object.assign(new Error(message), { code: error.code })
 }
 
 export function printJson(value: unknown): void {
@@ -252,22 +265,39 @@ export function formatTime(ms: number | null): string {
   return ms === null ? '-' : new Date(ms).toISOString().replace('T', ' ').slice(0, 16)
 }
 
-const OWNER_LIMIT_OPTION_KEYS: Record<BudgetPeriod, string> = {
-  daily: 'ownerDailyLimit',
-  weekly: 'ownerWeeklyLimit',
-  monthly: 'ownerMonthlyLimit',
-  total: 'ownerTotalLimit',
-}
+const BUYER_START_WAIT_MS = 60_000
 
-/** The key owner's own caps (`--owner-daily-limit` …), which only narrow the admin caps. */
-export function addOwnerLimitOptions(cmd: Command): Command {
-  return cmd
-    .option('--owner-daily-limit <usd>', 'owner-layer cap per UTC day in USD ("none" removes it)')
-    .option('--owner-weekly-limit <usd>', 'owner-layer cap per UTC week in USD ("none" removes it)')
-    .option('--owner-monthly-limit <usd>', 'owner-layer cap per UTC month in USD ("none" removes it)')
-    .option('--owner-total-limit <usd>', 'owner-layer lifetime cap in USD ("none" removes it)')
-}
-
-export function parseOwnerLimitOptions(options: Record<string, unknown>): Partial<BudgetLimits> {
-  return limitsFromOptions(options, OWNER_LIMIT_OPTION_KEYS)
+/**
+ * Starts a buyer for the gateway on `buyerPort` and stops it when the
+ * gateway stops (`gateway start`, `tunnel start`), unless one is already running there (started by hand, a
+ * service or the desktop app), which the gateway then uses.
+ */
+export async function startGatewayBuyer(
+  buyerPort: number,
+  globalOptions: { dataDir: string; config: string; verbose: boolean },
+  log: (message: string) => void,
+): Promise<GatewayBuyer | null> {
+  if (await portInUse(buyerPort)) {
+    log(`using the buyer already running on port ${buyerPort}`)
+    return null
+  }
+  log(`starting a buyer on port ${buyerPort} (run your own with --no-buyer)`)
+  const buyer = new GatewayBuyer({
+    buyerPort,
+    dataDir: globalOptions.dataDir,
+    configPath: globalOptions.config,
+    verbose: globalOptions.verbose,
+    onLog: log,
+  })
+  buyer.start()
+  // Shutdown runs last-registered first, so the gateway stops before its buyer.
+  setupShutdownHandler(() => buyer.stop())
+  // Serve once the buyer answers the gateway, so the first requests do not
+  // fail; a slow start (a long peer lookup) only delays the gateway so long.
+  const probe = { buyerPort, secret: loadOrCreateControlSecret(globalOptions.dataDir) }
+  const deadline = Date.now() + BUYER_START_WAIT_MS
+  while (Date.now() < deadline && await probeBuyerPolicySupport(probe) === 'unknown') {
+    await new Promise((resolve) => setTimeout(resolve, 500))
+  }
+  return buyer
 }

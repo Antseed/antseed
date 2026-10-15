@@ -23,16 +23,11 @@ export function secretsMatch(provided: string, expected: string): boolean {
 }
 
 /**
- * The buyer's hard limits expressed as a policy, so a gateway policy narrows
- * under them: `buyer.minPeerReputation` and a required verifier. Buyer max
- * pricing is not included: it is hierarchical (per provider / per service)
- * and stays enforced by the router plugin's `allowsPeerForPolicy`, which
- * every candidate still passes through.
- *
- * `buyer.routingPreferences` (minTrustScore, allow/block lists, preferFree,
- * the soft input-price cap) are deliberately absent: they are the buyer's
- * defaults for automatic routing, and a gateway policy replaces them (the
- * gateway console is the authority for its keys). See `rankingPreferences`.
+ * The buyer's hard limits expressed as a policy: `buyer.minPeerReputation`
+ * and a required verifier. They apply to every request, automatic or
+ * pinned. Buyer max pricing is not included: it is hierarchical (per
+ * provider / per service) and stays enforced by the router plugin's
+ * `allowsPeerForPolicy`, which every candidate still passes through.
  */
 export function buyerHardPolicy(input: {
   minPeerReputation?: number | null
@@ -47,10 +42,28 @@ export function buyerHardPolicy(input: {
 }
 
 /**
+ * `buyer.routingPreferences` as a policy: the top level of the chain for
+ * automatic routing, so a gateway policy narrows under it like any other
+ * level (it can tighten the trust minimum or the allow list, never loosen
+ * them, and the buyer's block list always holds). Like without a gateway,
+ * it does not judge pinned requests. The soft input-price limit is not a
+ * policy field: it only ranks (see `rankingPreferences`).
+ */
+export function buyerPreferencePolicy(prefs: ModelRoutingPreferences): RoutingPolicy {
+  const policy: RoutingPolicy = {}
+  if (prefs.allowedPeerIds.length > 0) policy.allowedPeerIds = [...prefs.allowedPeerIds]
+  if (prefs.blockedPeerIds.length > 0) policy.blockedPeerIds = [...prefs.blockedPeerIds]
+  if (prefs.minTrustScore > 0) policy.minTrustScore = prefs.minTrustScore
+  if (prefs.preferFreePeers) policy.preferFreePeers = true
+  return policy
+}
+
+/**
  * The buyer's routing preferences reduced to ranking only, for requests that
- * carry a gateway policy: nothing is excluded (no trust minimum, no allow or
- * block list), while preferFree and the soft input-price penalty still order
- * candidates. A policy that sets `preferFreePeers` decides it.
+ * carry a gateway policy: exclusions (trust minimum, allow and block lists)
+ * were already applied from the merged policy, while preferFree and the soft
+ * input-price penalty still order candidates. The merged policy's
+ * `preferFreePeers` (a gateway level's, else the buyer's) decides free-first.
  */
 export function rankingPreferences(prefs: ModelRoutingPreferences, policy: RoutingPolicy): ModelRoutingPreferences {
   return {
@@ -76,6 +89,8 @@ export interface PolicyPeerFacts {
   peerId: string
   /** Buyer trust score, 0–100 (null when unscored). */
   trustScore: number | null
+  /** Why `trustScore` is below the seller's own score (a ranking penalty), named in trust exclusions. */
+  trustPenalty?: string | null
   /** Reputation used by the buyer's `minPeerReputation`, 0–100 (null when unknown). */
   reputation: number | null
   inputUsdPerMillion: number | null
@@ -89,9 +104,15 @@ export interface PolicyPeerFacts {
   teeCapable: boolean
 }
 
+/** Up to 4 decimals; a sub-cent price keeps two significant digits so it never reads $0. */
 function formatUsd(value: number): string {
-  const rounded = Math.round(value * 10_000) / 10_000
-  return `$${rounded}`
+  if (value > 0 && value < 0.01) return `$${value.toLocaleString('en-US', { maximumSignificantDigits: 2 })}`
+  return `$${Math.round(value * 10_000) / 10_000}`
+}
+
+/** "trust 40", or "trust 40 (halved from 80: …)" when a penalty lowered it. */
+function trustLabel(trust: number, penalty: string | null | undefined): string {
+  return penalty ? `trust ${Math.round(trust)} (${penalty})` : `trust ${Math.round(trust)}`
 }
 
 function idIn(list: string[] | undefined, peerId: string): boolean {
@@ -107,7 +128,7 @@ export function policyExclusionReasons(policy: RoutingPolicy, facts: PolicyPeerF
   }
   if (policy.minTrustScore !== undefined && policy.minTrustScore > 0) {
     if (facts.trustScore === null) reasons.push(`trust unknown, minimum ${policy.minTrustScore}`)
-    else if (facts.trustScore < policy.minTrustScore) reasons.push(`trust ${Math.round(facts.trustScore)} below ${policy.minTrustScore}`)
+    else if (facts.trustScore < policy.minTrustScore) reasons.push(`${trustLabel(facts.trustScore, facts.trustPenalty)} below ${policy.minTrustScore}`)
   }
   if (policy.minReputation !== undefined && policy.minReputation > 0) {
     if (facts.reputation === null) reasons.push(`reputation unknown, minimum ${policy.minReputation}`)
@@ -151,13 +172,14 @@ export function preferenceExclusionReasons(
   prefs: ModelRoutingPreferences,
   peerId: string,
   effectiveTrust: number | null,
+  trustPenalty: string | null = null,
 ): string[] {
   const reasons: string[] = []
   if (idIn(prefs.blockedPeerIds, peerId)) reasons.push('blocked by buyer config')
   else if (prefs.allowedPeerIds.length > 0 && !idIn(prefs.allowedPeerIds, peerId)) reasons.push('not in buyer allow list')
   if (prefs.minTrustScore > 0) {
     if (effectiveTrust === null) reasons.push(`trust unknown, buyer minimum ${prefs.minTrustScore}`)
-    else if (effectiveTrust < prefs.minTrustScore) reasons.push(`trust ${Math.round(effectiveTrust)} below buyer minimum ${prefs.minTrustScore}`)
+    else if (effectiveTrust < prefs.minTrustScore) reasons.push(`${trustLabel(effectiveTrust, trustPenalty)} below buyer minimum ${prefs.minTrustScore}`)
   }
   return reasons
 }

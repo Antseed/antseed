@@ -9,7 +9,7 @@ import { getGlobalOptions } from '../types.js'
 import { setupShutdownHandler } from '../../shutdown.js'
 import { errorMessage } from '../../../gateway/errors.js'
 import { startGatewayRuntime, type GatewayRuntime } from '../../../gateway/runtime.js'
-import { DEFAULT_GATEWAY_PORT, topupConfig } from '../gateway/shared.js'
+import { DEFAULT_GATEWAY_PORT, startGatewayBuyer, topupConfig } from '../gateway/shared.js'
 import { printConsoleInfo } from '../gateway/index.js'
 import { CONSOLE_LOCATION_SETTING, gatewayConsole, normalizePublicUrl } from '../../../gateway/console.js'
 import { ensureCloudflared } from '../../../tunnel/cloudflared.js'
@@ -147,9 +147,10 @@ export function registerTunnelStartCommand(cmd: Command): void {
     .description('Expose the local buyer API through an authenticated HTTPS tunnel')
     .option('--provider <provider>', 'Tunnel provider: cloudflare or ngrok')
     .option('--buyer-port <number>', 'Local buyer proxy port', String(DEFAULT_BUYER_PORT))
+    .option('--no-buyer', 'do not start a buyer; use one you run yourself on the buyer port')
     .option('--gateway-port <number>', 'Local authenticated gateway port', String(DEFAULT_GATEWAY_PORT))
     .option('--no-console', 'serve only the API, without the /console management console')
-    .action(async (options: { provider?: string; buyerPort: string; gatewayPort: string; console: boolean }) => {
+    .action(async (options: { provider?: string; buyerPort: string; buyer: boolean; gatewayPort: string; console: boolean }) => {
       const globalOptions = getGlobalOptions(cmd)
       const dataDir = globalOptions.dataDir
       const buyerPort = parseInt(options.buyerPort, 10) || DEFAULT_BUYER_PORT
@@ -164,10 +165,11 @@ export function registerTunnelStartCommand(cmd: Command): void {
       let publicUrl = parsePublicUrl(configuredPublicUrl, provider)
       // The console's origin: the tunnel's hostname unless ANTSEED_GATEWAY_PUBLIC_URL overrides it.
       // A random ngrok URL is only known later; the console then goes by the request's Host.
-      const consolePublicUrl = normalizePublicUrl(process.env['ANTSEED_GATEWAY_PUBLIC_URL']) ?? (publicUrl ? publicUrl.origin : null)
+      const consolePublicUrl = normalizePublicUrl(process.env['ANTSEED_GATEWAY_PUBLIC_URL']) ?? (publicUrl?.origin ?? null)
       const log = (message: string): void => { process.stderr.write(`[tunnel] ${message}\n`) }
 
       const topup = topupConfig()
+      const buyer = options.buyer ? await startGatewayBuyer(buyerPort, globalOptions, log) : null
       const spinner = ora('Starting authenticated API gateway...').start()
       let gateway: GatewayRuntime
       try {
@@ -185,6 +187,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
         })
       } catch (error) {
         spinner.fail(chalk.red(`Could not start the API gateway: ${errorMessage(error)}`))
+        await buyer?.stop()
         process.exitCode = 1
         return
       }
@@ -216,6 +219,7 @@ export function registerTunnelStartCommand(cmd: Command): void {
         }
       } catch (error) {
         await gateway.stop()
+        await buyer?.stop()
         spinner.fail(chalk.red(`Could not start ${providerDisplayName(provider)}: ${errorMessage(error)}`))
         process.exitCode = 1
         return

@@ -6,7 +6,7 @@ import { afterEach, describe, it } from 'node:test'
 import { Wallet } from 'ethers'
 import { createLocalJWKSet, exportJWK, generateKeyPair, SignJWT, type JWK } from 'jose'
 import { GatewayStore } from '../store.js'
-import { AuthDb, MAX_PENDING_TICKETS, memberWalletAddresses, sessionAuthenticatedAt, SETUP_TOKEN_TTL_MS, sha256Hex } from './db.js'
+import { AuthDb, MAX_PENDING_TICKETS, memberWalletAddresses, sessionSignIn, SETUP_TOKEN_TTL_MS, sha256Hex } from './db.js'
 import { clientIp } from './http.js'
 import { startHarness, type Harness } from './test-helpers.js'
 
@@ -135,8 +135,8 @@ describe('console auth hardening', () => {
     assert.equal(entries[1]!.ip, '127.0.0.1')
 
     const session = store.database.prepare('SELECT id FROM auth_sessions WHERE member_id = ?').get(invite.invite.memberId) as { id: string }
-    assert.equal(sessionAuthenticatedAt(store.database, session.id), harness.clock.now)
-    assert.equal(sessionAuthenticatedAt(store.database, 'unknown'), null)
+    assert.equal(sessionSignIn(store.database, session.id)?.authenticatedAt, harness.clock.now)
+    assert.equal(sessionSignIn(store.database, 'unknown'), null)
     assert.deepEqual(memberWalletAddresses(store.database, invite.invite.memberId), [wallet.address.toLowerCase()])
   })
 

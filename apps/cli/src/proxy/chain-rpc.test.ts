@@ -49,6 +49,37 @@ test('without Multicall3 the calls are sent one by one', async (t) => {
   assert.equal(rpc.byMethod['eth_call'], 5)
 })
 
+test('only allow-listed reads are batched: anything else keeps its own eth_call and msg.sender', async (t) => {
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const provider = new ChainRpcProvider([rpc.url], 8453)
+  t.after(() => provider.destroy())
+  const token = new Contract(USDC, [...ERC20, 'function allowance(address owner, address spender) view returns (uint256)'], provider)
+  await Promise.all([
+    ...addresses.slice(0, 2).map((address) => token.getFunction('balanceOf').staticCall(address)),
+    token.getFunction('allowance').staticCall(addresses[0], addresses[1]),
+    token.getFunction('allowance').staticCall(addresses[1], addresses[2]),
+  ])
+  // One aggregate3 for the two balanceOf reads, one eth_call per allowance.
+  assert.deepEqual(rpc.byMethod, { eth_getCode: 1, eth_call: 3 })
+  assert.equal(rpc.batchedCalls, 2)
+})
+
+test('buyer reward reads are batched', async (t) => {
+  const rpc = await startFakeChainRpc()
+  t.after(() => rpc.close())
+  const provider = new ChainRpcProvider([rpc.url], 8453)
+  t.after(() => provider.destroy())
+  const rewards = new Contract(USDC, ['function pendingBuyerReward(address buyer, uint256 epoch) view returns (uint256)', 'function currentEpoch() view returns (uint256)'], provider)
+  await Promise.all([
+    rewards.getFunction('pendingBuyerReward').staticCall(addresses[0], 3),
+    rewards.getFunction('pendingBuyerReward').staticCall(addresses[0], 4),
+    rewards.getFunction('currentEpoch').staticCall(),
+  ])
+  assert.deepEqual(rpc.byMethod, { eth_getCode: 1, eth_call: 1 })
+  assert.equal(rpc.batchedCalls, 3)
+})
+
 test('a reverting call inside a batch fails alone, as a CALL_EXCEPTION', async (t) => {
   const multicall = new Interface(['function aggregate3(tuple(address target, bool allowFailure, bytes callData)[] calls) payable returns (tuple(bool success, bytes returnData)[] returnData)'])
   const word = (value: bigint) => '0x' + value.toString(16).padStart(64, '0')
@@ -69,6 +100,29 @@ test('a reverting call inside a batch fails alone, as a CALL_EXCEPTION', async (
   assert.equal(settled[1]!.status, 'rejected')
   assert.ok(isError((settled[1] as PromiseRejectedResult).reason, 'CALL_EXCEPTION'))
   assert.equal(settled[2]!.status, 'fulfilled')
+})
+
+test('an aggregate refused with HTTP 413 falls back to one call each', async (t) => {
+  const word = (value: bigint) => '0x' + value.toString(16).padStart(64, '0')
+  let aggregates = 0
+  let singles = 0
+  const transport: RpcTransport = async (_url, body) => {
+    const request = JSON.parse(body) as { id: number; method: string; params: [{ to: string; data: string }] }
+    if (request.method === 'eth_getCode') return { status: 200, body: { jsonrpc: '2.0', id: request.id, result: '0x60' } }
+    if (request.params[0].to.toLowerCase() === MULTICALL3_ADDRESS.toLowerCase()) {
+      aggregates += 1
+      return { status: 413, body: null }
+    }
+    singles += 1
+    return { status: 200, body: { jsonrpc: '2.0', id: request.id, result: word(5n) } }
+  }
+  const provider = new ChainRpcProvider(['https://rpc.example.test'], 8453, { transport })
+  t.after(() => provider.destroy())
+  const usdc = new Contract(USDC, ERC20, provider)
+  const values = await Promise.all(addresses.slice(0, 3).map((address) => usdc.getFunction('balanceOf').staticCall(address)))
+  assert.deepEqual(values, [5n, 5n, 5n])
+  assert.equal(aggregates, 1)
+  assert.equal(singles, 3)
 })
 
 test('a rate-limited endpoint is skipped for a jittered, growing back-off; then the call fails fast without touching the network', async (t) => {

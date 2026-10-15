@@ -18,7 +18,8 @@ function waitForOpen(conn: PeerConnection, peerId: PeerId): Promise<void> {
         resolve();
       } else if (state === ConnectionState.Failed || state === ConnectionState.Closed) {
         conn.off("stateChange", onState);
-        reject(new Error(`Connection to ${peerId} failed`));
+        const reason = conn.failureReason?.message;
+        reject(new Error(`Connection to ${peerId} failed${reason ? `: ${reason}` : ""}`));
       }
     };
     conn.on("stateChange", onState);
