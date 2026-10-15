@@ -109,7 +109,7 @@ interface SellerBillingContext {
 const METADATA_REFRESH_DEBOUNCE_MS = 200;
 /** Time to wait for a catch-up SpendingAuth before returning 402. */
 const DEFAULT_CATCH_UP_WAIT_MS = 5_000;
-/** Per-buyer rate limit for the free attestation and routing-models routes. */
+/** Per-buyer rate limit for the free attestation route. */
 const ATTEST_RATE_WINDOW_MS = 60_000;
 const ATTEST_RATE_MAX_PER_WINDOW = 10;
 const ATTEST_RATE_MAX_TRACKED_PEERS = 1024;
@@ -178,7 +178,7 @@ export class SellerRequestHandler {
       }
 
       if (request.method === 'GET' && pathOnly === MODEL_ROUTING_MODELS_PATH) {
-        mux.sendProxyResponse(await this._handleRoutingModels(request, buyerPeerId));
+        mux.sendProxyResponse(await this._handleRoutingModels(request));
         return;
       }
 
@@ -1030,19 +1030,16 @@ export class SellerRequestHandler {
 
   /**
    * Free router model list (IRP `GET /v1/routing/models`): forward to this seller's routing
-   * service. Rate-limited like attestation because it reaches the upstream router. Local
-   * failures use IRP problem details.
+   * service. Not rate-limited here; the router limits its own model list. Local failures use
+   * IRP problem details.
    */
-  private async _handleRoutingModels(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
-    const problem = (statusCode: number, type: string, title: string, detail: string, headers: Record<string, string> = {}): SerializedHttpResponse => ({
-      requestId: request.requestId, statusCode, headers: { 'content-type': 'application/problem+json', ...headers },
+  private async _handleRoutingModels(request: SerializedHttpRequest): Promise<SerializedHttpResponse> {
+    const problem = (statusCode: number, type: string, title: string, detail: string): SerializedHttpResponse => ({
+      requestId: request.requestId, statusCode, headers: { 'content-type': 'application/problem+json' },
       body: routingProblemBody(statusCode, type, title, detail),
     });
     const provider = routingServices(this._deps.providers)[0]?.provider;
     if (!provider) return problem(404, ROUTING_PROBLEM_TYPES.invalidRequest, 'No routing service', 'This seller offers no model-routing service.');
-    if (!this._allowAttest(buyerPeerId)) {
-      return problem(503, ROUTING_PROBLEM_TYPES.unavailable, 'Rate limited', 'Routing models rate limit exceeded.', { 'retry-after': '60' });
-    }
     try {
       const response = await provider.handleRequest(request);
       return { ...response, requestId: request.requestId };

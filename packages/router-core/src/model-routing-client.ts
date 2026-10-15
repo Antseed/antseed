@@ -167,10 +167,11 @@ export class ModelRoutingClient {
     const rankRequest = this.buildRankRequest(routingInferenceRequest(request, body), context)
     validateRoutingRankRequest(rankRequest)
 
-    // Tool-loop continuations repeat the same user turn: reuse its recommendation instead of paying again.
+    // Tool-loop continuations repeat the same user turn: reuse its recommendation instead of paying
+    // again, even when the candidate set changed in between (a peer refresh reorders, adds or drops
+    // sellers). A new ranking is bought only when none of the saved picks is still usable.
     const key = context.conversationKey
-    const fingerprint = JSON.stringify([context.routingService, context.costQualityTradeoff ?? null,
-      rankRequest.routing.candidates.map(({ id }) => id)])
+    const fingerprint = JSON.stringify([context.routingService, context.costQualityTradeoff ?? null])
     const cached = key ? this.lastRoutes.get(key) : undefined
     if (cached?.text === text && cached.fingerprint === fingerprint && context.acceptRecommendations(cached.routes)) {
       return structuredClone(cached.routes)

@@ -21,7 +21,7 @@ two. Run a second seller node to offer another router.
 
 | Endpoint | Cost | Purpose |
 | --- | --- | --- |
-| `GET /v1/routing/models` | Free, rate limited | IRP §4: models the router can score |
+| `GET /v1/routing/models` | Free; the router limits its own list | IRP §4: models the router can score |
 | `POST /v1/routing/rank` | One completed request | IRP §5: candidates ranked best first, for one user turn |
 
 The seller node answers `GET /v1/routing/models` with a 404 problem when it offers

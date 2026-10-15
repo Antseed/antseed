@@ -77,7 +77,12 @@ test('router model lists restrict candidates, are cached, and refresh once after
   assert.deepEqual(await executeRouterSelection(args), [{ serviceId: 'model-a', provider: 'openai' }])
   assert.equal(listCalls, 2)
   models = ['model-z']
-  await assert.rejects(executeRouterSelection({ ...args, modelsCache: new RoutingModelsCache() }), /supported by this router/)
+  const fresh = new RoutingModelsCache()
+  await assert.rejects(executeRouterSelection({ ...args, modelsCache: fresh }), /can be ranked by this router/)
+  // Nothing to rank is not the model list's fault: the cached list is kept, not refetched.
+  const callsBefore = listCalls
+  await assert.rejects(executeRouterSelection({ ...args, modelsCache: fresh }), /can be ranked by this router/)
+  assert.equal(listCalls, callsBefore)
 })
 
 test('a * entry with max_pricing sends only candidates within the limit', async () => {
@@ -95,7 +100,7 @@ test('a * entry with max_pricing sends only candidates within the limit', async 
   const args = { node: unusedNode, client, request, peers: [peer], conversationKey: null, signal: new AbortController().signal, selection: routerSelection }
   await executeRouterSelection({ ...args, candidates: [base, free, paidCache] })
   assert.deepEqual(sent, ['free-model'])
-  await assert.rejects(executeRouterSelection({ ...args, candidates: [base] }), /supported by this router/)
+  await assert.rejects(executeRouterSelection({ ...args, candidates: [base] }), /can be ranked by this router/)
 })
 
 test('seller model names are sent under the router\'s own name for that model', async () => {
@@ -177,7 +182,7 @@ test('model allowlists restrict routing candidates and returned recommendations'
   await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels } }), /no eligible recommendation/)
   const before = calls
   for (const blocked of [[], [{ provider: 'missing', serviceId: 'model-a' }]]) {
-    await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels: blocked } }), /model allowlist/)
+    await assert.rejects(executeRouterSelection({ ...args, selection: { ...routerSelection, allowedModels: blocked } }), /model allow list/)
   }
   assert.equal(calls, before)
 })

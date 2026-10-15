@@ -158,13 +158,13 @@ export async function executeRouterSelection(args: {
     const allowed = args.candidates
       .filter(candidate => allowedModels === undefined || allowedModels.some(model =>
         model.provider === candidate.provider && model.serviceId === candidate.serviceId))
-    if (!allowed.length && allowedModels !== undefined) throw new NoEligibleCandidatesError('No eligible models match this router’s model allowlist. Update Router settings or select a model.')
+    if (!allowed.length && allowedModels !== undefined) throw new NoEligibleCandidatesError('None of the allowed models is in this router’s model allow list.')
     // Send only models the router lists, within its price limits, named the way the router names them.
     const candidates: RouteCandidate[] = allowed.flatMap(({ peer: _peer, ...candidate }) => {
       const model = routerModel(candidate.serviceId, candidatePricing(candidate))
       return model ? [{ ...candidate, routerModel: model }] : []
     })
-    if (!candidates.length) throw new NoEligibleCandidatesError('No eligible allowed models are supported by this router')
+    if (!candidates.length) throw new NoEligibleCandidatesError('None of the allowed models can be ranked by this router.')
     const { costQualityTradeoff } = args.selection
     const routes = await untilAborted(signal, client.selectRoute(request, peers, {
       signal, conversationKey, candidates, routingService,
@@ -187,9 +187,10 @@ export async function executeRouterSelection(args: {
   try {
     return await attempt()
   } catch (error) {
+    // Nothing was left to rank before any call: the cached model list is not at fault, so keep it.
+    if (error instanceof NoEligibleCandidatesError) throw error
     modelsCache.invalidate(routingService)
     // IRP 422: our cached model list may be stale. Refresh it and retry once; failed ranks are not charged.
-    if (error instanceof NoEligibleCandidatesError) throw error
     if (error instanceof RouterCannotRankError) {
       try {
         return await attempt()

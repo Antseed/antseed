@@ -412,11 +412,13 @@ const ROUTING_OPTION_KEYS = new Set(['cost_quality_tradeoff'])
 /**
  * Reads and removes the body's `routing` object, so it never reaches a seller.
  * `routing` is `{ cost_quality_tradeoff?: 0-10 }` and only applies when the
- * request's model is a routing service; other requests drop it.
+ * request is served through a routing service. A malformed one is still
+ * removed; `invalid` carries the error for the caller to report only when a
+ * router is used, so other requests drop it silently.
  */
 export function takeRoutingOptions(
   request: SerializedHttpRequest,
-): { kind: 'none' } | { kind: 'options'; request: SerializedHttpRequest; options: RequestRoutingOptions } | { kind: 'invalid'; message: string } {
+): { kind: 'none' } | { kind: 'options'; request: SerializedHttpRequest; options: RequestRoutingOptions; invalid?: string } {
   if (!getHeader(request.headers, 'content-type').toLowerCase().includes('application/json') || request.body.length === 0) {
     return { kind: 'none' }
   }
@@ -424,24 +426,31 @@ export function takeRoutingOptions(
   if (!obj || !('routing' in obj)) return { kind: 'none' }
   const routing = obj['routing']
   delete obj['routing']
-  const options: RequestRoutingOptions = {}
-  if (routing !== null && routing !== undefined) {
-    if (typeof routing !== 'object' || Array.isArray(routing)) {
-      return { kind: 'invalid', message: '`routing` must be an object: { "cost_quality_tradeoff": 0-10 }.' }
-    }
-    const fields = routing as Record<string, unknown>
-    const unknown = Object.keys(fields).filter(key => !ROUTING_OPTION_KEYS.has(key))
-    if (unknown.length > 0) {
-      return { kind: 'invalid', message: `Unknown \`routing\` field(s): ${unknown.join(', ')}. Supported: cost_quality_tradeoff.` }
-    }
-    const tradeoff = fields['cost_quality_tradeoff']
-    if (tradeoff !== undefined && tradeoff !== null) {
-      if (!isCostQualityTradeoff(tradeoff)) {
-        return { kind: 'invalid', message: '`routing.cost_quality_tradeoff` must be an integer from 0 (best quality) to 10 (cheapest).' }
-      }
-      options.costQualityTradeoff = tradeoff
-    }
-  }
   const { body, headers } = encodeRewrittenJsonBody(obj, request.headers)
-  return { kind: 'options', request: { ...request, body, headers }, options }
+  const stripped = { ...request, body, headers }
+  const parsed = parseRoutingOptions(routing)
+  return 'invalid' in parsed
+    ? { kind: 'options', request: stripped, options: {}, invalid: parsed.invalid }
+    : { kind: 'options', request: stripped, options: parsed }
+}
+
+function parseRoutingOptions(routing: unknown): RequestRoutingOptions | { invalid: string } {
+  const options: RequestRoutingOptions = {}
+  if (routing === null || routing === undefined) return options
+  if (typeof routing !== 'object' || Array.isArray(routing)) {
+    return { invalid: '`routing` must be an object: { "cost_quality_tradeoff": 0-10 }.' }
+  }
+  const fields = routing as Record<string, unknown>
+  const unknown = Object.keys(fields).filter(key => !ROUTING_OPTION_KEYS.has(key))
+  if (unknown.length > 0) {
+    return { invalid: `Unknown \`routing\` field(s): ${unknown.join(', ')}. Supported: cost_quality_tradeoff.` }
+  }
+  const tradeoff = fields['cost_quality_tradeoff']
+  if (tradeoff !== undefined && tradeoff !== null) {
+    if (!isCostQualityTradeoff(tradeoff)) {
+      return { invalid: '`routing.cost_quality_tradeoff` must be an integer from 0 (best quality) to 10 (cheapest).' }
+    }
+    options.costQualityTradeoff = tradeoff
+  }
+  return options
 }
