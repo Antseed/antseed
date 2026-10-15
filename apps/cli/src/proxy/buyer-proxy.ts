@@ -101,6 +101,7 @@ import {
 import { SPEND_ATTRIBUTION_DB_FILE, SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
 import { ConversationStore } from './conversation-store.js'
 import { DEPOSIT_WATCH_ACTIVE_TTL_MS, type DepositWatcher } from './deposit-watcher.js'
+import { DepositLog, type DepositLogEntry } from './deposit-log.js'
 import {
   recordPeerFailureEntry,
   clearPeerHealthEntry,
@@ -988,6 +989,7 @@ export class BuyerProxy {
   private readonly _bgRefreshIntervalMs: number
   private readonly _peerCacheTtlMs: number
   private readonly _stateDir: string
+  private readonly _depositLog: DepositLog
   private readonly _stateFile: string
   private readonly _configPath: string | null
   private _stateFileWatching = false
@@ -1100,6 +1102,7 @@ export class BuyerProxy {
     this._bgRefreshIntervalMs = Math.max(1, config.backgroundRefreshIntervalMs ?? DEFAULT_BUYER_PEER_REFRESH_INTERVAL_MS)
     this._peerCacheTtlMs = Math.max(0, config.peerCacheTtlMs ?? Math.max(6 * 60_000, this._bgRefreshIntervalMs + 60_000))
     this._stateDir = config.dataDir
+    this._depositLog = new DepositLog(config.dataDir)
     this._stateFile = join(config.dataDir, 'buyer.state.json')
     // Kept on disk so spend signed just before a restart still reaches the gateway.
     this._spendAttribution = new SpendAttributionFeed(undefined, {
@@ -1771,6 +1774,13 @@ export class BuyerProxy {
     // A named identity without a watcher shares the default's cause; if the
     // default has one, the identity simply has not been given one yet.
     return { watcher: null, reason: this._depositWatcherAbsence ?? (identity ? 'identity-not-watched' : null) }
+  }
+
+  /** Writes down a deposit the watcher saw credited, for the gateway's deposit confirmations. */
+  recordDeposit(address: string, entry: DepositLogEntry): void {
+    void this._depositLog.record(address, entry).catch((err: unknown) => {
+      log(`deposit log: could not record ${entry.txHash}: ${err instanceof Error ? err.message : String(err)}`)
+    })
   }
 
   /** Latest relayer receipt for a sweep authNonce, if one has arrived. */
@@ -2948,6 +2958,17 @@ export class BuyerProxy {
         payments: this._node.getPaymentsStatus?.() ?? null,
         status: watcher?.status() ?? null,
       }))
+      return
+    }
+
+    // Credited deposits of one wallet (see DepositLog), for the gateway's deposit confirmations.
+    if (controlPathname === '/_antseed/deposits/history' && method === 'GET') {
+      const identity = await this._controlPlaneIdentity(path)
+      if (identity === undefined) return sendUnknownBuyerIdentity(res)
+      const address = this._depositWatcherFor(identity).watcher?.status().address ?? null
+      const deposits = address ? await this._depositLog.list(address) : []
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, ...(identity ? { identity } : {}), address, deposits }))
       return
     }
 

@@ -13,13 +13,15 @@ import { isSetAddress } from '../lib/chain'
 import { formatDateTime, formatUsd, shortId, usdcToNumber } from '../lib/format'
 import { useOpenChannels } from '../lib/attention'
 import { useConsoleMutation } from '../lib/mutations'
-import { isOrgAdmin } from '../lib/nav'
+import { isOrgAdmin, isWorkspaceAdmin } from '../lib/nav'
+import { useLocation } from '../lib/router'
 import { qk, useChain, useWallet } from '../lib/queries'
 import { useOperator } from '../lib/operator'
 import {
   channelAction, channelStatusLabel, channelStatusTone, cooperativeCloseError, isDepositPending, isEntireBalanceLocked, isOpenChannel, pendingSpend, unspent, walletUsdcMessage, withdrawableAt, withdrawableSummary,
 } from '../lib/channels'
 import { AddFunds } from '../wallet/AddFunds'
+import { DepositConfirmationPage, DepositsPanel } from '../wallet/Deposits'
 import { OperatorPanel, type OperatorAction } from '../wallet/OperatorPanel'
 
 const WalletFunding = lazy(() => import('../wallet/WalletFunding'))
@@ -281,6 +283,13 @@ function WithdrawModal({ wallet, workspaceId, isOpen, onClose, onAuthorize }: { 
 }
 
 export default function Wallet() {
+  // `wallet/deposits/<tx>`: one deposit's printable confirmation.
+  const location = useLocation()
+  if (location.rest[0] === 'deposits' && location.rest[1]) return <DepositConfirmationPage txHash={location.rest[1]} />
+  return <WalletOverview />
+}
+
+function WalletOverview() {
   const { workspace, viewer } = useConsole()
   const wallet = useWallet(workspace.id)
   const chain = useChain()
@@ -298,6 +307,7 @@ export default function Wallet() {
             <StaleHint stale={data.stale} />
             <BalancePanel wallet={data} workspaceId={workspace.id} onWithdraw={() => setDialog('withdraw')} />
             <OperatorPanel workspaceId={workspace.id} action={operatorAction} onActionChange={setOperatorAction} />
+            {isWorkspaceAdmin(viewer) && <DepositsPanel workspaceId={workspace.id} />}
             <Modal isOpen={dialog === 'fund'} onClose={() => setDialog(null)} size="md" title="Add funds" subtitle={`Credits that pay for ${workspace.name}'s requests.`}>
               <AddFunds wallet={data} chain={chain.data} workspaceId={workspace.id} />
             </Modal>

@@ -1692,6 +1692,39 @@ export class GatewayStore {
     return this._stmt('DELETE FROM chat_threads WHERE id = ?').run(id).changes > 0
   }
 
+  // ── Deposits (confirmations) ────────────────────────────────────────────
+
+  listDeposits(workspaceId: string): DepositRecord[] {
+    return (this._stmt('SELECT * FROM deposits WHERE workspace_id = ? ORDER BY block_time DESC').all(workspaceId) as DepositRow[]).map(depositRecord)
+  }
+
+  getDeposit(txHash: string): DepositRecord | null {
+    const row = this._stmt('SELECT * FROM deposits WHERE tx_hash = ?').get(txHash.toLowerCase()) as DepositRow | undefined
+    return row ? depositRecord(row) : null
+  }
+
+  /** Records a verified deposit once; an existing row (and its approval) is kept as it is. */
+  insertDeposit(input: Omit<DepositRecord, 'approval' | 'recordedAt'>): DepositRecord {
+    this._stmt(`
+      INSERT INTO deposits (tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources, recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tx_hash) DO NOTHING
+    `).run(input.txHash.toLowerCase(), input.workspaceId, input.wallet.toLowerCase(), input.kind, input.creditedUsdc, input.feeUsdc,
+      input.blockNumber, input.blockTime, JSON.stringify(input.sources), this._now())
+    return this.getDeposit(input.txHash)!
+  }
+
+  /** Sets (or with null clears) who approved a deposit. */
+  setDepositApproval(txHash: string, approval: { byId: string | null; byLabel: string; note: string | null } | null): DepositRecord | null {
+    if (approval) {
+      this._stmt('UPDATE deposits SET approved_by_id = ?, approved_by_label = ?, approved_at = ?, approval_note = ? WHERE tx_hash = ?')
+        .run(approval.byId, approval.byLabel, this._now(), approval.note, txHash.toLowerCase())
+    } else {
+      this._stmt('UPDATE deposits SET approved_by_id = NULL, approved_by_label = NULL, approved_at = NULL, approval_note = NULL WHERE tx_hash = ?')
+        .run(txHash.toLowerCase())
+    }
+    return this.getDeposit(txHash)
+  }
+
   // ── Settings ────────────────────────────────────────────────────────────
 
   /**
@@ -1931,5 +1964,63 @@ function toAudit(row: Record<string, unknown>): AuditRecord {
     target: targetKind ? { kind: targetKind, id: row['target_id'] as string | null, label: row['target_label'] as string | null } : null,
     details: parseJson(row['details'] as string, {}),
     ip: row['ip'] as string | null,
+  }
+}
+
+/** Where the USDC of a deposit came from: a wallet (or an exchange), or minted straight in by the USDC issuer (card purchases). */
+export interface DepositSource {
+  from: string
+  amountUsdc: number
+  txHash: string
+}
+
+/** A deposit credited to a workspace wallet, verified against its transaction receipt. */
+export interface DepositRecord {
+  txHash: string
+  workspaceId: string
+  wallet: string
+  /** relay: USDC sent to the wallet and swept in by a relayer (fee taken); direct: deposited by a connected wallet. */
+  kind: 'relay' | 'direct'
+  creditedUsdc: number
+  feeUsdc: number
+  blockNumber: number
+  blockTime: number
+  sources: DepositSource[]
+  approval: { byId: string | null; byLabel: string; at: number; note: string | null } | null
+  recordedAt: number
+}
+
+interface DepositRow {
+  tx_hash: string
+  workspace_id: string
+  wallet: string
+  kind: 'relay' | 'direct'
+  credited_usdc: number
+  fee_usdc: number
+  block_number: number
+  block_time: number
+  sources: string
+  approved_by_id: string | null
+  approved_by_label: string | null
+  approved_at: number | null
+  approval_note: string | null
+  recorded_at: number
+}
+
+function depositRecord(row: DepositRow): DepositRecord {
+  return {
+    txHash: row.tx_hash,
+    workspaceId: row.workspace_id,
+    wallet: row.wallet,
+    kind: row.kind,
+    creditedUsdc: row.credited_usdc,
+    feeUsdc: row.fee_usdc,
+    blockNumber: row.block_number,
+    blockTime: row.block_time,
+    sources: parseJson<DepositSource[]>(row.sources, []),
+    approval: row.approved_at !== null && row.approved_by_label !== null
+      ? { byId: row.approved_by_id, byLabel: row.approved_by_label, at: row.approved_at, note: row.approval_note }
+      : null,
+    recordedAt: row.recorded_at,
   }
 }

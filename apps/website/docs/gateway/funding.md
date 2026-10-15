@@ -51,6 +51,17 @@ antseed --data-dir ~/.antseed/buyer-identities/<identity> buyer deposit --no-wat
 
 For the Default workspace, use your data directory itself. Card checkout is only in the console.
 
+## Deposit confirmations
+
+**Deposits** on **Wallet & Funding** lists every deposit credited to the workspace, for workspace admins and organization admins. For each one it shows the date, the amount, where the USDC came from (a card purchase, a wallet, or a direct deposit) and whether someone approved it.
+
+- **Approve** records your name, email and the time on the deposit, with an optional note such as a purchase order number. The approval is in the audit log, and **Remove approval** takes it back.
+- Click the amount or **View confirmation** for a printable confirmation: the workspace, the date, the amount sent, the relay fee and what was credited, the workspace wallet, the deposit transaction, where the USDC came from, and the approval. **Print or save as PDF** saves it for your books.
+
+The gateway checks every deposit against its transaction on Base, so the confirmation states only what the chain shows, with links to check it. It confirms a transfer into the workspace's prepaid credits and is not an invoice: no seller or other party issues one for a deposit.
+
+The buyer writes deposits down as they are credited. For one made before that, **Add a past deposit** takes the transaction that credited it: the relayer's sweep, or your own deposit from a connected wallet.
+
 ## Balance and channels
 
 The **Balance** panel shows:
