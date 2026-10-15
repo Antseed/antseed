@@ -99,10 +99,27 @@ describe('unit billing adapters', () => {
     expect(isUnitBilledProtocol('model-routing')).toBe(true);
     expect(validateUnitBillingModelForProtocolV1('model-routing', model)).toEqual([]);
     expect(validateUnitBillingModelForProtocolV1('openai-images', model)).toEqual(['completed_requests is not supported for openai-images']);
-    expect(computeFinalUnitBilling(model, context, response(200, ranked), { kind: 'routing' }).costUsdc).toBe(1_000n);
-    expect(computeFinalUnitBilling(model, context, response(200, { ...ranked, ranked: [] }), { kind: 'routing' }).costUsdc).toBe(0n);
-    expect(computeFinalUnitBilling(model, context, response(200, 'garbage'), { kind: 'routing' }).costUsdc).toBe(0n);
-    expect(computeFinalUnitBilling(model, context, response(500, ranked), { kind: 'routing' }).costUsdc).toBe(0n);
+    const facts = { kind: 'routing' as const, candidateIds: ['c', 'd'] };
+    const cost = (statusCode: number, body: unknown) => computeFinalUnitBilling(model, context, response(statusCode, body), facts).costUsdc;
+    expect(cost(200, ranked)).toBe(1_000n);
+    expect(cost(200, { ...ranked, ranked: [{ candidate_id: 'nope' }, null, { candidate_id: 'd' }] })).toBe(1_000n);
+    expect(cost(200, { ...ranked, ranked: [] })).toBe(0n);
+    expect(cost(200, 'garbage')).toBe(0n);
+    expect(cost(500, ranked)).toBe(0n);
+    // Rankings the buyer's client rejects are never billable.
+    expect(cost(200, { ...ranked, ranked: [null] })).toBe(0n);
+    expect(cost(200, { ...ranked, ranked: [{ candidate_id: 'nope' }] })).toBe(0n);
+    expect(cost(200, { object: 'routing.ranking', ranked: [{ candidate_id: 'c' }] })).toBe(0n);
+    expect(computeFinalUnitBilling(model, context, response(200, ranked), { kind: 'routing', candidateIds: [] }).costUsdc).toBe(0n);
+  });
+
+  it('captures the candidate ids a rank request sends as its routing billing facts', () => {
+    const body = { request: { messages: [] }, routing: { candidates: [{ id: 'c' }, { id: 7 }, null, { id: 'd' }] } };
+    const captured = captureUnitBillingContext({
+      sellerPeerId: 'a'.repeat(40), provider: 'alpha', service: 'alpha-route', serviceApiProtocol: 'model-routing',
+      request: { requestId: 'r', method: 'POST', path: '/v1/routing/rank', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) },
+    });
+    expect(captured.requestFacts).toEqual({ kind: 'routing', candidateIds: ['c', 'd'] });
   });
 
   it('routes image and Venice video billing through their adapters', () => {

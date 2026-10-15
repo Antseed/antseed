@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Model routing billing: a routing service is paid for a ranking only when the buyer can use it. Rankings with no valid entry naming a candidate the request sent (for example `ranked: [null]`, or only unknown candidate ids) and responses with an invalid `routing.ranking` envelope now bill zero `completed_requests`, on both buyer and seller.
 - Website: the homepage "Tokens processed" stat now counts free-tier tokens as well as paid ones, from Antscan's new `/api/totals` endpoint, matching the explorer. It falls back to paid tokens only if that endpoint is unavailable.
 
 ### Documentation
