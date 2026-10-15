@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Desktop: the Antseed Pay card checkout (Deposit, and "Deposit using Outerfound") opened to "This funding link is invalid or was altered" when no amount had been entered, which is how the Add Credits chooser opens it. The pay page refuses a funding link without an amount (or with one outside $1–$200 or with more than two decimals) before checking the signature, and the desktop signed and sent an empty amount. The link now carries the entered amount, or a $20 default when none was entered; the amount can still be changed on the page. `@antseed/payments/card-link` refuses to sign an amount the page would reject (`antseedPayAmount`, `antseedPayLinkAmount`).
 - CLI buyer: a video job created with a workspace wallet (`x-antseed-buyer-identity`, as the gateway sends for workspace keys) is now retrieved with that same wallet. Retrieve used the default wallet, so the seller answered "Video job not found" and the video could not be downloaded.
 - CLI gateway: video models can be used through the gateway. It now passes the buyer's native video job routes (`/api/v1/video/queue` and `/retrieve`, `/fal/v1/video/queue` and `/retrieve`) to the buyer, and the video's spend counts against the key's limits. Before, these returned `404`.
 
