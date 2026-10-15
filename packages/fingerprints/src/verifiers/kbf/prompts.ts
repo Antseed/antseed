@@ -177,3 +177,24 @@ export function buildKbfChatRequestBody(
     max_tokens: maxTokens ?? Math.min(800, Math.max(100, probes.length * 16)),
   };
 }
+
+/**
+ * Sampling fields an audit drops when an endpoint refuses them. Some newer
+ * models fix their own sampling and reject `temperature`/`top_p` outright, so
+ * leaving them out asks for the same deterministic answer the reference holds.
+ */
+export const KBF_OPTIONAL_SAMPLING_FIELDS = ['temperature', 'top_p'] as const;
+
+/**
+ * True when an HTTP 400/422 error says the endpoint does not accept `temperature`
+ * or `top_p` at all, so a retry without them can succeed. An error asking for a
+ * different value (e.g. "only 0.6 is allowed") is not one: that model samples
+ * randomly and cannot be compared with a temperature-0 reference.
+ */
+export function isKbfSamplingFieldRejection(status: number | undefined, errorText: string): boolean {
+  if (status !== 400 && status !== 422) return false;
+  const text = errorText.toLowerCase();
+  if (!/\b(temperature|top[_\s-]?p)\b/.test(text)) return false;
+  if (/only\s+[\d.]+\s+(is\s+)?allowed|must be (one of:?\s*)?[\d.]+|invalid temperature/.test(text)) return false;
+  return /deprecat|unsupported|not supported|does not support|doesn't support|unknown|unrecognized|not permitted|not allowed|rejected|remove it|extra (inputs|fields)|cannot be (used|set|specified)|not available/.test(text);
+}

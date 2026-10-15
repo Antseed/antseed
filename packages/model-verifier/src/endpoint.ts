@@ -7,8 +7,9 @@ export interface ModelBatchRequest {
   model: string
   system: string
   user: string
-  temperature: number
-  topP: number
+  /** Left out when the endpoint refuses sampling fields (see `isKbfSamplingFieldRejection`). */
+  temperature?: number
+  topP?: number
   maxTokens: number
 }
 

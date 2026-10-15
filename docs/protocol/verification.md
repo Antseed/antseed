@@ -62,6 +62,20 @@ answers bought from OpenRouter can be compared with the model maker's native API
   those sha256 values are committed too. Banks built before this have no raw exchanges
   to publish.
 
+## Audit requests
+
+Every audit batch asks for answers at `temperature: 0` and `top_p: 1`, the settings the
+reference was built with. Some newer models fix their own sampling and reject those
+fields (for example "`temperature` is deprecated for this model"). When a seller returns
+HTTP 400/422 saying it does not take `temperature` or `top_p`, the audit asks that batch
+again once without both fields, and leaves them out for the rest of that seller's audit.
+The batch evidence then lists `omittedSamplingFields: ["temperature", "top_p"]`, and the
+exact body sent is in `request.bodyBase64`. An error that asks for a different value
+instead (for example "only 0.6 is allowed") is not retried: that model samples randomly
+and cannot be compared with the reference, so the audit is skipped as
+`request_profile_incompatible`. `antseed-verify` and `antseed verifier check` follow the
+same rule.
+
 ## On-chain state
 
 `submitModelAudit(expectedEpoch, modelHash, evidenceHash, evidenceUri, results)`:

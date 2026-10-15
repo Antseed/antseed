@@ -5,8 +5,10 @@ import {
   KBF_AUDIT_VERIFY_OPTIONS,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
+  KBF_OPTIONAL_SAMPLING_FIELDS,
   buildKbfChatRequestBody,
   canonicalHashBytes32,
+  isKbfSamplingFieldRejection,
   computeMatchVector,
   parseKbfAnswers,
   queryProfileHash,
@@ -109,6 +111,11 @@ export interface ProxyVerificationContext {
   sleepFn?: (delayMs: number) => Promise<void>
   randomFn?: () => number
   writeCheckpoint?: (path: string, checkpoint: ModelAuditCheckpointV1) => Promise<void>
+}
+
+/** Shared by one seller audit: once the seller refuses the sampling fields, later batches leave them out. */
+interface AuditSamplingState {
+  omit: boolean
 }
 
 export interface ModelVerificationResumeInput {
@@ -403,6 +410,9 @@ export async function verifyModelTarget(input: {
   const pending = batches.flatMap((batch, batchIndex) => exchangeByBatch.has(batchIndex)
     ? []
     : [{ probes: batch.probes, batchIndex }])
+  const sampling: AuditSamplingState = {
+    omit: input.resume?.exchanges.some((exchange) => exchange.omittedSamplingFields?.length) ?? false,
+  }
   let checkpointTail = Promise.resolve()
   let checkpointFailure: Error | null = null
   const persistCheckpoint = async (): Promise<void> => {
@@ -456,6 +466,7 @@ export async function verifyModelTarget(input: {
         probes,
         batchIndex,
         control.reduceToOne,
+        sampling,
         )
         exchangeByBatch.set(batchIndex, exchange)
         await persistCheckpoint()
@@ -686,10 +697,16 @@ async function executeProxyProbeBatch(
   probes: KbfProbe[],
   batchIndex: number,
   onRateLimited?: () => void,
+  sampling: AuditSamplingState = { omit: false },
 ): Promise<ProxyAuditEvidenceExchangeV1> {
-  const { url, headers, body, request, promptVariantId } = buildProxyBatchRequest(
-    context, target, service, reference, probes,
+  const promptVariantId = pickKbfPromptVariantId()
+  let samplingOmitted = sampling.omit
+  let { url, headers, body, request } = buildProxyBatchRequest(
+    context, target, service, reference, probes, promptVariantId, samplingOmitted,
   )
+  const samplingEvidence = () => samplingOmitted
+    ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] }
+    : {}
   const startedAt = Date.now()
   let attemptCount = 0
   let lastFailure = 'proxy request failed'
@@ -736,6 +753,14 @@ async function executeProxyProbeBatch(
       }
       if (!response.ok) {
         lastFailure = `buyer proxy HTTP ${response.status}: ${responseText(responseBody).slice(0, 500)}`
+        if (!samplingOmitted && isKbfSamplingFieldRejection(response.status, responseText(responseBody))) {
+          sampling.omit = true
+          samplingOmitted = true
+          ;({ url, headers, body, request } = buildProxyBatchRequest(
+            context, target, service, reference, probes, promptVariantId, true,
+          ))
+          continue
+        }
         const classified = classifyProxyFailure(response.status, responseBody)
         lastOutcomeReason = {
           ...classified.outcomeReason,
@@ -750,6 +775,7 @@ async function executeProxyProbeBatch(
             requestIds,
             probeIds: probes.map((probe) => probe.id),
             promptVariantId,
+            ...samplingEvidence(),
             request,
             response: lastResponse,
             timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
@@ -825,6 +851,7 @@ async function executeProxyProbeBatch(
         requestIds,
         probeIds: probes.map((probe) => probe.id),
         promptVariantId,
+        ...samplingEvidence(),
         request,
         response: lastResponse,
         timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
@@ -882,6 +909,7 @@ async function executeProxyProbeBatch(
     requestIds,
     probeIds: probes.map((probe) => probe.id),
     promptVariantId,
+    ...samplingEvidence(),
     request,
     response: lastResponse,
     timing: { startedAt, completedAt, responseLatencyMs: Math.max(0, completedAt - startedAt) },
@@ -1058,6 +1086,7 @@ export function buildKbfProbeRequestBody(
   queryProfile: KbfReferenceV1['queryProfile'],
   probes: readonly KbfProbe[],
   promptVariantId: string,
+  omitSampling = false,
 ): Uint8Array {
   // Audits send the canonical KBF body. Reference-endpoint settings (legacy
   // queryProfile.requestOverrides / requestOmissions / reasoningStrategy) only
@@ -1072,6 +1101,7 @@ export function buildKbfProbeRequestBody(
     stream: false,
     n: 1,
   }
+  if (omitSampling) for (const field of KBF_OPTIONAL_SAMPLING_FIELDS) delete requestBody[field]
   return new TextEncoder().encode(JSON.stringify(requestBody))
 }
 
@@ -1081,13 +1111,13 @@ function buildProxyBatchRequest(
   service: string,
   reference: KbfReferenceV1,
   probes: KbfProbe[],
-  promptVariantId: string = pickKbfPromptVariantId(),
+  promptVariantId: string,
+  omitSampling: boolean,
 ): {
   url: string
   headers: Record<string, string>
   body: Uint8Array
   request: ProxyAuditEvidenceExchangeV1['request']
-  promptVariantId: string
 } {
   const url = `${context.proxy.baseUrl}/v1/chat/completions`
   const headers = {
@@ -1095,13 +1125,12 @@ function buildProxyBatchRequest(
     'x-antseed-pin-peer': target.peerId,
     'x-antseed-capture-response-auth-preimages': '1',
   }
-  const body = buildKbfProbeRequestBody(service, reference.queryProfile, probes, promptVariantId)
+  const body = buildKbfProbeRequestBody(service, reference.queryProfile, probes, promptVariantId, omitSampling)
   const bodyBase64 = Buffer.from(body).toString('base64')
   return {
     url,
     headers,
     body,
-    promptVariantId,
     request: {
       method: 'POST',
       url,
@@ -1121,7 +1150,8 @@ function notAttemptedExchange(
   batchIndex: number,
   terminalReason: VerificationOutcomeReasonV1,
 ): ProxyAuditEvidenceExchangeV1 {
-  const { request, promptVariantId } = buildProxyBatchRequest(context, target, service, reference, probes)
+  const promptVariantId = pickKbfPromptVariantId()
+  const { request } = buildProxyBatchRequest(context, target, service, reference, probes, promptVariantId, false)
   const now = Date.now()
   return {
     batchIndex,

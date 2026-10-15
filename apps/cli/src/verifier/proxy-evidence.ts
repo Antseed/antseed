@@ -34,6 +34,8 @@ export interface ProxyAuditEvidenceExchange {
   probeIds: string[]
   /** KBF prompt variant used for this batch; absent on evidence predating prompt variants. */
   promptVariantId?: string
+  /** Sampling fields left out after the seller refused them; absent when the canonical body was sent. */
+  omittedSamplingFields?: string[]
   request: {
     method: 'POST'
     url: string

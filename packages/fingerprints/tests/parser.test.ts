@@ -1,6 +1,6 @@
 import { describe, expect, it } from 'vitest';
 import { parseKbfAnswers } from '../src/verifiers/kbf/parser.js';
-import { KBF_PROMPT_VARIANTS, buildKbfPrompt } from '../src/verifiers/kbf/prompts.js';
+import { KBF_PROMPT_VARIANTS, buildKbfPrompt, isKbfSamplingFieldRejection } from '../src/verifiers/kbf/prompts.js';
 import type { KbfProbe } from '../src/types.js';
 
 describe('parseKbfAnswers', () => {
@@ -96,5 +96,21 @@ describe('parseKbfAnswers', () => {
       const response = labels.map((label, index) => `${label} ${(index + 1) * 11}`).join('\n');
       expect(parseKbfAnswers(response, 3)).toEqual([11, 22, 33]);
     }
+  });
+});
+
+describe('isKbfSamplingFieldRejection', () => {
+  it('matches errors saying the endpoint does not take temperature/top_p at all', () => {
+    expect(isKbfSamplingFieldRejection(400, '{"error":{"message":"`temperature` is deprecated for this model."}}')).toBe(true);
+    expect(isKbfSamplingFieldRejection(400, 'Unsupported parameter: \'top_p\' is not supported with this model.')).toBe(true);
+    expect(isKbfSamplingFieldRejection(422, 'temperature: Extra inputs are not permitted')).toBe(true);
+    expect(isKbfSamplingFieldRejection(400, 'Parameter "temperature" was rejected. Correct or remove it and submit a new request.')).toBe(true);
+  });
+
+  it('keeps fixed-value demands, other fields and non-4xx statuses out', () => {
+    expect(isKbfSamplingFieldRejection(400, 'invalid temperature: only 0.6 is allowed for this model')).toBe(false);
+    expect(isKbfSamplingFieldRejection(400, 'Validation: Kimi request field top_p must be one of: 0.95')).toBe(false);
+    expect(isKbfSamplingFieldRejection(400, 'unsupported Chat feature for Claude Messages: n')).toBe(false);
+    expect(isKbfSamplingFieldRejection(500, '`temperature` is deprecated for this model.')).toBe(false);
   });
 });

@@ -50,6 +50,21 @@ describe('auditEndpoint', () => {
       expect(request.topP).toBe(1)
     }
   })
+
+  it('re-asks without temperature/top_p when the endpoint refuses them, and records it', async () => {
+    const endpoint = new FakeEndpoint()
+    const answer = endpoint.call.bind(endpoint)
+    endpoint.call = async (request, signal) => 'temperature' in request || 'topP' in request
+      ? { ok: false, status: 400, retryable: false, message: 'HTTP 400: `temperature` is deprecated for this model.' }
+      : answer(request, signal)
+    const result = await auditEndpoint({ endpoint, reference: testReference(), probeCount: 20, concurrency: 1 })
+    expect(result.evaluation.verdict).toBe('SAME')
+    for (const batch of result.batches) {
+      expect(batch.status).toBe('succeeded')
+      expect(batch.attempts).toBe(1)
+      expect(batch.omittedSamplingFields).toEqual(['temperature', 'top_p'])
+    }
+  })
 })
 
 describe('selectProbes', () => {

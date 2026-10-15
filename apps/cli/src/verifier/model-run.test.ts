@@ -119,7 +119,7 @@ async function runTarget(
   answerMode: 'valid' | 'out-of-range' | 'all-wrong' | 'partial-malformed' | 'malformed'
     | 'malformed-first-batch' | 'empty-responses' | 'content-filter' | 'sse' | 'transport-failure' | 'hanging'
     | 'rate-limited' | 'semantic-unavailable' | 'blank-length'
-    | 'persistent-blank-length' | 'checkpoint-abort' = 'valid',
+    | 'persistent-blank-length' | 'checkpoint-abort' | 'sampling-rejected' = 'valid',
   transientFailures = 0,
   authMode: 'verified' | 'missing' | 'unverified' | 'wrong-request' | 'wrong-seller' | 'wrong-service' = 'verified',
   includeCost = true,
@@ -163,7 +163,12 @@ async function runTarget(
         error: { message: 'Service is temporarily unavailable. Please try again later.' },
       }, { status: 400 })
     }
-    const body = JSON.parse(requestBody) as { messages: Array<{ content: string }> }
+    const body = JSON.parse(requestBody) as { messages: Array<{ content: string }>; temperature?: number; top_p?: number }
+    if (answerMode === 'sampling-rejected' && ('temperature' in body || 'top_p' in body)) {
+      return Response.json({
+        error: { type: 'invalid_request_error', message: '`temperature` is deprecated for this model.' },
+      }, { status: 400 })
+    }
     const prompt = body.messages.at(-1)?.content ?? ''
     const firstProbe = Number(prompt.match(/test probe (\d+) value is ___/)?.[1] ?? 0)
     if (answerMode === 'checkpoint-abort' && firstProbe === 21) {
@@ -795,6 +800,30 @@ test('deleted upstream credentials skip after the first batch with a structured 
   assert.equal(run.result.code, 'upstream_credentials_invalid')
   assert.equal(run.result.outcomeReason?.nextAction, 'seller must repair credentials')
   assert.equal(run.evidence.result.outcomeReason?.code, 'upstream_credentials_invalid')
+})
+
+test('a seller refusing temperature/top_p is re-asked without them and the omission is recorded', async () => {
+  const run = await runTarget(40, 'sampling-rejected')
+  assert.equal(run.result.status, 'SAME')
+  const bodies = run.requests.map((request) => JSON.parse(request.body) as Record<string, unknown>)
+  const withSampling = bodies.filter((body) => 'temperature' in body || 'top_p' in body)
+  assert.ok(withSampling.length >= 1 && withSampling.length <= 2, `expected at most one refused request per concurrent batch, got ${withSampling.length}`)
+  assert.equal(bodies.length, run.evidence.exchanges.length + withSampling.length)
+  for (const exchange of run.evidence.exchanges) {
+    assert.deepEqual(exchange.omittedSamplingFields, ['temperature', 'top_p'])
+    const sent = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as Record<string, unknown>
+    assert.equal('temperature' in sent, false)
+    assert.equal('top_p' in sent, false)
+  }
+})
+
+test('canonical audits send temperature and top_p and record no omission', async () => {
+  const run = await runTarget(40)
+  for (const exchange of run.evidence.exchanges) {
+    assert.equal(exchange.omittedSamplingFields, undefined)
+    const sent = JSON.parse(Buffer.from(exchange.request.bodyBase64, 'base64').toString('utf8')) as Record<string, unknown>
+    assert.equal(sent.temperature, 0)
+  }
 })
 
 test('canonical temperature rejection skips after the first batch', async () => {

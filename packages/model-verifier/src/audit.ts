@@ -1,12 +1,14 @@
 import { randomInt } from 'node:crypto'
 import {
   KBF_AUDIT_VERIFY_OPTIONS,
+  KBF_OPTIONAL_SAMPLING_FIELDS,
   KBF_PROBES_PER_REQUEST,
   KBF_PROMPT_VARIANT_IDS,
   buildKbfPrompt,
   computeBinomialPower,
   computeMatchVector,
   getKbfPromptVariant,
+  isKbfSamplingFieldRejection,
   parseKbfAnswers,
   subsetReferenceSelfTest,
   verifyKbf,
@@ -15,7 +17,7 @@ import {
   type KbfReferenceV1,
   type MatchEntry,
 } from '@antseed/fingerprints'
-import type { ModelEndpoint } from './endpoint.js'
+import type { ModelBatchRequest, ModelEndpoint } from './endpoint.js'
 
 export interface AuditOptions {
   endpoint: ModelEndpoint
@@ -38,6 +40,8 @@ export interface AuditBatchRecord {
   batchIndex: number
   probeIds: string[]
   promptVariantId: string
+  /** Sampling fields left out after the endpoint refused them; absent when the canonical request was sent. */
+  omittedSamplingFields?: string[]
   attempts: number
   status: 'succeeded' | 'failed'
   failureReason: string | null
@@ -182,7 +186,7 @@ async function runBatch(
 ): Promise<AuditBatchRecord> {
   const maxAttempts = options.maxAttempts ?? 3
   const profile = options.reference.queryProfile
-  const request = {
+  const request: ModelBatchRequest = {
     model,
     system: getKbfPromptVariant(promptVariantId).systemPrompt,
     user: buildKbfPrompt(probes, 0, promptVariantId),
@@ -191,13 +195,22 @@ async function runBatch(
     maxTokens: profile.maxTokensPerRequest,
   }
   let lastFailure = 'not attempted'
+  let omittedSampling = false
   for (let attempt = 1; attempt <= maxAttempts; attempt++) {
     const result = await options.endpoint.call(request, options.signal)
+    if (!result.ok && !omittedSampling && isKbfSamplingFieldRejection(result.status, result.message)) {
+      omittedSampling = true
+      delete request.temperature
+      delete request.topP
+      attempt--
+      continue
+    }
     if (result.ok) {
       return {
         batchIndex,
         probeIds: probes.map((probe) => probe.id),
         promptVariantId,
+        ...(omittedSampling ? { omittedSamplingFields: [...KBF_OPTIONAL_SAMPLING_FIELDS] } : {}),
         attempts: attempt,
         status: 'succeeded',
         failureReason: null,
