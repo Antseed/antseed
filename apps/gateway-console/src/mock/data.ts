@@ -109,6 +109,14 @@ export function seed() {
     // The newest request still waits for its spend; one an hour or so old never got any; a few were served free.
     const costPending = index === 0 || index === 2
     const servedFree = !failed && index % 13 === 4
+    // Every 11th request lists the models: no model, no seller, no tokens.
+    if (index % 11 === 3) {
+      return {
+        tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 60, keyId: k.id, keyLabel: k.label, workspaceId: k.workspaceId, memberId: k.ownerMemberId,
+        endUser: null, method: 'GET', path: '/v1/models', model: null, status: 200, sellerPeerId: null, latencyMs: 60, spent: null,
+        inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, errorCode: null, errorMessage: null, requestBody: null, responseBody: null,
+      }
+    }
     return {
       tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 900 + (index % 9) * 120, keyId: k.id, keyLabel: k.label,
       workspaceId: k.workspaceId, memberId: k.ownerMemberId, endUser: index % 4 === 0 ? `user-${index % 7}` : null, method: 'POST',

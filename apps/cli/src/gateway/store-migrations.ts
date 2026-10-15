@@ -2,6 +2,8 @@
  * Schema migrations, applied in order and tracked in `user_version`.
  * Append-only: never edit a migration that has shipped.
  */
+import { splitPinnedModelSql } from './pinned-model.js'
+
 export const MIGRATIONS: readonly string[] = [
   `
   CREATE TABLE api_keys (
@@ -297,4 +299,6 @@ export const MIGRATIONS: readonly string[] = [
   `
   ALTER TABLE gateway_requests ADD COLUMN served_free INTEGER NOT NULL DEFAULT 0;
   `,
+  // Pinned requests (`<peerId>@<model>`) recorded the pin in the model: keep the model, and the pin as the seller when none was reported.
+  [splitPinnedModelSql('gateway_requests'), splitPinnedModelSql('request_rollups'), splitPinnedModelSql('ledger_entries')].join('\n'),
 ]

@@ -17,6 +17,7 @@ import {
   type LimitPeriod,
   type SpendLimits,
 } from './limits.js'
+import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
@@ -1049,14 +1050,16 @@ export class GatewayStore {
   // ── Requests ────────────────────────────────────────────────────────────
 
   startRequest(input: GatewayRequestStart): void {
+    // A pinned model (`<peerId>@<model>`) is recorded as the model, with the pin as the seller until the buyer reports who served it.
+    const { model, peerId } = splitPinnedModel(input.model)
     this._stmt(`
-      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, started_at, workspace_id, member_id, end_user)
-      VALUES (?, ?, ?, ?, ?, ?, ?,
+      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, seller_peer_id, started_at, workspace_id, member_id, end_user)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?,
         COALESCE(?, (SELECT workspace_id FROM api_keys WHERE id = ?)),
         COALESCE(?, (SELECT owner_member_id FROM api_keys WHERE id = ?)),
         ?)
     `).run(
-      input.tag, input.keyId, input.buyerIdentity, input.method, input.path, input.model, input.startedAt,
+      input.tag, input.keyId, input.buyerIdentity, input.method, input.path, model, peerId, input.startedAt,
       input.workspaceId ?? null, input.keyId, input.memberId ?? null, input.keyId, input.endUser ?? null,
     )
   }
@@ -1367,7 +1370,7 @@ export class GatewayStore {
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
       entry.inputTokens ?? 0, entry.cachedInputTokens ?? 0, entry.outputTokens ?? 0,
       entry.note ?? null, entry.createdAt,
-      workspaceId, memberId, entry.model ?? request?.model ?? null, entry.endUser ?? request?.endUser ?? null,
+      workspaceId, memberId, splitPinnedModel(entry.model ?? request?.model ?? null).model, entry.endUser ?? request?.endUser ?? null,
     )
     return result.changes > 0
   }
