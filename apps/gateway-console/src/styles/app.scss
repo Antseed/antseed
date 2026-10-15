@@ -715,3 +715,28 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-flash { animation: gc-flash 1.6s ease-out; border-radius: var(--as-radius-lg); outline-offset: 0.625rem; }
 @keyframes gc-flash { 0%, 30% { outline: 2px solid var(--as-warning); } 100% { outline: 2px solid transparent; } }
 @media (prefers-reduced-motion: reduce) { .gc-flash { animation: none; } }
+
+/* Deposit confirmation: a document on screen, and the only thing on the page when printed. */
+.gc-doc { max-width: 46rem; padding: 2rem 2.25rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface); color: var(--as-text-primary); }
+.gc-doc__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--as-border); }
+.gc-doc__title { margin: 0; font-size: 1.375rem; font-weight: 600; }
+.gc-doc__ref { margin: 0.25rem 0 0; color: var(--as-text-secondary); font-family: var(--as-font-mono, ui-monospace, monospace); font-size: 0.8125rem; }
+.gc-doc__rows { display: flex; flex-direction: column; margin: 0; }
+.gc-doc__row { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 1rem; padding: 0.625rem 0; border-bottom: 1px solid var(--as-border);
+  dt { color: var(--as-text-secondary); font-size: 0.8125rem; }
+  dd { margin: 0; font-size: 0.875rem; overflow-wrap: anywhere; }
+}
+.gc-doc__sources { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.gc-doc__foot { margin-top: 1.25rem; color: var(--as-text-secondary); font-size: 0.75rem; line-height: 1.5; }
+@media (max-width: 640px) {
+  .gc-doc { padding: 1.25rem; }
+  .gc-doc__row { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }
+}
+@media print {
+  .gc-topbar, .gc-rail, .gc-skip, .gc-no-print, .gc-exposure, .as-toasts { display: none !important; }
+  .gc-body { display: block; padding: 0; }
+  .gc-main { padding: 0; max-width: none; }
+  .gc-doc { max-width: none; border: 0; padding: 0; background: #fff; color: #000; }
+  .gc-doc .gc-link, .gc-doc .gc-mono { color: #000; }
+  .gc-doc__row dt, .gc-doc__ref, .gc-doc__foot { color: #444; }
+}

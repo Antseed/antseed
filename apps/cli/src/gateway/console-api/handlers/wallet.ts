@@ -11,17 +11,20 @@ import { loadBuyerSigningIdentity } from '../../../buyer-identities/store.js'
 import { ChainReadCache } from '../../../proxy/chain-read-cache.js'
 import { memberWalletCredentials, sessionSignIn } from '../../auth/db.js'
 import { errorMessage } from '../../errors.js'
-import { audit, requireOrgAdmin, requireWorkspaceAccess } from '../access.js'
+import { audit, auditActor, requireOrgAdmin, requireWorkspaceAccess } from '../access.js'
 import type { ConsoleDeps } from '../deps.js'
 import { ConsoleError, type ConsoleRequest, type ConsoleRouter } from '../router.js'
 import type { WalletOwner } from '../../services/operator.js'
 import { assertSignerMatchesBuyer, resolveIdentityAddress, syncWalletCache, type BuyerAddressBook } from '../../services/wallet-address.js'
 import type { WorkspaceRecord } from '../../store.js'
-import type { Channel, ChainInfo, DepositWatch, Rewards, Wallet } from '../types.js'
+import type { Channel, ChainInfo, DepositConfirmation, DepositWatch, Rewards, Wallet } from '../types.js'
+import type { DepositRecord } from '../../store.js'
+import { usdcToDecimalString } from '../../money.js'
+import { verifyDeposit, type VerifiedDeposit } from '../../services/deposits.js'
 import { buyerJson, defaultBuyerClient, optionalBuyerJson, withIdentity, type BuyerClient } from './network-buyer.js'
 import { antseedPayBaseUrl, buildCardLink, CARD_PROVIDERS, type CardProvider } from './wallet-card-link.js'
 import { applyChannelChainState, chainInfo, mapBalances, mapChannels, mapDepositWatch, mapRewards, record, type ChannelChainState } from './wallet-mapping.js'
-import { createRewardsReader, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
+import { createRewardsReader, gatewayChainProvider, readChannelStates as readChannelStatesOnChain, REWARDS_TTL_MS } from './wallet-chain.js'
 import { registerOperatorRoutes } from './wallet-operator.js'
 
 /** Channel states are re-read from the chain at most this often for the same set of channels. */
@@ -56,6 +59,8 @@ export interface WalletRouteOverrides {
   /** On-chain records of these channels (AntseedChannels); ids that could not be read are left out. */
   readChannelStates?: (chain: AntsChainConfig, channelIds: string[]) => Promise<Map<string, ChannelChainState>>
   payBaseUrl?: () => string
+  /** A deposit to `wallet` as its transaction receipt shows it; null when the transaction credited no such deposit. */
+  verifyDeposit?: (chain: AntsChainConfig, txHash: string, wallet: string) => Promise<VerifiedDeposit | null>
   /** The buyer's current AntseedDeposits operator nonce (live read). */
   operatorNonce?: (chain: AntsChainConfig, buyer: string) => Promise<bigint>
   /** The buyer's current AntseedDeposits operator, null when none (live read). */
@@ -185,6 +190,92 @@ export function registerWalletRoutes(router: ConsoleRouter, deps: ConsoleDeps, o
     }
     const result = await buyerJson(buyer, '/_antseed/deposits/watch', { method: 'POST', body: { mode, identity: ws.buyerIdentity } })
     return mapDepositWatch({ watcher: true, status: result['status'] }, address)
+  })
+
+  // ── Deposit confirmations ──
+  const verify = overrides.verifyDeposit ?? ((chain: AntsChainConfig, txHash: string, wallet: string) => verifyDeposit(
+    gatewayChainProvider(chain) as unknown as Parameters<typeof verifyDeposit>[0],
+    {
+      depositsContractAddress: chain.depositsContractAddress ?? '',
+      depositRelayAddress: (chain as AntsChainConfig & { depositRelayAddress?: string }).depositRelayAddress,
+      usdcContractAddress: chain.usdcContractAddress ?? '',
+    },
+    txHash,
+    wallet,
+  ))
+  const confirmation = (deposit: DepositRecord, ws: WorkspaceWallet): DepositConfirmation => ({
+    txHash: deposit.txHash,
+    reference: `DEP-${deposit.txHash.slice(2, 10).toUpperCase()}`,
+    kind: deposit.kind,
+    wallet: deposit.wallet,
+    workspaceId: ws.record.id,
+    workspaceName: ws.record.name,
+    sent: usdcToDecimalString(deposit.creditedUsdc + deposit.feeUsdc),
+    credited: usdcToDecimalString(deposit.creditedUsdc),
+    fee: usdcToDecimalString(deposit.feeUsdc),
+    blockNumber: deposit.blockNumber,
+    time: deposit.blockTime,
+    sources: deposit.sources.map((source) => ({ from: source.from, amount: usdcToDecimalString(source.amountUsdc), txHash: source.txHash, minted: /^0x0{40}$/i.test(source.from) })),
+    approval: deposit.approval ? { by: deposit.approval.byLabel, at: deposit.approval.at, note: deposit.approval.note } : null,
+  })
+  /** Verifies and stores one deposit of this workspace's wallet; null when the transaction is not one. */
+  const recordDeposit = async (ws: WorkspaceWallet, txHash: string): Promise<DepositRecord | null> => {
+    const known = deps.store.getDeposit(txHash)
+    if (known) return known.workspaceId === ws.record.id ? known : null
+    const address = await addressOf(ws)
+    if (!address) throw new ConsoleError(409, 'wallet_unavailable', 'This workspace has no wallet address yet.')
+    const verified = await verify(await resolveChain(), txHash, address)
+    if (!verified) return null
+    return deps.store.insertDeposit({ ...verified, workspaceId: ws.record.id })
+  }
+  const TX_HASH_RE = /^0x[0-9a-fA-F]{64}$/
+  const depositOf = (ws: WorkspaceWallet, request: ConsoleRequest): DepositRecord => {
+    const found = deps.store.getDeposit(request.params['tx'] ?? '')
+    if (!found || found.workspaceId !== ws.record.id) throw new ConsoleError(404, 'not_found', 'Deposit not found.')
+    return found
+  }
+
+  router.add('GET', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation[]> => {
+    const ws = workspace(request, 'admin')
+    // New deposits the buyer recorded are verified on-chain before they are listed (a few per request).
+    const history = await optionalBuyerJson(buyer, withIdentity('/_antseed/deposits/history', ws.buyerIdentity))
+    const recorded = Array.isArray(history?.['deposits']) ? history['deposits'] as Array<Record<string, unknown>> : []
+    const fresh = recorded.map((entry) => String(entry['txHash'] ?? '')).filter((hash) => TX_HASH_RE.test(hash) && !deps.store.getDeposit(hash))
+    for (const txHash of fresh.slice(0, 10)) {
+      await recordDeposit(ws, txHash).catch((err: unknown) => deps.log(`console: deposit ${txHash} not verified yet: ${errorMessage(err)}`))
+    }
+    return deps.store.listDeposits(ws.record.id).map((deposit) => confirmation(deposit, ws))
+  })
+
+  router.add('POST', '/workspaces/:id/deposits', async (request): Promise<DepositConfirmation> => {
+    const ws = workspace(request, 'admin')
+    const txHash = String(record(request.body)['txHash'] ?? '').trim()
+    if (!TX_HASH_RE.test(txHash)) throw new ConsoleError(400, 'invalid_tx_hash', 'Paste the deposit transaction hash (0x followed by 64 hex characters).')
+    const deposit = await recordDeposit(ws, txHash)
+    if (!deposit) throw new ConsoleError(404, 'not_a_deposit', `That transaction did not credit a deposit to the ${ws.record.name} wallet.`)
+    audit(deps, request, 'deposit.add', { kind: 'workspace', id: ws.record.id, label: ws.record.name }, { txHash: deposit.txHash })
+    return confirmation(deposit, ws)
+  })
+
+  router.add('PUT', '/workspaces/:id/deposits/:tx/approval', async (request): Promise<DepositConfirmation> => {
+    const ws = workspace(request, 'admin')
+    const deposit = depositOf(ws, request)
+    const noteRaw = record(request.body)['note']
+    const note = typeof noteRaw === 'string' && noteRaw.trim() ? noteRaw.trim().slice(0, 500) : null
+    const actor = auditActor(deps.store, request.principal)
+    const member = request.principal?.kind === 'member' ? deps.store.getMember(request.principal.memberId) : null
+    const byLabel = member ? (member.email ? `${member.label} (${member.email})` : member.label) : actor.label ?? actor.kind
+    const updated = deps.store.setDepositApproval(deposit.txHash, { byId: actor.id, byLabel, note })!
+    audit(deps, request, 'deposit.approve', { kind: 'workspace', id: ws.record.id, label: ws.record.name }, { txHash: deposit.txHash, ...(note ? { note } : {}) })
+    return confirmation(updated, ws)
+  })
+
+  router.add('DELETE', '/workspaces/:id/deposits/:tx/approval', async (request): Promise<DepositConfirmation> => {
+    const ws = workspace(request, 'admin')
+    const deposit = depositOf(ws, request)
+    const updated = deps.store.setDepositApproval(deposit.txHash, null)!
+    audit(deps, request, 'deposit.unapprove', { kind: 'workspace', id: ws.record.id, label: ws.record.name }, { txHash: deposit.txHash })
+    return confirmation(updated, ws)
   })
 
   registerOperatorRoutes(router, deps, {
