@@ -1,6 +1,6 @@
 import { afterEach, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { falAppId } from './index.js';
+import plugin, { falAppId, falInputParameters } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -19,6 +19,17 @@ const retrieve = (body: object = { model: MODEL, request_id: 'req-1' }) =>
 const stream = (provider: Provider, req = retrieve(), callbacks: Partial<ProviderStreamCallbacks> = {}) =>
   provider.handleRequestStream!(req, { signal: new AbortController().signal, onResponseStart() {}, onResponseChunk() {}, ...callbacks });
 const parse = (body: Uint8Array) => JSON.parse(Buffer.from(body).toString());
+
+const V3 = 'fal-ai/kling-video/v3/pro/image-to-video';
+const v3Config = {
+  ...config,
+  ANTSEED_ALLOWED_SERVICES: V3,
+  ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({ [V3]: { 'fal-video': { version: 1, components: [{ unit: 'video_seconds', priceUsd: 0.1 }] } } }),
+};
+const schema = (endpointId: string, properties: Record<string, object>) => ({
+  paths: { [`/${endpointId}`]: { post: { requestBody: { content: { 'application/json': { schema: { $ref: '#/components/schemas/Input' } } } } } } },
+  components: { schemas: { Input: { properties } } },
+});
 
 it('derives fal app IDs for queue status and result URLs', () => {
   expect(falAppId(MODEL)).toBe('fal-ai/kling-video');
@@ -54,6 +65,42 @@ it('submits the input to the fal queue with seller auth and hides fal URLs', asy
   expect(init).toMatchObject({ method: 'POST', redirect: 'error', headers: { authorization: 'Key seller-secret' } });
   expect(Object.keys(init.headers).some((key: string) => key.startsWith('x-antseed-'))).toBe(false);
   expect(parse(init.body)).toEqual(input);
+});
+
+it('reads the input field names from the fal schema', () => {
+  expect(falInputParameters(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} }), V3)).toEqual(['end_image_url', 'prompt', 'start_image_url']);
+  expect(falInputParameters(schema('fal-ai/other', { prompt: {} }), V3)).toBeNull();
+  expect(falInputParameters(schema(V3, { Prompt: {} }), V3)).toBeNull();
+  expect(falInputParameters(schema(V3, Object.fromEntries(Array.from({ length: 33 }, (_, i) => [`field_${i}`, {}]))), V3)).toBeNull();
+  expect(falInputParameters(null, V3)).toBeNull();
+});
+
+it('advertises each endpoint\'s fal input fields and forwards the body unchanged', async () => {
+  const fetchMock = vi.fn()
+    .mockResolvedValueOnce(Response.json(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} })))
+    .mockResolvedValue(Response.json({ request_id: 'req-1' }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(v3Config) as Provider;
+  expect(provider.serviceCapabilities?.[V3]?.supportedParameters).toBeUndefined();
+  await provider.init!();
+  expect(fetchMock.mock.calls[0]![0]).toBe(`https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=${encodeURIComponent(V3)}`);
+  expect(fetchMock.mock.calls[0]![1].headers).toBeUndefined();
+  expect(provider.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'], supportedParameters: ['end_image_url', 'prompt', 'start_image_url'] });
+  const input = { prompt: 'cat', image_url: 'first', start_image_url: 'start' };
+  await provider.handleRequest(request('/fal/v1/video/queue', { model: V3, ...input }));
+  expect(parse(fetchMock.mock.calls[1]![1].body)).toEqual(input);
+});
+
+it('keeps configured parameters and starts without them when the fal schema is unavailable', async () => {
+  const fetchMock = vi.fn().mockRejectedValue(new Error('offline'));
+  vi.stubGlobal('fetch', fetchMock);
+  const offline = plugin.createProvider(v3Config) as Provider;
+  await offline.init!();
+  expect(offline.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'] });
+  const configured = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { supportedParameters: ['prompt', 'start_image_url'] } }) }) as Provider;
+  await configured.init!();
+  expect(configured.serviceCapabilities?.[V3]?.supportedParameters).toEqual(['prompt', 'start_image_url']);
+  expect(fetchMock).toHaveBeenCalledTimes(1);
 });
 
 it('passes fal validation errors back without accepting a job', async () => {

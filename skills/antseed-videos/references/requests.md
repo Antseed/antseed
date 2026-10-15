@@ -131,22 +131,35 @@ Send only the frame inputs the seller advertises.
 
 ## Create once
 
-Check for a job file first. If `<output>.job.json` exists, go to [Wait and save](#wait-and-save) instead. Set `protocol` from the chosen [Price](#price) entry and `route_model` to `<peerId>@<model>`. Write the prompt to `prompt.txt` first. Set `aspect_ratio` to the frame's ratio unless the model note in [prompting.md](prompting.md) says not to send it; some sellers fail the job without it even when they list no ratios. Set `audio=false` only when the user wants a silent video and the seller advertises `audio`; never send `audio=true`, because many models make sound by default and fail the job when `audio` is set. Before an approved retry after a failed job, rename `<name>.job.json` to `<name>.failed.job.json`.
+Check for a job file first. If `<output>.job.json` exists, go to [Wait and save](#wait-and-save) instead. Set `protocol` and `peer_id` from the chosen [Price](#price) entry and `route_model` to `<peerId>@<model>`. Write the prompt to `prompt.txt` first. Set `aspect_ratio` to the frame's ratio, and `audio=false` only when the user wants a silent video; never send `audio=true`, because many models make sound by default and fail the job when `audio` is set. Before an approved retry after a failed job, rename `<name>.job.json` to `<name>.failed.job.json`.
 
-- **`venice-video`**: duration is a string with an `s` suffix (`"5s"`); frames are `image_url` and `end_image_url`.
-- **`fal-video`**: duration is a plain string (`"5"`); check the frame field names in fal's schema first, because some models (Kling V3, Wan 3.0) require `start_image_url` (set `first_field`):
+Field names come from the upstream API and differ by model (fal's Kling V3 takes `start_image_url`, its Seedance `image_url`). Sellers list the fields each model takes in `supportedParameters`. The block below picks the frame and audio field names from that list and drops `aspect_ratio` or `audio` when the seller lists fields without them. When the seller lists nothing, it uses `image_url`, `end_image_url`, and `audio` (`generate_audio` on fal), sends `aspect_ratio` unless the model note in [prompting.md](prompting.md) says not to (some sellers fail the job without it even when they list no ratios), and sends `audio=false` only if the seller advertises `audio`.
 
 ```bash
-curl -sS "https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=$model" | jq -c '[.components.schemas[] | select(.properties.prompt) | {required, fields: [.properties | keys[] | select(test("image|audio|aspect"))]}]'
+read -r first_field last_field audio_field send_ratio < <(jq -r --arg peer "$peer_id" '
+  (.peers[] | select(.peerId == $peer)) as $o | ($o.capabilities.supportedParameters // []) as $p
+  | def pick(names): (names | map(select(. as $n | $p | index($n))) | first) // names[0];
+    [pick(["image_url", "start_image_url", "first_frame_url", "first_image_url"]),
+     pick(["end_image_url", "tail_image_url", "last_frame_url"]),
+     (if ($p | length) > 0 then pick(["audio", "generate_audio"]) | select(. as $n | $p | index($n)) // "-"
+      elif $o.capabilities.video.audio == true then (if $o.protocol == "fal-video" then "generate_audio" else "audio" end)
+      else "-" end),
+     (if ($p | length) == 0 then "?" elif $p | index("aspect_ratio") then "yes" else "no" end)] | join(" ")' "$model_file")
+[ "$audio_field" = - ] && audio=""
+[ "$send_ratio" = no ] && aspect_ratio=""
+echo "fields: first=$first_field last=$last_field audio=$audio_field aspect_ratio=$send_ratio"
 ```
 
-fal names its audio switch `generate_audio`; the block uses it for fal.
+`send_ratio=?` means the seller lists no fields: then follow the model note on `aspect_ratio`.
+
+- **`venice-video`**: duration is a string with an `s` suffix (`"5s"`).
+- **`fal-video`**: duration is a plain string (`"5"`).
 
 ```bash
 output="${output:-generated-video.mp4}"; job_file="${output%.*}.job.json"
 case "$protocol" in
-  venice-video) queue_path=/api/v1/video/queue; id_field=queue_id; dur="${duration}s"; audio_field=audio ;;
-  fal-video)    queue_path=/fal/v1/video/queue; id_field=request_id; dur="$duration"; audio_field=generate_audio ;;
+  venice-video) queue_path=/api/v1/video/queue; id_field=queue_id; dur="${duration}s" ;;
+  fal-video)    queue_path=/fal/v1/video/queue; id_field=request_id; dur="$duration" ;;
 esac
 if [ -e "$job_file" ]; then
   echo "job exists: $job_file (resume it; do not create again)"
@@ -154,11 +167,11 @@ else
   body="$(mktemp)"; resp="$(mktemp)"
   jq -n --arg model "$route_model" --rawfile prompt prompt.txt --arg duration "$dur" \
     --arg resolution "${resolution:-}" --arg aspect_ratio "${aspect_ratio:-}" --arg audio "${audio:-}" --arg audio_field "$audio_field" \
-    --arg first_field "${first_field:-image_url}" \
+    --arg first_field "${first_field:-image_url}" --arg last_field "${last_field:-end_image_url}" \
     --rawfile first "${first_url:-/dev/null}" --rawfile last "${last_url:-/dev/null}" '
     {model: $model, prompt: ($prompt | rtrimstr("\n")), duration: $duration}
     + (if $first != "" then {($first_field): $first} else {} end)
-    + (if $last != "" then {end_image_url: $last} else {} end)
+    + (if $last != "" then {($last_field): $last} else {} end)
     + (if $resolution != "" then {resolution: $resolution} else {} end)
     + (if $aspect_ratio != "" then {aspect_ratio: $aspect_ratio} else {} end)
     + (if $audio != "" then {($audio_field): ($audio == "true")} else {} end)' > "$body"

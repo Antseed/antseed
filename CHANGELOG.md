@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Video sellers announce the fields each model takes as `supportedParameters` at startup. fal sellers read them from fal's input schema for the endpoint and still pass the body to fal unchanged. Venice sellers derive them from Venice's model list and their announced frame inputs. The `antseed-videos` skill picks the frame and audio field names (for example `start_image_url` for fal's Kling V3 and Wan 3.0) and whether to send `aspect_ratio` from what the chosen seller announces, so buyers no longer read fal's schema from fal. Sellers that announce nothing get the previous behavior.
 - CLI gateway: video models can be used through the gateway. It now passes the buyer's native video job routes (`/api/v1/video/queue` and `/retrieve`, `/fal/v1/video/queue` and `/retrieve`) to the buyer, and the video's spend counts against the key's limits. Before, these returned `404`.
 
 ### Added

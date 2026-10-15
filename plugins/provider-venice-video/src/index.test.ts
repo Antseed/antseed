@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin from './index.js';
+import plugin, { veniceInputParameters } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -28,6 +28,47 @@ it('advertises Venice video services and requires seller configuration', () => {
   const provider = plugin.createProvider(config) as Provider;
   expect(provider.serviceApiProtocols).toEqual({ 'wan-2.5': ['venice-video'] });
   expect(provider.serviceCapabilities?.['wan-2.5']).toMatchObject({ outputs: ['video'] });
+});
+
+const veniceModel = (id: string, constraints: Record<string, unknown>) => ({ id, model_spec: { constraints } });
+
+it('derives each model\'s queue fields from Venice constraints and the announced frames', () => {
+  const imageToVideo = veniceModel('seedance', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_configurable: true });
+  expect(veniceInputParameters(imageToVideo)).toEqual(['audio', 'duration', 'image_url', 'prompt', 'resolution']);
+  expect(veniceInputParameters(imageToVideo, ['first_frame', 'last_frame'])).toEqual(['audio', 'duration', 'end_image_url', 'image_url', 'prompt', 'resolution']);
+  expect(veniceInputParameters(veniceModel('wan', { model_type: 'text-to-video', resolutions: ['720p'], aspect_ratios: ['16:9'], audio_configurable: false }), []))
+    .toEqual(['aspect_ratio', 'duration', 'prompt', 'resolution']);
+  expect(veniceInputParameters(undefined)).toBeNull();
+});
+
+it('announces queue fields from the Venice model list and keeps configured ones', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(Response.json({ data: [
+    veniceModel('wan-2.5', { model_type: 'image-to-video', resolutions: ['720p'], aspect_ratios: [], audio_configurable: false }),
+  ] }));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider({ ...config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { video: { inputs: ['first_frame', 'last_frame'] } } }) }) as Provider;
+  await provider.init!();
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(url).toBe('https://api.venice.ai/api/v1/models?type=video');
+  expect(init).toMatchObject({ redirect: 'error', headers: { authorization: 'Bearer seller-secret' } });
+  expect(provider.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'end_image_url', 'image_url', 'prompt', 'resolution']);
+
+  fetchMock.mockClear();
+  const configured = plugin.createProvider({ ...config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { supportedParameters: ['prompt'] } }) }) as Provider;
+  await configured.init!();
+  expect(fetchMock).not.toHaveBeenCalled();
+  expect(configured.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['prompt']);
+});
+
+it('starts without queue fields when the Venice model list is unavailable or lacks the model', async () => {
+  vi.stubGlobal('fetch', vi.fn().mockRejectedValue(new Error('offline')));
+  const offline = plugin.createProvider(config) as Provider;
+  await offline.init!();
+  expect(offline.serviceCapabilities?.['wan-2.5']).toEqual({ outputs: ['video'] });
+  vi.stubGlobal('fetch', vi.fn().mockResolvedValue(Response.json({ data: [] })));
+  const missing = plugin.createProvider(config) as Provider;
+  await missing.init!();
+  expect(missing.serviceCapabilities?.['wan-2.5']).toEqual({ outputs: ['video'] });
 });
 
 it('relays queue bodies without the AntSeed service field, with seller auth and without AntSeed headers', async () => {

@@ -1,5 +1,5 @@
-import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities } from '@antseed/node';
+import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
   parseCsv,
@@ -11,6 +11,7 @@ import {
 } from '@antseed/provider-core';
 
 export const FAL_DEFAULT_BASE_URL = 'https://queue.fal.run';
+export const FAL_SCHEMA_URL = 'https://fal.ai/api/openapi/queue/openapi.json';
 
 const PROTOCOL = 'fal-video';
 const MAX_JSON_BYTES = 1024 * 1024;
@@ -30,6 +31,17 @@ function json(request: SerializedHttpRequest, statusCode: number, body: Record<s
 async function readJson(response: Response): Promise<Record<string, unknown> | null> {
   const body = Buffer.from(await response.arrayBuffer());
   return body.length <= MAX_JSON_BYTES ? parseJsonObject(body) : null;
+}
+
+/** fal input field names from an endpoint's OpenAPI schema, or null when they cannot be announced as-is. */
+export function falInputParameters(schema: Record<string, unknown> | null, endpointId: string): string[] | null {
+  const paths = schema?.paths as Record<string, any> | undefined;
+  const ref = paths?.[`/${endpointId}`]?.post?.requestBody?.content?.['application/json']?.schema?.$ref;
+  if (typeof ref !== 'string') return null;
+  const properties = (schema?.components as Record<string, any> | undefined)?.schemas?.[ref.split('/').pop()!]?.properties;
+  if (!properties || typeof properties !== 'object') return null;
+  const parameters = Object.keys(properties).sort();
+  return parameters.length > 0 && validateServiceCapabilityFields({ supportedParameters: parameters }).length === 0 ? parameters : null;
 }
 
 /** fal's queue status and result URLs use only `owner/alias`, not the endpoint's sub-path. */
@@ -72,6 +84,22 @@ const plugin: AntseedProviderPlugin = {
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const authorization = `Key ${apiKey}`;
+    const serviceCapabilities: Record<string, ServiceCapabilities> = Object.fromEntries(
+      services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }]),
+    );
+
+    // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
+    const init = async () => {
+      await Promise.all(services.filter(service => !serviceCapabilities[service]!.supportedParameters).map(async service => {
+        try {
+          const response = await fetch(`${FAL_SCHEMA_URL}?endpoint_id=${encodeURIComponent(service)}`, { redirect: 'error', signal: AbortSignal.timeout(10_000) });
+          const parameters = response.ok ? falInputParameters(await readJson(response), service) : null;
+          if (parameters) serviceCapabilities[service]!.supportedParameters = parameters;
+        } catch {
+          // Unknown input fields: buyers fall back to the common names.
+        }
+      }));
+    };
 
     const route = (request: SerializedHttpRequest) => {
       const videoRoute = nativeVideoRoute(request);
@@ -132,9 +160,10 @@ const plugin: AntseedProviderPlugin = {
       pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
       serviceApiProtocols: Object.fromEntries(services.map(service => [service, [PROTOCOL]])),
       serviceUnitBillingModels,
-      serviceCapabilities: Object.fromEntries(services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }])),
+      serviceCapabilities,
       maxConcurrency,
       getCapacity: () => ({ current: active, max: maxConcurrency }),
+      init,
       handleRequest,
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);

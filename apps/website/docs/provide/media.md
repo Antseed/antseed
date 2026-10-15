@@ -96,6 +96,8 @@ antseed config seller add-service video <video-model> \
 
 The service ID is sent unchanged as `model` to your API, so don't set `--upstream`. A `status` of `FAILED`, `ERROR` or `CANCELLED` ends the job unpaid.
 
+At startup the plugin also reads `GET /api/v1/models?type=video` and announces the queue fields each model takes as `supportedParameters`, so buyers send only those. If your server has no model list, set `supportedParameters` in `--capabilities` yourself, for example `["duration","image_url","prompt","resolution"]`.
+
 ### fal.ai models
 
 The `fal-video` plugin relays fal's queue API. The service ID must be the fal endpoint ID (at most 64 characters), and every service needs `fal-video` pricing:
@@ -107,6 +109,8 @@ antseed config seller add-provider fal --plugin fal-video
 antseed config seller add-service fal <fal-endpoint-id> \
   --unit-billing-models '{"fal-video":{"version":1,"components":[{"unit":"video_seconds","priceUsd":0.1}]}}'
 ```
+
+Requests are passed to fal unchanged. At startup the seller announces each endpoint's input field names from fal's schema as `supportedParameters`, so buyers can use the model's own field names (for example `start_image_url` for Kling V3).
 
 ### Video pricing
 
