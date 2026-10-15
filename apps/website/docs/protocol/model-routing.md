@@ -19,7 +19,7 @@ A [router plugin](/docs/router-api) is local buyer policy. A routing service is 
 
 | Endpoint | Cost | Purpose |
 | --- | --- | --- |
-| `GET /v1/routing/models` | Free, rate limited | Models the router can score |
+| `GET /v1/routing/models` | Free; the router limits its own list | Models the router can score |
 | `POST /v1/routing/rank` | One completed request | Ranks the buyer's allowed candidates for one user turn |
 
 A seller advertises a routing service with the `model-routing` API protocol and offers **at most one** routing service. Buyers ignore peers that advertise more than one.

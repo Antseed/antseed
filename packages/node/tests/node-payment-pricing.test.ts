@@ -71,15 +71,14 @@ describe('completed-request seller payments', () => {
     expect(() => assertSingleRoutingService([routing('alpha', 'route')])).not.toThrow();
     expect(() => assertSingleRoutingService([routing('alpha', 'route'), routing('beta', 'other')])).toThrow('at most one model-routing service');
   });
-  it('rate limits routing model-list requests with an IRP 503', async () => {
+  it('does not rate limit routing model-list requests; the router limits its own list', async () => {
     const harness = setup();
     const statuses: number[] = [];
-    for (let index = 0; index < 11; index += 1) {
+    for (let index = 0; index < 12; index += 1) {
       statuses.push((await harness.send(`models-${index}`, { method: 'GET', path: '/v1/routing/models', headers: routingHeaders, body: new Uint8Array() })).statusCode);
     }
-    expect(statuses.slice(0, 10).every(status => status === 200)).toBe(true);
-    expect(statuses[10]).toBe(503);
-    expect(harness.provider.handleRequest).toHaveBeenCalledTimes(10);
+    expect(statuses.every(status => status === 200)).toBe(true);
+    expect(harness.provider.handleRequest).toHaveBeenCalledTimes(12);
   });
   it('negotiates once before execution and allows retrying that request ID', async () => {
     let hasSession = false;
