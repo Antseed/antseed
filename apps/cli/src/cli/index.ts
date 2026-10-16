@@ -8,11 +8,10 @@ loadEnvFromFiles();
 
 const program = createProgram();
 
-try {
-  await program.parseAsync(process.argv);
-} catch (err) {
+// No top-level await: the desktop app bundles this entry as CommonJS.
+program.parseAsync(process.argv).catch((err: unknown) => {
   console.error(chalk.red(`Error: ${err instanceof Error ? err.message : String(err)}`));
   // Exit like the unhandled rejection this replaces: a failed command may
   // still hold servers or timers open.
   process.exit(1);
-}
+});
