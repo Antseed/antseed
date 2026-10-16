@@ -487,6 +487,13 @@ export function isModelNotFoundResponse(response: SerializedHttpResponse): boole
  * liveness (`lastReachedAt`) even if the DHT record is older.
  */
 const CARRY_FORWARD_TTL_MS = 2 * 60 * 60_000
+const PEER_CATALOG_FIELDS = [
+  'providerPricing',
+  'providerServiceCategories',
+  'providerServiceApiProtocols',
+  'providerServiceUnitBillingModels',
+  'providerServiceCapabilities',
+] as const satisfies readonly (keyof PeerInfo)[]
 /**
  * Requests kept in the spend-attribution map. Entries outlive their request on
  * purpose (a seller-initiated auth can land after the response), so this is
@@ -2185,6 +2192,12 @@ export class BuyerProxy {
         ...prev,
         ...peer,
         ...(metadata ? { metadata } : {}),
+      }
+      // The seller's announced catalog comes only from this scan: a seller
+      // that stopped advertising a service (for example after failed health
+      // checks) leaves these fields out, and the cached copy must not survive.
+      for (const field of PEER_CATALOG_FIELDS) {
+        if (peer[field] === undefined) delete mergedPeer[field]
       }
       if (prev.lastReachedAt && (!peer.lastReachedAt || prev.lastReachedAt > peer.lastReachedAt)) {
         mergedPeer.lastReachedAt = prev.lastReachedAt
