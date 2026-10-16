@@ -13,6 +13,32 @@ This project uses selective package publishing. Each release entry lists the pub
 - Model routing billing: a routing service is paid for a ranking only when the buyer can use it. Rankings with no valid entry naming a candidate the request sent (for example `ranked: [null]`, or only unknown candidate ids) and responses with an invalid `routing.ranking` envelope now bill zero `completed_requests`, on both buyer and seller.
 - CLI buyer: in a chat that has its own routing service selected, `"model": "antseed"` now uses that router and its tradeoff, even when the buyer's default route is pinned to a different router.
 - CLI buyer: spend on a routing service, both the ranking fee and the inference it picks, now counts against the gateway API key that made the request, and the ranking fee is paid from that key's buyer wallet instead of the default one. Router pins also work through the `antseed` alias and through a chat pinned to a router; a chat whose router was chosen automatically is still re-ranked every turn.
+- CLI buyer: **Lowest latency** routing now ranks sellers by time to first token alone, measured on streamed answers. It mixed that with the full duration of non-streamed answers, so a seller asked for long answers looked slow. The buyer also measures each seller's generation speed (output tokens per second after the first token) and shows both in the route preview.
+- CLI buyer: a video job created with a workspace wallet (`x-antseed-buyer-identity`, as the gateway sends for workspace keys) is now retrieved with that same wallet. Retrieve used the default wallet, so the seller answered "Video job not found" and the video could not be downloaded.
+- CLI gateway: video models can be used through the gateway. It now passes the buyer's native video job routes (`/api/v1/video/queue` and `/retrieve`, `/fal/v1/video/queue` and `/retrieve`) to the buyer, and the video's spend counts against the key's limits. Before, these returned `404`.
+
+### Added
+
+- CLI gateway console: **Deposits** on Wallet & Funding lists every deposit credited to a workspace, checked against its transaction on Base, with where the USDC came from. Workspace admins can **Approve** a deposit, which records who approved it, when, and an optional note, and is audited. Each deposit has a printable confirmation to save as a PDF for the books. Deposits made before this release can be added by their transaction. The buyer now records each credited deposit, and its control API adds `GET /_antseed/deposits/history`.
+
+### Fixed
+
+- CLI gateway console: **Logs** and **Activity** show the model as the model and the seller by name. A request that pinned a seller (`<peerId>@<model>`) is recorded as its model with that seller, so it no longer shows the peer id as the model or counts as a separate model in Activity. Requests recorded before are corrected when the gateway upgrades. The Seller column is always shown, and model-list requests show their endpoint instead of a model.
+
+### Changed
+
+- CLI gateway console chat: one slim bar at the top shows the model, **Auto** or the pinned seller, and what this chat has cost. Prices and why Auto picked a seller (its ranking, the minimum trust, a cheaper seller it skips and why) show on hover. Each answer has one quiet line with the seller, its trust and the cost, plus **Pin** and **Try another seller**, which answers again with the next-ranked seller. Web, Files and Shell are switches in the message box, and the gateway only gives the agent the tools that are switched on. Shell, for organization admins, starts off. The help text, the paying key and the seller colour dots no longer take space above the chat.
+- CLI gateway console: the gateway's version shows at the foot of the navigation, instead of the dot ant.
+
+### Fixed
+
+- CLI gateway console: after a payment, **Wallet & Funding** shows **Pending** while the USDC moves into the available balance, checks again every few seconds, and says **Payment received** when it lands. Before, the balance stayed at $0.00 until the page was reloaded.
+- CLI gateway console: a routing policy's minimum trust (and reputation) slider can no longer go below the floor set in the buyer config. It says it is locked there, with a **Change** link to **Settings → Buyer** for admins. Before, it could be set lower with no effect, so a seller without a trust score, such as a new TEE seller, stayed filtered out.
+- Gateway: when a spend limit refuses a request before it is fully spent, the error now says how much is left and that requests still running or not yet charged hold part of it, instead of saying the limit was reached. The error's `limit` object adds `remaining_usd` and `held_usd`.
+- CLI gateway console: the Chat page opens about twice as fast. Its code now downloads while the console checks your sign-in instead of after, and the Markdown and code highlighting for answers load separately. Answers show as plain text until those arrive.
+- CLI gateway console: while an answer is in progress, the chat shows **Thinking…** whenever nothing else is moving: before the first part arrives, and between steps, such as after a tool call finishes and before the model continues. Before, the chat sat still for a few seconds.
+- CLI gateway console: on phones the web chat now stays put like a messaging app. The page no longer scrolls, the top bar stays at the top, only the conversation scrolls, and the message box stays at the bottom of the screen, above the on-screen keyboard.
+- CLI gateway console: the web chat on phones is now a clean, full-height chat. It has one slim row (saved chats, the model, a new chat button), the seller picker sits in the composer, and the explanations and the gateway URL strip are left out. Saved conversations, which phones could not reach before, open in a drawer, and the suggested prompts wrap instead of running off screen. On every screen size the chat now reaches the bottom of the window instead of leaving a gap below the composer.
 - Website: the homepage "Tokens processed" stat now counts free-tier tokens as well as paid ones, from Antscan's new `/api/totals` endpoint, matching the explorer. It falls back to paid tokens only if that endpoint is unavailable.
 
 ### Documentation

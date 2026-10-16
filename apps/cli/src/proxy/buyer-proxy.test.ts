@@ -1492,6 +1492,33 @@ test('native video resolves antseed and peer-pinned models like images', async (
   }
 })
 
+test('native video retrieves use the buyer identity that created the job', async () => {
+  const peer = makePeer('a', ['venice'])
+  peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  ;(proxy as any)._persistResourceRoutes = async () => {}
+  ;(proxy as any)._mayUseBuyerIdentity = () => true
+  ;(proxy as any)._resolveBuyerIdentity = async (name: string | undefined) => name ?? null
+  const identities: Array<{ path: string; identity: unknown }> = []
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest, options: { buyerIdentity?: string }) => {
+    identities.push({ path: request.path, identity: options?.buyerIdentity })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'job' })) }
+  }
+  ;(proxy as any)._node.sendRequestStream = async (_peer: PeerInfo, request: SerializedHttpRequest, _callbacks: unknown, options: { buyerIdentity?: string }) => {
+    identities.push({ path: request.path, identity: options?.buyerIdentity })
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ status: 'PROCESSING' })) }
+  }
+  const headers = { 'x-antseed-buyer-identity': 'team-a' }
+  const queued = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'video-model', prompt: 'cat', duration: '5s' }, headers }))
+  assert.equal(queued.statusCode, 200, queued.body)
+  const status = await invokeProxy(proxy, makeProxyRequest({ method: 'POST', path: '/api/v1/video/retrieve', body: { model: 'video-model', queue_id: 'job' }, headers }))
+  assert.equal(status.statusCode, 200, status.body)
+  assert.deepEqual(identities, [
+    { path: '/api/v1/video/queue', identity: 'team-a' },
+    { path: '/api/v1/video/retrieve', identity: 'team-a' },
+  ])
+})
+
 test('native resource follow-ups fail when the recorded provider loses support instead of switching providers', async () => {
   for (const provider of ['venice'] as const) {
     const protocol = 'venice-video'

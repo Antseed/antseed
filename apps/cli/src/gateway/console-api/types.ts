@@ -398,6 +398,32 @@ export interface OperatorAuth {
   signature: string
 }
 
+// Workspace admins: deposits credited to the workspace wallet, with who approved each (deposit confirmations).
+// GET    /workspaces/:id/deposits                 → DepositConfirmation[] (newest first; new ones the buyer recorded are verified first)
+// POST   /workspaces/:id/deposits { txHash }      → DepositConfirmation (adds a deposit by its transaction, e.g. one made before this was recorded)
+// PUT    /workspaces/:id/deposits/:tx/approval { note? } → DepositConfirmation
+// DELETE /workspaces/:id/deposits/:tx/approval   → DepositConfirmation
+export interface DepositConfirmation {
+  txHash: string
+  /** A short reference for the confirmation, from the transaction hash. */
+  reference: string
+  /** relay: USDC sent to the wallet and swept in by a relayer, which keeps a fixed fee; direct: deposited by a connected wallet. */
+  kind: 'relay' | 'direct'
+  wallet: string
+  workspaceId: string
+  workspaceName: string
+  /** What left the payer's side: credited + fee. */
+  sent: Usdc
+  credited: Usdc
+  fee: Usdc
+  blockNumber: number
+  /** Epoch ms of the block. */
+  time: number
+  /** Where the USDC came from; empty when the chain could not be searched. `minted`: the USDC issuer minted it into the wallet (a card purchase). */
+  sources: Array<{ from: string; amount: Usdc; txHash: string; minted: boolean }>
+  approval: { by: string; at: number; note: string | null } | null
+}
+
 export interface DepositWatch {
   mode: 'active' | 'background' | 'off'
   status: string

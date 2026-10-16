@@ -44,11 +44,15 @@ The gateway answers `402 Payment Required` with the code `spend_limit_reached`. 
       "period": "weekly",
       "limit_usd": "50.000000",
       "spent_usd": "50.112000",
+      "remaining_usd": "0.000000",
+      "held_usd": "0.000000",
       "resets_at": "2026-10-19T00:00:00.000Z"
     }
   }
 }
 ```
+
+`limit.remaining_usd` is what is left of the limit and `limit.held_usd` what requests still running (or not yet charged) may use. Each running request holds up to the most one request may cost, so a small limit can refuse a request before it is fully spent. The message then says how much is left.
 
 Refused requests are not added to the request log.
 

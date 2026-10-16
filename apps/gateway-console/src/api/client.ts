@@ -1,5 +1,5 @@
 import type {
-  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositWatch, Enrollment,
+  AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
   GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
@@ -204,6 +204,13 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       cardLink: (workspaceId: string, amountUsd: number, provider: 'crossmint' | 'stripe') =>
         post<{ url: string }>(`/workspaces/${id(workspaceId)}/wallet/card-link`, { amountUsd, provider }),
       watch: (workspaceId: string, mode: 'active' | 'background') => post<DepositWatch>(`/workspaces/${id(workspaceId)}/wallet/watch`, { mode }),
+      /** Deposits credited to the workspace wallet, with their approval (deposit confirmations). */
+      deposits: (workspaceId: string) => get<DepositConfirmation[]>(`/workspaces/${id(workspaceId)}/deposits`),
+      addDeposit: (workspaceId: string, txHash: string) => post<DepositConfirmation>(`/workspaces/${id(workspaceId)}/deposits`, { txHash }),
+      approveDeposit: (workspaceId: string, txHash: string, note: string | null) =>
+        put<DepositConfirmation>(`/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`, { note }),
+      unapproveDeposit: (workspaceId: string, txHash: string) =>
+        request<DepositConfirmation>('DELETE', `/workspaces/${id(workspaceId)}/deposits/${id(txHash)}/approval`),
       /** The authorized wallet (AntseedDeposits operator); `fresh` re-reads the chain (the gateway throttles it). */
       operator: (workspaceId: string, fresh = false) =>
         get<OperatorState>(`/workspaces/${id(workspaceId)}/wallet/operator`, { fresh: fresh ? 1 : undefined }),

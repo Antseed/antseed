@@ -33,7 +33,7 @@ Click a model to open its panel:
 - **Providers**: every provider offering the model, with its price, trust score and latency. Each row has a copy button for the pinned id `<peerId>@<model>`, verified domain or GitHub links when the provider has them, and a link to the provider on **Providers**.
 - **API call**: a request for the model. The selector defaults to **Best provider (automatic)**. Pick a provider in it, or click **Pin** on a provider row, to get the pinned version instead.
 
-Image models get a `/v1/images/generations` call. Video models are listed but are not served through the gateway's `/v1` API.
+Image models get a `/v1/images/generations` call. Video models are served through the gateway's [video job routes](/docs/gateway/api#supported-routes), which the panel does not generate a call for yet.
 
 The Models page shows the whole network, without any routing policy applied. A client calling `GET /v1/models` with an API key that has an allow list of models only sees the models that key may use.
 

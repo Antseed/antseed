@@ -653,7 +653,12 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // cadence. The default wallet keeps its earlier behavior.
           ...(shared && effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
           onEvent: (event) => {
-            if (event.phase === 'credited') proxy.invalidateBalances(identity.wallet.address)
+            if (event.phase !== 'credited') return
+            proxy.invalidateBalances(identity.wallet.address)
+            // Kept for the gateway's deposit confirmations; the hash can arrive in a second 'credited' event.
+            if (event.txHash && event.amountBaseUnits) {
+              proxy.recordDeposit(identity.wallet.address, { txHash: event.txHash, creditedBaseUnits: event.amountBaseUnits, at: event.at })
+            }
           },
           usdcAddress: chainConfig.usdcContractAddress,
           evmChainId: chainConfig.evmChainId,
