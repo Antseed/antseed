@@ -341,6 +341,12 @@ export interface RequestLogEntry {
    * Token counts meanwhile come from the response's own usage.
    */
   costPending?: boolean
+  /**
+   * A native video request. A job is charged once, on the retrieve that
+   * delivers its file (`delivery`); its create and status polls cost nothing.
+   * `charged` is a create's job charge, null until its video is delivered.
+   */
+  video?: { action: 'create' | 'poll' | 'delivery'; jobId: string | null; charged: Usdc | null }
 }
 
 /** GET /requests/:tag → one entry, with bodies when content logging was on for it. */

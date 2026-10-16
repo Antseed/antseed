@@ -210,12 +210,17 @@ export const COST_PENDING_MS = 10 * 60 * 1000
  * it (no spend is ever reported); `pending` while a model request waits for
  * the buyer to report spend; `not recorded` once it waited `COST_PENDING_MS`
  * (spend the buyer lost); null when there is nothing to show (failed requests).
+ * A video job is charged on the retrieve that delivers its file: its create
+ * reads `video-charged` (that charge) or `on-delivery`, a status poll
+ * `not-charged`.
  */
 export function costStatus(
-  entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt'>,
+  entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt' | 'video'>,
   now: number,
-): 'spent' | 'free' | 'pending' | 'not-recorded' | null {
+): 'spent' | 'free' | 'pending' | 'not-recorded' | 'video-charged' | 'on-delivery' | 'not-charged' | null {
   if (entry.spent !== null) return 'spent'
+  if (entry.video?.action === 'create') return entry.video.charged !== null ? 'video-charged' : 'on-delivery'
+  if (entry.video?.action === 'poll') return 'not-charged'
   if (entry.servedFree) return 'free'
   if (!entry.costPending) return null
   return now - (entry.finishedAt ?? entry.startedAt) < COST_PENDING_MS ? 'pending' : 'not-recorded'

@@ -101,6 +101,13 @@ export function requestDto(row: RequestLogRow): RequestLogEntry {
     errorMessage: row.errorMessage,
     ...(row.servedFree ? { servedFree: true } : {}),
     ...(row.costPending ? { costPending: true } : {}),
+    ...(row.video ? {
+      video: {
+        action: row.video.action,
+        jobId: row.video.jobId,
+        charged: row.video.chargedUsdc === null ? null : usdcToDecimalString(row.video.chargedUsdc),
+      },
+    } : {}),
   }
 }
 

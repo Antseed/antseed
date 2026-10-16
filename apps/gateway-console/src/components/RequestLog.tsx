@@ -21,9 +21,17 @@ function statusBadge(status: number | null) {
   return <Badge tone="danger">{status}</Badge>
 }
 
-/** Cost of a request; "free" from a free seller, "pending" until the buyer reports its spend, "not recorded" if it never does. */
+/**
+ * Cost of a request; "free" from a free seller, "pending" until the buyer reports its spend, "not recorded" if it never does.
+ * A video is charged when its file is downloaded: its create shows that charge (muted), its status checks nothing.
+ */
 function Cost({ entry }: { entry: RequestLogEntry }) {
   const status = costStatus(entry, Date.now())
+  if (status === 'video-charged') {
+    return <span className="gc-muted" title="Charged on the request that downloaded this video">{formatUsd(entry.video!.charged)}</span>
+  }
+  if (status === 'on-delivery') return <span className="gc-muted" title="A video is charged when its finished file is downloaded">on delivery</span>
+  if (status === 'not-charged') return <span className="gc-muted" title="A video status check is not charged">—</span>
   if (status === 'free') return <span className="gc-muted" title="Served by a free seller: $0">Free</span>
   if (status === 'pending') return <span className="gc-muted" title="The buyer reports spend a moment after the response">pending</span>
   if (status === 'not-recorded') {
