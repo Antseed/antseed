@@ -1,4 +1,4 @@
-import type { Provider, ServiceHealthStatus } from '../interfaces/seller-provider.js';
+import type { Provider, ServiceHealthStatus, UpstreamAccountStatus } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
 import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
@@ -158,9 +158,10 @@ export class ModelHealthChecker {
    * account failures (see `classifyMediaRequestStatus`) count against the
    * service; user errors, rate limits, and transient upstream errors are
    * ignored. A success resets the failure count. A removed media service is
-   * re-advertised by the provider's free health check
-   * (`Provider.checkServiceHealth`) once its account recovers; without one it
-   * stays unadvertised until the seller restarts.
+   * re-advertised by the provider's free checks
+   * (`Provider.checkUpstreamAccount`, `Provider.checkServiceHealth`) once its
+   * account recovers; without one it stays unadvertised until the seller
+   * restarts.
    */
   recordRequestOutcome({ provider: providerName, service, statusCode, body }: SellerProviderResponseEvent): void {
     const target = this._targets.find(({ provider }) => provider.name === providerName);
@@ -230,8 +231,9 @@ export class ModelHealthChecker {
         }
       }
 
-      const checkProvider = target.probeProvider?.checkServiceHealth ? target.probeProvider : provider;
-      const checked = checkProvider.checkServiceHealth
+      const hasFreeCheck = (candidate?: Provider) => Boolean(candidate?.checkServiceHealth || candidate?.checkUpstreamAccount);
+      const checkProvider = hasFreeCheck(target.probeProvider) ? target.probeProvider! : provider;
+      const checked = hasFreeCheck(checkProvider)
         ? [...services].filter((service) => !supportsHealthProbe(resolveProbeProtocol(provider, service)))
         : [];
       if (checked.length > 0) {
@@ -246,32 +248,49 @@ export class ModelHealthChecker {
   }
 
   /**
-   * Run the provider's free health check for services the probe skips, and
-   * apply each answer: `unavailable` counts as a failed check, `available`
-   * re-advertises, `unknown` changes nothing. A service that buyer requests
-   * unadvertised (for example out of credits) is re-advertised only once the
-   * reported balance has grown since then, so a positive balance too small
-   * for one generation doesn't flip it back and forth.
+   * Run the provider's free checks for services the probe skips: the
+   * upstream account check (key valid, account funded) once, and the model
+   * check (model still offered) for every service. A service is unavailable
+   * when either check says so, and available only when no check is unsure.
+   * `unavailable` counts as a failed check, `available` re-advertises,
+   * `unknown` changes nothing. A service that buyer requests unadvertised
+   * (for example out of credits) is re-advertised only once the reported
+   * balance has grown since then, so a positive balance too small for one
+   * generation doesn't flip it back and forth.
    */
   private async _checkServices(target: ModelHealthTarget, checkProvider: Provider, services: string[]): Promise<void> {
     const provider = target.provider;
-    let results: Record<string, ServiceHealthStatus>;
-    try {
-      results = await withTimeout(
-        checkProvider.checkServiceHealth!(services),
-        this._probeTimeoutMs,
-        `health check for ${provider.name} timed out after ${this._probeTimeoutMs}ms`,
-      );
-    } catch (err) {
-      debugLog(`[ModelHealth] ${provider.name}: health check inconclusive (${err instanceof Error ? err.message : err})`);
-      return;
-    }
+    const timed = <T>(label: string, check: () => Promise<T>) => withTimeout(
+      Promise.resolve().then(check),
+      this._probeTimeoutMs,
+      `${label} for ${provider.name} timed out after ${this._probeTimeoutMs}ms`,
+    );
+    const [account, models] = await Promise.all([
+      checkProvider.checkUpstreamAccount
+        ? timed('account check', () => checkProvider.checkUpstreamAccount!())
+          .catch((err): UpstreamAccountStatus => ({ status: 'unknown', reason: `account check failed: ${err instanceof Error ? err.message : err}` }))
+        : undefined,
+      checkProvider.checkServiceHealth
+        ? timed('model check', () => checkProvider.checkServiceHealth!(services)).catch(() => null)
+        : undefined,
+    ]);
+    const balance = account?.status === 'available' ? account.balanceUsd : undefined;
+    if (balance !== undefined) this._balances.set(provider.name, balance);
+    const combine = (service: string): UpstreamAccountStatus => {
+      const model: ServiceHealthStatus | undefined = models === undefined
+        ? undefined
+        : models?.[service] ?? { status: 'unknown', reason: 'model check gave no result' };
+      const results = [account, model].filter((result): result is UpstreamAccountStatus => result !== undefined);
+      return results.find((result) => result.status === 'unavailable')
+        ?? results.find((result) => result.status === 'unknown')
+        ?? { status: 'available', balanceUsd: balance };
+    };
     for (const service of services) {
       if (this._stopped) return;
-      const result = results[service];
+      const result = combine(service);
       const state = this._stateFor(provider.name, service);
-      if (!result || result.status === 'unknown') {
-        debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result?.reason ?? 'no result'})`);
+      if (result.status === 'unknown') {
+        debugLog(`[ModelHealth] ${provider.name}/${service}: inconclusive (${result.reason ?? 'no result'})`);
         continue;
       }
       state.lastProbeAt = Date.now();
@@ -281,8 +300,6 @@ export class ModelHealthChecker {
         this._recordFailure(provider, state, 'check');
         continue;
       }
-      const balance = result.balanceUsd;
-      if (balance !== undefined) this._balances.set(provider.name, balance);
       if (state.lastFailureSource !== 'request') state.consecutiveFailures = 0;
       if (!state.removed) continue;
       if (state.removedBy === 'request'

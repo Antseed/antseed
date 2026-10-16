@@ -16,7 +16,7 @@ export VENICE_VIDEO_API_KEY=<seller-api-key>
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
 - `VENICE_VIDEO_MIN_BALANCE_USD`: optional, default `0`. Models stop being advertised while the key's Venice balance (USD + DIEM + bundled credits) is at or below it
 
-Each seller health sweep reads `GET /api/v1/api_keys/rate_limits` (key, access, balance) and the public `GET /api/v1/models?type=video`. A rejected key, blocked access, a balance at the minimum, or a model Venice no longer lists or reports offline stops that model being advertised, and it is advertised again once the check passes. Neither call generates media.
+Each seller health sweep runs two free checks. The account check reads `GET /api/v1/api_keys/rate_limits` (key, access, balance): a rejected key, blocked access, or a balance at the minimum stops every model being advertised. The model check sends each model an empty-prompt `POST /api/v1/video/queue`, which Venice rejects without generating: a validation error (`400`) means the model is there, and `404` means Venice no longer offers it, which stops that model being advertised. Other answers change nothing. A model is advertised again once both checks pass. If Venice ever accepts the empty prompt, the seller logs a warning and stops checking that model.
 
 Venice's model list does not say which image-to-video models accept a last frame, so announce each model's frames yourself. Buyers send only the inputs you list in `video.inputs`; leaving out `last_frame` makes them skip it even when Venice would accept it. Check a model with one cheap queue that sends both `image_url` and `end_image_url` (Venice answers `This model does not support end_image_url` when it can't), then announce it:
 

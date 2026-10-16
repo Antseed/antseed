@@ -1,4 +1,4 @@
-import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, ProviderStreamCallbacks, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
@@ -278,26 +278,31 @@ const plugin: AntseedProviderPlugin = {
       init,
       handleRequest,
       async checkServiceHealth(checked) {
-        const [statuses, account] = await Promise.all([
-          readFalModelStatuses(FAL_PLATFORM_URL, checked),
-          billingKey ? readFalAccount(FAL_PLATFORM_URL, billingKey) : Promise.resolve(undefined),
-        ]);
-        if (account?.status === 'unknown') warnOnce(account.reason);
+        const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, checked);
         return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
-          const status = statuses?.get(service);
-          if (statuses && !status) return [service, { status: 'unavailable', reason: 'fal no longer offers this endpoint' }];
-          if (status && status !== 'active' && status !== 'deprecated') {
+          if (!statuses) return [service, { status: 'unknown', reason: 'fal model list unavailable' }];
+          const status = statuses.get(service);
+          if (!status) return [service, { status: 'unavailable', reason: 'fal no longer offers this endpoint' }];
+          if (status !== 'active' && status !== 'deprecated') {
             return [service, { status: 'unavailable', reason: `fal reports this endpoint ${status}` }];
           }
           if (status === 'deprecated') warnOnce(`${service} is deprecated on fal and may stop working; consider replacing it`);
-          if (account?.status === 'ok' && account.balanceUsd <= minBalanceUsd) {
-            return [service, { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` }];
-          }
-          if (!statuses) return [service, { status: 'unknown', reason: 'fal model list unavailable' }];
-          if (account?.status === 'unknown') return [service, account];
-          return [service, account ? { status: 'available', balanceUsd: account.balanceUsd } : { status: 'available' }];
+          return [service, { status: 'available' }];
         }));
       },
+      ...(billingKey && {
+        async checkUpstreamAccount(): Promise<UpstreamAccountStatus> {
+          const account = await readFalAccount(FAL_PLATFORM_URL, billingKey);
+          if (account.status === 'unknown') {
+            warnOnce(account.reason);
+            return account;
+          }
+          if (account.balanceUsd <= minBalanceUsd) {
+            return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` };
+          }
+          return { status: 'available', balanceUsd: account.balanceUsd };
+        },
+      }),
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);
         if (videoRoute?.action !== 'retrieve') return handleRequest(request);

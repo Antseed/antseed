@@ -204,7 +204,7 @@ it('refuses non-HTTPS result URLs', async () => {
   expect(fetchMock).toHaveBeenCalledTimes(2);
 });
 
-describe('checkServiceHealth', () => {
+describe('checkServiceHealth and checkUpstreamAccount', () => {
   const OTHER = 'fal-ai/wan-pro/image-to-video';
   const twoModels = {
     ...config,
@@ -274,22 +274,24 @@ describe('checkServiceHealth', () => {
 
   it('checks the balance with the optional billing key', async () => {
     const withBilling = { ...twoModels, FAL_VIDEO_BILLING_API_KEY: 'billing-secret', FAL_VIDEO_MIN_BALANCE_USD: '1' };
-    const fetchMock = mockFal(models([[MODEL, 'active'], [OTHER, 'active']]), Response.json({ credits: { current_balance: 12.5, currency: 'USD' } }));
-    expect((await check(withBilling))[MODEL]).toEqual({ status: 'available', balanceUsd: 12.5 });
+    const checkAccount = () => (plugin.createProvider(withBilling) as Provider).checkUpstreamAccount!();
+    expect((plugin.createProvider(twoModels) as Provider).checkUpstreamAccount).toBeUndefined();
+    const fetchMock = mockFal(models([]), Response.json({ credits: { current_balance: 12.5, currency: 'USD' } }));
+    expect(await checkAccount()).toEqual({ status: 'available', balanceUsd: 12.5 });
     const [billingUrl, billingInit] = fetchMock.mock.calls.find(([url]) => url.includes('billing'))!;
     expect(billingUrl).toBe('https://api.fal.ai/v1/account/billing?expand=credits');
     expect(billingInit).toMatchObject({ headers: { authorization: 'Key billing-secret' } });
 
-    mockFal(models([[MODEL, 'active'], [OTHER, 'active']]), Response.json({ credits: { current_balance: 0.5, currency: 'USD' } }));
-    expect((await check(withBilling))[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.50') });
+    mockFal(models([]), Response.json({ credits: { current_balance: 0.5, currency: 'USD' } }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.50') });
   });
 
   it('reports unknown and warns once when the billing key lacks permission', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
     const provider = plugin.createProvider({ ...twoModels, FAL_VIDEO_BILLING_API_KEY: 'run-only' }) as Provider;
     for (let i = 0; i < 2; i++) {
-      mockFal(models([[MODEL, 'active'], [OTHER, 'active']]), Response.json({ error: {} }, { status: 403 }));
-      expect((await provider.checkServiceHealth!([MODEL, OTHER]))[MODEL]).toMatchObject({ status: 'unknown', reason: expect.stringContaining('billing:usage:read') });
+      mockFal(models([]), Response.json({ error: {} }, { status: 403 }));
+      expect(await provider.checkUpstreamAccount!()).toMatchObject({ status: 'unknown', reason: expect.stringContaining('billing:usage:read') });
     }
     expect(warn).toHaveBeenCalledTimes(1);
     expect(() => plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: 'x' })).toThrow('FAL_VIDEO_MIN_BALANCE_USD');

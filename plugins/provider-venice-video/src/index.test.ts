@@ -166,72 +166,90 @@ it('keeps private-model download URLs across a seller restart', async () => {
   }
 });
 
-describe('checkServiceHealth', () => {
+describe('checkServiceHealth and checkUpstreamAccount', () => {
   const twoModels = { ...config, ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON: JSON.stringify({
     'wan-2.5': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] } },
     'kling-2': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] } },
   }), ANTSEED_ALLOWED_SERVICES: 'wan-2.5,kling-2' };
   const account = (data: object, status = 200) => Response.json({ data }, { status });
-  const models = (list: Array<{ id: string; offline?: boolean }>) =>
-    Response.json({ data: list.map(({ id, offline = false }) => ({ id, model_spec: { offline } })) });
-  const mockVenice = (accountResponse: Response | Error, modelsResponse: Response | Error) => {
-    const fetchMock = vi.fn(async (url: string) => {
-      const response = url.includes('/api_keys/rate_limits') ? accountResponse : modelsResponse;
+  const invalid = () => Response.json({ error: 'Invalid request parameters' }, { status: 400 });
+  const notFound = () => Response.json({ error: 'Specified model not found' }, { status: 404 });
+  const mockVenice = (accountResponse: Response | Error, modelCheck: (model: string) => Response | Error = invalid) => {
+    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
+      const response = url.includes('/api_keys/rate_limits')
+        ? accountResponse
+        : modelCheck(JSON.parse(String(init?.body)).model);
       if (response instanceof Error) throw response;
       return response;
     });
     vi.stubGlobal('fetch', fetchMock);
     return fetchMock;
   };
-  const check = (cfg: Record<string, string> = twoModels) =>
-    (plugin.createProvider(cfg) as Provider).checkServiceHealth!(['wan-2.5', 'kling-2']);
+  const provider = (cfg: Record<string, string> = twoModels) => plugin.createProvider(cfg) as Provider;
+  const check = (cfg?: Record<string, string>) => provider(cfg).checkServiceHealth!(['wan-2.5', 'kling-2']);
+  const checkAccount = (cfg?: Record<string, string>) => provider(cfg).checkUpstreamAccount!();
   const funded = { accessPermitted: true, balances: { USD: 3, DIEM: 1.5, BUNDLED_CREDITS: 0 } };
 
-  it('reports a funded key with listed models as available, with the total balance, using only free GETs', async () => {
-    const fetchMock = mockVenice(account(funded), models([{ id: 'wan-2.5' }, { id: 'kling-2' }]));
-    expect(await check()).toEqual({
-      'wan-2.5': { status: 'available', balanceUsd: 4.5 },
-      'kling-2': { status: 'available', balanceUsd: 4.5 },
-    });
-    const [accountUrl, accountInit] = fetchMock.mock.calls.find(([url]) => url.includes('rate_limits'))!;
+  it('reads the key and total balance from the free account endpoint', async () => {
+    const fetchMock = mockVenice(account(funded));
+    expect(await checkAccount()).toEqual({ status: 'available', balanceUsd: 4.5 });
+    const [accountUrl, accountInit] = fetchMock.mock.calls[0]!;
     expect(accountUrl).toBe('https://api.venice.ai/api/v1/api_keys/rate_limits');
     expect(accountInit).toMatchObject({ headers: { authorization: 'Bearer seller-secret' } });
-    expect(fetchMock.mock.calls.every(([, init]) => !init?.method || init.method === 'GET')).toBe(true);
-    const [modelsUrl, modelsInit] = fetchMock.mock.calls.find(([url]) => url.includes('/models'))!;
-    expect(modelsUrl).toBe('https://api.venice.ai/api/v1/models?type=video');
-    expect(modelsInit.headers).toBeUndefined();
+    expect(accountInit?.method).toBeUndefined();
   });
 
   it('reports an empty balance or one at the configured minimum as unavailable', async () => {
-    mockVenice(account({ accessPermitted: true, balances: { USD: 0, DIEM: 0 } }), models([{ id: 'wan-2.5' }, { id: 'kling-2' }]));
-    expect((await check())['wan-2.5']).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.00') });
-    mockVenice(account(funded), models([{ id: 'wan-2.5' }, { id: 'kling-2' }]));
-    expect((await check({ ...twoModels, VENICE_VIDEO_MIN_BALANCE_USD: '5' }))['kling-2']).toMatchObject({ status: 'unavailable' });
+    mockVenice(account({ accessPermitted: true, balances: { USD: 0, DIEM: 0 } }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.00') });
+    mockVenice(account(funded));
+    expect(await checkAccount({ ...twoModels, VENICE_VIDEO_MIN_BALANCE_USD: '5' })).toMatchObject({ status: 'unavailable' });
     expect(() => plugin.createProvider({ ...twoModels, VENICE_VIDEO_MIN_BALANCE_USD: '-1' })).toThrow('VENICE_VIDEO_MIN_BALANCE_USD');
   });
 
   it('reports a rejected key or blocked API access as unavailable', async () => {
-    mockVenice(Response.json({ error: 'Authentication failed' }, { status: 401 }), models([{ id: 'wan-2.5' }, { id: 'kling-2' }]));
-    expect((await check())['wan-2.5']).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('HTTP 401') });
-    mockVenice(account({ ...funded, accessPermitted: false }), models([{ id: 'wan-2.5' }, { id: 'kling-2' }]));
-    expect((await check())['kling-2']).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('not permitted') });
+    mockVenice(Response.json({ error: 'Authentication failed' }, { status: 401 }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('HTTP 401') });
+    mockVenice(account({ ...funded, accessPermitted: false }));
+    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('not permitted') });
   });
 
-  it('reports only the removed or offline model as unavailable', async () => {
-    mockVenice(account(funded), models([{ id: 'wan-2.5', offline: true }]));
-    const results = await check();
-    expect(results['wan-2.5']).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('offline') });
-    expect(results['kling-2']).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('no longer offers') });
+  it('checks each model with an empty-prompt queue request: a validation error means it exists, 404 means it is gone', async () => {
+    const fetchMock = mockVenice(account(funded), model => (model === 'kling-2' ? notFound() : invalid()));
+    expect(await check()).toEqual({
+      'wan-2.5': { status: 'available' },
+      'kling-2': { status: 'unavailable', reason: 'Venice no longer offers this model' },
+    });
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
+    expect(init).toMatchObject({ method: 'POST', headers: { authorization: 'Bearer seller-secret' } });
+    expect(JSON.parse(String(init?.body))).toEqual({ model: 'wan-2.5', prompt: '' });
   });
 
-  it('reports unknown when Venice can not be read, but still uses what it can read', async () => {
-    mockVenice(new Error('network down'), new Error('network down'));
+  it('leaves money, key, and server answers to the account check', async () => {
+    for (const status of [401, 402, 403, 429, 500, 503]) {
+      mockVenice(account(funded), () => Response.json({ error: 'x' }, { status }));
+      expect((await check())['wan-2.5']).toMatchObject({ status: 'unknown', reason: expect.stringContaining(`HTTP ${status}`) });
+    }
+    mockVenice(account(funded), () => new Error('network down'));
     expect((await check())['wan-2.5']).toMatchObject({ status: 'unknown' });
-    mockVenice(Response.json({}, { status: 500 }), models([{ id: 'wan-2.5' }]));
-    const results = await check();
-    expect(results['wan-2.5']).toMatchObject({ status: 'unknown' });
-    expect(results['kling-2']).toMatchObject({ status: 'unavailable' });
-    mockVenice(account(funded), Response.json({}, { status: 503 }));
-    expect((await check())['wan-2.5']).toEqual({ status: 'available', balanceUsd: 4.5 });
+  });
+
+  it('stops checking a model if Venice ever accepts the empty prompt', async () => {
+    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
+    const fetchMock = mockVenice(account(funded), () => Response.json({ queue_id: 'q' }));
+    const venice = provider();
+    expect((await venice.checkServiceHealth!(['wan-2.5']))['wan-2.5']).toMatchObject({ status: 'unknown' });
+    expect(warn).toHaveBeenCalledWith(expect.stringContaining('accepted an empty-prompt'));
+    expect((await venice.checkServiceHealth!(['wan-2.5']))['wan-2.5']).toMatchObject({ status: 'unknown' });
+    expect(fetchMock).toHaveBeenCalledTimes(1);
+    warn.mockRestore();
+  });
+
+  it('reports unknown when the account can not be read', async () => {
+    mockVenice(new Error('network down'));
+    expect(await checkAccount()).toMatchObject({ status: 'unknown' });
+    mockVenice(Response.json({}, { status: 500 }));
+    expect(await checkAccount()).toMatchObject({ status: 'unknown' });
   });
 });

@@ -837,9 +837,9 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // restore them when they recover, refreshing signed metadata each time.
       // Image and video services are not probed because a meaningful probe
       // would generate and charge for media. Providers check them with free
-      // account and model-list calls instead (checkServiceHealth), and real
-      // buyer requests that fail with an upstream credits or auth error also
-      // count against them.
+      // account and model-list calls instead (checkUpstreamAccount,
+      // checkServiceHealth), and real buyer requests that fail with an
+      // upstream credits or auth error also count against them.
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
         healthChecker = new ModelHealthChecker({
