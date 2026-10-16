@@ -85,7 +85,7 @@ The CLI also reads `.env.local` and `.env` from the current directory, and the f
 | `ANTSEED_TUNNEL_PUBLIC_URL` | tunnel | `https://` hostname of the tunnel; required for Cloudflare |
 | `ANTSEED_TUNNEL_API_KEY` | tunnel | Legacy single client API key (at least 16 characters), kept as an unlimited key on the default identity. Prefer `antseed gateway key create` |
 | `ANTSEED_NGROK_BIN` | tunnel | Path to the `ngrok` binary |
-| `ANTSEED_MODEL` | tool wrappers | Default `--model` for `antseed claude`, `antseed codex` and `antseed opencode` |
+| `ANTSEED_MODEL` | agent | Default `--model` for `antseed agent` |
 | `ANTSEED_SELLER_INPUT_USD_PER_MILLION` | seller | Overrides every provider's default input price, USD per million tokens |
 | `ANTSEED_SELLER_OUTPUT_USD_PER_MILLION` | seller | Overrides every provider's default output price, USD per million tokens |
 | `ANTSEED_DEFAULT_DEPOSIT_USDC` | seller | Read by `seller start` but currently has no effect: the node does not use the value |

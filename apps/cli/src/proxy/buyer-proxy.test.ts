@@ -8,6 +8,7 @@ import test, { type TestContext } from 'node:test'
 import localPlugin from '@antseed/router-local'
 import type { ModelRoutingClientApi } from '@antseed/router-core'
 import { ResourceRoutes } from './resource-routes.js'
+import { ClaudeDesktopRoute } from './claude-desktop-route.js'
 import {
   ANTSEED_BUYER_FAULT_ERROR_CODE,
   ANTSEED_FAULT_ATTRIBUTION_HEADER,
@@ -2435,6 +2436,48 @@ test('BuyerProxy does not forward the Expect header to the seller', async () => 
   }))
   assert.ok(forwardedHeaders)
   assert.equal(forwardedHeaders['expect'], undefined)
+})
+
+test('the Claude Desktop route lists models in Anthropic shape and routes slot ids to network models', async () => {
+  const peer = makePeer('c', ['openai'])
+  peer.providerServiceApiProtocols = {
+    openai: { services: { 'kimi-k3': ['openai-chat-completions'] } },
+  }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-claude-desktop-'))
+  ;(proxy as any)._claudeDesktop = new ClaudeDesktopRoute(join(dir, 'slots.json'))
+  let forwarded: { path: string; headers: Record<string, string>; body: Uint8Array } | undefined
+  ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: { requestId: string; path: string; headers: Record<string, string>; body: Uint8Array }) => {
+    forwarded = request
+    return {
+      requestId: request.requestId,
+      statusCode: 200,
+      headers: { 'content-type': 'application/json' },
+      body: Buffer.from('{}'),
+    }
+  }
+  try {
+    const listing = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/claude-desktop/v1/models?limit=1000' }))
+    assert.equal(listing.statusCode, 200)
+    const data = (JSON.parse(listing.body) as { data: { id: string; display_name: string }[] }).data
+    assert.deepEqual(data.map((entry) => entry.id), ['claude-fable-5', 'claude-opus-5'])
+    assert.equal(data[0]!.display_name, 'Antseed Auto')
+
+    await invokeProxy(proxy, makeProxyRequest({
+      path: '/claude-desktop/v1/messages',
+      body: { model: 'claude-opus-5', max_tokens: 16, messages: [{ role: 'user', content: 'hello' }] },
+    }))
+    assert.ok(forwarded)
+    const sentBody = Buffer.from(forwarded.body).toString()
+    assert.equal((JSON.parse(sentBody) as { model: string }).model, 'kimi-k3')
+    // Translated for this OpenAI-format seller, so the note rides in a system message.
+    assert.match(sentBody, /Antseed peer-to-peer network/)
+
+    const unknown = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/claude-desktop/v1/other' }))
+    assert.equal(unknown.statusCode, 404)
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
 })
 
 test('model-only request applies a cached-input pricing reputation penalty', async () => {

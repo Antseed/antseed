@@ -360,3 +360,46 @@ test('apps connect falls back to Antseed Auto when the buyer model list is unava
     await rm(ws.home, { recursive: true, force: true })
   }
 })
+
+test('apps connect points Claude Desktop at the buyer route and disconnect restores it', async () => {
+  const ws = await createWorkspace()
+  try {
+    const normalConfig = join(ws.home, 'Library', 'Application Support', 'Claude', 'claude_desktop_config.json')
+    const original = '{\n  "mcpServers": {}\n}\n'
+    await mkdir(dirname(normalConfig), { recursive: true })
+    await writeFile(normalConfig, original, 'utf8')
+
+    const connected = json<ActionReport>(ws, ['apps', 'connect', 'claude-desktop', '--port', '9123'])
+    assert.equal(connected.ok, true, connected.error)
+    assert.equal(connected.connected, true)
+    const profilePath = join(ws.home, 'Library', 'Application Support', 'Claude-3p', 'configLibrary', '00000000-0000-4000-8000-0000a4753eed.json')
+    const profile = JSON.parse(await readFile(profilePath, 'utf8')) as Record<string, unknown>
+    assert.equal(profile['inferenceGatewayBaseUrl'], 'http://127.0.0.1:9123/claude-desktop')
+
+    const disconnected = json<ActionReport>(ws, ['apps', 'disconnect', 'claude-desktop'])
+    assert.equal(disconnected.changed, true)
+    assert.equal(disconnected.connected, false)
+    assert.equal((JSON.parse(await readFile(normalConfig, 'utf8')) as Record<string, unknown>)['deploymentMode'], '1p')
+  } finally {
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})
+
+test('buyer connection set --model sets the default route connected apps use', async () => {
+  const ws = await createWorkspace()
+  try {
+    const statePath = join(ws.dataDir, 'buyer.state.json')
+    await writeFile(statePath, JSON.stringify({ state: 'connected', pid: process.pid, port: 8499, pinnedPeerId: null }), 'utf8')
+    assert.equal(run(ws, ['buyer', 'connection', 'set', '--model', 'antseed']).status, 1)
+    assert.equal(run(ws, ['buyer', 'connection', 'set', '--model', 'kimi-k3']).status, 0)
+    assert.equal((JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>)['defaultRoutedModel'], 'kimi-k3')
+
+    await mkdir(join(ws.home, '.config', 'zed'), { recursive: true })
+    assert.equal(json<ActionReport>(ws, ['apps', 'connect', 'zed']).warnings, undefined)
+
+    assert.equal(run(ws, ['buyer', 'connection', 'clear']).status, 0)
+    assert.equal((JSON.parse(await readFile(statePath, 'utf8')) as Record<string, unknown>)['defaultRoutedModel'], null)
+  } finally {
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})

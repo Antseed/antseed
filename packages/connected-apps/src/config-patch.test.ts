@@ -9,7 +9,6 @@ import { parse } from 'yaml';
 
 import {
   CLAUDE_DESKTOP_PROFILE_ID,
-  CLAUDE_GATEWAY_DEFAULT_PORT,
   applyConfigPatch,
   codexCatalogPathForClient,
   claudeDesktopPatchTargets,
@@ -1357,7 +1356,7 @@ function makeClaudeDesktopPatch(dir: string): ClaudeDesktopConfigPatchDef {
     format: 'claude-desktop',
     configPath: path.join(dir, 'Claude', 'claude_desktop_config.json'),
     thirdPartyDir: path.join(dir, 'Claude-3p'),
-    baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
+    baseURL: 'http://127.0.0.1:{buyerPort}/claude-desktop',
   };
 }
 
@@ -1382,7 +1381,7 @@ test('applyConfigPatch writes the Claude third-party profile and flips both depl
     const profilePath = path.join(patch.thirdPartyDir, 'configLibrary', `${CLAUDE_DESKTOP_PROFILE_ID}.json`);
     const profile = parseJsoncObject(await readFile(profilePath, 'utf8'), profilePath);
     assert.equal(profile['inferenceProvider'], 'gateway');
-    assert.equal(profile['inferenceGatewayBaseUrl'], `http://127.0.0.1:${CLAUDE_GATEWAY_DEFAULT_PORT}`);
+    assert.equal(profile['inferenceGatewayBaseUrl'], 'http://127.0.0.1:9456/claude-desktop');
     assert.equal(profile['inferenceGatewayAuthScheme'], 'bearer');
     assert.equal(profile['deploymentDisplayName'], 'Antseed');
     assert.equal(profile['disableDeploymentModeChooser'], true);

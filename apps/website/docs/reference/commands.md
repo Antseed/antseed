@@ -204,7 +204,7 @@ Chat with an agent through a gateway from the terminal. Web search, web pages an
 
 </CommandTable>
 
-## Apps and tool wrappers
+## Apps and System Proxy
 
 Point local AI tools at the buyer proxy. Guides: [Desktop app](/docs/desktop), [Local buyer API](/docs/api).
 
@@ -215,9 +215,6 @@ Point local AI tools at the buyer proxy. Guides: [Desktop app](/docs/desktop), [
 | `antseed apps status` | List supported apps: installed, connected, config path | `--json` |
 | `antseed apps connect <app>` | Point an app's config at the buyer proxy (backs up the original) | `--port <buyerPort>` |
 | `antseed apps disconnect <app>` | Remove only what Antseed added to an app's config | |
-| `antseed claude [args...]` | Run Claude Code through the buyer proxy | `--model <service-id>`, `--antseed-base-url <url>` |
-| `antseed codex [args...]` | Run Codex through the buyer proxy | `--model <service-id>`, `--antseed-base-url <url>` |
-| `antseed opencode [args...]` | Run OpenCode through the buyer proxy | `--model <service-id>`, `--antseed-base-url <url>` |
 | `antseed system-proxy install-ca` | Generate and trust the local CA certificate | |
 | `antseed system-proxy ca-trust-state` | Report whether the OS trusts the local CA (JSON) | |
 | `antseed system-proxy start` | Start the local System Proxy | `--peer <peerId>`, `--default-model`, `--served-model`, `--port` (8378), `--buyer-port` (8377), `--profile`, `--system-proxy` |
@@ -225,8 +222,6 @@ Point local AI tools at the buyer proxy. Guides: [Desktop app](/docs/desktop), [
 | `antseed system-proxy status` | Show System Proxy status | |
 
 </CommandTable>
-
-The wrappers forward unknown flags to the tool. `--model` falls back to `ANTSEED_MODEL`.
 
 ## Seller
 

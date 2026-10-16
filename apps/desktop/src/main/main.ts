@@ -16,7 +16,7 @@ import {
   type StartOptions,
 } from './runtime/process-manager.js';
 import { registerPiChatHandlers } from './chat/engine.js';
-import { setClaudeDesktopGatewayModelSource } from './connected-apps/claude-desktop-gateway.js';
+import { setClaudeDesktopModels } from './connected-apps/claude-desktop-models.js';
 import { setConnectedAppModelSource } from './system-proxy/runtime.js';
 import { emitChatEvent } from './chat/event-bus.js';
 import { createTelegramBridge } from './telegram/bridge.js';
@@ -401,6 +401,11 @@ const piChatEngine = registerPiChatHandlers({
     const telemetry = await telemetryReady;
     await telemetry?.recordDiscoveryFailed(input);
   },
+  // Claude Desktop (via the buyer's /claude-desktop route) offers the same
+  // curated picker rows the in-app dropdown and Telegram bridge offer.
+  onModelPickerSynced: (snapshot) => {
+    setClaudeDesktopModels(snapshot.models.map((model) => ({ label: model.label, model: model.serviceId })));
+  },
 });
 
 // Connected apps share the curated in-app (and Telegram) picker rows.
@@ -412,7 +417,6 @@ const connectedAppModelSource = () => (
     reasoning: piChatEngine.serviceSupportsReasoning(model.serviceId),
   }))
 );
-setClaudeDesktopGatewayModelSource(connectedAppModelSource);
 setConnectedAppModelSource(connectedAppModelSource);
 
 // ── Telegram bridge ──

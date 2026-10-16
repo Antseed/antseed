@@ -120,10 +120,9 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
       // derives its own candidate roots on win32 and these apply elsewhere.
       configPath: '~/Library/Application Support/Claude/claude_desktop_config.json',
       thirdPartyDir: '~/Library/Application Support/Claude-3p',
-      // Claude talks to the desktop's local Claude gateway (Anthropic-native
-      // model catalog + forwarding to the buyer proxy), not the buyer proxy
-      // directly — see apps/desktop/src/main/connected-apps/claude-desktop-gateway.ts.
-      baseURL: 'http://127.0.0.1:{claudeGatewayPort}',
+      // Claude talks to the buyer proxy's Claude Desktop route (Anthropic-native
+      // model catalog + model rewrite) — see apps/cli/src/proxy/claude-desktop-route.ts.
+      baseURL: 'http://127.0.0.1:{buyerPort}/claude-desktop',
     },
   },
   {

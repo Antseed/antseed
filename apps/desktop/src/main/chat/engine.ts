@@ -154,6 +154,7 @@ export function registerPiChatHandlers({
   recordChatRequestStarted,
   recordChatRequestFinished,
   recordDiscoveryFailed,
+  onModelPickerSynced,
 }: RegisterPiChatHandlersOptions): PiChatEngine {
   void loadChatWorkspaceDir().catch(() => {});
   const store = new PiConversationStore();
@@ -434,6 +435,7 @@ export function registerPiChatHandlers({
     if (normalized) {
       modelPickerSnapshot = normalized;
       modelPickerReady.markReady();
+      onModelPickerSynced?.(normalized);
     }
     return { ok: normalized != null };
   });
