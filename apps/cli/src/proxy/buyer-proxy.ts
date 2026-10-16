@@ -4,6 +4,7 @@ import { prepareVideoRequest, recordVideoAcceptance } from './native-video-proxy
 import { downloadVideo } from './video-download.js'
 import { createServer, type Server, type IncomingMessage, type ServerResponse } from 'node:http'
 import { randomUUID } from 'node:crypto'
+import { buildRoutingServices, findPinnedRoutingService } from './routing-services.js'
 import { readFileSync, watchFile, unwatchFile } from 'node:fs'
 import { readFile, writeFile, rename, mkdir, readdir, stat, unlink } from 'node:fs/promises'
 import { join } from 'node:path'
@@ -22,6 +23,7 @@ import {
   modelRouteTotalPrice,
   normalizedModelReputationScore,
   peerSupportsCooperativeClose,
+  isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
   sanitizePeerDisplayName,
@@ -34,6 +36,9 @@ import {
   type ModelRoutingPreferences,
   type RequestStreamResponseMetadata,
   type Router,
+  type RoutingSelection,
+  type RoutingServiceTarget,
+  type RouteRecommendation,
   type SerializedHttpRequest,
   type SerializedHttpResponse,
   type SerializedHttpResponseChunk,
@@ -64,12 +69,15 @@ import {
   SYSTEM_ROUTED_MODEL_HEADER,
   BUYER_IDENTITY_HEADER,
   normalizePeerId,
+  takeRoutingOptions,
+  type RequestRoutingOptions,
 } from './request-utils.js'
 import { BuyerIdentityLoader } from '../buyer-identities/loader.js'
 import {
   buildNetworkModels,
   effectiveModelReputationScore,
   parseModelTypeFilter,
+  type NetworkRouterEntry,
 } from './network-models.js'
 import {
   findMissingRequiredParameters,
@@ -97,9 +105,12 @@ import {
   isCompletionRequestPath,
   isTitleGenerationRequest,
   parseRequestBodyObject,
+  type ConversationIdentity,
 } from './conversation-identity.js'
+import { ConversationStore, type ConversationRouterSelection, type StoredConversation } from './conversation-store.js'
+import { eligibleRouterCandidates, executeRouterSelection, NoEligibleCandidatesError, requestForRecommendation, RoutingModelsCache } from './router-execution.js'
+import { recordRouterUsage } from './routing-usage.js'
 import { SPEND_ATTRIBUTION_DB_FILE, SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed, parseSpendAttributionTag } from './spend-attribution.js'
-import { ConversationStore } from './conversation-store.js'
 import { DEPOSIT_WATCH_ACTIVE_TTL_MS, type DepositWatcher } from './deposit-watcher.js'
 import { DepositLog, type DepositLogEntry } from './deposit-log.js'
 import {
@@ -123,6 +134,7 @@ import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { loadConfig } from '../config/loader.js'
+import { ModelRoutingClient, type ModelRoutingClientApi } from '@antseed/router-core'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_ENV,
@@ -147,6 +159,7 @@ import {
   preferenceExclusionReasons,
   rankingPreferences,
   secretsMatch,
+  routingServicePolicy,
   type PolicyPeerFacts,
 } from './route-policy.js'
 
@@ -170,6 +183,8 @@ const WATCHER_ABSENCE_ERRORS: Record<DepositWatcherAbsenceReason, string> = {
 }
 
 export interface BuyerProxyConfig {
+  /** Test seam; production uses the built-in `model-routing` service API client. */
+  modelRoutingClient?: ModelRoutingClientApi
   port: number
   node: AntseedNode
   /** Data directory used to persist buyer.state.json (discovered peers, session peer pin). */
@@ -325,6 +340,8 @@ function isLoopbackAddress(address: string | undefined): boolean {
 // because model_not_found already has dedicated unadvertise handling while a
 // generic 404 would repeat identically on every peer.
 const RETRYABLE_STATUS_CODES = new Set([401, 403, 408, 429, 500, 502, 503, 504])
+// Moving to another recommendation is a new purchase, so skip timeouts (408/504), where the seller may already have done the work.
+const RECOMMENDATION_FALLBACK_STATUS_CODES = new Set([401, 403, 429, 500, 502, 503])
 /**
  * Gateway-policy requests on automatic routing also move on after a 402: the
  * buyer could not fund that seller (no deposits for its reserve), but a free
@@ -388,6 +405,11 @@ async function waitForRetry(delayMs: number, signal: AbortSignal): Promise<boole
 function isValidRoutedModelTarget(value: string): boolean {
   if (value === ROUTED_MODEL_ALIAS) return false
   return !value.includes('@') || parsePeerPinnedService(value) !== null
+}
+
+function sameRoutingServiceTarget(a: RoutingServiceTarget | undefined, b: RoutingServiceTarget | undefined): boolean {
+  return !!a && !!b && a.peerId.toLowerCase() === b.peerId.toLowerCase()
+    && a.provider === b.provider && a.serviceId === b.serviceId
 }
 
 /** Returns `request` with its body's model field rewritten to `serviceId`, or unchanged if nothing rewrote. */
@@ -509,6 +531,48 @@ type BuyerPolicyRouter = Router & {
   /** Why `allowsPeerForPolicy` rejects the peer (null when allowed); optional. */
   explainPolicyRejection?: (req: SerializedHttpRequest, peer: PeerInfo) => string | null
 }
+
+/** Request-local inputs shared by direct inference and recommendation-based dispatch. */
+type BuyerDispatchContext = {
+  request: SerializedHttpRequest
+  requiredParameters: readonly string[]
+  requestPolicy: RoutingPolicy | null
+  signal: AbortSignal
+  systemRoutedModel: boolean
+  conversationIdentity: ConversationIdentity | null
+  conversationBody: Record<string, unknown> | null
+  storedConversation: StoredConversation | null
+  effectivePinnedPeer: string | null
+  effectiveRoutedModel: string | null
+  chatPinnedModel: string | null
+  preferredConversationPeerId: string | null
+  routingConversationKey: string | null
+  /** Gateway spend tag of the client request; router purchases and attempts get new IDs and inherit it. */
+  spendAttributionTag: string | null
+}
+
+type PeerDispatchResult =
+  | { done: true }
+  | { done: false; statusCode: number; responseBody: Buffer; responseHeaders: Record<string, string>; errorMessage: string | null }
+
+type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
+
+function dispatchFailure(statusCode: number, responseHeaders: Record<string, string>, body: string): DispatchFailure {
+  return { done: false, statusCode, responseHeaders, responseBody: Buffer.from(body), errorMessage: null }
+}
+
+function writeDispatchFailure(res: ServerResponse, result: DispatchFailure): void {
+  if (res.headersSent || res.writableEnded) return
+  res.writeHead(result.statusCode, result.responseHeaders)
+  res.end(result.responseBody)
+}
+
+function isBuyerFault(result: DispatchFailure): boolean {
+  return result.responseHeaders[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() === 'buyer'
+}
+
+type RouterSelection = Extract<RoutingSelection, { kind: 'router' }>
+type DefaultRouterSelection = RouterSelection & { service: RoutingServiceTarget }
 
 type ProtocolTransformStrategy = {
   from: ServiceApiProtocol
@@ -1010,12 +1074,14 @@ export class BuyerProxy {
   private _configFileWatching = false
   private _pinnedPeer: string | null
   /**
-   * Route substituted for the `antseed` model alias (`<service>` for automatic
-   * peer selection, or `<peerId>@<service>` for an explicit seller pin).
-   * Set via `POST /_antseed/route` (the desktop keeps it on the current VPR
-   * selection) and persisted in buyer.state.json like the session peer pin.
+   * Default for the `antseed` model alias: an explicit model route (`model`) or an exact
+   * routing service (`router`). At most one is set. Set via `POST /_antseed/route` and
+   * persisted in buyer.state.json.
    */
   private _defaultRoutedModel: string | null = null
+  private _defaultRouter: DefaultRouterSelection | null = null
+  private readonly _routingModels = new RoutingModelsCache()
+  private readonly _modelRoutingClient: ModelRoutingClientApi
   private _conversations!: ConversationStore
   /**
    * Wall-clock of the last model-request activity (dispatch or streamed
@@ -1077,7 +1143,7 @@ export class BuyerProxy {
    * `counted` guards requestCount: one request can produce several spend
    * deltas (buyer- and seller-initiated auth both advance the cumulative).
    */
-  private readonly _requestConversations = new Map<string, { convId: string; counted: boolean }>()
+  private readonly _requestConversations = new Map<string, { convId: string; counted: boolean; purpose?: 'routing' }>()
   /** Signed spend for requests a local gateway tagged, polled over the control plane. */
   private readonly _spendAttribution: SpendAttributionFeed
 
@@ -1110,6 +1176,7 @@ export class BuyerProxy {
     this._restartAllowedAt = Date.now() + (config.minRestartIntervalMs ?? MIN_RESTART_INTERVAL_MS)
     this._settingOverrides = [...(config.settingOverrides ?? [])]
     this._node = config.node
+    this._modelRoutingClient = config.modelRoutingClient ?? new ModelRoutingClient()
     this._verifier = config.verifier
     this._buyerIdentities = config.buyerIdentities ?? new BuyerIdentityLoader(config.node, config.dataDir)
     this._teeVerification = new TeeVerification(config.verifier)
@@ -1186,6 +1253,7 @@ export class BuyerProxy {
     if (!event.requestId) return
     const entry = this._requestConversations.get(event.requestId)
     if (!entry) return
+    const routing = entry.purpose === 'routing'
     this._conversations.addSpend(
       entry.convId,
       {
@@ -1194,9 +1262,9 @@ export class BuyerProxy {
         cachedInputTokens: event.cachedInputTokens,
         outputTokens: event.outputTokens,
       },
-      !entry.counted,
+      !routing && !entry.counted,
     )
-    entry.counted = true
+    if (!routing) entry.counted = true
   }
 
   /**
@@ -1759,8 +1827,11 @@ export class BuyerProxy {
    * a grace window — the seller-initiated auth path can land just after the
    * response is returned. Bounded so a leaked id can't grow the map forever.
    */
-  private _trackRequestConversation(requestId: string, convId: string): void {
-    this._requestConversations.set(requestId, { convId, counted: false })
+  private _trackRequestConversation(requestId: string, convId: string, parentRequestId?: string, purpose?: 'routing'): void {
+    if (this._requestConversations.has(requestId)) throw new Error('Request ID already tracked')
+    // Inference retries share one turn counter; recommendation purchases have their own cost entry.
+    const parent = !purpose && parentRequestId ? this._requestConversations.get(parentRequestId) : undefined
+    this._requestConversations.set(requestId, parent?.convId === convId ? parent : { convId, counted: false, purpose })
     while (this._requestConversations.size > MAX_TRACKED_REQUEST_CONVERSATIONS) {
       const oldest = this._requestConversations.keys().next().value
       if (oldest === undefined) break
@@ -1937,6 +2008,26 @@ export class BuyerProxy {
     }
   }
 
+  private _validateRouterSelection(value: unknown): asserts value is RouterSelection & { service: RoutingServiceTarget } {
+    if (!isRoutingSelection(value) || value.kind !== 'router') throw new Error('Invalid router selection')
+    if (!value.service) throw new Error('Select an exact routing-service target')
+  }
+
+  /** Parses the `router` field of `POST /_antseed/route` (`{ service, costQualityTradeoff?, allowedModels? }`). */
+  private _parseDefaultRouter(value: unknown): DefaultRouterSelection {
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('router must be { service, costQualityTradeoff? }')
+    const selection = { ...(value as Record<string, unknown>), kind: 'router' }
+    this._validateRouterSelection(selection)
+    return structuredClone(selection)
+  }
+
+  /** The default router in its wire form, without the internal `kind` tag. */
+  private get _defaultRouterJson(): Omit<DefaultRouterSelection, 'kind'> | null {
+    if (!this._defaultRouter) return null
+    const { kind: _kind, ...router } = this._defaultRouter
+    return router
+  }
+
   private async _reloadSessionOverrides(opts: { preservePeerPin?: boolean } = {}): Promise<void> {
     try {
       const raw = await readFile(this._stateFile, 'utf-8')
@@ -1949,7 +2040,15 @@ export class BuyerProxy {
       }
       const routedModel = typeof parsed.defaultRoutedModel === 'string' ? parsed.defaultRoutedModel.trim() : ''
       this._defaultRoutedModel = routedModel.length > 0 && isValidRoutedModelTarget(routedModel) ? routedModel : null
-      log(`Session overrides reloaded: peer=${this._pinnedPeer ?? 'none'} route=${this._defaultRoutedModel ?? 'none'}`)
+      try {
+        this._defaultRouter = null
+        if (parsed.defaultRouter != null && this._defaultRoutedModel === null) {
+          this._defaultRouter = this._parseDefaultRouter(parsed.defaultRouter)
+        }
+      } catch {
+        this._defaultRouter = null
+      }
+      log(`Session overrides reloaded: peer=${this._pinnedPeer ?? 'none'} route=${this._defaultRoutedModel ?? 'none'} router=${JSON.stringify(this._defaultRouterJson)}`)
     } catch {
       // state file unreadable; keep current values
     }
@@ -2028,7 +2127,7 @@ export class BuyerProxy {
     // in the file — the debounce may have been cancelled before
     // _reloadSessionOverrides could commit the latest CLI-written values.
     const sessionOverrides = state === 'connected'
-      ? { pinnedPeerId: this._pinnedPeer, defaultRoutedModel: this._defaultRoutedModel }
+      ? { pinnedPeerId: this._pinnedPeer, defaultRoutedModel: this._defaultRoutedModel, defaultRouter: this._defaultRouterJson }
       : {}
     await this._mergeStateFile({
       state,
@@ -2624,9 +2723,15 @@ export class BuyerProxy {
       return
     }
 
+    if (path === '/_antseed/routing-services' && method === 'GET') {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, services: await buildRoutingServices(await this._getPeers(), this._modelRoutingClient, this._node, this._routingModels) }))
+      return
+    }
+
     if (path === '/_antseed/route' && method === 'GET') {
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel }))
+      res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel, router: this._defaultRouterJson }))
       return
     }
 
@@ -2642,25 +2747,36 @@ export class BuyerProxy {
         }
         chunks.push(chunk as Buffer)
       }
+      let body: Record<string, unknown>
       let model: string
       try {
-        const body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
+        body = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
         model = typeof body.model === 'string' ? body.model.trim() : ''
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
         return
       }
-      if (model.length > 0 && !isValidRoutedModelTarget(model)) {
+      let router: DefaultRouterSelection | null = null
+      try {
+        if (body.router != null) {
+          if (model.length > 0) throw new Error('Set model or router, not both')
+          router = this._parseDefaultRouter(body.router)
+        }
+        if (model.length > 0 && !isValidRoutedModelTarget(model)) {
+          throw new Error('model must be "<service>", "<peerId>@<service>", or empty to clear')
+        }
+      } catch (error) {
         res.writeHead(400, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({ ok: false, error: 'model must be "<service>", "<peerId>@<service>", or empty to clear' }))
+        res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
         return
       }
       this._defaultRoutedModel = model.length > 0 ? model : null
-      await this._mergeStateFile({ defaultRoutedModel: this._defaultRoutedModel })
-      log(`Default routed model set: ${this._defaultRoutedModel ?? 'none'}`)
+      this._defaultRouter = router
+      await this._mergeStateFile({ defaultRoutedModel: this._defaultRoutedModel, defaultRouter: this._defaultRouterJson })
+      log(`Default route set: model=${this._defaultRoutedModel ?? 'none'} router=${JSON.stringify(this._defaultRouterJson)}`)
       res.writeHead(200, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel }))
+      res.end(JSON.stringify({ ok: true, model: this._defaultRoutedModel, router: this._defaultRouterJson }))
       return
     }
 
@@ -2703,6 +2819,7 @@ export class BuyerProxy {
       let parsed: Record<string, unknown>
       try {
         parsed = JSON.parse(Buffer.concat(chunks).toString()) as Record<string, unknown>
+        if (!parsed || typeof parsed !== 'object' || Array.isArray(parsed)) throw new Error('Invalid conversation update')
       } catch {
         res.writeHead(400, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Invalid JSON body' }))
@@ -2725,6 +2842,18 @@ export class BuyerProxy {
         res.writeHead(404, { 'content-type': 'application/json' })
         res.end(JSON.stringify({ ok: false, error: 'Unknown conversation' }))
         return
+      }
+      if ('routingSelection' in parsed) {
+        try {
+          if ('pinnedModel' in parsed) throw new Error('Update routingSelection or pinnedModel, not both')
+          if (parsed.routingSelection !== null) this._validateRouterSelection(parsed.routingSelection)
+        } catch (error) {
+          res.writeHead(400, { 'content-type': 'application/json' })
+          res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
+          return
+        }
+        const selection = parsed.routingSelection as ConversationRouterSelection | null
+        conversation = this._conversations.setRoutingSelection(id, selection)!
       }
       if ('pinnedModel' in parsed) {
         const pin = typeof parsed.pinnedModel === 'string' ? parsed.pinnedModel.trim() : ''
@@ -3101,7 +3230,7 @@ export class BuyerProxy {
       res.writeHead(400, responseHeaders)
       res.end(JSON.stringify({
         error: {
-          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", or "videos".`,
+          message: `Unknown model type "${url.searchParams.get('type') ?? ''}" — expected "text", "images", "decisions", "videos", or "routers".`,
           type: 'invalid_request_error',
           param: 'type',
         },
@@ -3109,10 +3238,57 @@ export class BuyerProxy {
       return
     }
 
+    if (typeFilter === 'router') {
+      const routers = await this._networkRouters(peers, requestPolicy)
+      log(`GET /v1/models?type=router answered locally: ${routers.length} routers`)
+      res.writeHead(200, responseHeaders)
+      res.end(JSON.stringify({ object: 'list', data: routers }))
+      return
+    }
+
     const data = typeFilter === 'all' ? models : models.filter((entry) => entry.type === typeFilter)
     log(`GET /v1/models answered locally: ${data.length} models across ${peers.length} peers${typeFilter ? ` (type=${typeFilter})` : ''}`)
     res.writeHead(200, responseHeaders)
     res.end(JSON.stringify({ object: 'list', data }))
+  }
+
+  /**
+   * Routing services on the network, one entry per service id with each
+   * router peer offering it. A router is listed only when a request could pay
+   * it (see `_routerExclusionReasons`), and under a gateway policy its models
+   * are cut to the ones the policy allows. Model lists are free calls, cached
+   * per router.
+   */
+  private async _networkRouters(peers: PeerInfo[], requestPolicy: RoutingPolicy | null): Promise<NetworkRouterEntry[]> {
+    const policy = this._effectivePolicy(requestPolicy)
+    const services = await buildRoutingServices(peers, this._modelRoutingClient, this._node, this._routingModels)
+    const created = Math.floor(this._now() / 1000)
+    const byId = new Map<string, NetworkRouterEntry>()
+    for (const service of services) {
+      const peer = peers.find((candidate) => candidate.peerId === service.peerId)
+      if (!peer || this._routerExclusionReasons(peer, service.serviceId, requestPolicy).length > 0) continue
+      const models = service.catalog
+        ? [...new Set(service.catalog.models.map((model) => model.serviceId))]
+          .filter((model) => !policy || policyAllowsModel(policy, model))
+          .sort((a, b) => a.localeCompare(b))
+        : null
+      const price = Number(service.priceMicroUsdc)
+      let entry = byId.get(service.serviceId)
+      if (!entry) {
+        entry = { id: service.serviceId, name: service.label, object: 'model', created, owned_by: 'antseed', type: 'router', peers: [] }
+        byId.set(service.serviceId, entry)
+      }
+      entry.peers.push({
+        peerId: service.peerId,
+        ...(service.sellerName ? { displayName: service.sellerName } : {}),
+        provider: service.provider,
+        serviceId: service.serviceId,
+        model: `${service.peerId}@${service.serviceId}`,
+        priceUsdPerRequest: Number.isFinite(price) ? price / 1_000_000 : null,
+        models,
+      })
+    }
+    return [...byId.values()].sort((a, b) => a.id.localeCompare(b.id))
   }
 
   /**
@@ -3289,6 +3465,20 @@ export class BuyerProxy {
       return
     }
 
+    // Per-request routing options (`routing` in the body) are read here and
+    // stripped, so they never reach a seller, whatever the model. A malformed
+    // `routing` is reported only when a router serves the request.
+    let routingOptions: RequestRoutingOptions = {}
+    let invalidRouting: string | null = null
+    if (method === 'POST' && isCompletionRequestPath(path)) {
+      const taken = takeRoutingOptions(serializedReq)
+      if (taken.kind === 'options') {
+        serializedReq = taken.request
+        routingOptions = taken.options
+        invalidRouting = taken.invalid ?? null
+      }
+    }
+
     if (nativeVideo) {
       // Re-classify with the body: some APIs (Venice) carry the job ID in it.
       const prepared = prepareVideoRequest(nativeVideoRoute(serializedReq) ?? nativeVideo, serializedReq.headers, this._resourceRoutes)
@@ -3316,6 +3506,7 @@ export class BuyerProxy {
     const conversationIdentity = isConversationRequest
       ? extractConversationIdentity(serializedReq.headers, conversationBody)
       : null
+    const routingConversationKey = conversationIdentity ? `${conversationIdentity.tool}:${conversationIdentity.sessionKey}` : null
     // Internal marker from the system proxy: source profile used only for
     // local conversation attribution. Stripped here so it never reaches a seller.
     delete serializedReq.headers[SYSTEM_PROXY_SOURCE_HEADER]
@@ -3325,6 +3516,10 @@ export class BuyerProxy {
     const storedConversation = conversationIdentity && trackedConversationKey
       ? this._conversations.get(`${conversationIdentity.tool}:${trackedConversationKey}`)
       : null
+    // Use this chat's router override when present; otherwise follow the buyer's default choice.
+    const conversationSelection = storedConversation?.routingSelection ?? null
+    // Keep this request's choice stable; later selection changes affect subsequent requests.
+    const routerSelection = structuredClone(conversationSelection ?? this._defaultRouter)
     const storedAutoRoute = storedConversation?.peerSource === 'auto' && storedConversation.pinnedModel
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
@@ -3334,8 +3529,244 @@ export class BuyerProxy {
     const preferredPeerHeader = normalizePeerId(serializedReq.headers['x-antseed-prefer-peer'] ?? '')
     const preferredConversationPeerId = preferredPeerHeader ?? storedAutoRoute?.peerId ?? null
     const effectiveRoutedModel = chatPinnedModel ?? this._defaultRoutedModel
-    let trackedConversationId: string | null = storedConversation?.id ?? null
+    // Where a router pin can come from besides the request's own model: the
+    // `antseed` alias resolves to the chat's explicit pin or, when the chat
+    // chose no route of its own (neither a pin nor a router), the default
+    // route; a system-proxied request follows the chat's explicit pin. An
+    // automatic chat route (the seller a router chose last turn) never
+    // counts, so every turn of a router-pinned chat is ranked again.
+    const userChatPin = storedConversation?.peerSource === 'user' ? storedConversation.pinnedModel : null
+    const aliasTarget = userChatPin ?? (conversationSelection ? null : this._defaultRoutedModel)
 
+    // Reuse disconnect cancellation for both the recommendation and the eventual inference call.
+    const clientAbortController = new AbortController()
+    const onClientAbort = (): void => {
+      if (clientAbortController.signal.aborted) return
+      clientAbortController.abort()
+      log(`Client disconnected; aborting upstream request reqId=${serializedReq.requestId.slice(0, 8)}`)
+    }
+    req.once('close', () => {
+      if (!req.complete && !res.writableEnded) onClientAbort()
+    })
+    res.once('close', () => {
+      if (!res.writableEnded) onClientAbort()
+    })
+    // Explicit model/seller choices bypass recommendations, even when the default is a router.
+    // A system-proxy connection's model was assigned at connect time, not chosen by the tool:
+    // under a router it stands for the automatic alias, unless this chat is pinned. The request
+    // is only rewritten once the router path is certain (below), so a request that goes direct
+    // keeps its connect-time model.
+    const systemRoutedAsAlias = routerSelection !== null && systemRoutedModel && storedConversation?.peerSource !== 'user'
+    const rawService = systemRoutedAsAlias ? ROUTED_MODEL_ALIAS : extractRequestedService(serializedReq)
+    // `<routerPeer>@<routingServiceId>`: the request names a routing service as
+    // its model, so that router picks the model and seller for this request.
+    const routerPinSource = rawService === ROUTED_MODEL_ALIAS
+      ? aliasTarget
+      : systemRoutedModel && userChatPin ? userChatPin : rawService
+    const pinnedRouter = await this._resolvePinnedRouter(routerPinSource)
+    const autoRequested = routerSelection !== null
+      && rawService === ROUTED_MODEL_ALIAS
+    const chatModelPin = storedConversation?.peerSource === 'user' ? chatPinnedModel : null
+    if (autoRequested && chatModelPin) {
+      serializedReq = withRoutedModel(serializedReq, chatModelPin)
+    }
+    const useModelRouter = pinnedRouter !== null || (autoRequested && !chatModelPin
+      && !getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined))
+    if (useModelRouter && systemRoutedAsAlias) {
+      serializedReq = withRoutedModel(serializedReq, ROUTED_MODEL_ALIAS)
+    }
+    // A request without `routing` uses the saved router settings (tradeoff,
+    // model allow list) when it pins the router those settings belong to.
+    const savedRouter = this._defaultRouter
+    const savedForPinned = pinnedRouter && savedRouter && sameRoutingServiceTarget(savedRouter.service, pinnedRouter.service)
+      ? structuredClone(savedRouter)
+      : null
+    const baseSelection = pinnedRouter ? savedForPinned ?? pinnedRouter : routerSelection
+    const activeSelection: RouterSelection | null = baseSelection && routingOptions.costQualityTradeoff !== undefined
+      ? { ...baseSelection, costQualityTradeoff: routingOptions.costQualityTradeoff }
+      : baseSelection
+    const context: BuyerDispatchContext = {
+      request: serializedReq, requiredParameters, requestPolicy, signal: clientAbortController.signal,
+      systemRoutedModel, conversationIdentity, conversationBody, storedConversation,
+      effectivePinnedPeer, effectiveRoutedModel, chatPinnedModel,
+      preferredConversationPeerId,
+      // Cache-reuse observations only feed a router, so skip them when none is configured.
+      routingConversationKey: activeSelection ? routingConversationKey : null,
+      spendAttributionTag,
+    }
+
+    // Both paths return an inference answer; only the router path buys a recommendation first.
+    if (activeSelection && useModelRouter) {
+      if (invalidRouting) {
+        sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'invalid_routing', message: invalidRouting, param: 'routing' } })
+        return
+      }
+      const refusal = await this._routerRefusal(activeSelection, requestPolicy)
+      if (refusal) {
+        log(`Routing service refused before ranking: ${refusal.error.message}`)
+        sendJson(res, 403, refusal)
+        return
+      }
+      await this._dispatchViaModelRouter(res, context, activeSelection)
+    } else {
+      await this._dispatchDirectModelRequest(res, context)
+    }
+  }
+
+  /**
+   * Buy ranked recommendations, then send each one through the normal inference path
+   * until one succeeds. A failed exact peer falls back to the next recommendation.
+   */
+  private async _dispatchViaModelRouter(
+    res: ServerResponse,
+    context: BuyerDispatchContext,
+    selection: RouterSelection,
+  ): Promise<void> {
+    const { request, requiredParameters, requestPolicy, signal, routingConversationKey, spendAttributionTag } = context
+    const conversationId = this._trackRouterConversation(context)
+    let recommendations: RouteRecommendation[]
+    try {
+      const client = this._modelRoutingClient
+      if (!selection.service) throw new Error('Select an exact routing-service target')
+      const peers = await this._getPeers()
+      // The router may only recommend destinations the buyer's own policies allow.
+      const candidates = eligibleRouterCandidates(request, peers, requiredParameters, this._routingPreferences,
+        (policyRequest, peer) => peerAllowedByPolicy(this._node.router as BuyerPolicyRouter | null, policyRequest, peer)
+          && this._routerCandidateAllowedByRequestPolicy(requestPolicy, policyRequest, peer)
+          && !isCoolingDown(this._peerHealth.get(peer.peerId), this._now()))
+      recommendations = await executeRouterSelection({
+        node: this._node, client, request, peers, candidates,
+        conversationKey: routingConversationKey, selection, modelsCache: this._routingModels,
+        ...(request.headers[BUYER_IDENTITY_HEADER] ? { buyerIdentity: request.headers[BUYER_IDENTITY_HEADER] } : {}),
+        signal: AbortSignal.any([signal, AbortSignal.timeout(120_000)]),
+        onRoutingRequest: requestId => {
+          if (spendAttributionTag) this._spendAttribution.track(requestId, spendAttributionTag)
+          if (conversationId) this._trackRequestConversation(requestId, conversationId, undefined, 'routing')
+        },
+      })
+    } catch (error) {
+      // Report routing failures rather than silently choosing a model for the user.
+      const message = error instanceof Error ? error.message : String(error)
+      writeDispatchFailure(res, error instanceof NoEligibleCandidatesError
+        ? dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
+          error: { type: 'invalid_request_error', code: 'no_eligible_candidates', message },
+        }))
+        : dispatchFailure(502, { 'content-type': 'application/json' }, JSON.stringify({
+          error: { type: 'routing_error', message },
+        })))
+      return
+    }
+
+    let lastFailure: DispatchFailure | null = null
+    for (const recommendation of recommendations) {
+      // Never switch sellers once the user has disconnected or a response has started.
+      if (signal.aborted || res.headersSent || res.writableEnded) return
+      // Each attempt has its own billing ID, but all attempts count as one chat turn.
+      const attempt = requestForRecommendation(request, recommendation, randomUUID())
+      if (spendAttributionTag) this._spendAttribution.track(attempt.requestId, spendAttributionTag)
+      if (conversationId) this._trackRequestConversation(attempt.requestId, conversationId, request.requestId)
+      const result = await this._dispatchInference(res, context, attempt, conversationId)
+      if (result.done) return
+      lastFailure = result
+      // Only try the next recommendation after a clear seller refusal, never after an ambiguous
+      // transport failure or timeout (the seller may have done paid work) or a buyer-side fault.
+      if (result.errorMessage !== null || isBuyerFault(result) || !RECOMMENDATION_FALLBACK_STATUS_CODES.has(result.statusCode)) break
+      log(`Recommendation ${recommendation.peerId ? `${recommendation.peerId.slice(0, 12)}...@` : ''}${recommendation.serviceId} failed (${result.statusCode}); trying the next recommendation.`)
+    }
+    if (signal.aborted) return
+    writeDispatchFailure(res, lastFailure ?? dispatchFailure(502, { 'content-type': 'application/json' }, JSON.stringify({
+      error: { type: 'routing_error', message: 'No recommended destination could serve this request' },
+    })))
+  }
+
+  /**
+   * The router selection a `<peerId>@<serviceId>` model names, when that
+   * peer's routing service is `<serviceId>`. A peer missing from the cache
+   * gets one refresh first, so a router that just came online is not taken
+   * for a seller. Still missing, the pin goes down the seller-pin path, which
+   * reports the peer as unreachable.
+   */
+  private async _resolvePinnedRouter(model: string | null): Promise<RouterSelection | null> {
+    const pin = model ? parsePeerPinnedService(model) : null
+    if (!pin) return null
+    let peers = await this._getPeers()
+    if (!peers.some((peer) => peer.peerId.toLowerCase() === pin.peerId)) {
+      peers = await this._getPeers({ forceRefresh: true })
+    }
+    const service = findPinnedRoutingService(peers, pin.peerId, pin.service)
+    return service ? { kind: 'router', service } : null
+  }
+
+  /**
+   * Why a routing service may not be paid, the way a pinned seller is judged:
+   * the gateway policy's model allow list (the router's service id counts as
+   * its model), its seller rules and strict model routes, and the buyer's
+   * hard limits, all through `routingServicePolicy`. Empty when allowed.
+   */
+  private _routerExclusionReasons(peer: PeerInfo, serviceId: string, requestPolicy: RoutingPolicy | null): string[] {
+    const facts = this._policyFacts(peer, null)
+    const reasons = requestPolicy ? pinnedPeerExclusionReasons(routingServicePolicy(requestPolicy), facts, serviceId) : []
+    if (requestPolicy && !policyAllowsModel(this._effectivePolicy(requestPolicy), serviceId)) reasons.unshift('model not allowed')
+    addBuyerConfigReasons(reasons, policyExclusionReasons(routingServicePolicy(this._buyerHardPolicy()), facts))
+    return reasons
+  }
+
+  /** A 403 body when the policy forbids paying this router for a ranking; null when allowed or its peer is unknown. */
+  private async _routerRefusal(selection: RouterSelection, requestPolicy: RoutingPolicy | null): Promise<{ error: { type: string; code: string; message: string; param?: string } } | null> {
+    const service = selection.service
+    if (!service) return null
+    const peer = (await this._getPeers()).find((candidate) => candidate.peerId.toLowerCase() === service.peerId.toLowerCase())
+    if (!peer) return null
+    const reasons = this._routerExclusionReasons(peer, service.serviceId, requestPolicy)
+    if (reasons.length === 0) return null
+    const label = `${service.peerId.slice(0, 12)}...@${service.serviceId}`
+    if (reasons[0] === 'model not allowed') {
+      return { error: { type: 'permission_error', code: 'model_not_allowed', param: 'model',
+        message: `Routing service "${service.serviceId}" is not allowed by the routing policy.` } }
+    }
+    return { error: { type: 'permission_error', code: 'peer_not_allowed',
+      message: `Routing service ${label} is not allowed by the routing policy (${reasons.join('; ')}).` } }
+  }
+
+  private _routerCandidateAllowedByRequestPolicy(
+    requestPolicy: RoutingPolicy | null,
+    request: SerializedHttpRequest,
+    peer: PeerInfo,
+  ): boolean {
+    if (!requestPolicy) return true
+    const provider = getExplicitProviderOverride(request)
+    const serviceId = extractRequestedService(request)
+    const offer = provider && serviceId ? findAdvertisedServiceOffer(peer, provider, serviceId) : null
+    return offer !== null
+      && this._policyAllowsOffer(requestPolicy, peer, offer)
+      && policyExclusionReasons(this._buyerHardPolicy(), this._policyFacts(peer, offer)).length === 0
+  }
+
+  /** Track a router-served chat before buying its recommendation, so routing costs are attributed. */
+  private _trackRouterConversation(context: BuyerDispatchContext): string | null {
+    const { request, conversationIdentity, conversationBody, storedConversation } = context
+    if (!conversationIdentity?.isUserThread) return storedConversation?.id ?? null
+    if (!storedConversation && isTitleGenerationRequest(conversationBody)) return null
+    const { id } = this._conversations.touch({
+      tool: conversationIdentity.tool,
+      sessionKey: conversationIdentity.parentSessionKey ?? conversationIdentity.sessionKey,
+      snippet: storedConversation?.snippet ? null : extractFirstUserSnippet(conversationBody),
+      lastModel: null,
+    })
+    // Inference attempts link to this ID so fallbacks count as one chat turn.
+    this._trackRequestConversation(request.requestId, id)
+    return id
+  }
+
+  /** Apply model aliases and chat pins, then attach inference to its conversation for accounting. */
+  private _prepareInferenceRequest(
+    res: ServerResponse,
+    context: BuyerDispatchContext,
+  ): { request: SerializedHttpRequest; conversationId: string | null } | null {
+    const { effectiveRoutedModel, chatPinnedModel, systemRoutedModel,
+      storedConversation, conversationIdentity, conversationBody } = context
+    let serializedReq = context.request
+    let trackedConversationId = storedConversation?.id ?? null
     // Resolve the `antseed` model alias to the session's default route first,
     // so the regular `<peerId>@<service>` pin rewrite below picks up the
     // substituted value. Tool configs written by the desktop carry the alias
@@ -3353,7 +3784,7 @@ export class BuyerProxy {
           param: 'model',
         },
       }))
-      return
+      return null
     }
     if (aliasResult.substituted) {
       serializedReq = { ...serializedReq, body: aliasResult.body, headers: aliasResult.headers }
@@ -3420,11 +3851,36 @@ export class BuyerProxy {
         this._trackRequestConversation(serializedReq.requestId, tracked.id)
       }
     }
+    return { request: serializedReq, conversationId: trackedConversationId }
+  }
+
+  /** Send a fixed-model or pinned-seller request without buying a model recommendation. */
+  private async _dispatchDirectModelRequest(res: ServerResponse, context: BuyerDispatchContext): Promise<void> {
+    const prepared = this._prepareInferenceRequest(res, context)
+    if (!prepared) return
+    const result = await this._dispatchInference(res, context, prepared.request, prepared.conversationId)
+    if (!result.done) writeDispatchFailure(res, result)
+  }
+
+  /**
+   * Select a seller for the requested model (or the pinned seller) and send the request.
+   * Success is written to `res`; failures are returned so callers can fall back or report them.
+   */
+  private async _dispatchInference(
+    res: ServerResponse,
+    context: BuyerDispatchContext,
+    request: SerializedHttpRequest,
+    trackedConversationId: string | null,
+  ): Promise<PeerDispatchResult> {
     // A chat switched while this request is in flight must keep the new route.
     const conversationPinAtRouting = trackedConversationId
       ? this._conversations.get(trackedConversationId)?.pinnedModel ?? null
       : null
 
+    const nativeVideo = nativeVideoRoute(request)
+    let serializedReq = request
+    const { requiredParameters, requestPolicy, signal, effectivePinnedPeer,
+      preferredConversationPeerId, routingConversationKey } = context
     const {
       body: servicePinBody,
       headers: servicePinHeaders,
@@ -3436,25 +3892,6 @@ export class BuyerProxy {
         log(`Model peer pin applied: peer=${bodyPinnedPeer.slice(0, 12)}...`)
       }
     }
-
-    const clientAbortController = new AbortController()
-    const onClientAbort = (): void => {
-      if (clientAbortController.signal.aborted) {
-        return
-      }
-      clientAbortController.abort()
-      log(`Client disconnected; aborting upstream request reqId=${serializedReq.requestId.slice(0, 8)}`)
-    }
-    req.once('close', () => {
-      if (!req.complete && !res.writableEnded) {
-        onClientAbort()
-      }
-    })
-    res.once('close', () => {
-      if (!res.writableEnded) {
-        onClientAbort()
-      }
-    })
 
     const requestProtocol = detectRequestServiceApiProtocol(serializedReq)
     const requestedService = extractRequestedService(serializedReq)
@@ -3472,8 +3909,7 @@ export class BuyerProxy {
         + '  • Model name prefix:    <peerId>@<model>\n'
         + '  • Session pin:          antseed buyer connection set --peer <peerId>\n'
         + 'Discover peers with:       antseed network browse'
-      res.writeHead(400, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
+      return dispatchFailure(400, { 'content-type': 'application/json' }, JSON.stringify({
         error: {
           type: 'missing_routing_target',
           code: 'missing_routing_target',
@@ -3487,28 +3923,24 @@ export class BuyerProxy {
           },
         },
       }))
-      return
     }
 
     if (requestPolicy && !policyAllowsModel(this._effectivePolicy(requestPolicy), requestedService)) {
-      sendJson(res, 403, {
+      return dispatchFailure(403, { 'content-type': 'application/json' }, JSON.stringify({
         error: {
           type: 'permission_error',
           code: 'model_not_allowed',
           message: `Model "${requestedService ?? 'unknown'}" is not allowed by the routing policy.`,
           param: 'model',
         },
-      })
-      return
+      }))
     }
 
     // Discover peers
     const peers = await this._getPeers()
     if (peers.length === 0) {
       log('No sellers available')
-      res.writeHead(502, { 'content-type': 'text/plain' })
-      res.end('No sellers available on the network. Is a seeder running?')
-      return
+      return dispatchFailure(502, { 'content-type': 'text/plain' }, 'No sellers available on the network. Is a seeder running?')
     }
 
     if (!explicitPeerId && requestedService) {
@@ -3546,8 +3978,7 @@ export class BuyerProxy {
             ? ` "${requestedService}" is a decision model; call POST /v1/systemone.`
             : ''
           log(`Request rejected: model ${requestedService} is served only via ${advertisedProtocols.join(', ')}`)
-          res.writeHead(400, { 'content-type': 'application/json' })
-          res.end(JSON.stringify({
+          return dispatchFailure(400, { 'content-type': 'application/json' }, JSON.stringify({
             error: {
               type: 'unsupported_protocol',
               code: 'unsupported_protocol',
@@ -3556,10 +3987,8 @@ export class BuyerProxy {
               supported_protocols: advertisedProtocols,
             },
           }))
-          return
         }
-        res.writeHead(capabilityRequired ? 422 : 502, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({
+        return dispatchFailure(capabilityRequired ? 422 : 502, { 'content-type': 'application/json' }, JSON.stringify({
           error: capabilityRequired
             ? {
                 type: 'required_capability_unavailable',
@@ -3574,10 +4003,9 @@ export class BuyerProxy {
                 param: 'model',
               },
         }))
-        return
       }
 
-      let lastRetry: Awaited<ReturnType<BuyerProxy['_dispatchToPeer']>> | null = null
+      let lastRetry: PeerDispatchResult | null = null
       let lastVerificationError: string | null = null
       // Set once a seller refused for lack of deposits: every other paid
       // seller would too, so only free ones are still worth trying.
@@ -3587,8 +4015,8 @@ export class BuyerProxy {
         if (unfunded && !isFree(selected)) continue
         if (this._verifier) {
           const makeReach = (chosenId: string): SellerReach =>
-            makeVerifierReach(this._node, selected.peer, chosenId, clientAbortController.signal)
-          const outcome = await this._verifyPeer(selected.peer, makeReach, clientAbortController.signal, requireVerified)
+            makeVerifierReach(this._node, selected.peer, chosenId, signal)
+          const outcome = await this._verifyPeer(selected.peer, makeReach, signal, requireVerified)
           if (!outcome.ok) {
             lastVerificationError = `Peer ${selected.peer.peerId.slice(0, 12)}... failed required verification (${outcome.reason ?? 'failed'}).`
             log(`${lastVerificationError} Trying the next model peer.`)
@@ -3613,8 +4041,9 @@ export class BuyerProxy {
             explicitProvider,
             router,
             false,
-            clientAbortController.signal,
+            signal,
             requestPolicy !== null,
+            routingConversationKey,
           )
           if (result.done) {
             // Only a seller that answered becomes the chat's route: an error
@@ -3626,53 +4055,40 @@ export class BuyerProxy {
                 conversationPinAtRouting,
               )
             }
-            return
+            return result
           }
           // Never retry a video on another seller: a create may already have
           // started (and been charged), and follow-ups only exist on one seller.
-          if (nativeVideo) {
-            res.writeHead(result.statusCode, result.responseHeaders)
-            res.end(result.responseBody)
-            return
-          }
+          if (nativeVideo) return result
           lastRetry = result
-          if (result.responseHeaders[ANTSEED_FAULT_ATTRIBUTION_HEADER]?.toLowerCase() === 'buyer') {
+          if (isBuyerFault(result)) {
             const freeLeft = candidates.slice(index + 1).some(isFree)
             if (result.statusCode === 402 && freeLeft) {
               unfunded = true
               log(`No deposits to pay peer ${selected.peer.peerId.slice(0, 12)}...; trying free sellers only.`)
               break
             }
-            res.writeHead(result.statusCode, result.responseHeaders)
-            res.end(result.responseBody)
-            return
+            return result
           }
           const retrySamePeer = result.statusCode === 429
             && peerAttempt + 1 < MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER
           if (!retrySamePeer) break
           const delayMs = rateLimitRetryDelayMs(result.responseHeaders, peerAttempt)
           log(`Peer ${selected.peer.peerId.slice(0, 12)}... is rate-limited; retrying in ${delayMs}ms.`)
-          if (!await waitForRetry(delayMs, clientAbortController.signal)) return
+          if (!await waitForRetry(delayMs, signal)) return { done: true }
         }
         if (index + 1 < candidates.length) {
           log(`Peer ${selected.peer.peerId.slice(0, 12)}... failed retryably; trying next model peer.`)
         }
       }
 
-      if (lastRetry) {
-        res.writeHead(lastRetry.statusCode, lastRetry.responseHeaders)
-        res.end(lastRetry.responseBody)
-      } else {
-        res.writeHead(502, { 'content-type': 'application/json' })
-        res.end(JSON.stringify({
-          error: {
-            type: 'peer_verification_failed',
-            code: 'peer_verification_failed',
-            message: lastVerificationError ?? `No verified peer currently serves model "${requestedService}".`,
-          },
-        }))
-      }
-      return
+      return lastRetry ?? dispatchFailure(502, { 'content-type': 'application/json' }, JSON.stringify({
+        error: {
+          type: 'peer_verification_failed',
+          code: 'peer_verification_failed',
+          message: lastVerificationError ?? `No verified peer currently serves model "${requestedService}".`,
+        },
+      }))
     }
 
     const pinnedPeerId = explicitPeerId!
@@ -3739,14 +4155,14 @@ export class BuyerProxy {
           : '--peer flag or session pin'
       const diagnostics = this._formatPeerSelectionDiagnostics(discoveredPeers)
       log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... not discoverable in DHT (${logSource})`)
-      res.writeHead(502, { 'content-type': 'text/plain' })
-      res.end(
-        `Pinned peer ${pinnedPeerId.slice(0, 12)}... is not reachable right now. `
+      // Also the answer for a `<peerId>@<routingServiceId>` pin whose router
+      // is offline: an absent peer cannot be told apart from a seller.
+      return dispatchFailure(502, { 'content-type': 'text/plain' },
+        `Pinned peer ${pinnedPeerId.slice(0, 12)}... (seller or routing service) is not reachable right now. `
         + 'It may be offline, not announcing, or temporarily unreachable. '
         + 'Pick a different service in Discover or try again later. '
         + diagnostics,
       )
-      return
     }
 
     if (routingPeers.length === 0) {
@@ -3763,25 +4179,21 @@ export class BuyerProxy {
         if (!providers.includes(explicitProvider)) {
           const providerList = providers.length > 0 ? providers.join(', ') : 'none'
           log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer explicit provider=${explicitProvider}`)
-          res.writeHead(502, { 'content-type': 'text/plain' })
-          res.end(
+          return dispatchFailure(502, { 'content-type': 'text/plain' },
             `Pinned peer ${pinnedPeerId.slice(0, 12)}... does not offer provider=${explicitProvider}. `
             + `Available providers: ${providerList}. `
             + 'Remove or change the x-antseed-provider header, or pick a different peer. '
             + diagnostics,
           )
-          return
         }
       }
 
       log(`Pinned peer ${pinnedPeerId.slice(0, 12)}... filtered out by protocol/service match`)
-      res.writeHead(502, { 'content-type': 'text/plain' })
-      res.end(
+      return dispatchFailure(502, { 'content-type': 'text/plain' },
         `Pinned peer ${pinnedPeerId.slice(0, 12)}... does not support this request `
         + `(${protocolLabel}, ${providerLabel}, ${serviceLabel}). `
         + `Pick a different service in Discover. ${diagnostics}`,
       )
-      return
     }
 
     log(`Routing candidates: ${routingPeers.length} peer(s)`)
@@ -3795,9 +4207,7 @@ export class BuyerProxy {
     // if an invariant breaks.
     if (!selectedPeer) {
       log(`Invariant: pinned peer ${pinnedPeerId.slice(0, 12)}... present in DHT but missing from narrowed candidate list`)
-      res.writeHead(502, { 'content-type': 'text/plain' })
-      res.end(`Pinned peer ${pinnedPeerId.slice(0, 12)}... is currently unreachable. Try again in a moment.`)
-      return
+      return dispatchFailure(502, { 'content-type': 'text/plain' }, `Pinned peer ${pinnedPeerId.slice(0, 12)}... is currently unreachable. Try again in a moment.`)
     }
     const policyRouter = router as BuyerPolicyRouter | null | undefined
     const selectedPlan = routingPlans.get(selectedPeer.peerId)
@@ -3812,8 +4222,7 @@ export class BuyerProxy {
         )
       : requiredParameters
     if (missingRequired.length > 0) {
-      res.writeHead(422, { 'content-type': 'application/json' })
-      res.end(JSON.stringify({
+      return dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
         error: {
           type: 'required_capability_unavailable',
           code: 'required_capability_unavailable',
@@ -3821,7 +4230,6 @@ export class BuyerProxy {
           param: REQUIRED_PARAMETERS_HEADER,
         },
       }))
-      return
     }
     const pinnedRequest = pinnedServiceId ? withRoutedModel(serializedReq, pinnedServiceId) : serializedReq
     // A hard pin cannot escape the gateway's policy: an excluded seller is
@@ -3839,30 +4247,27 @@ export class BuyerProxy {
       addBuyerConfigReasons(reasons, policyExclusionReasons(this._buyerHardPolicy(), facts))
       if (reasons.length > 0) {
         log(`Pinned peer ${selectedPeer.peerId.slice(0, 12)}... refused by routing policy: ${reasons.join('; ')}`)
-        sendJson(res, 403, {
+        return dispatchFailure(403, { 'content-type': 'application/json' }, JSON.stringify({
           error: {
             type: 'permission_error',
             code: 'peer_not_allowed',
             message: `Seller ${selectedPeer.peerId.slice(0, 12)}... is not allowed by the routing policy (${reasons.join('; ')}).`,
           },
-        })
-        return
+        }))
       }
     }
     if (!peerAllowedByPolicy(policyRouter, pinnedRequest, selectedPeer)) {
       log(`Pinned peer ${selectedPeer.peerId.slice(0, 12)}... filtered out by buyer routing policy`)
-      res.writeHead(502, { 'content-type': 'text/plain' })
-      res.end(
+      return dispatchFailure(502, { 'content-type': 'text/plain' },
         `Pinned peer ${selectedPeer.peerId.slice(0, 12)}... is outside your buyer routing policy. `
         + 'Pick a different service in Discover or adjust your buyer pricing/reputation limits.',
       )
-      return
     }
 
     if (this._verifier) {
       const makeReach = (chosenId: string): SellerReach =>
-        makeVerifierReach(this._node, selectedPeer, chosenId, clientAbortController.signal)
-      const outcome = await this._verifyPeer(selectedPeer, makeReach, clientAbortController.signal, pinnedPolicy?.requireVerified === true)
+        makeVerifierReach(this._node, selectedPeer, chosenId, signal)
+      const outcome = await this._verifyPeer(selectedPeer, makeReach, signal, pinnedPolicy?.requireVerified === true)
       const short = selectedPeer.peerId.slice(0, 12)
       if (outcome.verified) {
         log(`Verified ${short}... via ${outcome.sdk}`)
@@ -3870,12 +4275,10 @@ export class BuyerProxy {
         log(`Verification ${outcome.sdk ? `(${outcome.sdk}) ` : ''}did not pass for ${short}...: ${outcome.reason ?? 'failed'}${outcome.ok ? ' (optional — routing anyway)' : ''}`)
       }
       if (!outcome.ok) {
-        res.writeHead(502, { 'content-type': 'text/plain' })
-        res.end(
+        return dispatchFailure(502, { 'content-type': 'text/plain' },
           `Pinned peer ${short}... failed required verification (${outcome.reason ?? 'failed'}). `
           + 'Pick a different peer, or run without --require-verifier.',
         )
-        return
       }
     }
 
@@ -3890,7 +4293,9 @@ export class BuyerProxy {
       explicitProvider,
       router,
       true,
-      clientAbortController.signal,
+      signal,
+      false,
+      routingConversationKey,
     )
     if (result.done && trackedConversationId && pinnedServiceId) {
       this._conversations.recordRoutedModel(
@@ -3899,12 +4304,8 @@ export class BuyerProxy {
         conversationPinAtRouting,
       )
     }
-    if (!result.done) {
-      // Pinned peer returned a retryable error. We never retry against another
-      // peer for an explicit pin, so surface the error to the client.
-      res.writeHead(result.statusCode, result.responseHeaders)
-      res.end(result.responseBody)
-    }
+    // A pinned peer is never retried against another peer; the caller reports any failure.
+    return result
   }
 
   private async _verifyPeer(
@@ -4023,10 +4424,8 @@ export class BuyerProxy {
     pinned: boolean,
     requestSignal: AbortSignal,
     gatewayRouted = false,
-  ): Promise<
-    | { done: true }
-    | { done: false; statusCode: number; responseBody: Buffer; responseHeaders: Record<string, string>; errorMessage: string | null }
-  > {
+    routingConversationKey: string | null = null,
+  ): Promise<PeerDispatchResult> {
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
       ?? resolvePeerRoutePlan(selectedPeer, requestProtocol, requestedService, explicitProvider, 'lenient')
@@ -4190,6 +4589,8 @@ export class BuyerProxy {
           },
         }, { signal: requestSignal, pinned, ...(buyerIdentity ? { buyerIdentity } : {}) })
 
+        recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
+
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
         responseForClient = adaptPeerResponse(responseForClient)
         if (
@@ -4284,6 +4685,8 @@ export class BuyerProxy {
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
           log(`Upstream raw error detail: ${summarizeErrorResponse(upstreamResponse)}`)
         }
+
+        recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, upstreamResponse, selectedPeer, requestSignal)
 
         // Only the seller that accepted a video job knows its ID. Remember and
         // persist job ID -> seller so later retrieve requests (even

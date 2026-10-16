@@ -32,6 +32,45 @@ function makeMetadata(overrides?: Partial<PeerMetadata>): PeerMetadata {
 }
 
 describe('encodeMetadata / decodeMetadata', () => {
+  function completedRequestMetadata(priceUsd = 0.001): PeerMetadata {
+    return makeMetadata({ providers: [{
+      provider: 'alpha', services: ['route', 'image'], maxConcurrency: 5, currentLoad: 0,
+      defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
+      serviceApiProtocols: { route: ['model-routing'], image: ['openai-images'] },
+      serviceUnitBillingModels: {
+        route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd }] } },
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+      },
+    }] });
+  }
+
+  it.each([0, 0.000001, 0.001, 0.04])('round-trips v12 request prices of $%s using the image component layout', price => {
+    const original = completedRequestMetadata(price);
+    const decoded = decodeMetadata(encodeMetadata(original));
+    expect(decoded.version).toBe(12);
+    expect(decoded.providers[0]!.serviceUnitBillingModels!.route).toEqual({
+      'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: Math.fround(price) }] },
+    });
+    expect(Math.round(decoded.providers[0]!.serviceUnitBillingModels!.route!['model-routing']!.components[0]!.priceUsd * 1_000_000)).toBe(Math.round(price * 1_000_000));
+    expect(decoded.providers[0]!.serviceUnitBillingModels!.image?.['openai-images']?.version).toBe(1);
+    expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));
+  });
+
+  it('rejects unknown units and model versions in the existing component encoding', () => {
+    const encoded = encodeMetadata(completedRequestMetadata());
+    const price = new Uint8Array(4);
+    new DataView(price.buffer).setFloat32(0, 0.001, false);
+    const marker = new Uint8Array([1, 1, 1, ...price, 0]);
+    const offset = Buffer.from(encoded).indexOf(marker);
+    expect(offset).toBeGreaterThan(0);
+    const invalidVersion = encoded.slice();
+    invalidVersion[offset] = 2;
+    expect(() => decodeMetadata(invalidVersion)).toThrow('model version 2');
+    const invalidUnit = encoded.slice();
+    invalidUnit[offset + 2] = 255;
+    expect(() => decodeMetadata(invalidUnit)).toThrow('component unit');
+    expect(() => decodeMetadata(encoded.slice(0, offset + marker.length - 1))).toThrow();
+  });
   it('round-trips signed video options in v12', () => {
     const metadata = makeMetadata({ version: 12 });
     const video = { durationsSeconds: [5, 10], resolutions: ['720p', '1080p'], aspectRatios: ['16:9', '9:16'], inputs: ['first_frame', 'last_frame'] as const, requiredInputs: ['first_frame'] as const, audio: false };
@@ -90,7 +129,7 @@ describe('encodeMetadata / decodeMetadata', () => {
   it.each([
     ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
     ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
-    ['venice-video', 6], ['fal-video', 7],
+    ['venice-video', 6], ['fal-video', 7], ['model-routing', 8],
   ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
     const metadata = makeMetadata();
     const marker = 'billing-wire-id';

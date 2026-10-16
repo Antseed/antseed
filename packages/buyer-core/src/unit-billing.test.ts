@@ -88,6 +88,40 @@ describe('unit billing adapters', () => {
     serviceApiProtocol: 'openai-images',
   };
 
+  it('bills one completed request per well-formed routing response', () => {
+    const model: UnitBillingModelV1 = { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] };
+    const context: UnitBillingContext = { ...imageContext, serviceApiProtocol: 'model-routing', unitLimits: { completed_requests: 1 } };
+    const response = (statusCode: number, body: unknown) => ({
+      requestId: 'r', statusCode, headers: {}, body: new TextEncoder().encode(JSON.stringify(body)),
+    });
+    const ranked = { id: 'r', object: 'routing.ranking', created: 1, router: { id: 'a', version: '1' }, ranked: [{ candidate_id: 'c' }] };
+
+    expect(isUnitBilledProtocol('model-routing')).toBe(true);
+    expect(validateUnitBillingModelForProtocolV1('model-routing', model)).toEqual([]);
+    expect(validateUnitBillingModelForProtocolV1('openai-images', model)).toEqual(['completed_requests is not supported for openai-images']);
+    const facts = { kind: 'routing' as const, candidateIds: ['c', 'd'] };
+    const cost = (statusCode: number, body: unknown) => computeFinalUnitBilling(model, context, response(statusCode, body), facts).costUsdc;
+    expect(cost(200, ranked)).toBe(1_000n);
+    expect(cost(200, { ...ranked, ranked: [{ candidate_id: 'nope' }, null, { candidate_id: 'd' }] })).toBe(1_000n);
+    expect(cost(200, { ...ranked, ranked: [] })).toBe(0n);
+    expect(cost(200, 'garbage')).toBe(0n);
+    expect(cost(500, ranked)).toBe(0n);
+    // Rankings the buyer's client rejects are never billable.
+    expect(cost(200, { ...ranked, ranked: [null] })).toBe(0n);
+    expect(cost(200, { ...ranked, ranked: [{ candidate_id: 'nope' }] })).toBe(0n);
+    expect(cost(200, { object: 'routing.ranking', ranked: [{ candidate_id: 'c' }] })).toBe(0n);
+    expect(computeFinalUnitBilling(model, context, response(200, ranked), { kind: 'routing', candidateIds: [] }).costUsdc).toBe(0n);
+  });
+
+  it('captures the candidate ids a rank request sends as its routing billing facts', () => {
+    const body = { request: { messages: [] }, routing: { candidates: [{ id: 'c' }, { id: 7 }, null, { id: 'd' }] } };
+    const captured = captureUnitBillingContext({
+      sellerPeerId: 'a'.repeat(40), provider: 'alpha', service: 'alpha-route', serviceApiProtocol: 'model-routing',
+      request: { requestId: 'r', method: 'POST', path: '/v1/routing/rank', headers: { 'content-type': 'application/json' }, body: new TextEncoder().encode(JSON.stringify(body)) },
+    });
+    expect(captured.requestFacts).toEqual({ kind: 'routing', candidateIds: ['c', 'd'] });
+  });
+
   it('routes image and Venice video billing through their adapters', () => {
     const image: UnitBillingModelV1 = { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] };
 
@@ -109,7 +143,7 @@ describe('unit billing adapters', () => {
 
   it('fails closed for completed-request billing', () => {
     const completed: UnitBillingModelV1 = { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.1 }] };
-    expect(validateUnitBillingModelForProtocolV1('openai-images', completed)).toEqual(['completed-request billing is not implemented']);
-    expect(() => estimateUnitRequestCost(completed, imageContext, { units: { completed_requests: 1 } })).toThrow('completed-request billing is not implemented');
+    expect(validateUnitBillingModelForProtocolV1('openai-images', completed)).toEqual(['completed_requests is not supported for openai-images']);
+    expect(() => estimateUnitRequestCost(completed, imageContext, { units: { completed_requests: 1 } })).toThrow('completed_requests is not supported for openai-images');
   });
 });

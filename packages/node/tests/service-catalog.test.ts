@@ -10,6 +10,18 @@ function peer(overrides: Partial<NetworkServiceCatalogPeer>): NetworkServiceCata
 }
 
 describe('network service catalog', () => {
+  it('excludes routing and completed-request APIs without hiding ordinary images', () => {
+    const offers = buildNetworkServiceOffers([peer({
+      providers: ['mixed'], services: ['route', 'summary', 'image'],
+      providerServiceApiProtocols: { mixed: { services: { route: ['model-routing'], summary: ['typesafe-systemone'], image: ['openai-images'] } } },
+      providerServiceUnitBillingModels: { mixed: { services: {
+        summary: { 'typesafe-systemone': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
+        image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
+      } } },
+    })]);
+    expect(offers.map(offer => offer.serviceId)).toEqual(['image']);
+    expect(offers[0]?.minImageUsdPerImage).toBe(0.04);
+  });
   it('uses legacy services when provider pricing only announces defaults', () => {
     const offers = buildNetworkServiceOffers([peer({
       providers: ['openai'],

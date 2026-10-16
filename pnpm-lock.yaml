@@ -129,6 +129,9 @@ importers:
       '@antseed/provider-core':
         specifier: workspace:*
         version: link:../../packages/provider-core
+      '@antseed/router-core':
+        specifier: workspace:*
+        version: link:../../packages/router-core
       '@peculiar/x509':
         specifier: ^2.0.0
         version: 2.0.0
@@ -181,6 +184,9 @@ importers:
         specifier: ^4
         version: 4.3.6
     devDependencies:
+      '@antseed/router-local':
+        specifier: workspace:*
+        version: link:../../plugins/router-local
       '@types/better-sqlite3':
         specifier: ^7.6.13
         version: 7.6.13
@@ -1016,6 +1022,18 @@ importers:
       '@antseed/provider-core':
         specifier: workspace:*
         version: link:../../packages/provider-core
+    devDependencies:
+      '@antseed/node':
+        specifier: workspace:*
+        version: link:../../packages/node
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.7.5)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)
+
+  plugins/provider-default-router:
     devDependencies:
       '@antseed/node':
         specifier: workspace:*
