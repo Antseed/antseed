@@ -1,6 +1,6 @@
 import { mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import { join } from 'node:path';
-import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus } from '@antseed/node';
+import type { AntseedProviderPlugin, Provider, SerializedHttpRequest, ServiceCapabilities, ServiceHealthStatus, UpstreamAccountStatus } from '@antseed/node';
 import { VIDEO_DOWNLOAD_STREAM_HEADER, VIDEO_DOWNLOAD_STREAM_VERSION, validateServiceCapabilityFields } from '@antseed/node';
 import { nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter';
 import {
@@ -24,6 +24,7 @@ const DOWNLOAD_URL_TTL_MS = 24 * 60 * 60_000;
 const MAX_DOWNLOAD_URLS = 1000;
 const DOWNLOAD_URLS_FILE = 'venice-video-download-urls.json';
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
+const ACCEPTED_REASON = 'Venice accepted the empty-prompt model check';
 
 type DownloadUrls = Map<string, { url: string; expiresAt: number }>;
 
@@ -129,23 +130,32 @@ async function readVeniceAccount(baseUrl: string, apiKey: string): Promise<Venic
   }
 }
 
-/** Venice's public video model list: model ID → offline flag, or null when unreadable. */
-async function readVeniceVideoModels(baseUrl: string): Promise<Map<string, boolean> | null> {
+/**
+ * Check that Venice still offers a video model, without generating anything:
+ * queue a request with an empty prompt. Venice looks the model up first, so
+ * `404` means it no longer offers it, while a validation error (`400`/`422`)
+ * means the model is there. Money and key problems are left to the account
+ * check, so every other answer is `unknown`.
+ */
+async function checkVeniceVideoModel(baseUrl: string, apiKey: string, service: string): Promise<ServiceHealthStatus> {
   try {
-    const response = await fetch(`${baseUrl}/api/v1/models?type=video`, {
+    const response = await fetch(`${baseUrl}/api/v1/video/queue`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model: service, prompt: '' }),
       redirect: 'error',
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
     });
-    if (!response.ok) return null;
-    const data = parseJsonObject(Buffer.from(await response.arrayBuffer()))?.data;
-    if (!Array.isArray(data)) return null;
-    const models = new Map<string, boolean>();
-    for (const model of data as Array<{ id?: unknown; model_spec?: { offline?: unknown } }>) {
-      if (typeof model?.id === 'string') models.set(model.id, model.model_spec?.offline === true);
+    await response.body?.cancel();
+    if (response.status === 400 || response.status === 422) return { status: 'available' };
+    if (response.status === 404) return { status: 'unavailable', reason: 'Venice no longer offers this model' };
+    if (response.ok) {
+      console.warn(`[venice-video] Venice accepted an empty-prompt health check for ${service}; no longer checking it`);
+      return { status: 'unknown', reason: ACCEPTED_REASON };
     }
-    return models.size > 0 ? models : null;
-  } catch {
-    return null;
+    return { status: 'unknown', reason: `Venice model check returned HTTP ${response.status}` };
+  } catch (cause) {
+    return { status: 'unknown', reason: `Venice model check failed: ${cause instanceof Error ? cause.message : String(cause)}` };
   }
 }
 
@@ -240,6 +250,7 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
+    const acceptedModelChecks = new Set<string>();
     let activeDownloads = 0;
     // Private (VPS-backed) Venice models return a pre-signed download_url on
     // create instead of streaming the file from retrieve. The seller keeps
@@ -298,17 +309,21 @@ const plugin: AntseedProviderPlugin = {
       init,
       handleRequest,
       async checkServiceHealth(checked) {
-        const [account, models] = await Promise.all([readVeniceAccount(baseUrl, apiKey), readVeniceVideoModels(baseUrl)]);
-        return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
-          if (account.status === 'unavailable') return [service, account];
-          if (models && !models.has(service)) return [service, { status: 'unavailable', reason: 'Venice no longer offers this model' }];
-          if (models?.get(service)) return [service, { status: 'unavailable', reason: 'Venice reports this model offline' }];
-          if (account.status === 'unknown') return [service, account];
-          if (account.balanceUsd <= minBalanceUsd) {
-            return [service, { status: 'unavailable', reason: `Venice balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` }];
-          }
-          return [service, { status: 'available', balanceUsd: account.balanceUsd }];
+        const results = await Promise.all(checked.map(async (service): Promise<ServiceHealthStatus> => {
+          if (acceptedModelChecks.has(service)) return { status: 'unknown', reason: 'model check disabled' };
+          const result = await checkVeniceVideoModel(baseUrl, apiKey, service);
+          if (result.status === 'unknown' && result.reason === ACCEPTED_REASON) acceptedModelChecks.add(service);
+          return result;
         }));
+        return Object.fromEntries(checked.map((service, index): [string, ServiceHealthStatus] => [service, results[index]!]));
+      },
+      async checkUpstreamAccount(): Promise<UpstreamAccountStatus> {
+        const account = await readVeniceAccount(baseUrl, apiKey);
+        if (account.status !== 'ok') return account;
+        if (account.balanceUsd <= minBalanceUsd) {
+          return { status: 'unavailable', reason: `Venice balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` };
+        }
+        return { status: 'available', balanceUsd: account.balanceUsd };
       },
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);
