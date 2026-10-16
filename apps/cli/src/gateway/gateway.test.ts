@@ -235,6 +235,27 @@ test('gateway pays with the key\'s buyer identity and ignores the client\'s choi
   }
 })
 
+test('gateway never forwards the verifier\'s request-id or preimage-capture headers', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Team', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const headers = {
+      'x-antseed-request-id': '6b0c5a52-5b8f-4b44-9a43-1e4f4f6f2a11',
+      'x-antseed-capture-response-auth-preimages': '1',
+    }
+    assert.equal((await request(gateway.port, '/v1/responses', { method: 'POST', key: secret, body: '{}', headers })).status, 200)
+    assert.equal(buyer.captured.length, 1)
+    assert.equal(buyer.captured[0]!.headers['x-antseed-request-id'], undefined)
+    assert.equal(buyer.captured[0]!.headers['x-antseed-capture-response-auth-preimages'], undefined)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('spend signed by a different identity than the key\'s is not booked to the key', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 100_000, reportIdentity: 'other' })

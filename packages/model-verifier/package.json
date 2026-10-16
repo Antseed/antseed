@@ -1,0 +1,32 @@
+{
+  "name": "@antseed/model-verifier",
+  "version": "0.1.0",
+  "description": "Standalone KBF model verifier: audit any OpenAI- or Anthropic-compatible endpoint against a published model reference",
+  "type": "module",
+  "files": [
+    "dist"
+  ],
+  "main": "dist/index.js",
+  "types": "dist/index.d.ts",
+  "bin": {
+    "antseed-verify": "./dist/cli.js"
+  },
+  "engines": {
+    "node": ">=20.0.0"
+  },
+  "scripts": {
+    "prebuild": "node ../../scripts/remove-paths.mjs dist",
+    "build": "tsc",
+    "postbuild": "node ../../scripts/fix-executable.mjs dist/cli.js",
+    "test": "vitest run",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@antseed/fingerprints": "workspace:*"
+  },
+  "devDependencies": {
+    "@types/node": "^20.19.0",
+    "typescript": "^5.5.0",
+    "vitest": "^2.0.0"
+  }
+}

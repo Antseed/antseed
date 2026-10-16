@@ -123,6 +123,7 @@ Your services, prices and categories should appear. Run `antseed network browse`
 - [Seller payments](/docs/provide/payments): how USDC reaches your wallet.
 - [Verified identity](/docs/provide/verified-identity): prove you control a domain or GitHub account.
 - [TEE seller](/docs/provide/tee): attest your node so privacy-sensitive buyers can choose you.
+- [Model verification](/docs/model-verification): how auditors check that you serve the models you advertise.
 - [Metrics](/docs/provide/metrics): monitor requests, tokens and earnings with Prometheus.
 - [Provider plugin API](/docs/provider-api): build a plugin for an upstream the built-in plugins don't cover.
 - [`join-provider` agent skill](https://github.com/AntSeed/antseed/tree/main/skills/join-provider): let a coding agent walk you through this setup.

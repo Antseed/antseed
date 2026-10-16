@@ -22,6 +22,7 @@ import type { ResponseAuthSink } from './interfaces.js';
 import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
+import { encodeHttpRequest, encodeHttpResponse } from '@antseed/protocol/request-codec';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
@@ -52,6 +53,8 @@ export interface RequestExecutionOptions {
   controlPlane?: boolean;
   /** Present peer failures as coming from an explicitly pinned route. */
   pinned?: boolean;
+  /** Persist exact signed request/response preimages for portable verifier evidence. */
+  captureResponseAuthPreimages?: boolean;
 }
 
 export interface BuyerRequestHandlerConfig {
@@ -434,7 +437,14 @@ export class BuyerRequestHandler {
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
-      this._recordResponseAuth(peer, req, retriedResponse, requestedService, verificationMux);
+      this._recordResponseAuth(
+        peer,
+        req,
+        retriedResponse,
+        requestedService,
+        verificationMux,
+        options?.captureResponseAuthPreimages === true,
+      );
       return adaptPeerResponse(retriedResponse);
     }
 
@@ -448,7 +458,14 @@ export class BuyerRequestHandler {
       this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
     }
 
-    this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
+    this._recordResponseAuth(
+      peer,
+      req,
+      response,
+      requestedService,
+      verificationMux,
+      options?.captureResponseAuthPreimages === true,
+    );
     return adaptPeerResponse(response);
   }
 
@@ -485,6 +502,7 @@ export class BuyerRequestHandler {
     response: SerializedHttpResponse,
     requestedService: string | undefined,
     verificationMux: VerificationMux,
+    capturePreimages: boolean,
   ): void {
     if (!shouldExpectResponseAuth(peer, response, requestedService)) {
       return;
@@ -525,6 +543,10 @@ export class BuyerRequestHandler {
           receivedAt: Date.now(),
           verified: verification.valid,
           verificationError: verification.reason ?? null,
+          requestPreimage: capturePreimages ? encodeHttpRequest(request) : null,
+          responsePreimage: capturePreimages
+            ? encodeHttpResponse(stripStreamingHeader(response))
+            : null,
         });
 
         void this._deps.verificationSampler?.maybeStoreResponseAuthSample({

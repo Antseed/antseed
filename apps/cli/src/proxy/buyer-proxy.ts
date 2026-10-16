@@ -3231,6 +3231,8 @@ export class BuyerProxy {
     // it never reaches a seller.
     const systemRoutedModel = headers[SYSTEM_ROUTED_MODEL_HEADER] === '1'
     delete headers[SYSTEM_ROUTED_MODEL_HEADER]
+    const requestedRequestId = headers['x-antseed-request-id']?.trim()
+    delete headers['x-antseed-request-id']
     // Internal marker from the API-key gateway: report this request's signed
     // spend under the gateway's tag. Stripped so it never reaches a seller.
     const spendAttributionTag = parseSpendAttributionTag(headers[SPEND_ATTRIBUTION_HEADER])
@@ -3266,7 +3268,9 @@ export class BuyerProxy {
     else delete headers[BUYER_IDENTITY_HEADER]
 
     let serializedReq: SerializedHttpRequest = {
-      requestId: randomUUID(),
+      requestId: requestedRequestId && isUuid(requestedRequestId)
+        ? requestedRequestId
+        : randomUUID(),
       method,
       path,
       headers,
@@ -4061,6 +4065,7 @@ export class BuyerProxy {
       'x-vpr-session-id': _vprSession,
       // Legacy desktop builds (pre AntStation → VPR rename) still send this.
       'x-antstation-session-id': _antstationSession,
+      'x-antseed-capture-response-auth-preimages': captureResponseAuthPreimages,
       ...headersForPeer
     } = serializedReq.headers
     let requestForPeer: SerializedHttpRequest = {
@@ -4189,7 +4194,12 @@ export class BuyerProxy {
               }
             }
           },
-        }, { signal: requestSignal, pinned, ...(buyerIdentity ? { buyerIdentity } : {}) })
+        }, {
+          signal: requestSignal,
+          pinned,
+          captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
+          ...(buyerIdentity ? { buyerIdentity } : {}),
+        })
 
         let responseForClient = adaptBuyerFaultErrorResponse(response, requestProtocol)
         responseForClient = adaptPeerResponse(responseForClient)
@@ -4280,6 +4290,7 @@ export class BuyerProxy {
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
           signal: requestSignal,
           pinned,
+          captureResponseAuthPreimages: captureResponseAuthPreimages === '1',
           ...(buyerIdentity ? { buyerIdentity } : {}),
         })
         if (upstreamResponse.statusCode >= 400 && !adaptResponse) {
@@ -4457,4 +4468,8 @@ export class BuyerProxy {
       }
     }
   }
+}
+
+function isUuid(value: string): boolean {
+  return /^[0-9a-f]{8}-[0-9a-f]{4}-[1-5][0-9a-f]{3}-[89ab][0-9a-f]{3}-[0-9a-f]{12}$/i.test(value)
 }

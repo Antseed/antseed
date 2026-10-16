@@ -617,6 +617,106 @@ Use `base-sepolia` for testing with MockUSDC.
 
 Provider-specific options are configured via each plugin's config schema (see `antseed plugin add --help`).
 
+## Assigned Model Audits
+
+`verifier run` audits one `<model>`, every enabled model with `--all`, or the
+models assigned to an auditor with `--auditor <address>`:
+
+```bash
+antseed --config ./audit-config.json verifier run --auditor 0xYourAuditorAddress
+```
+
+Every `verifier run` labels its evidence with the current on-chain epoch from the
+emissions gate, the epoch `AntseedVerification` checks on submit. When no chain
+is reachable it falls back to the UTC-day epoch with a warning; that evidence
+cannot be submitted on-chain. The assignment uses the same epoch and is printed
+before the audit starts. Today every auditor is assigned every enabled
+configured model; a later release rotates models across auditors per epoch
+off-chain. `--auditor` cannot be combined with `<model>`, `--all`, or
+`--resume-run`.
+
+## Submitting Model Audits
+
+Approved auditors submit a completed run with one transaction per model:
+
+```bash
+antseed verifier submit --run-id <run-id> --dry-run
+antseed verifier submit --run-id <run-id> --publish-ipfs --yes
+```
+
+Each model's submission covers every seller result for that model: `SAME`,
+`DIFF`, and `UNDETERMINED`. Only runs audited on the current on-chain epoch can
+be submitted. The contract rejects any other epoch, so submit before the epoch
+ends. Results the contract would reject (your own agent, unknown agents,
+evidence that no longer matches its hash) are listed as excluded and do not
+block the model. Re-running is safe: a ledger under
+`<evidenceDir>/submissions/<run-id>/` records each model, and models already
+recorded on-chain are skipped. A seller service's SAME or DIFF verdict counts
+through the next epoch and then drops out on its own; the latest result always
+wins, and an UNDETERMINED clears an earlier verdict.
+
+`verifier run` rechecks every first DIFF on fresh probes the seller has never
+seen before it can be submitted. A recheck SAME turns the result into
+UNDETERMINED, a recheck DIFF or UNDETERMINED keeps the DIFF, and a seller whose
+recheck cannot run is reported as failed and not submitted. Fresh probes are
+generated once per model, only when a recheck needs them and the run uses
+`--enroll-if-needed`. Set `verifier.diffConfirmationRuns` to `0` to turn rechecks
+off. The `submit` preview shows how many results were rechecked.
+
+`verifier rewards --epochs <list>` shows the credits earned per epoch and claims
+the auditor share once an epoch is final; the current epoch shows 0 until it ends.
+
+## Checking Other Endpoints
+
+`verifier check` reuses the latest published audit for a model to check any
+OpenAI- or Anthropic-compatible endpoint, such as another network or a provider's
+own API:
+
+```bash
+VERIFY_API_KEY=... antseed verifier check meta-llama/llama-3.3-70b-instruct \
+  --base-url https://api.example.com/v1 --target-model their-model-id
+```
+
+It finds the newest `ModelAudited` event for the model on-chain, downloads its
+evidence from IPFS, checks the evidence against the on-chain hash, and audits the
+endpoint with the largest KBF reference the audit published. Pass
+`--audit ipfs://<cid>` to use a specific audit without a chain lookup. Use
+`--protocol anthropic` for Messages-API endpoints. Exit codes are 0 for `SAME`,
+2 for `DIFF`, and 3 for `UNDETERMINED`. Results stay local and are never
+submitted on-chain.
+
+## Model Audits With Reference Enrollment
+
+Audits normally use existing reference banks and do not make reference-building
+calls. Opt in to bounded enrollment when a selected model's bank is missing or
+fails the self-test, statistical-power, or contrast-detection checks:
+
+```bash
+antseed --config ./audit-config.json verifier run gpt-6.1-sol \
+  --enroll-if-needed --max-enrollment-requests 2000 --allow-probe-reuse
+```
+
+The request budget is **per model**, includes retries and requests already used
+by a compatible enrollment checkpoint, and cannot exceed a lower configured
+`referenceMaxRequestsPerBuild`. It is a request limit, not a dollar spending cap.
+Probe growth also respects `referenceMaximumProbeCount` (default 500) and the
+configured no-progress limit. `--all` applies this process to each enabled model
+with eligible sellers; it can therefore spend up to the per-model limit for each.
+
+Compatible banks retain their enrolled probes and self-test answers. New stable
+candidates are checked against the existing contrasts, with preference given to
+probes distinguishing failing contrasts. Existing contrast models are not replaced
+with easier ones. A ready bank causes no enrollment calls. The CLI checks the bank
+again after appending new probes and skips any model that is still not ready;
+incompatible enrollment settings fail before new model calls. Per-seller probe
+availability is still checked when reserving each audit.
+
+Enrollment cannot be combined with `--resume-run` or an automatic audit repair.
+Failed enrollment retains compatible cached requests for a bounded retry. No
+seller audit starts for a model whose enrollment failed. Use explicit local
+`verifier.banksDir`, `verifier.referencesDir`, and `verifier.evidenceDir` settings
+when existing operator artifacts must not be changed.
+
 ## Metrics
 
 Expose a Prometheus-compatible endpoint for a buyer or seller:

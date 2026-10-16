@@ -1,0 +1,1805 @@
+import assert from 'node:assert/strict'
+import { createHash } from 'node:crypto'
+import { mkdtemp, readFile, rm, writeFile, mkdir } from 'node:fs/promises'
+import { tmpdir } from 'node:os'
+import { join } from 'node:path'
+import test from 'node:test'
+import {
+  computeBinomialPower,
+  computeReferenceId,
+  createReferenceQueryProfile,
+  renderKbfProbeLine,
+  referenceEndpointRequest,
+  type KbfReferenceV1,
+} from '@antseed/fingerprints'
+import type { VerifierCLIConfig } from '../config/types.js'
+import {
+  buildModelReference,
+  collectReferenceProbes,
+  createReferenceRequestLimiter,
+  loadModelReference,
+  ReferenceBuildCheckpoint,
+  resolveReferenceRequestOverrides,
+} from './model-reference.js'
+import type { VerifierModelCatalog } from './openrouter-catalog.js'
+import { appendModelReferenceToBank, inspectModelProbeBankPower, loadBankEnrollmentReference } from './probe-bank.js'
+
+const MODEL = 'gpt-test'
+
+test('collector promotes reserve probes that distinguish the failing contrast first', async () => {
+  const probes = reference(100).probes.slice(0, 2)
+  const initial = {
+    probes: [], candidateCount: 2,
+    distinguishingProbeIdsByModel: new Map([['easy', [] as string[]], ['hard', [] as string[]]]),
+    generatedProbeIds: new Set(probes.map((probe) => probe.id)),
+    reserveProbes: probes.map((probe, index) => ({ ...probe, contrast: { distinguishingModels: [index ? 'hard' : 'easy'] } })),
+    generationRound: 1,
+  }
+  const collected = await collectReferenceProbes({
+    model: MODEL, contrastModels: ['easy', 'hard'], preferredContrastModels: ['hard'], targetCount: 1, initial,
+    query: async () => { throw new Error('reserve probes must not be queried again') },
+  })
+  assert.equal(collected.probes[0]!.id, probes[1]!.id)
+  assert.deepEqual(collected.distinguishingProbeIdsByModel.get('hard'), [probes[1]!.id])
+})
+
+test('bank top-up reuses enrolled measurements, grows against the failed contrast, and resumes without repeating calls', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-top-up-'))
+  const policy = config()
+  policy.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'contrast-other']
+  policy.referenceEndpoint!.contrastModelBank!['contrast-other'] = {
+    upstreamModel: 'contrast-other', pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 }, capabilityRank: 2,
+  }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return response(successfulContent(body.model, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: policy, fetchFn })
+    await built.finalize()
+    const seed = structuredClone(built.reference)
+    seed.contrasts[0]!.distinguishingProbeIds = [seed.probes[0]!.id]
+    delete seed.contrastDetection
+    seed.referenceId = computeReferenceId(seed)
+    const banksDir = join(directory, 'banks')
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: seed, cost: built.cost })
+    assert.equal((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount, null)
+    const initialReference = await loadBankEnrollmentReference(banksDir, MODEL)
+    assert.ok(initialReference)
+    const original = JSON.stringify(initialReference)
+    const prompts: string[] = []
+    const topUpFetch: typeof fetch = async (url, init) => {
+      const body = JSON.parse(String(init?.body)) as { messages: Array<{ content: string }> }
+      prompts.push(body.messages.at(-1)?.content ?? '')
+      return fetchFn(url, init)
+    }
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, initialReference,
+      config: { ...policy, referenceMaxRequestsPerBuild: 1 }, fetchFn: topUpFetch,
+    }), /request budget exhausted/)
+    assert.equal(prompts.length, 1)
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: join(directory, 'bounded'), initialReference,
+      config: { ...policy, referenceMaximumProbeCount: seed.probes.length },
+      fetchFn: async () => { throw new Error('must not query beyond the configured probe maximum') },
+    }), /reference remains underpowered/)
+    const expanded = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: policy, initialReference, fetchFn: topUpFetch,
+    })
+    assert.ok(expanded.reference.probes.length > seed.probes.length)
+    assert.ok(expanded.reference.contrastDetection!.every((entry) => entry.detected))
+    assert.deepEqual(expanded.reference.selfTest.outcomes.slice(0, seed.probes.length), seed.selfTest.outcomes)
+    assert.equal(JSON.stringify(initialReference), original)
+    assert.equal(prompts.filter((prompt) => prompt === prompts[0]).length, 1)
+    assert.equal(prompts.some((prompt) => initialReference.probes.some((probe) => prompt.includes(probe.template))), false)
+    await appendModelReferenceToBank({ banksDir, model: MODEL, reference: expanded.reference, cost: expanded.cost })
+    assert.ok((await inspectModelProbeBankPower({ banksDir, model: MODEL })).selectedProbeCount)
+    await expanded.finalize()
+    const changedContrast = structuredClone(policy)
+    changedContrast.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test']
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: changedContrast, initialReference,
+      fetchFn: async () => { throw new Error('must not mix contrast enrollments') },
+    }), /incompatible/)
+    const incompatible = config()
+    incompatible.referenceEndpoint!.models[MODEL]!.upstreamModel = 'other-model'
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: incompatible, initialReference,
+      fetchFn: async () => { throw new Error('must not make paid requests') },
+    }), /incompatible/)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+function config(overrides: Partial<VerifierCLIConfig> = {}): VerifierCLIConfig {
+  return {
+    probeRequestTimeoutMs: 120_000,
+    referenceRetryBaseDelayMs: 1,
+    referenceEndpoint: {
+      baseUrl: 'https://reference.test/v1',
+      sourceId: 'test-source',
+      trust: 'trusted' as const,
+      models: {
+        [MODEL]: {
+          upstreamModel: 'upstream-test',
+          contrastModels: ['contrast-test'],
+          pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+        },
+      },
+      contrastModelBank: {
+        'contrast-test': {
+          upstreamModel: 'contrast-test',
+          pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
+          capabilityRank: 1,
+        },
+      },
+    },
+    ...overrides,
+  }
+}
+
+function reference(count: number, hamming = 0, alpha = 0.05, confidence = 0.99): KbfReferenceV1 {
+  const probes = Array.from({ length: count }, (_, index) => ({
+    id: `probe-${index + 1}`,
+    name: `test probe ${index + 1}`,
+    domain: 'test',
+    template: `The test probe ${index + 1} value is ___.`,
+    consensus: index + 1,
+    range: [0, count + 10] as [number, number],
+    tolerance: { mode: 'absolute' as const, value: 0 },
+  }))
+  const power = computeBinomialPower({
+    selfHamming: hamming,
+    selfTotal: count,
+    probeCount: count,
+    minimumMismatchDelta: 0.1,
+    alpha,
+    cpConfidence: confidence,
+  })
+  const value: KbfReferenceV1 = {
+    version: 2,
+    kind: 'kbf',
+    referenceId: '',
+    referenceModel: MODEL,
+    serviceAliases: [MODEL],
+    createdAt: '2026-08-05T00:00:00.000Z',
+    source: 'generated',
+    generator: {
+      name: 'test',
+      version: '1',
+      verifierKind: 'kbf',
+      params: {},
+    },
+    queryProfile: createReferenceQueryProfile({ upstreamModel: 'upstream-test' }),
+    selfTest: {
+      hamming,
+      total: count,
+      coverage: 1,
+      errorRate: hamming / count,
+      outcomes: probes.map((probe, index) => ({
+        probeId: probe.id,
+        answers: [probe.consensus + (index < hamming ? 0.5 : 0)],
+        matches: [index < hamming ? 0 as const : 1 as const],
+      })),
+    },
+    probes,
+    selectedProbeCount: count,
+    minimumMismatchDelta: 0.1,
+    statisticalPower: power.power,
+    statisticalPowerEvidence: {
+      test: 'one-sided-binomial',
+      alpha,
+      clopperPearsonConfidence: confidence,
+      selfHamming: hamming,
+      selfTotal: count,
+      probeCount: count,
+      p0UpperBound: power.p0,
+      alternativeMismatchRate: power.p1,
+      criticalMismatchCount: power.criticalMismatchCount,
+      power: power.power,
+    },
+    contrasts: [],
+  }
+  value.referenceId = computeReferenceId(value)
+  return value
+}
+
+function generatedCandidates(prompt: string): string {
+  const count = Number(prompt.match(/^Generate (?:exactly )?(\d+)/)?.[1])
+  const round = Number(prompt.match(/generation round (\d+)/)?.[1])
+  const batch = Number(prompt.match(/batch (\d+)/)?.[1])
+  const offset = (round - 1) * 10_000 + (batch - 1) * count
+  return JSON.stringify(Array.from({ length: count }, (_, index) => {
+    const value = offset + index + 1
+    return {
+      name: `stable fact ${value}`,
+      domain: 'test',
+      template: `The stable specialist test value ${value} is ___.`,
+      consensus: value,
+      range: [0, 100_000],
+      tolerance: { mode: 'absolute', value: 0 },
+    }
+  }))
+}
+
+const PROBE_LINE_LABEL = /^(?:\(\d+\)|\d+[.)]|Q\d+:) /
+
+function successfulContent(model: string, prompt: string): string {
+  if (prompt.startsWith('Generate ')) return generatedCandidates(prompt)
+  const values = testPromptValues(prompt)
+  return values.map((value, index) => `(${index + 1}) ${model.startsWith('contrast-') ? value + 100_000 : value}`).join('\n')
+}
+
+function testPromptValues(prompt: string): number[] {
+  return [...prompt.matchAll(/(?:stable fact|collector fact|range fact) (\d+)/g)]
+    .map((match) => Number(match[1]))
+}
+
+function response(content: string, status = 200): Response {
+  return new Response(JSON.stringify(status === 200 ? {
+    choices: [{ message: { content } }],
+    usage: { prompt_tokens: 100, completion_tokens: 20 },
+  } : { error: content }), {
+    status,
+    headers: { 'content-type': 'application/json' },
+  })
+}
+
+test('missing references fail with the explicit build command', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-load-'))
+  try {
+    await assert.rejects(
+      loadModelReference({ model: MODEL, referencesDir: directory }),
+      new RegExp(`antseed verifier reference build ${MODEL}`),
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build uses minimum mandatory reasoning and persists the target override', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-build-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.serviceAliases = ['model.test-alias']
+  const requestBodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    requestBodies.push(body)
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return response(successfulContent(body.model, prompt))
+  }
+  const catalog: VerifierModelCatalog = new Map([
+    ['upstream-test', {
+      upstreamModel: 'upstream-test',
+      pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      capabilityRank: 10,
+      reasoning: { mandatory: true, supportedEfforts: ['high', 'medium', 'low'] },
+    }],
+    ['contrast-test', {
+      upstreamModel: 'contrast-test',
+      pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
+      capabilityRank: 1,
+      reasoning: { mandatory: false, supportedEfforts: ['high', 'low'] },
+    }],
+  ])
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, catalog, fetchFn })
+    assert.equal(built.reference.probes.length, 100)
+    assert.deepEqual(built.reference.serviceAliases, [MODEL, 'model.test-alias'])
+    assert.equal(built.reference.queryProfile.reasoningStrategy, undefined)
+    assert.equal(built.reference.queryProfile.requestOverrides, undefined)
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-minimum-supported',
+      requestOverrides: { reasoning: { effort: 'low', exclude: true } },
+      requestOmissions: [],
+    })
+    const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
+    const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
+    assert.equal(targetBodies.length > 0, true)
+    assert.equal(contrastBodies.length > 0, true)
+    assert.equal(targetBodies.every((body) => body.reasoning_effort === undefined), true)
+    assert.equal(targetBodies.every((body) => JSON.stringify(body.reasoning) === JSON.stringify({
+      effort: 'low',
+      exclude: true,
+    })), true)
+    assert.equal(contrastBodies.every((body) => body.reasoning_effort === 'none'), true)
+    assert.equal(BigInt(built.cost.totalUsdMicros) > 0n, true)
+    assert.deepEqual(
+      new Set(built.cost.purposes.map((entry) => entry.purpose)),
+      new Set(['candidate-generation', 'target-model', 'contrast-model', 'self-test']),
+    )
+    const loaded = await loadModelReference({ model: MODEL, referencesDir: directory })
+    assert.equal(loaded.reference.referenceId, built.reference.referenceId)
+    await readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8')
+    await built.finalize()
+    await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8'), { code: 'ENOENT' })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build sends target requests to a native Anthropic upstream and records raw exchanges', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-anthropic-'))
+  const banksDir = join(directory, 'banks')
+  const value = config({
+    upstreams: {
+      'anthropic-native': { type: 'anthropic', baseUrl: 'https://api.anthropic.test/v1/', apiKey: 'anthropic-secret' },
+    },
+  })
+  value.referenceEndpoint!.apiKey = 'openrouter-secret'
+  value.referenceEndpoint!.models[MODEL]!.upstream = { name: 'anthropic-native', model: 'claude-test-native' }
+  const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ role: string; content: string }>
+    }
+    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, body })
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (String(url).endsWith('/messages')) {
+      return new Response(JSON.stringify({
+        content: [{ type: 'text', text: successfulContent('upstream-test', prompt) }],
+        stop_reason: 'end_turn',
+        usage: { input_tokens: 100, output_tokens: 20 },
+      }), { status: 200, headers: { 'content-type': 'application/json' } })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    const target = requests.filter((request) => request.url.endsWith('/messages'))
+    const contrast = requests.filter((request) => request.url.endsWith('/chat/completions'))
+    assert.equal(target.length > 0, true)
+    assert.equal(target.every((request) => request.url === 'https://api.anthropic.test/v1/messages'), true)
+    assert.equal(target.every((request) => request.headers['x-api-key'] === 'anthropic-secret'
+      && request.headers['anthropic-version'] === '2023-06-01'
+      && request.headers.authorization === undefined), true)
+    assert.equal(target.every((request) => request.body.model === 'claude-test-native'
+      && typeof request.body.system === 'string'
+      && request.body.messages instanceof Array
+      && (request.body.messages as Array<{ role: string }>).every((message) => message.role !== 'system')
+      && request.body.top_p === undefined
+      && request.body.reasoning_effort === undefined), true)
+    assert.equal(contrast.every((request) => request.headers.authorization === 'Bearer openrouter-secret'), true)
+
+    const upstream = built.reference.provenance?.upstream as Record<string, unknown>
+    assert.deepEqual(upstream, {
+      name: 'anthropic-native',
+      type: 'anthropic',
+      baseUrl: 'https://api.anthropic.test/v1',
+      model: 'claude-test-native',
+      protocol: 'anthropic-messages',
+      request: { overrides: {}, omissions: ['top_p'] },
+      providerPin: null,
+    })
+    assert.equal(built.reference.provenance?.sourceId, 'upstream:anthropic-native:anthropic:claude-test-native')
+    assert.equal(built.reference.queryProfile.upstreamModel, 'claude-test-native')
+    assert.equal(JSON.stringify(built.reference).includes('secret'), false)
+
+    const exchanges = built.exchanges!
+    const raw = await readFile(exchanges.path)
+    assert.equal(exchanges.sha256, `sha256:${createHash('sha256').update(raw).digest('hex')}`)
+    const document = JSON.parse(raw.toString('utf8')) as {
+      kind: string
+      exchanges: Array<{ url: string; protocol: string; requestBody: string; responseBody: string; status: number }>
+    }
+    assert.equal(document.kind, 'antseed-reference-exchanges')
+    assert.equal(exchanges.exchangeCount, document.exchanges.length)
+    assert.equal(exchanges.exchangeCount, requests.length)
+    assert.equal(raw.toString('utf8').includes('secret'), false)
+    const anthropicExchange = document.exchanges.find((exchange) => exchange.protocol === 'anthropic-messages')!
+    assert.equal(JSON.parse(anthropicExchange.requestBody).model, 'claude-test-native')
+    assert.equal(JSON.parse(anthropicExchange.responseBody).stop_reason, 'end_turn')
+
+    const appended = await appendModelReferenceToBank({
+      banksDir, model: MODEL, reference: built.reference, cost: built.cost, exchanges,
+    })
+    await built.finalize()
+    await assert.rejects(readFile(join(directory, '.checkpoints', `${MODEL}.exchanges.jsonl`)), { code: 'ENOENT' })
+    const bank = JSON.parse(await readFile(appended.path, 'utf8')) as {
+      referenceExchanges: Array<{ path: string; sha256: string; upstream: unknown }>
+    }
+    assert.equal(bank.referenceExchanges.length, 1)
+    assert.equal(bank.referenceExchanges[0]!.sha256, exchanges.sha256)
+    assert.deepEqual(bank.referenceExchanges[0]!.upstream, upstream)
+    const stored = await readFile(join(banksDir, MODEL, bank.referenceExchanges[0]!.path))
+    assert.equal(stored.equals(raw), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('the default reference endpoint records OpenRouter-style upstream provenance', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-default-upstream-'))
+  const value = config()
+  value.referenceEndpoint!.baseUrl = 'https://openrouter.ai/api/v1'
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider A'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
+    return new Response(JSON.stringify({
+      provider: 'Provider A',
+      choices: [{ message: { content } }],
+      usage: { prompt_tokens: 100, completion_tokens: 20 },
+    }), { status: 200, headers: { 'content-type': 'application/json' } })
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.equal(built.reference.provenance?.sourceId, 'test-source')
+    assert.deepEqual(built.reference.provenance?.upstream, {
+      name: 'referenceEndpoint',
+      type: 'openrouter',
+      baseUrl: 'https://openrouter.ai/api/v1',
+      model: 'upstream-test',
+      protocol: 'openai-chat-completions',
+      request: { overrides: { reasoning_effort: 'none' }, omissions: [] },
+      providerPin: ['Provider A'],
+    })
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build routes only target requests through a pinned Antseed peer', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-'))
+  const requests: Array<{ url: string; headers: Record<string, string>; body: Record<string, unknown> }> = []
+  const value = config()
+  value.referenceEndpoint!.apiKey = 'openrouter-secret'
+  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+    type: 'antseed',
+    service: 'fable-5-coding-only',
+    peerId: '12'.repeat(20),
+    pricing: { inputUsdPerMillion: 0.45, outputUsdPerMillion: 1.15 },
+  }
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    requests.push({
+      url: String(url),
+      headers: init?.headers as Record<string, string>,
+      body,
+    })
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const logicalModel = body.model === 'fable-5-coding-only' ? 'upstream-test' : body.model
+    return response(successfulContent(logicalModel, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: value,
+      buyerProxyPort: 8377,
+      fetchFn,
+    })
+    const targetRequests = requests.filter((request) => request.body.model === 'fable-5-coding-only')
+    const contrastRequests = requests.filter((request) => request.body.model === 'contrast-test')
+    assert.equal(targetRequests.length > 0, true)
+    assert.equal(contrastRequests.length > 0, true)
+    assert.equal(targetRequests.every((request) => request.url === 'http://127.0.0.1:8377/v1/chat/completions'), true)
+    assert.equal(targetRequests.every((request) => request.headers['x-antseed-pin-peer'] === '12'.repeat(20)), true)
+    assert.equal(targetRequests.every((request) => request.headers.authorization === undefined), true)
+    assert.equal(targetRequests.every((request) => request.body.reasoning === undefined && request.body.reasoning_effort === undefined), true)
+    assert.equal(targetRequests.every((request) => request.body.temperature === undefined && request.body.top_p === undefined), true)
+    assert.equal(contrastRequests.every((request) => (
+      request.url === `${value.referenceEndpoint!.baseUrl}/chat/completions`
+    )), true)
+    assert.equal(contrastRequests.every((request) => request.headers.authorization === 'Bearer openrouter-secret'), true)
+    assert.equal(contrastRequests.every((request) => request.headers['x-antseed-pin-peer'] === undefined), true)
+    assert.equal(contrastRequests.every((request) => request.body.temperature !== undefined && request.body.top_p !== undefined), true)
+    assert.equal(built.reference.queryProfile.upstreamModel, 'fable-5-coding-only')
+    assert.equal(built.reference.queryProfile.requestOmissions, undefined)
+    assert.deepEqual(built.reference.generator.params.referenceEndpointRequest, {
+      reasoningStrategy: 'bare',
+      requestOverrides: {},
+      requestOmissions: ['temperature', 'top_p'],
+    })
+    assert.equal(built.reference.provenance?.sourceId, `test-source:antseed:${'12'.repeat(20)}:fable-5-coding-only`)
+    assert.equal(built.cost.models.find((entry) => entry.model === 'upstream-test')?.inputUsdPerMillion, 0.45)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an antseed entry in verifier.upstreams routes target requests to that pinned seller', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-upstream-peer-'))
+  const peerId = '34'.repeat(20)
+  const value = config({ upstreams: { 'trusted-seller': { type: 'antseed', peerId } } })
+  value.referenceEndpoint!.models[MODEL]!.upstream = {
+    name: 'trusted-seller',
+    model: 'seller-service',
+    pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.5 },
+  }
+  const requests: Array<{ url: string; headers: Record<string, string>; model: string }> = []
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    requests.push({ url: String(url), headers: init?.headers as Record<string, string>, model: body.model })
+    const logicalModel = body.model === 'seller-service' ? 'upstream-test' : body.model
+    return response(successfulContent(logicalModel, body.messages.at(-1)?.content ?? ''))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8377, fetchFn,
+    })
+    const target = requests.filter((request) => request.model === 'seller-service')
+    assert.equal(target.length > 0, true)
+    assert.equal(target.every((request) => request.url === 'http://127.0.0.1:8377/v1/chat/completions'
+      && request.headers['x-antseed-pin-peer'] === peerId), true)
+    assert.equal(built.reference.provenance?.sourceId, `test-source:antseed:${peerId}:seller-service`)
+    assert.deepEqual(built.reference.provenance?.upstream, {
+      name: 'trusted-seller',
+      type: 'antseed',
+      baseUrl: 'http://127.0.0.1:8377/v1',
+      model: 'seller-service',
+      protocol: 'openai-chat-completions',
+      request: { overrides: {}, omissions: ['temperature', 'top_p'] },
+      providerPin: null,
+      peerId,
+    })
+    assert.equal(built.cost.models.find((entry) => entry.model === 'upstream-test')?.inputUsdPerMillion, 0.5)
+    await built.finalize()
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('Antseed reference route failures preserve cached work and never fall back', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-resume-'))
+  const value = config()
+  value.referenceEndpoint!.apiKey = 'openrouter-secret'
+  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+    type: 'antseed',
+    service: 'fable-5-coding-only',
+    peerId: '34'.repeat(20),
+    pricing: { inputUsdPerMillion: 0.45, outputUsdPerMillion: 1.15 },
+  }
+  const promptCalls = new Map<string, number>()
+  let failOneTargetRequest = true
+  const fetchFn: typeof fetch = async (url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    promptCalls.set(prompt, (promptCalls.get(prompt) ?? 0) + 1)
+    if (body.model === 'fable-5-coding-only' && failOneTargetRequest && prompt.includes('domain chemistry_mp')) {
+      failOneTargetRequest = false
+      throw new TypeError('fetch failed')
+    }
+    assert.equal(body.model === 'fable-5-coding-only' ? String(url).startsWith('http://127.0.0.1:8377/') : true, true)
+    const logicalModel = body.model === 'fable-5-coding-only' ? 'upstream-test' : body.model
+    return response(successfulContent(logicalModel, prompt))
+  }
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: value,
+      buyerProxyPort: 8377,
+      fetchFn,
+    }), /Antseed reference route unavailable.*fable-5-coding-only/)
+    const reusablePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain chemistry_bp'))!
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: value,
+      buyerProxyPort: 8377,
+      fetchFn,
+    })
+    assert.equal(promptCalls.get(reusablePrompt), 1)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('mandatory reasoning uses the lowest declared effort and rejects unusable metadata', () => {
+  const catalog: VerifierModelCatalog = new Map([
+    ['provider/minimal', {
+      upstreamModel: 'provider/minimal',
+      pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      capabilityRank: 1,
+      reasoning: { mandatory: true, supportedEfforts: ['high', 'minimal', 'low'] },
+    }],
+    ['provider/unspecified', {
+      upstreamModel: 'provider/unspecified',
+      pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      capabilityRank: 1,
+      reasoning: { mandatory: true, supportedEfforts: null },
+    }],
+    ['provider/broken', {
+      upstreamModel: 'provider/broken',
+      pricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      capabilityRank: 1,
+      reasoning: { mandatory: true, supportedEfforts: ['none'] },
+    }],
+  ])
+  assert.deepEqual(resolveReferenceRequestOverrides('provider/minimal', catalog), {
+    reasoning: { effort: 'minimal', exclude: true },
+  })
+  assert.deepEqual(resolveReferenceRequestOverrides('provider/unspecified', catalog), {
+    reasoning: { effort: 'minimal', exclude: true },
+  })
+  assert.throws(
+    () => resolveReferenceRequestOverrides('provider/broken', catalog),
+    /exposes no supported reasoning effort/,
+  )
+  assert.deepEqual(resolveReferenceRequestOverrides('provider/optional', catalog), { reasoning_effort: 'none' })
+})
+
+test('reference build skips one empty candidate domain and retains powered quality gates', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-empty-domain-'))
+  let medicalAttempts = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.includes('domain medical')) {
+      medicalAttempts += 1
+      return Response.json({
+        choices: [{ message: { content: null }, finish_reason: 'content_filter' }],
+        usage: {
+          prompt_tokens: 100,
+          completion_tokens: 40,
+          completion_tokens_details: { reasoning_tokens: 40 },
+        },
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(medicalAttempts, 1)
+    assert.equal(logs.some((message) => message.includes('skipping empty candidate batch for medical')), true)
+    assert.equal(logs.some((message) => message.includes('finishReason')), true)
+    assert.equal(logs.some((message) => message.includes('reference request retry')), false)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build rejects a refused stability batch without aborting the target', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-refused-stability-'))
+  let refusedStabilityAttempts = 0
+  let refusedPrompt: string | null = null
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (refusedPrompt === null
+      && body.model === 'upstream-test'
+      && !prompt.startsWith('Generate ')
+      && body.temperature === 0) {
+      refusedPrompt = prompt
+    }
+    if (prompt === refusedPrompt && body.temperature === 0) {
+      refusedStabilityAttempts += 1
+      return Response.json({
+        choices: [{ message: { content: null }, finish_reason: 'content_filter', native_finish_reason: 'refusal' }],
+        usage: { prompt_tokens: 100, completion_tokens: 1 },
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(refusedStabilityAttempts, 1)
+    assert.equal(logs.some((message) => message.includes('skipping 10-probe stability batch')), true)
+    assert.equal(logs.some((message) => /in domain [a-z_]+/.test(message)), true)
+    const checkpoint = JSON.parse(await readFile(join(directory, '.checkpoints', `${MODEL}.json`), 'utf8')) as {
+      responses: Record<string, { outcome?: string }>
+    }
+    assert.equal(Object.values(checkpoint.responses).some((entry) => entry.outcome === 'terminal-empty'), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build adaptively isolates and caches a refused self-test probe', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-refused-self-test-'))
+  let refusedSelfTestAttempts = 0
+  let refusedProbeText: string | null = null
+  const refusedBatchSizes: number[] = []
+  const logs: string[] = []
+  let contrastChecked = false
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    const probeLines = prompt.split('\n').filter((line) => PROBE_LINE_LABEL.test(line))
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && refusedProbeText === null) {
+      refusedProbeText = probeLines[0]?.replace(PROBE_LINE_LABEL, '') ?? null
+    }
+    if (body.model === 'upstream-test'
+      && refusedProbeText !== null
+      && prompt.includes(refusedProbeText)) {
+      refusedSelfTestAttempts += 1
+      refusedBatchSizes.push(testPromptValues(prompt).length)
+      return Response.json({
+        choices: [{ message: { content: null }, finish_reason: 'content_filter', native_finish_reason: 'refusal' }],
+        usage: { prompt_tokens: 100, completion_tokens: 1 },
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(built.reference.selfTest.total, 300)
+    const refusedProbe = built.reference.probes.find((probe) => renderKbfProbeLine(probe) === refusedProbeText)!
+    const refusedOutcome = built.reference.selfTest.outcomes.find((outcome) => outcome.probeId === refusedProbe.id)!
+    const refusedRuns = refusedOutcome.answers.filter((answer) => answer === null).length
+    assert.ok(refusedRuns >= 1)
+    // Refused runs count as discrepancies, exactly like a missing target answer.
+    assert.deepEqual(
+      refusedOutcome.matches.filter((_match, run) => refusedOutcome.answers[run] === null),
+      new Array(refusedRuns).fill(0),
+    )
+    assert.equal(built.reference.selfTest.hamming, refusedRuns)
+    assert.equal(built.reference.selfTest.coverage, (300 - refusedRuns) / 300)
+    assert.equal(refusedBatchSizes.some((size) => size > 1), true)
+    assert.equal(refusedBatchSizes.includes(1), true)
+    assert.equal(logs.some((message) => /splitting refused \d+-probe self-test batch/.test(message)), true)
+    assert.equal(logs.some((message) => message.includes('skipping refused self-test probe')), true)
+    const attemptsAfterFirstBuild = refusedSelfTestAttempts
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(refusedSelfTestAttempts, attemptsAfterFirstBuild)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('no-text length responses retry the batch with fresh requests before isolating a contrast', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-length-contrast-'))
+  let lengthAttempts = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      lengthAttempts += 1
+      return Response.json({
+        choices: [{ message: { content: null }, finish_reason: 'length', native_finish_reason: 'length' }],
+        usage: { prompt_tokens: 100, completion_tokens: 1600 },
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await assert.rejects(
+      buildModelReference({
+        model: MODEL,
+        referencesDir: directory,
+        config: config({ referenceMaxNoProgressRounds: 1 }),
+        fetchFn,
+      }),
+      /made no progress/,
+    )
+    assert.equal(lengthAttempts, 3)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('an intermittent no-text contrast batch is retried and later batches are still asked', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-flaky-contrast-'))
+  const logs: string[] = []
+  const contrastPrompts = new Map<string, number>()
+  let emptyReplies = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') {
+      const seen = contrastPrompts.get(prompt) ?? 0
+      contrastPrompts.set(prompt, seen + 1)
+      if (contrastPrompts.size % 2 === 0 && seen < 3) {
+        emptyReplies += 1
+        return Response.json({
+          choices: [{ message: { content: null }, finish_reason: 'length', native_finish_reason: 'length' }],
+          usage: { prompt_tokens: 100, completion_tokens: 1600 },
+        })
+      }
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.ok(emptyReplies > 0)
+    assert.equal(logs.some((message) => message.includes('contrast model contrast-test unavailable')), false)
+    const answered = built.answeredContrastModelsByProbeId!
+    assert.equal(built.reference.probes.every((probe) => answered.get(probe.id)?.includes('contrast-test')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build isolates an unavailable contrast after its first terminal failure', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-gated-contrast-'))
+  let gatedAttempts = 0
+  const logs: string[] = []
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['gated-contrast', 'contrast-test']
+  value.referenceEndpoint!.contrastModelBank!['gated-contrast'] = {
+    upstreamModel: 'gated-contrast',
+    pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
+    capabilityRank: 2,
+  }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'gated-contrast') {
+      gatedAttempts += 1
+      return response(JSON.stringify({ error: { message: 'age confirmation required' } }), 403)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: value,
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(gatedAttempts, 1)
+    assert.equal(logs.some((message) => message.includes('contrast model gated-contrast unavailable')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('loader rejects references outside the configured adaptive sizing policy', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-policy-'))
+  const path = join(directory, `${MODEL}.json`)
+  try {
+    for (const [candidate, policy, message] of [
+      [reference(50), undefined, /probe count 50/],
+      [reference(510), undefined, /probe count 510/],
+      [reference(110), config({ referenceProbeStep: 20 }), /adaptive sizing sequence/],
+      [reference(100, 2), undefined, /statistical power .* is below 0\.900/],
+      [reference(100, 0, 0.1), undefined, /statistical power alpha must be 0\.05/],
+      [reference(100, 0, 0.05, 0.98), undefined, /Clopper-Pearson confidence must be 0\.99/],
+    ] as const) {
+      await writeFile(path, JSON.stringify(candidate))
+      await assert.rejects(
+        loadModelReference({ model: MODEL, referencesDir: directory, config: policy }),
+        message,
+      )
+    }
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference self-test repeats shuffled batches with prompt variants for each configured run', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-self-test-runs-'))
+  let contrastChecked = false
+  const selfTestRequests: Array<{ system: string; lines: string[] }> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'contrast-test') contrastChecked = true
+    if (contrastChecked && body.model === 'upstream-test' && body.temperature === 0 && prompt.includes('___')) {
+      selfTestRequests.push({
+        system: body.messages[0]!.content,
+        lines: prompt.split('\n').filter((line) => PROBE_LINE_LABEL.test(line))
+          .map((line) => line.replace(PROBE_LINE_LABEL, '')),
+      })
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config({ referenceSelfTestRuns: 2 }),
+      fetchFn,
+    })
+    const { reference } = built
+    assert.equal(reference.probes.length, 100)
+    assert.equal(reference.generator.params.selfTestRuns, 2)
+    assert.equal(reference.selfTest.total, 200)
+    assert.equal(reference.statisticalPowerEvidence.selfTotal, 200)
+    assert.equal(reference.statisticalPowerEvidence.probeCount, 100)
+    assert.equal(reference.selfTest.outcomes.every((outcome) => outcome.matches.length === 2
+      && outcome.answers.length === 2), true)
+    assert.ok(selfTestRequests.length > 0)
+    assert.equal(selfTestRequests.every((request) => request.lines.length <= 10), true)
+    assert.ok(new Set(selfTestRequests.map((request) => request.system)).size > 1)
+    const buildOrder = new Map(reference.probes.map((probe, index) => [renderKbfProbeLine(probe), index]))
+    assert.ok(selfTestRequests.some((request) => request.lines.some((line, index) => index > 0
+      && buildOrder.get(line)! < buildOrder.get(request.lines[index - 1]!)!)), 'self-test must not keep build order')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('adaptive builder selects the first powered prefix', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-adaptive-'))
+  // 14 pooled mismatches leave 100 probes (300 trials) just underpowered.
+  let selfTestMismatchesRemaining = 14
+  let contrastChecked = false
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      __antseedReferenceCacheDomain?: string
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.includes('Reply with only the number 7')) return response('7')
+    if (prompt.startsWith('Generate ')) return response(generatedCandidates(prompt))
+    const values = testPromptValues(prompt)
+    if (body.model === 'contrast-test') {
+      contrastChecked = true
+      return response(values.map((value, index) => `(${index + 1}) ${value + 100_000}`).join('\n'))
+    }
+    const selfTest = contrastChecked && body.model === 'upstream-test' && body.temperature === 0
+    return response(values.map((value, index) => {
+      const mismatch = selfTest && selfTestMismatchesRemaining > 0
+      if (mismatch) selfTestMismatchesRemaining -= 1
+      return `(${index + 1}) ${mismatch ? value + Math.max(10, Math.abs(value) * 0.2) : value}`
+    }).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
+    assert.equal(built.reference.probes.length, 110)
+    assert.equal(built.reference.selfTest.hamming, 14)
+    assert.equal(built.reference.selfTest.total, 330)
+    assert.equal(built.reference.statisticalPowerEvidence.probeCount, 110)
+    assert.ok(built.reference.statisticalPower >= 0.9)
+    assert.deepEqual(referenceEndpointRequest(built.reference), {
+      reasoningStrategy: 'reasoning-effort-none',
+      requestOverrides: { reasoning_effort: 'none' },
+      requestOmissions: [],
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('adaptive builder generates more candidates when the next step is unavailable', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-grow-pool-'))
+  const generationRounds = new Set<number>()
+  const zeroTemperatureCalls = new Map<string, number>()
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.includes('Reply with only the number 7')) return response('7')
+    if (prompt.startsWith('Generate ')) {
+      const round = Number(prompt.match(/generation round (\d+)/)?.[1])
+      const batch = Number(prompt.match(/batch (\d+)/)?.[1])
+      generationRounds.add(round)
+      const offset = (round - 1) * 10_000 + (batch - 1) * 100
+      return response(JSON.stringify(Array.from({ length: 7 }, (_, index) => {
+        const value = offset + index + 1
+        return {
+          name: `stable fact ${value}`,
+          domain: 'test',
+          template: `The stable specialist test value ${value} is ___.`,
+          consensus: value,
+          range: [0, 100_000],
+          tolerance: { mode: 'absolute', value: 0 },
+        }
+      })))
+    }
+    const values = testPromptValues(prompt)
+    if (body.model === 'contrast-test') {
+      return response(values.map((value, index) => `(${index + 1}) ${value + 100_000}`).join('\n'))
+    }
+    const zeroCall = body.temperature === 0 ? (zeroTemperatureCalls.get(prompt) ?? 0) + 1 : 0
+    if (body.temperature === 0) zeroTemperatureCalls.set(prompt, zeroCall)
+    return response(values.map((value, index) => `(${index + 1}) ${value}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config({ referenceMinimumProbeCount: 110, referenceMaximumProbeCount: 110 }),
+      fetchFn,
+    })
+    assert.equal(built.reference.probes.length, 110)
+    assert.deepEqual([...generationRounds], [1, 2])
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('underpowered 500-probe maximum preserves the previous reference', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-underpowered-'))
+  const path = join(directory, `${MODEL}.json`)
+  await mkdir(directory, { recursive: true })
+  await writeFile(path, 'existing-reference')
+  let contrastChecked = false
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      __antseedReferenceCacheDomain?: string
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (prompt.includes('Reply with only the number 7')) return response('7')
+    if (prompt.startsWith('Generate ')) return response(generatedCandidates(prompt))
+    const values = testPromptValues(prompt)
+    if (body.model === 'contrast-test') {
+      contrastChecked = true
+      return response(values.map((value, index) => `(${index + 1}) ${value + 100_000}`).join('\n'))
+    }
+    const selfTest = contrastChecked && body.model === 'upstream-test' && body.temperature === 0
+    return response(values.map((value, index) => (
+      `(${index + 1}) ${selfTest && index === 0 ? value + 0.5 : value}`
+    )).join('\n'))
+  }
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config({ referenceMinimumStatisticalPower: 1 }),
+      fetchFn,
+    }), /underpowered at 500 probes/)
+    assert.equal(await readFile(path, 'utf8'), 'existing-reference')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('collector generates until target and accepts probes distinguishing any contrast', async () => {
+  let generated = 0
+  const query = async (model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      const count = Number(prompt.match(/^Generate (?:exactly )?(\d+)/)?.[1])
+      return JSON.stringify(Array.from({ length: count }, () => {
+        generated += 1
+        return {
+          name: `collector fact ${generated}`,
+          domain: 'test',
+          template: `The stable collector test value ${generated} is ___.`,
+          consensus: generated,
+          range: [0, 1000],
+          tolerance: { mode: 'absolute', value: 0 },
+        }
+      }))
+    }
+    const values = testPromptValues(prompt)
+    return values.map((value, index) => {
+      const differs = model === 'contrast-a' ? value % 2 === 1 : model === 'contrast-b' && value % 2 === 0
+      return `(${index + 1}) ${differs ? value + 100 : value}`
+    }).join('\n')
+  }
+
+  const collected = await collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: ['contrast-a', 'contrast-b'],
+    targetCount: 4,
+    candidateCountPerRound: 2,
+    query,
+  })
+
+  assert.equal(generated, 4)
+  assert.equal(collected.probes.length, 4)
+  assert.deepEqual(collected.distinguishingProbeIdsByModel.get('contrast-a'), [
+    collected.probes[0]!.id,
+    collected.probes[2]!.id,
+  ])
+  assert.deepEqual(collected.distinguishingProbeIdsByModel.get('contrast-b'), [
+    collected.probes[1]!.id,
+    collected.probes[3]!.id,
+  ])
+})
+
+test('collector stops after repeated rounds without progress', async () => {
+  let generationRequests = 0
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      generationRequests += 1
+      return JSON.stringify([{
+        name: 'duplicate fact',
+        domain: 'test',
+        template: 'The stable duplicate collector value is ___.',
+        consensus: 1,
+        range: [0, 10],
+        tolerance: { mode: 'absolute', value: 0 },
+      }])
+    }
+    return '(1) 1'
+  }
+
+  await assert.rejects(collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 2,
+    candidateCountPerRound: 1,
+    maxNoProgressRounds: 2,
+    query,
+  }), /made no progress for 2 rounds/)
+  assert.equal(generationRequests, 3)
+})
+
+test('collector never returns probes that are already banked', async () => {
+  const banked = { id: '', name: 'banked fact', domain: 'test', template: 'The banked collector value is ___.',
+    consensus: 1, range: [0, 10] as [number, number], tolerance: { mode: 'absolute' as const, value: 0 } }
+  let generationRequests = 0
+  let bankedId = ''
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      generationRequests += 1
+      return JSON.stringify([{ ...banked, id: undefined }])
+    }
+    return '(1) 1'
+  }
+  const firstRun = await collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1, query,
+  })
+  bankedId = firstRun.probes[0]!.id
+  generationRequests = 0
+  await assert.rejects(collectReferenceProbes({
+    model: 'reference-model', contrastModels: [], targetCount: 1, candidateCountPerRound: 1,
+    maxNoProgressRounds: 1, query, excludedProbeIds: new Set([bankedId]),
+  }), /made no progress/)
+  assert.ok(generationRequests >= 1)
+})
+
+test('collector rejects certified consensus values outside the declared range', async () => {
+  let generationRound = 0
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      generationRound += 1
+      return JSON.stringify([{
+        name: `range fact ${generationRound}`,
+        domain: 'test',
+        template: `The range collector value ${generationRound} is ___.`,
+        consensus: 5,
+        range: [0, 10],
+        tolerance: { mode: 'absolute', value: 20 },
+      }])
+    }
+    const value = Number(prompt.match(/range fact (\d+)/)?.[1])
+    return `(1) ${value === 1 ? 700 : 5}`
+  }
+
+  const collected = await collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 1,
+    candidateCountPerRound: 1,
+    query,
+  })
+  assert.equal(generationRound, 2)
+  assert.equal(collected.probes[0]?.consensus, 5)
+})
+
+test('collector applies rounded agreement for canonical absolute domains', async () => {
+  const stabilityAnswers = new Map([
+    ['stability-0', 100],
+    ['stability-1', 100.4],
+    ['stability-2', 99.6],
+  ])
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return 'test compound | 100'
+    const cacheDomain = String(body.__antseedReferenceCacheDomain ?? '')
+    return `(1) ${String(stabilityAnswers.get(cacheDomain) ?? 100)}`
+  }
+
+  const collected = await collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 1,
+    candidateCountPerRound: 1,
+    query,
+  })
+
+  assert.equal(collected.probes.length, 1)
+  assert.equal(collected.probes[0]?.domain, 'chemistry_bp')
+  assert.equal(collected.probes[0]?.consensus, 100)
+  assert.deepEqual(collected.probes[0]?.enrollmentEvidence, {
+    temperatures: [0, 0.7, 0.7],
+    answers: [100, 100.4, 99.6],
+    rule: 'rounded-exact-agreement',
+  })
+})
+
+test('collector never requests excluded canonical domains', async () => {
+  const requestedDomains = new Set<string>()
+  const query = async (model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    const domain = prompt.match(/canonical KBF domain ([a-z_]+)/)?.[1]
+    if (domain) requestedDomains.add(domain)
+    return successfulContent(model, prompt)
+  }
+
+  const collected = await collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    excludedDomains: ['medical'],
+    targetCount: 1,
+    candidateCountPerRound: 15,
+    query,
+  })
+
+  assert.equal(requestedDomains.has('medical'), false)
+  assert.equal(requestedDomains.size, 14)
+  assert.equal(collected.probes.some((probe) => probe.domain === 'medical'), false)
+})
+
+test('collector stability requests never mix canonical domains', async () => {
+  const stabilityDomains: Array<Set<string>> = []
+  const valueForDomain = (domain: string): number => ['programming', 'chinese_internet'].includes(domain) ? 2000 : 100
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      const domain = prompt.match(/canonical KBF domain ([a-z_]+)/)?.[1]
+      return `${domain} fact | ${valueForDomain(domain ?? '')}`
+    }
+    const matchedDomains = [...prompt.matchAll(/\b([a-z_]+) fact\b/g)].map((match) => match[1]!)
+    const domains = new Set(matchedDomains)
+    stabilityDomains.push(domains)
+    return matchedDomains.map((domain, index) => `(${index + 1}) ${valueForDomain(domain)}`).join('\n')
+  }
+
+  await collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 1,
+    candidateCountPerRound: 15,
+    query,
+  })
+
+  assert.equal(stabilityDomains.length, 45)
+  assert.equal(stabilityDomains.every((domains) => domains.size === 1), true)
+})
+
+test('collector rejects decimal disagreement in exact-match domains', async () => {
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) {
+      return prompt.includes('domain biology') ? 'test organism | 100' : ''
+    }
+    const cacheDomain = String(body.__antseedReferenceCacheDomain ?? '')
+    if (cacheDomain === 'stability-1') return '(1) 100.5'
+    if (cacheDomain === 'stability-2') return '(1) 99.4'
+    return '(1) 100'
+  }
+
+  await assert.rejects(collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 1,
+    candidateCountPerRound: 5,
+    maxNoProgressRounds: 1,
+    query,
+  }), /made no progress for 1 rounds/)
+})
+
+test('collector rejects consistently non-integral answers in exact-match domains', async () => {
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return prompt.includes('domain biology') ? 'test organism | 100' : ''
+    return '(1) 100.4'
+  }
+
+  await assert.rejects(collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 1,
+    candidateCountPerRound: 5,
+    maxNoProgressRounds: 1,
+    query,
+  }), /made no progress for 1 rounds/)
+})
+
+test('collector rejects relative-domain stability spread above two percent', async () => {
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return prompt.includes('domain medical') ? 'test medicine | 100' : ''
+    const cacheDomain = String(body.__antseedReferenceCacheDomain ?? '')
+    if (cacheDomain === 'stability-1') return '(1) 103'
+    if (cacheDomain === 'stability-2') return '(1) 97'
+    return '(1) 100'
+  }
+
+  await assert.rejects(collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    targetCount: 1,
+    candidateCountPerRound: 5,
+    maxNoProgressRounds: 1,
+    query,
+  }), /made no progress for 1 rounds/)
+})
+
+test('collector independently shuffles every stability pass and preserves probe alignment', async () => {
+  const passOrders: string[][] = []
+  let shuffleCalls = 0
+  const query = async (_model: string, body: Record<string, unknown>): Promise<string> => {
+    const messages = body.messages as Array<{ content: string }>
+    const prompt = messages.at(-1)?.content ?? ''
+    if (prompt.startsWith('Generate ')) return 'first organism | 10\nsecond organism | 20'
+    const names = [...prompt.matchAll(/of (first organism|second organism) is/g)].map((match) => match[1]!)
+    passOrders.push(names)
+    return names.map((name, index) => `(${index + 1}) ${name === 'first organism' ? 10 : 20}`).join('\n')
+  }
+  const shuffle = <T>(values: readonly T[]): T[] => {
+    shuffleCalls += 1
+    return shuffleCalls % 2 === 0 ? [...values].reverse() : [...values]
+  }
+
+  const collected = await collectReferenceProbes({
+    model: 'reference-model',
+    contrastModels: [],
+    excludedDomains: [
+      'chemistry_bp', 'chemistry_mp', 'physics', 'astronomy', 'math', 'programming', 'medical',
+      'crypto_params', 'chinese_history', 'chinese_geography', 'chinese_literature',
+      'chinese_internet', 'internet_culture', 'pop_culture',
+    ],
+    targetCount: 2,
+    candidateCountPerRound: 2,
+    query,
+    shuffle,
+  })
+
+  assert.equal(shuffleCalls, 3)
+  assert.deepEqual(passOrders, [
+    ['first organism', 'second organism'],
+    ['second organism', 'first organism'],
+    ['first organism', 'second organism'],
+  ])
+  assert.deepEqual(collected.probes.map((probe) => probe.consensus), [10, 20])
+})
+
+test('reference requests retry new-account throttles with queued same-model work', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-retry-'))
+  const rateLimitedStabilityAttempts: number[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as {
+      model: string
+      temperature: number
+      messages: Array<{ content: string }>
+    }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model === 'upstream-test' && !prompt.startsWith('Generate ') && body.temperature === 0) {
+      rateLimitedStabilityAttempts.push(Date.now())
+      if (rateLimitedStabilityAttempts.length === 1) {
+        return new Response(JSON.stringify({ error: 'Rate limit exceeded: new-account-rpm/upstream-test' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'retry-after': '0.001' },
+        })
+      }
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const value = config()
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: value,
+      fetchFn,
+      requestLimiter: createReferenceRequestLimiter(value, {
+        newAccountMinimumRequestIntervalMs: 1,
+        newAccountRateLimitCooldownMs: 20,
+      }),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.ok(rateLimitedStabilityAttempts.length >= 2)
+    assert.ok(rateLimitedStabilityAttempts[1]! - rateLimitedStabilityAttempts[0]! >= 15)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference requests retry nested Undici socket failures', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-socket-retry-'))
+  let socketFailures = 0
+  const logs: string[] = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    if (socketFailures === 0) {
+      socketFailures += 1
+      const cause = Object.assign(new Error('other side closed'), { code: 'UND_ERR_SOCKET' })
+      throw new TypeError('terminated', { cause })
+    }
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.equal(built.reference.probes.length, 100)
+    assert.equal(socketFailures, 1)
+    assert.equal(logs.some((message) => message.includes('reference request retry') && message.includes('terminated')), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference builds enforce the physical request budget', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-budget-'))
+  const budgetedConfig = { ...config(), referenceMaxRequestsPerBuild: 1 }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await assert.rejects(
+      buildModelReference({ model: MODEL, referencesDir: directory, config: budgetedConfig, fetchFn }),
+      /request budget exhausted \(1\)/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('failed builds resume cached reference responses', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-resume-'))
+  const promptCalls = new Map<string, number>()
+  let failSecondCandidateBatch = true
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    promptCalls.set(prompt, (promptCalls.get(prompt) ?? 0) + 1)
+    if (failSecondCandidateBatch && prompt.includes('domain chemistry_mp') && prompt.includes('batch 1')) {
+      failSecondCandidateBatch = false
+      return response('invalid request', 400)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await assert.rejects(buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn }), /reference endpoint 400/)
+    await buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn })
+    const firstCandidatePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('generation round 1, batch 1'))!
+    assert.equal(promptCalls.get(firstCandidatePrompt), 1)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('domain exclusions preserve safe exact-request checkpoint responses', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-domain-resume-'))
+  const promptCalls = new Map<string, number>()
+  let failSecondCandidateBatch = true
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    promptCalls.set(prompt, (promptCalls.get(prompt) ?? 0) + 1)
+    if (failSecondCandidateBatch && prompt.includes('domain chemistry_mp') && prompt.includes('batch 1')) {
+      failSecondCandidateBatch = false
+      return response('invalid request', 400)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await assert.rejects(buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn }))
+    const medicalPrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain medical'))!
+    const reusablePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('domain chemistry_bp'))!
+    const excludedConfig = config()
+    excludedConfig.referenceEndpoint!.models[MODEL]!.excludedDomains = ['medical']
+    await buildModelReference({ model: MODEL, referencesDir: directory, config: excludedConfig, fetchFn })
+    assert.equal(promptCalls.get(medicalPrompt), 1)
+    assert.equal(promptCalls.get(reusablePrompt), 1)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('checkpoint compatibility invalidates changed sizing policies', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-policy-checkpoint-'))
+  let failSecondCandidateBatch = true
+  const promptCalls = new Map<string, number>()
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    promptCalls.set(prompt, (promptCalls.get(prompt) ?? 0) + 1)
+    if (failSecondCandidateBatch && prompt.includes('domain chemistry_mp') && prompt.includes('batch 1')) {
+      failSecondCandidateBatch = false
+      return response('invalid request', 400)
+    }
+    return response(successfulContent(body.model, prompt))
+  }
+  try {
+    await assert.rejects(buildModelReference({ model: MODEL, referencesDir: directory, config: config(), fetchFn }))
+    await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config({ referenceMinimumStatisticalPower: 0.91 }),
+      fetchFn,
+    })
+    const firstCandidatePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('generation round 1, batch 1'))!
+    assert.equal(promptCalls.get(firstCandidatePrompt), 2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('checkpoint compatibility invalidates changed Antseed target routes', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-route-checkpoint-'))
+  const promptCalls = new Map<string, number>()
+  let failSecondCandidateBatch = true
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+    type: 'antseed', service: 'fable-5-coding-only', peerId: '56'.repeat(20),
+    pricing: { inputUsdPerMillion: 0.45, outputUsdPerMillion: 1.15 },
+  }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    promptCalls.set(prompt, (promptCalls.get(prompt) ?? 0) + 1)
+    if (failSecondCandidateBatch && prompt.includes('domain chemistry_mp') && prompt.includes('batch 1')) {
+      failSecondCandidateBatch = false
+      return response('invalid request', 400)
+    }
+    const logicalModel = body.model.startsWith('fable-') ? 'upstream-test' : body.model
+    return response(successfulContent(logicalModel, prompt))
+  }
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8377, fetchFn,
+    }))
+    value.referenceEndpoint!.models[MODEL]!.referenceRoute = {
+      type: 'antseed', service: 'fable-5-reference-v2', peerId: '78'.repeat(20),
+      pricing: { inputUsdPerMillion: 0.5, outputUsdPerMillion: 1.25 },
+    }
+    await buildModelReference({
+      model: MODEL, referencesDir: directory, config: value, buyerProxyPort: 8378, fetchFn,
+    })
+    const firstCandidatePrompt = [...promptCalls.keys()].find((prompt) => prompt.includes('generation round 1, batch 1'))!
+    assert.equal(promptCalls.get(firstCandidatePrompt), 2)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('failed builds preserve an existing reference file', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-preserve-'))
+  const path = join(directory, `${MODEL}.json`)
+  await mkdir(directory, { recursive: true })
+  await writeFile(path, 'existing-reference')
+  try {
+    await assert.rejects(buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn: async () => response('missing content', 400),
+    }), /reference endpoint 400/)
+    assert.equal(await readFile(path, 'utf8'), 'existing-reference')
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference checkpoint writes recover after a failed write', async () => {
+  const dir = await mkdtemp(join(tmpdir(), 'antseed-reference-checkpoint-'))
+  try {
+    const path = join(dir, 'checkpoint.json')
+    const checkpoint = await ReferenceBuildCheckpoint.open(path, 'compat-hash')
+
+    // Replace the checkpoint file with a non-empty directory so the atomic
+    // rename fails for the next write.
+    await rm(path)
+    await mkdir(path)
+    await writeFile(join(path, 'blocker'), '')
+    await assert.rejects(checkpoint.reserveRequest(10))
+
+    await rm(path, { recursive: true })
+    await checkpoint.reserveRequest(10)
+    const saved = JSON.parse(await readFile(path, 'utf8')) as { requestsUsed: number }
+    assert.equal(saved.requestsUsed, 2)
+
+    await assert.rejects(checkpoint.reserveRequest(2), /budget exhausted/)
+    await checkpoint.delete('missing-key')
+  } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+function providerResponse(content: string, provider: string): Response {
+  return new Response(JSON.stringify({
+    provider,
+    choices: [{ message: { content } }],
+    usage: { prompt_tokens: 100, completion_tokens: 20 },
+  }), { headers: { 'content-type': 'application/json' } })
+}
+
+test('reference build pins the target upstream provider and records it', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-pin-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  const requestBodies: Array<Record<string, unknown>> = []
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    requestBodies.push(body)
+    const prompt = body.messages.at(-1)?.content ?? ''
+    return providerResponse(successfulContent(body.model, prompt), body.model === 'upstream-test' ? 'Provider-A' : 'Other')
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    const targetBodies = requestBodies.filter((body) => body.model === 'upstream-test')
+    const contrastBodies = requestBodies.filter((body) => body.model === 'contrast-test')
+    assert.equal(targetBodies.length > 0, true)
+    assert.equal(targetBodies.every((body) => JSON.stringify(body.provider) === JSON.stringify({
+      order: ['Provider-A'],
+      allow_fallbacks: false,
+    })), true)
+    assert.equal(contrastBodies.every((body) => body.provider === undefined), true)
+    assert.deepEqual(built.reference.generator.params.referenceProvider, {
+      pinned: { order: ['Provider-A'], allowFallbacks: false },
+      served: ['Provider-A'],
+    })
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference build fails when a pinned provider is not the one that served', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-mismatch-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.referenceProvider = { order: ['Provider-A'] }
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    return providerResponse(successfulContent(body.model, body.messages.at(-1)?.content ?? ''), 'Provider-B')
+  }
+  try {
+    await assert.rejects(
+      buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn }),
+      /outside the pinned providers Provider-A/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('unpinned reference builds record served providers and warn when they change', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-provider-drift-'))
+  const logs: string[] = []
+  let targetRequests = 0
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as Record<string, unknown> & {
+      model: string
+      messages: Array<{ content: string }>
+    }
+    assert.equal(body.provider, undefined)
+    const content = successfulContent(body.model, body.messages.at(-1)?.content ?? '')
+    if (body.model !== 'upstream-test') return response(content)
+    targetRequests += 1
+    return providerResponse(content, targetRequests <= 3 ? 'Provider-A' : 'Provider-B')
+  }
+  try {
+    const built = await buildModelReference({
+      model: MODEL,
+      referencesDir: directory,
+      config: config(),
+      fetchFn,
+      log: (message) => logs.push(message),
+    })
+    assert.deepEqual(built.reference.generator.params.referenceProvider, {
+      pinned: null,
+      served: ['Provider-A', 'Provider-B'],
+    })
+    assert.equal(logs.some((message) => /changed mid-build from Provider-A to Provider-B/.test(message)), true)
+    assert.equal(logs.some((message) => /pin referenceProvider\.order/.test(message)), true)
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})
+
+test('reference builds record contrast detection and grow until every contrast is flagged', async () => {
+  const directory = await mkdtemp(join(tmpdir(), 'antseed-reference-contrast-detection-'))
+  const value = config()
+  value.referenceEndpoint!.models[MODEL]!.contrastModels = ['contrast-test', 'close-contrast']
+  value.referenceEndpoint!.contrastModelBank!['close-contrast'] = {
+    upstreamModel: 'close-contrast',
+    pricing: { inputUsdPerMillion: 0.1, outputUsdPerMillion: 0.2 },
+    capabilityRank: 2,
+  }
+  // close-contrast misses only every twentieth fact, so small references cannot detect it.
+  const fetchFn: typeof fetch = async (_url, init) => {
+    const body = JSON.parse(String(init?.body)) as { model: string; messages: Array<{ content: string }> }
+    const prompt = body.messages.at(-1)?.content ?? ''
+    if (body.model !== 'close-contrast') return response(successfulContent(body.model, prompt))
+    return response(testPromptValues(prompt)
+      .map((fact, index) => `(${index + 1}) ${fact % 20 === 0 ? fact + 100_000 : fact}`).join('\n'))
+  }
+  try {
+    const built = await buildModelReference({ model: MODEL, referencesDir: directory, config: value, fetchFn })
+    assert.ok(built.reference.probes.length > 100)
+    const detection = built.reference.contrastDetection!
+    assert.deepEqual(detection.map((entry) => entry.model), ['contrast-test', 'close-contrast'])
+    assert.equal(detection.every((entry) => entry.detected), true)
+    assert.equal(detection[0]!.mismatches, built.reference.probes.length)
+    assert.equal(detection[1]!.total, built.reference.probes.length)
+
+    const capped = config({ referenceMaximumProbeCount: 100 })
+    capped.referenceEndpoint = value.referenceEndpoint
+    await assert.rejects(
+      buildModelReference({
+        model: MODEL,
+        referencesDir: join(directory, 'capped'),
+        config: capped,
+        fetchFn,
+      }),
+      /contrast models that would pass as SAME: close-contrast/,
+    )
+  } finally {
+    await rm(directory, { recursive: true, force: true })
+  }
+})

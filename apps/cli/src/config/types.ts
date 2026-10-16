@@ -4,6 +4,19 @@ import type {
   UnitBillingModelV1,
 } from '@antseed/node';
 import type { ModelRoutingPreferences } from '@antseed/node/model-routing';
+import type { VerifierCLIConfig } from '../verifier/config-schema.js';
+
+export type {
+  VerifierAntseedReferenceRouteConfig,
+  VerifierCLIConfig,
+  VerifierContrastModelConfig,
+  VerifierContrastSelectionConfig,
+  VerifierModelPricingConfig,
+  VerifierReferenceEndpointConfig,
+  VerifierReferenceModelConfig,
+  VerifierReferenceProviderConfig,
+  VerifierUpstreamConfig,
+} from '../verifier/config-schema.js';
 
 /**
  * Dual token pricing in USD per 1M tokens.
@@ -308,6 +321,10 @@ export interface PaymentsCLIConfig {
     identityRegistryAddress?: string;
     /** Deployed AntseedEmissions contract address */
     emissionsContractAddress?: string;
+    /** Deployed AntseedVerification contract address */
+    verificationContractAddress?: string;
+    /** Deployment block of the verification contract; floor for verifier event scans */
+    verificationDeployBlock?: number;
     legacyEmissionsContractAddress?: string;
     legacyStakingContractAddress?: string;
     legacyEmissionsV1ContractAddress?: string;
@@ -369,6 +386,8 @@ export interface AntseedConfig {
   buyer: BuyerCLIConfig;
   /** Payment settings */
   payments: PaymentsCLIConfig;
+  /** Verifier mode settings (model-verification network) */
+  verifier?: VerifierCLIConfig;
   /** Seller-side deposit-sweep relayer settings (opt-out, ON by default) */
   relayer?: RelayerCLIConfig;
   /** Network / DHT settings */
