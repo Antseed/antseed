@@ -19,6 +19,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Added
 
+- Desktop: a new install now starts on AntSeed's free Default Router (`@antseed/provider-default-router`) as soon as discovery finds one, so new users get the best free model per request without picking one. It is only chosen when the router itself is free and every model it ranks is offered for free by a seller the user's access rules allow; until then the app keeps auto-picking a free model. Existing installs keep their saved route, and any model or router the user picks wins.
 - CLI gateway console: **Deposits** on Wallet & Funding lists every deposit credited to a workspace, checked against its transaction on Base, with where the USDC came from. Workspace admins can **Approve** a deposit, which records who approved it, when, and an optional note, and is audited. Each deposit has a printable confirmation to save as a PDF for the books. Deposits made before this release can be added by their transaction. The buyer now records each credited deposit, and its control API adds `GET /_antseed/deposits/history`.
 
 ### Fixed

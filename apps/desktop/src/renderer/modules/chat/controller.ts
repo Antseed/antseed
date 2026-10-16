@@ -9,9 +9,9 @@ import { findCatalogEntry, projectRowsToVprModelCatalog, selectDefaultVprModel }
 import { sameCanonicalModel } from '../catalog/model-identity.js';
 import { bestFreeVprRouteReputation, chooseBestVprRoute, filterRoutableVprRoutes, isRouteEligibleForAutoSelection } from '../routing/select.js';
 import { routesForSelectedModel } from '../catalog/view-models.js';
-import { saveVprRouteSelection } from '../routing/preferences.js';
+import { clearFreeRouterDefaultPending, loadFreeRouterDefaultPending, saveVprRouteSelection } from '../routing/preferences.js';
 import { syncBuyerDefaultRoute } from '../routing/proxy-sync.js';
-import { adoptExternalVprRouter } from '../routing/select-router.js';
+import { adoptExternalVprRouter, adoptFreeDefaultRouter, findFreeDefaultRouter } from '../routing/select-router.js';
 import { clearVprModelPin, saveVprModelPins, setVprModelPin } from '../routing/model-pins.js';
 import {
   applyOpenRouterBaselines,
@@ -1437,6 +1437,32 @@ export function initChatModule({
    */
   function endProvisionalDefaultModel(): void {
     setProvisionalDefaultModel(null);
+    endFreeRouterDefault();
+  }
+
+  // A new install starts on the free default router once discovery finds it.
+  // Until then it uses the auto-picked free model; any explicit route choice
+  // (model or router) ends the wait for good.
+  let freeRouterDefaultPending = loadFreeRouterDefaultPending();
+
+  function endFreeRouterDefault(): void {
+    if (!freeRouterDefaultPending) return;
+    freeRouterDefaultPending = false;
+    clearFreeRouterDefaultPending();
+  }
+
+  function adoptFreeDefaultRouterIfPending(): void {
+    if (!freeRouterDefaultPending) return;
+    if (uiState.vprRouteSelection.router) {
+      endFreeRouterDefault();
+      return;
+    }
+    const router = findFreeDefaultRouter(uiState.vprRoutingServices, uiState.vprRoutableRows, uiState.vprRoutingPreferences);
+    if (!router) return;
+    endFreeRouterDefault();
+    setProvisionalDefaultModel(null);
+    adoptFreeDefaultRouter(uiState, router);
+    void syncBuyerDefaultRoute(bridge, uiState);
   }
 
   /**
@@ -1568,6 +1594,7 @@ export function initChatModule({
     void bridge?.chatGetRoutingServices?.().then((result) => {
       uiState.vprRoutingServices = result.ok ? result.services ?? [] : [];
       uiState.vprRoutingServicesError = result.ok ? null : result.error ?? 'Routing discovery failed. Check that the buyer is running.';
+      adoptFreeDefaultRouterIfPending();
       notifyUiStateChanged();
     }).catch((error: unknown) => {
       uiState.vprRoutingServices = [];
@@ -1650,7 +1677,7 @@ export function initChatModule({
         // the same model deliberately pinned to a seller. Either way that was
         // an explicit choice (or a rules-driven re-pick); stop second-guessing
         // it — re-picking here would flatten a pin back to auto.
-        setProvisionalDefaultModel(null);
+        endProvisionalDefaultModel();
       }
       if (!uiState.vprRouteSelection.router && (!selectedRouteModel
         || (selectedRouteEntry != null && selectedRouteEntry.kind !== 'text')
@@ -2933,7 +2960,7 @@ export function initChatModule({
       };
       // An explicit pick ends the provisional-default window even when the
       // user picks the very model the provisional default landed on.
-      setProvisionalDefaultModel(null);
+      endProvisionalDefaultModel();
       if (rememberModelPin) {
         if (pinnedPeerId) {
           uiState.vprModelPins = setVprModelPin(
@@ -3129,7 +3156,7 @@ export function initChatModule({
       // route instead of stomping it with the stale selection.
       bridge.onChatDefaultRouteChanged((data) => {
         if (data.router) {
-          if (adoptExternalVprRouter(uiState, data.router)) setProvisionalDefaultModel(null);
+          if (adoptExternalVprRouter(uiState, data.router)) endProvisionalDefaultModel();
           return;
         }
         const peerId = typeof data.peerId === 'string' ? data.peerId.trim() : '';
@@ -3159,7 +3186,7 @@ export function initChatModule({
         // An external explicit pick ends the provisional-default window even
         // when it lands on the very model the provisional default chose —
         // otherwise the next refresh's re-pick would flatten the pin to auto.
-        setProvisionalDefaultModel(null);
+        endProvisionalDefaultModel();
         uiState.vprModelPins = setVprModelPin(
           uiState.vprModelPins,
           selectedModel.provider,

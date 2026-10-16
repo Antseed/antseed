@@ -1,10 +1,10 @@
 import assert from 'node:assert/strict';
 import { afterEach, beforeEach, test, vi } from 'vitest';
-import { createInitialUiState } from '../../core/state';
+import { createInitialUiState, type DiscoverRow } from '../../core/state';
 import { initStore } from '../../core/store';
 import { createDesktopRouterSelection } from '../../../shared/routing-selection';
-import { loadVprRouterSettings, loadVprRouteSelection } from './preferences';
-import { adoptExternalVprRouter, selectVprRouter, updateVprRouterSettings } from './select-router';
+import { clearFreeRouterDefaultPending, loadFreeRouterDefaultPending, loadVprRouterSettings, loadVprRouteSelection } from './preferences';
+import { adoptExternalVprRouter, adoptFreeDefaultRouter, findFreeDefaultRouter, selectVprRouter, updateVprRouterSettings } from './select-router';
 
 const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' };
 const model = { provider: 'openai', serviceId: 'model-a' };
@@ -137,4 +137,44 @@ test('a router saved outside the app replaces the selection and its settings wit
   const previous = state.vprRouteSelection;
   assert.equal(adoptExternalVprRouter(state, { ...router, costQualityTradeoff: 11 }), false);
   assert.equal(state.vprRouteSelection, previous);
+});
+
+const freeRouter = { peerId: 'f'.repeat(40), provider: 'default-router', serviceId: 'default-router', label: 'Free', priceMicroUsdc: '0',
+  catalog: { models: [model] } };
+const freeRow = { peerId: 'a'.repeat(40), provider: 'openai', serviceId: 'model-a', inputUsdPerMillion: 0, outputUsdPerMillion: 0,
+  cachedInputUsdPerMillion: null } as unknown as DiscoverRow;
+
+test('the free default router is found only when it is free and routes to free models', () => {
+  const preferences = createInitialUiState().vprRoutingPreferences;
+  assert.equal(findFreeDefaultRouter([freeRouter], [freeRow], preferences), freeRouter);
+  assert.equal(findFreeDefaultRouter([{ ...freeRouter, priceMicroUsdc: '1' }], [freeRow], preferences), null);
+  assert.equal(findFreeDefaultRouter([{ ...freeRouter, provider: 'levanto' }], [freeRow], preferences), null);
+  assert.equal(findFreeDefaultRouter([{ ...freeRouter, catalog: { models: [] } }], [freeRow], preferences), null);
+  assert.equal(findFreeDefaultRouter([{ ...freeRouter, catalog: undefined }], [freeRow], preferences), null);
+  assert.equal(findFreeDefaultRouter([freeRouter], [{ ...freeRow, outputUsdPerMillion: 1 }], preferences), null);
+  assert.equal(findFreeDefaultRouter([freeRouter], [freeRow], { ...preferences, blockedPeerIds: [freeRouter.peerId] }), null);
+  assert.equal(findFreeDefaultRouter([freeRouter], [freeRow], { ...preferences, blockedPeerIds: [freeRow.peerId] }), null);
+});
+
+test('adopting the free default router keeps its saved settings and persists the selection', () => {
+  const state = createInitialUiState();
+  initStore(state);
+  updateVprRouterSettings(undefined, state, freeRouter, 3);
+  adoptFreeDefaultRouter(state, freeRouter);
+  const router = createDesktopRouterSelection(freeRouter, 3);
+  assert.deepEqual(state.vprRouteSelection, { model: null, mode: 'auto', peerId: null, router });
+  assert.deepEqual(loadVprRouteSelection(createInitialUiState().vprRouteSelection), state.vprRouteSelection);
+});
+
+test('only a fresh install waits for the free default router, until it is cleared', () => {
+  assert.equal(loadFreeRouterDefaultPending(), true);
+  localStorage.setItem('antseed.desktop.vpr.routeSelection', '{}');
+  assert.equal(loadFreeRouterDefaultPending(), true);
+  clearFreeRouterDefaultPending();
+  assert.equal(loadFreeRouterDefaultPending(), false);
+});
+
+test('an existing install never switches to the free default router', () => {
+  localStorage.setItem('antseed.desktop.vpr.routeSelection', '{}');
+  assert.equal(loadFreeRouterDefaultPending(), false);
 });

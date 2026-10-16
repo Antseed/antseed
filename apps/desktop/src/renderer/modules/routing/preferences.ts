@@ -5,6 +5,7 @@ import { createDesktopRouterSelection, isDesktopRouterSelection, type DesktopRou
 export const VPR_PREFERENCES_STORAGE_KEY = 'antseed.desktop.vpr.preferences';
 export const VPR_ROUTE_SELECTION_STORAGE_KEY = 'antseed.desktop.vpr.routeSelection';
 const VPR_ROUTER_SETTINGS_STORAGE_PREFIX = 'antseed.desktop.vpr.routerSettings.';
+const VPR_FREE_ROUTER_DEFAULT_PENDING_STORAGE_KEY = 'antseed.desktop.vpr.freeRouterDefaultPending';
 const VPR_PREFERENCES_VERSION = 2;
 const ROUTING_PEER_ID_PATTERN = /^(?:0x)?[0-9a-f]{40}$/i;
 
@@ -182,6 +183,26 @@ export function saveVprRouteSelection(value: VprRouteSelection): void {
     return;
   }
   localStorage.setItem(VPR_ROUTE_SELECTION_STORAGE_KEY, JSON.stringify(value));
+}
+
+/**
+ * Whether this install should still switch to the free default router once it
+ * is discovered. Starts true only on a fresh install (no saved route), and
+ * stays true across restarts until the router is adopted or the user picks a
+ * route themselves.
+ */
+export function loadFreeRouterDefaultPending(): boolean {
+  if (typeof localStorage === 'undefined') return false;
+  const pending = localStorage.getItem(VPR_FREE_ROUTER_DEFAULT_PENDING_STORAGE_KEY);
+  if (pending !== null) return pending === 'true';
+  const fresh = localStorage.getItem(VPR_ROUTE_SELECTION_STORAGE_KEY) === null;
+  localStorage.setItem(VPR_FREE_ROUTER_DEFAULT_PENDING_STORAGE_KEY, String(fresh));
+  return fresh;
+}
+
+export function clearFreeRouterDefaultPending(): void {
+  if (typeof localStorage === 'undefined') return;
+  localStorage.setItem(VPR_FREE_ROUTER_DEFAULT_PENDING_STORAGE_KEY, 'false');
 }
 
 function routerSettingsStorageKey(service: RoutingServiceTarget): string {
