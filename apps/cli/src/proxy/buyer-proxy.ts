@@ -3552,11 +3552,12 @@ export class BuyerProxy {
       if (!res.writableEnded) onClientAbort()
     })
     // Explicit model/seller choices bypass recommendations, even when the default is a router.
-    // Replace a system-proxy connection's stale model with the automatic alias, unless this chat is pinned.
-    if (routerSelection && systemRoutedModel && storedConversation?.peerSource !== 'user') {
-      serializedReq = withRoutedModel(serializedReq, ROUTED_MODEL_ALIAS)
-    }
-    const rawService = extractRequestedService(serializedReq)
+    // A system-proxy connection's model was assigned at connect time, not chosen by the tool:
+    // under a router it stands for the automatic alias, unless this chat is pinned. The request
+    // is only rewritten once the router path is certain (below), so a request that goes direct
+    // keeps its connect-time model.
+    const systemRoutedAsAlias = routerSelection !== null && systemRoutedModel && storedConversation?.peerSource !== 'user'
+    const rawService = systemRoutedAsAlias ? ROUTED_MODEL_ALIAS : extractRequestedService(serializedReq)
     // `<routerPeer>@<routingServiceId>`: the request names a routing service as
     // its model, so that router picks the model and seller for this request.
     const routerPinSource = rawService === ROUTED_MODEL_ALIAS
@@ -3571,6 +3572,9 @@ export class BuyerProxy {
     }
     const useModelRouter = pinnedRouter !== null || (autoRequested && !chatModelPin
       && !getExplicitPeerIdOverride(serializedReq, effectivePinnedPeer ?? undefined))
+    if (useModelRouter && systemRoutedAsAlias) {
+      serializedReq = withRoutedModel(serializedReq, ROUTED_MODEL_ALIAS)
+    }
     // A request without `routing` uses the saved router settings (tradeoff,
     // model allow list) when it pins the router those settings belong to.
     const savedRouter = this._defaultRouter

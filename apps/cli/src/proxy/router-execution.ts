@@ -1,5 +1,5 @@
 import { QueryClient } from '@tanstack/query-core'
-import { buildNetworkServiceOffers, isModelRouteEligible, type AntseedNode, type RoutingModelEntryV1, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
+import { buildNetworkServiceOffers, effectiveModelReputationScore, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RoutingModelEntryV1, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
@@ -53,7 +53,12 @@ function modelsKey(target: RoutingServiceTarget): readonly [string, string, stri
 
 type ExecutionCandidate = RouteCandidate & { peer: PeerInfo }
 
-/** Build the text-model destinations this buyer's policies allow. The router chooses among them. */
+/**
+ * Build the text-model destinations this buyer's policies allow. The router chooses among them.
+ * `preferences` apply as for automatic routing: the peer allow and block lists and `minTrustScore`
+ * exclude, judged on the same effective reputation (`effectiveModelReputationScore`) automatic
+ * routing uses; `maxInputUsdPerMillion` is a soft ranking limit there and never excludes here.
+ */
 export function eligibleRouterCandidates(
   request: SerializedHttpRequest,
   peers: PeerInfo[],
@@ -64,7 +69,11 @@ export function eligibleRouterCandidates(
   const protocol = detectRequestServiceApiProtocol(request)
   const explicitProvider = getExplicitProviderOverride(request)
   const candidates: ExecutionCandidate[] = []
-  for (const offer of buildNetworkServiceOffers(peers)) {
+  const offers = buildNetworkServiceOffers(peers)
+  // As in automatic routing, a missing cached-input price lowers a seller's effective reputation
+  // only when some seller of the same request does advertise one.
+  const preferCachedPricing = offers.some(offer => offer.type === 'text' && offer.cachedInputUsdPerMillion !== undefined)
+  for (const offer of offers) {
     // Keep only available, priced text services compatible with the request and required parameters.
     const peer = peers.find(candidate => candidate.peerId === offer.peerId)
     if (!peer || offer.type !== 'text' || (explicitProvider && offer.provider !== explicitProvider)) continue
@@ -81,7 +90,13 @@ export function eligibleRouterCandidates(
       inputUsdPerMillion: offer.inputUsdPerMillion, outputUsdPerMillion: offer.outputUsdPerMillion,
       ...(offer.cachedInputUsdPerMillion !== undefined ? { cachedInputUsdPerMillion: offer.cachedInputUsdPerMillion } : {}),
     }
-    if (!preferences || (isModelRouteEligible(candidate, preferences) && candidate.inputUsdPerMillion <= preferences.maxInputUsdPerMillion)) candidates.push(candidate)
+    const effectiveReputationScore = effectiveModelReputationScore(
+      normalizedModelReputationScore(peer),
+      offer.cachedInputUsdPerMillion !== undefined,
+      preferCachedPricing,
+      offer.inputUsdPerMillion === 0 && offer.outputUsdPerMillion === 0,
+    )
+    if (!preferences || isModelRouteEligible({ ...candidate, effectiveReputationScore }, preferences)) candidates.push(candidate)
   }
   return candidates
 }

@@ -782,6 +782,18 @@ test('intercepted connected-app defaults use the selected routing service rather
   assert.equal(JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString()).model, 'model-a')
 })
 
+test('a session peer pin under a default router keeps a system-routed connect-time model instead of answering 400', async () => {
+  const { proxy, peers, calls } = makeRankedRoutingFixture([200])
+  ;(proxy as any)._pinnedPeer = peers[1]!.peerId
+  const response = await invokeProxy(proxy, makeProxyRequest({ headers: { [SYSTEM_ROUTED_MODEL_HEADER]: '1' },
+    body: { model: 'model-b', messages: [{ role: 'user', content: 'Hello' }] } }))
+  assert.equal(response.statusCode, 200, response.body)
+  assert.equal(calls.routing, 0)
+  assert.equal(calls.requests.length, 1)
+  assert.equal(calls.requests[0]!.peer.peerId, peers[1]!.peerId)
+  assert.equal(JSON.parse(Buffer.from(calls.requests[0]!.request.body).toString()).model, 'model-b')
+})
+
 test('switching a routed conversation back to model mode keeps the chat model, like main', async () => {
   const { proxy, calls } = makeRankedRoutingFixture([200, 200, 200, 200])
   ;(proxy as any)._mergeStateFile = async () => {}

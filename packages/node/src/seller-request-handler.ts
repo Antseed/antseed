@@ -178,7 +178,7 @@ export class SellerRequestHandler {
       }
 
       if (request.method === 'GET' && pathOnly === MODEL_ROUTING_MODELS_PATH) {
-        mux.sendProxyResponse(await this._handleRoutingModels(request));
+        mux.sendProxyResponse(await this._handleRoutingModels(request, buyerPeerId));
         return;
       }
 
@@ -1030,16 +1030,18 @@ export class SellerRequestHandler {
 
   /**
    * Free router model list (IRP `GET /v1/routing/models`): forward to this seller's routing
-   * service. Not rate-limited here; the router limits its own model list. Local failures use
-   * IRP problem details.
+   * service. Not rate-limited here; the router limits its own model list, keyed on the
+   * authenticated buyer id this seller stamps on the request, as on paid requests. Local
+   * failures use IRP problem details.
    */
-  private async _handleRoutingModels(request: SerializedHttpRequest): Promise<SerializedHttpResponse> {
+  private async _handleRoutingModels(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
     const problem = (statusCode: number, type: string, title: string, detail: string): SerializedHttpResponse => ({
       requestId: request.requestId, statusCode, headers: { 'content-type': 'application/problem+json' },
       body: routingProblemBody(statusCode, type, title, detail),
     });
     const provider = routingServices(this._deps.providers)[0]?.provider;
     if (!provider) return problem(404, ROUTING_PROBLEM_TYPES.invalidRequest, 'No routing service', 'This seller offers no model-routing service.');
+    setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
       return { ...response, requestId: request.requestId };
