@@ -51,10 +51,15 @@ describe('completed-request seller payments', () => {
     expect(harness.spm.recordSpend).toHaveBeenCalledWith('session-1', 1000n);
     expect(harness.paymentMux.sendNeedAuth).toHaveBeenCalledWith(expect.objectContaining({ lastRequestCost: '1000', inputTokens: '0', outputTokens: '0', billingUsage: { version: 1, units: { completed_requests: '1' } } }));
   });
-  it('serves the routing model list for free through the provider', async () => {
+  it('serves the routing model list for free through the provider, under the authenticated buyer id', async () => {
     const harness = setup();
-    expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers: routingHeaders, body: new Uint8Array() })).statusCode).toBe(200);
-    expect(vi.mocked(harness.provider.handleRequest).mock.calls[0]![0].path).toBe('/v1/routing/models');
+    const headers = { ...routingHeaders, 'X-Antseed-Buyer-Peer-Id': 'f'.repeat(40) };
+    expect((await harness.send('models', { method: 'GET', path: '/v1/routing/models', headers, body: new Uint8Array() })).statusCode).toBe(200);
+    const forwarded = vi.mocked(harness.provider.handleRequest).mock.calls[0]![0];
+    expect(forwarded.path).toBe('/v1/routing/models');
+    // The buyer-sent copy (any casing) is replaced by the id from the authenticated connection.
+    expect(forwarded.headers['x-antseed-buyer-peer-id']).toBe('b'.repeat(40));
+    expect(Object.keys(forwarded.headers).filter(key => key.toLowerCase() === 'x-antseed-buyer-peer-id')).toEqual(['x-antseed-buyer-peer-id']);
     expect(harness.spm.recordSpend).not.toHaveBeenCalled();
     expect(harness.paymentMux.sendPaymentRequired).not.toHaveBeenCalled();
   });

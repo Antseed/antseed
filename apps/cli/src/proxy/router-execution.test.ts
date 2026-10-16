@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import type { PeerInfo, SerializedHttpRequest } from '@antseed/node'
+import { DEFAULT_MODEL_ROUTING_PREFERENCES, type PeerInfo, type SerializedHttpRequest } from '@antseed/node'
 import type { ModelRoutingClientApi } from '@antseed/router-core'
 import { RouterCannotRankError } from '@antseed/router-core'
 import { eligibleRouterCandidates, executeRouterSelection, requestForRecommendation, resolveRouterRecommendations, RoutingModelsCache } from './router-execution.js'
@@ -216,9 +216,18 @@ test('routing purchases cannot substitute a different routing-service peer', asy
 test('candidate construction enforces buyer restrictions and required parameters', () => {
   assert.equal(eligibleRouterCandidates(request, [peer], [], null, () => false).length, 0)
   assert.equal(eligibleRouterCandidates(request, [peer], ['tools'], null, () => true).length, 0)
-  assert.equal(eligibleRouterCandidates(request, [peer], [], {
-    preferFreePeers: false, maxInputUsdPerMillion: 0.5, minTrustScore: 0, allowedPeerIds: [], blockedPeerIds: [],
-  }, () => true).length, 0)
+})
+
+test('candidate construction applies buyer routing preferences like automatic routing', () => {
+  // The default preferences (min trust 60) keep a reputable seller: its reputation is read from the peer.
+  assert.equal(eligibleRouterCandidates(request, [peer], [], DEFAULT_MODEL_ROUTING_PREFERENCES, () => true).length, 1)
+  // Trust below the minimum, a block list and an allow list exclude.
+  assert.equal(eligibleRouterCandidates(request, [peer], [], { ...DEFAULT_MODEL_ROUTING_PREFERENCES, minTrustScore: 95 }, () => true).length, 0)
+  assert.equal(eligibleRouterCandidates(request, [{ ...peer, reputationScore: undefined } as PeerInfo], [], DEFAULT_MODEL_ROUTING_PREFERENCES, () => true).length, 0)
+  assert.equal(eligibleRouterCandidates(request, [peer], [], { ...DEFAULT_MODEL_ROUTING_PREFERENCES, blockedPeerIds: [peer.peerId] }, () => true).length, 0)
+  assert.equal(eligibleRouterCandidates(request, [peer], [], { ...DEFAULT_MODEL_ROUTING_PREFERENCES, allowedPeerIds: ['b'.repeat(40)] }, () => true).length, 0)
+  // The soft input-price limit only ranks automatic routing; it never excludes a router candidate.
+  assert.equal(eligibleRouterCandidates(request, [peer], [], { ...DEFAULT_MODEL_ROUTING_PREFERENCES, maxInputUsdPerMillion: 0.5 }, () => true).length, 1)
 })
 
 test('routing purchases are registered before dispatch with their own request ID', async () => {
