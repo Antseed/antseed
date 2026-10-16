@@ -149,7 +149,7 @@ const KEY_WORKSPACES: Record<string, string> = { key_team: 'ws_team', key_other:
 const store = {
   peerStats: (since: number) => {
     assert.equal(since, NOW - 24 * 60 * 60 * 1000)
-    return [{ peerId: PEER_A, requests: 17, latencyMsP50: 840 }]
+    return [{ peerId: PEER_A, requests: 17, latencyMsP50: 840, firstTokenMsP50: 300, tokensPerSecondP50: 55.5 }]
   },
   workspaceForKey: (keyId: string) => (KEY_WORKSPACES[keyId] ? { id: KEY_WORKSPACES[keyId] } : null),
 }
@@ -226,6 +226,8 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     lastSeen: NOW - 5_000,
     health: { failureStreak: 0, coolingDownUntil: null },
     latencyMsP50: 840,
+    firstTokenMsP50: 300,
+    tokensPerSecondP50: 55.5,
     requests24h: 17,
   })
   assert.equal(b.verified, true)
@@ -300,6 +302,8 @@ test('network models merge the buyer catalog with the peer list', () => {
     verificationLinks: [],
     tee: true,
     latencyMsP50: 840,
+    firstTokenMsP50: null,
+    tokensPerSecondP50: null,
   })
   // B's name and verification come from the peer list; it keeps its own service id for pinning.
   const b = text.offers[1]!

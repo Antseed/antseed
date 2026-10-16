@@ -22,12 +22,12 @@ The **Overview** page shows this week's spend against the workspace budgets, the
 
 ## Logs
 
-**Logs** lists every request through the workspace's keys, newest first, with its model, key, provider, status, latency, tokens and cost. Search by model, key, end user or error, and filter by key, model, status (**Succeeded** or **Failed**) and a UTC date range.
+**Logs** lists every request through the workspace's keys, newest first, with its model, key, provider, status, time to first token, output speed, tokens and cost. Search by model, key, end user or error, and filter by key, model, status (**Succeeded** or **Failed**) and a UTC date range.
 
 Click a request to open its details:
 
 - Status, method and path, model, key, end user and provider (peer id).
-- Latency, duration, input, cached input and output tokens, and cost.
+- Time to first token and output speed (streamed requests only), duration, input, cached input and output tokens, and cost.
 - The request's tag, which identifies it in the CLI and exports.
 - For a failed request, its error code and message.
 - With content logging on, the request and response bodies.

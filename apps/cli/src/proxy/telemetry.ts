@@ -350,14 +350,19 @@ export function attachAntseedTelemetryHeaders(
   return headers
 }
 
-/** Streamed responses carry the seller's advertised prices too (a gateway tells a free seller by them). */
+/**
+ * Streamed responses carry the seller's advertised prices too (a gateway tells
+ * a free seller by them), and the time from sending to the seller's first frame.
+ */
 export function attachStreamingAntseedHeaders(
   upstreamHeaders: Record<string, string>,
   selectedPeer: PeerInfo,
   request: SerializedHttpRequest,
+  firstTokenMs?: number,
 ): Record<string, string> {
   const headers: Record<string, string> = { ...upstreamHeaders }
   headers['x-antseed-request-id'] = request.requestId
+  if (firstTokenMs !== undefined) headers['x-antseed-first-token-ms'] = String(Math.max(0, Math.floor(firstTokenMs)))
   setPeerIdentityHeaders(headers, selectedPeer)
   setPricingHeaders(headers, resolvePeerPricing(selectedPeer, pickProviderForPeer(selectedPeer, request), extractRequestedService(request)))
   return headers

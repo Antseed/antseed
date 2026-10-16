@@ -1,6 +1,6 @@
 {
   "name": "@antseed/cli",
-  "version": "0.1.188",
+  "version": "0.1.189",
   "description": "Antseed Network CLI and Web Dashboard",
   "type": "module",
   "files": [
@@ -34,6 +34,7 @@
     "@antseed/node": "workspace:*",
     "@antseed/payments": "workspace:*",
     "@antseed/provider-core": "workspace:*",
+    "@antseed/router-core": "workspace:*",
     "@peculiar/x509": "^2.0.0",
     "@simplewebauthn/server": "^13.1.0",
     "@tanstack/query-core": "5.97.0",
@@ -53,6 +54,7 @@
     "zod": "^4"
   },
   "devDependencies": {
+    "@antseed/router-local": "workspace:*",
     "@types/better-sqlite3": "^7.6.13",
     "@types/geoip-country": "^5",
     "@types/node": "^20.11.0",

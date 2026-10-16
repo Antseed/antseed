@@ -1,6 +1,6 @@
 {
   "name": "@antseed/connected-apps",
-  "version": "0.1.0",
+  "version": "0.1.1",
   "description": "Connect local AI tools (Codex, Claude Code, OpenCode, Droid, pi, Zed, …) to the AntSeed buyer proxy by patching their own config files. Shared by the AntSeed CLI and desktop app",
   "type": "module",
   "files": [

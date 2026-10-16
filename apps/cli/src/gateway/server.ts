@@ -452,6 +452,9 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let reportedLatency: number | null = null
+      // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
+      let firstTokenMs: number | null = null
+      let respondedAt = 0
       let servedFree = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
@@ -468,8 +471,9 @@ export class GatewayServer {
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser, servedFree })
           const usage = usageReader?.result() ?? null
+          const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
@@ -507,6 +511,8 @@ export class GatewayServer {
         const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
         sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
         reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
+        firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
+        respondedAt = Date.now()
         servedFree = freeSellerPricing(upstreamRes.headers)
         if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
         if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
@@ -887,6 +893,13 @@ function freeSellerPricing(headers: http.IncomingHttpHeaders): boolean {
   }
   const cached = price('x-antseed-cached-input-usd-per-million')
   return price('x-antseed-input-usd-per-million') === 0 && price('x-antseed-output-usd-per-million') === 0 && (cached === null || cached === 0)
+}
+
+/** Answers with fewer output tokens say little about generation speed (the buyer ranks by the same rule). */
+const MIN_SPEED_OUTPUT_TOKENS = 20
+
+function outputTokensPerSecond(outputTokens: number, streamMs: number): number | null {
+  return outputTokens >= MIN_SPEED_OUTPUT_TOKENS && streamMs > 0 ? Math.round((outputTokens / (streamMs / 1000)) * 10) / 10 : null
 }
 
 function latencyHeader(value: string): number | null {

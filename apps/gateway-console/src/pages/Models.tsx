@@ -7,7 +7,7 @@ import { Icon } from '../components/icons'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { PanelRow, PanelSection, SplitView, type SidePanelContent } from '../components/SidePanel'
 import { Badge, CopyButton, DetailList, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView, SelectField, Switch } from '../components/ui'
-import { formatLatency, formatNumber, formatPriceRange, formatTokens, shortId } from '../lib/format'
+import { formatLatency, formatNumber, formatSpeed, formatPriceRange, formatTokens, shortId } from '../lib/format'
 import { CAPABILITY_LABELS, filterModels, findModel, MODEL_TYPE_LABELS, modelTypes, priceSummary, type ModelFilter } from '../lib/models'
 import { panelPath, panelSelection } from '../lib/nav'
 import { useModels } from '../lib/queries'
@@ -152,7 +152,8 @@ function ModelPanelBody({ model }: { model: NetworkModel }) {
                   meta={<>
                     <span>{priceSummary(offer)}</span>
                     <span>Trust {score(offer.trustScore)}</span>
-                    {offer.latencyMsP50 !== null && <span>{formatLatency(offer.latencyMsP50)}</span>}
+                    {offer.firstTokenMsP50 !== null && <span>{formatLatency(offer.firstTokenMsP50)} first token</span>}
+                    {offer.tokensPerSecondP50 !== null && <span>{formatSpeed(offer.tokensPerSecondP50)}</span>}
                     {offer.serviceId !== model.id && <Mono>{offer.serviceId}</Mono>}
                   </>}
                   badges={(offer.verificationLinks?.length || offer.tee || offer.free) && (

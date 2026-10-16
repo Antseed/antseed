@@ -248,6 +248,9 @@ export interface GatewayRequestStart {
 export interface RequestOutcome {
   sellerPeerId?: string | null
   latencyMs?: number | null
+  /** Streamed answers only: time to the seller's first frame, and output tokens per second after it. */
+  firstTokenMs?: number | null
+  tokensPerSecond?: number | null
   endUser?: string | null
   /** Served by a free seller (all advertised prices zero): no spend will be reported. */
   servedFree?: boolean
@@ -352,6 +355,8 @@ export interface RequestLogRow {
   status: number | null
   sellerPeerId: string | null
   latencyMs: number | null
+  firstTokenMs: number | null
+  tokensPerSecond: number | null
   spentUsdc: number | null
   inputTokens: number
   cachedInputTokens: number
@@ -487,6 +492,12 @@ function rowLimits<Prefix extends string = ''>(row: LimitColumns<Prefix>, prefix
     monthly: limit('monthly'),
     total: limit('total'),
   }
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor((sorted.length - 1) / 2)]!
 }
 
 /**
@@ -1074,12 +1085,16 @@ export class GatewayStore {
     )
   }
 
-  /** Seller, latency and end user of a request; null fields leave what is stored. */
+  /** Seller, speed and end user of a request; null fields leave what is stored. */
   recordRequestOutcome(tag: string, outcome: RequestOutcome): void {
     this._stmt(`
       UPDATE gateway_requests SET seller_peer_id = COALESCE(?, seller_peer_id), latency_ms = COALESCE(?, latency_ms),
+        first_token_ms = COALESCE(?, first_token_ms), tokens_per_second = COALESCE(?, tokens_per_second),
         end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?) WHERE tag = ?
-    `).run(outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag)
+    `).run(
+      outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
+      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag,
+    )
   }
 
   /**
@@ -1159,23 +1174,28 @@ export class GatewayStore {
       : null
   }
 
-  /** Requests per seller since a time, with the median latency this gateway measured. */
-  peerStats(sinceMs: number): Array<{ peerId: string; requests: number; latencyMsP50: number | null }> {
+  /** Requests per seller since a time, with the medians of what this gateway measured. */
+  peerStats(sinceMs: number): Array<{ peerId: string; requests: number; latencyMsP50: number | null; firstTokenMsP50: number | null; tokensPerSecondP50: number | null }> {
     const rows = this._stmt(`
-      SELECT seller_peer_id AS peer, latency_ms AS latency FROM gateway_requests
+      SELECT seller_peer_id AS peer, latency_ms AS latency, first_token_ms AS first_token, tokens_per_second AS speed FROM gateway_requests
       WHERE started_at >= ? AND seller_peer_id IS NOT NULL
-    `).all(sinceMs) as Array<{ peer: string; latency: number | null }>
-    const byPeer = new Map<string, { requests: number; latencies: number[] }>()
+    `).all(sinceMs) as Array<{ peer: string; latency: number | null; first_token: number | null; speed: number | null }>
+    const byPeer = new Map<string, { requests: number; latencies: number[]; firstTokens: number[]; speeds: number[] }>()
     for (const row of rows) {
-      const entry = byPeer.get(row.peer) ?? { requests: 0, latencies: [] }
+      const entry = byPeer.get(row.peer) ?? { requests: 0, latencies: [], firstTokens: [], speeds: [] }
       entry.requests += 1
       if (row.latency !== null) entry.latencies.push(row.latency)
+      if (row.first_token !== null) entry.firstTokens.push(row.first_token)
+      if (row.speed !== null) entry.speeds.push(row.speed)
       byPeer.set(row.peer, entry)
     }
-    return [...byPeer].map(([peerId, entry]) => {
-      const sorted = entry.latencies.sort((a, b) => a - b)
-      return { peerId, requests: entry.requests, latencyMsP50: sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)]! : null }
-    })
+    return [...byPeer].map(([peerId, entry]) => ({
+      peerId,
+      requests: entry.requests,
+      latencyMsP50: median(entry.latencies),
+      firstTokenMsP50: median(entry.firstTokens),
+      tokensPerSecondP50: median(entry.speeds),
+    }))
   }
 
   /** Newest first, ordered by (startedAt, tag); pass the last row as `before` for the next page. Bodies are not read. */
@@ -1212,7 +1232,7 @@ export class GatewayStore {
     const rows = this._stmt(`
       WITH page AS (
         SELECT r.tag, r.started_at, r.finished_at, r.key_id, k.label AS key_label, COALESCE(r.workspace_id, k.workspace_id) AS ws_id,
-          r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.error_code, r.error_message,
+          r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.first_token_ms, r.tokens_per_second, r.error_code, r.error_message,
           r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
           ${withBodies ? ', r.request_body, r.response_body' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
@@ -1249,6 +1269,8 @@ export class GatewayStore {
       status: row['status'] as number | null,
       sellerPeerId: row['seller_peer_id'] as string | null,
       latencyMs: row['latency_ms'] as number | null,
+      firstTokenMs: row['first_token_ms'] as number | null,
+      tokensPerSecond: row['tokens_per_second'] as number | null,
       spentUsdc: row['spent'] as number | null,
       inputTokens: ledgerTokens ? row['in_tokens'] as number : (row['usage_input_tokens'] as number | null) ?? 0,
       cachedInputTokens: ledgerTokens ? row['cached_tokens'] as number : (row['usage_cached_input_tokens'] as number | null) ?? 0,
