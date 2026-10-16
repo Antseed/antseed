@@ -229,13 +229,13 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
   const check = (cfg: Record<string, string> = twoModels) =>
     (plugin.createProvider(cfg) as Provider).checkServiceHealth!([MODEL, OTHER]);
 
-  it('reports listed endpoints as available from fal\'s public model list, without the seller key', async () => {
+  it('reports listed endpoints as available from fal\'s model list, sending the seller key', async () => {
     const fetchMock = mockFal(models([[MODEL, 'active'], [OTHER, 'active']]));
     expect(await check()).toEqual({ [MODEL]: { status: 'available' }, [OTHER]: { status: 'available' } });
     expect(fetchMock).toHaveBeenCalledTimes(1);
     const [url, init] = fetchMock.mock.calls[0]!;
     expect(url).toBe(`https://api.fal.ai/v1/models?endpoint_id=${encodeURIComponent(MODEL)}&endpoint_id=${encodeURIComponent(OTHER)}`);
-    expect(init.headers).toBeUndefined();
+    expect(init.headers).toEqual({ authorization: 'Key seller-secret' });
   });
 
   it('reports a removed endpoint as unavailable and keeps a deprecated one with a warning', async () => {
@@ -260,6 +260,16 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     expect(results[MODEL]).toEqual({ status: 'available' });
     expect(results[OTHER]).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('no longer offers') });
     expect(fetchMock).toHaveBeenCalledTimes(3);
+  });
+
+  it('stops the one-by-one lookup at a rate limit and reports unknown', async () => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const ids = new URL(url).searchParams.getAll('endpoint_id');
+      return ids.length > 1 ? notFound() : Response.json({ error: {} }, { status: 429 });
+    });
+    vi.stubGlobal('fetch', fetchMock);
+    expect(await check()).toMatchObject({ [MODEL]: { status: 'unknown' }, [OTHER]: { status: 'unknown' } });
+    expect(fetchMock).toHaveBeenCalledTimes(2);
   });
 
   it('reports unknown for any other 404, such as a moved route', async () => {
