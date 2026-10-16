@@ -260,7 +260,21 @@ const CONTROL_SECRET_RECHECK_MS = 1_000
 const CONTROL_SECRET_FORCED_RECHECK_MS = 100
 const LATENCY_EMA_ALPHA = 0.3
 const MAX_LATENCY_ENTRIES = 4096
+/** Responses with fewer output tokens than this say little about a seller's generation speed. */
+const MIN_THROUGHPUT_TOKENS = 20
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
+
+/** Moves `key`'s EMA toward `sample`; the map stays least recently measured first and bounded. */
+function updateEma(map: Map<string, number>, key: string, sample: number): void {
+  if (!Number.isFinite(sample) || sample < 0) return
+  const previous = map.get(key)
+  map.delete(key)
+  map.set(key, previous === undefined ? sample : previous + LATENCY_EMA_ALPHA * (sample - previous))
+  if (map.size > MAX_LATENCY_ENTRIES) {
+    const oldest = map.keys().next().value
+    if (oldest !== undefined) map.delete(oldest)
+  }
+}
 
 /** Exact USDC decimal string from base units, e.g. 1500000n -> "1.500000". */
 function formatUsdcBaseUnits(amount: bigint): string {
@@ -1074,11 +1088,13 @@ export class BuyerProxy {
   private _controlSecretForcedAt = 0
   private _loggedUnauthenticatedPolicy = false
   /**
-   * Per-seller latency EMA (ms) measured by this proxy: time to the first
-   * response frame for streamed requests, full round trip otherwise. Feeds
-   * `sort: 'latency'`; sellers without a measurement rank after measured ones.
+   * Per-seller speed measured by this proxy on streamed requests, as EMAs:
+   * time to the first response frame (ms) and output tokens per second after
+   * it. Kept apart so a long answer doesn't read as a slow seller. Latency
+   * feeds `sort: 'latency'`; sellers without a measurement rank after measured ones.
    */
   private readonly _peerLatencyMs = new Map<string, number>()
+  private readonly _peerTokensPerSecond = new Map<string, number>()
   private readonly _balanceReader: BuyerBalanceReader | null
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
@@ -1352,18 +1368,16 @@ export class BuyerProxy {
     return this._peerLatencyMs.get(this._latencyKey(peerId, serviceId)) ?? null
   }
 
-  private _recordPeerLatency(peerId: string, serviceId: string | null, latencyMs: number): void {
-    if (!Number.isFinite(latencyMs) || latencyMs < 0) return
+  private _peerThroughput(peerId: string, serviceId: string | null): number | null {
+    return this._peerTokensPerSecond.get(this._latencyKey(peerId, serviceId)) ?? null
+  }
+
+  /** One streamed request: time to its first frame, then output tokens over the rest of the stream. */
+  private _recordPeerSpeed(peerId: string, serviceId: string | null, firstFrameMs: number, streamMs: number, outputTokens: number): void {
     const key = this._latencyKey(peerId, serviceId)
-    const previous = this._peerLatencyMs.get(key)
-    // Re-inserted so the map's order is least recently measured first.
-    this._peerLatencyMs.delete(key)
-    this._peerLatencyMs.set(key, previous === undefined
-      ? latencyMs
-      : previous + LATENCY_EMA_ALPHA * (latencyMs - previous))
-    if (this._peerLatencyMs.size > MAX_LATENCY_ENTRIES) {
-      const oldest = this._peerLatencyMs.keys().next().value
-      if (oldest !== undefined) this._peerLatencyMs.delete(oldest)
+    updateEma(this._peerLatencyMs, key, firstFrameMs)
+    if (outputTokens >= MIN_THROUGHPUT_TOKENS && streamMs > 0) {
+      updateEma(this._peerTokensPerSecond, key, outputTokens / (streamMs / 1000))
     }
   }
 
@@ -1523,6 +1537,8 @@ export class BuyerProxy {
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
       const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
       if (latency !== null) verdict.reasons.push(`latency ~${Math.round(latency)}ms`)
+      const throughput = this._peerThroughput(candidate.peerId, candidate.serviceId)
+      if (throughput !== null) verdict.reasons.push(`~${Math.round(throughput)} tok/s`)
     })
     return { candidates, verdicts: [...verdicts.values()], effectivePolicy }
   }
@@ -4135,11 +4151,12 @@ export class BuyerProxy {
     try {
       if (wantsStreaming) {
         let streamed = false
+        let firstFrameAt = 0
         const response = await this._node.sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
             streamed = true
-            if (startResponse.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyServiceId, Date.now() - startTime)
+            firstFrameAt = Date.now()
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startResponse)
               : startResponse
@@ -4188,8 +4205,8 @@ export class BuyerProxy {
           responseForClient = inject402PeerId(responseForClient, selectedPeer.peerId)
         }
 
-        const latencyMs = Date.now() - startTime
-        if (!streamed && responseForClient.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyServiceId, latencyMs)
+        const finishedAt = Date.now()
+        const latencyMs = finishedAt - startTime
         log(`Response: ${responseForClient.statusCode} (${latencyMs}ms, ${responseForClient.body.length} bytes)`)
         if (responseForClient.statusCode >= 400) {
           const prefix = adaptResponse && !streamed ? 'Upstream adapted error detail' : 'Upstream error detail'
@@ -4202,6 +4219,9 @@ export class BuyerProxy {
           responseForClient.body,
           selectedPeer,
         )
+        if (streamed && responseForClient.statusCode < 400) {
+          this._recordPeerSpeed(selectedPeer.peerId, latencyServiceId, firstFrameAt - startTime, finishedAt - firstFrameAt, telemetry.usage.outputTokens)
+        }
         const responseFault = responseFaultAttribution(responseForClient)
         const modelNotFound = !streamed
           && !isControlPlaneServicesPath(requestForPeer.path)
@@ -4291,7 +4311,6 @@ export class BuyerProxy {
         }
         const latencyMs = Date.now() - startTime
         this._markModelActivity()
-        if (response.statusCode < 400) this._recordPeerLatency(selectedPeer.peerId, latencyServiceId, latencyMs)
 
         log(`Response: ${response.statusCode} (${latencyMs}ms, ${response.body.length} bytes)`)
         if (response.statusCode >= 400) {

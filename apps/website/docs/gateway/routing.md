@@ -18,7 +18,7 @@ A routing policy decides which providers may serve a request and how the eligibl
 | **Minimum trust score** | 0 to 100. See [Trust score](/docs/reputation). |
 | **TEE sellers only** | Only providers that advertise running models in a trusted execution environment (TEE) |
 | **Verified sellers only** | Only providers whose responses pass a verifier, such as a TEE attestation check |
-| **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). |
+| **Sort by** | **Balanced**, **Lowest price**, **Lowest latency** or **Highest trust**. **Balanced** keeps the buyer's automatic order: the cheapest provider that passes the trust minimum, with trust only breaking ties (see [Router plugin API](/docs/router-api)). **Lowest latency** ranks by time to first token, which the buyer measures per provider and model on streamed answers; providers it hasn't measured yet come after the measured ones. |
 | **Free sellers first** | Rank free providers ahead of paid ones |
 | **Which models may be used** | **Any model**, or **Only these models**. Requests for other models get `403 model_not_allowed`. |
 | **Price caps** | Maximum input, output and cached-input price per million tokens, and price per image |
