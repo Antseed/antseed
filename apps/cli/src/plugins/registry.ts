@@ -52,6 +52,12 @@ export const TRUSTED_PROVIDER_PLUGINS: TrustedPlugin[] = [
     description: 'TypeSafe System One decision-model provider (API key)',
     package: '@antseed/provider-typesafe',
   },
+  {
+    name: 'default-router',
+    type: 'provider',
+    description: 'Default model-routing service that ranks the best free models on the network',
+    package: '@antseed/provider-default-router',
+  },
 ]
 
 export const TRUSTED_ROUTER_PLUGINS: TrustedPlugin[] = [

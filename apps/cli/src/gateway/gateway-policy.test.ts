@@ -190,6 +190,25 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
   }
 })
 
+test('a routing service pinned as the model passes the allow list like any model, with its routing options', async () => {
+  const ctx = await setup()
+  try {
+    const router = `${'d'.repeat(40)}@alpha-route`
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    const body = { model: router, messages: [], routing: { cost_quality_tradeoff: 8 } }
+    assert.equal((await ctx.send(open.secret, '/v1/chat/completions', body)).status, 200)
+    assert.deepEqual(JSON.parse(ctx.buyer.captured.at(-1)!.body).routing, { cost_quality_tradeoff: 8 })
+    const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const refused = await ctx.send(limited.secret, '/v1/chat/completions', body)
+    assert.equal(refused.status, 403)
+    assert.equal(refused.body.error.code, 'model_not_allowed')
+    const allowed = ctx.store.createKey({ label: 'router', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['alpha-route'] } })
+    assert.equal((await ctx.send(allowed.secret, '/v1/chat/completions', body)).status, 200)
+  } finally {
+    await ctx.close()
+  }
+})
+
 test('allowedModels and the request log use the model the buyer routes by (service before model)', async () => {
   const ctx = await setup()
   try {

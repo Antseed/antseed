@@ -941,6 +941,24 @@
   margin-left: -4px;
 }
 
+.routedModel {
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  min-width: 0;
+  max-width: 100%;
+  margin-left: 5px;
+  padding: 3px 7px;
+  border-radius: 6px;
+  background: var(--bg-hover);
+  color: var(--text-muted);
+  font-size: 11px;
+  line-height: 18px;
+
+  svg { flex-shrink: 0; }
+  span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+}
+
 .fileAttachment {
   display: flex;
   align-items: center;

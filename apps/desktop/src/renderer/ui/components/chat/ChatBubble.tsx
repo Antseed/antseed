@@ -8,6 +8,7 @@ import { findSensitiveChatArtifacts } from './chat-safety';
 import styles from './ChatBubble.module.scss';
 import { AttachmentViewer, type ViewerAttachment } from './AttachmentViewer';
 import { ChatCopyButton } from './ChatCopyButton';
+import { RoutedModelIndicator } from './RoutedModelIndicator';
 import { ImageGenerationPlaceholder } from './ImageGenerationPlaceholder';
 import type { ChatMessage, ContentBlock } from './chat-shared';
 import {
@@ -1004,6 +1005,7 @@ export function ChatBubble({ message, streaming = false, onOpenPreview, conversa
       {message.role !== 'user' && !isStreamingBubble ? (
         <div className={styles.messageActions}>
           <CopyResponseButton content={message.content} />
+          <RoutedModelIndicator message={message} />
         </div>
       ) : null}
     </div>
