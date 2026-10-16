@@ -133,6 +133,13 @@ describe('costStatus', () => {
   it('has nothing to show for a failed request', () => {
     expect(costStatus({ ...base, spent: null }, NOW)).toBeNull()
   })
+  it('shows a video create its job charge, on delivery until then, and never pends on a status poll', () => {
+    expect(costStatus({ ...base, spent: null, servedFree: true, video: { action: 'create', jobId: 'j', charged: null } }, NOW + COST_PENDING_MS * 2)).toBe('on-delivery')
+    expect(costStatus({ ...base, spent: null, video: { action: 'create', jobId: 'j', charged: '0.330000' } }, NOW)).toBe('video-charged')
+    expect(costStatus({ ...base, spent: null, video: { action: 'poll', jobId: 'j', charged: null } }, NOW + COST_PENDING_MS * 2)).toBe('not-charged')
+    expect(costStatus({ ...base, spent: '0.330000', video: { action: 'delivery', jobId: 'j', charged: null } }, NOW)).toBe('spent')
+    expect(costStatus({ ...base, spent: null, costPending: true, video: { action: 'delivery', jobId: 'j', charged: null } }, NOW)).toBe('pending')
+  })
 })
 
 describe('groupLabel', () => {

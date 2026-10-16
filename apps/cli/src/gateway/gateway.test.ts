@@ -406,6 +406,96 @@ test('gateway passes native video jobs to the buyer and books their spend to the
   }
 })
 
+/**
+ * Buyer for one video job, as a seller bills it: the create and a status poll
+ * cost nothing (and carry zero token prices: video is priced per second), the
+ * retrieve that streams the file is charged.
+ */
+async function videoJobBuyer(costUsdc: number) {
+  const feed = new SpendAttributionFeed()
+  let polls = 0
+  let requestCounter = 0
+  const server = http.createServer((req, res) => {
+    if (req.url?.startsWith('/_antseed/attributed-spend')) {
+      const after = Number(new URL(req.url, 'http://localhost').searchParams.get('after') ?? '0')
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, ...feed.page(after) }))
+      return
+    }
+    req.resume()
+    req.on('end', () => {
+      const requestId = `req-${++requestCounter}`
+      const tag = req.headers[SPEND_ATTRIBUTION_HEADER] as string
+      feed.track(requestId, tag)
+      const headers = {
+        'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'seller',
+        'x-antseed-input-usd-per-million': '0', 'x-antseed-output-usd-per-million': '0',
+      }
+      if (req.url?.endsWith('/queue')) {
+        res.writeHead(200, { ...headers, 'content-type': 'application/json' })
+        res.end(JSON.stringify({ model: 'seedance', queue_id: 'job-7', status: 'IN_QUEUE' }))
+      } else if (++polls === 1) {
+        res.writeHead(200, { ...headers, 'content-type': 'application/json' })
+        res.end(JSON.stringify({ status: 'PROCESSING' }))
+      } else {
+        if (costUsdc > 0) feed.record({ requestId, buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 'seller', amountUsdc: String(costUsdc), inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0' })
+        res.writeHead(200, { ...headers, 'content-type': 'video/mp4' })
+        res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(1024)]))
+      }
+    })
+  })
+  const port = await listen(server)
+  return { port, close: () => new Promise<void>((resolve) => server.close(() => { feed.close(); resolve() })) }
+}
+
+test('a video job is charged on its delivery: the create shows that charge and neither it nor a status poll is pending or free', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await videoJobBuyer(330_000)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const retrieve = '{"model":"seedance","queue_id":"job-7"}'
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant"}' })).status, 200)
+    const byAction = () => Object.fromEntries(store.listRequests({ keyIds: null, keyId: key.id }).map((row) => [row.video!.action, row]))
+    assert.deepEqual(byAction()['create']!.video, { action: 'create', jobId: 'job-7', chargedUsdc: null })
+    assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: retrieve })).status, 200)
+    assert.equal((await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: retrieve })).status, 200)
+    await gateway.feed.pollOnce()
+
+    const rows = byAction()
+    assert.deepEqual(Object.keys(rows).sort(), ['create', 'delivery', 'poll'])
+    assert.deepEqual(
+      [rows['create']!.spentUsdc, rows['create']!.video!.chargedUsdc, rows['create']!.servedFree, rows['create']!.costPending],
+      [null, 330_000, false, false],
+    )
+    assert.deepEqual([rows['poll']!.spentUsdc, rows['poll']!.servedFree, rows['poll']!.costPending], [null, false, false])
+    assert.deepEqual([rows['delivery']!.spentUsdc, rows['delivery']!.video!.jobId, rows['delivery']!.costPending], [330_000, 'job-7', false])
+    assert.equal(store.periodSpend(key.id).total, 330_000, 'the job is counted once')
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
+test('a video delivery whose spend has not arrived is pending, like any charged request', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await videoJobBuyer(0)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const retrieve = '{"model":"seedance","queue_id":"job-7"}'
+    await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: retrieve })
+    await request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: retrieve })
+    const delivery = store.listRequests({ keyIds: null, keyId: key.id }).find((row) => row.video?.action === 'delivery')
+    assert.equal(delivery?.costPending, true)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway never forwards client credential headers to the buyer (#1104)', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer()

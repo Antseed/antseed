@@ -243,6 +243,21 @@ export interface GatewayRequestStart {
   workspaceId?: string | null
   memberId?: string | null
   endUser?: string | null
+  /** A native video request: a create, or a retrieve (a poll until it delivers the file) with its job ID. */
+  video?: { action: 'create' | 'poll'; jobId: string | null } | null
+}
+
+/**
+ * A native video request's part in its job. Only the delivery is charged;
+ * a create shows the charge of its job's delivery once there is one.
+ */
+export type VideoAction = 'create' | 'poll' | 'delivery'
+
+export interface RequestVideo {
+  action: VideoAction
+  jobId: string | null
+  /** A create's job charge: the spend on the retrieve that delivered its file, null until then. */
+  chargedUsdc: number | null
 }
 
 export interface RequestOutcome {
@@ -254,6 +269,10 @@ export interface RequestOutcome {
   endUser?: string | null
   /** Served by a free seller (all advertised prices zero): no spend will be reported. */
   servedFree?: boolean
+  /** Video create: the job ID the seller accepted. */
+  videoJobId?: string | null
+  /** Video retrieve: it delivered the finished file (so it carries the job's charge). */
+  videoDelivered?: boolean
 }
 
 /** What a key listing shows: lifetime requests and spend, and spend since a given time. */
@@ -368,8 +387,11 @@ export interface RequestLogRow {
   /**
    * A model request that did not fail and was not served free, but has no
    * spend recorded yet (the buyer reports it a moment after the response).
+   * Video creates and polls are never charged, so they are never pending.
    */
   costPending: boolean
+  /** Native video requests only. */
+  video: RequestVideo | null
 }
 
 /** One request with its bodies (null unless content logging was on for it). */
@@ -1064,14 +1086,15 @@ export class GatewayStore {
     // A pinned model (`<peerId>@<model>`) is recorded as the model, with the pin as the seller until the buyer reports who served it.
     const { model, peerId } = splitPinnedModel(input.model)
     this._stmt(`
-      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, seller_peer_id, started_at, workspace_id, member_id, end_user)
+      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, seller_peer_id, started_at, workspace_id, member_id, end_user, video_action, video_job_id)
       VALUES (?, ?, ?, ?, ?, ?, ?, ?,
         COALESCE(?, (SELECT workspace_id FROM api_keys WHERE id = ?)),
         COALESCE(?, (SELECT owner_member_id FROM api_keys WHERE id = ?)),
-        ?)
+        ?, ?, ?)
     `).run(
       input.tag, input.keyId, input.buyerIdentity, input.method, input.path, model, peerId, input.startedAt,
       input.workspaceId ?? null, input.keyId, input.memberId ?? null, input.keyId, input.endUser ?? null,
+      input.video?.action ?? null, input.video?.jobId?.slice(0, 256) ?? null,
     )
   }
 
@@ -1085,15 +1108,18 @@ export class GatewayStore {
     )
   }
 
-  /** Seller, speed and end user of a request; null fields leave what is stored. */
+  /** Seller, speed, end user and video job of a request; null fields leave what is stored. */
   recordRequestOutcome(tag: string, outcome: RequestOutcome): void {
     this._stmt(`
       UPDATE gateway_requests SET seller_peer_id = COALESCE(?, seller_peer_id), latency_ms = COALESCE(?, latency_ms),
         first_token_ms = COALESCE(?, first_token_ms), tokens_per_second = COALESCE(?, tokens_per_second),
-        end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?) WHERE tag = ?
+        end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?),
+        video_job_id = COALESCE(?, video_job_id),
+        video_action = CASE WHEN ? = 1 AND video_action = 'poll' THEN 'delivery' ELSE video_action END
+      WHERE tag = ?
     `).run(
       outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
-      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag,
+      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoDelivered ? 1 : 0, tag,
     )
   }
 
@@ -1233,7 +1259,7 @@ export class GatewayStore {
       WITH page AS (
         SELECT r.tag, r.started_at, r.finished_at, r.key_id, k.label AS key_label, COALESCE(r.workspace_id, k.workspace_id) AS ws_id,
           r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.first_token_ms, r.tokens_per_second, r.error_code, r.error_message,
-          r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
+          r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens, r.video_action, r.video_job_id
           ${withBodies ? ', r.request_body, r.response_body' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
         ${whereClause(where)}
@@ -1243,10 +1269,18 @@ export class GatewayStore {
         SELECT l.request_tag AS tag, -SUM(l.amount_usdc) AS spent, SUM(l.input_tokens) AS in_tokens,
           SUM(l.cached_input_tokens) AS cached_tokens, SUM(l.output_tokens) AS out_tokens
         FROM ledger_entries l WHERE l.kind = 'spend' AND l.request_tag IN (SELECT tag FROM page) GROUP BY l.request_tag
+      ),
+      video_charge AS (
+        SELECT page.tag, -SUM(l.amount_usdc) AS charged
+        FROM page
+        JOIN gateway_requests d ON d.video_job_id = page.video_job_id AND d.key_id = page.key_id AND d.video_action = 'delivery'
+        JOIN ledger_entries l ON l.kind = 'spend' AND l.request_tag = d.tag
+        WHERE page.video_action = 'create' AND page.video_job_id IS NOT NULL
+        GROUP BY page.tag
       )
       SELECT page.*, spend.spent, COALESCE(spend.in_tokens, 0) AS in_tokens, COALESCE(spend.cached_tokens, 0) AS cached_tokens,
-        COALESCE(spend.out_tokens, 0) AS out_tokens
-      FROM page LEFT JOIN spend ON spend.tag = page.tag
+        COALESCE(spend.out_tokens, 0) AS out_tokens, video_charge.charged AS video_charged
+      FROM page LEFT JOIN spend ON spend.tag = page.tag LEFT JOIN video_charge ON video_charge.tag = page.tag
       ORDER BY page.started_at DESC, page.tag DESC
     `).all(...params, limit) as Array<Record<string, unknown>>
     return rows.map((row) => {
@@ -1254,6 +1288,9 @@ export class GatewayStore {
       const ledgerTokens = (row['in_tokens'] as number) + (row['cached_tokens'] as number) + (row['out_tokens'] as number) > 0
       const status = row['status'] as number | null
       const servedFree = row['served_free'] === 1
+      const videoAction = row['video_action'] as VideoAction | null
+      // Only a video's delivery is charged: its create and polls never wait for spend.
+      const chargeable = videoAction === null || videoAction === 'delivery'
       return {
       tag: row['tag'] as string,
       startedAt: row['started_at'] as number,
@@ -1278,7 +1315,12 @@ export class GatewayStore {
       errorCode: row['error_code'] as string | null,
       errorMessage: row['error_message'] as string | null,
       servedFree,
-      costPending: row['spent'] === null && !servedFree && row['model'] !== null && (status === null || status < 400),
+      costPending: chargeable && row['spent'] === null && !servedFree && row['model'] !== null && (status === null || status < 400),
+      video: videoAction === null ? null : {
+        action: videoAction,
+        jobId: row['video_job_id'] as string | null,
+        chargedUsdc: (row['video_charged'] as number | null) ?? null,
+      },
       ...(withBodies ? { requestBody: row['request_body'] as string | null, responseBody: row['response_body'] as string | null } : {}),
       }
     })

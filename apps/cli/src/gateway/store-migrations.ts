@@ -326,4 +326,11 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN first_token_ms INTEGER;
   ALTER TABLE gateway_requests ADD COLUMN tokens_per_second REAL;
   `,
+  // Native video jobs: a job is charged once, on the retrieve that delivers its file. Each request
+  // records its part ('create', 'poll' or 'delivery') and the job ID, so a create shows its job's charge.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN video_action TEXT;
+  ALTER TABLE gateway_requests ADD COLUMN video_job_id TEXT;
+  CREATE INDEX gateway_requests_video_job ON gateway_requests(video_job_id) WHERE video_job_id IS NOT NULL;
+  `,
 ]

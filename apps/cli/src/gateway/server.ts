@@ -1,6 +1,7 @@
 import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
+import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
 import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER } from '../proxy/request-utils.js'
@@ -122,6 +123,8 @@ interface ForwardedRequest {
    * narrowed to here, since without a control secret the buyer never sees it.
    */
   modelListPolicy: RoutingPolicy | null
+  /** A native video create or retrieve: only the retrieve that delivers the file is charged. */
+  video: NativeVideoRoute | null
 }
 
 export interface GatewayServerOptions {
@@ -304,6 +307,7 @@ export class GatewayServer {
       body,
       policyHeaders: policy.headers,
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
+      video: nativeVideoRoute({ method, path: route.prefix, body }),
     }
     try {
       this._options.store.startRequest({
@@ -317,6 +321,7 @@ export class GatewayServer {
         workspaceId: key.workspaceId,
         memberId: key.ownerMemberId,
         endUser: request.endUser,
+        video: request.video && { action: request.video.action === 'create' ? 'create' : 'poll', jobId: request.video.resourceId ?? null },
       })
       this._options.store.touchKey(key.id)
     } catch (error) {
@@ -456,6 +461,9 @@ export class GatewayServer {
       let firstTokenMs: number | null = null
       let respondedAt = 0
       let servedFree = false
+      // Video: the start of a create's answer (it names the job) and whether a retrieve delivered the file.
+      let videoCreateChunks: Buffer[] | null = null
+      let videoDelivered = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
@@ -474,7 +482,10 @@ export class GatewayServer {
           store.finishRequest(tag, { status, buyerRequestId, error })
           const usage = usageReader?.result() ?? null
           const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree })
+          const videoJobId = videoCreateChunks && request.video
+            ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
+            : null
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
@@ -514,11 +525,15 @@ export class GatewayServer {
         reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
         firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
         respondedAt = Date.now()
-        servedFree = freeSellerPricing(upstreamRes.headers)
+        const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
+        // A video is priced per second, not per token: zero token prices do not make it free.
+        servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
+        if (request.video?.action === 'create' && status >= 200 && status < 300) videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+        videoDelivered = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
         if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
         if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
         // A delivered video is an MP4 stream with no usage to read.
-        else if (request.model !== null && !firstHeader(upstreamRes.headers['content-type']).toLowerCase().startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+        else if (request.model !== null && !contentType.startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
         const responseHeaders: http.OutgoingHttpHeaders = {}
         for (const [name, value] of Object.entries(upstreamRes.headers)) {
           if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
