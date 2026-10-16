@@ -52,7 +52,7 @@ describe('presets', () => {
 describe('peers', () => {
   const peer = (id: string, overrides: Partial<Peer>): Peer => ({
     peerId: id, displayName: null, services: [], trustScore: null, reputationScore: null, verified: false, verificationLinks: [], tee: false, stakeAnts: null,
-    usageShareBps: null, washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, requests24h: 0, ...overrides,
+    usageShareBps: null, washFlagged: false, lastSeen: null, health: { failureStreak: 0, coolingDownUntil: null }, latencyMsP50: null, firstTokenMsP50: null, tokensPerSecondP50: null, requests24h: 0, ...overrides,
   })
   const svc = (service: string, price: number) => ({ provider: 'p', service, inputUsdPerMillion: price, outputUsdPerMillion: price, cachedInputUsdPerMillion: null, categories: [] })
   const peers = [

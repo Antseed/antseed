@@ -321,6 +321,10 @@ export interface RequestLogEntry {
   status: number | null
   sellerPeerId: string | null
   latencyMs: number | null
+  /** Streamed answers: time from sending to the seller's first frame, measured by the buyer. */
+  firstTokenMs: number | null
+  /** Streamed answers of 20+ output tokens: output tokens per second after the first frame. */
+  tokensPerSecond: number | null
   spent: Usdc | null
   inputTokens: number
   cachedInputTokens: number
@@ -618,8 +622,10 @@ export interface Peer {
   washFlagged: boolean
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }
-  /** Measured by this gateway over its recent requests. */
+  /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
   requests24h: number
 }
 
@@ -651,8 +657,10 @@ export interface NetworkModelOffer {
   /** The seller's verified domain and GitHub claims. */
   verificationLinks: PeerVerificationLink[]
   tee: boolean
-  /** Measured by this gateway over its recent requests. */
+  /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */

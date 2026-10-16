@@ -3,7 +3,7 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Alert, Button, DataTable, Drawer } from '@antseed/ui'
 import { api, isApiError, type RequestQuery } from '../api'
 import type { RequestDetail, RequestLogEntry } from '../api/types'
-import { formatDateTime, formatLatency, formatNumber, formatUsd } from '../lib/format'
+import { formatDateTime, formatLatency, formatNumber, formatSpeed, formatUsd } from '../lib/format'
 import { qk, usePeers } from '../lib/queries'
 import { peerName } from './PeerPicker'
 import { costStatus } from '../lib/usage'
@@ -84,7 +84,8 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
         ['Key', data.keyLabel],
         ['End user', data.endUser ?? '—'],
         ['Seller', data.sellerPeerId ? <SellerName key="s" peerId={data.sellerPeerId} full /> : '—'],
-        ['Latency', formatLatency(data.latencyMs)],
+        ['First token', formatLatency(data.firstTokenMs)],
+        ['Speed', formatSpeed(data.tokensPerSecond)],
         ['Duration', data.finishedAt ? formatLatency(data.finishedAt - data.startedAt) : '—'],
         ['Input tokens', formatNumber(data.inputTokens)],
         ['Cached input', formatNumber(data.cachedInputTokens)],
@@ -133,7 +134,8 @@ export function RequestLog({ filter, showKey = true }: { filter: RequestFilter; 
           ) },
           { key: 'seller', header: 'Seller', render: (row) => row.sellerPeerId ? <SellerName peerId={row.sellerPeerId} /> : '—' },
           { key: 'status', header: 'Status', secondary: true, render: (row) => <span title={row.errorMessage ?? undefined}>{statusBadge(row.status)}</span> },
-          { key: 'latency', header: 'Latency', align: 'right', secondary: true, optional: true, render: (row) => formatLatency(row.latencyMs) },
+          { key: 'firstToken', header: 'First token', align: 'right', secondary: true, optional: true, render: (row) => formatLatency(row.firstTokenMs) },
+          { key: 'speed', header: 'Speed', align: 'right', secondary: true, optional: true, render: (row) => formatSpeed(row.tokensPerSecond) },
           { key: 'tokens', header: 'Tokens', align: 'right', secondary: true, render: (row) => `${formatNumber(row.inputTokens)} → ${formatNumber(row.outputTokens)}` },
           { key: 'cost', header: 'Cost', align: 'right', render: (row) => <Cost entry={row} /> },
         ]} />

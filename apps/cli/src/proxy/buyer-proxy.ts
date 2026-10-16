@@ -4563,6 +4563,7 @@ export class BuyerProxy {
               adaptedStartResponse.headers,
               selectedPeer,
               requestForPeer,
+              firstFrameAt - startTime,
             )
             // Ensure content-type is set for SSE — some upstream APIs (e.g. Codex)
             // omit it, which can cause the client's fetch body reader to not

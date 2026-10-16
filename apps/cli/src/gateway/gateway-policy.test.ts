@@ -46,6 +46,12 @@ async function fakeBuyer(options: { costUsdc?: number } = {}) {
           amountUsdc: String(options.costUsdc), inputTokens: '10', cachedInputTokens: '0', outputTokens: '5', outputImages: '0',
         })
       }
+      if (Buffer.concat(chunks).toString('utf8').includes('"stream":true')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'f00d', 'x-antseed-first-token-ms': '150' })
+        res.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+        setTimeout(() => res.end('data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":40,"total_tokens":50}}\n\ndata: [DONE]\n\n'), 200)
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'f00d', 'x-antseed-latency-ms': '321' })
       res.end('{"answer":"ok"}')
     })
@@ -102,6 +108,25 @@ async function setup(options: { costUsdc?: number; controlSecret?: string | null
     },
   }
 }
+
+test('a streamed answer logs the buyer\'s time to first token and the output speed', async () => {
+  const ctx = await setup()
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'm', stream: true })).status, 200)
+    await ctx.send(secret, '/v1/chat/completions', { model: 'm' })
+    const [plain, streamed] = ctx.store.listRequests({ keyId: key.id })
+    assert.equal(streamed!.firstTokenMs, 150)
+    assert.ok(streamed!.tokensPerSecond! > 100 && streamed!.tokensPerSecond! <= 205, `40 tokens over ~200ms (${streamed!.tokensPerSecond})`)
+    assert.equal(plain!.firstTokenMs, null, 'a non-streamed answer has no first token')
+    assert.equal(plain!.tokensPerSecond, null)
+    const [stat] = ctx.store.peerStats(0)
+    assert.equal(stat!.firstTokenMsP50, 150)
+    assert.equal(stat!.tokensPerSecondP50, streamed!.tokensPerSecond)
+  } finally {
+    await ctx.close()
+  }
+})
 
 test('the effective policy goes to the buyer with the control secret; client copies are dropped', async () => {
   const ctx = await setup()

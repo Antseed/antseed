@@ -75,6 +75,8 @@ export function seed() {
     lastSeen: now - index * 60_000,
     health: { failureStreak: index === 4 ? 3 : 0, coolingDownUntil: index === 4 ? now + 5 * 60_000 : null },
     latencyMsP50: [420, 610, 950, 1800, 700, null, 520, 480][index]!,
+    firstTokenMsP50: [310, 450, 720, 1300, 520, null, 380, 340][index]!,
+    tokensPerSecondP50: [88, 62, 41, 24, 70, null, 95, 110][index]!,
     requests24h: [912, 340, 120, 55, 20, 0, 0, 210][index]!,
   }))
   const peerLists: PeerList[] = [
@@ -113,7 +115,7 @@ export function seed() {
     if (index % 11 === 3) {
       return {
         tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 60, keyId: k.id, keyLabel: k.label, workspaceId: k.workspaceId, memberId: k.ownerMemberId,
-        endUser: null, method: 'GET', path: '/v1/models', model: null, status: 200, sellerPeerId: null, latencyMs: 60, spent: null,
+        endUser: null, method: 'GET', path: '/v1/models', model: null, status: 200, sellerPeerId: null, latencyMs: 60, firstTokenMs: null, tokensPerSecond: null, spent: null,
         inputTokens: 0, cachedInputTokens: 0, outputTokens: 0, errorCode: null, errorMessage: null, requestBody: null, responseBody: null,
       }
     }
@@ -121,7 +123,8 @@ export function seed() {
       tag: `req_${String(index).padStart(5, '0')}`, startedAt, finishedAt: startedAt + 900 + (index % 9) * 120, keyId: k.id, keyLabel: k.label,
       workspaceId: k.workspaceId, memberId: k.ownerMemberId, endUser: index % 4 === 0 ? `user-${index % 7}` : null, method: 'POST',
       path: index % 3 === 0 ? '/v1/messages' : '/v1/chat/completions', model: models[index % models.length]!, status: failed ? 502 : 200,
-      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90, spent: failed || costPending || servedFree ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
+      sellerPeerId: failed ? null : peer.peerId, latencyMs: failed ? null : 300 + (index % 11) * 90,
+      firstTokenMs: failed || index % 3 === 1 ? null : 250 + (index % 7) * 60, tokensPerSecond: failed || index % 3 === 1 ? null : 40 + (index % 8) * 9, spent: failed || costPending || servedFree ? null : ((input * 0.6 + output * 2) / 1e6).toFixed(6),
       inputTokens: input, cachedInputTokens: index % 5 === 0 ? Math.floor(input / 2) : 0, outputTokens: failed ? 0 : output,
       ...(costPending ? { costPending: true } : {}),
       ...(servedFree ? { servedFree: true } : {}),
@@ -193,7 +196,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
-        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
       })
       offers.set(service.service, list)
     }
@@ -201,7 +204,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
     peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
     cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
-    reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+    reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50, firstTokenMsP50: peer.firstTokenMsP50, tokensPerSecondP50: peer.tokensPerSecondP50,
   })), type]
   const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
     ...[...offers].map(([id, list]): [string, NetworkModelOffer[], NetworkModel['type']] => [id, list, 'text']),
