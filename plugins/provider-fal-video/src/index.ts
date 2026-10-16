@@ -20,6 +20,7 @@ const MAX_ACTIVE_DOWNLOADS = 2;
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
 /** Endpoint IDs per fal model-list request. */
 const MODEL_LOOKUP_BATCH = 50;
+const MODEL_LOOKUP_PAUSE_MS = 200;
 /** fal endpoint IDs: `owner/alias[/path...]`, at most 64 characters (the discovery service-name limit). */
 const ENDPOINT_ID = /^[A-Za-z0-9_-]+(?:\/[A-Za-z0-9_-][A-Za-z0-9._-]*)+$/;
 
@@ -81,18 +82,26 @@ type FalAccount =
  * status (`active`, `deprecated`, ...). IDs missing from the result no longer
  * exist on fal. Returns null when fal does not answer clearly. fal answers a
  * whole lookup with `404 Endpoint(s) not found` when any one requested
- * endpoint is unknown, so such a lookup is repeated per endpoint.
+ * endpoint is unknown, so such a lookup is repeated per endpoint, one at a
+ * time with a short pause, stopping at the first unclear answer (for example
+ * a rate limit). The seller's key is sent because fal rate-limits anonymous
+ * lookups.
  */
-async function readFalModelStatuses(platformUrl: string, services: string[]): Promise<Map<string, string> | null> {
+async function readFalModelStatuses(platformUrl: string, authorization: string, services: string[]): Promise<Map<string, string> | null> {
   const statuses = new Map<string, string>();
   const lookup = async (ids: string[]): Promise<boolean> => {
     const query = new URLSearchParams(ids.map((id): [string, string] => ['endpoint_id', id]));
-    const response = await fetch(`${platformUrl}/v1/models?${query}`, { redirect: 'error', signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS) });
+    const response = await fetch(`${platformUrl}/v1/models?${query}`, {
+      headers: { authorization },
+      redirect: 'error',
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+    });
     if (response.status === 404) {
       const error = (await readJson(response))?.error as { message?: unknown } | undefined;
       if (error?.message !== 'Endpoint(s) not found') return false;
       if (ids.length === 1) return true;
       for (const id of ids) {
+        await new Promise(resolve => setTimeout(resolve, MODEL_LOOKUP_PAUSE_MS));
         if (!await lookup([id])) return false;
       }
       return true;
@@ -278,7 +287,7 @@ const plugin: AntseedProviderPlugin = {
       init,
       handleRequest,
       async checkServiceHealth(checked) {
-        const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, checked);
+        const statuses = await readFalModelStatuses(FAL_PLATFORM_URL, authorization, checked);
         return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
           if (!statuses) return [service, { status: 'unknown', reason: 'fal model list unavailable' }];
           const status = statuses.get(service);

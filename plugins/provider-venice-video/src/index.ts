@@ -24,7 +24,6 @@ const DOWNLOAD_URL_TTL_MS = 24 * 60 * 60_000;
 const MAX_DOWNLOAD_URLS = 1000;
 const DOWNLOAD_URLS_FILE = 'venice-video-download-urls.json';
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
-const ACCEPTED_REASON = 'Venice accepted the empty-prompt model check';
 
 type DownloadUrls = Map<string, { url: string; expiresAt: number }>;
 
@@ -131,31 +130,26 @@ async function readVeniceAccount(baseUrl: string, apiKey: string): Promise<Venic
 }
 
 /**
- * Check that Venice still offers a video model, without generating anything:
- * queue a request with an empty prompt. Venice looks the model up first, so
- * `404` means it no longer offers it, while a validation error (`400`/`422`)
- * means the model is there. Money and key problems are left to the account
- * check, so every other answer is `unknown`.
+ * Venice's public video model list, ID → listed. Reading it costs nothing
+ * and does not count against the key's video request limit, unlike a
+ * request to each model. Returns null when the list can't be read.
  */
-async function checkVeniceVideoModel(baseUrl: string, apiKey: string, service: string): Promise<ServiceHealthStatus> {
+async function readVeniceVideoModels(baseUrl: string): Promise<Set<string> | null> {
   try {
-    const response = await fetch(`${baseUrl}/api/v1/video/queue`, {
-      method: 'POST',
-      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
-      body: JSON.stringify({ model: service, prompt: '' }),
+    const response = await fetch(`${baseUrl}/api/v1/models?type=video`, {
       redirect: 'error',
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
     });
-    await response.body?.cancel();
-    if (response.status === 400 || response.status === 422) return { status: 'available' };
-    if (response.status === 404) return { status: 'unavailable', reason: 'Venice no longer offers this model' };
-    if (response.ok) {
-      console.warn(`[venice-video] Venice accepted an empty-prompt health check for ${service}; no longer checking it`);
-      return { status: 'unknown', reason: ACCEPTED_REASON };
+    if (!response.ok) return null;
+    const data = parseJsonObject(Buffer.from(await response.arrayBuffer()))?.data;
+    if (!Array.isArray(data)) return null;
+    const models = new Set<string>();
+    for (const model of data as Array<{ id?: unknown }>) {
+      if (typeof model?.id === 'string') models.add(model.id);
     }
-    return { status: 'unknown', reason: `Venice model check returned HTTP ${response.status}` };
-  } catch (cause) {
-    return { status: 'unknown', reason: `Venice model check failed: ${cause instanceof Error ? cause.message : String(cause)}` };
+    return models.size > 0 ? models : null;
+  } catch {
+    return null;
   }
 }
 
@@ -250,7 +244,6 @@ const plugin: AntseedProviderPlugin = {
       }
     };
 
-    const acceptedModelChecks = new Set<string>();
     let activeDownloads = 0;
     // Private (VPS-backed) Venice models return a pre-signed download_url on
     // create instead of streaming the file from retrieve. The seller keeps
@@ -309,13 +302,12 @@ const plugin: AntseedProviderPlugin = {
       init,
       handleRequest,
       async checkServiceHealth(checked) {
-        const results = await Promise.all(checked.map(async (service): Promise<ServiceHealthStatus> => {
-          if (acceptedModelChecks.has(service)) return { status: 'unknown', reason: 'model check disabled' };
-          const result = await checkVeniceVideoModel(baseUrl, apiKey, service);
-          if (result.status === 'unknown' && result.reason === ACCEPTED_REASON) acceptedModelChecks.add(service);
-          return result;
+        const models = await readVeniceVideoModels(baseUrl);
+        return Object.fromEntries(checked.map((service): [string, ServiceHealthStatus] => {
+          if (!models) return [service, { status: 'unknown', reason: 'Venice model list unavailable' }];
+          if (!models.has(service)) return [service, { status: 'unavailable', reason: 'Venice no longer offers this model' }];
+          return [service, { status: 'available' }];
         }));
-        return Object.fromEntries(checked.map((service, index): [string, ServiceHealthStatus] => [service, results[index]!]));
       },
       async checkUpstreamAccount(): Promise<UpstreamAccountStatus> {
         const account = await readVeniceAccount(baseUrl, apiKey);

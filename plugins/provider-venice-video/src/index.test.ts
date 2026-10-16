@@ -172,13 +172,10 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     'kling-2': { 'venice-video': { version: 1, components: [{ unit: 'video_generations', priceUsd: 0.1 }] } },
   }), ANTSEED_ALLOWED_SERVICES: 'wan-2.5,kling-2' };
   const account = (data: object, status = 200) => Response.json({ data }, { status });
-  const invalid = () => Response.json({ error: 'Invalid request parameters' }, { status: 400 });
-  const notFound = () => Response.json({ error: 'Specified model not found' }, { status: 404 });
-  const mockVenice = (accountResponse: Response | Error, modelCheck: (model: string) => Response | Error = invalid) => {
-    const fetchMock = vi.fn(async (url: string, init?: RequestInit) => {
-      const response = url.includes('/api_keys/rate_limits')
-        ? accountResponse
-        : modelCheck(JSON.parse(String(init?.body)).model);
+  const models = (ids: string[]) => Response.json({ data: ids.map(id => ({ id, model_spec: { offline: false } })) });
+  const mockVenice = (accountResponse: Response | Error, modelsResponse: Response | Error = models(['wan-2.5', 'kling-2'])) => {
+    const fetchMock = vi.fn(async (url: string) => {
+      const response = url.includes('/api_keys/rate_limits') ? accountResponse : modelsResponse;
       if (response instanceof Error) throw response;
       return response;
     });
@@ -214,36 +211,23 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('not permitted') });
   });
 
-  it('checks each model with an empty-prompt queue request: a validation error means it exists, 404 means it is gone', async () => {
-    const fetchMock = mockVenice(account(funded), model => (model === 'kling-2' ? notFound() : invalid()));
+  it('checks each model against Venice\'s public model list, without the key', async () => {
+    const fetchMock = mockVenice(account(funded), models(['wan-2.5']));
     expect(await check()).toEqual({
       'wan-2.5': { status: 'available' },
       'kling-2': { status: 'unavailable', reason: 'Venice no longer offers this model' },
     });
-    const [url, init] = fetchMock.mock.calls[0]!;
-    expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
-    expect(init).toMatchObject({ method: 'POST', headers: { authorization: 'Bearer seller-secret' } });
-    expect(JSON.parse(String(init?.body))).toEqual({ model: 'wan-2.5', prompt: '' });
-  });
-
-  it('leaves money, key, and server answers to the account check', async () => {
-    for (const status of [401, 402, 403, 429, 500, 503]) {
-      mockVenice(account(funded), () => Response.json({ error: 'x' }, { status }));
-      expect((await check())['wan-2.5']).toMatchObject({ status: 'unknown', reason: expect.stringContaining(`HTTP ${status}`) });
-    }
-    mockVenice(account(funded), () => new Error('network down'));
-    expect((await check())['wan-2.5']).toMatchObject({ status: 'unknown' });
-  });
-
-  it('stops checking a model if Venice ever accepts the empty prompt', async () => {
-    const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const fetchMock = mockVenice(account(funded), () => Response.json({ queue_id: 'q' }));
-    const venice = provider();
-    expect((await venice.checkServiceHealth!(['wan-2.5']))['wan-2.5']).toMatchObject({ status: 'unknown' });
-    expect(warn).toHaveBeenCalledWith(expect.stringContaining('accepted an empty-prompt'));
-    expect((await venice.checkServiceHealth!(['wan-2.5']))['wan-2.5']).toMatchObject({ status: 'unknown' });
     expect(fetchMock).toHaveBeenCalledTimes(1);
-    warn.mockRestore();
+    const [url, init] = fetchMock.mock.calls[0]!;
+    expect(url).toBe('https://api.venice.ai/api/v1/models?type=video');
+    expect(init?.headers).toBeUndefined();
+  });
+
+  it('reports unknown when the model list can not be read', async () => {
+    for (const response of [new Error('network down'), Response.json({}, { status: 503 }), Response.json({ data: [] })]) {
+      mockVenice(account(funded), response);
+      expect((await check())['wan-2.5']).toMatchObject({ status: 'unknown' });
+    }
   });
 
   it('reports unknown when the account can not be read', async () => {
