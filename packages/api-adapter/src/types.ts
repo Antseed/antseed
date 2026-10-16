@@ -36,7 +36,6 @@ export const WELL_KNOWN_SERVICE_API_PROTOCOLS = [
   'openai-images',
   'typesafe-systemone',
   ...NATIVE_VIDEO_PROTOCOLS,
-  'model-routing',
 ] as const;
 
 export type ServiceApiProtocol = (typeof WELL_KNOWN_SERVICE_API_PROTOCOLS)[number];

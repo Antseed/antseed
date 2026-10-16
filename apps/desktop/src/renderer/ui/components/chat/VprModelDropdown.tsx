@@ -14,9 +14,6 @@ import {
 } from '../../../modules/catalog/recommended';
 import { BrandIcon } from '../brand/BrandIcon';
 import styles from './VprModelDropdown.module.scss';
-import { VprRouterOptions } from '../vpr/VprRouterOptions';
-import { useUiSelector } from '../../hooks/useUiSelector';
-import { routerAutoModelLabel } from '../../../../shared/routing-selection';
 
 /* The menu shows the curated recommended lineup (frontier + free models);
    the full list lives on the Models page via the footer link. */
@@ -33,7 +30,6 @@ type VprModelDropdownProps = {
   disabled: boolean;
   onSelect: (entry: VprModelCatalogEntry) => void;
   onBrowseAll: () => void;
-  routerActive?: boolean;
 };
 
 export type ChatModelKind = Exclude<VprModelCatalogEntry['kind'], 'video'>;
@@ -78,10 +74,8 @@ export function VprModelDropdown({
   disabled,
   onSelect,
   onBrowseAll,
-  routerActive = false,
 }: VprModelDropdownProps) {
   const [open, setOpen] = useState(false);
-  const routerLabel = useUiSelector((state) => routerAutoModelLabel(state.vprRouteSelection.router, state.vprRoutingServices));
   const [favorites, setFavorites] = useState(loadFavoriteModels);
   const ref = useRef<HTMLDivElement>(null);
 
@@ -137,10 +131,10 @@ export function VprModelDropdown({
 
   // Prettify the fallback in case it is a raw service key (e.g. the bound
   // conversation's serviceId while the catalog is still loading).
-  const triggerLabel = routerActive ? routerLabel : selectedEntry?.label || displayModelLabel(selectedServiceId, fallbackLabel);
+  const triggerLabel = selectedEntry?.label || displayModelLabel(selectedServiceId, fallbackLabel);
 
   function renderEntry(entry: VprModelCatalogEntry) {
-    const active = !routerActive && isSelected(entry, selectedProvider, selectedServiceId);
+    const active = isSelected(entry, selectedProvider, selectedServiceId);
     const price = priceLabel(entry);
     const capabilitySummary = modelCapabilitySummary(entry);
     return (
@@ -194,7 +188,6 @@ export function VprModelDropdown({
       </button>
       {open && (
         <div className={styles.modelDropdownMenu} role="listbox">
-          {kind === 'text' && <VprRouterOptions forConversation routerActive={routerActive} onSelect={() => setOpen(false)} />}
           {favoriteEntries.length > 0 && (
             <>
               <div className={styles.modelDropdownSection}>

@@ -63,7 +63,6 @@ plugins/              Provider and router plugins
   provider-openai/          OpenAI-compatible provider (OpenAI, Together, OpenRouter)
   provider-local-llm/       Local LLM provider (Ollama, llama.cpp)
   provider-typesafe/        TypeSafe System One decision-model provider
-  provider-default-router/  Default model-routing provider (best free model on the network)
   router-local/             Local router (Claude Code, Aider, Continue.dev)
 
 apps/                 Applications
@@ -81,8 +80,7 @@ docs/protocol/        Protocol specification
 @antseed/node (core SDK)
   ├── provider-core
   │     └── provider-anthropic, provider-claude-code, provider-claude-oauth,
-  │         provider-openai, provider-local-llm, provider-typesafe,
-  │         provider-default-router
+  │         provider-openai, provider-local-llm, provider-typesafe
   ├── router-core
   │     └── router-local
   ├── payments (peer: node)

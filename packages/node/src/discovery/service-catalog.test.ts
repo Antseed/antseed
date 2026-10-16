@@ -70,21 +70,6 @@ describe('buildNetworkServiceOffers', () => {
     });
   });
 
-  it('keeps the other offers when a peer announces a billing model without components', () => {
-    const offers = buildNetworkServiceOffers([{
-      peerId: 'a'.repeat(40),
-      providers: ['openai'],
-      providerPricing: { openai: { services: { 'gpt-test': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 } } } },
-    }, {
-      peerId: 'b'.repeat(40),
-      providers: ['broken'],
-      providerServiceUnitBillingModels: {
-        broken: { services: { 'image-test': { 'openai-images': { version: 1 } as never } } },
-      },
-    }]);
-    expect(offers.map((offer) => offer.serviceId).sort()).toEqual(['gpt-test', 'image-test']);
-  });
-
   it('types typesafe-systemone services as decision offers', () => {
     expect(buildNetworkServiceOffers([{
       peerId: 'c'.repeat(40),

@@ -1,4 +1,3 @@
-import type { DesktopRouterSelection, RoutingServiceEntry } from '../../shared/routing-selection';
 import type {
   DaemonStateSnapshot,
   DesktopBuyerSpendHistory,
@@ -121,7 +120,6 @@ export type VprSelectedModel = {
 };
 
 export type VprRouteSelection = {
-  router?: DesktopRouterSelection;
   model: VprSelectedModel | null;
   mode: VprRouteMode;
   peerId: string | null;
@@ -468,9 +466,6 @@ export type RendererUiState = {
   vprModelCatalog: VprModelCatalogEntry[];
   /** Main text/connected-app route. Image models never replace this. */
   vprRouteSelection: VprRouteSelection;
-  vprRoutingServices: RoutingServiceEntry[];
-  vprRoutingServicesError: string | null;
-  vprRouteError: string | null;
   /** True while the auto-picked default model is provisional: no trusted free
    * route is discovered yet, so the pick keeps being re-evaluated. Surfaces a
    * "finding free peers" hint during the first-use discovery warm-up. */
@@ -646,9 +641,6 @@ export function createInitialUiState(): RendererUiState {
       peerId: null,
     },
     vprDefaultModelProvisional: false,
-    vprRoutingServices: [],
-    vprRoutingServicesError: null,
-    vprRouteError: null,
     chatImageRouteSelection: null,
     vprModelPins: {},
     vprRoutingPreferences: {
