@@ -62,7 +62,7 @@ export function routingServiceKey(service: RoutingServiceTarget): string {
   return `${service.peerId}:${service.provider}:${service.serviceId}`;
 }
 
-/** Router name from the routing provider, e.g. "Default Router" for `default-router`. */
+/** Router name from the routing provider, e.g. "Free Model Router" for `free-model-router`. */
 export function routerDisplayName(service: Pick<RoutingServiceEntry, 'provider'>): string {
   return preferredModelDisplayName(service.provider);
 }
