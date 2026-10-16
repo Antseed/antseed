@@ -5,6 +5,7 @@ import { copyModelIdItem, CopyIdButton, useCopy } from '../components/copy-actio
 import { Icon } from '../components/icons'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { PeerListsPanel } from '../components/PeerLists'
+import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { SplitView, type SidePanelContent } from '../components/SidePanel'
 import { Badge, EmptyState, LoadingRows, Mono, PageHeader, Panel, QueryView, SelectField, Switch } from '../components/ui'
@@ -27,7 +28,7 @@ function ProviderBadges({ peer, model }: { peer: Peer; model: string }) {
   const coolingDown = (peer.health.coolingDownUntil ?? 0) > Date.now()
   return (
     <div className="gc-badges">
-      {peer.tee && <Badge tone="info">TEE</Badge>}
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
       {isFreePeer(peer, model) && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}

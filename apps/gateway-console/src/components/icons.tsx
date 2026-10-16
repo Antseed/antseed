@@ -12,6 +12,8 @@ function Svg({ size = 16, children, ...rest }: IconProps & { children: React.Rea
 }
 
 export const Icon = {
+  teeFull: (p: IconProps) => <Svg {...p}><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z" /><path d="m8.8 12 2.2 2.2 4.2-4.4" /></Svg>,
+  teePartial: (p: IconProps) => <Svg {...p}><path d="M12 3 4.5 6v5.5c0 4.6 3.2 8.4 7.5 9.5 4.3-1.1 7.5-4.9 7.5-9.5V6z" /><path d="M12 3v18c-4.3-1.1-7.5-4.9-7.5-9.5V6z" fill="currentColor" stroke="none" /></Svg>,
   overview: (p: IconProps) => <Svg {...p}><rect x="3" y="3" width="7" height="9" rx="1.5" /><rect x="14" y="3" width="7" height="5" rx="1.5" /><rect x="14" y="12" width="7" height="9" rx="1.5" /><rect x="3" y="16" width="7" height="5" rx="1.5" /></Svg>,
   chat: (p: IconProps) => <Svg {...p}><path d="M4 5h16v11H9l-5 4z" /><path d="M8 9.5h8M8 12.5h5" /></Svg>,
   activity: (p: IconProps) => <Svg {...p}><path d="M3 12h4l3 8 4-16 3 8h4" /></Svg>,

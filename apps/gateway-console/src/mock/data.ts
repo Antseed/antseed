@@ -68,7 +68,9 @@ export function seed() {
     verificationLinks: index === 0
       ? [{ kind: 'domain' as const, label: 'alpha.example.com', href: 'https://alpha.example.com' }, { kind: 'github' as const, label: '@fake-alpha', href: 'https://github.com/fake-alpha' }]
       : index === 2 ? [{ kind: 'github' as const, label: '@fake-gamma/tee-node', href: 'https://github.com/fake-gamma/tee-node' }] : [],
-    tee: index === 2,
+    tee: index === 2 || index === 1 || index === 4,
+    // Gamma is attested end to end, Beta at the seller node only, Epsilon not checked yet.
+    teeScope: index === 2 ? 'end-to-end' as const : index === 1 ? 'seller-node' as const : null,
     stakeAnts: index < 5 ? `${(index + 1) * 2500}.0` : null,
     usageShareBps: [1200, 800, 450, 300, 200, null, 90, 600][index]!,
     washFlagged: index === 6,
@@ -185,7 +187,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
         protocols: service.apiProtocols ?? ['openai-chat-completions'], inputUsdPerMillion: service.inputUsdPerMillion,
         outputUsdPerMillion: service.outputUsdPerMillion, cachedInputUsdPerMillion: service.cachedInputUsdPerMillion, usdPerImage: null,
         contextLength: service.service.includes('llama') ? 128_000 : service.service.includes('qwen') ? 262_144 : null, free,
-        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+        reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50,
       })
       offers.set(service.service, list)
     }
@@ -193,7 +195,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
   const media = (id: string, type: 'image' | 'video', price: number): [string, NetworkModelOffer[], 'image' | 'video'] => [id, peers.slice(0, 2).map((peer, index) => ({
     peerId: peer.peerId, displayName: peer.displayName, serviceId: id, provider: 'fal', protocols: [], inputUsdPerMillion: null, outputUsdPerMillion: null,
     cachedInputUsdPerMillion: null, usdPerImage: { min: price * (index + 1), max: price * (index + 1) }, contextLength: null, free: false,
-    reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, latencyMsP50: peer.latencyMsP50,
+    reputationScore: peer.reputationScore, trustScore: peer.trustScore, verified: peer.verified, verificationLinks: peer.verificationLinks, tee: peer.tee, teeScope: peer.teeScope, latencyMsP50: peer.latencyMsP50,
   })), type]
   const entries: Array<[string, NetworkModelOffer[], NetworkModel['type']]> = [
     ...[...offers].map(([id, list]): [string, NetworkModelOffer[], NetworkModel['type']] => [id, list, 'text']),
@@ -211,6 +213,7 @@ export function mockNetworkModels(peers: readonly Peer[]): NetworkModel[] {
       outputUsdPerMillion: range(ranked.map((offer) => offer.outputUsdPerMillion)),
       free: ranked.some((offer) => offer.free),
       teeSellers: ranked.filter((offer) => offer.tee).length,
+      fullTeeSellers: ranked.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: ranked.filter((offer) => offer.verified).length,
       offers: ranked,
     }

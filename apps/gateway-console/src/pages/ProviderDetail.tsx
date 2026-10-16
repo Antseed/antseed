@@ -5,6 +5,7 @@ import { useConsole, useScopeFilter } from '../app/context'
 import { useGatewayBaseUrl } from '../components/copy-actions'
 import { PeerActionDialog } from '../components/PeerActionDialog'
 import { PanelRow, PanelSection } from '../components/SidePanel'
+import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import {
   Badge, CodeBlock, CopyButton, Figure, Mono, PageLink, SelectField, TabPanel, Tabs,
@@ -46,7 +47,7 @@ function ProviderMeta({ peer }: { peer: Peer }) {
     <span className="gc-seller__meta">
       <span className="gc-peer-id"><Mono title={peer.peerId}>{shortId(peer.peerId, 6, 4)}</Mono><CopyButton iconOnly value={peer.peerId} label="Copy peer id" /></span>
       <VerificationLinks links={peer.verificationLinks} />
-      {peer.tee && <Badge tone="info">TEE</Badge>}
+      <TeeBadge tee={peer.tee} scope={peer.teeScope} />
       {isFreePeer(peer, '') && <Badge tone="success">Free</Badge>}
       {peer.washFlagged && <Badge tone="danger">Flagged</Badge>}
       {coolingDown && <Badge tone="warning">Cooling down</Badge>}
