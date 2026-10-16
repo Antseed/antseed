@@ -10,6 +10,7 @@
  * below are the only things it needs from the app around it.
  */
 import { net as electronNet, type MenuItemConstructorOptions } from 'electron';
+import { writeBuyerRoute } from '../chat/buyer-route.js';
 import { readFileSync } from 'node:fs';
 import { mkdir, unlink, writeFile } from 'node:fs/promises';
 import type { AppLaunchTarget } from '../connected-apps/launch-settings.js';
@@ -848,12 +849,8 @@ export async function postBuyerDefaultRoute(buyerPort: number, peerId: string, m
   const peer = peerId.trim();
   if (!service || !/^(0x)?[0-9a-fA-F]{40}$/.test(peer)) return;
   try {
-    await fetch(`http://127.0.0.1:${buyerPort}/_antseed/route`, {
-      method: 'POST',
-      headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: `${peer}@${service}` }),
-      signal: AbortSignal.timeout(3_000),
-    });
+    const result = await writeBuyerRoute(buyerPort, { kind: 'model', model: `${peer}@${service}` }, true);
+    if (!result.ok) throw new Error(result.error);
   } catch (err) {
     deps().appendLog('system-proxy', 'system', `Default route update failed: ${err instanceof Error ? err.message : String(err)}`);
   }

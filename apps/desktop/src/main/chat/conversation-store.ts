@@ -10,6 +10,7 @@ import { mkdir, readdir, stat, unlink } from 'node:fs/promises';
 import path from 'node:path';
 import type { AssistantMessage, Message, UserMessage } from '@mariozechner/pi-ai';
 import { SessionManager } from '@mariozechner/pi-coding-agent';
+import { restoreResponseRoutes } from './response-route.js';
 import { CHAT_DATA_DIR, getCurrentChatWorkspaceDir } from './workspace.js';
 import {
   ANTSEED_PEER_CUSTOM_TYPE,
@@ -200,7 +201,7 @@ export class PiConversationStore {
 
   private async buildConversationFromManager(manager: SessionManager): Promise<AiConversation> {
     const context = manager.buildSessionContext();
-    const messages = convertPiMessagesToUi(context.messages as Message[]);
+    const messages = restoreResponseRoutes(convertPiMessagesToUi(context.messages as Message[]), manager.getBranch());
     const usage = deriveUsage(messages);
     const header = manager.getHeader();
     const createdAtRaw = header ? Date.parse(header.timestamp) : Date.now();
