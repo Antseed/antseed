@@ -1,0 +1,77 @@
+/* ── Theme tokens ──
+   Dark-first "vault desk" theme: near-black ground with a faint grid, hairline
+   borders, one signal colour (AntSeed green) for positive state and primary
+   actions, amber for pending, red for slashing/errors. The --pc-* names are
+   kept from the previous checkout-style theme so every component keeps
+   working; the light set maps the same roles onto a paper surface. */
+
+@mixin dark-tokens {
+  color-scheme: dark;
+  --pc-bg: #0b0d10;
+  --pc-panel: #12151a;
+  --pc-panel-2: #171b21;
+  --pc-ink: #eef1f4;
+  --pc-sub: #9aa3ad;
+  --pc-faint: #5f6873;
+  --pc-line: rgba(255, 255, 255, 0.08);
+  --pc-line-strong: rgba(255, 255, 255, 0.16);
+  --pc-btn: #1fd87a;
+  --pc-btn-hover: #3ee892;
+  --pc-btn-ink: #06281a;
+  --pc-accent: #1fd87a;
+  --pc-accent-bg: rgba(31, 216, 122, 0.1);
+  --pc-accent-line: rgba(31, 216, 122, 0.35);
+  --pc-danger: #ff6b6b;
+  --pc-danger-bg: rgba(255, 107, 107, 0.1);
+  --pc-danger-line: rgba(255, 107, 107, 0.35);
+  --pc-danger-ink: #16080a;
+  --pc-ok: #1fd87a;
+  --pc-ok-bg: rgba(31, 216, 122, 0.1);
+  --pc-ok-line: rgba(31, 216, 122, 0.35);
+  --pc-amber: #f5b73b;
+  --pc-amber-bg: rgba(245, 183, 59, 0.1);
+  --pc-amber-line: rgba(245, 183, 59, 0.35);
+  --pc-blue: #6aa6ff;
+  --pc-shadow: 0 1px 0 rgba(255, 255, 255, 0.03) inset, 0 8px 30px rgba(0, 0, 0, 0.35);
+  --pc-shadow-float: 0 1px 0 rgba(255, 255, 255, 0.05) inset, 0 24px 80px rgba(0, 0, 0, 0.6);
+  --pc-backdrop: rgba(4, 6, 8, 0.72);
+  --pc-glow: 0 0 0 1px rgba(31, 216, 122, 0.35), 0 8px 28px rgba(31, 216, 122, 0.22);
+  --pc-grid: rgba(255, 255, 255, 0.035);
+
+  --font-sans: 'IBM Plex Sans', -apple-system, system-ui, sans-serif;
+  --font-mono: 'JetBrains Mono', 'SF Mono', ui-monospace, Menlo, monospace;
+}
+
+@mixin light-tokens {
+  color-scheme: light;
+  --pc-bg: #f4f5f2;
+  --pc-panel: #ffffff;
+  --pc-panel-2: #f7f8f6;
+  --pc-ink: #0f1214;
+  --pc-sub: #5c6670;
+  --pc-faint: #98a2ab;
+  --pc-line: rgba(15, 18, 20, 0.09);
+  --pc-line-strong: rgba(15, 18, 20, 0.18);
+  --pc-btn: #0f8f4f;
+  --pc-btn-hover: #0a7a42;
+  --pc-btn-ink: #ffffff;
+  --pc-accent: #0f8f4f;
+  --pc-accent-bg: rgba(15, 143, 79, 0.09);
+  --pc-accent-line: rgba(15, 143, 79, 0.3);
+  --pc-danger: #c5221f;
+  --pc-danger-bg: rgba(197, 34, 31, 0.08);
+  --pc-danger-line: rgba(197, 34, 31, 0.28);
+  --pc-danger-ink: #ffffff;
+  --pc-ok: #0f8f4f;
+  --pc-ok-bg: rgba(15, 143, 79, 0.09);
+  --pc-ok-line: rgba(15, 143, 79, 0.3);
+  --pc-amber: #a7690b;
+  --pc-amber-bg: rgba(167, 105, 11, 0.09);
+  --pc-amber-line: rgba(167, 105, 11, 0.3);
+  --pc-blue: #2f6fd6;
+  --pc-shadow: 0 1px 2px rgba(16, 17, 19, 0.04), 0 10px 32px rgba(16, 17, 19, 0.05);
+  --pc-shadow-float: 0 1px 3px rgba(16, 17, 19, 0.06), 0 20px 60px rgba(16, 17, 19, 0.18);
+  --pc-backdrop: rgba(16, 17, 19, 0.4);
+  --pc-glow: 0 0 0 1px rgba(15, 143, 79, 0.3), 0 8px 24px rgba(15, 143, 79, 0.18);
+  --pc-grid: rgba(15, 18, 20, 0.05);
+}

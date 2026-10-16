@@ -8,6 +8,7 @@ import { ActivityDrawer } from './Activity';
 import { AddressLink } from './AddressLink';
 import { Toasts } from './Toasts';
 import { IconButton } from './ui';
+import { host } from '../host';
 
 interface Props {
   page: Page;
@@ -18,6 +19,17 @@ interface Props {
 }
 
 export function Layout({ page, updatedAt, children }: Props) {
+  // Embedded, the host's navigation lists the pages; the epoch and wallet move to a toolbar.
+  if (host().embedded) {
+    return (
+      <div className="app app--embedded">
+        <EmbeddedToolbar updatedAt={updatedAt} />
+        <main className="main">{children}</main>
+        <ActivityDrawer />
+        <Toasts />
+      </div>
+    );
+  }
   return (
     <div className="app">
       <Sidebar page={page} updatedAt={updatedAt} />
@@ -67,7 +79,20 @@ function Sidebar({ page, updatedAt }: { page: Page; updatedAt: number | null }) 
   );
 }
 
-/** "Epoch 23 · 2d 4h left" pill linking to the network page. */
+function EmbeddedToolbar({ updatedAt }: { updatedAt: number | null }) {
+  const { config } = useApp();
+  return (
+    <div className="embedded-toolbar">
+      <EpochChip updatedAt={updatedAt} />
+      {config.selectedAddress && <div className="small">Selected account <AddressLink value={config.selectedAddress} copy /></div>}
+      <div className="embedded-toolbar__wallet">
+        {config.browserWallet ? <WalletControls config={config} /> : <span className="wallet-chip"><AddressLink value={config.address} copy className="wallet-chip-addr" /></span>}
+      </div>
+    </div>
+  );
+}
+
+/** "Epoch 23 · 2d 4h left" pill. */
 export function EpochChip({ updatedAt }: { updatedAt: number | null }) {
   const { overview } = useApp();
   const now = useNow(30_000);
@@ -75,13 +100,16 @@ export function EpochChip({ updatedAt }: { updatedAt: number | null }) {
   const epoch = overview.epoch;
   const boundaryAt = updatedAt !== null ? updatedAt + epoch.secondsToBoundary * 1000 : epoch.nextBoundaryAt * 1000;
   const secondsLeft = Math.max(0, Math.floor((boundaryAt - now) / 1000));
-  return (
-    <a className="epoch-chip" href={href('network')} title="Current epoch and time until the next boundary">
-      <i aria-hidden="true" />
-      <span>epoch <strong>{epoch.current}</strong></span>
-      <span>· <strong>{formatDuration(secondsLeft)}</strong> left</span>
-    </a>
-  );
+  const body = <>
+    <i aria-hidden="true" />
+    <span>epoch <strong>{epoch.current}</strong></span>
+    <span>· <strong>{formatDuration(secondsLeft)}</strong> left</span>
+  </>;
+  const title = 'Current epoch and time until the next boundary';
+  // Links to the Network page where the host shows it.
+  return host().pages.includes('network')
+    ? <a className="epoch-chip" href={href('network')} title={title}>{body}</a>
+    : <span className="epoch-chip" title={title}>{body}</span>;
 }
 
 function NavIcon({ page }: { page: Page }) {
