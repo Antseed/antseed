@@ -602,9 +602,8 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
           path.join(systemProxyDataDir(), 'claude-gateway.slots.json'),
         );
       }
-      // The patched config carries only the routed-model alias; the buyer
-      // resolves it to the default route posted above, so the model picked in
-      // the floating pill / AI VPN applies to running tool sessions.
+      // Configs select Auto by default and list the curated picker models.
+      // The buyer's default starts new chats; existing chats keep their model.
       applyConfigPatch(profile.configPatch, defaultRoute.peerId, buyerProxyPort, {
         wslTargetsFile: systemProxyWslTargetsPath(),
         models: connectedAppModelSource(),

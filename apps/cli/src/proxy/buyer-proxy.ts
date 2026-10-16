@@ -2426,22 +2426,18 @@ export class BuyerProxy {
     const storedAutoRoute = storedConversation?.peerSource === 'auto' && storedConversation.pinnedModel
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
-    const requestTool = conversationIdentity?.tool ?? ''
-    // Apps listing our catalog send the model the user just picked in the app,
-    // so it beats the chat's auto pin; a desktop chat pin still wins.
-    const appPicker = MODEL_PICKER_TOOL_SLUGS.some((app) => toolMatchesApp(requestTool, app))
+    // Auto uses this chat's remembered model; the global default only starts
+    // new chats. Concrete picker requests still carry the model to switch to.
     const chatPinnedModel = storedConversation?.peerSource === 'user'
       ? storedConversation.pinnedModel
-      : appPicker ? null : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
+      : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
     const preferredPeerHeader = normalizePeerId(serializedReq.headers['x-antseed-prefer-peer'] ?? '')
     const preferredConversationPeerId = preferredPeerHeader ?? storedAutoRoute?.peerId ?? null
     const effectiveRoutedModel = chatPinnedModel ?? this._defaultRoutedModel
     let trackedConversationId: string | null = storedConversation?.id ?? null
 
-    // Resolve the `antseed` model alias to the session's default route first,
-    // so the regular `<peerId>@<service>` pin rewrite below picks up the
-    // substituted value. Tool configs written by the desktop carry the alias
-    // so route changes apply to running sessions without config rewrites.
+    // Resolve the `antseed` alias to the chat's model, or the global default
+    // for a new chat, before rewriting any `<peerId>@<service>` pin.
     const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
@@ -2513,9 +2509,9 @@ export class BuyerProxy {
           || (aliasResult.substituted && parsePeerPinnedService(effectiveRoutedModel ?? ''))
           || (chatPinOverrideApplied && parsePeerPinnedService(chatPinnedModel ?? ''))
         )
-        // An in-app picker choice (including Auto resolved to a pinned peer)
-        // applies to this request. Keep desktop chat pins explicit and let
-        // subsequent Auto requests follow the current global route.
+        // Picker requests don't create user locks: successful concrete picks
+        // can update the automatic chat route without replacing a desktop pin.
+        const appPicker = MODEL_PICKER_TOOL_SLUGS.some((app) => toolMatchesApp(conversationIdentity.tool, app))
         if (explicitConversationPin && !appPicker) {
           this._conversations.setPinnedModel(tracked.id, resolvedModel, 'user')
         }

@@ -476,6 +476,7 @@ test('Codex catalog starts with Auto and refreshes curated slugs on reconnect', 
     applyConfigPatch(patch, PEER_ID, 8377, { models: [{ label: 'Network "Model"', model: pinned }, { label: 'Other', model: 'other/model' }] });
       const catalogPath = `${configPath}.antseed.models.json`;
       const catalog = JSON.parse(await readFile(catalogPath, 'utf8'));
+      assert.equal(catalog.models[0].description, "Use this chat's model, or the AI VPN default for a new chat.");
       assert.deepEqual(catalog.models.map((model: { slug: string; display_name: string }) => [model.slug, model.display_name]), [
         ['antseed', 'Antseed Auto'], [pinned, 'Network "Model"'], ['other/model', 'Other'],
       ]);

@@ -265,10 +265,9 @@ export function isLoopbackPeer(peer: PeerInfo): boolean {
 
 /**
  * Model alias that tool configs can carry instead of a concrete
- * `<peerId>@<service>` key. The buyer substitutes the session's default
- * routed model at request time, so the route selected in the desktop
- * (floating pill / VPR) applies to already-running tool sessions without
- * rewriting their configs.
+ * `<peerId>@<service>` key. The buyer substitutes the chat's remembered
+ * model, falling back to the global default for new chats, without rewriting
+ * the tool's config.
  */
 export const ROUTED_MODEL_ALIAS = 'antseed'
 

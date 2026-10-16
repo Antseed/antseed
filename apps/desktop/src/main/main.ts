@@ -404,6 +404,7 @@ const piChatEngine = registerPiChatHandlers({
 });
 
 // Connected apps share the curated in-app (and Telegram) picker rows.
+const CONNECTED_APP_MODEL_PICKER_WAIT_MS = 15_000;
 const connectedAppModelSource = () => (
   (piChatEngine.getModelPicker()?.models ?? []).map((model) => ({
     label: model.label,
@@ -536,7 +537,14 @@ app.whenReady().then(async () => {
       : undefined;
     // Sequenced after the fail-open above, or the clear could land after the
     // child has already re-armed the setting and silently disconnect it.
-    void systemProxyFailOpen.then(() => restoreSystemProxyProfilesAtLaunch({
+    // Also waits (bounded) for the renderer's first model-picker push, so the
+    // restored app configs list the curated models instead of only Auto.
+    void systemProxyFailOpen.then(async () => {
+      const pickerReady = await piChatEngine.waitForModelPicker(CONNECTED_APP_MODEL_PICKER_WAIT_MS);
+      if (!pickerReady) {
+        appendLog('system-proxy', 'system', 'Model list not ready; restoring connected apps with Auto only until the next connect.');
+      }
+    }).then(() => restoreSystemProxyProfilesAtLaunch({
       peerId: restorePeerId,
       port: DEFAULT_SYSTEM_PROXY_PORT,
       profiles: restoredProfiles,

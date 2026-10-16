@@ -3386,7 +3386,7 @@ for (const pinStyle of ['none', 'bare', 'namespaced']) {
   })
 }
 
-test('Codex Auto returns to the current global route after a concrete picker choice', async () => {
+test('Codex Auto keeps the chat model after a concrete picker choice', async () => {
   const { proxy, dir } = await makeConversationProxy()
   try {
     const peer = makePeer('c', ['openai'])
@@ -3407,7 +3407,7 @@ test('Codex Auto returns to the current global route after a concrete picker cho
       }))
       assert.equal(response.statusCode, 200, response.body)
     }
-    assert.deepEqual(sent, services)
+    assert.deepEqual(sent, ['network/model', 'network/model', 'network/model'])
     await (proxy as any)._conversations.flush()
   } finally {
     await (proxy as any)._stateWriteChain
@@ -3417,7 +3417,45 @@ test('Codex Auto returns to the current global route after a concrete picker cho
 })
 
 for (const originator of ['codex_exec', 'droid', 'pi', 'gooeypi', 'prime-agent', 'opencode', 'crush', 'zed', 'hermes-agent', 't3code']) {
-  test(`${originator} picker switches models mid-chat and Auto returns to the global route`, async () => {
+  test(`${originator} Auto keeps existing chats on their model when the global default changes`, async () => {
+    const { proxy, dir } = await makeConversationProxy()
+    try {
+      const firstPeer = makePeer('a', ['openai'])
+      const nextPeer = makePeer('b', ['openai'])
+      firstPeer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-responses'] } } }
+      nextPeer.providerServiceApiProtocols = { openai: { services: { 'model-b': ['openai-responses'] } } }
+      ;(proxy as any)._getPeers = async () => [firstPeer, nextPeer]
+      const sent: Array<{ peerId: string; model: string }> = []
+      ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+        sent.push({ peerId: peer.peerId, model: parseJsonBody(request.body)['model'] as string })
+        return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+      }
+      for (const [session, global] of [
+        ['existing-chat', 'model-a'],
+        ['existing-chat', `${nextPeer.peerId}@model-b`],
+        ['new-chat', `${nextPeer.peerId}@model-b`],
+      ] as const) {
+        ;(proxy as any)._defaultRoutedModel = global
+        const response = await invokeProxy(proxy, makeProxyRequest({
+          path: '/v1/responses',
+          headers: { originator, 'session-id': session },
+          body: { model: 'antseed', input: 'hello' },
+        }))
+        assert.equal(response.statusCode, 200, response.body)
+      }
+      assert.deepEqual(sent, [
+        { peerId: firstPeer.peerId, model: 'model-a' },
+        { peerId: firstPeer.peerId, model: 'model-a' },
+        { peerId: nextPeer.peerId, model: 'model-b' },
+      ])
+    } finally {
+      await (proxy as any)._stateWriteChain
+      await (proxy as any)._conversations.flush()
+      await rm(dir, { recursive: true, force: true })
+    }
+  })
+
+  test(`${originator} picker switches models mid-chat and Auto keeps the selected chat model`, async () => {
     const { proxy, dir } = await makeConversationProxy()
     try {
       const peer = makePeer('c', ['openai'])
@@ -3438,7 +3476,7 @@ for (const originator of ['codex_exec', 'droid', 'pi', 'gooeypi', 'prime-agent',
         }))
         assert.equal(response.statusCode, 200, response.body)
       }
-      assert.deepEqual(sent, ['global-model', 'model-a', 'model-b', 'global-model'])
+      assert.deepEqual(sent, ['global-model', 'model-a', 'model-b', 'model-b'])
     } finally {
       await (proxy as any)._stateWriteChain
       await (proxy as any)._conversations.flush()
@@ -3613,6 +3651,51 @@ test('conversation control endpoints list, rename, pin, reject bad pins, delete'
     assert.equal(store.get('opencode:ses_x'), null)
     await store.flush()
   } finally {
+    await rm(dir, { recursive: true, force: true })
+  }
+})
+
+test('subagent Auto inherits the parent picker model instead of the global default', async () => {
+  const { proxy, dir } = await makeConversationProxy()
+  try {
+    const parentPeer = makePeer('a', ['openai'])
+    const defaultPeer = makePeer('b', ['openai'])
+    parentPeer.providerServiceApiProtocols = { openai: { services: { 'model-a': ['openai-responses'] } } }
+    defaultPeer.providerServiceApiProtocols = { openai: { services: { 'model-b': ['openai-responses'] } } }
+    ;(proxy as any)._getPeers = async () => [parentPeer, defaultPeer]
+    ;(proxy as any)._defaultRoutedModel = `${defaultPeer.peerId}@model-b`
+    const sent: Array<{ peerId: string; model: string }> = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string; body: Uint8Array }) => {
+      sent.push({ peerId: peer.peerId, model: parseJsonBody(request.body)['model'] as string })
+      return { requestId: request.requestId, statusCode: 200, headers: {}, body: Buffer.from('{}') }
+    }
+    const parentRoute = `${parentPeer.peerId}@model-a`
+    const parent = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/responses',
+      headers: { originator: 'opencode', 'session-id': 'parent' },
+      body: { model: parentRoute, input: 'parent task' },
+    }))
+    assert.equal(parent.statusCode, 200, parent.body)
+    const store = (proxy as any)._conversations
+    assert.equal(store.get('opencode:parent')?.pinnedModel, parentRoute)
+    assert.equal(store.get('opencode:parent')?.peerSource, 'auto')
+
+    const child = await invokeProxy(proxy, makeProxyRequest({
+      path: '/v1/responses',
+      headers: { originator: 'opencode', 'session-id': 'child', 'x-parent-session-id': 'parent' },
+      body: { model: 'antseed', input: 'helper task' },
+    }))
+    assert.equal(child.statusCode, 200, child.body)
+    assert.deepEqual(sent, [
+      { peerId: parentPeer.peerId, model: 'model-a' },
+      { peerId: parentPeer.peerId, model: 'model-a' },
+    ])
+    assert.equal(store.get('opencode:child'), null)
+    assert.equal(store.get('opencode:parent')?.pinnedModel, parentRoute)
+    assert.equal(store.get('opencode:parent')?.peerSource, 'auto')
+  } finally {
+    await (proxy as any)._stateWriteChain
+    await (proxy as any)._conversations.flush()
     await rm(dir, { recursive: true, force: true })
   }
 })

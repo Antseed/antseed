@@ -15,8 +15,8 @@ import {
 } from './wsl.js';
 
 /**
- * Model alias resolved by the buyer proxy at request time to the route
- * currently selected in the desktop (floating pill / AI VPN). Must match
+ * Model alias resolved by the buyer proxy to the chat's remembered model,
+ * or the buyer's default route for a new chat. Must match
  * ROUTED_MODEL_ALIAS in apps/cli/src/proxy/request-utils.ts.
  */
 export const ROUTED_MODEL_ALIAS = 'antseed';
@@ -546,12 +546,9 @@ function removeFromStringArray(config: JsonObject, key: string, value: string): 
 }
 
 /**
- * Point the tool's config at the buyer proxy. The config exposes a single
- * model — the ROUTED_MODEL_ALIAS — which the buyer resolves per request to
- * the route currently selected in the desktop (floating pill / AI VPN). Concrete
- * `<peerId>@<service>` entries are no longer written: the only place to pick
- * a model is the desktop route selector, so route changes reach running tool
- * sessions without a config rewrite.
+ * Point the tool's config at the buyer proxy, selecting Auto by default
+ * and listing curated models in formats with a native picker. The buyer
+ * resolves Auto to the chat's remembered model, or its default for a new chat.
  */
 export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPort: number, options?: string | ConfigPatchOptions): void {
   if (!isBuyerProxyRoutablePeerId(peerId)) {
@@ -562,9 +559,7 @@ export function applyConfigPatch(patch: ConfigPatchDef, peerId: string, buyerPor
 
 /**
  * The config write behind applyConfigPatch, without the selected-peer guard.
- * The patched config only carries the ROUTED_MODEL_ALIAS, so no peer is
- * written either way; callers that do not own a route selection (the CLI's
- * `antseed apps connect`) use this and leave route choice to the buyer.
+ * This does not set the buyer's route; CLI callers leave routing to the buyer.
  */
 export function writeConfigPatch(patch: ConfigPatchDef, buyerPort: number, options?: string | ConfigPatchOptions): void {
   const { wslTargetsFile, models = [] } = normalizeConfigPatchOptions(options);
@@ -1109,7 +1104,7 @@ function writeCodexCatalog(catalogPath: string, curatedModels: readonly Connecte
     slug: entry.model,
     display_name: entry.label,
     base_instructions: 'You are Codex, a coding agent working with the user in a shared workspace. Use the available tools to complete the user\'s task and follow the workspace instructions.',
-    description: entry.model === ROUTED_MODEL_ALIAS ? 'Follow the model selected in the AI VPN.' : `Route to ${entry.label} through the AI VPN.`,
+    description: entry.model === ROUTED_MODEL_ALIAS ? "Use this chat's model, or the AI VPN default for a new chat." : `Route to ${entry.label} through the AI VPN.`,
     ...(catalogEntryReasons(entry)
       ? { default_reasoning_level: CONNECTED_APP_DEFAULT_REASONING, supported_reasoning_levels: CODEX_REASONING_LEVELS }
       : { supported_reasoning_levels: [] }),

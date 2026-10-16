@@ -313,8 +313,8 @@ export const DEFAULT_APP_PROFILES: readonly Record<string, unknown>[] = [
 
 /**
  * Tool slugs of built-in apps whose own model picker lists the AntSeed
- * catalog. The buyer trusts the model in their requests over a chat's auto
- * pin, because the user picked it in the app.
+ * catalog. Their request-derived chat routes stay automatic, so concrete
+ * picker choices can update a chat without creating a desktop seller pin.
  */
 export const MODEL_PICKER_TOOL_SLUGS: readonly string[] = DEFAULT_APP_PROFILES
   .filter((profile) => configPatchListsModels((profile['configPatch'] as Record<string, unknown> | undefined)?.['format'] as string | undefined))
