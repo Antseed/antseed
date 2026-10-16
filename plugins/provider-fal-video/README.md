@@ -14,10 +14,18 @@ export FAL_VIDEO_API_KEY=<seller-fal-key>
 - `ANTSEED_ALLOWED_SERVICES`: fal endpoint IDs such as `fal-ai/kling-video/v2.1/standard/text-to-video` (64 characters at most)
 - `ANTSEED_SERVICE_UNIT_BILLING_MODELS_JSON`: `fal-video` pricing using `video_generations` or `video_seconds`
 - `ANTSEED_SERVICE_CAPABILITIES_JSON`: optional video options to advertise
-- `FAL_VIDEO_BILLING_API_KEY`: optional fal key with the `billing:usage:read` permission (presets BILLING, READONLY or FULL), used only to read the credit balance
-- `FAL_VIDEO_MIN_BALANCE_USD`: optional, default `0`. With a billing key, models stop being advertised while the balance is at or below it
+- `FAL_VIDEO_MIN_BALANCE_USD`: optional, default `0`. Models stop being advertised while the fal balance is at or below it (needs the permission below)
 
-Each seller health sweep reads fal's model list (`GET https://api.fal.ai/v1/models`, with the seller's key, since fal rate-limits anonymous lookups): an endpoint fal no longer lists, or no longer reports as `active`, stops being advertised. A `deprecated` endpoint stays advertised with a warning. Without a billing key, running out of credits is not detected.
+Each seller health sweep reads fal's model list (`GET https://api.fal.ai/v1/models`, with the seller's key, since fal rate-limits anonymous lookups): an endpoint fal no longer lists, or no longer reports as `active`, stops being advertised. A `deprecated` endpoint stays advertised with a warning.
+
+### Balance check
+
+To stop advertising when the fal account runs out of credits, give `FAL_VIDEO_API_KEY` the `billing:usage:read` permission (fal key presets BILLING, READONLY or FULL, or a custom key that also runs models). One key does both; there is no separate billing key. At startup the seller reads the balance (`GET https://api.fal.ai/v1/account/billing?expand=credits`) and logs one of:
+
+- `fal balance check is on: $<balance>; ...`: each health sweep checks the balance, and models are advertised again after a top-up.
+- `fal balance check is off: FAL_VIDEO_API_KEY lacks the billing:usage:read permission ...`: the seller still sells, but running out of credits does not stop it advertising. Add the permission and restart to turn the check on.
+
+A key fal rejects as invalid (`401`) stops the seller advertising its models.
 
 The service ID is the fal endpoint ID; aliases are not supported.
 
