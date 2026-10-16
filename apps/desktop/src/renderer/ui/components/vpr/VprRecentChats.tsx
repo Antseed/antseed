@@ -4,10 +4,11 @@ import { ArrowRight01Icon, ArrowRight02Icon } from '@hugeicons/core-free-icons';
 import type { VprModelCatalogEntry } from '../../../core/state';
 import type { BuyerConversationSummary, SystemProxyProfileSummary } from '../../../types/bridge';
 import {
+  catalogModelLabel,
   conversationAge,
   conversationCost,
   conversationMatchesApp,
-  conversationPinnedServiceId,
+  conversationRoutedServiceId,
   conversationTitle,
   isConversationActive,
   shortSessionId,
@@ -19,16 +20,18 @@ import styles from './VprRecentChats.module.scss';
 /* Chat rows sampled on the card — the full list lives on the Chats page. */
 const CARD_SAMPLE_COUNT = 3;
 
-/** The model a chat runs on: its pin resolved through the catalog, falling
-    back to the default-route label for chats that haven't started yet. */
+/** The model a chat runs on: its latest route (updated when a seller is
+    chosen, so an in-app model switch shows before the answer finishes)
+    resolved through the catalog, falling back to the default-route label for
+    chats that haven't started yet. */
 export function chatModelLabel(
   chat: BuyerConversationSummary,
   catalog: VprModelCatalogEntry[],
   defaultModelLabel: string | null,
 ): string {
-  const pinnedServiceId = conversationPinnedServiceId(chat);
-  if (!pinnedServiceId) return defaultModelLabel ?? '';
-  return catalog.find((entry) => entry.serviceId === pinnedServiceId)?.label ?? pinnedServiceId;
+  const serviceId = conversationRoutedServiceId(chat);
+  if (!serviceId) return defaultModelLabel ?? '';
+  return catalogModelLabel(catalog, serviceId);
 }
 
 /** One chat row: title + session id on the first line, tool · time on the

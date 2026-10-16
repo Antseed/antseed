@@ -5,6 +5,7 @@ import {
   conversationPinnedPeerId,
   conversationPinnedServiceId,
   conversationRoutedPeerId,
+  conversationRoutedServiceId,
 } from './conversations.js';
 
 function conversation(overrides: Partial<BuyerConversationSummary>): BuyerConversationSummary {
@@ -40,4 +41,13 @@ test('explicit seller routes expose both peer and service', () => {
   assert.equal(conversationPinnedServiceId(record), 'openai-gpt-56-sol');
   assert.equal(conversationPinnedPeerId(record), peerId);
   assert.equal(conversationRoutedPeerId(record), peerId);
+});
+
+test('conversationRoutedServiceId prefers the in-flight route over the pin', () => {
+  assert.equal(conversationRoutedServiceId(conversation({
+    pinnedModel: `${'a'.repeat(40)}@gpt-5`,
+    lastModel: `${'b'.repeat(40)}@opus-5.5`,
+  })), 'opus-5.5');
+  assert.equal(conversationRoutedServiceId(conversation({ pinnedModel: `${'a'.repeat(40)}@gpt-5`, lastModel: null })), 'gpt-5');
+  assert.equal(conversationRoutedServiceId(conversation({ pinnedModel: null, lastModel: null })), null);
 });

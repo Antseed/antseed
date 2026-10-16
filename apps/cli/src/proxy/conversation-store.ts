@@ -335,6 +335,22 @@ export class ConversationStore {
     return record
   }
 
+  /** The seller a request is being sent to right now. Updates only the display
+      route so the desktop shows a switch before the answer finishes; the pin
+      is left to `recordRoutedModel` once a seller actually serves the request.
+      Two steps on purpose: if this seller fails, pinning here would keep the
+      chat's next requests on a broken seller. Showing it is harmless; a retry
+      on another seller just overwrites `lastModel` again. */
+  markRouting(id: string, routedModel: string): StoredConversation | null {
+    const existing = this._byId.get(id)
+    if (!existing) return null
+    if (existing.lastModel === routedModel) return existing
+    const record = { ...existing, lastModel: routedModel, lastActiveAt: Date.now() }
+    this._byId.set(id, record)
+    void this._persist()
+    return record
+  }
+
   setLabel(id: string, label: string | null): StoredConversation | null {
     const existing = this._byId.get(id)
     if (!existing) return null

@@ -1,6 +1,7 @@
 import { InvalidArgumentError, type Command } from 'commander'
 import chalk from 'chalk'
 import {
+  configPatchListsModels,
   connectedAppStatus,
   findConnectedAppProfile,
   loadConnectedAppProfiles,
@@ -11,6 +12,7 @@ import {
   writeConfigPatch,
   type ConnectedAppProfile,
   type ConnectedAppStatus,
+  type ConnectedAppModel,
 } from '@antseed/connected-apps'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
@@ -101,6 +103,39 @@ function ensureStateDir(ctx: AppsContext): string {
   return targets
 }
 
+/** A model reports reasoning when the model or any seller offering it announces support. */
+function reportsReasoning(entry: Record<string, unknown>): boolean {
+  const announces = (value: unknown) => Boolean(value && typeof value === 'object'
+    && (value as Record<string, unknown>)['reasoning'] === true)
+  if (announces(entry['capabilities'])) return true
+  const peers = entry['peers']
+  return Array.isArray(peers) && peers.some((peer) => (
+    Boolean(peer && typeof peer === 'object') && announces((peer as Record<string, unknown>)['capabilities'])
+  ))
+}
+
+export async function fetchConnectedAppModels(buyerPort: number): Promise<ConnectedAppModel[]> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${buyerPort}/v1/models?type=text`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(1500),
+    })
+    if (!response.ok) return []
+    const body = await response.json() as { data?: unknown }
+    if (!Array.isArray(body.data)) return []
+    return body.data.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const id = (entry as Record<string, unknown>)['id']
+      const name = (entry as Record<string, unknown>)['name']
+      const reasoning = reportsReasoning(entry as Record<string, unknown>)
+      if (typeof id !== 'string' || id.trim().length === 0) return []
+      return [{ model: id, label: typeof name === 'string' && name.trim() ? name : id, ...(reasoning ? { reasoning } : {}) }]
+    })
+  } catch {
+    return []
+  }
+}
+
 export async function connectApp(ctx: AppsContext, name: string, buyerPort?: number): Promise<AppsActionReport> {
   const all = profiles()
   const profile = findConnectedAppProfile(name, all)
@@ -114,7 +149,8 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
     warnings.push('Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
   }
   try {
-    writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
+    const models = configPatchListsModels(profile.configPatch.format) ? await fetchConnectedAppModels(port) : []
+    writeConfigPatch(profile.configPatch, port, { wslTargetsFile: ensureStateDir(ctx), models })
   } catch (err) {
     return {
       schemaVersion: APPS_JSON_SCHEMA_VERSION,

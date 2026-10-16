@@ -1,6 +1,8 @@
 import test from 'node:test'
 import assert from 'node:assert/strict'
-import { spawnSync } from 'node:child_process'
+import { spawn, spawnSync } from 'node:child_process'
+import { createServer, type Server } from 'node:http'
+import type { AddressInfo } from 'node:net'
 import { existsSync } from 'node:fs'
 import { mkdir, mkdtemp, readFile, rm, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
@@ -75,6 +77,10 @@ const ORIGINAL_CONFIGS: Record<string, { path: string; content: string }[]> = {
   pi: [
     { path: '~/.pi/agent/models.json', content: '{\n  "providers": {}\n}\n' },
     { path: '~/.pi/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
+  ],
+  'prime-agent': [
+    { path: '~/.prime/agent/models.json', content: '{\n  "providers": {}\n}\n' },
+    { path: '~/.prime/agent/settings.json', content: '{\n  "theme": "dark"\n}\n' },
   ],
   crush: [{ path: '~/.config/crush/crush.json', content: '{\n  "options": {},\n  "providers": {}\n}\n' }],
   goose: [{ path: '~/.config/goose/config.yaml', content: 'GOOSE_TEMPERATURE: 0.5\n' }],
@@ -223,6 +229,134 @@ test('apps connect warns when the buyer has no default route', async () => {
     const withRoute = json<ActionReport>(ws, ['apps', 'connect', 'zed'])
     assert.equal(withRoute.warnings?.some((warning) => /no default route/i.test(warning)) ?? false, false)
   } finally {
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})
+
+function runAsync(ws: Workspace, args: string[]): Promise<ActionReport> {
+  return new Promise((resolvePromise, reject) => {
+    const child = spawn(
+      process.execPath,
+      [CLI_INDEX, '--data-dir', ws.dataDir, '--config', ws.configPath, ...args, '--json'],
+      { env: { ...process.env, HOME: ws.home, USERPROFILE: ws.home, PATH: ws.binDir, XDG_CONFIG_HOME: join(ws.home, '.config') } },
+    )
+    let stdout = ''
+    let stderr = ''
+    child.stdout.on('data', (chunk) => { stdout += chunk })
+    child.stderr.on('data', (chunk) => { stderr += chunk })
+    child.on('error', reject)
+    child.on('close', () => {
+      try {
+        resolvePromise(JSON.parse(stdout) as ActionReport)
+      } catch {
+        reject(new Error(`no JSON output for ${args.join(' ')}: ${stderr}`))
+      }
+    })
+  })
+}
+
+async function startFakeBuyer(handler: Parameters<typeof createServer>[1]): Promise<{ server: Server; port: number }> {
+  const server = createServer(handler)
+  await new Promise<void>((resolvePromise) => server.listen(0, '127.0.0.1', resolvePromise))
+  return { server, port: (server.address() as AddressInfo).port }
+}
+
+const CATALOG_APPS: { name: string; dir: string; read: (ws: Workspace) => Promise<string[]> }[] = [
+  {
+    name: 'codex',
+    dir: '~/.codex',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.codex', 'config.toml.antseed.models.json'), 'utf8')) as { models: { slug: string }[] }).models.map((model) => model.slug),
+  },
+  {
+    name: 'droid',
+    dir: '~/.factory',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.factory', 'settings.json'), 'utf8')) as { customModels: { id: string; model: string }[] }).customModels
+      .filter((model) => model.id.startsWith('custom:Antseed-'))
+      .map((model) => model.model),
+  },
+  {
+    name: 'pi',
+    dir: '~/.pi/agent',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.pi', 'agent', 'models.json'), 'utf8')) as { providers: { antseed: { models: { id: string }[] } } }).providers.antseed.models.map((model) => model.id),
+  },
+  {
+    name: 'prime-agent',
+    dir: '~/.prime/agent',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.prime', 'agent', 'models.json'), 'utf8')) as { providers: { antseed: { models: { id: string }[] } } }).providers.antseed.models.map((model) => model.id),
+  },
+  {
+    name: 'opencode',
+    dir: '~/.config/opencode',
+    read: async (ws) => Object.keys((JSON.parse(await readFile(join(ws.home, '.config', 'opencode', 'opencode.jsonc'), 'utf8')) as { provider: { antseed: { models: Record<string, unknown> } } }).provider.antseed.models),
+  },
+  {
+    name: 'crush',
+    dir: '~/.config/crush',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.config', 'crush', 'crush.json'), 'utf8')) as { providers: { antseed: { models: { id: string }[] } } }).providers.antseed.models.map((model) => model.id),
+  },
+  {
+    name: 'zed',
+    dir: '~/.config/zed',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.config', 'zed', 'settings.json'), 'utf8')) as { language_models: { openai_compatible: { Antseed: { available_models: { name: string }[] } } } }).language_models.openai_compatible.Antseed.available_models.map((model) => model.name),
+  },
+  {
+    name: 'hermes',
+    dir: '~/.hermes',
+    read: async (ws) => [...(await readFile(join(ws.home, '.hermes', 'config.yaml'), 'utf8')).matchAll(/([\w.-]+):\s*\{?\s*context_length:/g)].map((match) => match[1]!),
+  },
+  {
+    name: 't3code',
+    dir: '~/.t3/userdata',
+    read: async (ws) => (JSON.parse(await readFile(join(ws.home, '.t3', 'userdata', 'settings.json'), 'utf8')) as { providerInstances: { antseed: { config: { customModels: string[] } } } }).providerInstances.antseed.config.customModels,
+  },
+]
+
+test('apps connect writes the buyer model catalog into every in-app model picker', async () => {
+  const requests: string[] = []
+  const { server, port } = await startFakeBuyer((req, res) => {
+    requests.push(req.url ?? '')
+    res.setHeader('content-type', 'application/json')
+    res.end(JSON.stringify({ object: 'list', data: [{ id: 'model-a', name: 'Model A', peers: [{ capabilities: {} }, { capabilities: { reasoning: true } }] }, { id: 'model-b', peers: [{ capabilities: { reasoning: false } }] }] }))
+  })
+  const ws = await createWorkspace()
+  try {
+    for (const app of CATALOG_APPS) {
+      await mkdir(homePath(ws, app.dir), { recursive: true })
+      const connected = await runAsync(ws, ['apps', 'connect', app.name, '--port', String(port)])
+      assert.equal(connected.ok, true, connected.error)
+      assert.deepEqual(await app.read(ws), ['antseed', 'model-a', 'model-b'], app.name)
+      if (app.name === 'codex') {
+        const catalog = JSON.parse(await readFile(join(ws.home, '.codex', 'config.toml.antseed.models.json'), 'utf8')) as { models: { slug: string; supported_reasoning_levels: unknown[] }[] }
+        assert.deepEqual(catalog.models.map((model) => [model.slug, model.supported_reasoning_levels.length > 0]), [['antseed', true], ['model-a', true], ['model-b', false]])
+      }
+      const disconnected = await runAsync(ws, ['apps', 'disconnect', app.name])
+      assert.equal(disconnected.ok, true, disconnected.error)
+      assert.equal(json<StatusReport>(ws, ['apps', 'status']).apps.find((entry) => entry.name === app.name)?.connected, false, app.name)
+    }
+    assert.equal(existsSync(join(ws.home, '.codex', 'config.toml.antseed.models.json')), false)
+    assert.ok(requests.length >= CATALOG_APPS.length)
+    assert.ok(requests.every((url) => url === '/v1/models?type=text'), requests.join(', '))
+  } finally {
+    server.close()
+    await rm(ws.home, { recursive: true, force: true })
+  }
+})
+
+test('apps connect falls back to Antseed Auto when the buyer model list is unavailable', async () => {
+  const { server, port } = await startFakeBuyer((_req, res) => {
+    res.statusCode = 503
+    res.end('unavailable')
+  })
+  const ws = await createWorkspace()
+  try {
+    for (const app of CATALOG_APPS) {
+      await mkdir(homePath(ws, app.dir), { recursive: true })
+      const connected = await runAsync(ws, ['apps', 'connect', app.name, '--port', String(port)])
+      assert.equal(connected.ok, true, connected.error)
+      assert.deepEqual(await app.read(ws), ['antseed'], app.name)
+    }
+  } finally {
+    server.close()
     await rm(ws.home, { recursive: true, force: true })
   }
 })

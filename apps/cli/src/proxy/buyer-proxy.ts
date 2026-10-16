@@ -45,6 +45,7 @@ import {
   type SweepReceiptPayload,
 } from '@antseed/node'
 import { canonicalModelKey } from '@antseed/node/model-identity'
+import { MODEL_PICKER_TOOL_SLUGS } from '@antseed/connected-apps'
 import {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
@@ -1054,6 +1055,11 @@ function sendJson(res: ServerResponse, status: number, body: unknown): void {
 /** A requested buyer identity name as stored ('' when none is named). */
 function buyerIdentityName(value: string | undefined): string {
   return value?.trim().toLowerCase() ?? ''
+}
+
+/** Tool slugs carry client variants, e.g. Codex reports `codex-exec`. */
+function toolMatchesApp(tool: string, app: string): boolean {
+  return tool === app || tool.startsWith(`${app}-`)
 }
 
 function sendUnknownBuyerIdentity(res: ServerResponse): void {
@@ -3546,6 +3552,8 @@ export class BuyerProxy {
     const storedAutoRoute = storedConversation?.peerSource === 'auto' && storedConversation.pinnedModel
       ? parsePeerPinnedService(storedConversation.pinnedModel)
       : null
+    // Auto uses this chat's remembered model; the global default only starts
+    // new chats. Concrete picker requests still carry the model to switch to.
     const chatPinnedModel = storedConversation?.peerSource === 'user'
       ? storedConversation.pinnedModel
       : storedAutoRoute?.service ?? storedConversation?.pinnedModel ?? null
@@ -3796,10 +3804,8 @@ export class BuyerProxy {
       storedConversation, conversationIdentity, conversationBody } = context
     let serializedReq = context.request
     let trackedConversationId = storedConversation?.id ?? null
-    // Resolve the `antseed` model alias to the session's default route first,
-    // so the regular `<peerId>@<service>` pin rewrite below picks up the
-    // substituted value. Tool configs written by the desktop carry the alias
-    // so route changes apply to running sessions without config rewrites.
+    // Resolve the `antseed` alias to the chat's model, or the global default
+    // for a new chat, before rewriting any `<peerId>@<service>` pin.
     const aliasResult = substituteRoutedModelAlias(serializedReq.body, serializedReq.headers, effectiveRoutedModel)
     if (aliasResult.aliasRequested && !aliasResult.substituted) {
       log(`Request rejected: model alias "${ROUTED_MODEL_ALIAS}" with no default route set`)
@@ -3871,7 +3877,10 @@ export class BuyerProxy {
           || (aliasResult.substituted && parsePeerPinnedService(effectiveRoutedModel ?? ''))
           || (chatPinOverrideApplied && parsePeerPinnedService(chatPinnedModel ?? ''))
         )
-        if (explicitConversationPin) {
+        // Picker requests don't create user locks: successful concrete picks
+        // can update the automatic chat route without replacing a desktop pin.
+        const appPicker = MODEL_PICKER_TOOL_SLUGS.some((app) => toolMatchesApp(conversationIdentity.tool, app))
+        if (explicitConversationPin && !appPicker) {
           this._conversations.setPinnedModel(tracked.id, resolvedModel, 'user')
         }
         trackedConversationId = tracked.id
@@ -4062,6 +4071,9 @@ export class BuyerProxy {
             + `effective=${selected.effectiveReputationScore ?? 'unknown'} peer=${index + 1}/${candidates.length} `
             + `attempt=${peerAttempt + 1}/${MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER}`,
           )
+          if (trackedConversationId) {
+            this._conversations.markRouting(trackedConversationId, `${selected.peer.peerId}@${selected.serviceId}`)
+          }
           const result = await this._dispatchToPeer(
             res,
             selected.request,
@@ -4314,6 +4326,9 @@ export class BuyerProxy {
     }
 
     log(`Using pinned peer ${selectedPeer.peerId.slice(0, 12)}...`)
+    if (trackedConversationId && pinnedServiceId) {
+      this._conversations.markRouting(trackedConversationId, `${selectedPeer.peerId}@${pinnedServiceId}`)
+    }
     const result = await this._dispatchToPeer(
       res,
       pinnedRequest,

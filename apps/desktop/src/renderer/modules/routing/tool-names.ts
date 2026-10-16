@@ -13,6 +13,7 @@ const TOOL_DISPLAY_NAMES: Record<string, string> = {
   droid: 'Droid',
   opencode: 'OpenCode',
   pi: 'pi',
+  'prime-agent': 'Prime Agent',
   vpr: 'AI VPN',
   // Chats created before the AntStation → AI VPN rename keep their stored slug.
   antstation: 'AI VPN',

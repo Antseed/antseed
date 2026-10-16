@@ -30,7 +30,11 @@ import { applyWindowView, getMainWindow } from '../ui/window.js';
 import { updateDesktopTray } from '../ui/tray.js';
 import path from 'node:path';
 import { ensureClaudeDesktopGateway, stopClaudeDesktopGateway } from '../connected-apps/claude-desktop-gateway.js';
-import { applyConfigPatch, removeConfigPatch } from '@antseed/connected-apps/config-patch';
+import {
+  applyConfigPatch,
+  removeConfigPatch,
+  type ConnectedAppModel,
+} from '@antseed/connected-apps/config-patch';
 import {
   DEFAULT_SYSTEM_PROXY_PORT,
   SYSTEM_PROXY_PROFILES,
@@ -66,9 +70,14 @@ export type SystemProxyDeps = {
 };
 
 let injected: SystemProxyDeps | null = null;
+let connectedAppModelSource: () => readonly ConnectedAppModel[] = () => [];
 
 export function initSystemProxyRuntime(deps: SystemProxyDeps): void {
   injected = deps;
+}
+
+export function setConnectedAppModelSource(source: () => readonly ConnectedAppModel[]): void {
+  connectedAppModelSource = source;
 }
 
 function deps(): SystemProxyDeps {
@@ -594,10 +603,12 @@ export async function startSystemProxyRuntimeInner(opts: SystemProxyStartRequest
           path.join(systemProxyDataDir(), 'claude-gateway.slots.json'),
         );
       }
-      // The patched config carries only the routed-model alias; the buyer
-      // resolves it to the default route posted above, so the model picked in
-      // the floating pill / AI VPN applies to running tool sessions.
-      applyConfigPatch(profile.configPatch, defaultRoute.peerId, buyerProxyPort, systemProxyWslTargetsPath());
+      // Configs select Auto by default and list the curated picker models.
+      // The buyer's default starts new chats; existing chats keep their model.
+      applyConfigPatch(profile.configPatch, defaultRoute.peerId, buyerProxyPort, {
+        wslTargetsFile: systemProxyWslTargetsPath(),
+        models: connectedAppModelSource(),
+      });
       deps().appendLog('system-proxy', 'system', `${profile.label}: connected by config patch (peer=${shortTrayPeerId(defaultRoute.peerId)}, model=${defaultRoute.model || 'auto'} via selection)`);
     } catch (err) {
       failedConfigPatchProfiles.add(name);
