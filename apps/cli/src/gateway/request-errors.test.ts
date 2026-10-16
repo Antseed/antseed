@@ -65,6 +65,33 @@ test('failed requests keep the seller\'s error code and message, and buyer outag
   }
 })
 
+test('a client that leaves before the buyer answers is recorded as its cancel, not a buyer outage', async () => {
+  const { store, cleanup } = tempDataDir()
+  let buyerGotRequest: () => void = () => {}
+  const reached = new Promise<void>((resolve) => { buyerGotRequest = resolve })
+  // The buyer never answers, like a seller still thinking.
+  const buyer = await fakeBuyer(() => buyerGotRequest())
+  const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
+  const gateway = new GatewayServer({ store, accounting, buyerPort: buyer.port, identityAddress: async () => null, spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {} })
+  try {
+    const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const port = await gateway.start()
+    const req = http.request({ hostname: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' } })
+    req.on('error', () => {})
+    req.end('{"model":"open-model"}')
+    await reached
+    req.destroy()
+    for (let attempt = 0; attempt < 100 && store.listRequests({})[0]?.status == null; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    const [cancelled] = store.listRequests({})
+    assert.deepEqual([cancelled!.status, cancelled!.errorCode], [499, 'client_closed_request'])
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    accounting.dispose()
+    cleanup()
+  }
+})
+
 test('admission reads only capped periods, and a request that fails to start releases its hold', () => {
   const { store, cleanup } = tempDataDir()
   const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })

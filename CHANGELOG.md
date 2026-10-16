@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- CLI gateway: a request the client cancels before the buyer answers (for example a client-side timeout) is now logged as `499 client_closed_request` instead of `502 buyer_unavailable`, so the console no longer reports a buyer outage when the buyer was still working on the request.
 - Node: a large request over WebRTC (over 1 MiB, such as a video job with an input image) no longer drops the connection on a slow or busy link. The buyer counted a data-channel send that was only queued as a failure and closed the connection, so the request failed with a 502 "Connection to <peer> failed during request". Queued sends are now kept; a connection fails only when its data channel stops draining (over 64 MiB queued).
 - Desktop: the "Routed to …" label under a chat reply now names the seller that served it (e.g. "Routed to Open Forge") when you chose the model, and the model plus the seller (e.g. "Routed to GLM 5.3 Flash · Open Forge") when a routing service chose it. It used to show only the model, as if a router had picked it. The CLI buyer records which routing service chose each chat turn's model (`lastRouter` on `/_antseed/conversations`).
 - Desktop release: the CLI entry no longer uses a top-level `await`, which broke the desktop's CommonJS CLI bundle and failed every desktop build.

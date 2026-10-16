@@ -460,8 +460,9 @@ export class GatewayServer {
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
 
+      let clientClosed = false
       let finished = false
-      finish = (status: number, buyerRequestId: string | null): void => {
+      finish =(status: number, buyerRequestId: string | null): void => {
         if (finished) return
         finished = true
         const finishedAt = Date.now()
@@ -543,6 +544,13 @@ export class GatewayServer {
       })
 
       upstream.on('error', (error) => {
+        // Destroying the buyer request for a client that left fails it too; that is the client's cancel, not a buyer outage.
+        if (clientClosed) {
+          this._log(`gateway client closed before the buyer answered: key=${key.id}`)
+          gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
+          finish!(499, null)
+          return
+        }
         this._log(`gateway upstream error: ${error.message}`)
         gatewayError = { code: 'buyer_unavailable', message: 'Antseed buyer proxy is unavailable' }
         finish!(502, null)
@@ -554,7 +562,9 @@ export class GatewayServer {
       })
       // A client that disconnects mid-stream should stop the paid request too.
       res.once('close', () => {
-        if (!res.writableFinished) upstream.destroy()
+        if (res.writableFinished) return
+        clientClosed = true
+        upstream.destroy()
       })
       sentToBuyer = true
       upstream.end(body)
