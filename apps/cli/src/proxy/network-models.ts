@@ -20,6 +20,8 @@ import {
   type PeerInfo,
 } from '@antseed/node'
 import { canonicalModelKey, preferredModelDisplayName } from '@antseed/node/model-identity'
+import type { RoutingProtocol } from '@antseed/node'
+import type { RouterOptionSpec } from '@antseed/router-core'
 
 export { effectiveModelReputationScore } from '@antseed/node'
 
@@ -99,6 +101,10 @@ export type NetworkRouterEntry = {
     displayName?: string
     provider: string
     serviceId: string
+    /** The routing protocol this router speaks, e.g. `irp-suggest`. */
+    protocol: RoutingProtocol
+    /** Settings the router accepts in a request's `routing` object, by its protocol. */
+    options: readonly RouterOptionSpec[]
     /** The `model` to send to use this router. */
     model: string
     priceUsdPerRequest: number | null

@@ -46,7 +46,7 @@ curl http://localhost:8377/v1/chat/completions \
   }'
 ```
 
-- `routing.cost_quality_tradeoff` is optional: `0` favors quality, `10` the cheapest acceptable candidate. Without it, the router uses its default, `5`.
+- `routing` holds optional router settings, in the terms of the router's protocol. `GET /v1/models?type=router` lists each router's `protocol` and the `options` it accepts. For `irp-suggest` routers, `cost_quality_tradeoff` goes from `0` (quality) to `10` (the cheapest acceptable candidate); without it, the router uses its default, `5`.
 - `routing` is removed before anything reaches a seller. On a request that does not name a router, it is ignored.
 - The answer is a normal completion from the chosen seller; `x-antseed-peer-id` says which seller served it.
 - Each ranking is charged by the router, and counts toward the request's spend (on a gateway, the API key's budget).
@@ -65,10 +65,10 @@ The buyer can also keep one router as its default, set from the desktop app or w
 ```bash
 curl -X POST http://127.0.0.1:8377/_antseed/route \
   -H 'content-type: application/json' \
-  -d '{"router":{"service":{"peerId":"<routerPeerId>","provider":"<provider>","serviceId":"<serviceId>"},"costQualityTradeoff":3,"allowedModels":[{"provider":"<provider>","serviceId":"<model>"}]}}'
+  -d '{"router":{"service":{"peerId":"<routerPeerId>","provider":"<provider>","serviceId":"<serviceId>"},"options":{"cost_quality_tradeoff":3},"allowedModels":[{"provider":"<provider>","serviceId":"<model>"}]}}'
 ```
 
-`"model": "antseed"` then uses that router. A request that names the saved router without a `routing` object uses its saved tradeoff and model list; a `routing.cost_quality_tradeoff` in the request wins over the saved one. A request naming any other router gets the router's defaults. `GET /_antseed/routing-services` lists routers with their exact `service` targets.
+`"model": "antseed"` then uses that router. A request that names the saved router without a `routing` object uses its saved options and model list; settings in the request's `routing` object win over the saved ones, key by key. A request naming any other router gets the router's defaults. `GET /_antseed/routing-services` lists routers with their exact `service` targets.
 
 A routing service receives the conversation, so use only routers you trust with that content.
 

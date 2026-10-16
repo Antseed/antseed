@@ -182,20 +182,20 @@ describe('FreeModelRouter', () => {
   });
 });
 
-describe('provider-default-router plugin', () => {
-  const offline = { DEFAULT_ROUTER_SCORES_URL: '' };
+describe('provider-free-model-router plugin', () => {
+  const offline = { FREE_ROUTER_SCORES_URL: '' };
 
   it('advertises one free model-routing service by default', () => {
     const provider = plugin.createProvider(offline) as Awaited<ReturnType<typeof plugin.createProvider>>;
-    expect(provider.services).toEqual(['default-router']);
-    expect(provider.serviceApiProtocols).toEqual({ 'default-router': ['model-routing'] });
+    expect(provider.services).toEqual(['free-model-router']);
+    expect(provider.serviceApiProtocols).toEqual({ 'free-model-router': ['irp-suggest'] });
     expect(provider.pricing.defaults).toEqual({ inputUsdPerMillion: 0, outputUsdPerMillion: 0 });
-    expect(isFreeUnitBillingModel(provider.serviceUnitBillingModels!['default-router']!['model-routing']!)).toBe(true);
+    expect(isFreeUnitBillingModel(provider.serviceUnitBillingModels!['free-model-router']!['irp-suggest']!)).toBe(true);
   });
 
   it('charges the configured price per ranking', () => {
-    const provider = plugin.createProvider({ ...offline, DEFAULT_ROUTER_PRICE_USD: '0.001' }) as Awaited<ReturnType<typeof plugin.createProvider>>;
-    expect(provider.serviceUnitBillingModels!['default-router']!['model-routing']).toEqual({
+    const provider = plugin.createProvider({ ...offline, FREE_ROUTER_PRICE_USD: '0.001' }) as Awaited<ReturnType<typeof plugin.createProvider>>;
+    expect(provider.serviceUnitBillingModels!['free-model-router']!['irp-suggest']).toEqual({
       version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
     });
   });
@@ -203,7 +203,7 @@ describe('provider-default-router plugin', () => {
   it('validates its configuration', () => {
     expect((plugin.createProvider({ ...offline, ANTSEED_ALLOWED_SERVICES: 'route' }) as { services: string[] }).services).toEqual(['route']);
     expect(() => plugin.createProvider({ ...offline, ANTSEED_ALLOWED_SERVICES: 'a,b' })).toThrow('exactly one');
-    expect(() => plugin.createProvider({ ...offline, DEFAULT_ROUTER_METRIC: 'vibes' })).toThrow('intelligence or coding');
-    expect(() => plugin.createProvider({ ...offline, DEFAULT_ROUTER_PRICE_USD: '-1' })).toThrow('non-negative');
+    expect(() => plugin.createProvider({ ...offline, FREE_ROUTER_METRIC: 'vibes' })).toThrow('intelligence or coding');
+    expect(() => plugin.createProvider({ ...offline, FREE_ROUTER_PRICE_USD: '-1' })).toThrow('non-negative');
   });
 });

@@ -42,28 +42,20 @@ export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, Routin
 export type { RoutingUsageObservation } from './interfaces/model-routing-client.js';
 export * from './routing/selection.js';
 export {
-  MAX_ROUTING_CANDIDATE_ID_LENGTH,
-  MODEL_ROUTING_PROTOCOL,
-  MODEL_ROUTING_ANY_MODEL,
-  MODEL_ROUTING_MODELS_PATH,
-  MODEL_ROUTING_RANK_PATH,
-  ROUTING_PROBLEM_TYPES,
-  isCostQualityTradeoff,
-  parseRoutingModelsResponse,
-  parseRoutingModelEntries,
-  withinRoutingPricing,
-  parseRoutingProblem,
-  routingProblemBody,
+  ROUTER_ANY_MODEL,
   findRoutingService,
-  isModelRoutingPath,
-  validateRoutingRankRequest,
-  validateRoutingRankResponse,
-  type RoutingCandidateV1,
-  type RoutingModelEntryV1,
-  type RoutingPricingV1,
-  type RoutingInferenceRequestV1,
-  type RoutingRankRequestV1,
-} from '@antseed/protocol';
+  listRoutingServices,
+  routingProtocolForPath,
+  routingProtocolOf,
+  routingRequestOf,
+  routingWireProtocol,
+  withinRouterPricing,
+  type RouterModelEntry,
+  type RouterPricing,
+  type RoutingRequestAction,
+  type RoutingWireProtocol,
+} from '@antseed/protocol/routing';
+export * from '@antseed/protocol/irp';
 
 // Types (re-export everything)
 export * from './types/index.js';

@@ -1,7 +1,7 @@
 {
-  "name": "@antseed/provider-default-router",
+  "name": "@antseed/provider-free-model-router",
   "version": "0.1.0",
-  "description": "Default model-routing provider for Antseed: ranks the best free models on the network by live Artificial Analysis scores",
+  "description": "IRP routing provider for Antseed that ranks the best free models among a buyer's candidates by live Artificial Analysis scores",
   "type": "module",
   "files": [
     "dist"

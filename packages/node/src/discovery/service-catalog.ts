@@ -1,6 +1,6 @@
 import { CODING_ONLY_SUFFIX_RE, canonicalModelKey } from '../model-identity.js';
 import { parseVerifierCapabilities } from './verifier-capabilities.js';
-import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
+import { NATIVE_VIDEO_PROTOCOLS, isNativeVideoProtocol, isRoutingProtocol, type NativeVideoProtocol } from '@antseed/protocol/service-api';
 import type { VideoOptions } from '@antseed/protocol/peer-metadata';
 
 export type CatalogServiceProtocol =
@@ -180,7 +180,7 @@ export function buildNetworkServiceOffers(peers: NetworkServiceCatalogPeer[]): N
       for (const serviceId of serviceIds) {
         const protocols = peer.providerServiceApiProtocols?.[provider]?.services?.[serviceId] ?? [];
         const billingModels = peer.providerServiceUnitBillingModels?.[provider]?.services?.[serviceId];
-        if (protocols.includes('model-routing') || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
+        if (protocols.some(isRoutingProtocol) || Object.values(billingModels ?? {}).some(model => (model?.components ?? []).some(component => component.unit === 'completed_requests'))) continue;
         const capabilities = peer.providerServiceCapabilities?.[provider]?.services?.[serviceId];
         const categories = peer.providerServiceCategories?.[provider]?.services?.[serviceId];
         const protocol = resolveServiceProtocol(protocols, provider);

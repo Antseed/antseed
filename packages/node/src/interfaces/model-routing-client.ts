@@ -1,13 +1,13 @@
 import type { PeerInfo } from '../types/peer.js';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '../types/http.js';
 import type { RequestExecutionOptions } from '@antseed/buyer-core';
-import type { RoutingServiceTarget } from '../routing/selection.js';
+import type { RouterOptions, RoutingServiceTarget } from '../routing/selection.js';
 
 export type RouteRecommendation = {
   serviceId: string;
   provider?: string;
   peerId?: string;
-  /** IRP `reasoning_effort` suggested by the router for this candidate. */
+  /** Reasoning effort the router suggests for this candidate (IRP `reasoning_effort`). */
   reasoningEffort?: string;
 };
 
@@ -31,8 +31,8 @@ export interface RoutingModelsContext {
 }
 
 export interface RouteSelectionContext {
-  /** IRP `cost_quality_tradeoff`; omitted means the router's default (5). */
-  costQualityTradeoff?: number;
+  /** Router settings in its protocol's terms; omitted means the router's defaults. */
+  options?: RouterOptions;
   routingService: RoutingServiceTarget;
   signal: AbortSignal;
   conversationKey: string | null;

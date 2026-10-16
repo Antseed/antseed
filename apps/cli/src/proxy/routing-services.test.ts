@@ -11,14 +11,14 @@ const client = { listModels: async () => [{ id: 'openai/gpt-5' }], selectRoute: 
 function peer(): PeerInfo {
   const peerId = 'a'.repeat(40) as PeerInfo['peerId'];
   return { peerId, lastSeen: 0, providers: ['router'], displayName: 'Test router',
-    providerServiceApiProtocols: { router: { services: { routing: ['model-routing'], image: ['openai-images'], 'gpt-5': ['openai-chat-completions'] } } },
+    providerServiceApiProtocols: { router: { services: { routing: ['irp-suggest'], image: ['openai-images'], 'gpt-5': ['openai-chat-completions'] } } },
     metadata: {
     peerId, version: 12, region: 'test', timestamp: 0, signature: '', providers: [{
       provider: 'router', services: ['routing', 'image', 'gpt-5'],
       defaultPricing: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, maxConcurrency: 10, currentLoad: 0,
-      serviceApiProtocols: { routing: ['model-routing'], image: ['openai-images'], 'gpt-5': ['openai-chat-completions'] },
+      serviceApiProtocols: { routing: ['irp-suggest'], image: ['openai-images'], 'gpt-5': ['openai-chat-completions'] },
       serviceUnitBillingModels: {
-        routing: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
+        routing: { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } },
         image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.01 }] } },
       },
     }],
@@ -75,7 +75,7 @@ test('discovery caches listModels, surfaces failures and recovers without stale 
 test('discovery rejects multiple routing services on a seller before fetching models', async () => {
   const sameProvider = peer();
   sameProvider.metadata!.providers[0]!.services.push('other-route');
-  sameProvider.metadata!.providers[0]!.serviceApiProtocols!['other-route'] = ['model-routing'];
+  sameProvider.metadata!.providers[0]!.serviceApiProtocols!['other-route'] = ['irp-suggest'];
   const otherProvider = peer();
   otherProvider.metadata!.providers.push({ ...structuredClone(otherProvider.metadata!.providers[0]!), provider: 'other-router' });
   const noModels = { ...client, listModels: async () => { throw new Error('Ambiguous sellers must be filtered before model discovery'); } };

@@ -1,19 +1,19 @@
 import { randomUUID } from 'node:crypto';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import {
-  MODEL_ROUTING_ANY_MODEL,
-  MODEL_ROUTING_MODELS_PATH,
-  MODEL_ROUTING_RANK_PATH,
-  ROUTING_PROBLEM_TYPES,
-  routingProblemBody,
-  validateRoutingRankRequest,
-  type RoutingCandidateV1,
-  type RoutingModelEntryV1,
+  IRP_ANY_MODEL,
+  IRP_MODELS_PATH,
+  IRP_RANK_PATH,
+  IRP_PROBLEM_TYPES,
+  irpProblemBody,
+  validateIrpRankRequest,
+  type IrpCandidate,
+  type IrpModelEntry,
 } from '@antseed/node';
 import { canonicalModelKey } from '@antseed/node/model-identity';
 
-export const DEFAULT_ROUTER_ID = 'antseed-default-router';
-export const DEFAULT_ROUTER_VERSION = '0.1.0';
+export const FREE_ROUTER_ID = 'antseed-free-model-router';
+export const FREE_ROUTER_VERSION = '0.1.0';
 export const DEFAULT_SCORES_URL = 'https://modelgrep.com/api/v1/models';
 export const DEFAULT_REFRESH_MS = 6 * 60 * 60_000;
 
@@ -42,7 +42,7 @@ export type FreeModelRouterOptions = {
   now?: () => number;
 };
 
-const isFreeCandidate = (candidate: RoutingCandidateV1): boolean =>
+const isFreeCandidate = (candidate: IrpCandidate): boolean =>
   candidate.pricing.input === 0 && candidate.pricing.output === 0 && candidate.pricing.cache_read === 0;
 
 /** Canonical keys for a model id, most specific first: the id itself, then with variant suffixes removed. */
@@ -78,11 +78,11 @@ function json(requestId: string, statusCode: number, value: unknown): Serialized
 }
 
 function problem(requestId: string, statusCode: number, type: string, title: string, detail: string): SerializedHttpResponse {
-  return { requestId, statusCode, headers: { 'content-type': 'application/problem+json' }, body: routingProblemBody(statusCode, type, title, detail) };
+  return { requestId, statusCode, headers: { 'content-type': 'application/problem+json' }, body: irpProblemBody(statusCode, type, title, detail) };
 }
 
 /**
- * AntSeed's default model router: a suggest-only IRP router that sends buyers to the best
+ * A free-model router: a suggest-only IRP router that sends buyers to the best
  * free model among their candidates. It answers both IRP endpoints itself and forwards nothing.
  *
  * Free candidates are ranked by their live Artificial Analysis score (via modelgrep). Models
@@ -113,27 +113,27 @@ export class FreeModelRouter {
    * Unless paid candidates are ranked, every entry carries a zero `max_pricing` so buyers
    * send only free candidates.
    */
-  listModels(): RoutingModelEntryV1[] {
-    return [MODEL_ROUTING_ANY_MODEL, ...this.preferred]
+  listModels(): IrpModelEntry[] {
+    return [IRP_ANY_MODEL, ...this.preferred]
       .map(id => (this.options.includePaid ? { id } : { id, max_pricing: { ...FREE_PRICING } }));
   }
 
   async handleRequest(request: SerializedHttpRequest): Promise<SerializedHttpResponse> {
     const path = request.path.split('?')[0];
-    if (request.method === 'GET' && path === MODEL_ROUTING_MODELS_PATH) {
+    if (request.method === 'GET' && path === IRP_MODELS_PATH) {
       return json(request.requestId, 200, { object: 'list', data: this.listModels().map(entry => ({ ...entry, object: 'model' })) });
     }
-    if (request.method === 'POST' && path === MODEL_ROUTING_RANK_PATH) return this.rank(request);
-    return problem(request.requestId, 404, ROUTING_PROBLEM_TYPES.invalidRequest, 'Not found', `${request.method} ${path} is not a routing endpoint.`);
+    if (request.method === 'POST' && path === IRP_RANK_PATH) return this.rank(request);
+    return problem(request.requestId, 404, IRP_PROBLEM_TYPES.invalidRequest, 'Not found', `${request.method} ${path} is not a routing endpoint.`);
   }
 
   private async rank(request: SerializedHttpRequest): Promise<SerializedHttpResponse> {
     let body: unknown;
     try {
       body = JSON.parse(new TextDecoder().decode(request.body));
-      validateRoutingRankRequest(body);
+      validateIrpRankRequest(body);
     } catch (error) {
-      return problem(request.requestId, 400, ROUTING_PROBLEM_TYPES.invalidRequest, 'Invalid request', error instanceof Error ? error.message : String(error));
+      return problem(request.requestId, 400, IRP_PROBLEM_TYPES.invalidRequest, 'Invalid request', error instanceof Error ? error.message : String(error));
     }
     await this.refreshIfStale();
     const candidates = body.routing.candidates;
@@ -150,13 +150,13 @@ export class FreeModelRouter {
       : [];
     const ranked = [...free, ...paid];
     if (!ranked.length) {
-      return problem(request.requestId, 422, ROUTING_PROBLEM_TYPES.noScorableCandidate, 'No free candidate', 'None of the candidates is free.');
+      return problem(request.requestId, 422, IRP_PROBLEM_TYPES.noScorableCandidate, 'No free candidate', 'None of the candidates is free.');
     }
     return json(request.requestId, 200, {
       id: `rank_${randomUUID()}`,
       object: 'routing.ranking',
       created: Math.floor(this.now() / 1000),
-      router: { id: DEFAULT_ROUTER_ID, version: DEFAULT_ROUTER_VERSION },
+      router: { id: FREE_ROUTER_ID, version: FREE_ROUTER_VERSION },
       ranked,
     });
   }

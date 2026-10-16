@@ -49,8 +49,11 @@ export {
   type SerializedHttpResponseChunk,
   type ServiceApiProtocol,
   type NativeVideoProtocol,
+  type RoutingProtocol,
   WELL_KNOWN_SERVICE_API_PROTOCOLS,
   NATIVE_VIDEO_PROTOCOLS,
+  ROUTING_PROTOCOLS,
   isKnownServiceApiProtocol,
   isNativeVideoProtocol,
+  isRoutingProtocol,
 } from './types.js';

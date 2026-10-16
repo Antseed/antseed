@@ -44,8 +44,9 @@ export function detectRequestServiceApiProtocol(
     return 'typesafe-systemone';
   }
   const pathOnly = normalizedPath.split('?')[0];
+  // Inference Routing Protocol suggest-only mode (see @antseed/protocol/irp).
   if (pathOnly === '/v1/routing/models' || pathOnly === '/v1/routing/rank') {
-    return 'model-routing';
+    return 'irp-suggest';
   }
 
   const hasAnthropicVersionHeader = Object.keys(request.headers)

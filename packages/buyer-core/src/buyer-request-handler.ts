@@ -23,7 +23,7 @@ import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
-import { findRoutingService, isModelRoutingPath } from '@antseed/protocol/model-routing';
+import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
@@ -544,9 +544,15 @@ export class BuyerRequestHandler {
   }
 }
 
-/** The requested service: the peer's single routing service on IRP paths, else `service`/`model` from a JSON or multipart body. */
+/**
+ * The requested service: on a routing protocol whose paths name no service, the peer's single
+ * service of that protocol; else `service`/`model` from a JSON or multipart body.
+ */
 function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
-  if (isModelRoutingPath(request.path)) return findRoutingService(peer.providerServiceApiProtocols)?.serviceId;
+  const routingProtocol = routingProtocolForPath(request.path);
+  if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
+    return findRoutingService(peer.providerServiceApiProtocols, routingProtocol)?.serviceId;
+  }
   if (nativeVideoRoute(request)) return requestService(request);
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;

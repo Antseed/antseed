@@ -2,21 +2,21 @@ import { describe, expect, it, vi } from 'vitest';
 import type { Provider, SerializedHttpRequest, SerializedHttpResponse } from '@antseed/node';
 import { MockOpenAIChatProvider } from './helpers/mock-openai-provider.js';
 import { usePaymentNetwork } from './helpers/payment-network.js';
-import defaultRouterPlugin from '../../plugins/provider-default-router/src/index.js';
+import freeModelRouterPlugin from '../../plugins/provider-free-model-router/src/index.js';
 
-describe('model-routing payment flow over buyer proxy', () => {
+describe('routing-service payment flow over buyer proxy', () => {
   const network = usePaymentNetwork('routing');
   const { setupRpc, setupProxyNetwork } = network;
 
-  it('bills a model-routing rank as one completed request through the same payment flow', async () => {
+  it('bills an irp-suggest rank as one completed request through the same payment flow', async () => {
     await setupRpc();
     let rankCalls = 0;
     const routing: Provider = {
       name: 'alpha',
       services: ['alpha-route'],
       pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
-      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
-      serviceUnitBillingModels: { 'alpha-route': { 'model-routing': {
+      serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
+      serviceUnitBillingModels: { 'alpha-route': { 'irp-suggest': {
         version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
       } } },
       maxConcurrency: 5,
@@ -52,10 +52,10 @@ describe('model-routing payment flow over buyer proxy', () => {
     expect(bpm.getVerifiedCost(discoveredSeller.peerId)).toBe(2_000n);
   }, 30_000);
 
-  it('serves default-router rankings without opening a payment channel', async () => {
+  it('serves free-model-router rankings without opening a payment channel', async () => {
     await setupRpc();
-    const defaultRouter = defaultRouterPlugin.createProvider({ DEFAULT_ROUTER_SCORES_URL: '' }) as Provider;
-    const { discoveredSeller } = await setupProxyNetwork(defaultRouter);
+    const freeRouter = freeModelRouterPlugin.createProvider({ FREE_ROUTER_SCORES_URL: '' }) as Provider;
+    const { discoveredSeller } = await setupProxyNetwork(freeRouter);
     const paymentEvents: string[] = [];
     network.buyerNode!.on('payment:required', () => paymentEvents.push('required'));
     network.buyerNode!.on('payment:signed', () => paymentEvents.push('signed'));
@@ -79,7 +79,7 @@ describe('model-routing payment flow over buyer proxy', () => {
 
   it('routes a buyer-proxy chat through the default router to a free model it never listed, sending only free candidates', async () => {
     await setupRpc();
-    const defaultRouter = defaultRouterPlugin.createProvider({ DEFAULT_ROUTER_SCORES_URL: '' }) as Provider;
+    const freeRouter = freeModelRouterPlugin.createProvider({ FREE_ROUTER_SCORES_URL: '' }) as Provider;
     const paidChat = new MockOpenAIChatProvider();
     const freeBackend = new MockOpenAIChatProvider();
     const freeChat: Provider = {
@@ -92,12 +92,12 @@ describe('model-routing payment flow over buyer proxy', () => {
       handleRequest: (req) => freeBackend.handleRequest(req),
     };
     const rankedModels: string[][] = [];
-    const routeRequest = defaultRouter.handleRequest.bind(defaultRouter);
-    defaultRouter.handleRequest = async (req) => {
+    const routeRequest = freeRouter.handleRequest.bind(freeRouter);
+    freeRouter.handleRequest = async (req) => {
       if (req.method === 'POST') rankedModels.push(JSON.parse(Buffer.from(req.body).toString()).routing.candidates.map((candidate: { model: string }) => candidate.model));
       return routeRequest(req);
     };
-    const { port, discoveredSeller } = await setupProxyNetwork(defaultRouter, [paidChat, freeChat]);
+    const { port, discoveredSeller } = await setupProxyNetwork(freeRouter, [paidChat, freeChat]);
     const base = `http://127.0.0.1:${port}`;
 
     const routerModels = await network.buyerNode!.sendRequest(discoveredSeller, {
@@ -109,7 +109,7 @@ describe('model-routing payment flow over buyer proxy', () => {
     const response = await fetch(`${base}/v1/chat/completions`, {
       method: 'POST',
       headers: { 'content-type': 'application/json' },
-      body: JSON.stringify({ model: `${discoveredSeller.peerId}@default-router`, messages: [{ role: 'user', content: 'hi' }] }),
+      body: JSON.stringify({ model: `${discoveredSeller.peerId}@free-model-router`, messages: [{ role: 'user', content: 'hi' }] }),
     });
     expect(response.status, await response.clone().text()).toBe(200);
     expect(((await response.json()) as any).choices[0].message.content).toBe('Hello from OpenAI mock!');

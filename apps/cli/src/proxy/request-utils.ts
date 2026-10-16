@@ -1,4 +1,4 @@
-import { isCostQualityTradeoff, shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { isRouterOptions, shouldEmitDebugLine, type PeerInfo, type RouterOptions, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
@@ -401,20 +401,18 @@ export function rewritePeerPinnedServiceInBody(
   return { body: rewritten, headers: updatedHeaders, pinnedPeerId: parsed.peerId }
 }
 
-/** Per-request routing options: the body's optional `routing` object. */
-export interface RequestRoutingOptions {
-  /** 0 (best quality) to 10 (cheapest); unset leaves the router's default (5). */
-  costQualityTradeoff?: number
-}
-
-const ROUTING_OPTION_KEYS = new Set(['cost_quality_tradeoff'])
+/**
+ * Per-request router settings: the body's optional `routing` object, in the serving router's
+ * protocol terms (for `irp-suggest`: `{ "cost_quality_tradeoff": 0-10 }`). They are checked
+ * against that router's protocol only once the request is known to go through a router.
+ */
+export type RequestRoutingOptions = RouterOptions
 
 /**
  * Reads and removes the body's `routing` object, so it never reaches a seller.
- * `routing` is `{ cost_quality_tradeoff?: 0-10 }` and only applies when the
- * request is served through a routing service. A malformed one is still
- * removed; `invalid` carries the error for the caller to report only when a
- * router is used, so other requests drop it silently.
+ * It only applies when the request is served through a routing service. A malformed one is
+ * still removed; `invalid` carries the error for the caller to report only when a router is
+ * used, so other requests drop it silently.
  */
 export function takeRoutingOptions(
   request: SerializedHttpRequest,
@@ -428,29 +426,8 @@ export function takeRoutingOptions(
   delete obj['routing']
   const { body, headers } = encodeRewrittenJsonBody(obj, request.headers)
   const stripped = { ...request, body, headers }
-  const parsed = parseRoutingOptions(routing)
-  return 'invalid' in parsed
-    ? { kind: 'options', request: stripped, options: {}, invalid: parsed.invalid }
-    : { kind: 'options', request: stripped, options: parsed }
-}
-
-function parseRoutingOptions(routing: unknown): RequestRoutingOptions | { invalid: string } {
-  const options: RequestRoutingOptions = {}
-  if (routing === null || routing === undefined) return options
-  if (typeof routing !== 'object' || Array.isArray(routing)) {
-    return { invalid: '`routing` must be an object: { "cost_quality_tradeoff": 0-10 }.' }
-  }
-  const fields = routing as Record<string, unknown>
-  const unknown = Object.keys(fields).filter(key => !ROUTING_OPTION_KEYS.has(key))
-  if (unknown.length > 0) {
-    return { invalid: `Unknown \`routing\` field(s): ${unknown.join(', ')}. Supported: cost_quality_tradeoff.` }
-  }
-  const tradeoff = fields['cost_quality_tradeoff']
-  if (tradeoff !== undefined && tradeoff !== null) {
-    if (!isCostQualityTradeoff(tradeoff)) {
-      return { invalid: '`routing.cost_quality_tradeoff` must be an integer from 0 (best quality) to 10 (cheapest).' }
-    }
-    options.costQualityTradeoff = tradeoff
-  }
-  return options
+  if (routing === null || routing === undefined) return { kind: 'options', request: stripped, options: {} }
+  return isRouterOptions(routing)
+    ? { kind: 'options', request: stripped, options: { ...routing } }
+    : { kind: 'options', request: stripped, options: {}, invalid: '`routing` must be an object of router settings with string, number or boolean values.' }
 }

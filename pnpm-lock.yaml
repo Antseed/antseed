@@ -1033,7 +1033,14 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)
 
-  plugins/provider-default-router:
+  plugins/provider-fal-video:
+    dependencies:
+      '@antseed/api-adapter':
+        specifier: workspace:*
+        version: link:../../packages/api-adapter
+      '@antseed/provider-core':
+        specifier: workspace:*
+        version: link:../../packages/provider-core
     devDependencies:
       '@antseed/node':
         specifier: workspace:*
@@ -1045,14 +1052,19 @@ importers:
         specifier: ^2.0.0
         version: 2.1.9(@types/node@22.7.5)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)
 
-  plugins/provider-fal-video:
-    dependencies:
-      '@antseed/api-adapter':
+  plugins/provider-free-model-router:
+    devDependencies:
+      '@antseed/node':
         specifier: workspace:*
-        version: link:../../packages/api-adapter
-      '@antseed/provider-core':
-        specifier: workspace:*
-        version: link:../../packages/provider-core
+        version: link:../../packages/node
+      typescript:
+        specifier: ^5.5.0
+        version: 5.9.3
+      vitest:
+        specifier: ^2.0.0
+        version: 2.1.9(@types/node@22.7.5)(lightningcss@1.32.0)(sass@1.97.3)(terser@5.46.0)
+
+  plugins/provider-irp-router:
     devDependencies:
       '@antseed/node':
         specifier: workspace:*

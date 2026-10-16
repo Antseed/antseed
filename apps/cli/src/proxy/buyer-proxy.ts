@@ -134,7 +134,7 @@ import { TeeControl } from './tee-control.js'
 import { ChainReadCache } from './chain-read-cache.js'
 import { isClientCredentialHeader } from './credential-headers.js'
 import { loadConfig } from '../config/loader.js'
-import { ModelRoutingClient, type ModelRoutingClientApi } from '@antseed/router-core'
+import { InvalidRouterOptionsError, ModelRoutingClient, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
 import {
   GATEWAY_CONTROL_HEADER,
   GATEWAY_CONTROL_SECRET_ENV,
@@ -183,7 +183,7 @@ const WATCHER_ABSENCE_ERRORS: Record<DepositWatcherAbsenceReason, string> = {
 }
 
 export interface BuyerProxyConfig {
-  /** Test seam; production uses the built-in `model-routing` service API client. */
+  /** Test seam; production uses the protocol-neutral routing client, which picks an adapter per routing protocol. */
   modelRoutingClient?: ModelRoutingClientApi
   port: number
   node: AntseedNode
@@ -2013,12 +2013,29 @@ export class BuyerProxy {
     if (!value.service) throw new Error('Select an exact routing-service target')
   }
 
-  /** Parses the `router` field of `POST /_antseed/route` (`{ service, costQualityTradeoff?, allowedModels? }`). */
+  /** Parses the `router` field of `POST /_antseed/route` (`{ service, options?, allowedModels? }`). */
   private _parseDefaultRouter(value: unknown): DefaultRouterSelection {
-    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('router must be { service, costQualityTradeoff? }')
+    if (!value || typeof value !== 'object' || Array.isArray(value)) throw new Error('router must be { service, options?, allowedModels? }')
     const selection = { ...(value as Record<string, unknown>), kind: 'router' }
     this._validateRouterSelection(selection)
     return structuredClone(selection)
+  }
+
+  /**
+   * Check a router selection's options against the protocol its router advertises, when the
+   * router is in the peer cache; throws `InvalidRouterOptionsError`. An unknown router is
+   * checked again before each ranking.
+   */
+  private async _checkRouterOptions(selection: RouterSelection): Promise<void> {
+    if (!selection.service || selection.options === undefined) return
+    let peers: PeerInfo[]
+    try {
+      peers = await this._getPeers()
+    } catch {
+      return // Discovery is unavailable: the options are checked again before each ranking.
+    }
+    const protocol = routingProtocolOfTarget(peers, selection.service)
+    if (protocol) validateRouterOptions(routingClientAdapter(protocol).options, selection.options)
   }
 
   /** The default router in its wire form, without the internal `kind` tag. */
@@ -2762,6 +2779,7 @@ export class BuyerProxy {
         if (body.router != null) {
           if (model.length > 0) throw new Error('Set model or router, not both')
           router = this._parseDefaultRouter(body.router)
+          await this._checkRouterOptions(router)
         }
         if (model.length > 0 && !isValidRoutedModelTarget(model)) {
           throw new Error('model must be "<service>", "<peerId>@<service>", or empty to clear')
@@ -2846,7 +2864,10 @@ export class BuyerProxy {
       if ('routingSelection' in parsed) {
         try {
           if ('pinnedModel' in parsed) throw new Error('Update routingSelection or pinnedModel, not both')
-          if (parsed.routingSelection !== null) this._validateRouterSelection(parsed.routingSelection)
+          if (parsed.routingSelection !== null) {
+            this._validateRouterSelection(parsed.routingSelection)
+            await this._checkRouterOptions(parsed.routingSelection)
+          }
         } catch (error) {
           res.writeHead(400, { 'content-type': 'application/json' })
           res.end(JSON.stringify({ ok: false, error: error instanceof Error ? error.message : String(error) }))
@@ -3283,6 +3304,8 @@ export class BuyerProxy {
         ...(service.sellerName ? { displayName: service.sellerName } : {}),
         provider: service.provider,
         serviceId: service.serviceId,
+        protocol: service.protocol,
+        options: service.options,
         model: `${service.peerId}@${service.serviceId}`,
         priceUsdPerRequest: Number.isFinite(price) ? price / 1_000_000 : null,
         models,
@@ -3575,15 +3598,16 @@ export class BuyerProxy {
     if (useModelRouter && systemRoutedAsAlias) {
       serializedReq = withRoutedModel(serializedReq, ROUTED_MODEL_ALIAS)
     }
-    // A request without `routing` uses the saved router settings (tradeoff,
-    // model allow list) when it pins the router those settings belong to.
+    // A request without `routing` uses the saved router settings (options,
+    // model allow list) when it pins the router those settings belong to;
+    // a request's own `routing` options override the saved ones key by key.
     const savedRouter = this._defaultRouter
     const savedForPinned = pinnedRouter && savedRouter && sameRoutingServiceTarget(savedRouter.service, pinnedRouter.service)
       ? structuredClone(savedRouter)
       : null
     const baseSelection = pinnedRouter ? savedForPinned ?? pinnedRouter : routerSelection
-    const activeSelection: RouterSelection | null = baseSelection && routingOptions.costQualityTradeoff !== undefined
-      ? { ...baseSelection, costQualityTradeoff: routingOptions.costQualityTradeoff }
+    const activeSelection: RouterSelection | null = baseSelection && Object.keys(routingOptions).length > 0
+      ? { ...baseSelection, options: { ...baseSelection.options, ...routingOptions } }
       : baseSelection
     const context: BuyerDispatchContext = {
       request: serializedReq, requiredParameters, requestPolicy, signal: clientAbortController.signal,
@@ -3647,6 +3671,10 @@ export class BuyerProxy {
     } catch (error) {
       // Report routing failures rather than silently choosing a model for the user.
       const message = error instanceof Error ? error.message : String(error)
+      if (error instanceof InvalidRouterOptionsError) {
+        sendJson(res, 400, { error: { type: 'invalid_request_error', code: 'invalid_routing', message, param: 'routing' } })
+        return
+      }
       writeDispatchFailure(res, error instanceof NoEligibleCandidatesError
         ? dispatchFailure(422, { 'content-type': 'application/json' }, JSON.stringify({
           error: { type: 'invalid_request_error', code: 'no_eligible_candidates', message },

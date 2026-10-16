@@ -67,5 +67,6 @@ cd my-router && npm install && npm run verify
 - [@antseed/provider-openai](https://npmjs.com/package/@antseed/provider-openai) — OpenAI-compatible provider (OpenAI, Together, OpenRouter)
 - [@antseed/provider-local-llm](https://npmjs.com/package/@antseed/provider-local-llm) — Local LLM provider
 - [@antseed/provider-typesafe](https://npmjs.com/package/@antseed/provider-typesafe) — TypeSafe System One decision-model provider
-- [@antseed/provider-default-router](https://npmjs.com/package/@antseed/provider-default-router) — Default model-routing provider
+- [@antseed/provider-irp-router](https://npmjs.com/package/@antseed/provider-irp-router) — `irp-suggest` routing provider for any IRP router
+- [@antseed/provider-free-model-router](https://npmjs.com/package/@antseed/provider-free-model-router) — `irp-suggest` routing provider that ranks free models
 - [@antseed/router-local](https://npmjs.com/package/@antseed/router-local) — Local router (Claude Code, Codex)

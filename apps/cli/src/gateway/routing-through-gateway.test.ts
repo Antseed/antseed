@@ -44,8 +44,8 @@ function routingService(seed: string): PeerInfo {
       peerId: seed.repeat(40), version: 12, timestamp: Date.now(), signature: '', region: 'test',
       providers: [{ provider: 'alpha', services: ['alpha-route'], maxConcurrency: 1, currentLoad: 0,
         defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-        serviceApiProtocols: { 'alpha-route': ['model-routing'] },
-        serviceUnitBillingModels: { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+        serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
+        serviceUnitBillingModels: { 'alpha-route': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
       }],
     } as unknown as NonNullable<PeerInfo['metadata']>,
   }

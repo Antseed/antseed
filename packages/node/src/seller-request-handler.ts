@@ -47,21 +47,28 @@ import {
   selectTargetProtocolForRequest,
 } from '@antseed/api-adapter';
 import { parseResponseUsage } from './utils/response-usage.js';
-import { MODEL_ROUTING_MODELS_PATH, MODEL_ROUTING_PROTOCOL, ROUTING_PROBLEM_TYPES, isModelRoutingPath, routingProblemBody } from '@antseed/protocol/model-routing';
+import { routingProtocolForPath, routingProtocolOf, routingRequestOf, routingWireProtocol, ROUTING_PROTOCOLS, type RoutingProtocol } from '@antseed/protocol/routing';
 
 type ProviderTokenPricing = import('./interfaces/seller-provider.js').ProviderTokenPricingUsdPerMillion;
 
-/** A seller's routing services; IRP paths carry no service name, so a seller may offer at most one. */
-function routingServices(providers: readonly Provider[]): Array<{ provider: Provider; service: string }> {
+/** A seller's services of one routing protocol. */
+function routingServices(providers: readonly Provider[], protocol: RoutingProtocol): Array<{ provider: Provider; service: string }> {
   return providers.flatMap(provider => provider.services
-    .filter(service => provider.serviceApiProtocols?.[service]?.includes(MODEL_ROUTING_PROTOCOL))
+    .filter(service => routingProtocolOf(provider.serviceApiProtocols?.[service]) === protocol)
     .map(service => ({ provider, service })));
 }
 
+/**
+ * Routing protocols whose requests do not name a service (`oneServicePerSeller`) let a seller
+ * offer at most one service of that protocol; the request path then addresses it.
+ */
 export function assertSingleRoutingService(providers: readonly Provider[]): void {
-  const found = routingServices(providers);
-  if (found.length > 1) {
-    throw new Error(`A seller can offer at most one model-routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
+  for (const protocol of ROUTING_PROTOCOLS) {
+    if (!routingWireProtocol(protocol).oneServicePerSeller) continue;
+    const found = routingServices(providers, protocol);
+    if (found.length > 1) {
+      throw new Error(`A seller can offer at most one ${protocol} routing service; found ${found.map(entry => `${entry.provider.name}/${entry.service}`).join(', ')}`);
+    }
   }
 }
 
@@ -177,8 +184,9 @@ export class SellerRequestHandler {
         return;
       }
 
-      if (request.method === 'GET' && pathOnly === MODEL_ROUTING_MODELS_PATH) {
-        mux.sendProxyResponse(await this._handleRoutingModels(request, buyerPeerId));
+      const routingRequest = routingRequestOf(request.method, request.path);
+      if (routingRequest?.action === 'catalog') {
+        mux.sendProxyResponse(await this._handleRoutingCatalog(request, buyerPeerId, routingRequest.protocol));
         return;
       }
 
@@ -1029,24 +1037,25 @@ export class SellerRequestHandler {
   // -- Local /v1/models handler --
 
   /**
-   * Free router model list (IRP `GET /v1/routing/models`): forward to this seller's routing
-   * service. Not rate-limited here; the router limits its own model list, keyed on the
-   * authenticated buyer id this seller stamps on the request, as on paid requests. Local
-   * failures use IRP problem details.
+   * Free router catalog (for `irp-suggest`, `GET /v1/routing/models`): forward to this seller's
+   * service of that routing protocol. Not rate-limited here; the router limits its own catalog,
+   * keyed on the authenticated buyer id this seller stamps on the request, as on paid requests.
+   * Local failures use the routing protocol's own error format.
    */
-  private async _handleRoutingModels(request: SerializedHttpRequest, buyerPeerId: string): Promise<SerializedHttpResponse> {
-    const problem = (statusCode: number, type: string, title: string, detail: string): SerializedHttpResponse => ({
-      requestId: request.requestId, statusCode, headers: { 'content-type': 'application/problem+json' },
-      body: routingProblemBody(statusCode, type, title, detail),
-    });
-    const provider = routingServices(this._deps.providers)[0]?.provider;
-    if (!provider) return problem(404, ROUTING_PROBLEM_TYPES.invalidRequest, 'No routing service', 'This seller offers no model-routing service.');
+  private async _handleRoutingCatalog(request: SerializedHttpRequest, buyerPeerId: string, protocol: RoutingProtocol): Promise<SerializedHttpResponse> {
+    const wire = routingWireProtocol(protocol);
+    const failure = (statusCode: number, reason: 'no-router' | 'unavailable', detail: string): SerializedHttpResponse => {
+      const { contentType, body } = wire.errorResponse(statusCode, reason, detail);
+      return { requestId: request.requestId, statusCode, headers: { 'content-type': contentType }, body };
+    };
+    const provider = routingServices(this._deps.providers, protocol)[0]?.provider;
+    if (!provider) return failure(404, 'no-router', `This seller offers no ${protocol} routing service.`);
     setTrustedHeader(request.headers, 'x-antseed-buyer-peer-id', buyerPeerId);
     try {
       const response = await provider.handleRequest(request);
       return { ...response, requestId: request.requestId };
     } catch (error) {
-      return problem(503, ROUTING_PROBLEM_TYPES.unavailable, 'Router unavailable', `Routing models failed: ${error instanceof Error ? error.message : String(error)}`);
+      return failure(503, 'unavailable', `Routing catalog failed: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
 
@@ -1167,8 +1176,11 @@ export class SellerRequestHandler {
   }
 
   private _extractRequestedService(request: SerializedHttpRequest): string | null {
-    // IRP paths name no service: they address this seller's single routing service.
-    if (isModelRoutingPath(request.path)) return routingServices(this._deps.providers)[0]?.service ?? null;
+    // Routing protocols whose paths name no service address this seller's single service of that protocol.
+    const routingProtocol = routingProtocolForPath(request.path);
+    if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
+      return routingServices(this._deps.providers, routingProtocol)[0]?.service ?? null;
+    }
     if (nativeVideoRoute(request)) return requestService(request) ?? null;
     const body = extractRequestBodyFields(request.headers, request.body);
     const service = body?.["service"] ?? body?.["model"];

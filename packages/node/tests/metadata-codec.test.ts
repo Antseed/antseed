@@ -36,9 +36,9 @@ describe('encodeMetadata / decodeMetadata', () => {
     return makeMetadata({ providers: [{
       provider: 'alpha', services: ['route', 'image'], maxConcurrency: 5, currentLoad: 0,
       defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-      serviceApiProtocols: { route: ['model-routing'], image: ['openai-images'] },
+      serviceApiProtocols: { route: ['irp-suggest'], image: ['openai-images'] },
       serviceUnitBillingModels: {
-        route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd }] } },
+        route: { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd }] } },
         image: { 'openai-images': { version: 1, components: [{ unit: 'output_images', priceUsd: 0.04 }] } },
       },
     }] });
@@ -49,9 +49,9 @@ describe('encodeMetadata / decodeMetadata', () => {
     const decoded = decodeMetadata(encodeMetadata(original));
     expect(decoded.version).toBe(12);
     expect(decoded.providers[0]!.serviceUnitBillingModels!.route).toEqual({
-      'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: Math.fround(price) }] },
+      'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: Math.fround(price) }] },
     });
-    expect(Math.round(decoded.providers[0]!.serviceUnitBillingModels!.route!['model-routing']!.components[0]!.priceUsd * 1_000_000)).toBe(Math.round(price * 1_000_000));
+    expect(Math.round(decoded.providers[0]!.serviceUnitBillingModels!.route!['irp-suggest']!.components[0]!.priceUsd * 1_000_000)).toBe(Math.round(price * 1_000_000));
     expect(decoded.providers[0]!.serviceUnitBillingModels!.image?.['openai-images']?.version).toBe(1);
     expect(encodeMetadataForSigning(decoded)).toEqual(encodeMetadataForSigning(original));
   });
@@ -129,7 +129,7 @@ describe('encodeMetadata / decodeMetadata', () => {
   it.each([
     ['anthropic-messages', 0], ['openai-chat-completions', 1], ['openai-completions', 2],
     ['openai-responses', 3], ['openai-images', 4], ['typesafe-systemone', 5],
-    ['venice-video', 6], ['fal-video', 7], ['model-routing', 8],
+    ['venice-video', 6], ['fal-video', 7], ['irp-suggest', 8],
   ] as const)('preserves the billing wire ID for %s', (protocol, wireId) => {
     const metadata = makeMetadata();
     const marker = 'billing-wire-id';

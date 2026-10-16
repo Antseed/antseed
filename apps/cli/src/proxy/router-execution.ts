@@ -1,15 +1,15 @@
 import { QueryClient } from '@tanstack/query-core'
-import { buildNetworkServiceOffers, effectiveModelReputationScore, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RoutingModelEntryV1, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
+import { buildNetworkServiceOffers, effectiveModelReputationScore, isModelRouteEligible, normalizedModelReputationScore, type AntseedNode, type RouterModelEntry, type ModelRoutingPreferences, type PeerInfo, type RouteCandidate, type RouteRecommendation, type SerializedHttpRequest } from '@antseed/node'
 import { detectRequestServiceApiProtocol } from './service-api-adapter.js'
 import { findMissingRequiredParameters, getExplicitProviderOverride, resolvePeerRoutePlan } from './routing.js'
 import { overrideRoutedModelInBody } from './request-utils.js'
 import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node'
-import { candidatePricing, RouterCannotRankError, routerModelResolver, type ModelRoutingClientApi } from '@antseed/router-core'
+import { candidatePricing, InvalidRouterOptionsError, RouterCannotRankError, routerModelResolver, routingClientAdapter, routingProtocolOfTarget, validateRouterOptions, type ModelRoutingClientApi } from '@antseed/router-core'
 
 const MODELS_TIMEOUT_MS = 5_000
 
 /**
- * Router model lists (IRP `GET /v1/routing/models`) in a TanStack Query Core cache: reused for
+ * Router model catalogs (free, per routing protocol) in a TanStack Query Core cache: reused for
  * `ttlMs`, shared by concurrent callers so a burst of requests sends one models request, and
  * removed when a routing attempt fails.
  */
@@ -20,7 +20,7 @@ export class RoutingModelsCache {
 
   constructor(private readonly ttlMs = 60_000) {}
 
-  async get(client: Pick<ModelRoutingClientApi, 'listModels'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RoutingModelEntryV1[]> {
+  async get(client: Pick<ModelRoutingClientApi, 'listModels'>, target: RoutingServiceTarget, peers: PeerInfo[], node: Pick<AntseedNode, 'sendRequest'>): Promise<RouterModelEntry[]> {
     const models = await this.queries.fetchQuery({
       queryKey: modelsKey(target),
       staleTime: this.ttlMs,
@@ -168,6 +168,9 @@ export async function executeRouterSelection(args: {
   if (!routingService) throw new Error('Select an exact routing-service target')
   const allowedModels = args.selection.allowedModels
   const modelsCache = args.modelsCache ?? new RoutingModelsCache(0)
+  // Check the router settings against the router's own protocol before anything is fetched or bought.
+  const protocol = routingProtocolOfTarget(peers, routingService)
+  const options = protocol ? validateRouterOptions(routingClientAdapter(protocol).options, args.selection.options) : args.selection.options
   const attempt = async (): Promise<RouteRecommendation[]> => {
     const routerModel = routerModelResolver(await untilAborted(signal, modelsCache.get(client, routingService, peers, node)))
     const allowed = args.candidates
@@ -180,10 +183,9 @@ export async function executeRouterSelection(args: {
       return model ? [{ ...candidate, routerModel: model }] : []
     })
     if (!candidates.length) throw new NoEligibleCandidatesError('None of the allowed models can be ranked by this router.')
-    const { costQualityTradeoff } = args.selection
     const routes = await untilAborted(signal, client.selectRoute(request, peers, {
       signal, conversationKey, candidates, routingService,
-      ...(costQualityTradeoff !== undefined ? { costQualityTradeoff } : {}),
+      ...(options !== undefined ? { options } : {}),
       // Pay for the recommendation only if it names at least one allowed destination.
       acceptRecommendations: recommendations => resolveRouterRecommendations(recommendations, candidates).length > 0,
       sendRequest: (peer, serviceRequest, options) => {
@@ -202,10 +204,10 @@ export async function executeRouterSelection(args: {
   try {
     return await attempt()
   } catch (error) {
-    // Nothing was left to rank before any call: the cached model list is not at fault, so keep it.
-    if (error instanceof NoEligibleCandidatesError) throw error
+    // Nothing was left to rank, or the options were refused, before any call: the cached model list is not at fault, so keep it.
+    if (error instanceof NoEligibleCandidatesError || error instanceof InvalidRouterOptionsError) throw error
     modelsCache.invalidate(routingService)
-    // IRP 422: our cached model list may be stale. Refresh it and retry once; failed ranks are not charged.
+    // The router cannot rank any candidate: our cached model list may be stale. Refresh it and retry once; failed ranks are not charged.
     if (error instanceof RouterCannotRankError) {
       try {
         return await attempt()
