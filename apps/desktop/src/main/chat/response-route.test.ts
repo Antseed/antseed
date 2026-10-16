@@ -48,11 +48,14 @@ test('response-model indicators survive closing and reopening the on-disk sessio
       manager.appendMessage({ role: 'user', content: 'Hello', timestamp: timestamp - 1 });
       manager.appendMessage({ role: 'assistant', content: [{ type: 'text', text: 'Reply' }],
         api: 'openai-completions', provider: 'antseed', model: 'antseed', usage: toUsage({}), stopReason: 'stop', timestamp });
-      manager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, { createdAt: timestamp, service, peerId: 'peer-a' });
+      manager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, { createdAt: timestamp, service, peerId: 'peer-a',
+        ...(service === 'model-b' ? { router: 'router-peer@route' } : {}) });
     }
     const reopened = SessionManager.open(manager.getSessionFile()!, directory);
     const messages = restoreResponseRoutes(convertPiMessagesToUi(reopened.buildSessionContext().messages as Message[]), reopened.getBranch());
     assert.deepEqual(messages.filter((message) => message.role === 'assistant').map((message) => message.meta?.service), ['model-a', 'model-b']);
+    // Only the router-chosen reply keeps a router, so only it shows the routed label.
+    assert.deepEqual(messages.filter((message) => message.role === 'assistant').map((message) => message.meta?.router ?? null), [null, 'router-peer@route']);
   } finally {
     await rm(directory, { recursive: true, force: true });
   }

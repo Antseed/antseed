@@ -465,3 +465,19 @@ test('a route change made while a request is in flight survives that request com
     await rm(dir, { recursive: true, force: true })
   }
 })
+
+test('records which router chose the latest turn, and clears it for a direct turn', async (context) => {
+  const dir = await makeDir()
+  context.after(async () => { await rm(dir, { recursive: true, force: true }) })
+  const store = new ConversationStore(dir)
+  const { id } = store.touch({ tool: 'vpr', sessionKey: 'routed' })
+  assert.equal(store.get(id)?.lastRouter, null)
+  store.setLastRouter(id, `${'d'.repeat(40)}@route`)
+  assert.equal(store.get(id)?.lastRouter, `${'d'.repeat(40)}@route`)
+  await store.flush()
+  const reloaded = new ConversationStore(dir)
+  assert.equal(reloaded.get(id)?.lastRouter, `${'d'.repeat(40)}@route`)
+  store.setLastRouter(id, null)
+  assert.equal(store.get(id)?.lastRouter, null)
+  await store.flush()
+})

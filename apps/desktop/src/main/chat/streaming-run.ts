@@ -880,20 +880,20 @@ export function createStreamingRunner(ctx: StreamingRunContext) {
       if (completedAssistantMessage) {
         const routed = await fetchProxyConversationRoute(proxyPort, conversationId);
         if (routed?.peerId) {
-          completedAssistantMessage.meta = {
-            ...(completedAssistantMessage.meta ?? {}),
+          const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === routed.peerId)?.peerLabel;
+          // The seller's own name, without the "(1d90f467)" id suffix the catalog label carries.
+          const peerName = peerLabel?.replace(/\s*\([^)]*\)\s*$/, '').trim() || undefined;
+          const route = {
             peerId: routed.peerId,
             service: routed.service,
+            ...(peerName ? { peerName } : {}),
+            ...(routed.router ? { router: routed.router } : {}),
           };
+          completedAssistantMessage.meta = { ...(completedAssistantMessage.meta ?? {}), ...route };
           if (finalAssistantCreatedAt) {
-            sessionManager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, {
-              createdAt: finalAssistantCreatedAt,
-              peerId: routed.peerId,
-              service: routed.service,
-            });
+            sessionManager.appendCustomEntry(RESPONSE_ROUTE_ENTRY, { createdAt: finalAssistantCreatedAt, ...route });
           }
           preferredPeerByConversationId.set(conversationId, routed.peerId);
-          const peerLabel = getServiceCatalogEntries().find((entry) => entry.peerId === routed.peerId)?.peerLabel;
           await store.setPeer(conversationId, routed.peerId, peerLabel, routeMode);
         }
         sendToRenderer('chat:ai-done', {
