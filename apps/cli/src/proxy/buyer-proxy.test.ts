@@ -1273,7 +1273,13 @@ test('ranked inference attempts share conversation spend attribution without cou
   assert.equal(conversation.spentUsdc, '2000')
   assert.equal(conversation.requestCount, 1)
   assert.equal(conversation.lastModel, `${peers[1]!.peerId}@model-b`)
+  assert.equal(conversation.lastRouter, `${'a'.repeat(40)}@alpha-route`)
   assert.equal(calls.requests.length, 2)
+  // A turn the chat sends straight to a model clears the router, so the desktop shows no routed label.
+  const direct = await invokeProxy(proxy, makeProxyRequest({ headers: { 'x-vpr-session-id': session },
+    body: { model: `${peers[0]!.peerId}@model-a`, messages: [{ role: 'user', content: 'Again' }] } }))
+  assert.equal(direct.statusCode, 200, direct.body)
+  assert.equal((proxy as any)._conversations.get(`vpr:${session}`).lastRouter, null)
 })
 
 function makeRoutingSpendFixture(options: { late?: boolean; rejected?: boolean; inferenceStatuses?: number[]; routingRequestId?: string } = {}) {

@@ -3648,6 +3648,7 @@ export class BuyerProxy {
   ): Promise<void> {
     const { request, requiredParameters, requestPolicy, signal, routingConversationKey, spendAttributionTag } = context
     const conversationId = this._trackRouterConversation(context)
+    if (conversationId && selection.service) this._conversations.setLastRouter(conversationId, `${selection.service.peerId}@${selection.service.serviceId}`)
     let recommendations: RouteRecommendation[]
     try {
       const client = this._modelRoutingClient
@@ -3886,6 +3887,8 @@ export class BuyerProxy {
   private async _dispatchDirectModelRequest(res: ServerResponse, context: BuyerDispatchContext): Promise<void> {
     const prepared = this._prepareInferenceRequest(res, context)
     if (!prepared) return
+    // No router chose this turn's model.
+    if (prepared.conversationId) this._conversations.setLastRouter(prepared.conversationId, null)
     const result = await this._dispatchInference(res, context, prepared.request, prepared.conversationId)
     if (!result.done) writeDispatchFailure(res, result)
   }

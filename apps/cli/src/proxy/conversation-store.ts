@@ -37,6 +37,8 @@ export type StoredConversation = {
   peerSource: 'auto' | 'user'
   /** Model that served the most recent request (`<peerId>@<service>`), for display. */
   lastModel: string | null
+  /** Routing service (`<peerId>@<serviceId>`) that chose the most recent turn's model; null when no router was used. */
+  lastRouter: string | null
   /** USDC base units authorized for this chat's requests (bigint as string).
       Subagent traffic rolls up into the parent chat, same as everything else
       here. This is what the chat has cost, not what has settled on-chain. */
@@ -99,6 +101,7 @@ function sanitizeRecord(value: unknown): StoredConversation | null {
       && record.routingSelection.kind === 'router' && record.routingSelection.service
       ? structuredClone(record.routingSelection) as ConversationRouterSelection : null,
     lastModel: typeof record.lastModel === 'string' && record.lastModel.length > 0 ? record.lastModel : null,
+    lastRouter: typeof record.lastRouter === 'string' && record.lastRouter.length > 0 ? record.lastRouter : null,
     spentUsdc: sanitizeCounter(record.spentUsdc),
     inputTokens: sanitizeCounter(record.inputTokens),
     cachedInputTokens: sanitizeCounter(record.cachedInputTokens),
@@ -229,6 +232,7 @@ export class ConversationStore {
         peerSource: 'auto',
         routingSelection: null,
         lastModel: input.lastModel ?? null,
+        lastRouter: null,
         spentUsdc: '0',
         inputTokens: '0',
         cachedInputTokens: '0',
@@ -306,6 +310,14 @@ export class ConversationStore {
 
   /** `pinAtRouting`: the chat's pin when the request was routed. If it has
       changed since (switched mid-flight), the newer pin is kept. */
+  /** Record which routing service chose this turn's model, or null for a turn with no router. */
+  setLastRouter(id: string, router: string | null): void {
+    const existing = this._byId.get(id)
+    if (!existing || existing.lastRouter === router) return
+    this._byId.set(id, { ...existing, lastRouter: router })
+    void this._persist()
+  }
+
   recordRoutedModel(id: string, routedModel: string, pinAtRouting?: string | null): StoredConversation | null {
     const existing = this._byId.get(id)
     if (!existing) return null
