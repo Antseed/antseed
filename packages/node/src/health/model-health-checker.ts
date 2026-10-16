@@ -330,9 +330,7 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
-  // Image generations cost real money per probe; everything else has a
-  // near-free minimal request shape.
-  return protocol !== 'openai-images' && !isNativeVideoProtocol(protocol);
+  return protocol !== 'openai-images' && protocol !== 'model-routing' && !isNativeVideoProtocol(protocol);
 }
 
 /**

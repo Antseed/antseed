@@ -66,7 +66,7 @@ Everything a seller announces lives under `seller.providers`. Each key is a labe
 | `pricing` | `inputUsdPerMillion`, `outputUsdPerMillion` and optional `cachedInputUsdPerMillion`, in USD per million tokens. Overrides the provider's `defaults`. |
 | `categories` | Tags announced in discovery. Lowercase letters, digits and hyphens. Buyers can filter on any tag; `privacy`, `legal`, `uncensored`, `coding`, `finance` and `tee` are the well-known ones shown in `antseed network browse --tag`. |
 | `capabilities` | Hints about the model. See below. |
-| `unitBillingModels` | Per-image or per-video pricing. See [Image and video services](/docs/provide/media). |
+| `unitBillingModels` | Per-image, per-video or per-routing-request pricing. See [Unit-billed services](/docs/provide/media). |
 
 Set `cachedInputUsdPerMillion` when your upstream charges less for cache hits. When any seller of a model advertises a cached-input price, buyers count offers of that model that omit it at half their trust score, which can drop them below the buyer's minimum. Free offers are exempt.
 
@@ -115,7 +115,7 @@ antseed config seller add-service inference kimi-k2.6 \
 | `--input`, `--output`, `--cached <usd>` | Token prices in USD per million tokens |
 | `--categories <list>` | Comma-separated tags |
 | `--capabilities <json>` | Capabilities object |
-| `--unit-billing-models <json>` | Unit pricing, see [Image and video services](/docs/provide/media) |
+| `--unit-billing-models <json>` | Unit pricing, see [Unit-billed services](/docs/provide/media) |
 | `--base-url <url>` | Sets `baseUrl` on the whole provider |
 
 Change single fields or remove entries:
