@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Node: a large request over WebRTC (over 1 MiB, such as a video job with an input image) no longer drops the connection on a slow or busy link. The buyer counted a data-channel send that was only queued as a failure and closed the connection, so the request failed with a 502 "Connection to <peer> failed during request". Queued sends are now kept; a connection fails only when its data channel stops draining (over 64 MiB queued).
 - Desktop: the "Routed to …" label under a chat reply now names the seller that served it (e.g. "Routed to Open Forge") when you chose the model, and the model plus the seller (e.g. "Routed to GLM 5.3 Flash · Open Forge") when a routing service chose it. It used to show only the model, as if a router had picked it. The CLI buyer records which routing service chose each chat turn's model (`lastRouter` on `/_antseed/conversations`).
 - Desktop release: the CLI entry no longer uses a top-level `await`, which broke the desktop's CommonJS CLI bundle and failed every desktop build.
 - Desktop: router rows and the router page now name the router (e.g. "Free Model Router") with the seller offering it underneath, the same way model rows name their seller, so the same router offered by several sellers can be told apart. A seller without a display name shows a short peer id.
