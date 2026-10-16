@@ -11,7 +11,7 @@
  * member of Default and an admin of Research.
  */
 import type {
-  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
+  AdminToken, ApiKey, AuditEntry, BuyerLimits, DepositConfirmation, GatewayExposure, GatewayExposureMode, GatewayUpdate, Me, MeResponse, Member, RequestDetail, RequestLogEntry, RoutePreview, RoutingPolicy,
   UsageGroupBy, Workspace, WorkspaceRole,
 } from '../api/types'
 import { LIMIT_PERIODS } from '../lib/format'
@@ -880,6 +880,17 @@ const routes: Array<[string, string, Handler]> = [
   ['DELETE', '/presets/:id', ({ params }) => { editablePreset(params['id']); db.presets = db.presets.filter((x) => x.id !== params['id']) }],
 
   ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
+  ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
+  ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
+  ['POST', '/update', () => {
+    requireOrgAdmin()
+    const update = mockUpdate()
+    if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
+    if (!update.available) throw new MockError(409, 'up_to_date', 'Already the latest version')
+    mockUpdateState.requestedAt = Date.now()
+    audit('gateway.update')
+    return mockUpdate()
+  }],
   ['GET', '/settings', () => { requireOrgAdmin(); return maskedSettings() }],
   ['PATCH', '/settings/buyer', ({ body }) => {
     requireOrgAdmin()
@@ -900,6 +911,31 @@ const routes: Array<[string, string, Handler]> = [
   }],
   ['PUT', '/settings/observability', ({ body }) => { requireOrgAdmin(); db.settings.observability = observability(body); return maskedSettings() }],
 ]
+
+/**
+ * `?update=available|command|current` on the first load picks what `/update`
+ * reports (default available). An applied update waits 3 s for the update
+ * service, installs for 5 s, then reports the new version.
+ */
+const mockUpdateState = { mode: 'available' as 'available' | 'command' | 'current', current: '0.1.180', checkedAt: Date.now() - 40 * 60_000, requestedAt: null as number | null }
+function mockUpdate(): GatewayUpdate {
+  const latest = mockUpdateState.mode === 'current' ? mockUpdateState.current : '0.1.193'
+  const base: GatewayUpdate = {
+    current: mockUpdateState.current, latest, available: latest !== mockUpdateState.current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
+    apply: mockUpdateState.mode === 'command' ? 'command' : 'console', install: mockUpdateState.mode === 'command' ? 'npm' : 'installer',
+    command: mockUpdateState.mode === 'command' ? 'npm install -g @antseed/cli@latest' : 'antseed update',
+    note: mockUpdateState.mode === 'command' ? 'Installed globally with npm.' : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
+    progress: null,
+  }
+  const at = mockUpdateState.requestedAt
+  if (at === null) return base
+  const elapsed = Date.now() - at
+  if (elapsed < 3_000) return { ...base, progress: { state: 'requested', from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  if (elapsed < 8_000) return { ...base, progress: { state: 'running', from: base.current, to: null, startedAt: at + 3_000, finishedAt: null, error: null } }
+  mockUpdateState.current = latest
+  mockUpdateState.requestedAt = null
+  return { ...base, current: latest, available: false, progress: { state: 'succeeded', from: base.current, to: latest, startedAt: at + 3_000, finishedAt: at + 8_000, error: null } }
+}
 
 /** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
 let mockExposure: GatewayExposureMode = 'public'
@@ -941,6 +977,8 @@ export function installMockApi(): void {
   const realFetch = window.fetch.bind(window)
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
+  const updateParam = new URLSearchParams(window.location.search).get('update')
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current') mockUpdateState.mode = updateParam
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0
@@ -969,5 +1007,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current')
 }

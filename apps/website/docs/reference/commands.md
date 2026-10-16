@@ -372,6 +372,13 @@ Read and change `~/.antseed/config.json`. Guides: [Buyer configuration](/docs/bu
 | `antseed metrics serve` | Serve Prometheus metrics ([guide](/docs/provide/metrics)) | `--role buyer\|seller\|both\|auto`, `--host` (127.0.0.1), `--port` (9108), `--path` (/metrics), `--instance`, `--include-chain` |
 | `antseed dev` | Run a seller and a buyer locally for development | `--port <buyerPort>` |
 | `antseed agent dev <agentDir>` | Test an ant agent locally in an interactive chat | `--endpoint <url>`, `--api-key`, `--model` |
+| `antseed update` | Install the latest CLI the way this copy was installed ([details](#updating)) | `--check` (only report), `--json` |
 | `antseed help [command]` | Show help for a command | |
 
 </CommandTable>
+
+### Updating
+
+`antseed update` asks the npm registry for the latest `@antseed/cli` and runs the matching command for how the CLI was installed: `npm install -g`, `pnpm add -g`, `yarn global add`, `bun add -g` or `volta install`. A global npm install in a root-owned prefix, Nix, npx, a project dependency or a source checkout only prints the command to run. On a server set up by the [gateway installer](/docs/gateway/server#upgrade) it hands the install to the root update service, which also restarts the buyer and gateway. Restart any running buyer, seller or gateway you started yourself to use the new version.
+
+Interactive commands print a one-line notice on stderr when a newer version is out. The registry is asked at most once a day, in the background, so the notice appears from the next run. It stays quiet with `--json`, when stderr is not a terminal, in CI, and when `NO_UPDATE_NOTIFIER` or `ANTSEED_NO_UPDATE_CHECK` is set. `ANTSEED_NPM_REGISTRY` (or npm's `npm_config_registry`) points the check at a mirror.

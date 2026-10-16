@@ -11,6 +11,8 @@
  * HTTP status.
  */
 import type { RoutingPolicy } from '../../routing-policy/policy.js'
+import type { InstallKind } from '../../update/install-method.js'
+import type { RootUpdateProgress } from '../../update/root-updater.js'
 
 export type { RoutingPolicy, ModelRoute, RoutingSort } from '../../routing-policy/policy.js'
 export type { OperatorRelation, OperatorState, OperatorAuthorization, WorkspaceOperatorSummary } from './operator-types.js'
@@ -798,6 +800,35 @@ export interface GatewayStatus {
    * (`listenHost` null, `reasons` empty).
    */
   exposure?: GatewayExposure
+}
+
+// GET   /update                    → GatewayUpdate  (org admins)
+// POST  /update/check              → GatewayUpdate  (asks npm now)
+// POST  /update                    → GatewayUpdate  (installer servers: installs @antseed/cli@latest and restarts)
+export interface GatewayUpdate {
+  /** The running CLI version. */
+  current: string
+  /** npm's `latest` for @antseed/cli at the last check; null before the first answer. */
+  latest: string | null
+  available: boolean
+  /** When npm was last asked (ms); null when never. */
+  checkedAt: number | null
+  /** Why the last check failed; null when it worked. */
+  checkError: string | null
+  /** `NO_UPDATE_NOTIFIER`, `ANTSEED_NO_UPDATE_CHECK` or `CI` turned background checks off. */
+  checksDisabled: boolean
+  /**
+   * `console`: `POST /update` installs it (servers set up by the gateway
+   * installer); `command`: run `command` on the gateway host; `none`: it
+   * updates some other way (the desktop app).
+   */
+  apply: 'console' | 'command' | 'none'
+  install: InstallKind
+  command: string | null
+  /** One line on how this install updates. */
+  note: string
+  /** The update service's pending request or last run; null when `apply` is not `console` or it never ran. */
+  progress: RootUpdateProgress | null
 }
 
 /**

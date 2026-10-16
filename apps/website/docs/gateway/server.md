@@ -163,7 +163,11 @@ You can also set **Base RPC URL** under **Settings → Buyer → Payments**. A v
 
 ## Upgrade
 
-Run the installer again with the same options. It upgrades the CLI and rewrites the services. Existing wallets and keys are kept, and no new key is created.
+**Settings → General → Updates** in the console shows the running version and npm's latest `@antseed/cli` (the gateway checks a few times a day; **Check now** asks at once). Owners and admins also see a one-line notice above every page when a newer version is out, until they dismiss that version.
+
+To install the latest CLI, click **Update** there or run `antseed update` on the server. The services run as the unprivileged `antseed` user and cannot change `/opt/antseed`, so both only create `/var/lib/antseed/update-request`. The installer's `antseed-update.path` unit then starts the root `antseed-update.service`, which installs `@antseed/cli@latest` (the request cannot name another version), restarts the buyer and gateway, and records the result in `/var/lib/antseed-update/status.json`. The console reloads once the gateway is back. Requests in flight during the restart are cut off. Logs: `journalctl -u antseed-update`. Servers installed before this existed get the update service by re-running the installer once. A gateway not set up by the installer shows the command to run on its host instead.
+
+Run the installer again with the same options to upgrade the CLI and Node.js and rewrite the services. Existing wallets and keys are kept, and no new key is created.
 
 ## Uninstall
 

@@ -1,6 +1,6 @@
 import type {
   AdminToken, ApiKey, ApiKeyInput, AuditEntry, AuthConfig, BuyerLimits, BuyerSettingsInput, Channel, ChainInfo, DepositConfirmation, DepositWatch, Enrollment,
-  GatewayStatus, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
+  GatewayStatus, GatewayUpdate, Invite, InviteInput, Member, MemberInput, MeResponse, ObservabilitySettings, OperatorAuthorization, OperatorState, WorkspaceOperatorSummary, ChatContext, ChatModel, ChatThread, ChatThreadDetail, NetworkModel, Peer, PeerList, Preset,
   RequestDetail, RequestLogEntry, Rewards, RoutePreview, RoutingPolicy, Settings, SpendLimits, UsageGroupBy, UsageReport, Wallet, Workspace,
   WorkspaceInput, WorkspaceRole,
 } from './types'
@@ -39,6 +39,7 @@ export const ERROR_COPY: Record<string, string> = {
   empty_allow_list: 'This allow list is empty, so no seller could serve. Confirm to save it anyway.',
   last_credential: 'You cannot remove your only sign-in method, or you could not sign in again. Add another passkey or wallet first.',
   credential_exists: 'This passkey or wallet is already registered.',
+  update_unsupported: 'This gateway cannot update itself from the console. Run the update command on its host.',
   max_keys_reached: 'You already have as many keys as you are allowed. Revoke one, or ask an admin to raise your limit.',
 }
 
@@ -266,6 +267,11 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       get: () => get<Settings>('/settings'),
       updateBuyer: (input: BuyerSettingsInput) => patch<SettingsResult>('/settings/buyer', input),
       setObservability: (input: ObservabilitySettings) => put<SettingsResult>('/settings/observability', input),
+    },
+    update: {
+      get: () => get<GatewayUpdate>('/update'),
+      check: () => post<GatewayUpdate>('/update/check'),
+      apply: () => post<GatewayUpdate>('/update'),
     },
   }
 }
