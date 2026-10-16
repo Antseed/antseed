@@ -321,4 +321,9 @@ export const MIGRATIONS: readonly string[] = [
   `,
   // Pinned requests (`<peerId>@<model>`) recorded the pin in the model: keep the model, and the pin as the seller when none was reported.
   [splitPinnedModelSql('gateway_requests'), splitPinnedModelSql('request_rollups'), splitPinnedModelSql('ledger_entries')].join('\n'),
+  // Streamed answers: the buyer's time to the seller's first frame, and output tokens per second after it.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN first_token_ms INTEGER;
+  ALTER TABLE gateway_requests ADD COLUMN tokens_per_second REAL;
+  `,
 ]

@@ -8,6 +8,7 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ### Fixed
 
+- Gateway console: Logs, Providers and Models show time to first token and output speed (tokens per second) instead of one latency figure, which grew with the length of the answer. Both come from streamed requests, and time to first token is the buyer's own measurement, the same one **Lowest latency** routing ranks by. Request exports include both.
 - CLI buyer: **Lowest latency** routing now ranks sellers by time to first token alone, measured on streamed answers. It mixed that with the full duration of non-streamed answers, so a seller asked for long answers looked slow. The buyer also measures each seller's generation speed (output tokens per second after the first token) and shows both in the route preview.
 - CLI buyer: a video job created with a workspace wallet (`x-antseed-buyer-identity`, as the gateway sends for workspace keys) is now retrieved with that same wallet. Retrieve used the default wallet, so the seller answered "Video job not found" and the video could not be downloaded.
 - CLI gateway: video models can be used through the gateway. It now passes the buyer's native video job routes (`/api/v1/video/queue` and `/retrieve`, `/fal/v1/video/queue` and `/retrieve`) to the buyer, and the video's spend counts against the key's limits. Before, these returned `404`.

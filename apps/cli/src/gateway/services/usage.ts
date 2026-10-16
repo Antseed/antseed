@@ -91,6 +91,8 @@ export function requestDto(row: RequestLogRow): RequestLogEntry {
     status: row.status,
     sellerPeerId: row.sellerPeerId,
     latencyMs: row.latencyMs,
+    firstTokenMs: row.firstTokenMs,
+    tokensPerSecond: row.tokensPerSecond,
     spent: row.spentUsdc === null ? null : usdcToDecimalString(row.spentUsdc),
     inputTokens: row.inputTokens,
     cachedInputTokens: row.cachedInputTokens,
@@ -187,7 +189,7 @@ export function requestDetail(store: GatewayStore, tag: string, keyIds: readonly
 /** Explicit export columns: never request or response bodies. */
 const CSV_COLUMNS: ReadonlyArray<keyof RequestLogEntry> = [
   'tag', 'startedAt', 'finishedAt', 'keyId', 'keyLabel', 'workspaceId', 'memberId', 'endUser', 'method', 'path',
-  'model', 'status', 'sellerPeerId', 'latencyMs', 'spent', 'inputTokens', 'cachedInputTokens', 'outputTokens',
+  'model', 'status', 'sellerPeerId', 'latencyMs', 'firstTokenMs', 'tokensPerSecond', 'spent', 'inputTokens', 'cachedInputTokens', 'outputTokens',
   'errorCode', 'errorMessage',
 ]
 
