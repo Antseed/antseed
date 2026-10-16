@@ -75,7 +75,15 @@ export function falAppId(endpointId: string): string {
 
 type FalAccount =
   | { status: 'ok'; balanceUsd: number }
+  | { status: 'rejected'; reason: string }
+  | { status: 'no_permission' }
   | { status: 'unknown'; reason: string };
+
+/** Startup notice when the seller key cannot read the fal balance. */
+export const FAL_BALANCE_CHECK_OFF =
+  'fal balance check is off: FAL_VIDEO_API_KEY lacks the billing:usage:read permission. '
+  + 'Running out of fal credits will not stop this seller advertising. '
+  + 'To turn the check on, give the key that permission (fal presets BILLING, READONLY or FULL) and restart.';
 
 /**
  * Read fal's public model list for the given endpoint IDs: endpoint ID →
@@ -126,17 +134,20 @@ async function readFalModelStatuses(platformUrl: string, authorization: string, 
   }
 }
 
-/** Read the account's credit balance. Needs a key with the `billing:usage:read` permission. */
-async function readFalAccount(platformUrl: string, billingKey: string): Promise<FalAccount> {
+/**
+ * Read the account's credit balance with the seller key. fal answers 401 for
+ * an invalid key and 403 for a valid key without the `billing:usage:read`
+ * permission.
+ */
+async function readFalAccount(platformUrl: string, authorization: string): Promise<FalAccount> {
   try {
     const response = await fetch(`${platformUrl}/v1/account/billing?expand=credits`, {
-      headers: { authorization: `Key ${billingKey}` },
+      headers: { authorization },
       redirect: 'error',
       signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
     });
-    if (response.status === 401 || response.status === 403) {
-      return { status: 'unknown', reason: `fal rejected FAL_VIDEO_BILLING_API_KEY (HTTP ${response.status}); it needs the billing:usage:read permission` };
-    }
+    if (response.status === 401) return { status: 'rejected', reason: 'fal rejected the API key (HTTP 401)' };
+    if (response.status === 403) return { status: 'no_permission' };
     if (!response.ok) return { status: 'unknown', reason: `fal billing check returned HTTP ${response.status}` };
     const credits = (await readJson(response))?.credits as { current_balance?: unknown } | undefined;
     if (typeof credits?.current_balance !== 'number') return { status: 'unknown', reason: 'fal billing check returned no balance' };
@@ -160,17 +171,11 @@ const plugin: AntseedProviderPlugin = {
     { key: 'ANTSEED_SERVICE_CAPABILITIES_JSON', label: 'Capabilities', type: 'string' },
     { key: 'ANTSEED_MAX_CONCURRENCY', label: 'Concurrency', type: 'number', default: 10 },
     {
-      key: 'FAL_VIDEO_BILLING_API_KEY',
-      label: 'fal Billing API Key',
-      type: 'secret',
-      description: 'Optional fal key with the billing:usage:read permission. Lets the seller stop advertising models while credits are low and advertise them again after a top-up',
-    },
-    {
       key: 'FAL_VIDEO_MIN_BALANCE_USD',
       label: 'Minimum Balance (USD)',
       type: 'number',
       default: 0,
-      description: 'With a billing key, stop advertising video models while the fal balance is at or below this amount',
+      description: 'Stop advertising video models while the fal balance is at or below this amount. Needs FAL_VIDEO_API_KEY to have the billing:usage:read permission',
     },
   ],
   createProvider(config): Provider {
@@ -194,7 +199,6 @@ const plugin: AntseedProviderPlugin = {
     if (!Number.isSafeInteger(maxConcurrency) || maxConcurrency < 1) throw new Error('ANTSEED_MAX_CONCURRENCY must be a positive integer');
     const configuredCapabilities = parseServiceCapabilitiesJson(config['ANTSEED_SERVICE_CAPABILITIES_JSON']);
     const authorization = `Key ${apiKey}`;
-    const billingKey = config['FAL_VIDEO_BILLING_API_KEY']?.trim() || undefined;
     const minBalanceUsd = Number(config['FAL_VIDEO_MIN_BALANCE_USD'] ?? 0);
     if (!Number.isFinite(minBalanceUsd) || minBalanceUsd < 0) throw new Error('FAL_VIDEO_MIN_BALANCE_USD must be a non-negative number');
     const warned = new Set<string>();
@@ -208,6 +212,9 @@ const plugin: AntseedProviderPlugin = {
       services.map(service => [service, { ...configuredCapabilities?.[service], outputs: ['video'] }]),
     );
 
+    // Off once fal says the seller key can't read billing; the key's permissions don't change while running.
+    let balanceCheck = true;
+
     // Announces each endpoint's own input field names, so buyers can call fal's API unchanged.
     const init = async () => {
       await Promise.all(services.filter(service => !serviceCapabilities[service]!.supportedParameters).map(async service => {
@@ -220,6 +227,13 @@ const plugin: AntseedProviderPlugin = {
         }
       }));
       for (const service of services) serviceCapabilities[service] = withFrameInputs(serviceCapabilities[service]!);
+      const account = await readFalAccount(FAL_PLATFORM_URL, authorization);
+      if (account.status === 'no_permission') {
+        balanceCheck = false;
+        warnOnce(FAL_BALANCE_CHECK_OFF);
+      } else if (account.status === 'ok') {
+        console.log(`[fal-video] fal balance check is on: $${account.balanceUsd.toFixed(2)}; models stop being advertised at or below $${minBalanceUsd}`);
+      }
     };
 
     const route = (request: SerializedHttpRequest) => {
@@ -299,19 +313,21 @@ const plugin: AntseedProviderPlugin = {
           return [service, { status: 'available' }];
         }));
       },
-      ...(billingKey && {
-        async checkUpstreamAccount(): Promise<UpstreamAccountStatus> {
-          const account = await readFalAccount(FAL_PLATFORM_URL, billingKey);
-          if (account.status === 'unknown') {
-            warnOnce(account.reason);
-            return account;
-          }
-          if (account.balanceUsd <= minBalanceUsd) {
-            return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` };
-          }
-          return { status: 'available', balanceUsd: account.balanceUsd };
-        },
-      }),
+      async checkUpstreamAccount(): Promise<UpstreamAccountStatus> {
+        if (!balanceCheck) return { status: 'unknown', reason: 'fal balance check is off (key lacks billing:usage:read)' };
+        const account = await readFalAccount(FAL_PLATFORM_URL, authorization);
+        if (account.status === 'no_permission') {
+          balanceCheck = false;
+          warnOnce(FAL_BALANCE_CHECK_OFF);
+          return { status: 'unknown', reason: 'fal balance check is off (key lacks billing:usage:read)' };
+        }
+        if (account.status === 'rejected') return { status: 'unavailable', reason: account.reason };
+        if (account.status === 'unknown') return account;
+        if (account.balanceUsd <= minBalanceUsd) {
+          return { status: 'unavailable', reason: `fal balance $${account.balanceUsd.toFixed(2)} is at or below the $${minBalanceUsd} minimum` };
+        }
+        return { status: 'available', balanceUsd: account.balanceUsd };
+      },
       async handleRequestStream(request, callbacks) {
         const { videoRoute, service } = route(request);
         if (videoRoute?.action !== 'retrieve') return handleRequest(request);

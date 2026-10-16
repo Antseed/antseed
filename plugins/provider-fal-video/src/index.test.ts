@@ -1,6 +1,6 @@
 import { afterEach, describe, expect, it, vi } from 'vitest';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { falAppId, falInputParameters, withFrameInputs } from './index.js';
+import plugin, { FAL_BALANCE_CHECK_OFF, falAppId, falInputParameters, withFrameInputs } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -96,6 +96,7 @@ it('announces last_frame for a Kling endpoint whose fal schema has tail_image_ur
 it('advertises each endpoint\'s fal input fields and forwards the body unchanged', async () => {
   const fetchMock = vi.fn()
     .mockResolvedValueOnce(Response.json(schema(V3, { prompt: {}, start_image_url: {}, end_image_url: {} })))
+    .mockResolvedValueOnce(Response.json({ credits: { current_balance: 5 } }))
     .mockResolvedValue(Response.json({ request_id: 'req-1' }));
   vi.stubGlobal('fetch', fetchMock);
   const provider = plugin.createProvider(v3Config) as Provider;
@@ -106,7 +107,7 @@ it('advertises each endpoint\'s fal input fields and forwards the body unchanged
   expect(provider.serviceCapabilities?.[V3]).toEqual({ outputs: ['video'], supportedParameters: ['end_image_url', 'prompt', 'start_image_url'] });
   const input = { prompt: 'cat', image_url: 'first', start_image_url: 'start' };
   await provider.handleRequest(request('/fal/v1/video/queue', { model: V3, ...input }));
-  expect(parse(fetchMock.mock.calls[1]![1].body)).toEqual(input);
+  expect(parse(fetchMock.mock.calls[2]![1].body)).toEqual(input);
 });
 
 it('keeps configured parameters and starts without them when the fal schema is unavailable', async () => {
@@ -118,7 +119,7 @@ it('keeps configured parameters and starts without them when the fal schema is u
   const configured = plugin.createProvider({ ...v3Config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ [V3]: { supportedParameters: ['prompt', 'start_image_url'] } }) }) as Provider;
   await configured.init!();
   expect(configured.serviceCapabilities?.[V3]?.supportedParameters).toEqual(['prompt', 'start_image_url']);
-  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(fetchMock.mock.calls.filter(([url]) => String(url).includes('openapi'))).toHaveLength(1);
 });
 
 it('passes fal validation errors back without accepting a job', async () => {
@@ -282,29 +283,50 @@ describe('checkServiceHealth and checkUpstreamAccount', () => {
     expect((await check())[MODEL]).toMatchObject({ status: 'unknown' });
   });
 
-  it('checks the balance with the optional billing key', async () => {
-    const withBilling = { ...twoModels, FAL_VIDEO_BILLING_API_KEY: 'billing-secret', FAL_VIDEO_MIN_BALANCE_USD: '1' };
-    const checkAccount = () => (plugin.createProvider(withBilling) as Provider).checkUpstreamAccount!();
-    expect((plugin.createProvider(twoModels) as Provider).checkUpstreamAccount).toBeUndefined();
+  it('checks the balance with the seller key', async () => {
+    const provider = plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: '1' }) as Provider;
     const fetchMock = mockFal(models([]), Response.json({ credits: { current_balance: 12.5, currency: 'USD' } }));
-    expect(await checkAccount()).toEqual({ status: 'available', balanceUsd: 12.5 });
+    expect(await provider.checkUpstreamAccount!()).toEqual({ status: 'available', balanceUsd: 12.5 });
     const [billingUrl, billingInit] = fetchMock.mock.calls.find(([url]) => url.includes('billing'))!;
     expect(billingUrl).toBe('https://api.fal.ai/v1/account/billing?expand=credits');
-    expect(billingInit).toMatchObject({ headers: { authorization: 'Key billing-secret' } });
+    expect(billingInit).toMatchObject({ headers: { authorization: 'Key seller-secret' } });
 
     mockFal(models([]), Response.json({ credits: { current_balance: 0.5, currency: 'USD' } }));
-    expect(await checkAccount()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.50') });
+    expect(await provider.checkUpstreamAccount!()).toMatchObject({ status: 'unavailable', reason: expect.stringContaining('$0.50') });
+    expect(() => plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: 'x' })).toThrow('FAL_VIDEO_MIN_BALANCE_USD');
   });
 
-  it('reports unknown and warns once when the billing key lacks permission', async () => {
+  it('reports an invalid seller key as unavailable', async () => {
+    mockFal(models([]), Response.json({ error: { type: 'authorization_error', message: 'Invalid API key' } }, { status: 401 }));
+    expect(await (plugin.createProvider(twoModels) as Provider).checkUpstreamAccount!())
+      .toMatchObject({ status: 'unavailable', reason: expect.stringContaining('401') });
+  });
+
+  it('warns once at startup and stops checking when the seller key lacks billing permission', async () => {
     const warn = vi.spyOn(console, 'warn').mockImplementation(() => {});
-    const provider = plugin.createProvider({ ...twoModels, FAL_VIDEO_BILLING_API_KEY: 'run-only' }) as Provider;
+    const fetchMock = vi.fn(async (url: string) => (url.includes('/account/billing')
+      ? Response.json({ error: { type: 'authorization_error' } }, { status: 403 })
+      : Response.json(schema(MODEL, { prompt: {} }))));
+    vi.stubGlobal('fetch', fetchMock);
+    const provider = plugin.createProvider(twoModels) as Provider;
+    await provider.init!();
+    expect(warn).toHaveBeenCalledTimes(1);
+    expect(warn).toHaveBeenCalledWith(`[fal-video] ${FAL_BALANCE_CHECK_OFF}`);
     for (let i = 0; i < 2; i++) {
-      mockFal(models([]), Response.json({ error: {} }, { status: 403 }));
       expect(await provider.checkUpstreamAccount!()).toMatchObject({ status: 'unknown', reason: expect.stringContaining('billing:usage:read') });
     }
+    expect(fetchMock.mock.calls.filter(([url]) => url.includes('/account/billing'))).toHaveLength(1);
     expect(warn).toHaveBeenCalledTimes(1);
-    expect(() => plugin.createProvider({ ...twoModels, FAL_VIDEO_MIN_BALANCE_USD: 'x' })).toThrow('FAL_VIDEO_MIN_BALANCE_USD');
     warn.mockRestore();
+  });
+
+  it('logs at startup that the balance check is on when the key can read billing', async () => {
+    const info = vi.spyOn(console, 'log').mockImplementation(() => {});
+    vi.stubGlobal('fetch', vi.fn(async (url: string) => (url.includes('/account/billing')
+      ? Response.json({ credits: { current_balance: 7.25 } })
+      : Response.json(schema(MODEL, { prompt: {} })))));
+    await (plugin.createProvider(twoModels) as Provider).init!();
+    expect(info).toHaveBeenCalledWith(expect.stringContaining('fal balance check is on: $7.25'));
+    info.mockRestore();
   });
 });
