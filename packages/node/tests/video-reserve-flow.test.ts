@@ -114,7 +114,6 @@ interface Harness {
   disconnect(): void;
   providerCreates: SerializedHttpRequest[];
   sentAuths: SpendingAuthPayload[];
-  sellerEmit: ReturnType<typeof vi.fn>;
   releaseTopUp(): void;
   send(request: SerializedHttpRequest): ReturnType<BuyerRequestHandler['sendRequest']>;
   videoRequest(requestId: string, duration?: string): SerializedHttpRequest;
@@ -302,10 +301,9 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     const sellerPayment = new PaymentMux(sellerSide);
     const sellerVerification = new VerificationMux(sellerSide);
     sellerPayment.onSpendingAuth((payload) => { void seller.handleSpendingAuth(buyerIdentity.peerId, payload, sellerPayment); });
-    const sellerEmit = vi.fn((..._args: unknown[]) => false);
     const sellerHandler = new SellerRequestHandler({
       identity: sellerIdentity, providers: [provider], sellerPaymentManager: seller, sessionTracker: null,
-      channelsClient: seller.channelsClient, announcer: null, emit: sellerEmit, resourceOwnershipStore: ownership,
+      channelsClient: seller.channelsClient, announcer: null, emit: () => false, resourceOwnershipStore: ownership,
       reserveEstimateOverdraftUsdc: options.reserveEstimateOverdraftUsdc,
       ...(options.freeTier ? {
         sellerFreeTierLimiter: { maxRequestsPerAddress: 1, maxRequestsPerIp: 1, windowMs: 60_000, consume: options.freeTier.consume } as any,
@@ -381,7 +379,7 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
 
     return {
       buyerIdentity, sellerIdentity, peer, buyer, seller, buyerHandler, chain, sessionChannelId, oneOffChannelIds,
-      reserve, topUp, close, providerCreates, sentAuths, sellerEmit,
+      reserve, topUp, close, providerCreates, sentAuths,
       disconnect: () => seller.onBuyerDisconnect(buyerIdentity.peerId),
       releaseTopUp: () => { expect(releaseTopUp).not.toBeNull(); releaseTopUp!(); },
       send: (request) => buyerHandler.sendRequest(peer, request, request.path.endsWith('/video/retrieve') ? { onResponseStart() {}, onResponseChunk() {} } : undefined),
@@ -634,9 +632,6 @@ describe('one-off video channel flow over the real buyer and seller stacks', () 
     await h.settle();
 
     expect(response.statusCode).toBe(400);
-    expect(h.sellerEmit).toHaveBeenCalledWith('seller:provider-response', expect.objectContaining({
-      provider: 'venice', service: 'video-model', statusCode: 400,
-    }));
     const { channelId } = onlyOneOff(h);
     expect(h.close).toHaveBeenCalledOnce();
     expect(h.close.mock.calls[0]![2]).toBe(SERIOUS_FEE);

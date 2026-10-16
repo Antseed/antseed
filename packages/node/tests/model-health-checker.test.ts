@@ -2,7 +2,6 @@ import { describe, expect, it, vi } from 'vitest';
 import {
   ModelHealthChecker,
   buildHealthProbeRequest,
-  classifyMediaRequestStatus,
   classifyProbeStatus,
   supportsHealthProbe,
   type ModelHealthEvent,
@@ -392,124 +391,6 @@ describe('ModelHealthChecker', () => {
   });
 });
 
-describe('classifyMediaRequestStatus', () => {
-  it('only counts upstream account failures against a media service', () => {
-    expect(classifyMediaRequestStatus(200)).toBe('healthy');
-    expect(classifyMediaRequestStatus(401)).toBe('unhealthy');
-    expect(classifyMediaRequestStatus(402)).toBe('unhealthy');
-    expect(classifyMediaRequestStatus(403)).toBe('unhealthy');
-    for (const status of [400, 404, 413, 422, 429, 500, 502, 503]) {
-      expect(classifyMediaRequestStatus(status)).toBe('inconclusive');
-    }
-  });
-});
-
-describe('ModelHealthChecker.recordRequestOutcome', () => {
-  function makeMediaProvider(): Provider {
-    return makeProvider({
-      name: 'venice-video',
-      services: ['wan-2.5', 'kling-2'],
-      serviceApiProtocols: { 'wan-2.5': ['venice-video'], 'kling-2': ['venice-video'] },
-    });
-  }
-  const credits = new TextEncoder().encode(JSON.stringify({ error: 'Insufficient USD or Diem balance to complete request.' }));
-
-  it('unadvertises a media service after repeated out-of-credits responses', () => {
-    const provider = makeMediaProvider();
-    const onChange = vi.fn();
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 3, onChange });
-
-    for (let i = 0; i < 2; i++) {
-      checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402, body: credits });
-    }
-    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
-
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402, body: credits });
-    expect(provider.services).toEqual(['kling-2']);
-    expect(onChange).toHaveBeenCalledTimes(1);
-    const event = onChange.mock.calls[0]![0] as ModelHealthEvent;
-    expect(event).toMatchObject({ provider: 'venice-video', service: 'wan-2.5', status: 'removed', consecutiveFailures: 3 });
-    expect(event.detail).toContain('Insufficient USD');
-  });
-
-  it('removes the whole provider from discovery when every media service is dead', () => {
-    const provider = makeMediaProvider();
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 401 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'kling-2', statusCode: 403 });
-    expect(provider.services).toEqual([]);
-    expect(provider.healthCheckAvailable).toBe(false);
-  });
-
-  it('ignores user errors, rate limits, and transient upstream errors', () => {
-    const provider = makeMediaProvider();
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
-    for (const statusCode of [400, 404, 413, 422, 429, 500, 502, 503]) {
-      checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode });
-    }
-    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
-    expect(checker.getSnapshot()).toEqual([]);
-  });
-
-  it('resets the failure count after a successful request', () => {
-    const provider = makeMediaProvider();
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 200 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
-    expect(checker.getSnapshot()[0]).toMatchObject({ consecutiveFailures: 1, lastStatusCode: 402 });
-  });
-
-  it('counts openai-images services the probe skips', () => {
-    const provider = makeProvider({
-      services: ['gpt-image-1'],
-      serviceApiProtocols: { 'gpt-image-1': ['openai-images'] },
-    });
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
-    checker.recordRequestOutcome({ provider: 'test-provider', service: 'gpt-image-1', statusCode: 402 });
-    expect(provider.services).toEqual([]);
-  });
-
-  it('leaves probed text services and unknown providers to the periodic probe', () => {
-    const provider = makeProvider();
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
-    checker.recordRequestOutcome({ provider: 'test-provider', service: 'model-a', statusCode: 402 });
-    checker.recordRequestOutcome({ provider: 'other-provider', service: 'model-a', statusCode: 402 });
-    expect(provider.services).toEqual(['model-a', 'model-b']);
-    expect(checker.getSnapshot()).toEqual([]);
-  });
-
-  it('keeps a removed media service unadvertised until restart', async () => {
-    vi.useFakeTimers();
-    try {
-      const provider = makeMediaProvider();
-      const onChange = vi.fn();
-      const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1, onChange });
-      checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402, body: credits });
-      expect(provider.services).toEqual(['kling-2']);
-
-      vi.advanceTimersByTime(24 * 60 * 60_000);
-      await checker.runSweep();
-      expect(provider.services).toEqual(['kling-2']);
-      expect(onChange).toHaveBeenCalledTimes(1);
-      expect(checker.getSnapshot().find((s) => s.service === 'wan-2.5')).toMatchObject({ advertised: false });
-    } finally {
-      vi.useRealTimers();
-    }
-  });
-
-  it('never probes a removed media service with a paid request', async () => {
-    const handleRequest = vi.fn(async (req: SerializedHttpRequest) => jsonResponse(req.requestId, 200));
-    const provider = { ...makeMediaProvider(), handleRequest };
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    await checker.runSweep();
-    expect(handleRequest).not.toHaveBeenCalled();
-    expect(provider.services).toEqual(['kling-2']);
-  });
-});
-
 describe('ModelHealthChecker free media health checks', () => {
   type Results = Record<string, ServiceHealthStatus>;
   const next = <T>(answers: Array<T | Error>): T => {
@@ -589,38 +470,6 @@ describe('ModelHealthChecker free media health checks', () => {
     const checker = new ModelHealthChecker({ targets: [{ provider: accountOnly }], failureThreshold: 1 });
     await checker.runSweep();
     expect(accountOnly.services).toEqual([]);
-  });
-
-  it('re-advertises a service unadvertised by buyer requests only after the balance grows', async () => {
-    const { provider } = makeCheckedProvider([available], [funded(0.1), funded(0.1), funded(25)]);
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
-    await checker.runSweep();
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    expect(provider.services).toEqual(['kling-2']);
-
-    await checker.runSweep();
-    expect(provider.services).toEqual(['kling-2']);
-
-    await checker.runSweep();
-    expect(provider.services).toEqual(['wan-2.5', 'kling-2']);
-  });
-
-  it('keeps counting buyer request failures across passing checks', async () => {
-    const { provider } = makeCheckedProvider([available], [funded(0.1)]);
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 2 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    await checker.runSweep();
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    expect(provider.services).toEqual(['kling-2']);
-  });
-
-  it('re-advertises a service unadvertised by buyer requests without a balance only if its key failed', async () => {
-    const { provider } = makeCheckedProvider([available]);
-    const checker = new ModelHealthChecker({ targets: [{ provider }], failureThreshold: 1 });
-    checker.recordRequestOutcome({ provider: 'venice-video', service: 'wan-2.5', statusCode: 402 });
-    await checker.runSweep();
-    expect(provider.services).toEqual(['kling-2']);
   });
 
   it('uses the unwrapped probe provider for the free check', async () => {

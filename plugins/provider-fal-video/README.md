@@ -17,7 +17,7 @@ export FAL_VIDEO_API_KEY=<seller-fal-key>
 - `FAL_VIDEO_BILLING_API_KEY`: optional fal key with the `billing:usage:read` permission (presets BILLING, READONLY or FULL), used only to read the credit balance
 - `FAL_VIDEO_MIN_BALANCE_USD`: optional, default `0`. With a billing key, models stop being advertised while the balance is at or below it
 
-Each seller health sweep reads fal's model list (`GET https://api.fal.ai/v1/models`, with the seller's key, since fal rate-limits anonymous lookups): an endpoint fal no longer lists, or no longer reports as `active`, stops being advertised. A `deprecated` endpoint stays advertised with a warning. Without a billing key, running out of credits is only noticed when buyer requests fail, and such a model stays unadvertised until the seller restarts.
+Each seller health sweep reads fal's model list (`GET https://api.fal.ai/v1/models`, with the seller's key, since fal rate-limits anonymous lookups): an endpoint fal no longer lists, or no longer reports as `active`, stops being advertised. A `deprecated` endpoint stays advertised with a warning. Without a billing key, running out of credits is not detected.
 
 The service ID is the fal endpoint ID; aliases are not supported.
 

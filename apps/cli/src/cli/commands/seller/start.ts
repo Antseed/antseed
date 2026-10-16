@@ -23,7 +23,6 @@ import {
   parseEther,
   type Provider,
   type Prover,
-  type SellerProviderResponseEvent,
   type ConfigField,
   resolveChainConfig,
   loadOrCreateIdentity,
@@ -838,8 +837,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
       // Image and video services are not probed because a meaningful probe
       // would generate and charge for media. Providers check them with free
       // account and model-list calls instead (checkUpstreamAccount,
-      // checkServiceHealth), and real buyer requests that fail with an
-      // upstream credits or auth error also count against them.
+      // checkServiceHealth).
       let healthChecker: ModelHealthChecker | null = null
       if (healthCheckEnabled && registeredProviders.length > 0) {
         healthChecker = new ModelHealthChecker({
@@ -860,8 +858,6 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
             void node.refreshSellerMetadata().catch(() => {})
           },
         })
-        const checker = healthChecker
-        node.on('seller:provider-response', (event: SellerProviderResponseEvent) => checker.recordRequestOutcome(event))
         healthChecker.start()
       }
 

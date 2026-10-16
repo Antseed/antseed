@@ -225,7 +225,7 @@ Both must be positive integers; `recordFlushIntervalMs` must be at least 1000. T
 
 The seller probes each text service at startup and every `intervalMs` afterwards. After `failureThreshold` consecutive failures it stops advertising the service, and advertises it again when a probe succeeds.
 
-Image and video services are never probed, because a probe would generate a paid result. Instead, buyer requests that fail with `401`, `402` or `403` (a rejected key or no credits) count as failed probes, and the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)). A service stopped by failed buyer requests is advertised again once the free check reports a higher balance; without a free check, it stays stopped until the seller restarts.
+Image and video services are never probed, because a probe would generate a paid result. Instead, the Venice and fal video plugins check the account and model list for free every `intervalMs` (see [Image and video services](/docs/provide/media)).
 
 ```json
 {

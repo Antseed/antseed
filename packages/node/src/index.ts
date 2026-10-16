@@ -23,7 +23,6 @@ export {
   DEFAULT_HEALTH_CHECK_PROBE_TIMEOUT_MS,
   type ModelHealthCheckerConfig,
   type ModelHealthEvent,
-  type SellerProviderResponseEvent,
   type ModelHealthTarget,
   type ServiceHealthSnapshot,
 } from './health/model-health-checker.js';
