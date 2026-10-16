@@ -698,14 +698,14 @@ function makeRoutingPeer(seed: string): PeerInfo {
       peerId: seed.repeat(40), version: 12, timestamp: Date.now(), signature: '', region: 'test',
       providers: [{ provider: 'alpha', services: ['alpha-route'], maxConcurrency: 1, currentLoad: 0,
         defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 },
-        serviceApiProtocols: { 'alpha-route': ['model-routing'] },
-        serviceUnitBillingModels: { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+        serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
+        serviceUnitBillingModels: { 'alpha-route': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
       }],
     } as unknown as NonNullable<PeerInfo['metadata']>,
   }
 }
 
-function routerClient(recommend: PeerInfo, contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []) {
+function routerClient(recommend: PeerInfo, contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []) {
   return {
     listModels: async () => [{ id: 'gpt-5' }],
     async selectRoute(_request: SerializedHttpRequest, _peers: PeerInfo[], context: any) {
@@ -722,7 +722,7 @@ function routerClient(recommend: PeerInfo, contexts: Array<{ costQualityTradeoff
 
 test('a pinned routing service ranks only the sellers the key policy allows and is paid by the key identity', async (t) => {
   const router = makeRoutingPeer('d')
-  const contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
   const h = await startHarness(t, [cheap, pricey, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
   ;(h.proxy as any)._buyerIdentities = { ensure: async (name: string) => name === 'team-a' }
   const res = await fetch(`${h.url}/v1/chat/completions`, {
@@ -732,14 +732,14 @@ test('a pinned routing service ranks only the sellers the key policy allows and 
   })
   assert.equal(res.status, 200, await res.text())
   assert.equal(contexts.length, 1)
-  assert.equal(contexts[0]!.costQualityTradeoff, 8)
+  assert.equal(contexts[0]!.options?.cost_quality_tradeoff, 8)
   assert.deepEqual(contexts[0]!.candidates.map((candidate) => candidate.peerId), [cheap.peerId])
   assert.deepEqual(h.dispatched.map((entry) => [entry.peerId, entry.buyerIdentity]), [[router.peerId, 'team-a'], [cheap.peerId, 'team-a']])
 })
 
 test('a pinned routing service the key policy blocks is refused before any ranking is bought', async (t) => {
   const router = makeRoutingPeer('d')
-  const contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
   const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
   const res = await chat(h, withPolicy({ blockedPeerIds: [router.peerId] }), `${router.peerId}@alpha-route`)
   assert.equal(res.status, 403)
@@ -750,7 +750,7 @@ test('a pinned routing service the key policy blocks is refused before any ranki
 
 test('a pinned routing service is held to the key policy\'s seller rules and model allow list, but not its token price caps', async (t) => {
   const router = makeRoutingPeer('d')
-  const contexts: Array<{ costQualityTradeoff?: number; candidates: Array<{ peerId?: string }> }> = []
+  const contexts: Array<{ options?: Record<string, unknown>; candidates: Array<{ peerId?: string }> }> = []
   const h = await startHarness(t, [cheap, router], { modelRoutingClient: routerClient(cheap, contexts) as any })
   const model = `${router.peerId}@alpha-route`
 

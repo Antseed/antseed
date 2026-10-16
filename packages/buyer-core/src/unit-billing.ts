@@ -26,8 +26,8 @@ import {
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
-import { NATIVE_VIDEO_PROTOCOLS, type ServiceApiProtocol } from '@antseed/protocol/service-api';
-import { validateRoutingRankResponse } from '@antseed/protocol/model-routing';
+import { NATIVE_VIDEO_PROTOCOLS, ROUTING_PROTOCOLS, isRoutingProtocol, type RoutingProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { routingWireProtocol } from '@antseed/protocol/routing';
 
 const ZERO_TOKEN_USAGE: TokenUsage = {
   inputTokens: 0,
@@ -41,7 +41,7 @@ export type BillingRequestFacts =
   | { kind: 'image'; image: ImageRequestFacts }
   | { kind: 'video'; video: NativeVideoFacts }
   /** `candidateIds`: the ids the rank request sent; a ranking is billable only when it names one. */
-  | { kind: 'routing'; candidateIds: string[] };
+  | { kind: 'routing'; protocol: RoutingProtocol; candidateIds: string[] };
 
 export interface CapturedUnitBillingContext {
   context: UnitBillingContext;
@@ -83,53 +83,39 @@ const imageBillingAdapter: UnitBillingAdapter = {
   measure: extractImageResponseUsage,
 };
 
-// Model routing charges one completed request per well-formed ranking: one the buyer's client
-// accepts, naming at least one candidate the request sent. Buyer and seller run this same
-// function on the same request and response bytes, so they always agree on the charge.
+// Routing services charge one completed request per well-formed ranking: one naming at least
+// one candidate the request sent. Each routing protocol defines how to read candidates and
+// rankings (`RoutingWireProtocol`). Buyer and seller run the same function on the same request
+// and response bytes, so they always agree on the charge.
 const routingBillingAdapter: UnitBillingAdapter = {
-  name: 'model-routing billing',
+  name: 'routing billing',
   units: ['completed_requests'],
-  protocols: ['model-routing'],
-  capture: (args) => ({
-    context: {
-      sellerPeerId: args.sellerPeerId,
-      provider: args.provider,
-      service: args.service,
-      serviceApiProtocol: args.serviceApiProtocol,
-      unitLimits: { completed_requests: 1 },
-    },
-    requestUsage: { units: { completed_requests: 1 } },
-    requestFacts: { kind: 'routing', candidateIds: routingCandidateIds(args.request) },
-  }),
+  protocols: ROUTING_PROTOCOLS,
+  capture: (args) => {
+    if (!isRoutingProtocol(args.serviceApiProtocol)) throw new Error(`routing billing cannot bill ${args.serviceApiProtocol}`);
+    return {
+      context: {
+        sellerPeerId: args.sellerPeerId,
+        provider: args.provider,
+        service: args.service,
+        serviceApiProtocol: args.serviceApiProtocol,
+        unitLimits: { completed_requests: 1 },
+      },
+      requestUsage: { units: { completed_requests: 1 } },
+      requestFacts: {
+        kind: 'routing',
+        protocol: args.serviceApiProtocol,
+        candidateIds: routingWireProtocol(args.serviceApiProtocol).rankCandidateIds(args.request.body),
+      },
+    };
+  },
   measure: (response, requestFacts) => {
-    if (requestFacts.kind !== 'routing') return wrongFacts('model-routing billing', requestFacts);
-    const parsed = response.statusCode >= 200 && response.statusCode < 300 ? parseJsonObject(response.body) : null;
-    return { usage: { units: { completed_requests: acceptedRanking(parsed, requestFacts.candidateIds) ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+    if (requestFacts.kind !== 'routing') return wrongFacts('routing billing', requestFacts);
+    const billable = response.statusCode >= 200 && response.statusCode < 300
+      && routingWireProtocol(requestFacts.protocol).isBillableRanking(response.body, requestFacts.candidateIds);
+    return { usage: { units: { completed_requests: billable ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
   },
 };
-
-/** The string candidate ids a rank request sends; empty for any other request (the free models list). */
-function routingCandidateIds(request: SerializedHttpRequest): string[] {
-  const routing = parseJsonObject(request.body)?.routing;
-  const candidates = routing && typeof routing === 'object' && !Array.isArray(routing)
-    ? (routing as Record<string, unknown>).candidates
-    : undefined;
-  if (!Array.isArray(candidates)) return [];
-  return candidates.flatMap((candidate) => {
-    const id = candidate && typeof candidate === 'object' ? (candidate as Record<string, unknown>).id : undefined;
-    return typeof id === 'string' ? [id] : [];
-  });
-}
-
-function acceptedRanking(parsed: unknown, candidateIds: string[]): boolean {
-  if (!parsed || candidateIds.length === 0) return false;
-  try {
-    validateRoutingRankResponse(parsed, candidateIds.map((id) => ({ id })));
-    return true;
-  } catch {
-    return false;
-  }
-}
 
 const videoBillingAdapter: UnitBillingAdapter = {
   name: 'video billing',

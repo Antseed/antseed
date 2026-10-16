@@ -1,14 +1,15 @@
 import { describe, expect, it, vi } from 'vitest'
 import type { PeerInfo, RouteSelectionContext, SerializedHttpRequest } from '@antseed/node'
-import { ModelRoutingClient, RouterCannotRankError, routingCandidateId } from './model-routing-client.js'
+import { ModelRoutingClient } from './model-routing-client.js'
+import { InvalidRouterOptionsError, irpCandidateId as routingCandidateId, RouterCannotRankError } from './routing-adapters/index.js'
 
 const routerId = 'a'.repeat(40)
 const inferenceId = 'b'.repeat(40)
 const target = { peerId: routerId, provider: 'alpha', serviceId: 'route' }
 const peer = { peerId: routerId, metadata: { version: 12, peerId: routerId, providers: [{
   provider: 'alpha', services: ['route'], defaultPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, maxConcurrency: 1, currentLoad: 0,
-  serviceApiProtocols: { route: ['model-routing'] },
-  serviceUnitBillingModels: { route: { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
+  serviceApiProtocols: { route: ['irp-suggest'] },
+  serviceUnitBillingModels: { route: { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } },
 }] } } as unknown as PeerInfo
 const modelsResponse = { object: 'list', data: [{ id: 'model-a', object: 'model', owned_by: 'x' }, { id: 'model-b', object: 'model' }] }
 const idA = `openai:model-a@${'b'.repeat(40)}`
@@ -30,7 +31,7 @@ function setup(respond: (body: any) => { statusCode?: number; body: unknown } = 
     return { requestId: serviceRequest.requestId, statusCode: reply.statusCode ?? 200, headers: {}, body: encode(reply.body) }
   })
   const context: RouteSelectionContext = {
-    routingService: target, costQualityTradeoff: 9, signal: new AbortController().signal, conversationKey: 'chat-1',
+    routingService: target, options: { cost_quality_tradeoff: 9 }, signal: new AbortController().signal, conversationKey: 'chat-1',
     candidates: [{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai', inputUsdPerMillion: 1, outputUsdPerMillion: 2, cachedInputUsdPerMillion: 0.1 }],
     acceptRecommendations: accepted, sendRequest,
   }
@@ -38,12 +39,23 @@ function setup(respond: (body: any) => { statusCode?: number; body: unknown } = 
 }
 
 describe('ModelRoutingClient', () => {
+  it('picks the adapter by the protocol the router advertises', () => {
+    const client = new ModelRoutingClient()
+    expect(client.adapterFor(target, [peer]).protocol).toBe('irp-suggest')
+    expect(client.adapterFor(target, [peer]).options.map(option => option.key)).toEqual(['cost_quality_tradeoff'])
+    expect(client.validateOptions(target, [peer], { cost_quality_tradeoff: 0 })).toEqual({ cost_quality_tradeoff: 0 })
+    expect(() => client.validateOptions(target, [peer], { cost_quality_tradeoff: true })).toThrow(InvalidRouterOptionsError)
+  })
+
   it('lists the router models through a free request to the selected peer', async () => {
     const client = new ModelRoutingClient()
     const sendRequest = vi.fn(async (_peer: PeerInfo, serviceRequest: SerializedHttpRequest) =>
       ({ requestId: serviceRequest.requestId, statusCode: 200, headers: {}, body: encode(modelsResponse) }))
     expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).toEqual([{ id: 'model-a' }, { id: 'model-b' }])
     expect(sendRequest.mock.calls[0]![1]).toMatchObject({ method: 'GET', path: '/v1/routing/models', headers: { accept: 'application/json' } })
+    sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ object: 'list', data: [{ id: '*', object: 'model', max_pricing: { input: 0, output: 0 } }] }) })
+    expect(await client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest }))
+      .toEqual([{ id: '*', maxPricing: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } }])
     sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 200, headers: {}, body: encode({ ...modelsResponse, data: 'model-a' }) })
     await expect(client.listModels(target, [peer], { signal: new AbortController().signal, sendRequest })).rejects.toThrow('models response')
     sendRequest.mockResolvedValueOnce({ requestId: 'x', statusCode: 503, headers: {}, body: encode({ type: 'urn:irp:problem:unavailable', title: 'Unavailable', status: 503, detail: 'Try later.' }) })
@@ -69,7 +81,7 @@ describe('ModelRoutingClient', () => {
 
   it('omits an unset tradeoff and prices cache reads at the input price when unpriced', async () => {
     const state = setup()
-    delete state.context.costQualityTradeoff
+    delete state.context.options
     state.context.candidates = [{ serviceId: 'model-a', peerId: inferenceId, provider: 'openai', inputUsdPerMillion: 1, outputUsdPerMillion: 2 }]
     await state.client.selectRoute(request(), [peer], state.context)
     const { routing } = decode(state.sendRequest.mock.calls[0]![1].body)
@@ -137,14 +149,14 @@ describe('ModelRoutingClient', () => {
     await expect(problem.client.selectRoute(request(), [peer], problem.context)).rejects.toThrow('None of the 1 candidates fit.')
   })
 
-  it('reuses a same-turn recommendation, but not after the text or tradeoff change', async () => {
+  it('reuses a same-turn recommendation, but not after the text or router options change', async () => {
     const state = setup()
     await state.client.selectRoute(request(), [peer], state.context)
     await state.client.selectRoute(request(), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(1)
     await state.client.selectRoute(request('New turn'), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(2)
-    state.context.costQualityTradeoff = 1
+    state.context.options = { cost_quality_tradeoff: 1 }
     await state.client.selectRoute(request('New turn'), [peer], state.context)
     expect(state.sendRequest).toHaveBeenCalledTimes(3)
   })
@@ -166,11 +178,12 @@ describe('ModelRoutingClient', () => {
     expect(state.sendRequest).toHaveBeenCalledTimes(2)
   })
 
-  it('validates before sending: user text, candidates, tradeoff and a model-routing service', async () => {
+  it('validates before sending: user text, candidates, router options and a routing service', async () => {
     const state = setup()
     await expect(state.client.selectRoute(request(''), [peer], state.context)).rejects.toThrow('user text')
     await expect(state.client.selectRoute(request(), [peer], { ...state.context, candidates: [] })).rejects.toThrow('No eligible candidates')
-    await expect(state.client.selectRoute(request(), [peer], { ...state.context, costQualityTradeoff: 11 })).rejects.toThrow('Invalid model-routing rank request')
+    await expect(state.client.selectRoute(request(), [peer], { ...state.context, options: { cost_quality_tradeoff: 11 } })).rejects.toThrow('must be an integer from 0 to 10')
+    await expect(state.client.selectRoute(request(), [peer], { ...state.context, options: { tier: 'fast' } })).rejects.toThrow(InvalidRouterOptionsError)
     const duplicate = state.context.candidates[0]!
     await expect(state.client.selectRoute(request(), [peer], { ...state.context, candidates: [duplicate, duplicate] })).rejects.toThrow('Duplicate')
     const plain = setup()
@@ -178,11 +191,11 @@ describe('ModelRoutingClient', () => {
     expect(state.sendRequest).not.toHaveBeenCalled()
     const wrongProtocol = structuredClone(peer)
     wrongProtocol.metadata!.providers[0]!.serviceApiProtocols!.route = ['openai-chat-completions']
-    await expect(plain.client.selectRoute(request(), [wrongProtocol], plain.context)).rejects.toThrow('does not advertise model-routing')
+    await expect(plain.client.selectRoute(request(), [wrongProtocol], plain.context)).rejects.toThrow('does not advertise a routing protocol')
     const twoRouters = structuredClone(peer)
     twoRouters.metadata!.providers[0]!.services.push('other')
-    twoRouters.metadata!.providers[0]!.serviceApiProtocols!.other = ['model-routing']
-    await expect(plain.client.selectRoute(request(), [twoRouters], plain.context)).rejects.toThrow('more than one model-routing service')
+    twoRouters.metadata!.providers[0]!.serviceApiProtocols!.other = ['irp-suggest']
+    await expect(plain.client.selectRoute(request(), [twoRouters], plain.context)).rejects.toThrow('more than one irp-suggest routing service')
     expect(plain.sendRequest).not.toHaveBeenCalled()
   })
 

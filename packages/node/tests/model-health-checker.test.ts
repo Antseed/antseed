@@ -116,7 +116,7 @@ describe('ModelHealthChecker', () => {
     const onRequest = vi.fn(async request => jsonResponse(request.requestId, 200));
     const provider = makeProvider({
       services: ['alpha-route', 'model-a'], onRequest,
-      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+      serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
     });
     const checker = new ModelHealthChecker({ targets: [{ provider }] });
     await checker.runSweep();

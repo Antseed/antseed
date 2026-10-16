@@ -22,8 +22,8 @@ describe('completed-request seller payments', () => {
   function setup(overrides: Record<string, unknown> = {}, routing = true) {
     let spend = 0n;
     const provider = makeProvider(10, 10, { name: 'alpha', services: ['alpha-route', 'image'] });
-    provider.serviceApiProtocols = routing ? { 'alpha-route': ['model-routing'] } : {};
-    provider.serviceUnitBillingModels = { 'alpha-route': { 'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
+    provider.serviceApiProtocols = routing ? { 'alpha-route': ['irp-suggest'] } : {};
+    provider.serviceUnitBillingModels = { 'alpha-route': { 'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] } } };
     provider.pricing = { defaults: { inputUsdPerMillion: 10, outputUsdPerMillion: 10 }, services: { 'alpha-route': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } };
     provider.handleRequest = vi.fn(async request => ({ requestId: request.requestId, statusCode: 200, headers: {}, body: new TextEncoder().encode(JSON.stringify(result)) }));
     delete (provider as Partial<Provider>).handleRequestStream;
@@ -72,9 +72,9 @@ describe('completed-request seller payments', () => {
     expect(harness.provider.handleRequest).not.toHaveBeenCalled();
   });
   it('allows at most one routing service per seller', () => {
-    const routing = (name: string, service: string) => Object.assign(makeProvider(0, 0, { name, services: [service] }), { serviceApiProtocols: { [service]: ['model-routing'] } }) as Provider;
+    const routing = (name: string, service: string) => Object.assign(makeProvider(0, 0, { name, services: [service] }), { serviceApiProtocols: { [service]: ['irp-suggest'] } }) as Provider;
     expect(() => assertSingleRoutingService([routing('alpha', 'route')])).not.toThrow();
-    expect(() => assertSingleRoutingService([routing('alpha', 'route'), routing('beta', 'other')])).toThrow('at most one model-routing service');
+    expect(() => assertSingleRoutingService([routing('alpha', 'route'), routing('beta', 'other')])).toThrow('at most one irp-suggest routing service');
   });
   it('does not rate limit routing model-list requests; the router limits its own list', async () => {
     const harness = setup();

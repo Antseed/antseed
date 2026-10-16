@@ -39,15 +39,15 @@ Image and video services stay advertised without health checks, because a probe 
 
 ## Routing services
 
-A routing service ranks other sellers for a buyer request; it does not serve inference. Advertise it with the `model-routing` API protocol and bill one `completed_requests` unit per well-formed ranking. A seller can offer only one routing service.
+A routing service ranks other sellers for a buyer request; it does not serve inference. Routing is a service category, not one API: each routing API is its own service API protocol with its own provider plugin, and none is a default. Today's routing protocol is `irp-suggest` ([Inference Routing Protocol](https://github.com/inference-routing/spec) suggest-only mode). Bill one `completed_requests` unit per well-formed ranking. IRP paths name no service, so a seller can offer only one `irp-suggest` service.
 
 ```json title="provider service settings"
 {
   "services": ["alpha-route"],
-  "serviceApiProtocols": { "alpha-route": ["model-routing"] },
+  "serviceApiProtocols": { "alpha-route": ["irp-suggest"] },
   "serviceUnitBillingModels": {
     "alpha-route": {
-      "model-routing": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
+      "irp-suggest": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
     }
   }
 }
@@ -55,11 +55,20 @@ A routing service ranks other sellers for a buyer request; it does not serve inf
 
 The ranking price is separate from the token price of the seller that serves the inference. Errors and malformed rankings are not billed. Older buyers reject announcements containing `completed_requests`, so run routing services on separate peers until buyers upgrade. See [Model Routing](/docs/model-routing).
 
-To offer routing without building a router, run the `default-router` plugin. It answers the routing endpoints itself, lists `*` so buyers send candidates from their own catalog, ranks the free ones by their live Artificial Analysis score, and is free by default:
+Routing plugins:
+
+- `irp-router` serves any IRP router you run or use, forwarding both IRP endpoints to its URL:
 
 ```bash
-antseed config seller add-provider router --plugin default-router
-antseed config seller add-service router default-router --input 0 --output 0
+antseed config seller add-provider router --plugin irp-router --base-url https://router.example.com
+antseed config seller add-service router my-router --input 0 --output 0
+```
+
+- `free-model-router` answers the IRP endpoints itself, lists `*` so buyers send candidates from their own catalog, ranks the free ones by their live Artificial Analysis score, and is free by default:
+
+```bash
+antseed config seller add-provider router --plugin free-model-router
+antseed config seller add-service router free-model-router --input 0 --output 0
 ```
 
 Free rankings count toward `seller.freeTier` like any other free service.

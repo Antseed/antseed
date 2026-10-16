@@ -1,21 +1,61 @@
-# Model routing protocol
+# Routing services
 
-`model-routing` lets a seller rank which inference destination should serve a
-request. The router only ranks; the buyer still sends the inference to the
-chosen seller and pays that seller normally.
+A routing service ranks which inference destination should serve a request. The
+router only ranks; the buyer still sends the inference to the chosen seller and
+pays that seller normally.
 
-The wire format is [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md)
-(IRP) **suggest-only mode**: plain IRP paths and bodies, with no AntSeed headers.
-The one AntSeed addition is the optional `max_pricing` member on model-list entries
-(see [Models](#models)); IRP clients ignore unknown members, so the wire format stays
-compatible. Seller identity stays on the buyer.
+Routing is a service category, not one API. Each routing API is its own service
+API protocol, served by its own provider plugin, the same way `venice-video` and
+`fal-video` are separate video protocols. No routing protocol and no router is a
+default: buyers pick a router like any other service.
 
-A routing seller advertises a service with API protocol `model-routing` and
-a completed-request unit billing model (see
-[unit-billing-services.md](unit-billing-services.md)). A seller offers **at most
-one** routing service, so the request path alone says what is being bought: the
-node refuses to start with two, and buyers do not select a peer that advertises
-two. Run a second seller node to offer another router.
+| Protocol | API | Provider plugins |
+| --- | --- | --- |
+| `irp-suggest` | [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md) suggest-only mode | `irp-router` (any IRP router), `free-model-router` |
+
+Every routing protocol shares:
+
+- **Billing.** One `completed_requests` unit per well-formed ranking that names at
+  least one candidate the buyer sent (see
+  [unit-billing-services.md](unit-billing-services.md)). Errors and malformed
+  rankings are not billed.
+- **Candidates.** The buyer sends only the destinations its own trust, price,
+  allow/block and pin filters allow, and maps the answer back through the
+  candidates it sent, so a router can never name a seller the buyer filtered out.
+- **Catalog.** A free request lists the models the router can rank; the buyer
+  caches it for 60 seconds.
+- **Options.** Router settings travel in the protocol's own terms. Buyers keep them
+  opaque (`router.options` in `POST /_antseed/route`, `routing` in a request
+  body) and check them against the option specs of the router's protocol before
+  a ranking is bought. `GET /v1/models?type=router` lists each router's
+  `protocol` and `options`.
+
+### Adding a routing protocol
+
+1. Append the protocol to `ROUTING_PROTOCOLS` in `@antseed/protocol/service-api`
+   (billing metadata encodes protocols by list position, so append only).
+2. Add its wire binding (`RoutingWireProtocol`: which requests are the free catalog
+   and the billed ranking, how to read candidate IDs and judge a ranking billable,
+   and its error format) to `ROUTING_WIRES` in `@antseed/protocol/routing`.
+3. Add a buyer adapter (`RoutingClientAdapter`: catalog, rank, option specs) to
+   `@antseed/router-core`'s routing adapters.
+4. Ship a provider plugin that advertises the protocol.
+
+The rest of this page specifies `irp-suggest`.
+
+## `irp-suggest`: IRP suggest-only mode
+
+The wire format is IRP **suggest-only mode**: plain IRP paths and bodies, with no
+AntSeed headers. The one AntSeed addition is the optional `max_pricing` member on
+model-list entries (see [Models](#models)); IRP clients ignore unknown members, so
+the wire format stays compatible. Seller identity stays on the buyer.
+
+A routing seller advertises a service with API protocol `irp-suggest` and a
+completed-request unit billing model. IRP paths name no service, so a seller
+offers **at most one** `irp-suggest` service and the request path alone says
+what is being bought: the node refuses to start with two, and buyers do not
+select a peer that advertises two. Run a second seller node to offer another
+IRP router.
 
 ## Endpoints
 
@@ -111,9 +151,9 @@ Request:
   request adapters; the buyer still sends the original request to the chosen seller.
   `model`, `stream` and `stream_options` are omitted. Content with no Chat Completions
   equivalent (Anthropic thinking and document blocks, cache markers) is dropped.
-- `cost_quality_tradeoff` is an integer from `0` (best quality regardless of price)
-  to `10` (cheapest acceptable candidate). It is omitted when the buyer has not chosen
-  one, and the router uses IRP's default, `5`.
+- `cost_quality_tradeoff` is the `irp-suggest` router option: an integer from `0`
+  (best quality regardless of price) to `10` (cheapest acceptable candidate). It is
+  omitted when the buyer has not chosen one, and the router uses IRP's default, `5`.
 - `candidates` are the exact destinations the buyer allows, after its own trust, price
   and pin filters. The same model from two sellers is two candidates.
   - `id` is `provider:model@peer`. If that is longer than 128 characters, it is
@@ -168,7 +208,7 @@ Non-success responses are not charged, so the 422 retry is free.
 1. List the selected routing service's models (cached for 60 seconds).
 2. Build candidates from eligible sellers whose model is listed (or matched by `*`)
    within the entry's `max_pricing`, named the way the router lists it.
-3. Call rank with the buyer's `cost_quality_tradeoff`, if set.
+3. Call rank with the buyer's router options (`cost_quality_tradeoff`), if set.
 4. Validate the response (a well-formed ranking is billed as one completed request) and
    send the inference to the first ranked candidate. Later candidates are fallbacks for
    retryable inference errors. Tool-loop continuations of the same user turn reuse the
@@ -177,7 +217,7 @@ Non-success responses are not charged, so the 422 retry is free.
 The router receives the whole conversation, so buyers should only select routers
 they would trust with that content.
 
-The buyer-side implementation is the built-in `ModelRoutingClient` in
-`@antseed/router-core`. It is selected by the advertised `model-routing`
-service API protocol, not by a router plugin.
-Types and validators are in `@antseed/protocol` (`@antseed/protocol/model-routing`).
+The buyer-side implementation is the protocol-neutral `ModelRoutingClient` in
+`@antseed/router-core`, which picks the `irp-suggest` adapter from the router's
+advertised service API protocol. IRP types and validators are in
+`@antseed/protocol/irp`; the protocol-neutral pieces are in `@antseed/protocol/routing`.

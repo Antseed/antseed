@@ -354,8 +354,8 @@ describe('OpenAI SDK integration: Images API payment flow over buyer proxy', () 
       name: 'alpha',
       services: ['alpha-route'],
       pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
-      serviceApiProtocols: { 'alpha-route': ['model-routing'] },
-      serviceUnitBillingModels: { 'alpha-route': { 'model-routing': {
+      serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
+      serviceUnitBillingModels: { 'alpha-route': { 'irp-suggest': {
         version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }],
       } } },
       maxConcurrency: 5,

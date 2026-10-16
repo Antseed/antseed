@@ -12,10 +12,10 @@ A ranking with five ranked candidates is one completed request. A response count
 
 ```ts
 services: ['alpha-route'],
-serviceApiProtocols: { 'alpha-route': ['model-routing'] },
+serviceApiProtocols: { 'alpha-route': ['irp-suggest'] },
 serviceUnitBillingModels: {
   'alpha-route': {
-    'model-routing': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] },
+    'irp-suggest': { version: 1, components: [{ unit: 'completed_requests', priceUsd: 0.001 }] },
   },
 },
 pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
@@ -23,11 +23,13 @@ pricing: { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } },
 
 ## How it is billed
 
-Routing uses the same unit-billing path as images: a billing adapter for the
-`model-routing` protocol in `@antseed/buyer-core/unit-billing`. Buyer and seller
-run the same adapter on the same response bytes. A 2xx response with
-`version: 1` and at least one recommendation counts as 1. Anything else counts
-as 0. Because both sides compute the same count, a malformed answer is free on
+Routing uses the same unit-billing path as images: one billing adapter for every
+routing protocol in `@antseed/buyer-core/unit-billing`, which asks the protocol's
+wire binding (`RoutingWireProtocol` in `@antseed/protocol/routing`) which
+candidates a rank request sent and whether the answer is a usable ranking. Buyer
+and seller run the same adapter on the same request and response bytes. For
+`irp-suggest`, a 2xx IRP ranking that names at least one sent candidate counts
+as 1. Anything else counts as 0. Because both sides compute the same count, a malformed answer is free on
 both sides and never leaves the seller waiting for an authorization.
 
 Channel opening, top-ups, 402 retries, NeedAuth validation and settlement are

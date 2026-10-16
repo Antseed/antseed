@@ -85,10 +85,10 @@ test('router model lists restrict candidates, are cached, and refresh once after
   assert.equal(listCalls, callsBefore)
 })
 
-test('a * entry with max_pricing sends only candidates within the limit', async () => {
+test('a * entry with maxPricing sends only candidates within the limit', async () => {
   const sent: string[] = []
   const client: ModelRoutingClientApi = {
-    listModels: async () => [{ id: '*', max_pricing: { input: 0, cache_read: 0, output: 0 } }],
+    listModels: async () => [{ id: '*', maxPricing: { inputUsdPerMillion: 0, cachedInputUsdPerMillion: 0, outputUsdPerMillion: 0 } }],
     async selectRoute(_request, _peers, context) {
       sent.push(...context.candidates.map(candidate => candidate.serviceId))
       return [{ serviceId: 'free-model' }]
@@ -187,18 +187,18 @@ test('model allowlists restrict routing candidates and returned recommendations'
   assert.equal(calls, before)
 })
 
-test('the selection tradeoff is passed to the routing client, and omitted when unset', async () => {
-  const seen: Array<number | undefined> = []
+test('the selection router options are passed to the routing client, and omitted when unset', async () => {
+  const seen: unknown[] = []
   const client: ModelRoutingClientApi = {
     listModels: async () => [{ id: 'model-a' }],
     async selectRoute(_request, _peers, context) {
-      seen.push(context.costQualityTradeoff)
-      assert.equal('costQualityTradeoff' in context, context.costQualityTradeoff !== undefined)
+      seen.push(context.options?.cost_quality_tradeoff)
+      assert.equal('options' in context, context.options !== undefined)
       return [{ serviceId: 'model-a' }]
     },
   }
   const args = { node: unusedNode, client, request, peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal }
-  await executeRouterSelection({ ...args, selection: { ...routerSelection, costQualityTradeoff: 0 } })
+  await executeRouterSelection({ ...args, selection: { ...routerSelection, options: { cost_quality_tradeoff: 0 } } })
   await executeRouterSelection({ ...args, selection: routerSelection })
   assert.deepEqual(seen, [0, undefined])
 })

@@ -9,10 +9,16 @@ hide_title: true
 
 A **routing service** is a seller service that ranks where a buyer should send a request. It does not run the inference. The buyer sends the inference to the chosen seller and pays that seller normally.
 
-Routing services use [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md) (IRP) **suggest-only mode** without AntSeed-specific headers or fields. Seller identity stays with the buyer.
+Routing is a service category, not one API. Each routing API is its own service API protocol with its own provider plugin, and no protocol or router is a default: buyers choose a router like any other service.
+
+| Protocol | API | Provider plugins |
+| --- | --- | --- |
+| `irp-suggest` | [Inference Routing Protocol](https://github.com/inference-routing/spec/blob/main/SPEC.md) (IRP) suggest-only mode | `irp-router` (any IRP router), `free-model-router` |
+
+Router settings are sent in the terms of the router's protocol. `GET /v1/models?type=router` lists each router's `protocol` and the `options` it accepts. The rest of this page describes `irp-suggest`, which uses IRP without AntSeed-specific headers or fields. Seller identity stays with the buyer.
 
 :::note Routing service vs. router plugin
-A [router plugin](/docs/router-api) is local buyer policy. A routing service is a paid service offered by another peer on the network. Buyers use the built-in `ModelRoutingClient` in `@antseed/router-core` for routing services; no router plugin is required.
+A [router plugin](/docs/router-api) is local buyer policy. A routing service is a paid service offered by another peer on the network. Buyers use the built-in `ModelRoutingClient` in `@antseed/router-core`, which picks an adapter by the router's protocol; no router plugin is required.
 :::
 
 ## Endpoints
@@ -22,7 +28,7 @@ A [router plugin](/docs/router-api) is local buyer policy. A routing service is 
 | `GET /v1/routing/models` | Free; the router limits its own list | Models the router can score |
 | `POST /v1/routing/rank` | One completed request | Ranks the buyer's allowed candidates for one user turn |
 
-A seller advertises a routing service with the `model-routing` API protocol and offers **at most one** routing service. Buyers ignore peers that advertise more than one.
+A seller advertises an IRP routing service with the `irp-suggest` API protocol. IRP paths name no service, so a seller offers **at most one** `irp-suggest` service. Buyers ignore peers that advertise more than one.
 
 ## Models
 

@@ -150,12 +150,12 @@ function parseSseEvents(sseText: string): Array<{ event: string | null; data: st
 
 describe('detectRequestServiceApiProtocol', () => {
   it('identifies model routing independently from TypeSafe and the local routing endpoint', () => {
-    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/routing/rank', headers: {} }))).toBe('model-routing');
-    expect(detectRequestServiceApiProtocol(makeRequest({ method: 'GET', path: '/v1/routing/models?service=router', headers: {} }))).toBe('model-routing');
+    expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/routing/rank', headers: {} }))).toBe('irp-suggest');
+    expect(detectRequestServiceApiProtocol(makeRequest({ method: 'GET', path: '/v1/routing/models?service=router', headers: {} }))).toBe('irp-suggest');
     expect(detectRequestServiceApiProtocol(makeRequest({ path: '/v1/systemone', headers: {} }))).toBe('typesafe-systemone');
     expect(detectRequestServiceApiProtocol(makeRequest({ path: '/_antseed/route', headers: {} }))).toBeNull();
-    expect(selectTargetProtocolForRequest('model-routing', ['model-routing'])).toEqual({ targetProtocol: 'model-routing', requiresTransform: false });
-    expect(selectTargetProtocolForRequest('model-routing', ['openai-chat-completions'])).toBeNull();
+    expect(selectTargetProtocolForRequest('irp-suggest', ['irp-suggest'])).toEqual({ targetProtocol: 'irp-suggest', requiresTransform: false });
+    expect(selectTargetProtocolForRequest('irp-suggest', ['openai-chat-completions'])).toBeNull();
   });
   it('detects anthropic messages from path', () => {
     expect(detectRequestServiceApiProtocol(makeRequest())).toBe('anthropic-messages');
