@@ -1,6 +1,6 @@
 import type { Provider } from '../interfaces/seller-provider.js';
 import type { SerializedHttpRequest } from '../types/http.js';
-import { isNativeVideoProtocol, type ServiceApiProtocol } from '../types/service-api.js';
+import { isNativeVideoProtocol, isRoutingProtocol, type ServiceApiProtocol } from '../types/service-api.js';
 import { debugLog, debugWarn } from '../utils/debug.js';
 
 /** Default sweep interval. Each sweep sends one 1-token probe per advertised service. */
@@ -330,9 +330,7 @@ function resolveProbeProtocol(provider: Provider, service: string): ServiceApiPr
 }
 
 export function supportsHealthProbe(protocol: ServiceApiProtocol): boolean {
-  // Image generations cost real money per probe; everything else has a
-  // near-free minimal request shape.
-  return protocol !== 'openai-images' && !isNativeVideoProtocol(protocol);
+  return protocol !== 'openai-images' && !isRoutingProtocol(protocol) && !isNativeVideoProtocol(protocol);
 }
 
 /**

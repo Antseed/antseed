@@ -26,7 +26,8 @@ import {
   unitUsageToBillingReport,
   validateUnitBillingModelV1,
 } from '@antseed/protocol/billing';
-import { NATIVE_VIDEO_PROTOCOLS, type ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { NATIVE_VIDEO_PROTOCOLS, ROUTING_PROTOCOLS, isRoutingProtocol, type RoutingProtocol, type ServiceApiProtocol } from '@antseed/protocol/service-api';
+import { routingWireProtocol } from '@antseed/protocol/routing';
 
 const ZERO_TOKEN_USAGE: TokenUsage = {
   inputTokens: 0,
@@ -38,7 +39,9 @@ const ZERO_TOKEN_USAGE: TokenUsage = {
 /** What a unit-billed request asked for, tagged by the kind of output it bills. */
 export type BillingRequestFacts =
   | { kind: 'image'; image: ImageRequestFacts }
-  | { kind: 'video'; video: NativeVideoFacts };
+  | { kind: 'video'; video: NativeVideoFacts }
+  /** `candidateIds`: the ids the rank request sent; a ranking is billable only when it names one. */
+  | { kind: 'routing'; protocol: RoutingProtocol; candidateIds: string[] };
 
 export interface CapturedUnitBillingContext {
   context: UnitBillingContext;
@@ -80,6 +83,40 @@ const imageBillingAdapter: UnitBillingAdapter = {
   measure: extractImageResponseUsage,
 };
 
+// Routing services charge one completed request per well-formed ranking: one naming at least
+// one candidate the request sent. Each routing protocol defines how to read candidates and
+// rankings (`RoutingWireProtocol`). Buyer and seller run the same function on the same request
+// and response bytes, so they always agree on the charge.
+const routingBillingAdapter: UnitBillingAdapter = {
+  name: 'routing billing',
+  units: ['completed_requests'],
+  protocols: ROUTING_PROTOCOLS,
+  capture: (args) => {
+    if (!isRoutingProtocol(args.serviceApiProtocol)) throw new Error(`routing billing cannot bill ${args.serviceApiProtocol}`);
+    return {
+      context: {
+        sellerPeerId: args.sellerPeerId,
+        provider: args.provider,
+        service: args.service,
+        serviceApiProtocol: args.serviceApiProtocol,
+        unitLimits: { completed_requests: 1 },
+      },
+      requestUsage: { units: { completed_requests: 1 } },
+      requestFacts: {
+        kind: 'routing',
+        protocol: args.serviceApiProtocol,
+        candidateIds: routingWireProtocol(args.serviceApiProtocol).rankCandidateIds(args.request.body),
+      },
+    };
+  },
+  measure: (response, requestFacts) => {
+    if (requestFacts.kind !== 'routing') return wrongFacts('routing billing', requestFacts);
+    const billable = response.statusCode >= 200 && response.statusCode < 300
+      && routingWireProtocol(requestFacts.protocol).isBillableRanking(response.body, requestFacts.candidateIds);
+    return { usage: { units: { completed_requests: billable ? 1 : 0 } }, tokenUsage: ZERO_TOKEN_USAGE };
+  },
+};
+
 const videoBillingAdapter: UnitBillingAdapter = {
   name: 'video billing',
   units: ['video_generations', 'video_seconds'],
@@ -88,16 +125,9 @@ const videoBillingAdapter: UnitBillingAdapter = {
   measure: extractVideoResponseUsage,
 };
 
-function unimplementedUnitBillingAdapter(name: string, units: readonly UnitBillingUnitV1[]): UnitBillingAdapter {
-  const fail = (): never => {
-    throw new Error(`${name} is not implemented`);
-  };
-  return { name, units, protocols: [], capture: fail, measure: fail };
-}
-
 const UNIT_BILLING_ADAPTERS: readonly UnitBillingAdapter[] = [
   imageBillingAdapter,
-  unimplementedUnitBillingAdapter('completed-request billing', ['completed_requests']),
+  routingBillingAdapter,
   videoBillingAdapter,
 ];
 

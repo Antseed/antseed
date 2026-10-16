@@ -322,6 +322,7 @@ export function buildSellerPluginRuntimeEnv(
       ? 'TYPESAFE'
       : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
       : pluginPackage === '@antseed/provider-fal-video' ? 'FAL_VIDEO'
+      : pluginPackage === '@antseed/provider-irp-router' ? 'IRP_ROUTER'
       : 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl

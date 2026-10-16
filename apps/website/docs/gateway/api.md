@@ -33,7 +33,7 @@ See [Commands](/docs/commands) for every option.
 |---|---|
 | Base URL | `https://gateway.example.com/v1` on a server, `http://localhost:8379/v1` for a local gateway. The console's top bar shows yours. |
 | API key | Sent as `Authorization: Bearer $ANTSEED_API_KEY`. |
-| Model | `<peerId>@deepseek-v4-flash` pinned to one provider, or `deepseek-v4-flash` for automatic routing. See [Models and providers](/docs/gateway/models). |
+| Model | `<peerId>@deepseek-v4-flash` pinned to one provider, `deepseek-v4-flash` for automatic routing, or `<routerPeerId>@<routerServiceId>` to let a routing service choose. See [Models and providers](/docs/gateway/models). |
 
 ```bash
 export ANTSEED_API_KEY="antseed_…"
@@ -45,6 +45,21 @@ curl https://gateway.example.com/v1/chat/completions \
 ```
 
 The same keys work through a [tunnel endpoint](/docs/tunnels).
+
+### Use a routing service
+
+Name a routing service as the model and it picks the model and provider for each request, among the ones the key's routing policy allows. Add optional router settings in a `routing` object, in the terms of the router's protocol. For an `irp-suggest` router, `cost_quality_tradeoff` goes from `0` (best quality) to `10` (cheapest); without it the router uses its default, `5`:
+
+```bash
+curl https://gateway.example.com/v1/chat/completions \
+  -H "Authorization: Bearer $ANTSEED_API_KEY" \
+  -H "Content-Type: application/json" \
+  -d '{"model":"<routerPeerId>@<routerServiceId>","messages":[{"role":"user","content":"Hello"}],"routing":{"cost_quality_tradeoff":7}}'
+```
+
+With the OpenAI SDK, pass `routing` as `extra_body={"routing": {"cost_quality_tradeoff": 7}}`. `GET /v1/models?type=router` lists the routers the key may use, with the `model` value, `protocol` and accepted `options` for each.
+
+A router counts as a model in the key's policy: a key limited to certain models needs the router's service id in its allow list. Its peer must also pass the policy's provider rules (allow and block lists, minimum trust and reputation, TEE); token and image price caps do not apply to a router, which charges per ranking. A router that is offline answers like an offline provider: `502`, peer not reachable. The router's fee and the inference are both charged to the key. See [Use a routing service](/docs/api/routing#use-a-routing-service).
 
 ## Supported routes
 

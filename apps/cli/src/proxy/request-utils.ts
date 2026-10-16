@@ -1,4 +1,4 @@
-import { shouldEmitDebugLine, type PeerInfo, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
+import { isRouterOptions, shouldEmitDebugLine, type PeerInfo, type RouterOptions, type SerializedHttpRequest, type SerializedHttpResponse } from '@antseed/node'
 import { extractRequestBodyFields, nativeVideoRoute, parseJsonObject, requestService } from '@antseed/api-adapter'
 
 function isTruthyDebugValue(value: string | undefined): boolean {
@@ -399,4 +399,35 @@ export function rewritePeerPinnedServiceInBody(
 
   const { body: rewritten, headers: updatedHeaders } = encodeRewrittenJsonBody(obj, headers)
   return { body: rewritten, headers: updatedHeaders, pinnedPeerId: parsed.peerId }
+}
+
+/**
+ * Per-request router settings: the body's optional `routing` object, in the serving router's
+ * protocol terms (for `irp-suggest`: `{ "cost_quality_tradeoff": 0-10 }`). They are checked
+ * against that router's protocol only once the request is known to go through a router.
+ */
+export type RequestRoutingOptions = RouterOptions
+
+/**
+ * Reads and removes the body's `routing` object, so it never reaches a seller.
+ * It only applies when the request is served through a routing service. A malformed one is
+ * still removed; `invalid` carries the error for the caller to report only when a router is
+ * used, so other requests drop it silently.
+ */
+export function takeRoutingOptions(
+  request: SerializedHttpRequest,
+): { kind: 'none' } | { kind: 'options'; request: SerializedHttpRequest; options: RequestRoutingOptions; invalid?: string } {
+  if (!getHeader(request.headers, 'content-type').toLowerCase().includes('application/json') || request.body.length === 0) {
+    return { kind: 'none' }
+  }
+  const obj = parseJsonObject(request.body)
+  if (!obj || !('routing' in obj)) return { kind: 'none' }
+  const routing = obj['routing']
+  delete obj['routing']
+  const { body, headers } = encodeRewrittenJsonBody(obj, request.headers)
+  const stripped = { ...request, body, headers }
+  if (routing === null || routing === undefined) return { kind: 'options', request: stripped, options: {} }
+  return isRouterOptions(routing)
+    ? { kind: 'options', request: stripped, options: { ...routing } }
+    : { kind: 'options', request: stripped, options: {}, invalid: '`routing` must be an object of router settings with string, number or boolean values.' }
 }

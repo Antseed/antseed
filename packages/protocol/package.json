@@ -61,6 +61,14 @@
       "import": "./dist/billing.js",
       "types": "./dist/billing.d.ts"
     },
+    "./routing": {
+      "import": "./dist/routing.js",
+      "types": "./dist/routing.d.ts"
+    },
+    "./irp": {
+      "import": "./dist/irp.js",
+      "types": "./dist/irp.d.ts"
+    },
     "./capability": {
       "import": "./dist/capability.js",
       "types": "./dist/capability.d.ts"

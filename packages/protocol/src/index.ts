@@ -9,6 +9,8 @@ export * from './signatures.js';
 export * from './connection-auth.js';
 export * from './signing.js';
 export * from './service-api.js';
+export * from './routing.js';
+export * from './irp.js';
 export * from './billing.js';
 export * from './capability.js';
 export * from './peer-metadata.js';
