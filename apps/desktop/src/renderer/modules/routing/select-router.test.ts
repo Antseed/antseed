@@ -20,13 +20,14 @@ beforeEach(() => {
 });
 afterEach(() => vi.unstubAllGlobals());
 
-test.each([0, 10, undefined])('autosave and reselection preserve IRP tradeoff %s', (costQualityTradeoff) => {
+test.each([0, 10, undefined])('autosave and reselection preserve router options (tradeoff %s)', (tradeoff) => {
+  const options = tradeoff === undefined ? undefined : { cost_quality_tradeoff: tradeoff };
   const state = createInitialUiState();
   initStore(state);
-  updateVprRouterSettings(undefined, state, service, 5, [model]);
-  updateVprRouterSettings(undefined, state, service, costQualityTradeoff, [model]);
+  updateVprRouterSettings(undefined, state, service, { cost_quality_tradeoff: 5 }, [model]);
+  updateVprRouterSettings(undefined, state, service, options, [model]);
   selectVprRouter(undefined, state, chat, service);
-  assert.equal(state.vprRouteSelection.router?.costQualityTradeoff, costQualityTradeoff);
+  assert.deepEqual(state.vprRouteSelection.router?.options, options);
   assert.deepEqual(state.vprRouteSelection.router?.allowedModels, [model]);
 });
 
@@ -35,20 +36,20 @@ test('inactive-router settings persist without selecting it and are used by the 
   initStore(state);
   const previous = state.vprRouteSelection;
   const bridge = { chatSetBuyerDefaultRoute: vi.fn(async () => ({ ok: true })) };
-  updateVprRouterSettings(bridge, state, service, 9, [model]);
+  updateVprRouterSettings(bridge, state, service, { cost_quality_tradeoff: 9 }, [model]);
   assert.equal(state.vprRouteSelection, previous);
   assert.equal(bridge.chatSetBuyerDefaultRoute.mock.calls.length, 0);
-  assert.deepEqual(loadVprRouterSettings(service), createDesktopRouterSelection(service, 9, [model]));
+  assert.deepEqual(loadVprRouterSettings(service), createDesktopRouterSelection(service, { cost_quality_tradeoff: 9 }, [model]));
   const restarted = createInitialUiState();
   initStore(restarted);
   selectVprRouter(bridge, restarted, chat, service);
-  assert.deepEqual(restarted.vprRouteSelection.router, createDesktopRouterSelection(service, 9, [model]));
+  assert.deepEqual(restarted.vprRouteSelection.router, createDesktopRouterSelection(service, { cost_quality_tradeoff: 9 }, [model]));
   assert.equal(chat.handleServiceChange.mock.calls.length, 0);
 });
 
 test('editing a different router does not replace the selected router or its settings', () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = createDesktopRouterSelection(service, 5);
+  state.vprRouteSelection.router = createDesktopRouterSelection(service, { cost_quality_tradeoff: 5 });
   initStore(state);
   const previous = state.vprRouteSelection;
   const other = { ...service, peerId: 'e'.repeat(40) };
@@ -60,13 +61,13 @@ test('editing a different router does not replace the selected router or its set
 
 test('active edits sync automatically without reselecting chats or restarting connected profiles', async () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = createDesktopRouterSelection(service, 5);
+  state.vprRouteSelection.router = createDesktopRouterSelection(service, { cost_quality_tradeoff: 5 });
   initStore(state);
   const bridge = { chatSetBuyerDefaultRoute: vi.fn(async () => ({ ok: true })), systemProxyStart: vi.fn() };
-  updateVprRouterSettings(bridge, state, service, 7, [model]);
+  updateVprRouterSettings(bridge, state, service, { cost_quality_tradeoff: 7 }, [model]);
   await vi.waitFor(() => assert.equal(state.vprRouteError, null));
   assert.deepEqual(bridge.chatSetBuyerDefaultRoute.mock.calls[0], [{ selection: {
-    kind: 'router', ...createDesktopRouterSelection(service, 7, [model]),
+    kind: 'router', ...createDesktopRouterSelection(service, { cost_quality_tradeoff: 7 }, [model]),
   } }]);
   assert.equal(bridge.systemProxyStart.mock.calls.length, 0);
   assert.equal(chat.handleServiceChange.mock.calls.length, 0);
@@ -88,40 +89,40 @@ test('empty selections reset to all models through autosave and reselection', ()
 
 test('failed autosave sync reports an error and the next edit can recover', async () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = createDesktopRouterSelection(service, 5);
+  state.vprRouteSelection.router = createDesktopRouterSelection(service, { cost_quality_tradeoff: 5 });
   initStore(state);
   const bridge = { chatSetBuyerDefaultRoute: vi.fn()
     .mockResolvedValueOnce({ ok: false, error: 'Router unavailable' })
     .mockResolvedValueOnce({ ok: true }) };
-  updateVprRouterSettings(bridge, state, service, 7);
+  updateVprRouterSettings(bridge, state, service, { cost_quality_tradeoff: 7 });
   await vi.waitFor(() => assert.equal(state.vprRouteError, 'Router unavailable'));
-  updateVprRouterSettings(bridge, state, service, 9);
+  updateVprRouterSettings(bridge, state, service, { cost_quality_tradeoff: 9 });
   await vi.waitFor(() => assert.equal(state.vprRouteError, null));
-  assert.deepEqual(loadVprRouterSettings(service)?.costQualityTradeoff, 9);
+  assert.deepEqual(loadVprRouterSettings(service)?.options, { cost_quality_tradeoff: 9 });
 });
 
 test('rapid edits ignore an older failed response after the newer selection succeeds', async () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = createDesktopRouterSelection(service, 5);
+  state.vprRouteSelection.router = createDesktopRouterSelection(service, { cost_quality_tradeoff: 5 });
   initStore(state);
   let completeOld!: (result: { ok: boolean; error: string }) => void;
   const bridge = { chatSetBuyerDefaultRoute: vi.fn()
     .mockImplementationOnce(() => new Promise(resolve => { completeOld = resolve; }))
     .mockResolvedValueOnce({ ok: true }) };
-  updateVprRouterSettings(bridge, state, service, 7, []);
-  updateVprRouterSettings(bridge, state, service, 9, [model]);
+  updateVprRouterSettings(bridge, state, service, { cost_quality_tradeoff: 7 }, []);
+  updateVprRouterSettings(bridge, state, service, { cost_quality_tradeoff: 9 }, [model]);
   completeOld({ ok: false, error: 'Stale response' });
   await vi.waitFor(() => assert.equal(state.vprRouteError, null));
-  assert.deepEqual(state.vprRouteSelection.router, createDesktopRouterSelection(service, 9, [model]));
+  assert.deepEqual(state.vprRouteSelection.router, createDesktopRouterSelection(service, { cost_quality_tradeoff: 9 }, [model]));
 });
 
 test('storage failures do not silently apply unpersisted settings', () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = createDesktopRouterSelection(service, 5);
+  state.vprRouteSelection.router = createDesktopRouterSelection(service, { cost_quality_tradeoff: 5 });
   initStore(state);
   const previous = state.vprRouteSelection;
   vi.stubGlobal('localStorage', { setItem: () => { throw new Error('Storage full'); } });
-  assert.throws(() => updateVprRouterSettings(undefined, state, service, 9), /Storage full/);
+  assert.throws(() => updateVprRouterSettings(undefined, state, service, { cost_quality_tradeoff: 9 }), /Storage full/);
   assert.equal(state.vprRouteSelection, previous);
 });
 
@@ -129,12 +130,12 @@ test('a router saved outside the app replaces the selection and its settings wit
   const state = createInitialUiState();
   initStore(state);
   state.vprRouteSelection = { model: { provider: 'openai', serviceId: 'model-a', label: 'Model A', categories: [] }, mode: 'auto', peerId: null };
-  const router = createDesktopRouterSelection(service, 8, [model]);
+  const router = createDesktopRouterSelection(service, { cost_quality_tradeoff: 8 }, [model]);
   assert.equal(adoptExternalVprRouter(state, router), true);
   assert.deepEqual(state.vprRouteSelection, { model: null, mode: 'auto', peerId: null, router });
   assert.deepEqual(loadVprRouteSelection(createInitialUiState().vprRouteSelection), state.vprRouteSelection);
   assert.deepEqual(loadVprRouterSettings(service), router);
   const previous = state.vprRouteSelection;
-  assert.equal(adoptExternalVprRouter(state, { ...router, costQualityTradeoff: 11 }), false);
+  assert.equal(adoptExternalVprRouter(state, { ...router, options: { cost_quality_tradeoff: null } } as never), false);
   assert.equal(state.vprRouteSelection, previous);
 });

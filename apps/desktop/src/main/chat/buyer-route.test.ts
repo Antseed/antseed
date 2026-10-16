@@ -16,12 +16,12 @@ test('desktop route writes serialize rapid switches and connected-app updates pr
       selection = body.router ? { kind: 'router', ...body.router } : { kind: 'model', model: body.model };
     }
     response.setHeader('content-type', 'application/json');
-    response.end(JSON.stringify({ ok: true, ...(selection.kind === 'router' ? { model: null, router: { service: selection.service, costQualityTradeoff: selection.costQualityTradeoff } } : { model: selection.model, router: null }) }));
+    response.end(JSON.stringify({ ok: true, ...(selection.kind === 'router' ? { model: null, router: { service: selection.service, options: selection.options } } : { model: selection.model, router: null }) }));
   });
   await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve));
   context.after(() => new Promise<void>((resolve) => server.close(() => resolve())));
   const port = (server.address() as { port: number }).port;
-  const router: RoutingSelection = { kind: 'router', service: { peerId: 'a'.repeat(40), provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 5 };
+  const router: RoutingSelection = { kind: 'router', service: { peerId: 'a'.repeat(40), provider: 'levanto', serviceId: 'route' }, options: { cost_quality_tradeoff: 5 } };
   forgetBuyerRoute();
   await Promise.all([
     writeBuyerRoute(port, { kind: 'model', model: 'first' }),
@@ -48,7 +48,7 @@ async function routeServer(context: { after: (fn: () => void) => void }, initial
   return { state, server, port: (server.address() as { port: number }).port };
 }
 
-const savedRouter = { service: { peerId: 'a'.repeat(40), provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 3, allowedModels: [{ provider: 'openai', serviceId: 'model-a' }] };
+const savedRouter = { service: { peerId: 'a'.repeat(40), provider: 'levanto', serviceId: 'route' }, options: { cost_quality_tradeoff: 3 }, allowedModels: [{ provider: 'openai', serviceId: 'model-a' }] };
 
 test('desktop route reads return the saved router and fail quietly when the proxy is down', async (context) => {
   const { state, server, port } = await routeServer(context, { ok: true, model: null, router: savedRouter });

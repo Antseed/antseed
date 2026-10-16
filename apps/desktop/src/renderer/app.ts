@@ -653,11 +653,11 @@ registerActions({
   selectVprModel: (provider, serviceId, peerId) => {
     actionSelectVprModel(provider, serviceId, peerId);
   },
-  selectVprRouter: (service, costQualityTradeoff, forConversation = false, allowedModels) => {
-    selectVprRouter(bridge, uiState, chatApi, service, costQualityTradeoff, forConversation, allowedModels);
+  selectVprRouter: (service, options, forConversation = false, allowedModels) => {
+    selectVprRouter(bridge, uiState, chatApi, service, options, forConversation, allowedModels);
   },
-  updateVprRouterSettings: (service, costQualityTradeoff, allowedModels) => {
-    updateVprRouterSettings(bridge, uiState, service, costQualityTradeoff, allowedModels);
+  updateVprRouterSettings: (service, options, allowedModels) => {
+    updateVprRouterSettings(bridge, uiState, service, options, allowedModels);
   },
   clearVprPinnedPeer: () => {
     recordUserAction('route_mode_change', 'model');

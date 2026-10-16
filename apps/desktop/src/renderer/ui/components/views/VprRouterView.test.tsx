@@ -18,8 +18,11 @@ function createRoutingCatalog(models: RouterAllowedModel[]) {
 
 const { selectRouter } = vi.hoisted(() => ({ selectRouter: vi.fn() }));
 vi.mock('../../hooks/useActions', () => ({ useActions: () => ({ selectVprRouter: selectRouter }) }));
+const irpOptions = [{ key: 'cost_quality_tradeoff', type: 'integer' as const, label: 'Cost vs. quality',
+  description: '0 picks the best quality regardless of price; 10 picks the cheapest acceptable model.', minimum: 0, maximum: 10, default: 5 }];
+
 const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route', label: 'Test Levanto', priceMicroUsdc: '1000',
-  catalog: createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]) };
+  protocol: 'irp-suggest', options: irpOptions, catalog: createRoutingCatalog([{ provider: 'openai', serviceId: 'model-a' }]) };
 afterEach(() => { setVprModelPageTarget('openai', 'test'); selectRouter.mockClear(); });
 
 test.each(['0', '1000'])('router detail only shows billing units for paid pricing (%s)', (priceMicroUsdc) => {
@@ -46,30 +49,37 @@ test.each([
 ])('allowed-models info stays the same with $selection selected', ({ allowedModels }) => {
   const state = createInitialUiState();
   state.vprRoutingServices = [service];
-  state.vprRouteSelection.router = { service, costQualityTradeoff: undefined, allowedModels };
+  state.vprRouteSelection.router = { service, options: undefined, allowedModels };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
   assert.match(markup, /Choose which supported models this router can use\. If the router returns no allowed model, the request fails\./);
   assert.doesNotMatch(markup, /models? selected\.|including newly advertised ones/);
 });
 
-test.each([
-  [0, 0], [2, 0], [5, 1], [8, 2], [10, 2], [undefined, 1],
-] as const)('IRP cost-quality control displays %s as the selected option without reversing its scale', (costQualityTradeoff, stop) => {
+test.each([[0, '0'], [8, '8'], [undefined, '5']] as const)('router settings render the router\'s advertised options (%s)', (tradeoff, shown) => {
+  const state = createInitialUiState();
+  const withOptions = service;
+  state.vprRoutingServices = [withOptions];
+  state.vprRouteSelection.router = { service, ...(tradeoff === undefined ? {} : { options: { cost_quality_tradeoff: tradeoff } }) };
+  initStore(state);
+  const markup = renderToStaticMarkup(<VprRouterView service={withOptions} />);
+  assert.match(markup, />Router settings</);
+  assert.match(markup, /id="router-option-cost_quality_tradeoff"[^>]*>Cost vs\. quality<\/h3>/);
+  assert.match(markup, /type="range"[^>]*min="0"[^>]*max="10"/);
+  assert.match(markup, new RegExp(`>${shown}</span>`));
+  assert.equal(markup.includes("The router&#x27;s default."), tradeoff === undefined);
+  assert.equal(markup.includes("Use the router&#x27;s default"), tradeoff !== undefined);
+});
+
+test('a router that advertises no options shows no settings', () => {
   const state = createInitialUiState();
   state.vprRoutingServices = [service];
-  state.vprRouteSelection.router = { service, costQualityTradeoff };
   initStore(state);
-  const markup = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(markup, /id="router-cost-quality-title"[^>]*>Cost \/ quality<\/h3>/);
-  assert.match(markup, /role="radiogroup" aria-labelledby="router-cost-quality-title"/);
-  const options = [...markup.matchAll(/role="radio" aria-checked="(true|false)"[^>]*>([^<]+)<\/button>/g)];
-  assert.deepEqual(options.map(option => option[2]), ['Best quality', 'Balanced', 'Lowest cost']);
-  assert.deepEqual(options.map(option => option[1] === 'true'), options.map((_, index) => index === stop));
-  assert.doesNotMatch(markup, /<output/);
-  assert.equal(markup.includes("the router&#x27;s default."), costQualityTradeoff === undefined);
-  assert.doesNotMatch(markup, /type="range"|>Default<\/button>/);
-  assert.equal(state.vprRouteSelection.router?.costQualityTradeoff, costQualityTradeoff);
+  const bare = { ...service, protocol: undefined, options: undefined };
+  state.vprRoutingServices = [bare];
+  initStore(state);
+  const markup = renderToStaticMarkup(<VprRouterView service={bare} />);
+  assert.doesNotMatch(markup, /Router settings|type="range"/);
 });
 
 test('Models lists a router with the same row structure and a Router tag', () => {
@@ -89,7 +99,7 @@ test('Models lists a router with the same row structure and a Router tag', () =>
 test('the top-right button stays selection-only even when applying settings fails', () => {
   const state = createInitialUiState();
   state.vprRoutingServices = [service];
-  state.vprRouteSelection.router = { service, costQualityTradeoff: undefined };
+  state.vprRouteSelection.router = { service, options: undefined };
   state.vprRouteError = 'Router unavailable';
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
@@ -105,9 +115,9 @@ test('browsing router detail shows settings without changing the selected model'
   initStore(state);
   setVprRouterPageTarget(service);
   const markup = renderToStaticMarkup(<VprModelView />);
-  assert.match(markup, /Cost \/ quality/);
+  assert.match(markup, /Cost vs\. quality/);
   assert.match(markup, /Use router/);
-  assert.match(markup, /role="radio" aria-checked="true"[^>]*>Balanced</);
+  assert.match(markup, />5<\/span>/);
   assert.match(markup, /Allowed models/);
   assert.doesNotMatch(markup, /Chooses a model for each request from the models you allow/);
   assert.doesNotMatch(markup, /levanto \/ route/);
@@ -119,10 +129,11 @@ test('browsing router detail shows settings without changing the selected model'
 
 test('saved preferences remain visible and unavailable routers cannot be applied', () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = { service, costQualityTradeoff: 0 };
+  state.vprRouteSelection.router = { service, options: { cost_quality_tradeoff: 0 } };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(markup, /role="radio" aria-checked="true"[^>]*>Best quality</);
+  // Settings come from the router's advertised options, so an undiscovered router shows none.
+  assert.doesNotMatch(markup, /Router settings/);
   assert.match(markup, /This router is unavailable/);
   assert.match(markup, /disabled=""/);
   assert.doesNotMatch(markup, /\/completed request/);
@@ -132,7 +143,7 @@ test('empty and stale selections show all models without a previously-selected s
   const state = createInitialUiState();
   state.chatDiscoverRowsLoaded = true;
   state.vprRoutingServices = [service];
-  state.vprRouteSelection.router = { service, costQualityTradeoff: 5, allowedModels: [] };
+  state.vprRouteSelection.router = { service, options: { cost_quality_tradeoff: 5 }, allowedModels: [] };
   initStore(state);
   const empty = renderToStaticMarkup(<VprRouterView service={service} />);
   assert.doesNotMatch(empty, /Select at least one model/);
@@ -154,16 +165,15 @@ test('unknown catalogs never claim support for the entire network', () => {
   assert.doesNotMatch(unknown, /All supported models/);
 });
 
-test('unset tradeoff displays router default without persisting an explicit value', () => {
+test('an unset option displays the router default without persisting an explicit value', () => {
   const state = createInitialUiState();
   state.vprRoutingServices = [service];
-  state.vprRouteSelection.router = { service, costQualityTradeoff: undefined };
+  state.vprRouteSelection.router = { service, options: undefined };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={service} />);
-  assert.match(markup, /role="radio" aria-checked="true"[^>]*>Balanced</);
-  assert.match(markup, /the router&#x27;s default\./);
-  assert.doesNotMatch(markup, /cqt|Quality focused/);
-  assert.deepEqual(state.vprRouteSelection.router.costQualityTradeoff, undefined);
+  assert.match(markup, />5<\/span>/);
+  assert.match(markup, /The router&#x27;s default\./);
+  assert.deepEqual(state.vprRouteSelection.router.options, undefined);
 });
 
 test('catalog intersection excludes unsupported providers and drops stale selections from display', () => {
@@ -180,7 +190,7 @@ test('catalog intersection excludes unsupported providers and drops stale select
   assert.ok(rows[0] && rows[1]);
   state.vprRoutableRows = [rows[0], rows[1]];
   state.vprModelCatalog = projectRowsToVprModelCatalog([rows[0], rows[1]]);
-  state.vprRouteSelection.router = { service: catalogService, costQualityTradeoff: 5,
+  state.vprRouteSelection.router = { service: catalogService, options: { cost_quality_tradeoff: 5 },
     allowedModels: [{ provider: 'openai', serviceId: 'removed-model' }] };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
@@ -201,7 +211,7 @@ test('checkbox identity distinguishes provider and model IDs containing separato
   assert.ok(rows[0] && rows[1]);
   state.vprRoutableRows = [rows[0], rows[1]];
   state.vprModelCatalog = projectRowsToVprModelCatalog([rows[0], rows[1]]);
-  state.vprRouteSelection.router = { service: catalogService, costQualityTradeoff: 5, allowedModels: [models[0]!] };
+  state.vprRouteSelection.router = { service: catalogService, options: { cost_quality_tradeoff: 5 }, allowedModels: [models[0]!] };
   initStore(state);
   const markup = renderToStaticMarkup(<VprRouterView service={catalogService} />);
   assert.equal((markup.match(/role="checkbox" aria-checked="true"/g) ?? []).length, 1);

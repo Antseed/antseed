@@ -127,6 +127,30 @@
 
     strong { color: var(--text-primary); font-weight: 500; }
   }
+  .optionSlider {
+    display: flex;
+    flex: 1 1 100%;
+    align-items: center;
+    gap: 10px;
+  }
+  .optionValue {
+    min-width: 2ch;
+    color: var(--text-primary);
+    font-size: 12px;
+    font-variant-numeric: tabular-nums;
+    text-align: right;
+  }
+  .resetOption {
+    padding: 0;
+    border: 0;
+    background: transparent;
+    color: var(--text-muted);
+    font-size: 12px;
+    text-decoration: underline;
+    cursor: pointer;
+
+    &:hover { color: var(--text-primary); }
+  }
 }
 
 .allModels {

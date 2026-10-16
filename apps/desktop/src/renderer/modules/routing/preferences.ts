@@ -164,7 +164,7 @@ export function loadVprRouteSelection(fallback: VprRouteSelection): VprRouteSele
     return fallback;
   }
   if (isDesktopRouterSelection(parsed.router)) {
-    return { model: null, mode: 'auto', peerId: null, router: createDesktopRouterSelection(parsed.router.service, parsed.router.costQualityTradeoff, parsed.router.allowedModels) };
+    return { model: null, mode: 'auto', peerId: null, router: createDesktopRouterSelection(parsed.router.service, parsed.router.options, parsed.router.allowedModels) };
   }
   if (parsed.mode !== 'auto' && parsed.mode !== 'pinned-peer') {
     return fallback;
@@ -191,12 +191,12 @@ function routerSettingsStorageKey(service: RoutingServiceTarget): string {
 export function loadVprRouterSettings(service: RoutingServiceTarget): DesktopRouterSelection | null {
   const stored = loadJson(routerSettingsStorageKey(service));
   if (!isDesktopRouterSelection(stored) || routerSettingsStorageKey(stored.service) !== routerSettingsStorageKey(service)) return null;
-  return createDesktopRouterSelection(stored.service, stored.costQualityTradeoff, stored.allowedModels);
+  return createDesktopRouterSelection(stored.service, stored.options, stored.allowedModels);
 }
 
 export function saveVprRouterSettings(settings: DesktopRouterSelection): void {
   if (!isDesktopRouterSelection(settings)) throw new Error('Invalid router settings');
   if (typeof localStorage === 'undefined') return;
-  const stored = createDesktopRouterSelection(settings.service, settings.costQualityTradeoff, settings.allowedModels);
+  const stored = createDesktopRouterSelection(settings.service, settings.options, settings.allowedModels);
   localStorage.setItem(routerSettingsStorageKey(settings.service), JSON.stringify(stored));
 }

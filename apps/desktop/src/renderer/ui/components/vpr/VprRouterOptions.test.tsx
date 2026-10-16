@@ -85,7 +85,7 @@ test('routers offered by several sellers stay distinguishable by seller', () => 
 test('fixed-model chats do not mark the global router as their active selection', () => {
   const state = createInitialUiState();
   const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' };
-  state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router: { service, costQualityTradeoff: 5 } };
+  state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router: { service, options: { cost_quality_tradeoff: 5 } } };
   state.vprRoutingServices = [{ ...service, label: 'Test router', priceMicroUsdc: '1000' }];
   initStore(state);
   const fixed = renderToStaticMarkup(<VprRouterOptions forConversation routerActive={false} />);
@@ -101,7 +101,7 @@ test('fixed-model chats do not mark the global router as their active selection'
 test('a disappeared selected router remains visible with an actionable message', () => {
   const state = createInitialUiState();
   state.vprRouteSelection = { model: null, mode: 'auto', peerId: null,
-    router: { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 5 } };
+    router: { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, options: { cost_quality_tradeoff: 5 } } };
   initStore(state);
   assert.match(renderToStaticMarkup(<VprRouterOptions />), /Selected router unavailable/);
 });
@@ -123,7 +123,7 @@ test.each([false, true])('an empty router catalog renders nothing (chat=%s)', (f
 
 test('an unavailable global router does not add an empty section to a fixed-model chat', () => {
   const state = createInitialUiState();
-  state.vprRouteSelection.router = { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: undefined };
+  state.vprRouteSelection.router = { service: { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' }, options: undefined };
   initStore(state);
   assert.equal(renderToStaticMarkup(<VprRouterOptions forConversation routerActive={false} />), '');
 });

@@ -49,15 +49,19 @@ test('legacy empty saved selections restore as all models', () => {
 
 test('invalid IRP tradeoffs and legacy preferences cannot be restored', () => {
   const service = { peerId: 'd'.repeat(40), provider: 'levanto', serviceId: 'route' };
-  for (const costQualityTradeoff of [-1, 11, 2.5, NaN, Infinity, '5', null]) {
-    assert.equal(isDesktopRouterSelection({ service, costQualityTradeoff }), false);
+  for (const options of [[], 'cheap', { nested: {} }, { n: Number.NaN }, { n: Infinity }, { n: null }]) {
+    assert.equal(isDesktopRouterSelection({ service, options }), false);
+  }
+  assert.equal(isDesktopRouterSelection({ service, costQualityTradeoff: 5 }), false);
+  for (const options of [{ cost_quality_tradeoff: 0 }, { tier: 'fast', strict: true }]) {
+    assert.equal(isDesktopRouterSelection({ service, options }), true);
   }
   assert.equal(isDesktopRouterSelection({ service, preferences: { tradeoff: '9' } }), false);
   assert.equal(isDesktopRouterSelection({ service }), true);
 });
 
 test('Malformed targets are not restored as paid router selections', () => {
-  for (const value of [null, {}, [], { service: null }, { service: { peerId: 'bad', provider: 'levanto', serviceId: 'route' }, costQualityTradeoff: 5 }]) {
+  for (const value of [null, {}, [], { service: null }, { service: { peerId: 'bad', provider: 'levanto', serviceId: 'route' }, options: { cost_quality_tradeoff: 5 } }]) {
     assert.equal(isDesktopRouterSelection(value), false);
   }
 });

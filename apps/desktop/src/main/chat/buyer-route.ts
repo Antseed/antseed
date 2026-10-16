@@ -9,7 +9,7 @@ let writes = 0;
 
 function routeKey(selection: RoutingSelection): string {
   if (selection.kind === 'model') return JSON.stringify(['model', selection.model]);
-  return JSON.stringify(['router', selection.service ?? null, selection.costQualityTradeoff ?? null,
+  return JSON.stringify(['router', selection.service ?? null, selection.options ? Object.entries(selection.options).sort(([a], [b]) => a.localeCompare(b)) : null,
     selection.allowedModels?.map(({ provider, serviceId }) => [provider, serviceId]) ?? null]);
 }
 
@@ -51,7 +51,7 @@ export async function checkBuyerRoute(port: number): Promise<ExternalBuyerRouteC
   known = current;
   if (previous && routeKey(previous) === routeKey(current)) return null;
   if (current.kind === 'router') {
-    return current.service ? { router: { service: current.service, costQualityTradeoff: current.costQualityTradeoff, allowedModels: current.allowedModels } } : null;
+    return current.service ? { router: { service: current.service, options: current.options, allowedModels: current.allowedModels } } : null;
   }
   if (previous?.kind !== 'router' || !current.model) return null;
   const at = current.model.indexOf('@');
@@ -67,7 +67,7 @@ export function writeBuyerRoute(port: number, selection: RoutingSelection, prese
     const response = await fetch(url, {
       method: 'POST', headers: { 'content-type': 'application/json' },
       body: JSON.stringify(selection.kind === 'router'
-        ? { model: null, router: { service: selection.service, costQualityTradeoff: selection.costQualityTradeoff, allowedModels: selection.allowedModels } }
+        ? { model: null, router: { service: selection.service, options: selection.options, allowedModels: selection.allowedModels } }
         : { model: selection.model, router: null }), signal: AbortSignal.timeout(5_000),
     });
     const result = await response.json() as { ok?: boolean; error?: string };

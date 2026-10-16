@@ -1,7 +1,7 @@
-import type { RoutingSelection, RoutingServiceTarget } from '@antseed/node';
+import type { RouterOptions, RoutingSelection, RoutingServiceTarget } from '@antseed/node';
 import { preferredModelDisplayName } from '@antseed/node/model-identity';
 
-export type { RoutingServiceTarget } from '@antseed/node';
+export type { RouterOptions, RoutingServiceTarget } from '@antseed/node';
 
 type RouterSelection = Extract<RoutingSelection, { kind: 'router' }>;
 export type RouterAllowedModel = NonNullable<RouterSelection['allowedModels']>[number];
@@ -11,12 +11,37 @@ export type DesktopRouterSelection = Omit<RouterSelection, 'kind' | 'service'> &
 export type DesktopRoutingSelection =
   | Extract<RoutingSelection, { kind: 'model' }>
   | ({ kind: 'router' } & DesktopRouterSelection);
+/**
+ * One setting a router accepts with each ranking, as `GET /_antseed/routing-services` describes it
+ * for the router's protocol (for `irp-suggest`: `cost_quality_tradeoff`, an integer 0-10).
+ */
+export type RouterOptionSpec = {
+  key: string;
+  label: string;
+  description?: string;
+} & (
+  | { type: 'integer' | 'number'; minimum?: number; maximum?: number; default?: number }
+  | { type: 'boolean'; default?: boolean }
+  | { type: 'string'; values?: readonly string[]; default?: string }
+);
 export type RoutingServiceEntry = RoutingServiceTarget & {
+  /** Routing protocol the router speaks, e.g. `irp-suggest`. */
+  protocol?: string;
+  /** Settings the router's protocol accepts; the desktop renders a control for each. */
+  options?: RouterOptionSpec[];
   label: string;
   priceMicroUsdc: string;
   catalog?: { models: RouterAllowedModel[] };
   catalogError?: string;
 };
+
+/** Router settings: at most 32 short keys with string, finite number or boolean values (as the buyer accepts). */
+export function isRouterOptions(value: unknown): value is RouterOptions {
+  if (!value || typeof value !== 'object' || Array.isArray(value)) return false;
+  const entries = Object.entries(value);
+  return entries.length <= 32 && entries.every(([key, option]) => key.length > 0 && key.length <= 64
+    && ((typeof option === 'string' && option.length <= 256) || (typeof option === 'number' && Number.isFinite(option)) || typeof option === 'boolean'));
+}
 
 export function isDesktopRouterSelection(value: unknown): value is DesktopRouterSelection {
   if (!value || typeof value !== 'object') return false;
@@ -24,9 +49,8 @@ export function isDesktopRouterSelection(value: unknown): value is DesktopRouter
   return !!router.service && /^[0-9a-f]{40}$/.test(router.service.peerId)
     && typeof router.service.provider === 'string' && router.service.provider.trim().length > 0
     && typeof router.service.serviceId === 'string' && router.service.serviceId.trim().length > 0
-    && Object.keys(router).every(key => ['service', 'costQualityTradeoff', 'allowedModels'].includes(key))
-    && (router.costQualityTradeoff === undefined || (Number.isInteger(router.costQualityTradeoff)
-      && router.costQualityTradeoff >= 0 && router.costQualityTradeoff <= 10))
+    && Object.keys(router).every(key => ['service', 'options', 'allowedModels'].includes(key))
+    && (router.options === undefined || isRouterOptions(router.options))
     && (router.allowedModels === undefined || (Array.isArray(router.allowedModels) && router.allowedModels.length <= 512
       && router.allowedModels.every(model => !!model && typeof model === 'object' && !Array.isArray(model)
         && Object.keys(model).every(key => key === 'provider' || key === 'serviceId')
@@ -63,9 +87,9 @@ export function normalizeRouterAllowedModels(allowedModels: RouterAllowedModel[]
   return valid.length === allowedModels.length ? allowedModels : valid.length ? valid : undefined;
 }
 
-export function createDesktopRouterSelection(service: RoutingServiceTarget, costQualityTradeoff?: number, allowedModels?: RouterAllowedModel[]): DesktopRouterSelection {
+export function createDesktopRouterSelection(service: RoutingServiceTarget, options?: RouterOptions, allowedModels?: RouterAllowedModel[]): DesktopRouterSelection {
   allowedModels = normalizeRouterAllowedModels(allowedModels);
   return { service: { peerId: service.peerId, provider: service.provider, serviceId: service.serviceId },
-    ...(costQualityTradeoff === undefined ? {} : { costQualityTradeoff }),
+    ...(options === undefined || Object.keys(options).length === 0 ? {} : { options: { ...options } }),
     ...(allowedModels === undefined ? {} : { allowedModels: allowedModels.map(({ provider, serviceId }) => ({ provider, serviceId })) }) };
 }

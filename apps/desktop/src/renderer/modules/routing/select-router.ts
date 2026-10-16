@@ -1,4 +1,4 @@
-import { createDesktopRouterSelection, isDesktopRouterSelection, type DesktopRouterSelection, type RoutingServiceTarget, type RouterAllowedModel, routingServiceKey } from '../../../shared/routing-selection';
+import { createDesktopRouterSelection, isDesktopRouterSelection, type DesktopRouterSelection, type RouterOptions, type RoutingServiceTarget, type RouterAllowedModel, routingServiceKey } from '../../../shared/routing-selection';
 import type { RendererUiState } from '../../core/state';
 import { notifyUiStateChanged } from '../../core/store';
 import type { DesktopBridge } from '../../types/bridge';
@@ -11,13 +11,13 @@ export function selectVprRouter(
   state: RendererUiState,
   chat: Pick<ChatModuleApi, 'handleServiceChange' | 'endProvisionalDefaultModel'>,
   service: RoutingServiceTarget,
-  costQualityTradeoff?: number,
+  options?: RouterOptions,
   forConversation = false,
   allowedModels?: RouterAllowedModel[],
 ): void {
-  const stored = costQualityTradeoff === undefined ? loadVprRouterSettings(service) : null;
+  const stored = options === undefined ? loadVprRouterSettings(service) : null;
   const router = createDesktopRouterSelection(service,
-    costQualityTradeoff ?? stored?.costQualityTradeoff,
+    options ?? stored?.options,
     allowedModels ?? stored?.allowedModels);
   saveVprRouterSettings(router);
   if (forConversation) chat.handleServiceChange('antseed', undefined, false, 'auto');
@@ -33,10 +33,10 @@ export function updateVprRouterSettings(
   bridge: DesktopBridge | undefined,
   state: RendererUiState,
   service: RoutingServiceTarget,
-  costQualityTradeoff: number | undefined,
+  options: RouterOptions | undefined,
   allowedModels?: RouterAllowedModel[],
 ): void {
-  const router = createDesktopRouterSelection(service, costQualityTradeoff, allowedModels);
+  const router = createDesktopRouterSelection(service, options, allowedModels);
   saveVprRouterSettings(router);
   if (!state.vprRouteSelection.router || routingServiceKey(state.vprRouteSelection.router.service) !== routingServiceKey(service)) return;
   state.vprRouteSelection = { ...state.vprRouteSelection, router };
@@ -48,7 +48,7 @@ export function updateVprRouterSettings(
 /** Adopt a router saved in the buyer proxy by another client, without writing it back. */
 export function adoptExternalVprRouter(state: RendererUiState, value: DesktopRouterSelection): boolean {
   if (!isDesktopRouterSelection(value)) return false;
-  const router = createDesktopRouterSelection(value.service, value.costQualityTradeoff, value.allowedModels);
+  const router = createDesktopRouterSelection(value.service, value.options, value.allowedModels);
   saveVprRouterSettings(router);
   state.vprRouteSelection = { model: null, mode: 'auto', peerId: null, router };
   state.chatImageRouteSelection = null;

@@ -1,12 +1,12 @@
 import { useEffect, useMemo, useState } from 'react';
 import { HugeiconsIcon } from '@hugeicons/react';
 import { HierarchyIcon, InformationCircleIcon } from '@hugeicons/core-free-icons';
-import { normalizeRouterAllowedModels, routerDisplayName, routerSellerName, routingServiceKey, type RouterAllowedModel, type RoutingServiceEntry } from '../../../../shared/routing-selection';
+import { normalizeRouterAllowedModels, routerDisplayName, routerSellerName, routingServiceKey, type RouterAllowedModel, type RouterOptions, type RouterOptionSpec, type RoutingServiceEntry } from '../../../../shared/routing-selection';
 import { useUiSelector, shallowEqual } from '../../hooks/useUiSelector';
 import { useActions } from '../../hooks/useActions';
 import { projectRowsToVprModelCatalog } from '../../../modules/catalog/model-catalog';
 import { loadVprRouterSettings } from '../../../modules/routing/preferences';
-import { VprPage, VprSearch, VprStatRow, VprStatTile } from '../vpr/VprKit';
+import { VprPage, VprSearch, VprSlider, VprStatRow, VprStatTile } from '../vpr/VprKit';
 import { VprModelRowList } from '../vpr/VprModelRows';
 import { routerPriceLabel } from '../vpr/VprRouterOptions';
 import { InfoTooltip } from '../InfoTooltip';
@@ -15,20 +15,65 @@ import styles from './VprRouterView.module.scss';
 
 const modelKey = (model: RouterAllowedModel) => JSON.stringify([model.provider, model.serviceId]);
 
-const COST_QUALITY_STOPS = [
-  { value: 0, label: 'Best quality', description: 'Strongest models, highest price.' },
-  { value: 5, label: 'Balanced', description: 'Good answers at a moderate price.' },
-  { value: 10, label: 'Lowest cost', description: 'Cheapest model that can handle the request.' },
-] as const;
-const DEFAULT_COST_QUALITY_STOP = 1;
+/** Value shown for an option: the saved one, else the router's default. */
+function optionValue(spec: RouterOptionSpec, options: RouterOptions | undefined): string | number | boolean | undefined {
+  return options?.[spec.key] ?? spec.default;
+}
 
-function costQualityStopIndex(value: number | undefined): number {
-  if (value === undefined) return DEFAULT_COST_QUALITY_STOP;
-  let nearest = 0;
-  COST_QUALITY_STOPS.forEach((stop, index) => {
-    if (Math.abs(stop.value - value) < Math.abs(COST_QUALITY_STOPS[nearest].value - value)) nearest = index;
-  });
-  return nearest;
+/** Drop an option back to the router's default by removing it; empty options mean "router defaults". */
+function withOption(options: RouterOptions | undefined, key: string, value: string | number | boolean | undefined): RouterOptions | undefined {
+  const next: RouterOptions = { ...options };
+  if (value === undefined) delete next[key];
+  else next[key] = value;
+  return Object.keys(next).length ? next : undefined;
+}
+
+/**
+ * One control per setting the router's protocol accepts, from its option specs: a slider for a
+ * bounded number, a checkbox for a boolean, a choice for a string with fixed values. The desktop
+ * knows no routing protocol; it renders what the router advertises.
+ */
+function RouterOptionControls({ specs, options, onChange }: {
+  specs: readonly RouterOptionSpec[];
+  options: RouterOptions | undefined;
+  onChange: (next: RouterOptions | undefined) => void;
+}) {
+  return <>{specs.map(spec => {
+    const value = optionValue(spec, options);
+    const custom = options?.[spec.key] !== undefined;
+    const titleId = `router-option-${spec.key}`;
+    let control: JSX.Element | null = null;
+    if ((spec.type === 'integer' || spec.type === 'number') && spec.minimum !== undefined && spec.maximum !== undefined) {
+      const current = typeof value === 'number' ? value : spec.minimum;
+      control = <div className={styles.optionSlider}>
+        <VprSlider min={spec.minimum} max={spec.maximum} step={spec.type === 'integer' ? 1 : (spec.maximum - spec.minimum) / 100}
+          value={current} ariaLabel={spec.label} onChange={next => onChange(withOption(options, spec.key, next))} />
+        <span className={styles.optionValue}>{current}</span>
+      </div>;
+    } else if (spec.type === 'boolean') {
+      control = <input type="checkbox" aria-labelledby={titleId} checked={value === true}
+        onChange={event => onChange(withOption(options, spec.key, event.currentTarget.checked))} />;
+    } else if (spec.type === 'string' && spec.values?.length) {
+      control = <div className={styles.segmented} role="radiogroup" aria-labelledby={titleId}>
+        {spec.values.map(choice => <button key={choice} type="button" role="radio" aria-checked={value === choice}
+          className={value === choice ? styles.segmentSelected : styles.segment}
+          onClick={() => onChange(withOption(options, spec.key, choice))}>{choice}</button>)}
+      </div>;
+    }
+    if (!control) return null;
+    return <div key={spec.key} className={styles.settings}>
+      <div className={styles.settingText}>
+        <h3 id={titleId} className={styles.settingTitle}>{spec.label}</h3>
+        {spec.description && <p className={styles.hint}>{spec.description}</p>}
+      </div>
+      {control}
+      <p className={styles.segmentDescription}>
+        {custom
+          ? <button type="button" className={styles.resetOption} onClick={() => onChange(withOption(options, spec.key, undefined))}>Use the router's default</button>
+          : "The router's default."}
+      </p>
+    </div>;
+  })}</>;
 }
 
 export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
@@ -39,13 +84,13 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   const current = snapshot.services.find((entry) => routingServiceKey(entry) === key);
   const active = !!snapshot.selected && routingServiceKey(snapshot.selected.service) === key;
   const [initialSettings] = useState(() => active ? snapshot.selected : loadVprRouterSettings(service));
-  const [costQualityTradeoff, setCostQualityTradeoff] = useState<number | undefined>(initialSettings?.costQualityTradeoff);
+  const [routerOptions, setRouterOptions] = useState<RouterOptions | undefined>(initialSettings?.options);
   const [savedAllowedModels, setAllowedModels] = useState<RouterAllowedModel[] | undefined>(initialSettings?.allowedModels);
   const [saveError, setSaveError] = useState<string | null>(null);
   const [search, setSearch] = useState('');
   useEffect(() => {
     if (!active || !snapshot.selected) return;
-    setCostQualityTradeoff(snapshot.selected.costQualityTradeoff);
+    setRouterOptions(snapshot.selected.options);
     setAllowedModels(snapshot.selected.allowedModels);
   }, [active, snapshot.selected]);
   const supported = current?.catalog;
@@ -58,35 +103,31 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
   useEffect(() => {
     if (allowedModels === savedAllowedModels) return;
     try {
-      actions.updateVprRouterSettings(service, costQualityTradeoff, allowedModels);
+      actions.updateVprRouterSettings(service, routerOptions, allowedModels);
       setAllowedModels(allowedModels);
       setSaveError(null);
     } catch (error) {
       setSaveError(`Could not save router settings: ${error instanceof Error ? error.message : String(error)}`);
     }
-  }, [actions, service, costQualityTradeoff, allowedModels, savedAllowedModels]);
+  }, [actions, service, routerOptions, allowedModels, savedAllowedModels]);
   const checkedKeys = useMemo(() => new Set((allowedModels ?? catalog).map(modelKey)), [allowedModels, catalog]);
   const visible = catalog.filter(entry => `${entry.label} ${entry.serviceId} ${entry.provider}`.toLowerCase().includes(search.trim().toLowerCase()));
   const noAvailableModels = !!supported && !catalog.some(model => checkedKeys.has(modelKey(model)));
-  function updateSettings(nextCostQualityTradeoff: number | undefined, nextAllowedModels: RouterAllowedModel[] | undefined): void {
+  function updateSettings(nextOptions: RouterOptions | undefined, nextAllowedModels: RouterAllowedModel[] | undefined): void {
     nextAllowedModels = normalizeRouterAllowedModels(nextAllowedModels, availableModels);
-    setCostQualityTradeoff(nextCostQualityTradeoff);
+    setRouterOptions(nextOptions);
     setAllowedModels(nextAllowedModels);
     try {
-      actions.updateVprRouterSettings(service, nextCostQualityTradeoff, nextAllowedModels);
+      actions.updateVprRouterSettings(service, nextOptions, nextAllowedModels);
       setSaveError(null);
     } catch (error) {
       setSaveError(`Could not save router settings: ${error instanceof Error ? error.message : String(error)}`);
     }
   }
-  const selectedStop = costQualityStopIndex(costQualityTradeoff);
-  function selectStop(index: number): void {
-    updateSettings(index === DEFAULT_COST_QUALITY_STOP ? undefined : COST_QUALITY_STOPS[index].value, allowedModels);
-  }
   function toggleModel(provider: string, serviceId: string): void {
     const model = { provider, serviceId };
     const selected = allowedModels ?? catalog.map(({ provider, serviceId }) => ({ provider, serviceId }));
-    updateSettings(costQualityTradeoff, selected.some(entry => modelKey(entry) === modelKey(model))
+    updateSettings(routerOptions, selected.some(entry => modelKey(entry) === modelKey(model))
       ? selected.filter(entry => modelKey(entry) !== modelKey(model)) : [...selected, model]);
   }
   return <section className={`view view-vpr-model view-pinned-header ${styles.view}`} role="tabpanel">
@@ -102,7 +143,7 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
           </div>
           <button type="button" className={modelStyles.use} aria-label={active ? 'Selected router' : 'Use router'}
             disabled={active || !current || !supported || !!catalogError || noAvailableModels}
-            onClick={() => { if (current) actions.selectVprRouter(current, costQualityTradeoff, false, allowedModels); }}>
+            onClick={() => { if (current) actions.selectVprRouter(current, routerOptions, false, allowedModels); }}>
             {active ? 'Selected' : 'Use'}
           </button>
         </div>
@@ -119,35 +160,14 @@ export function VprRouterView({ service }: { service: RoutingServiceEntry }) {
               </span>} tone="success" outlined />
           </VprStatRow>
         </div>
+        {!!current?.options?.length && <>
         <h2>Router settings</h2>
-        <div className={styles.settings}>
-          <div className={styles.settingText}>
-            <h3 id="router-cost-quality-title" className={styles.settingTitle}>Cost / quality</h3>
-            <p className={styles.hint}>How the router trades answer quality against price.</p>
-          </div>
-          <div id="router-cost-quality" className={styles.segmented} role="radiogroup" aria-labelledby="router-cost-quality-title"
-            onKeyDown={event => {
-              const step = event.key === 'ArrowRight' || event.key === 'ArrowDown' ? 1 : event.key === 'ArrowLeft' || event.key === 'ArrowUp' ? -1 : 0;
-              if (!step) return;
-              event.preventDefault();
-              const next = Math.min(COST_QUALITY_STOPS.length - 1, Math.max(0, selectedStop + step));
-              selectStop(next);
-              (event.currentTarget.children[next] as HTMLElement | undefined)?.focus();
-            }}>
-            {COST_QUALITY_STOPS.map((stop, index) => <button key={stop.value} type="button" role="radio"
-              aria-checked={index === selectedStop} tabIndex={index === selectedStop ? 0 : -1}
-              className={index === selectedStop ? styles.segmentSelected : styles.segment}
-              onClick={() => selectStop(index)}>{stop.label}</button>)}
-          </div>
-          <p className={styles.segmentDescription}>
-            <strong>{COST_QUALITY_STOPS[selectedStop].label}</strong>
-            {' · '}{costQualityTradeoff === undefined ? "the router's default. " : ''}{COST_QUALITY_STOPS[selectedStop].description}
-          </p>
-        </div>
+        <RouterOptionControls specs={current.options} options={routerOptions} onChange={next => updateSettings(next, allowedModels)} />
+        </>}
         <div className={styles.modelHeading}>
           <h2>Allowed models</h2>
           {supported && <label className={styles.allModels}><input type="checkbox" checked={allowedModels === undefined} disabled={!!catalogError || !catalog.length}
-            onChange={event => updateSettings(costQualityTradeoff, event.currentTarget.checked ? undefined : catalog)} />All supported models</label>}
+            onChange={event => updateSettings(routerOptions, event.currentTarget.checked ? undefined : catalog)} />All supported models</label>}
         </div>
         {!supported && !catalogError && <p role="status" className={styles.hint}>Router models are not available yet. Refresh discovery before routing.</p>}
         {catalogError && <p role="alert" className={styles.hint}>{catalogError}</p>}
