@@ -5,7 +5,7 @@ import type { ResolvedPolicy } from '../../policy-resolver.js'
 import { ConsoleRouter, type Principal } from '../router.js'
 import type { BuyerLimits, NetworkModel, Peer, RoutePreview } from '../types.js'
 import { registerNetworkRoutes, type NetworkRouteOverrides } from './network.js'
-import { enrichCandidates, mapNetworkModels, mapPeers, peerServices, teeVerifiedPeers } from './network-mapping.js'
+import { enrichCandidates, mapNetworkModels, mapPeers, peerServices, teeScopes, teeVerifiedPeers } from './network-mapping.js'
 import {
   call,
   fakeCanSeeWorkspace,
@@ -204,6 +204,17 @@ test('TEE snapshot: only current passing attestations count', () => {
   assert.deepEqual([...verified], [PEER_A])
 })
 
+test('TEE snapshot: full only when the provider TEE claim passes too', () => {
+  const node = [{ claim: 'antseed-verifier:seller-node-tee-genuine', ok: true }, { claim: 'antseed-verifier:seller-bound', ok: true }]
+  const scopes = teeScopes({
+    evidence: [
+      { peerId: PEER_A, verifierId: 'antseed-verifier', sellerNodeVerified: true, expiresAt: NOW + 1, claims: [...node, { claim: 'antseed-verifier:seller-provider-tee-genuine', ok: true }] },
+      { peerId: PEER_B, verifierId: 'antseed-verifier', sellerNodeVerified: true, expiresAt: NOW + 1, claims: node },
+    ],
+  }, NOW)
+  assert.deepEqual([...scopes], [[PEER_A, 'end-to-end'], [PEER_B, 'seller-node']])
+})
+
 test('GET peers merges buyer peers, health and gateway stats', async () => {
   verificationAllowed = false
   const peers = await call(setup(), 'GET', '/peers', member) as Peer[]
@@ -220,6 +231,7 @@ test('GET peers merges buyer peers, health and gateway stats', async () => {
     verified: false,
     verificationLinks: [],
     tee: true,
+    teeScope: null,
     stakeAnts: '1200',
     usageShareBps: 250,
     washFlagged: false,
@@ -253,6 +265,8 @@ test('GET peers uses the TEE snapshot when the buyer shares it', async () => {
     const peers = await call(setup(), 'GET', '/peers', member) as Peer[]
     // A by its TEE attestation, B by its verified ownership claims.
     assert.deepEqual(peers.map((peer) => peer.verified), [true, true])
+    // A's snapshot has no provider TEE claim: seller node only. B is not TEE-capable.
+    assert.deepEqual(peers.map((peer) => peer.teeScope), ['seller-node', null])
   } finally {
     verificationAllowed = false
   }
@@ -281,6 +295,7 @@ test('network models merge the buyer catalog with the peer list', () => {
     outputUsdPerMillion: { min: 0, max: 1.5 },
     free: true,
     teeSellers: 1,
+    fullTeeSellers: 0,
     verifiedSellers: 1,
     offers: 2,
   })
@@ -301,6 +316,7 @@ test('network models merge the buyer catalog with the peer list', () => {
     verified: false,
     verificationLinks: [],
     tee: true,
+    teeScope: null,
     latencyMsP50: 840,
     firstTokenMsP50: null,
     tokensPerSecondP50: null,

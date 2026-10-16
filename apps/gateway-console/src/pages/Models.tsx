@@ -1,9 +1,10 @@
 import { useMemo, useState } from 'react'
 import { Button, DataTable, TextField } from '@antseed/ui'
-import type { NetworkModel, NetworkModelOffer } from '../api/types'
+import type { NetworkModel, NetworkModelOffer, PeerTeeScope } from '../api/types'
 import { ApiCall } from '../components/ApiCall'
 import { CopyIdButton, useCopy } from '../components/copy-actions'
 import { Icon } from '../components/icons'
+import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { PanelRow, PanelSection, SplitView, type SidePanelContent } from '../components/SidePanel'
 import { Badge, CopyButton, DetailList, EmptyState, LoadingRows, Mono, PageHeader, PageLink, Panel, QueryView, SelectField, Switch } from '../components/ui'
@@ -22,11 +23,17 @@ function context(value: number | null): string {
   return value === null ? '—' : formatTokens(value)
 }
 
+/** The best TEE any seller of the model has verified. */
+function modelTeeScope(model: NetworkModel): PeerTeeScope | null {
+  if (model.fullTeeSellers > 0) return 'end-to-end'
+  return model.offers.some((offer) => offer.teeScope === 'seller-node') ? 'seller-node' : null
+}
+
 function ModelBadges({ model }: { model: NetworkModel }) {
   return (
     <div className="gc-badges">
       {model.free && <Badge tone="success">Free</Badge>}
-      {model.teeSellers > 0 && <Badge tone="info">TEE</Badge>}
+      <TeeBadge tee={model.teeSellers > 0} scope={modelTeeScope(model)} />
     </div>
   )
 }
@@ -125,7 +132,7 @@ function ModelPanelBody({ model }: { model: NetworkModel }) {
           <span className="gc-peer-id"><Mono title={model.id}>{model.id}</Mono><CopyButton iconOnly value={model.id} label="Copy model id" /></span>
           <Badge>{MODEL_TYPE_LABELS[model.type]}</Badge>
           {model.free && <Badge tone="success">Free</Badge>}
-          {model.teeSellers > 0 && <Badge tone="info">TEE</Badge>}
+          <TeeBadge tee={model.teeSellers > 0} scope={modelTeeScope(model)} />
         </span>
         <DetailList items={[
           ['Context', context(model.contextLength)],
@@ -159,7 +166,7 @@ function ModelPanelBody({ model }: { model: NetworkModel }) {
                   badges={(offer.verificationLinks?.length || offer.tee || offer.free) && (
                     <div className="gc-badges">
                       <VerificationLinks links={offer.verificationLinks} />
-                      {offer.tee && <Badge tone="info">TEE</Badge>}
+                      <TeeBadge tee={offer.tee} scope={offer.teeScope} />
                       {offer.free && <Badge tone="success">Free</Badge>}
                     </div>
                   )}

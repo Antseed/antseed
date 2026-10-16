@@ -1,7 +1,7 @@
 /** Pure mapping from the buyer's peer, health and verification views to the console's `Peer`. */
 import { collectPeerVerificationLinks } from '@antseed/node/discovery'
 import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
-import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
+import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, Peer, RoutePreview } from '../types.js'
 
 type Row = Record<string, unknown>
@@ -69,18 +69,27 @@ export function peerServices(row: Row): Peer['services'] {
   return services
 }
 
-/** Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot. */
-export function teeVerifiedPeers(snapshot: unknown, now: number): Set<string> {
-  const verified = new Set<string>()
+/**
+ * Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot,
+ * mapped to how far it reaches: the seller node only, or end to end through its provider.
+ */
+export function teeScopes(snapshot: unknown, now: number): Map<string, TeeScope> {
+  const scopes = new Map<string, TeeScope>()
   for (const evidence of rows(asRecord(snapshot)['evidence'])) {
     if (evidence['verifierId'] !== TEE_VERIFIER_ID || evidence['sellerNodeVerified'] !== true) continue
     if (evidence['checking'] === true || evidence['unavailable'] === true) continue
     const expiresAt = num(evidence['expiresAt'])
     if (expiresAt !== null && expiresAt <= now) continue
     const peerId = str(evidence['peerId'])
-    if (peerId) verified.add(peerKey(peerId))
+    const claims = rows(evidence['claims']).filter((claim): claim is Row & TeeClaim => typeof claim['claim'] === 'string')
+    if (peerId) scopes.set(peerKey(peerId), teeScope({ claims }))
   }
-  return verified
+  return scopes
+}
+
+/** Peer ids with a current, passing TEE attestation in a `/_antseed/verification` snapshot. */
+export function teeVerifiedPeers(snapshot: unknown, now: number): Set<string> {
+  return new Set(teeScopes(snapshot, now).keys())
 }
 
 /**
@@ -97,7 +106,7 @@ export function mapPeers(input: {
 }): Peer[] {
   const health = new Map(rows(asRecord(input.health)['peers']).map((row) => [peerKey(String(row['peerId'] ?? '')), row]))
   const stats = new Map(input.stats.map((row) => [peerKey(row.peerId), row]))
-  const teeVerified = input.verification ? teeVerifiedPeers(input.verification, input.now) : null
+  const teeVerified = input.verification ? teeScopes(input.verification, input.now) : null
   return rows(asRecord(input.peers)['peers']).flatMap((row): Peer[] => {
     const peerId = str(row['peerId'])
     if (!peerId) return []
@@ -123,6 +132,7 @@ export function mapPeers(input: {
       verified,
       verificationLinks: collectPeerVerificationLinks(row),
       tee,
+      teeScope: tee ? teeVerified?.get(key) ?? null : null,
       stakeAnts: stake === null ? null : String(stake),
       usageShareBps: num(row['onChainUsageShareBps']),
       washFlagged: row['onChainWashFlagged'] === true || trust['washFlagged'] === true,
@@ -209,6 +219,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         verified: peer?.verified ?? false,
         verificationLinks: peer?.verificationLinks ?? [],
         tee: strings(offer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID) || (peer?.tee ?? false),
+        teeScope: peer?.teeScope ?? null,
         latencyMsP50: peer?.latencyMsP50 ?? null,
         firstTokenMsP50: peer?.firstTokenMsP50 ?? null,
         tokensPerSecondP50: peer?.tokensPerSecondP50 ?? null,
@@ -233,6 +244,7 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
       outputUsdPerMillion: range(offers.map((offer) => offer.outputUsdPerMillion)),
       free: offers.some((offer) => offer.free),
       teeSellers: offers.filter((offer) => offer.tee).length,
+      fullTeeSellers: offers.filter((offer) => offer.teeScope === 'end-to-end').length,
       verifiedSellers: offers.filter((offer) => offer.verified).length,
       offers,
     }]

@@ -598,6 +598,9 @@ export interface PeerVerificationLink {
   href: string
 }
 
+/** Mirrors `TeeScope` in `@antseed/node/tee-status`, which the console cannot import. */
+export type PeerTeeScope = 'end-to-end' | 'seller-node'
+
 export interface Peer {
   peerId: string
   displayName: string | null
@@ -617,6 +620,12 @@ export interface Peer {
   /** Verified domain and GitHub claims; empty when none checked out. */
   verificationLinks: PeerVerificationLink[]
   tee: boolean
+  /**
+   * How far a current TEE attestation reaches: 'end-to-end' (seller node and its model
+   * provider) or 'seller-node' (the provider behind it is not TEE-attested). Null when the
+   * seller is not TEE-capable or the buyer has not verified it yet.
+   */
+  teeScope: PeerTeeScope | null
   stakeAnts: string | null
   usageShareBps: number | null
   washFlagged: boolean
@@ -657,6 +666,12 @@ export interface NetworkModelOffer {
   /** The seller's verified domain and GitHub claims. */
   verificationLinks: PeerVerificationLink[]
   tee: boolean
+  /**
+   * How far a current TEE attestation reaches: 'end-to-end' (seller node and its model
+   * provider) or 'seller-node' (the provider behind it is not TEE-attested). Null when the
+   * seller is not TEE-capable or the buyer has not verified it yet.
+   */
+  teeScope: PeerTeeScope | null
   /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
   firstTokenMsP50: number | null
@@ -679,6 +694,8 @@ export interface NetworkModel {
   /** At least one offer is free. */
   free: boolean
   teeSellers: number
+  /** Sellers whose TEE attestation reaches end to end, through their model provider. */
+  fullTeeSellers: number
   verifiedSellers: number
   /** In the buyer's routing order. */
   offers: NetworkModelOffer[]
