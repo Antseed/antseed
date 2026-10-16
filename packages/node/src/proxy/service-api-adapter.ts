@@ -4,7 +4,6 @@ export {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
   inferProviderDefaultServiceApiProtocols,
-  renderRequestBodyAsOpenAIChat,
   selectTargetProtocolForRequest,
   transformRequest,
   transformResponse,

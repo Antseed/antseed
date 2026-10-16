@@ -8,9 +8,7 @@
  * when nothing was recorded (e.g. after an app reload).
  */
 
-import type { RoutingServiceEntry } from '../../../shared/routing-selection';
-
-export type VprModelPageTarget = { provider: string; serviceId: string; router?: RoutingServiceEntry };
+export type VprModelPageTarget = { provider: string; serviceId: string };
 
 let target: VprModelPageTarget | null = null;
 
@@ -20,8 +18,4 @@ export function setVprModelPageTarget(provider: string, serviceId: string): void
 
 export function vprModelPageTarget(): VprModelPageTarget | null {
   return target;
-}
-
-export function setVprRouterPageTarget(router: RoutingServiceEntry): void {
-  target = { provider: router.provider, serviceId: router.serviceId, router };
 }

@@ -13,9 +13,6 @@ import styles from './VprModelRows.module.scss';
 
 export type VprModelRowListProps = {
   entries: VprModelCatalogEntry[];
-  additionalRows?: JSX.Element[];
-  additionalRowsLabel?: string;
-  checkedKeys?: ReadonlySet<string>;
   selectedProvider?: string;
   selectedServiceId?: string;
   onSelect: (provider: string, serviceId: string) => void;
@@ -86,11 +83,10 @@ function formatPrice(price: number | null): string {
   return price === null ? '—' : formatUsdShort(price);
 }
 
-function ModelRow({ entry, checked, checkbox, favorite, badge, compact, dense, chevron = true, pinnedPeerLabel, onClick, onConfigure }: {
+function ModelRow({ entry, checked, favorite, badge, compact, dense, chevron = true, pinnedPeerLabel, onClick, onConfigure }: {
   entry: VprModelCatalogEntry;
   /** Leading checkmark for the currently selected model (Figma "model list" checked state). */
   checked?: boolean;
-  checkbox?: boolean;
   favorite?: boolean;
   badge?: JSX.Element | null;
   compact?: boolean;
@@ -162,16 +158,12 @@ function ModelRow({ entry, checked, checkbox, favorite, badge, compact, dense, c
         compact ? styles.rowCompact : '',
         dense ? styles.rowDense : '',
       ].filter(Boolean).join(' ')}
-      role={checkbox ? 'checkbox' : undefined}
-      aria-checked={checkbox ? checked : undefined}
-      aria-pressed={checkbox ? undefined : checked}
+      aria-pressed={checked}
       onClick={onClick}
     >
-      {(checked || checkbox) && (
+      {checked && (
         <span className={styles.checkSlot} aria-hidden="true">
-          {checkbox ? <span className={`${styles.checkbox}${checked ? ` ${styles.checkboxChecked}` : ''}`}>
-            {checked && <HugeiconsIcon icon={Tick02Icon} size={12} strokeWidth={2} />}
-          </span> : <HugeiconsIcon icon={Tick02Icon} size={16} strokeWidth={2} className={styles.check} />}
+          <HugeiconsIcon icon={Tick02Icon} size={16} strokeWidth={2} className={styles.check} />
         </span>
       )}
       <span className={styles.rowMain}>
@@ -269,9 +261,6 @@ function ModelRow({ entry, checked, checkbox, favorite, badge, compact, dense, c
 
 export function VprModelRowList({
   entries,
-  additionalRows,
-  additionalRowsLabel,
-  checkedKeys,
   selectedProvider,
   selectedServiceId,
   onSelect,
@@ -287,7 +276,7 @@ export function VprModelRowList({
   pinnedPeerLabels,
   onConfigure,
 }: VprModelRowListProps): JSX.Element {
-  if (entries.length === 0 && !additionalRows?.length) {
+  if (entries.length === 0) {
     return (
       <div className={styles.empty} role="status">
         {emptyLabel}
@@ -323,10 +312,9 @@ export function VprModelRowList({
 
     return (
       <ModelRow
-        key={checkedKeys ? JSON.stringify([entry.provider, entry.serviceId]) : key}
+        key={key}
         entry={entry}
-        checked={checkedKeys ? checkedKeys.has(JSON.stringify([entry.provider, entry.serviceId])) : selected}
-        checkbox={checkedKeys !== undefined}
+        checked={selected}
         compact={compact}
         dense={dense}
         chevron={!selectOnly}
@@ -353,13 +341,6 @@ export function VprModelRowList({
           <span className={styles.recommendedLegend}>{recommendedLabel ?? 'Recommended'}</span>
           {framedEntries.map(renderRow)}
         </div>
-      )}
-      {!!additionalRows?.length && additionalRowsLabel && (
-        <div className={styles.sectionHeading}>{additionalRowsLabel}</div>
-      )}
-      {additionalRows}
-      {!!additionalRows?.length && additionalRowsLabel && plainEntries.length > 0 && (
-        <div className={styles.sectionHeading}>Models</div>
       )}
       {plainEntries.map(renderRow)}
     </div>

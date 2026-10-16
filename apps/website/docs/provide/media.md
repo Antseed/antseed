@@ -37,33 +37,6 @@ A component can carry a `match` object to price tiers. Match keys are `model`, `
 
 Image and video services stay advertised without health checks, because a probe would generate a paid result.
 
-## Routing services
-
-A routing service ranks other sellers for a buyer request; it does not serve inference. Advertise it with the `model-routing` API protocol and bill one `completed_requests` unit per well-formed ranking. A seller can offer only one routing service.
-
-```json title="provider service settings"
-{
-  "services": ["alpha-route"],
-  "serviceApiProtocols": { "alpha-route": ["model-routing"] },
-  "serviceUnitBillingModels": {
-    "alpha-route": {
-      "model-routing": { "version": 1, "components": [{ "unit": "completed_requests", "priceUsd": 0.001 }] }
-    }
-  }
-}
-```
-
-The ranking price is separate from the token price of the seller that serves the inference. Errors and malformed rankings are not billed. Older buyers reject announcements containing `completed_requests`, so run routing services on separate peers until buyers upgrade. See [Model Routing](/docs/model-routing).
-
-To offer routing without building a router, run the `default-router` plugin. It answers the routing endpoints itself, lists `*` so buyers send candidates from their own catalog, ranks the free ones by their live Artificial Analysis score, and is free by default:
-
-```bash
-antseed config seller add-provider router --plugin default-router
-antseed config seller add-service router default-router --input 0 --output 0
-```
-
-Free rankings count toward `seller.freeTier` like any other free service.
-
 ## Image services
 
 The `openai` plugin serves the OpenAI Images API (`/v1/images/generations`, and `/v1/images/edits` when the service accepts image input). It advertises a service as an image service when the upstream model ID belongs to a known image model family, such as `qwen-image`, `flux-2-…`, `seedream-v4…`, `hunyuan-image-…`, `z-image-…` or `gpt-image-…`. Image services behind OpenRouter are not advertised.

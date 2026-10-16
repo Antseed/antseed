@@ -84,28 +84,7 @@ export type NetworkModelEntry = {
   peers: NetworkModelPeerOffer[]
 }
 
-export type ModelTypeFilter = 'all' | NetworkModelType | 'router' | 'invalid'
-
-/** A routing service, listed under `?type=router`: pin it as `<peerId>@<id>` to have it pick the model. */
-export type NetworkRouterEntry = {
-  id: string
-  name: string
-  object: 'model'
-  created: number
-  owned_by: 'antseed'
-  type: 'router'
-  peers: Array<{
-    peerId: string
-    displayName?: string
-    provider: string
-    serviceId: string
-    /** The `model` to send to use this router. */
-    model: string
-    priceUsdPerRequest: number | null
-    /** Models this router can rank, by service id; null when its model list is unavailable. */
-    models: string[] | null
-  }>
-}
+export type ModelTypeFilter = 'all' | NetworkModelType | 'invalid'
 
 export type NetworkModelBuildOptions = {
   routingPreferences?: ModelRoutingPreferences | null
@@ -209,7 +188,6 @@ export function parseModelTypeFilter(raw: string | null): ModelTypeFilter {
   if (value === 'video' || value === 'videos') return 'video'
   if (value === 'text') return 'text'
   if (value === 'decision' || value === 'decisions') return 'decision'
-  if (value === 'router' || value === 'routers') return 'router'
   return 'invalid'
 }
 

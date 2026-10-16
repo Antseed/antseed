@@ -156,24 +156,6 @@ function priceCapReasons(label: string, price: number | null, cap: number | unde
 }
 
 /**
- * The policy as it applies to a routing service, which is paid per ranking
- * and returns no inference: without the token and image price caps, and
- * without `requireVerified` (verification proves which model a seller ran).
- * `requireTee` still applies, since a router reads the whole conversation.
- */
-export function routingServicePolicy(policy: RoutingPolicy): RoutingPolicy {
-  const {
-    maxInputUsdPerMillion: _input,
-    maxOutputUsdPerMillion: _output,
-    maxCachedInputUsdPerMillion: _cached,
-    maxImageUsdPerImage: _image,
-    requireVerified: _verified,
-    ...rest
-  } = policy
-  return rest
-}
-
-/**
  * Why the policy forbids a hard pin (`peer@model`, `x-antseed-pin-peer`,
  * session pin): the seller-level checks plus a strict model route that does
  * not list the pinned seller.
