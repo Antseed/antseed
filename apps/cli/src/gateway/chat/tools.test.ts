@@ -6,7 +6,7 @@ import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import { after, test } from 'node:test'
 import { chatTools, fetchPinned, htmlToText, isPrivateAddress, parseDuckDuckGo } from './tools.js'
-import { mapChatModels } from './routes.js'
+import { mapChatModels, systemPrompt } from './routes.js'
 
 const dirs: string[] = []
 after(async () => { await Promise.all(dirs.map((dir) => rm(dir, { recursive: true, force: true }))) })
@@ -142,4 +142,20 @@ test('chat models: text only, tool-capable first, cheapest offer and peers by re
   assert.equal(models[0]!.outputUsdPerMillion, 4)
   assert.deepEqual(models[0]!.peers.map((p) => [p.peerId, p.name, p.toolUse]), [['cc', null, false], ['bb', 'Beta', true]])
   assert.equal(models[1]!.toolUse, false)
+})
+
+test('the Web and Files switches leave their tools out', async () => {
+  const all = chatTools({ sandboxDir: await sandbox(), allowShell: true })
+  assert.deepEqual(Object.keys(all).sort(), ['list_files', 'read_file', 'run_command', 'web_fetch', 'web_search', 'write_file'])
+  const noWeb = chatTools({ sandboxDir: await sandbox(), allowShell: false, web: false })
+  assert.deepEqual(Object.keys(noWeb).sort(), ['list_files', 'read_file', 'write_file'])
+  const none = chatTools({ sandboxDir: await sandbox(), allowShell: false, web: false, files: false })
+  assert.deepEqual(Object.keys(none), [])
+})
+
+test('the system prompt only mentions the tools the chat has', async () => {
+  const web = systemPrompt(chatTools({ sandboxDir: await sandbox(), allowShell: false, files: false }))
+  assert.match(web, /Search and read the web/)
+  assert.doesNotMatch(web, /scratch directory/)
+  assert.match(systemPrompt({}), /no tools/)
 })

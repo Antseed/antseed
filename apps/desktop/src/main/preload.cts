@@ -309,7 +309,10 @@ const api = {
   chatAiSelectPeer(payload: { conversationId?: string | null; peerId?: string | null; service?: string | null; provider?: string | null; routeMode?: 'auto' | 'pinned' | null }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:ai-select-peer', payload);
   },
-  chatSetBuyerDefaultRoute(payload: { peerId?: string; service: string }): Promise<{ ok: boolean; error?: string }> {
+  chatGetRoutingServices(): Promise<{ ok: boolean; services?: import('../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }> {
+    return ipcRenderer.invoke('chat:get-routing-services');
+  },
+  chatSetBuyerDefaultRoute(payload: { selection: import('../shared/routing-selection.js').DesktopRoutingSelection }): Promise<{ ok: boolean; error?: string }> {
     return ipcRenderer.invoke('chat:set-buyer-default-route', payload);
   },
   chatSyncModelPicker(payload: unknown): Promise<{ ok: boolean }> {
@@ -412,8 +415,8 @@ const api = {
     ipcRenderer.on('chat:conversation-title-updated', listener);
     return () => ipcRenderer.off('chat:conversation-title-updated', listener);
   },
-  onChatDefaultRouteChanged(handler: (data: { peerId: string; service: string; provider: string | null }) => void): () => void {
-    const listener = (_: unknown, data: { peerId: string; service: string; provider: string | null }) => handler(data);
+  onChatDefaultRouteChanged(handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../shared/routing-selection.js').DesktopRouterSelection }) => void): () => void {
+    const listener = (_: unknown, data: { peerId: string; service: string; provider: string | null; router?: import('../shared/routing-selection.js').DesktopRouterSelection }) => handler(data);
     ipcRenderer.on('chat:default-route-changed', listener);
     return () => ipcRenderer.off('chat:default-route-changed', listener);
   },
@@ -632,6 +635,8 @@ const api = {
   publicTunnelStart: (settings?: { provider?: 'cloudflare' | 'ngrok' }) => ipcRenderer.invoke('public-tunnel:start', settings),
   publicTunnelStop: () => ipcRenderer.invoke('public-tunnel:stop'),
   publicTunnelGetApiKey: () => ipcRenderer.invoke('public-tunnel:get-api-key'),
+  publicTunnelGetConsoleStatus: () => ipcRenderer.invoke('public-tunnel:get-console-status'),
+  publicTunnelClaimConsole: () => ipcRenderer.invoke('public-tunnel:claim-console'),
 
   /* Floating always-on-top pill window */
   vprFloatOpen(data: unknown): Promise<{ ok: boolean }> {

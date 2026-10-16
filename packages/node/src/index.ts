@@ -38,6 +38,24 @@ export {
 // on ethers directly.
 export { formatEther, parseEther } from 'ethers';
 export type { Router } from './interfaces/buyer-router.js';
+export type { RouteRecommendation, RouteCandidate, RouteSelectionContext, RoutingModelsContext } from './interfaces/model-routing-client.js';
+export type { RoutingUsageObservation } from './interfaces/model-routing-client.js';
+export * from './routing/selection.js';
+export {
+  ROUTER_ANY_MODEL,
+  findRoutingService,
+  listRoutingServices,
+  routingProtocolForPath,
+  routingProtocolOf,
+  routingRequestOf,
+  routingWireProtocol,
+  withinRouterPricing,
+  type RouterModelEntry,
+  type RouterPricing,
+  type RoutingRequestAction,
+  type RoutingWireProtocol,
+} from '@antseed/protocol/routing';
+export * from '@antseed/protocol/irp';
 
 // Types (re-export everything)
 export * from './types/index.js';
@@ -299,6 +317,7 @@ export {
   detectRequestServiceApiProtocol,
   createStreamingAdapter,
   inferProviderDefaultServiceApiProtocols,
+  renderRequestBodyAsOpenAIChat,
   selectTargetProtocolForRequest,
   transformRequest,
   transformResponse,

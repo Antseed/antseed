@@ -85,6 +85,11 @@ const ALLOWED_ROUTES: ReadonlyArray<{ method: string; prefix: string; paid: bool
   { method: 'POST', prefix: '/v1/responses', paid: true },
   { method: 'POST', prefix: '/v1/images/generations', paid: true },
   { method: 'POST', prefix: '/v1/images/edits', paid: true },
+  // Native video jobs, as the buyer serves them: queue, then poll retrieve until it streams the MP4 (charged on delivery).
+  { method: 'POST', prefix: '/api/v1/video/queue', paid: true },
+  { method: 'POST', prefix: '/api/v1/video/retrieve', paid: true },
+  { method: 'POST', prefix: '/fal/v1/video/queue', paid: true },
+  { method: 'POST', prefix: '/fal/v1/video/retrieve', paid: true },
 ]
 
 interface CanonicalRoute {
@@ -447,6 +452,9 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let reportedLatency: number | null = null
+      // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
+      let firstTokenMs: number | null = null
+      let respondedAt = 0
       let servedFree = false
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
@@ -463,8 +471,9 @@ export class GatewayServer {
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, endUser, servedFree })
           const usage = usageReader?.result() ?? null
+          const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {
@@ -502,10 +511,13 @@ export class GatewayServer {
         const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
         sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
         reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
+        firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
+        respondedAt = Date.now()
         servedFree = freeSellerPricing(upstreamRes.headers)
         if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
         if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
-        else if (request.model !== null) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+        // A delivered video is an MP4 stream with no usage to read.
+        else if (request.model !== null && !firstHeader(upstreamRes.headers['content-type']).toLowerCase().startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
         const responseHeaders: http.OutgoingHttpHeaders = {}
         for (const [name, value] of Object.entries(upstreamRes.headers)) {
           if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
@@ -726,21 +738,38 @@ export class GatewayServer {
  * 402 is the status a client-facing payment flow will answer with, so a key
  * that hits its cap already gets the shape a top-up offer can extend.
  */
-function spendLimitError(breach: LimitBreach) {
+export function spendLimitError(breach: LimitBreach) {
   const label = breach.period === 'total' ? 'lifetime' : breach.period
   const level = breach.level ?? 'key'
+  const remaining = Math.max(0, breach.limitUsdc - breach.spentUsdc)
   return {
     type: 'insufficient_quota',
     code: 'spend_limit_reached',
-    message: `${budgetHolder(level)} reached its ${label} spend limit of ${formatUsdc(breach.limitUsdc)}.`,
+    message: spendLimitMessage(budgetHolder(level), label, breach, remaining),
     limit: {
       level,
       period: breach.period,
       limit_usd: usdcToDecimalString(breach.limitUsdc),
       spent_usd: usdcToDecimalString(breach.spentUsdc),
+      remaining_usd: usdcToDecimalString(remaining),
+      held_usd: usdcToDecimalString(breach.heldUsdc),
       resets_at: breach.resetsAt === null ? null : new Date(breach.resetsAt).toISOString(),
     },
   }
+}
+
+/**
+ * A limit is also refused before it is spent: requests still running (or not yet charged) hold up to
+ * the per-request maximum each, so a small cap can be full while little is spent. Say so, with what is left.
+ */
+function spendLimitMessage(holder: string, label: string, breach: LimitBreach, remaining: number): string {
+  const limit = formatUsdc(breach.limitUsdc)
+  if (remaining === 0) return `${holder} reached its ${label} spend limit of ${limit}.`
+  const held = breach.heldUsdc > 0
+    ? `, and requests still running or not yet charged may use up to ${formatUsdc(breach.heldUsdc)} of it`
+    : ''
+  return `${holder} has ${formatUsdc(remaining)} left of its ${label} spend limit of ${limit} (${formatUsdc(breach.spentUsdc)} spent)${held}. `
+    + 'The next request could cost more than what is left, so it was not sent. Try again once running requests are charged, or raise the limit.'
 }
 
 function budgetHolder(level: NonNullable<LimitBreach['level']>): string {
@@ -864,6 +893,13 @@ function freeSellerPricing(headers: http.IncomingHttpHeaders): boolean {
   }
   const cached = price('x-antseed-cached-input-usd-per-million')
   return price('x-antseed-input-usd-per-million') === 0 && price('x-antseed-output-usd-per-million') === 0 && (cached === null || cached === 0)
+}
+
+/** Answers with fewer output tokens say little about generation speed (the buyer ranks by the same rule). */
+const MIN_SPEED_OUTPUT_TOKENS = 20
+
+function outputTokensPerSecond(outputTokens: number, streamMs: number): number | null {
+  return outputTokens >= MIN_SPEED_OUTPUT_TOKENS && streamMs > 0 ? Math.round((outputTokens / (streamMs / 1000)) * 10) / 10 : null
 }
 
 function latencyHeader(value: string): number | null {

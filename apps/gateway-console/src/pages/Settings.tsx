@@ -17,6 +17,7 @@ import { BuyerSettingsEditor } from '../components/BuyerSettingsEditor'
 import { qk, useAdminTokens, useStatus } from '../lib/queries'
 
 type Tab = 'general' | 'buyer' | 'observability' | 'tokens' | 'auth'
+const TABS: readonly Tab[] = ['general', 'buyer', 'observability', 'tokens', 'auth']
 
 function General() {
   const status = useStatus()
@@ -190,7 +191,11 @@ function SettingsSection({ tab, settings }: { tab: Tab; settings: SettingsData }
 }
 
 export default function Settings() {
-  const [tab, setTab] = useState<Tab>('general')
+  // `?tab=buyer` opens a section directly (the routing editor links to the buyer's floors).
+  const [tab, setTab] = useState<Tab>(() => {
+    const requested = new URLSearchParams(window.location.search).get('tab')
+    return TABS.includes(requested as Tab) ? requested as Tab : 'general'
+  })
   const settings = useQuery({ queryKey: qk.settings, queryFn: api.settings.get })
   useEffect(() => { window.scrollTo?.(0, 0) }, [tab])
   return (

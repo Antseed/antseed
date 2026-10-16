@@ -30,6 +30,8 @@ export interface PeerStat {
   peerId: string
   requests: number
   latencyMsP50: number | null
+  firstTokenMsP50?: number | null
+  tokensPerSecondP50?: number | null
 }
 
 /** One entry per advertised service, priced from the service's own entry or the provider default. */
@@ -140,6 +142,8 @@ export function mapPeers(input: {
         coolingDownUntil: coolingDown ? num(healthRow?.['cooldownUntil']) : null,
       },
       latencyMsP50: stat?.latencyMsP50 ?? null,
+      firstTokenMsP50: stat?.firstTokenMsP50 ?? null,
+      tokensPerSecondP50: stat?.tokensPerSecondP50 ?? null,
       requests24h: stat?.requests ?? 0,
     }]
   })
@@ -217,6 +221,8 @@ export function mapNetworkModels(body: unknown, peers: readonly Peer[]): Network
         tee: strings(offer['advertisedVerifierIds']).includes(TEE_VERIFIER_ID) || (peer?.tee ?? false),
         teeScope: peer?.teeScope ?? null,
         latencyMsP50: peer?.latencyMsP50 ?? null,
+        firstTokenMsP50: peer?.firstTokenMsP50 ?? null,
+        tokensPerSecondP50: peer?.tokensPerSecondP50 ?? null,
       }]
     })
     const capabilityRows = rows(row['peers']).map((offer) => asRecord(offer['capabilities']))

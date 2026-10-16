@@ -175,7 +175,7 @@ export function LoginPage() {
         <div className="gc-stack">
           {config.data.setupRequired && (
             <Alert tone="info" title="Not set up yet">
-              Open the one-time setup link the gateway printed when it started (<code>antseed gateway start</code>), or ask the operator for it.
+              Get a one-time setup link by running <code>antseed gateway console-link</code> on the gateway, or ask the operator for it.
             </Alert>
           )}
           <MethodList config={config.data} mode="login" onSignedIn={onSignedIn} />

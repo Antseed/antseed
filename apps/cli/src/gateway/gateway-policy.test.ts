@@ -46,6 +46,12 @@ async function fakeBuyer(options: { costUsdc?: number } = {}) {
           amountUsdc: String(options.costUsdc), inputTokens: '10', cachedInputTokens: '0', outputTokens: '5', outputImages: '0',
         })
       }
+      if (Buffer.concat(chunks).toString('utf8').includes('"stream":true')) {
+        res.writeHead(200, { 'content-type': 'text/event-stream', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'f00d', 'x-antseed-first-token-ms': '150' })
+        res.write('data: {"choices":[{"delta":{"content":"hi"}}]}\n\n')
+        setTimeout(() => res.end('data: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":40,"total_tokens":50}}\n\ndata: [DONE]\n\n'), 200)
+        return
+      }
       res.writeHead(200, { 'content-type': 'application/json', 'x-antseed-request-id': requestId, 'x-antseed-peer-id': 'f00d', 'x-antseed-latency-ms': '321' })
       res.end('{"answer":"ok"}')
     })
@@ -102,6 +108,25 @@ async function setup(options: { costUsdc?: number; controlSecret?: string | null
     },
   }
 }
+
+test('a streamed answer logs the buyer\'s time to first token and the output speed', async () => {
+  const ctx = await setup()
+  try {
+    const { secret, key } = ctx.store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    assert.equal((await ctx.send(secret, '/v1/chat/completions', { model: 'm', stream: true })).status, 200)
+    await ctx.send(secret, '/v1/chat/completions', { model: 'm' })
+    const [plain, streamed] = ctx.store.listRequests({ keyId: key.id })
+    assert.equal(streamed!.firstTokenMs, 150)
+    assert.ok(streamed!.tokensPerSecond! > 100 && streamed!.tokensPerSecond! <= 205, `40 tokens over ~200ms (${streamed!.tokensPerSecond})`)
+    assert.equal(plain!.firstTokenMs, null, 'a non-streamed answer has no first token')
+    assert.equal(plain!.tokensPerSecond, null)
+    const [stat] = ctx.store.peerStats(0)
+    assert.equal(stat!.firstTokenMsP50, 150)
+    assert.equal(stat!.tokensPerSecondP50, streamed!.tokensPerSecond)
+  } finally {
+    await ctx.close()
+  }
+})
 
 test('the effective policy goes to the buyer with the control secret; client copies are dropped', async () => {
   const ctx = await setup()
@@ -160,6 +185,25 @@ test('allowedModels is enforced by the gateway, including pinned peer@model', as
     assert.equal((await ctx.send(secret, '/v1/messages', { model: 'other-model' })).status, 403)
     assert.equal((await ctx.send(secret, '/v1/responses', {})).status, 403, 'no model under an allow list')
     assert.equal(ctx.buyer.captured.length, 2)
+  } finally {
+    await ctx.close()
+  }
+})
+
+test('a routing service pinned as the model passes the allow list like any model, with its routing options', async () => {
+  const ctx = await setup()
+  try {
+    const router = `${'d'.repeat(40)}@alpha-route`
+    const open = ctx.store.createKey({ label: 'open', limits: NO_LIMITS, expiresAt: null })
+    const body = { model: router, messages: [], routing: { cost_quality_tradeoff: 8 } }
+    assert.equal((await ctx.send(open.secret, '/v1/chat/completions', body)).status, 200)
+    assert.deepEqual(JSON.parse(ctx.buyer.captured.at(-1)!.body).routing, { cost_quality_tradeoff: 8 })
+    const limited = ctx.store.createKey({ label: 'limited', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['good-model'] } })
+    const refused = await ctx.send(limited.secret, '/v1/chat/completions', body)
+    assert.equal(refused.status, 403)
+    assert.equal(refused.body.error.code, 'model_not_allowed')
+    const allowed = ctx.store.createKey({ label: 'router', limits: NO_LIMITS, expiresAt: null, routingPolicy: { allowedModels: ['alpha-route'] } })
+    assert.equal((await ctx.send(allowed.secret, '/v1/chat/completions', body)).status, 200)
   } finally {
     await ctx.close()
   }

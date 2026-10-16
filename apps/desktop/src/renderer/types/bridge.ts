@@ -355,9 +355,10 @@ export type DesktopBridge = {
   onTelegramStatusChanged?: (handler: (data: TelegramBridgeStatus) => void) => () => void;
   chatAiAbort?: (conversationId?: string) => Promise<{ ok: boolean }>;
   chatAiSelectPeer?: (payload: { conversationId?: string | null; peerId?: string | null; service?: string | null; provider?: string | null; routeMode?: 'auto' | 'pinned' | null }) => Promise<{ ok: boolean; error?: string }>;
-  chatSetBuyerDefaultRoute?: (payload: { peerId?: string; service: string }) => Promise<{ ok: boolean; error?: string }>;
+  chatGetRoutingServices?: () => Promise<{ ok: boolean; services?: import('../../shared/routing-selection.js').RoutingServiceEntry[]; error?: string }>;
+  chatSetBuyerDefaultRoute?: (payload: { selection: import('../../shared/routing-selection.js').DesktopRoutingSelection }) => Promise<{ ok: boolean; error?: string }>;
   chatSyncModelPicker?: (payload: import('../../shared/model-picker.js').ModelPickerSnapshot) => Promise<{ ok: boolean }>;
-  onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null }) => void) => () => void;
+  onChatDefaultRouteChanged?: (handler: (data: { peerId: string; service: string; provider: string | null; router?: import('../../shared/routing-selection.js').DesktopRouterSelection }) => void) => () => void;
   chatAiGetProxyStatus?: () => Promise<{ ok: boolean; data: { running: boolean; port: number } }>;
   apiTryProxyRequest?: (params: {
     port: number;
@@ -501,6 +502,9 @@ export type DesktopBridge = {
   publicTunnelStart?: (settings?: { provider?: TunnelProvider }) => Promise<{ ok: boolean; status?: PublicTunnelStatus; error?: string }>;
   publicTunnelStop?: () => Promise<{ ok: boolean; status?: PublicTunnelStatus; error?: string }>;
   publicTunnelGetApiKey?: () => Promise<{ apiKey: string | null }>;
+  publicTunnelGetConsoleStatus?: () => Promise<TunnelConsoleStatus>;
+  /** Mints a one-time setup link and opens it in the browser (the console itself once claimed). */
+  publicTunnelClaimConsole?: () => Promise<{ ok: boolean; status: TunnelConsoleStatus; error?: string }>;
 
   /* Floating always-on-top pill window */
   vprFloatSetExpanded?: (expanded: boolean) => void;
@@ -523,6 +527,11 @@ export type DesktopBridge = {
 };
 
 export type TunnelProvider = 'cloudflare' | 'ngrok';
+/** The gateway console a running tunnel publishes at <public url>/console. */
+export type TunnelConsoleStatus = {
+  state: 'unclaimed' | 'claimed' | 'unavailable';
+  url: string | null;
+};
 export type PublicTunnelStatus = {
   configured: boolean;
   configuredProviders: TunnelProvider[];

@@ -15,7 +15,7 @@ type EcosystemProject = {
   color: string;
   colorSoft: string;
   logo?: string;
-  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants';
+  theme: 'stats' | 'scan' | 'diem' | 'antseedmarkets' | 'lants' | 'seedstore';
 };
 
 type Resource = {
@@ -114,6 +114,20 @@ const projects: EcosystemProject[] = [
     colorSoft: 'rgba(194, 240, 74, 0.18)',
     theme: 'lants',
   },
+  {
+    name: 'SeedStore',
+    href: 'https://sippar.network/seedstore/',
+    category: 'Data provider',
+    oneLiner: 'Live data for your agent, served as models on Antseed by Sippar.',
+    description:
+      'Ask any model in the AI VPN to use the X, Reddit, LinkedIn, news, jobs, flight, hotel or Amazon model. It fetches the live data when you ask and names the source in its answer.',
+    glyph: 'SS',
+    status: 'Live',
+    color: '#d4a074',
+    colorSoft: 'rgba(212, 160, 116, 0.2)',
+    logo: 'https://sippar.network/seedstore/sippar-mark-diamond-512.png',
+    theme: 'seedstore',
+  },
 ];
 
 const pillars = [
@@ -193,6 +207,20 @@ function ProductPreview({project}: {project: EcosystemProject}) {
           <span><b>settle</b><em>$2.32k</em></span>
           <span><b>channel</b><em>0x058a…49f6</em></span>
           <span><b>epoch</b><em>#15</em></span>
+        </div>
+      </div>
+    );
+  }
+
+  if (project.theme === 'seedstore') {
+    return (
+      <div className={`${styles.preview} ${styles.previewSeed}`}>
+        <div className={styles.previewTop}><span>SeedStore</span><i>Any model</i></div>
+        <div className={styles.seedAsk}>Use the flight model on AntSeed to find New York to London for two</div>
+        <div className={styles.seedSteps}>
+          <span><b>✓</b>Finds sippar-flight-search</span>
+          <span><b>✓</b>Pays for the answer</span>
+          <span><b>✓</b>Source: Google Flights</span>
         </div>
       </div>
     );

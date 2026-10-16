@@ -251,8 +251,6 @@ export interface BuyerVerifierConfig {
 export interface PaymentsCLIConfig {
   /** Preferred payment method */
   preferredMethod: 'crypto';
-  /** Platform fee rate (0-1) */
-  platformFeeRate: number;
   /** Minimum USDC per request in base units (seller). Default: "10000" ($0.01). */
   minBudgetPerRequest?: string;
   /**

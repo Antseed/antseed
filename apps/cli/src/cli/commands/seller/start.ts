@@ -322,6 +322,7 @@ export function buildSellerPluginRuntimeEnv(
       ? 'TYPESAFE'
       : pluginPackage === '@antseed/provider-venice-video' ? 'VENICE_VIDEO'
       : pluginPackage === '@antseed/provider-fal-video' ? 'FAL_VIDEO'
+      : pluginPackage === '@antseed/provider-irp-router' ? 'IRP_ROUTER'
       : 'OPENAI'
   if (providerCfg.baseUrl) {
     runtimeEnv[`${envPrefix}_BASE_URL`] = providerCfg.baseUrl
@@ -624,7 +625,7 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         const rpcSource = baseRpcUrlOverride ? 'runtime override' : 'config/default'
         console.log(chalk.dim(`  Base RPC URL: ${paymentConfig.crypto.rpcUrl} (${rpcSource})`))
         if (isPublicRpcUrl(paymentConfig.crypto.rpcUrl)) {
-          console.log(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/config#base-rpc-url'))
+          console.log(chalk.yellow('  Warning: using a public Base RPC. Public RPCs can be rate-limited or lag on event/log polling; sellers should use a dedicated RPC for reliable payment channel settlement. Learn how to configure one: https://antseed.com/docs/buyer-config#base-rpc-url'))
         }
       }
       // CLI flag (decimal USDC) overrides config JSON (base-unit string).
@@ -739,7 +740,6 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         payments: {
           enabled: paymentsEnabled,
           paymentMethod: preferredMethod,
-          platformFeeRate: config.payments.platformFeeRate,
           settlementIdleMs: Number.isFinite(settlementIdleMs) ? settlementIdleMs : 30_000,
           defaultDepositAmountUSDC: defaultDepositAmountUSDCBaseUnits,
           sellerWalletAddress,

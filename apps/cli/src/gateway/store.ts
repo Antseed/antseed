@@ -17,6 +17,7 @@ import {
   type LimitPeriod,
   type SpendLimits,
 } from './limits.js'
+import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
@@ -247,6 +248,9 @@ export interface GatewayRequestStart {
 export interface RequestOutcome {
   sellerPeerId?: string | null
   latencyMs?: number | null
+  /** Streamed answers only: time to the seller's first frame, and output tokens per second after it. */
+  firstTokenMs?: number | null
+  tokensPerSecond?: number | null
   endUser?: string | null
   /** Served by a free seller (all advertised prices zero): no spend will be reported. */
   servedFree?: boolean
@@ -351,6 +355,8 @@ export interface RequestLogRow {
   status: number | null
   sellerPeerId: string | null
   latencyMs: number | null
+  firstTokenMs: number | null
+  tokensPerSecond: number | null
   spentUsdc: number | null
   inputTokens: number
   cachedInputTokens: number
@@ -486,6 +492,12 @@ function rowLimits<Prefix extends string = ''>(row: LimitColumns<Prefix>, prefix
     monthly: limit('monthly'),
     total: limit('total'),
   }
+}
+
+function median(values: number[]): number | null {
+  if (values.length === 0) return null
+  const sorted = [...values].sort((a, b) => a - b)
+  return sorted[Math.floor((sorted.length - 1) / 2)]!
 }
 
 /**
@@ -1049,14 +1061,16 @@ export class GatewayStore {
   // ── Requests ────────────────────────────────────────────────────────────
 
   startRequest(input: GatewayRequestStart): void {
+    // A pinned model (`<peerId>@<model>`) is recorded as the model, with the pin as the seller until the buyer reports who served it.
+    const { model, peerId } = splitPinnedModel(input.model)
     this._stmt(`
-      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, started_at, workspace_id, member_id, end_user)
-      VALUES (?, ?, ?, ?, ?, ?, ?,
+      INSERT INTO gateway_requests (tag, key_id, buyer_identity, method, path, model, seller_peer_id, started_at, workspace_id, member_id, end_user)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?,
         COALESCE(?, (SELECT workspace_id FROM api_keys WHERE id = ?)),
         COALESCE(?, (SELECT owner_member_id FROM api_keys WHERE id = ?)),
         ?)
     `).run(
-      input.tag, input.keyId, input.buyerIdentity, input.method, input.path, input.model, input.startedAt,
+      input.tag, input.keyId, input.buyerIdentity, input.method, input.path, model, peerId, input.startedAt,
       input.workspaceId ?? null, input.keyId, input.memberId ?? null, input.keyId, input.endUser ?? null,
     )
   }
@@ -1071,12 +1085,16 @@ export class GatewayStore {
     )
   }
 
-  /** Seller, latency and end user of a request; null fields leave what is stored. */
+  /** Seller, speed and end user of a request; null fields leave what is stored. */
   recordRequestOutcome(tag: string, outcome: RequestOutcome): void {
     this._stmt(`
       UPDATE gateway_requests SET seller_peer_id = COALESCE(?, seller_peer_id), latency_ms = COALESCE(?, latency_ms),
+        first_token_ms = COALESCE(?, first_token_ms), tokens_per_second = COALESCE(?, tokens_per_second),
         end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?) WHERE tag = ?
-    `).run(outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag)
+    `).run(
+      outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
+      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, tag,
+    )
   }
 
   /**
@@ -1156,23 +1174,28 @@ export class GatewayStore {
       : null
   }
 
-  /** Requests per seller since a time, with the median latency this gateway measured. */
-  peerStats(sinceMs: number): Array<{ peerId: string; requests: number; latencyMsP50: number | null }> {
+  /** Requests per seller since a time, with the medians of what this gateway measured. */
+  peerStats(sinceMs: number): Array<{ peerId: string; requests: number; latencyMsP50: number | null; firstTokenMsP50: number | null; tokensPerSecondP50: number | null }> {
     const rows = this._stmt(`
-      SELECT seller_peer_id AS peer, latency_ms AS latency FROM gateway_requests
+      SELECT seller_peer_id AS peer, latency_ms AS latency, first_token_ms AS first_token, tokens_per_second AS speed FROM gateway_requests
       WHERE started_at >= ? AND seller_peer_id IS NOT NULL
-    `).all(sinceMs) as Array<{ peer: string; latency: number | null }>
-    const byPeer = new Map<string, { requests: number; latencies: number[] }>()
+    `).all(sinceMs) as Array<{ peer: string; latency: number | null; first_token: number | null; speed: number | null }>
+    const byPeer = new Map<string, { requests: number; latencies: number[]; firstTokens: number[]; speeds: number[] }>()
     for (const row of rows) {
-      const entry = byPeer.get(row.peer) ?? { requests: 0, latencies: [] }
+      const entry = byPeer.get(row.peer) ?? { requests: 0, latencies: [], firstTokens: [], speeds: [] }
       entry.requests += 1
       if (row.latency !== null) entry.latencies.push(row.latency)
+      if (row.first_token !== null) entry.firstTokens.push(row.first_token)
+      if (row.speed !== null) entry.speeds.push(row.speed)
       byPeer.set(row.peer, entry)
     }
-    return [...byPeer].map(([peerId, entry]) => {
-      const sorted = entry.latencies.sort((a, b) => a - b)
-      return { peerId, requests: entry.requests, latencyMsP50: sorted.length ? sorted[Math.floor((sorted.length - 1) / 2)]! : null }
-    })
+    return [...byPeer].map(([peerId, entry]) => ({
+      peerId,
+      requests: entry.requests,
+      latencyMsP50: median(entry.latencies),
+      firstTokenMsP50: median(entry.firstTokens),
+      tokensPerSecondP50: median(entry.speeds),
+    }))
   }
 
   /** Newest first, ordered by (startedAt, tag); pass the last row as `before` for the next page. Bodies are not read. */
@@ -1209,7 +1232,7 @@ export class GatewayStore {
     const rows = this._stmt(`
       WITH page AS (
         SELECT r.tag, r.started_at, r.finished_at, r.key_id, k.label AS key_label, COALESCE(r.workspace_id, k.workspace_id) AS ws_id,
-          r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.error_code, r.error_message,
+          r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.first_token_ms, r.tokens_per_second, r.error_code, r.error_message,
           r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens
           ${withBodies ? ', r.request_body, r.response_body' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
@@ -1246,6 +1269,8 @@ export class GatewayStore {
       status: row['status'] as number | null,
       sellerPeerId: row['seller_peer_id'] as string | null,
       latencyMs: row['latency_ms'] as number | null,
+      firstTokenMs: row['first_token_ms'] as number | null,
+      tokensPerSecond: row['tokens_per_second'] as number | null,
       spentUsdc: row['spent'] as number | null,
       inputTokens: ledgerTokens ? row['in_tokens'] as number : (row['usage_input_tokens'] as number | null) ?? 0,
       cachedInputTokens: ledgerTokens ? row['cached_tokens'] as number : (row['usage_cached_input_tokens'] as number | null) ?? 0,
@@ -1367,7 +1392,7 @@ export class GatewayStore {
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
       entry.inputTokens ?? 0, entry.cachedInputTokens ?? 0, entry.outputTokens ?? 0,
       entry.note ?? null, entry.createdAt,
-      workspaceId, memberId, entry.model ?? request?.model ?? null, entry.endUser ?? request?.endUser ?? null,
+      workspaceId, memberId, splitPinnedModel(entry.model ?? request?.model ?? null).model, entry.endUser ?? request?.endUser ?? null,
     )
     return result.changes > 0
   }
@@ -1692,6 +1717,39 @@ export class GatewayStore {
     return this._stmt('DELETE FROM chat_threads WHERE id = ?').run(id).changes > 0
   }
 
+  // ── Deposits (confirmations) ────────────────────────────────────────────
+
+  listDeposits(workspaceId: string): DepositRecord[] {
+    return (this._stmt('SELECT * FROM deposits WHERE workspace_id = ? ORDER BY block_time DESC').all(workspaceId) as DepositRow[]).map(depositRecord)
+  }
+
+  getDeposit(txHash: string): DepositRecord | null {
+    const row = this._stmt('SELECT * FROM deposits WHERE tx_hash = ?').get(txHash.toLowerCase()) as DepositRow | undefined
+    return row ? depositRecord(row) : null
+  }
+
+  /** Records a verified deposit once; an existing row (and its approval) is kept as it is. */
+  insertDeposit(input: Omit<DepositRecord, 'approval' | 'recordedAt'>): DepositRecord {
+    this._stmt(`
+      INSERT INTO deposits (tx_hash, workspace_id, wallet, kind, credited_usdc, fee_usdc, block_number, block_time, sources, recorded_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?) ON CONFLICT (tx_hash) DO NOTHING
+    `).run(input.txHash.toLowerCase(), input.workspaceId, input.wallet.toLowerCase(), input.kind, input.creditedUsdc, input.feeUsdc,
+      input.blockNumber, input.blockTime, JSON.stringify(input.sources), this._now())
+    return this.getDeposit(input.txHash)!
+  }
+
+  /** Sets (or with null clears) who approved a deposit. */
+  setDepositApproval(txHash: string, approval: { byId: string | null; byLabel: string; note: string | null } | null): DepositRecord | null {
+    if (approval) {
+      this._stmt('UPDATE deposits SET approved_by_id = ?, approved_by_label = ?, approved_at = ?, approval_note = ? WHERE tx_hash = ?')
+        .run(approval.byId, approval.byLabel, this._now(), approval.note, txHash.toLowerCase())
+    } else {
+      this._stmt('UPDATE deposits SET approved_by_id = NULL, approved_by_label = NULL, approved_at = NULL, approval_note = NULL WHERE tx_hash = ?')
+        .run(txHash.toLowerCase())
+    }
+    return this.getDeposit(txHash)
+  }
+
   // ── Settings ────────────────────────────────────────────────────────────
 
   /**
@@ -1931,5 +1989,63 @@ function toAudit(row: Record<string, unknown>): AuditRecord {
     target: targetKind ? { kind: targetKind, id: row['target_id'] as string | null, label: row['target_label'] as string | null } : null,
     details: parseJson(row['details'] as string, {}),
     ip: row['ip'] as string | null,
+  }
+}
+
+/** Where the USDC of a deposit came from: a wallet (or an exchange), or minted straight in by the USDC issuer (card purchases). */
+export interface DepositSource {
+  from: string
+  amountUsdc: number
+  txHash: string
+}
+
+/** A deposit credited to a workspace wallet, verified against its transaction receipt. */
+export interface DepositRecord {
+  txHash: string
+  workspaceId: string
+  wallet: string
+  /** relay: USDC sent to the wallet and swept in by a relayer (fee taken); direct: deposited by a connected wallet. */
+  kind: 'relay' | 'direct'
+  creditedUsdc: number
+  feeUsdc: number
+  blockNumber: number
+  blockTime: number
+  sources: DepositSource[]
+  approval: { byId: string | null; byLabel: string; at: number; note: string | null } | null
+  recordedAt: number
+}
+
+interface DepositRow {
+  tx_hash: string
+  workspace_id: string
+  wallet: string
+  kind: 'relay' | 'direct'
+  credited_usdc: number
+  fee_usdc: number
+  block_number: number
+  block_time: number
+  sources: string
+  approved_by_id: string | null
+  approved_by_label: string | null
+  approved_at: number | null
+  approval_note: string | null
+  recorded_at: number
+}
+
+function depositRecord(row: DepositRow): DepositRecord {
+  return {
+    txHash: row.tx_hash,
+    workspaceId: row.workspace_id,
+    wallet: row.wallet,
+    kind: row.kind,
+    creditedUsdc: row.credited_usdc,
+    feeUsdc: row.fee_usdc,
+    blockNumber: row.block_number,
+    blockTime: row.block_time,
+    sources: parseJson<DepositSource[]>(row.sources, []),
+    approval: row.approved_at !== null && row.approved_by_label !== null
+      ? { byId: row.approved_by_id, byLabel: row.approved_by_label, at: row.approved_at, note: row.approval_note }
+      : null,
+    recordedAt: row.recorded_at,
   }
 }

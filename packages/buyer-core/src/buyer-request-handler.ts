@@ -23,6 +23,7 @@ import type { ResponseAuthSampler } from './interfaces.js';
 import type { BuyerFreeUsageManager } from './buyer-free-usage-manager.js';
 import { verifyResponseAuth, createStreamingResponseHash } from './response-auth.js';
 import { isFreeUnitBillingModel } from '@antseed/protocol/billing';
+import { findRoutingService, routingProtocolForPath, routingWireProtocol } from '@antseed/protocol/routing';
 import { isUnitBilledProtocol } from './unit-billing.js';
 import type { ServiceApiProtocol } from '@antseed/protocol/service-api';
 import {
@@ -128,7 +129,7 @@ export class BuyerRequestHandler {
     }
 
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
-    const requestedService = options?.controlPlane ? undefined : extractServiceFromBody(req);
+    const requestedService = options?.controlPlane ? undefined : extractRequestedService(peer, req);
     const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
@@ -543,8 +544,15 @@ export class BuyerRequestHandler {
   }
 }
 
-/** Extract the service/model name from a JSON or multipart request body, or undefined if not found. */
-function extractServiceFromBody(request: SerializedHttpRequest): string | undefined {
+/**
+ * The requested service: on a routing protocol whose paths name no service, the peer's single
+ * service of that protocol; else `service`/`model` from a JSON or multipart body.
+ */
+function extractRequestedService(peer: BuyerPeerView, request: SerializedHttpRequest): string | undefined {
+  const routingProtocol = routingProtocolForPath(request.path);
+  if (routingProtocol && routingWireProtocol(routingProtocol).oneServicePerSeller) {
+    return findRoutingService(peer.providerServiceApiProtocols, routingProtocol)?.serviceId;
+  }
   if (nativeVideoRoute(request)) return requestService(request);
   const parsed = extractRequestBodyFields(request.headers, request.body);
   const service = parsed?.service ?? parsed?.model;

@@ -9,12 +9,14 @@ import {
   ViewOffSlashIcon,
 } from '@hugeicons/core-free-icons';
 import { Modal } from '@antseed/ui';
-import type { PublicTunnelStatus, TunnelProvider } from '../../../types/bridge';
+import type { PublicTunnelStatus, TunnelConsoleStatus, TunnelProvider } from '../../../types/bridge';
 import { BrandIcon } from '../brand/BrandIcon';
 import formStyles from '../views/VprToolsView.module.scss';
+import noticeStyles from '../views/FundingStatusNotice.module.scss';
 import styles from './PublicEndpointModal.module.scss';
 
-const TUNNEL_DOCS_URL = 'https://antseed.com/docs/guides/public-tunnels';
+const TUNNEL_DOCS_URL = 'https://antseed.com/docs/tunnels';
+const CONSOLE_POLL_MS = 3000;
 const MASKED_API_KEY = '••••••••••••••••••••••••••••••••';
 type CopyKind = 'url' | 'key';
 
@@ -72,6 +74,30 @@ export function PublicEndpointModal({
   const [busyProvider, setBusyProvider] = useState<TunnelProvider | null>(null);
   const [error, setError] = useState<string | null>(null);
   const [copied, setCopied] = useState<CopyKind | null>(null);
+  const [consoleStatus, setConsoleStatus] = useState<TunnelConsoleStatus | null>(null);
+  const [claimingConsole, setClaimingConsole] = useState(false);
+  const tunnelReady = isOpen && status?.running === true && Boolean(status.baseUrl);
+
+  // Poll while the console is unclaimed, so "Open console" appears once the owner signs up.
+  useEffect(() => {
+    if (!tunnelReady) {
+      setConsoleStatus(null);
+      return;
+    }
+    let cancelled = false;
+    let timer: number | undefined;
+    const poll = async () => {
+      const next = await window.antseedDesktop?.publicTunnelGetConsoleStatus?.();
+      if (cancelled || !next) return;
+      setConsoleStatus(next);
+      if (next.state === 'unclaimed') timer = window.setTimeout(() => void poll(), CONSOLE_POLL_MS);
+    };
+    void poll();
+    return () => {
+      cancelled = true;
+      window.clearTimeout(timer);
+    };
+  }, [tunnelReady, status?.baseUrl]);
 
   useEffect(() => {
     if (isOpen) return;
@@ -130,6 +156,19 @@ export function PublicEndpointModal({
       setBusyProvider(null);
     }
   }, [onStatusChange, status?.activeProvider, status?.running]);
+
+  const claimConsole = useCallback(async () => {
+    setClaimingConsole(true);
+    setError(null);
+    try {
+      const result = await window.antseedDesktop?.publicTunnelClaimConsole?.();
+      if (!result) return;
+      setConsoleStatus(result.status);
+      if (!result.ok) setError(result.error ?? 'Could not create a console setup link');
+    } finally {
+      setClaimingConsole(false);
+    }
+  }, []);
 
   const copy = useCallback((value: string, kind: CopyKind) => {
     void navigator.clipboard.writeText(value).then(() => {
@@ -196,7 +235,7 @@ export function PublicEndpointModal({
       <section className={styles.intro}>
         <div>
           <h3 className={styles.sectionTitle}>Choose a tunnel provider</h3>
-          <p className={styles.sectionHint}>Only Antseed’s authenticated <code>/v1</code> model API is published. Port 8377 remains local.</p>
+          <p className={styles.sectionHint}>Only Antseed’s authenticated <code>/v1</code> API and its <code>/console</code> are published. Port 8377 remains local.</p>
         </div>
         <button type="button" className={styles.docsLink} onClick={() => void window.antseedDesktop?.openExternalUrl?.(TUNNEL_DOCS_URL)}>
           Public tunnel guide <HugeiconsIcon icon={ArrowUpRight01Icon} size={13} strokeWidth={2} />
@@ -267,6 +306,33 @@ export function PublicEndpointModal({
               </div>
             </section>
           ) : null}
+          {consoleStatus && consoleStatus.state !== 'unavailable' && consoleStatus.url ? (
+            <section className={styles.fieldSection}>
+              <div className={styles.fieldHead}><span>Gateway console</span></div>
+              <div className={noticeStyles.notice} role="status">
+                <span
+                  className={`${noticeStyles.dot} ${consoleStatus.state === 'unclaimed' ? noticeStyles.dotWarning : noticeStyles.dotInfo}`}
+                  aria-hidden="true"
+                />
+                <span className={noticeStyles.text}>
+                  {consoleStatus.state === 'unclaimed'
+                    ? 'No owner yet. Claim it to manage keys, members and spend.'
+                    : 'Claimed. Sign in to manage keys, members and spend.'}
+                </span>
+                <span className={noticeStyles.actions}>
+                  {consoleStatus.state === 'unclaimed' ? (
+                    <button type="button" className={noticeStyles.link} disabled={claimingConsole} onClick={() => void claimConsole()}>
+                      {claimingConsole ? 'Opening…' : 'Claim console'}
+                    </button>
+                  ) : (
+                    <button type="button" className={noticeStyles.link} onClick={() => void window.antseedDesktop?.openExternalUrl?.(consoleStatus.url!)}>
+                      Open console
+                    </button>
+                  )}
+                </span>
+              </div>
+            </section>
+          ) : null}
           {status?.configured ? (
             <section className={styles.fieldSection}>
               <div className={styles.fieldHead}><span>API key</span></div>
@@ -294,7 +360,7 @@ export function PublicEndpointModal({
         onClose={closeConfigure}
         size="sm"
         title={selectedProvider?.name ?? 'Tunnel provider'}
-        subtitle="Expose only Antseed’s authenticated /v1 API."
+        subtitle="Expose only Antseed’s authenticated /v1 API and console."
         className={styles.modal}
         bodyClassName={styles.settingsBody}
       >

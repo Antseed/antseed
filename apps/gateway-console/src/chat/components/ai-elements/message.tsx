@@ -1,11 +1,11 @@
 "use client";
 
-import { streamdownPlugins, streamdownRehypePlugins } from "@/chat/lib/streamdown";
 import { cn } from "@/chat/lib/utils";
 import type { UIMessage } from "ai";
-import type { ComponentProps, HTMLAttributes } from "react";
+import type { HTMLAttributes } from "react";
 import { memo } from "react";
-import { Streamdown } from "streamdown";
+import type { StreamdownProps } from "streamdown";
+import { Markdown } from "./markdown";
 
 export type MessageProps = HTMLAttributes<HTMLDivElement> & {
   from: UIMessage["role"];
@@ -42,17 +42,15 @@ export const MessageContent = ({
   </div>
 );
 
-export type MessageResponseProps = ComponentProps<typeof Streamdown>;
+export type MessageResponseProps = StreamdownProps;
 
 export const MessageResponse = memo(
   ({ className, ...props }: MessageResponseProps) => (
-    <Streamdown
+    <Markdown
       className={cn(
         "size-full [&>*:first-child]:mt-0 [&>*:last-child]:mb-0",
         className
       )}
-      plugins={streamdownPlugins}
-      rehypePlugins={streamdownRehypePlugins}
       {...props}
     />
   ),

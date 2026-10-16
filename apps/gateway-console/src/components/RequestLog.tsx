@@ -3,8 +3,9 @@ import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Alert, Button, DataTable, Drawer } from '@antseed/ui'
 import { api, isApiError, type RequestQuery } from '../api'
 import type { RequestDetail, RequestLogEntry } from '../api/types'
-import { formatDateTime, formatLatency, formatNumber, formatUsd, shortId } from '../lib/format'
-import { qk } from '../lib/queries'
+import { formatDateTime, formatLatency, formatNumber, formatSpeed, formatUsd } from '../lib/format'
+import { qk, usePeers } from '../lib/queries'
+import { peerName } from './PeerPicker'
 import { costStatus } from '../lib/usage'
 import { Badge, CodeBlock, DetailList, EmptyState, ErrorAlert, LoadingRows, Mono } from './ui'
 import { Icon } from './icons'
@@ -29,6 +30,14 @@ function Cost({ entry }: { entry: RequestLogEntry }) {
     return <span className="gc-muted" title="No spend was reported for this request: the buyer lost it">not recorded</span>
   }
   return <>{formatUsd(entry.spent)}</>
+}
+
+/** A seller by name (its id when it has none, or the peer list is not readable); the full id on hover, or under the name with `full`. */
+function SellerName({ peerId, full = false }: { peerId: string; full?: boolean }) {
+  const peers = usePeers()
+  const name = peerName(peers.data, peerId)
+  if (!full) return <span className="gc-ellipsis" title={peerId}>{name}</span>
+  return <div className="gc-stack gc-stack--tight"><span>{name}</span><Mono>{peerId}</Mono></div>
 }
 
 /** Pretty-prints JSON bodies; anything else is shown as is. */
@@ -74,8 +83,9 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
         ['Model', data.model ?? '—'],
         ['Key', data.keyLabel],
         ['End user', data.endUser ?? '—'],
-        ['Seller', data.sellerPeerId ? <Mono key="s">{data.sellerPeerId}</Mono> : '—'],
-        ['Latency', formatLatency(data.latencyMs)],
+        ['Seller', data.sellerPeerId ? <SellerName key="s" peerId={data.sellerPeerId} full /> : '—'],
+        ['First token', formatLatency(data.firstTokenMs)],
+        ['Speed', formatSpeed(data.tokensPerSecond)],
         ['Duration', data.finishedAt ? formatLatency(data.finishedAt - data.startedAt) : '—'],
         ['Input tokens', formatNumber(data.inputTokens)],
         ['Cached input', formatNumber(data.cachedInputTokens)],
@@ -116,11 +126,16 @@ export function RequestLog({ filter, showKey = true }: { filter: RequestFilter; 
           { key: 'time', header: 'Time', render: (row) => <span className="gc-nowrap">{formatDateTime(row.startedAt)}</span> },
           ...(showKey ? [{ key: 'key', header: 'Key', secondary: true, render: (row: RequestLogEntry) => row.keyLabel }] : []),
           { key: 'model', header: 'Model', render: (row) => (
-            <span className="gc-ellipsis">{row.model ?? row.path}{row.status !== null && row.status >= 400 ? <span className="gc-narrow-only"> {statusBadge(row.status)}</span> : null}</span>
+            <span className="gc-ellipsis">
+              {/* Requests without a model (the model list) show their endpoint, muted. */}
+              {row.model ?? <span className="gc-muted">{row.method} {row.path}</span>}
+              {row.status !== null && row.status >= 400 ? <span className="gc-narrow-only"> {statusBadge(row.status)}</span> : null}
+            </span>
           ) },
-          { key: 'seller', header: 'Seller', secondary: true, optional: true, render: (row) => row.sellerPeerId ? <Mono title={row.sellerPeerId}>{shortId(row.sellerPeerId)}</Mono> : '—' },
+          { key: 'seller', header: 'Seller', render: (row) => row.sellerPeerId ? <SellerName peerId={row.sellerPeerId} /> : '—' },
           { key: 'status', header: 'Status', secondary: true, render: (row) => <span title={row.errorMessage ?? undefined}>{statusBadge(row.status)}</span> },
-          { key: 'latency', header: 'Latency', align: 'right', secondary: true, optional: true, render: (row) => formatLatency(row.latencyMs) },
+          { key: 'firstToken', header: 'First token', align: 'right', secondary: true, optional: true, render: (row) => formatLatency(row.firstTokenMs) },
+          { key: 'speed', header: 'Speed', align: 'right', secondary: true, optional: true, render: (row) => formatSpeed(row.tokensPerSecond) },
           { key: 'tokens', header: 'Tokens', align: 'right', secondary: true, render: (row) => `${formatNumber(row.inputTokens)} → ${formatNumber(row.outputTokens)}` },
           { key: 'cost', header: 'Cost', align: 'right', render: (row) => <Cost entry={row} /> },
         ]} />

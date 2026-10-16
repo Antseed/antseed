@@ -94,6 +94,18 @@ export function isEntireBalanceLocked(wallet: { available: Usdc; reserved: Usdc;
  * What the USDC waiting in the workspace wallet is doing. Near the credit
  * limit it stays there and tops the credits up as they are spent.
  */
+/**
+ * USDC that arrived in the workspace wallet and is on its way into the credits (a card payment or a
+ * transfer the buyer has not deposited yet). Not USDC held back because the credits are at their limit.
+ */
+export function isDepositPending(wallet: { available: Usdc; reserved: Usdc; walletUsdc: Usdc; creditLimit: Usdc | null }): boolean {
+  const inWallet = usdcToNumber(wallet.walletUsdc)
+  if (inWallet <= 0) return false
+  const limit = wallet.creditLimit === null ? 0 : usdcToNumber(wallet.creditLimit)
+  const headroom = Math.max(0, limit - usdcToNumber(wallet.available) - usdcToNumber(wallet.reserved))
+  return !(limit > 0 && inWallet > headroom)
+}
+
 export function walletUsdcMessage(wallet: { available: Usdc; reserved: Usdc; walletUsdc: Usdc; creditLimit: Usdc | null }): string {
   const inWallet = usdcToNumber(wallet.walletUsdc)
   const limit = wallet.creditLimit === null ? 0 : usdcToNumber(wallet.creditLimit)

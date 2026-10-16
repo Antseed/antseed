@@ -101,7 +101,7 @@ export async function runBundleExport(cmd: Command, options: BundleExportOptions
   console.log(`     curl -fsSL https://antseed.com/install-gateway.sh | sudo bash -s -- --domain llm.example.com --import /tmp/${file}`)
   console.log('  3. Point your apps at the new base URL, e.g. https://llm.example.com/v1 (API keys keep working).')
   console.log('  4. Stop the gateway and buyer on this machine, then delete the bundle from both machines.')
-  console.log(chalk.dim('The bundle holds wallet keys: keep the password apart from the file. Guide: https://antseed.com/docs/guides/gateway-server#move-a-local-gateway-to-a-server'))
+  console.log(chalk.dim('The bundle holds wallet keys: keep the password apart from the file. Guide: https://antseed.com/docs/gateway/migrate'))
 }
 
 /** `antseed gateway import`; the export side lives on `gateway export --out` (see activity.ts). */

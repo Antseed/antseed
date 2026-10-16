@@ -370,7 +370,6 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           defaultDepositAmountUSDC: cryptoOverrides?.defaultLockAmountUSDC
             ? String(Math.round(parseFloat(cryptoOverrides.defaultLockAmountUSDC) * 1_000_000))
             : '1000000',
-          platformFeeRate: config.payments?.platformFeeRate,
           // $0.30 overdraft window per channel — large enough that a single
           // typical long-context request (~$0.05–$0.15 on the priciest
           // published models) fits within verifiedCost + maxPerRequest, so the
@@ -654,7 +653,12 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
           // cadence. The default wallet keeps its earlier behavior.
           ...(shared && effectiveBuyerConfig.autoSweep === false ? { idleIntervalMs: null } : {}),
           onEvent: (event) => {
-            if (event.phase === 'credited') proxy.invalidateBalances(identity.wallet.address)
+            if (event.phase !== 'credited') return
+            proxy.invalidateBalances(identity.wallet.address)
+            // Kept for the gateway's deposit confirmations; the hash can arrive in a second 'credited' event.
+            if (event.txHash && event.amountBaseUnits) {
+              proxy.recordDeposit(identity.wallet.address, { txHash: event.txHash, creditedBaseUnits: event.amountBaseUnits, at: event.at })
+            }
           },
           usdcAddress: chainConfig.usdcContractAddress,
           evmChainId: chainConfig.evmChainId,

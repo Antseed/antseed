@@ -393,7 +393,7 @@ See [Reward Policies](../website/docs/protocol/reward-policies.md) for how usage
 points are adjusted and historical wash-trading evidence affects rewards.
 
 Looking for pre-migration USDC staking or rewards? See
-[Legacy emissions and claims](../website/docs/protocol/legacy-emissions.md).
+[Legacy emissions and claims](../website/docs/archive/legacy-emissions.md).
 The setup commands below use that legacy USDC interface; they do not create
 ANTS pool positions.
 
@@ -462,7 +462,7 @@ operator, so they are claimable here only when the node wallet is its own
 operator. Loop-proof artifacts come from the `antseed-loop-proof` host
 (`kind: antseed-wash-trading-seller-proof`); submission is resumable, so a
 partially authenticated proof can be re-submitted with the same file.
-The [staking guide](../website/docs/guides/staking.md) walks through the
+The [staking guide](../website/docs/provide/staking.md) walks through the
 dashboard tabs and how to read the pool table.
 
 ### Legacy USDC Provider Setup (Pre-Migration)
@@ -634,7 +634,7 @@ Endpoints:
 /readyz
 ```
 
-See [Metrics](../../apps/website/docs/guides/metrics.md) for metric names, labels, and operational notes.
+See [Metrics](../../apps/website/docs/provide/metrics.md) for metric names, labels, and operational notes.
 
 ## Development
 
@@ -658,6 +658,15 @@ that buyer's cache; separate buyer processes do not share memory. Query Core
 stores evidence and deduplicates in-flight checks, with keys containing the
 seller ID, selected verifier, and advertised-verifier fingerprint. The renderer
 does not need a new query client for this service.
+
+### Router model-list cache
+
+`RoutingModelsCache` in `src/proxy/router-execution.ts` keeps each
+routing service's free `GET /v1/routing/models` response in a TanStack Query Core
+`QueryClient`, keyed by peer, provider and service. Model lists are reused for
+60 seconds, concurrent requests share one models call, and the entry is
+removed when a routing attempt fails. A 422 from the router refreshes the
+list and retries the ranking once. Paid rank results are not stored in Query Core.
 
 Trust lifetimes remain explicit in the service: successful badge evidence lasts
 up to 24 hours from check start, but routing evidence lasts only five minutes.

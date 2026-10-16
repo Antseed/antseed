@@ -18,13 +18,21 @@ test('fetchProxyConversationRoute reads the actual routed peer from the buyer co
   globalThis.fetch = (async (input) => {
     assert.match(String(input), /vpr%3Aconv-a$/);
     return new Response(JSON.stringify({
-      conversation: { lastModel: `${'ab'.repeat(20)}@kimi-k3` },
+      conversation: { lastModel: `${'ab'.repeat(20)}@kimi-k3`, ...(routerTurn ? { lastRouter: `${'cd'.repeat(20)}@route` } : {}) },
     }), { status: 200, headers: { 'content-type': 'application/json' } });
   }) as typeof fetch;
+  let routerTurn = false;
   try {
     assert.deepEqual(await fetchProxyConversationRoute(8377, 'conv-a'), {
       peerId: 'ab'.repeat(20),
       service: 'kimi-k3',
+      router: null,
+    });
+    routerTurn = true;
+    assert.deepEqual(await fetchProxyConversationRoute(8377, 'conv-a'), {
+      peerId: 'ab'.repeat(20),
+      service: 'kimi-k3',
+      router: `${'cd'.repeat(20)}@route`,
     });
   } finally {
     globalThis.fetch = originalFetch;

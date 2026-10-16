@@ -104,7 +104,7 @@ import { SellerAddressResolver } from "./discovery/seller-address-resolver.js";
 import { Contract as EthersContract } from "ethers";
 import { SellerPaymentManager, type SellerPaymentConfig } from "./payments/seller-payment-manager.js";
 import { IdentityClient } from "./payments/evm/identity-client.js";
-import { SellerRequestHandler } from "./seller-request-handler.js";
+import { SellerRequestHandler, assertSingleRoutingService } from "./seller-request-handler.js";
 import {
   BuyerRequestHandler,
   type RequestStreamCallbacks,
@@ -195,7 +195,7 @@ export interface NodePaymentsConfig {
   enabled?: boolean;
   /** Payment method used for settlement. Default: "crypto" */
   paymentMethod?: PaymentMethod;
-  /** Platform fee rate in [0,1]. Default: 0.05 */
+  /** @deprecated Ignored. The protocol fee is set on-chain (`PLATFORM_FEE_BPS` on AntseedChannels). */
   platformFeeRate?: number;
   /** Idle time before calling settle() to collect earnings (channel stays open). Default: 10 min. */
   settlementIdleMs?: number;
@@ -1822,6 +1822,7 @@ export class AntseedNode extends EventEmitter {
     const dhtPort = this._config.dhtPort ?? 6881;
     const signalingPort = this._config.signalingPort ?? 6882;
     debugLog(`[Node] Starting seller — DHT port=${dhtPort}, signaling port=${signalingPort}`);
+    assertSingleRoutingService(this._providers);
 
     const dataDir = this._config.dataDir ?? join(homedir(), ".antseed");
     try {

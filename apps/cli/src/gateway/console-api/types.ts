@@ -321,6 +321,10 @@ export interface RequestLogEntry {
   status: number | null
   sellerPeerId: string | null
   latencyMs: number | null
+  /** Streamed answers: time from sending to the seller's first frame, measured by the buyer. */
+  firstTokenMs: number | null
+  /** Streamed answers of 20+ output tokens: output tokens per second after the first frame. */
+  tokensPerSecond: number | null
   spent: Usdc | null
   inputTokens: number
   cachedInputTokens: number
@@ -396,6 +400,32 @@ export interface OperatorAuth {
   /** Operator nonce as a decimal string. */
   nonce: string
   signature: string
+}
+
+// Workspace admins: deposits credited to the workspace wallet, with who approved each (deposit confirmations).
+// GET    /workspaces/:id/deposits                 → DepositConfirmation[] (newest first; new ones the buyer recorded are verified first)
+// POST   /workspaces/:id/deposits { txHash }      → DepositConfirmation (adds a deposit by its transaction, e.g. one made before this was recorded)
+// PUT    /workspaces/:id/deposits/:tx/approval { note? } → DepositConfirmation
+// DELETE /workspaces/:id/deposits/:tx/approval   → DepositConfirmation
+export interface DepositConfirmation {
+  txHash: string
+  /** A short reference for the confirmation, from the transaction hash. */
+  reference: string
+  /** relay: USDC sent to the wallet and swept in by a relayer, which keeps a fixed fee; direct: deposited by a connected wallet. */
+  kind: 'relay' | 'direct'
+  wallet: string
+  workspaceId: string
+  workspaceName: string
+  /** What left the payer's side: credited + fee. */
+  sent: Usdc
+  credited: Usdc
+  fee: Usdc
+  blockNumber: number
+  /** Epoch ms of the block. */
+  time: number
+  /** Where the USDC came from; empty when the chain could not be searched. `minted`: the USDC issuer minted it into the wallet (a card purchase). */
+  sources: Array<{ from: string; amount: Usdc; txHash: string; minted: boolean }>
+  approval: { by: string; at: number; note: string | null } | null
 }
 
 export interface DepositWatch {
@@ -601,8 +631,10 @@ export interface Peer {
   washFlagged: boolean
   lastSeen: number | null
   health: { failureStreak: number; coolingDownUntil: number | null }
-  /** Measured by this gateway over its recent requests. */
+  /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
   requests24h: number
 }
 
@@ -640,8 +672,10 @@ export interface NetworkModelOffer {
    * seller is not TEE-capable or the buyer has not verified it yet.
    */
   teeScope: PeerTeeScope | null
-  /** Measured by this gateway over its recent requests. */
+  /** Medians over this gateway's recent requests: total time, time to first token, and output tokens per second. */
   latencyMsP50: number | null
+  firstTokenMsP50: number | null
+  tokensPerSecondP50: number | null
 }
 
 /** A model on the network, merged across the sellers that offer it (aliases included). */

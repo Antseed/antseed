@@ -255,7 +255,7 @@ export default function ConnectHub(): JSX.Element {
           <div>
             <h3>Building an integration?</h3>
             <p>
-              Read the <Link to="/docs/guides/using-the-api">API guide</Link>, give your agent{' '}
+              Read the <Link to="/docs/api">API guide</Link>, give your agent{' '}
               <a href="/skill.md">the skill</a>, and ping us in{' '}
               <a href="https://t.me/antseed" target="_blank" rel="noopener noreferrer">
                 Telegram
@@ -271,7 +271,7 @@ export default function ConnectHub(): JSX.Element {
         sub="Install once, set one base URL, and keep the workflow you already have."
         note={
           <>
-            <a href="/docs/guides/using-the-api">Read the API guide</a>
+            <a href="/docs/api">Read the API guide</a>
             <a href="/skill.md">Read the skill</a>
           </>
         }>

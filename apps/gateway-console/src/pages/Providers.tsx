@@ -9,7 +9,7 @@ import { TeeBadge } from '../components/TeeBadge'
 import { VerificationLinks } from '../components/VerificationLinks'
 import { SplitView, type SidePanelContent } from '../components/SidePanel'
 import { Badge, EmptyState, LoadingRows, Mono, PageHeader, Panel, QueryView, SelectField, Switch } from '../components/ui'
-import { formatLatency, formatNumber, formatPriceRange, shortId } from '../lib/format'
+import { formatLatency, formatNumber, formatPriceRange, formatSpeed, shortId } from '../lib/format'
 import { panelPath, panelSelection } from '../lib/nav'
 import { samePeerId } from '../lib/peer-id'
 import { filterPeers, inputPrice, isFreePeer, outputPrice, priceRange, type PeerFilter } from '../lib/peers'
@@ -92,7 +92,8 @@ export default function Providers() {
                 { key: 'output', header: 'Output $/M', align: 'right', secondary: true, sortValue: (peer) => outputPrice(peer, filter.model), render: (peer) => formatPriceRange(priceRange(peer, 'outputUsdPerMillion', filter.model)) },
                 { key: 'trust', header: 'Trust', align: 'right', sortValue: (peer) => peer.trustScore, render: (peer) => score(peer.trustScore) },
                 ...(showReputation ? [{ key: 'reputation', header: 'Reputation', align: 'right' as const, secondary: true, optional: true, sortValue: (peer: Peer) => peer.reputationScore, render: (peer: Peer) => score(peer.reputationScore) }] : []),
-                { key: 'latency', header: 'Latency', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.latencyMsP50, render: (peer) => formatLatency(peer.latencyMsP50) },
+                { key: 'firstToken', header: 'First token', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.firstTokenMsP50, render: (peer) => formatLatency(peer.firstTokenMsP50) },
+                { key: 'speed', header: 'Speed', align: 'right', secondary: true, optional: true, sortValue: (peer) => peer.tokensPerSecondP50, render: (peer) => formatSpeed(peer.tokensPerSecondP50) },
                 { key: 'usage', header: 'Your 24h', align: 'right', secondary: true, sortValue: (peer) => peer.requests24h, render: (peer) => formatNumber(peer.requests24h) },
               ]} />
           )}

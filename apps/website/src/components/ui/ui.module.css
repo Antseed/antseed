@@ -78,18 +78,6 @@
   color: #FFFFFF;
 }
 
-:global(html[data-theme='dark']) .btnDark {
-  background: var(--as-primary-5);
-  border-color: var(--as-primary-5);
-  color: #001E12;
-}
-
-:global(html[data-theme='dark']) .btnDark:hover {
-  background: var(--as-primary-4);
-  border-color: var(--as-primary-4);
-  color: #001E12;
-}
-
 .btnGhost {
   background: var(--as-soil-2);
   border: 1px solid var(--as-line);
@@ -102,11 +90,7 @@
   color: var(--as-text);
 }
 
-:global(html[data-theme='dark']) .btnGhost:hover {
-  border-color: var(--as-primary-3);
-}
-
-/* light — outline pill for dark ink sections; stays light in both themes */
+/* light — outline pill for dark ink sections */
 .btnLight {
   background: transparent;
   border: 1px solid #FFFFFF;
@@ -646,10 +630,6 @@
 .faqAnswer a {
   color: var(--as-green-deep);
   font-weight: 500;
-}
-
-:global(html[data-theme='dark']) .faqAnswer a {
-  color: var(--as-primary-4);
 }
 
 .faqAnswer code {

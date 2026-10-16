@@ -257,16 +257,14 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   > svg { flex: 0 0 auto; color: var(--as-text-muted); }
 }
 .gc-ws__name { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-.gc-ws--select { cursor: pointer; padding-right: 0.375rem;
-  &:hover { background: var(--as-bg-muted); }
-  &:focus-within { outline: 2px solid var(--focus); outline-offset: 1px; }
+.gc-ws-wrap { display: inline-flex; min-width: 0; }
+.gc-ws--select { cursor: pointer; padding-right: 0.375rem; border: 0; background: transparent; font: inherit;
+  &:hover, &[aria-expanded="true"] { background: var(--as-bg-muted); }
+  &:focus-visible { outline: 2px solid var(--focus); outline-offset: 1px; }
 }
-.gc-ws__select {
-  appearance: none; border: 0; padding: 0; background: transparent; color: inherit; font: inherit;
-  min-width: 0; max-width: 13rem; overflow: hidden; text-overflow: ellipsis; cursor: pointer; outline: none;
-  option { color: initial; }
-}
-.gc-ws__chevron { pointer-events: none; }
+.gc-ws__role { flex: 0 0 auto; padding: 0 0.375rem; border-radius: 999px; background: var(--as-bg-muted); color: var(--as-text-secondary); font-size: 0.6875rem; font-weight: 500; line-height: 1.25rem; }
+.gc-ws--select:hover .gc-ws__role, .gc-ws--select[aria-expanded="true"] .gc-ws__role { background: var(--as-bg-surface); }
+.gc-ws__chevron { flex: 0 0 auto; color: var(--as-text-muted); }
 
 .gc-account { position: relative; }
 .gc-user { display: inline-flex; padding: 0.125rem; border: 0; border-radius: 999px; background: transparent; cursor: pointer; }
@@ -299,19 +297,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   position: sticky; top: var(--gc-topbar-h); align-self: start; display: flex; flex-direction: column;
   height: calc(100vh - var(--gc-topbar-h)); overflow-y: auto; padding: 1.5rem 0 1rem;
 }
-/* The homepage's dot ant behind the foot of the nav: pinned to the window's
-   bottom, exactly under the nav column (its left and right edges), and fading
-   to nothing upwards and softly at both sides. */
-.gc-antdots {
-  position: fixed; bottom: 0; z-index: 0; display: block; pointer-events: none;
-  left: calc(max(0px, (100vw - var(--gc-max)) / 2) + 1.5rem); width: var(--gc-rail-w); height: 15rem;
-  -webkit-mask-image: linear-gradient(to top, #000 30%, transparent), linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
-  -webkit-mask-composite: source-in;
-  mask-image: linear-gradient(to top, #000 30%, transparent), linear-gradient(to right, transparent, #000 1.5rem, #000 calc(100% - 1.5rem), transparent);
-  mask-composite: intersect;
-}
-.gc-rail > .gc-nav { position: relative; z-index: 1; }
-@media (max-height: 46rem) { .gc-antdots { display: none; } }
+/* The gateway's version at the foot of the nav (and of the phone menu). */
+.gc-version { margin: auto 0 0; padding: 1.5rem 0.625rem 0; color: var(--as-text-muted); font-size: 0.75rem; font-variant-numeric: tabular-nums; }
 .gc-nav { display: flex; flex-direction: column; gap: 1.25rem; }
 .gc-nav__group { display: flex; flex-direction: column; gap: 1px; }
 .gc-nav__heading { padding: 0 0.625rem 0.375rem; color: var(--as-text-muted); font-size: 0.75rem; font-weight: 500; }
@@ -627,7 +614,6 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
   .gc-topbar .gc-brand__full { display: none; }
   .gc-topbar .gc-brand__mark { display: block !important; }
   .gc-ws { max-width: 11rem; }
-  .gc-ws__select { max-width: 8.5rem; }
 }
 @media (max-width: 520px) {
   .gc-grid--4 { grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 0.625rem; }
@@ -650,6 +636,26 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 /* Chat: the page fills the viewport below the top bar; the conversation scrolls, the prompt stays put. */
 .gc-chat-page { height: calc(100vh - var(--gc-topbar-h) - 4.5rem); min-height: 28rem; }
 .gc-chat-conversation { flex: 1 1 auto; min-height: 0; }
+/*
+ * Phones: the chat behaves like a messaging app. The app is pinned to the visible viewport (kept in
+ * --gc-vvh/--gc-vvtop by the chat page, so it shrinks above the on-screen keyboard), the page itself never
+ * scrolls, the top bar stays put, the conversation scrolls and the composer sits at the bottom.
+ * The gateway URL strip is left out (Overview and Keys show it).
+ */
+@media (max-width: 640px) {
+  html:has(.gc-app[data-page="chat"]), html:has(.gc-app[data-page="chat"]) body { height: 100%; overflow: hidden; overscroll-behavior: none; }
+  .gc-app[data-page="chat"] {
+    --gc-topbar-h: var(--gc-topbar-row);
+    position: fixed; left: 0; right: 0; top: var(--gc-vvtop, 0px);
+    height: var(--gc-vvh, 100dvh); min-height: 0;
+    .gc-topbar { position: relative; flex: none; }
+    .gc-topbar__strip { display: none; }
+    .gc-body { flex: 1 1 auto; min-height: 0; grid-template-rows: minmax(0, 1fr); }
+    .gc-main { min-height: 0; display: flex; flex-direction: column; padding: 0.25rem 0 0.5rem; }
+    .gc-chat-page { flex: 1 1 auto; min-height: 0; height: auto; }
+  }
+}
+.gc-chat-history .as-drawer__body { display: flex; flex-direction: column; gap: 0.125rem; }
 
 /* First-run tour (driver.js): its popover on the console's surface, type and buttons; monochrome like the rest. */
 .driver-popover.gc-tour {
@@ -698,3 +704,36 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 .gc-section-card__body { color: var(--as-text-secondary); font-size: 0.8125rem; line-height: 1.4; }
 .gc-section-card__chevron { flex: 0 0 auto; align-self: center; color: var(--as-text-muted); }
 @media (max-width: 640px) { .gc-setup { flex-direction: column; align-items: stretch; } }
+/* A payment on its way into the credits: amber dot + one line, emphasised so it does not read as a failed payment. */
+.gc-pending { color: var(--as-text-primary); font-size: 0.8125rem; flex-wrap: nowrap; align-items: baseline; .gc-attention { transform: translateY(-1px); } }
+/* An alert at the top of a panel, above its figures. */
+.gc-panel-alert { margin-bottom: 1.25rem; }
+/* A section someone was just sent to: a brief ring so the jump is visible even without scrolling. */
+.gc-flash { animation: gc-flash 1.6s ease-out; border-radius: var(--as-radius-lg); outline-offset: 0.625rem; }
+@keyframes gc-flash { 0%, 30% { outline: 2px solid var(--as-warning); } 100% { outline: 2px solid transparent; } }
+@media (prefers-reduced-motion: reduce) { .gc-flash { animation: none; } }
+
+/* Deposit confirmation: a document on screen, and the only thing on the page when printed. */
+.gc-doc { max-width: 46rem; padding: 2rem 2.25rem; border: 1px solid var(--as-border); border-radius: var(--as-radius-lg); background: var(--as-bg-surface); color: var(--as-text-primary); }
+.gc-doc__head { display: flex; align-items: flex-start; justify-content: space-between; gap: 1rem; padding-bottom: 1.25rem; border-bottom: 1px solid var(--as-border); }
+.gc-doc__title { margin: 0; font-size: 1.375rem; font-weight: 600; }
+.gc-doc__ref { margin: 0.25rem 0 0; color: var(--as-text-secondary); font-family: var(--as-font-mono, ui-monospace, monospace); font-size: 0.8125rem; }
+.gc-doc__rows { display: flex; flex-direction: column; margin: 0; }
+.gc-doc__row { display: grid; grid-template-columns: 12rem minmax(0, 1fr); gap: 1rem; padding: 0.625rem 0; border-bottom: 1px solid var(--as-border);
+  dt { color: var(--as-text-secondary); font-size: 0.8125rem; }
+  dd { margin: 0; font-size: 0.875rem; overflow-wrap: anywhere; }
+}
+.gc-doc__sources { margin: 0; padding: 0; list-style: none; display: flex; flex-direction: column; gap: 0.5rem; }
+.gc-doc__foot { margin-top: 1.25rem; color: var(--as-text-secondary); font-size: 0.75rem; line-height: 1.5; }
+@media (max-width: 640px) {
+  .gc-doc { padding: 1.25rem; }
+  .gc-doc__row { grid-template-columns: minmax(0, 1fr); gap: 0.125rem; }
+}
+@media print {
+  .gc-topbar, .gc-rail, .gc-skip, .gc-no-print, .gc-exposure, .as-toasts { display: none !important; }
+  .gc-body { display: block; padding: 0; }
+  .gc-main { padding: 0; max-width: none; }
+  .gc-doc { max-width: none; border: 0; padding: 0; background: #fff; color: #000; }
+  .gc-doc .gc-link, .gc-doc .gc-mono { color: #000; }
+  .gc-doc__row dt, .gc-doc__ref, .gc-doc__foot { color: #444; }
+}

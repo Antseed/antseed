@@ -147,7 +147,7 @@ export async function resolveDefaultAntseedBaseUrl(dataDir: string, configPath: 
 export function buildCodexConfigArgs(baseUrlV1: string, model: string): string[] {
   return [
     '-c',
-    `model_providers.antseed.name=${tomlString('AntSeed')}`,
+    `model_providers.antseed.name=${tomlString('Antseed')}`,
     '-c',
     `model_providers.antseed.base_url=${tomlString(baseUrlV1)}`,
     '-c',
@@ -155,7 +155,7 @@ export function buildCodexConfigArgs(baseUrlV1: string, model: string): string[]
     '-c',
     'model_providers.antseed.env_key="ANTSEED_API_KEY"',
     '-c',
-    `model_providers.antseed.env_key_instructions=${tomlString('The AntSeed wrapper sets ANTSEED_API_KEY automatically.')}`,
+    `model_providers.antseed.env_key_instructions=${tomlString('The Antseed wrapper sets ANTSEED_API_KEY automatically.')}`,
     '-c',
     `model=${tomlString(model)}`,
     '-c',
@@ -170,14 +170,14 @@ export function buildOpenCodeConfigContent(baseUrlV1: string, model: string): st
     provider: {
       antseed: {
         npm: '@ai-sdk/openai-compatible',
-        name: 'AntSeed',
+        name: 'Antseed',
         options: {
           baseURL: baseUrlV1,
           apiKey: 'antseed',
         },
         models: {
           [model]: {
-            name: `${model} (via AntSeed)`,
+            name: `${model} (via Antseed)`,
             limit: {
               context: ANTSEED_MODEL_CONTEXT_WINDOW,
               output: ANTSEED_MODEL_MAX_OUTPUT_TOKENS,
@@ -346,7 +346,7 @@ async function runWrappedTool(toolName: ToolName, rawArgs: string[], dataDir: st
     process.exit(1)
   }
 
-  console.log(chalk.dim(`AntSeed proxy: ${proxyDisplayUrl(toolName, baseUrl)}`))
+  console.log(chalk.dim(`Antseed proxy: ${proxyDisplayUrl(toolName, baseUrl)}`))
   const exitCode = await spawnInteractive(executable, prepared.args, prepared.env).catch((err) => {
     console.error(chalk.red(`Failed to run ${toolName}: ${(err as Error).message}`))
     return 1
@@ -360,13 +360,13 @@ function registerToolCommand(program: Command, toolName: ToolName): void {
   const tool = TOOL_CONFIGS[toolName]
   program
     .command(toolName)
-    .description(`Run ${tool.executable} with AntSeed proxy settings`)
+    .description(`Run ${tool.executable} with Antseed proxy settings`)
     .allowUnknownOption(true)
     .allowExcessArguments(true)
-    .argument('[args...]', `${tool.executable} arguments; AntSeed consumes --model and --antseed-base-url`)
+    .argument('[args...]', `${tool.executable} arguments; Antseed consumes --model and --antseed-base-url`)
     .addHelpText('after', `
 
-AntSeed wrapper flags:
+Antseed wrapper flags:
   --model <service-id>             Service/model id for the tool
   --antseed-base-url <url>         Proxy URL (default: active buyer proxy/config)
 
