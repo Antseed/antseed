@@ -1,3 +1,4 @@
+import { parseMultipartFormFields } from '@antseed/api-adapter'
 import type { PresetRecord } from './store.js'
 
 export const PRESET_MODEL_PREFIX = '@preset/'
@@ -42,12 +43,15 @@ export function extractEndUser(body: Record<string, unknown> | null, header: str
   return value ? value.slice(0, MAX_END_USER_LENGTH) : null
 }
 
-/** A text field of a multipart form (image edits), without a full parser; `model` by default. */
-export function sniffMultipartModel(body: Buffer, contentType: string | undefined, field: 'model' | 'service' = 'model'): string | null {
-  if (!contentType?.toLowerCase().startsWith('multipart/form-data')) return null
-  const text = body.subarray(0, 4 * 1024 * 1024).toString('latin1')
-  const match = new RegExp(`content-disposition:\\s*form-data;\\s*name="${field}"[^\\r\\n]*\\r\\n(?:[^\\r\\n]+\\r\\n)*\\r\\n([^\\r\\n]*)\\r\\n`, 'i').exec(text)
-  return match ? Buffer.from(match[1]!, 'latin1').toString('utf8').slice(0, 200) : null
+/**
+ * A multipart form's text fields, read with the buyer's own parser
+ * (`parseMultipartFormFields`): the same `model`/`service` values, and the
+ * whole body, not just its start. Null unless the content type is multipart.
+ */
+function multipartFields(body: Buffer, contentType: string | undefined): Record<string, string> | null {
+  return contentType?.toLowerCase().startsWith('multipart/form-data')
+    ? parseMultipartFormFields(body, contentType)
+    : null
 }
 
 /**
@@ -56,10 +60,13 @@ export function sniffMultipartModel(body: Buffer, contentType: string | undefine
  * proxy/request-utils.ts): a `service` field wins over `model`, and one that
  * is not a usable name leaves the request without a model. The gateway's
  * model allow list and its accounting use this, not `model` alone.
+ *
+ * The body is read whole, however large: the buyer reads it whole too, so a
+ * body the gateway cannot read is one whose preset, allow list and accounting
+ * it would get wrong while the buyer still routes it.
  */
 export function effectiveRequestModel(parsed: Record<string, unknown> | null, body: Buffer, contentType: string | undefined): string | null {
-  const raw = parsed
-    ? parsed['service'] ?? parsed['model']
-    : sniffMultipartModel(body, contentType, 'service') ?? sniffMultipartModel(body, contentType)
+  const fields: Record<string, unknown> | null = parsed ?? multipartFields(body, contentType)
+  const raw = fields?.['service'] ?? fields?.['model']
   return typeof raw === 'string' && raw.trim() ? raw.trim() : null
 }
