@@ -9,7 +9,8 @@
  * - `request`: the console creates it to ask for the update. Its `action`
  *   is the step, as on the app's own banner: `download` fetches the newest
  *   release the app's updater found, and `install` (the default) restarts
- *   into it, downloading it first when needed. Nothing else is read.
+ *   into it, downloading it first when needed. Nothing else is read, and a
+ *   file that is not a whole JSON object is dropped.
  * - `status`: JSON the app writes. `app` carries the app's own versions,
  *   which are what the console shows (the CLI's npm version is not what the
  *   app ships), and the rest is the last update run, which the console polls.
@@ -151,12 +152,14 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
   }
   write();
 
-  const readAction = (): RunAction => {
+  // The CLI renames a whole request into place; anything else restarts nothing.
+  const readAction = (): RunAction | null => {
     try {
-      const request = JSON.parse(readFileSync(deps.paths.request, 'utf8')) as Record<string, unknown>;
-      return request.action === 'download' ? 'download' : 'install';
+      const request = JSON.parse(readFileSync(deps.paths.request, 'utf8')) as unknown;
+      if (!request || typeof request !== 'object') return null;
+      return (request as Record<string, unknown>).action === 'download' ? 'download' : 'install';
     } catch {
-      return 'install';
+      return null;
     }
   };
 
@@ -187,7 +190,8 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
     } catch {
       // Gone already; the request still counts once.
     }
-    startRun(action);
+    if (action) startRun(action);
+    else deps.log('Ignored an incomplete update request from the gateway console');
   };
 
   return {

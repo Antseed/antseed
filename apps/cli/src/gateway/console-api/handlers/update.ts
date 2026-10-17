@@ -38,7 +38,7 @@ export function registerUpdateRoutes(router: ConsoleRouter, deps: ConsoleDeps): 
         ? `This gateway cannot update itself from the console. On its host, run: ${before.command}`
         : before.note)
     }
-    if (!before.available && !inFlight(before)) throw new ConsoleError(409, 'up_to_date', `Antseed ${before.current} is already the latest version`)
+    if (!before.available && before.downloaded === null && !inFlight(before)) throw new ConsoleError(409, 'up_to_date', `Antseed ${before.current} is already the latest version`)
     // Asking again for the step that is running is harmless; the other step waits for it.
     if (inFlight(before) && before.progress?.action !== action) {
       throw new ConsoleError(409, 'update_in_progress', before.progress?.action === 'download'
@@ -46,12 +46,12 @@ export function registerUpdateRoutes(router: ConsoleRouter, deps: ConsoleDeps): 
         : 'An update is installing; try again when it is done')
     }
     // Downloaded already: nothing to fetch until the next version is out.
-    if (action === 'download' && before.progress?.state === 'ready' && before.progress.to === before.latest) return respond(202, before)
+    if (action === 'download' && before.downloaded !== null && before.downloaded === before.latest) return respond(202, before)
     const actor = requestActor(deps, request)
     const after = updates.apply(actor.actor.label ?? actor.actor.kind, action)
     // Only the step that restarts the gateway is audited.
     if (action === 'install' && !inFlight(before)) {
-      recordAudit(deps, actor, 'gateway.update', { kind: 'settings', id: 'update', label: 'Antseed version' }, { from: before.current, to: before.progress?.state === 'ready' ? before.progress.to : before.latest })
+      recordAudit(deps, actor, 'gateway.update', { kind: 'settings', id: 'update', label: 'Antseed version' }, { from: before.current, to: before.downloaded ?? before.latest })
     }
     return respond(202, after)
   })

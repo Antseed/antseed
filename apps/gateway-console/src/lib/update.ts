@@ -15,10 +15,9 @@ export type UpdatePhase =
   | 'installing'   // switching to it and restarting
   | 'failed'       // the last run failed
 
-/** The downloaded version waiting for Restart & update, if any. */
+/** The downloaded version waiting for Restart & update, even when npm has a newer one since. */
 export function readyVersion(update: GatewayUpdate): string | null {
-  const progress = update.progress
-  return progress?.state === 'ready' && progress.to && progress.to === update.latest && update.available ? progress.to : null
+  return update.downloaded ?? null
 }
 
 export function updatePhase(update: GatewayUpdate, now = Date.now()): UpdatePhase {
@@ -43,7 +42,12 @@ export function updateRestarting(update: GatewayUpdate | undefined): boolean {
 export function showUpdateNotice(viewer: Viewer, update: GatewayUpdate | undefined, dismissedVersion: string | null): boolean {
   if (!update || !isOrgAdmin(viewer) || update.apply === 'none') return false
   if (updateInFlight(update)) return true
-  return update.available && update.latest !== dismissedVersion
+  return (update.available || readyVersion(update) !== null) && noticeVersion(update) !== dismissedVersion
+}
+
+/** The version the notice is about, and the one Dismiss hides it for: the downloaded one, else npm's latest. */
+export function noticeVersion(update: GatewayUpdate): string | null {
+  return readyVersion(update) ?? update.latest
 }
 
 /** Dismissal lasts per version in this browser: the next release shows the notice again. */

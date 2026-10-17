@@ -103,6 +103,7 @@ test('Download, then Restart & update: the first only fetches, the second restar
     assert.equal(again.status, 202)
     assert.equal(existsSync(h.env.ANTSEED_UPDATER_REQUEST!), false, 'downloaded already: nothing to ask for')
     assert.equal(again.body.progress?.state, 'ready')
+    assert.equal(again.body.downloaded, '0.1.193')
 
     const install = await h.post('install')
     assert.equal(install.status, 202)
@@ -138,6 +139,27 @@ test('POST /update refuses when the gateway cannot update itself or is already c
     assert.equal(refused.body.error.code, 'up_to_date')
   } finally {
     await current.close()
+  }
+})
+
+test('a downloaded version stays installable after npm publishes a newer one', async () => {
+  const h = await harness({ installer: true, latest: '0.1.194' })
+  try {
+    await h.as('owner', 'POST', '/update/check')
+    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ state: 'ready', action: 'download', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
+    const info = await h.as('owner', 'GET', '/update')
+    assert.deepEqual([info.body.downloaded, info.body.latest, info.body.available], ['0.1.193', '0.1.194', true])
+    const install = await h.post('install')
+    assert.equal(install.status, 202)
+    const [audit] = h.store.listAudit({ action: 'gateway.update' }).entries.filter((entry) => entry.action === 'gateway.update')
+    assert.deepEqual(audit?.details, { from: '0.1.180', to: '0.1.193' }, 'the version that restarts is the downloaded one')
+
+    // Once it runs, it is no longer waiting.
+    rmSync(h.env.ANTSEED_UPDATER_REQUEST!)
+    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ state: 'ready', action: 'download', from: '0.1.170', to: '0.1.180', startedAt: 1, finishedAt: 2, error: null }))
+    assert.equal((await h.as('owner', 'GET', '/update')).body.downloaded, null)
+  } finally {
+    await h.close()
   }
 })
 

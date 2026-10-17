@@ -7,6 +7,7 @@ import {
   rootUpdaterPaths,
   updateInFlight,
   type RootUpdateAction,
+  type RootUpdateProgress,
   type RootUpdaterPaths,
 } from '../update/root-updater.js'
 import { updateAvailableLine } from '../update/notifier.js'
@@ -102,7 +103,13 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
     return inFlight
   }
 
+  // Ready to install whatever npm's latest has moved on to; not once it runs.
+  function downloaded(run: RootUpdateProgress | null, current: string): string | null {
+    return run?.state === 'ready' && isNewer(run.to, current) ? run.to : null
+  }
+
   function info(): GatewayUpdate {
+    const run = progress()
     if (desktop) {
       const app = readUpdaterAppVersions(updater)
       const current = app?.current ?? options.current
@@ -119,7 +126,8 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
         install: method.kind,
         command: null,
         note: method.note,
-        progress: progress(),
+        progress: run,
+        downloaded: downloaded(run, current),
       }
     }
     return {
@@ -134,7 +142,8 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
       install: method.kind,
       command: method.command,
       note: method.note,
-      progress: progress(),
+      progress: run,
+      downloaded: downloaded(run, options.current),
     }
   }
 

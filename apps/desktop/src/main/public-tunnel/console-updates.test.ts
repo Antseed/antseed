@@ -190,3 +190,21 @@ test('a download from the banner shows as ready, and one the app quits on is ins
     h.cleanup();
   }
 });
+
+test('an incomplete request starts nothing', async () => {
+  const h = harness();
+  try {
+    h.updates.checked('0.2.63');
+    writeFileSync(h.paths.request, '');
+    h.updates.poll();
+    await settle();
+    writeFileSync(h.paths.request, '{"action":"downl');
+    h.updates.poll();
+    await settle();
+    assert.deepEqual([h.downloads, h.installs], [[], []]);
+    assert.equal(h.status().state, undefined);
+    assert.equal(existsSync(h.paths.request), false);
+  } finally {
+    h.cleanup();
+  }
+});

@@ -835,6 +835,11 @@ export interface GatewayUpdate {
   note: string
   /** The update service's pending request or last run; null when `apply` is not `console` or it never ran. */
   progress: RootUpdateProgress | null
+  /**
+   * A version downloaded and waiting for Restart & update: newer than
+   * `current`, whatever npm's `latest` has moved on to since. Null when none.
+   */
+  downloaded: string | null
 }
 
 /**

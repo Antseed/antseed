@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { mkdtempSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
+import { mkdtempSync, readdirSync, rmSync, writeFileSync, existsSync, readFileSync } from 'node:fs'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
 import test from 'node:test'
@@ -167,6 +167,9 @@ test('root updater: a download request reads as one, and a downloaded version as
     const paths = { request: join(dir, 'update-request'), status: join(dir, 'status.json') }
     requestRootUpdate(paths, 'owner', 1_000, 'download')
     assert.deepEqual([readRootUpdateProgress(paths)?.state, readRootUpdateProgress(paths)?.action], ['requested', 'download'])
+    // Renamed into place whole, so the updater never sees it half written.
+    assert.deepEqual(JSON.parse(readFileSync(paths.request, 'utf8')), { requestedAt: 1_000, requestedBy: 'owner', action: 'download' })
+    assert.deepEqual(readdirSync(dir).filter((name) => name.endsWith('.tmp')), [])
     rmSync(paths.request)
     writeFileSync(paths.status, JSON.stringify({ state: 'ready', action: 'download', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
     const ready = readRootUpdateProgress(paths)

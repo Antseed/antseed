@@ -1,4 +1,4 @@
-import { existsSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, renameSync, rmSync, statSync, writeFileSync } from 'node:fs'
 import { isSemver } from './version.js'
 
 /**
@@ -77,9 +77,20 @@ export function rootUpdaterPaths(env: NodeJS.ProcessEnv = process.env): RootUpda
   return request && status ? { request, status } : null
 }
 
-/** Asks the root updater for `@antseed/cli@latest`. Writing the file is all it takes. */
+/**
+ * Asks the root updater for `@antseed/cli@latest`. Writing the file is all it
+ * takes; it appears whole (written aside, then renamed), since the updater
+ * starts the moment the path exists.
+ */
 export function requestRootUpdate(paths: RootUpdaterPaths, requestedBy: string, now = Date.now(), action: RootUpdateAction = 'install'): void {
-  writeFileSync(paths.request, `${JSON.stringify({ requestedAt: now, requestedBy, action })}\n`, { mode: 0o644 })
+  const temp = `${paths.request}.${process.pid}.tmp`
+  writeFileSync(temp, `${JSON.stringify({ requestedAt: now, requestedBy, action })}\n`, { mode: 0o644 })
+  try {
+    renameSync(temp, paths.request)
+  } catch (error) {
+    rmSync(temp, { force: true })
+    throw error
+  }
 }
 
 function readAction(value: unknown): RootUpdateAction {

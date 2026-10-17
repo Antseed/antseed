@@ -760,12 +760,20 @@ interrupted() {
 STARTED="$(now)"
 FROM="$(cli_version "$CLI_HOME")"
 TO="" PREVIOUS="" ACTIVATED="" DONE=0
-ACTION=install
 # The request is the antseed user's file: only a little of a regular file is
-# read, never through a link, and only to pick the step.
-if [[ -f "$REQUEST" && ! -L "$REQUEST" ]] && timeout 5 head -c 1024 -- "$REQUEST" 2>/dev/null | grep -q '"action":"download"'; then
-  ACTION=download
+# read, never through a link, and only to pick the step. Its writers rename it
+# into place whole; anything that is not a whole JSON object restarts nothing.
+# No request at all is root starting this service by hand: an install.
+REQ="{}"
+if [[ -e "$REQUEST" || -L "$REQUEST" ]]; then
+  REQ=""
+  [[ -f "$REQUEST" && ! -L "$REQUEST" ]] && REQ="$(timeout 5 head -c 1024 -- "$REQUEST" 2>/dev/null | tr -d '\n')"
 fi
+case "$REQ" in
+  '{'*'"action":"download"'*'}') ACTION=download ;;
+  '{'*'}') ACTION=install ;;
+  *) ACTION=install; rm -rf -- "$REQUEST"; fail "the update request was incomplete; ask again" ;;
+esac
 # A version this service downloaded earlier (its own status, which only root writes).
 READY="$(sed -nE 's/^\{"state":"ready","action":"download","from":[^,]*,"to":"([^"]+)".*/\1/p' "$STATUS" 2>/dev/null | head -1)"
 trap interrupted EXIT

@@ -10,6 +10,7 @@ import { qk, useUpdate } from '../lib/queries'
 import { isOrgAdmin } from '../lib/nav'
 import { href, navigate } from '../lib/router'
 import {
+  noticeVersion,
   readDismissedUpdate,
   readyVersion,
   rememberDismissedUpdate,
@@ -100,7 +101,7 @@ export function UpdateNotice({ quiet = false }: { quiet?: boolean }) {
   const phase = updatePhase(data)
   const name = productName(data)
   const dismiss = (
-    <button type="button" className="gc-update-notice__link" onClick={() => { rememberDismissedUpdate(data.latest!); setDismissed(data.latest) }}>Dismiss</button>
+    <button type="button" className="gc-update-notice__link" onClick={() => { const version = noticeVersion(data)!; rememberDismissedUpdate(version); setDismissed(version) }}>Dismiss</button>
   )
   let line: ReactNode
   if (phase === 'installing' || (phase === 'requested' && data.progress?.action !== 'download')) {
@@ -138,7 +139,8 @@ export function UpdateNotice({ quiet = false }: { quiet?: boolean }) {
 }
 
 function VersionBadge({ update }: { update: GatewayUpdate }) {
-  if (readyVersion(update)) return <Badge tone="warning">{update.latest} ready to install</Badge>
+  const ready = readyVersion(update)
+  if (ready) return <Badge tone="warning">{ready} ready to install</Badge>
   if (update.available) return <Badge tone="warning">{update.latest} available</Badge>
   if (update.latest) return <Badge tone="success">Up to date</Badge>
   return <Badge>Not checked</Badge>
@@ -155,9 +157,11 @@ function ProgressLine({ update }: { update: GatewayUpdate }) {
       : `Downloading @antseed/cli ${version} next to the running version. The gateway keeps serving until you restart it.`}</p>
   }
   if (phase === 'ready') {
+    const ready = readyVersion(update)
+    const newer = update.latest && update.latest !== ready ? ` ${update.latest} came out since; download it after this update.` : ''
     return <p className="gc-muted">{desktop
-      ? `Antseed Desktop ${version} is downloaded. Restart & update restarts the app into it.`
-      : `@antseed/cli ${version} is downloaded. Restart & update restarts the buyer and the gateway on it, one at a time, while requests wait for them.`}</p>
+      ? `Antseed Desktop ${ready} is downloaded. Restart & update restarts the app into it.${newer}`
+      : `@antseed/cli ${ready} is downloaded. Restart & update restarts the buyer and the gateway on it, one at a time, while requests wait for them.${newer}`}</p>
   }
   if (phase === 'installing') {
     return (

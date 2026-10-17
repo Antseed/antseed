@@ -942,12 +942,13 @@ function mockUpdate(): GatewayUpdate {
       : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
       : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
     progress: null,
+    downloaded: null,
   }
   const at = mockUpdateState.requestedAt
   const action = mockUpdateState.action
   if (at === null) {
     return mockUpdateState.downloaded
-      ? { ...base, progress: { state: 'ready', action: 'download', from: base.current, to: latest, startedAt: 1, finishedAt: 2, error: null } }
+      ? { ...base, downloaded: latest, progress: { state: 'ready', action: 'download', from: base.current, to: latest, startedAt: 1, finishedAt: 2, error: null } }
       : base
   }
   const elapsed = Date.now() - at

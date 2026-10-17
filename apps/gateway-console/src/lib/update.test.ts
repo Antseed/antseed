@@ -1,11 +1,11 @@
 import { describe, expect, it } from 'vitest'
 import type { GatewayUpdate } from '../api/types'
 import type { Viewer } from './nav'
-import { readyVersion, showUpdateNotice, UPDATE_PICKUP_MS, updateInFlight, updatePhase, updateRestarting } from './update'
+import { noticeVersion, readyVersion, showUpdateNotice, UPDATE_PICKUP_MS, updateInFlight, updatePhase, updateRestarting } from './update'
 
 const base: GatewayUpdate = {
   product: 'cli', current: '0.1.180', latest: '0.1.193', available: true, checkedAt: 1, checkError: null, checksDisabled: false,
-  apply: 'console', install: 'installer', command: 'antseed update', note: '', progress: null,
+  apply: 'console', install: 'installer', command: 'antseed update', note: '', progress: null, downloaded: null,
 }
 const owner: Viewer = { orgRole: 'owner', workspaceRole: 'admin' }
 const member: Viewer = { orgRole: 'member', workspaceRole: 'member' }
@@ -29,14 +29,17 @@ describe('updatePhase', () => {
     expect(updatePhase(downloading)).toBe('downloading')
     expect(updateInFlight(downloading)).toBe(true)
     expect(updateRestarting(downloading)).toBe(false)
-    const ready = { ...base, progress: progress('ready', 1_000, 'download') }
+    const ready = { ...base, progress: progress('ready', 1_000, 'download'), downloaded: '0.1.193' }
     expect(updatePhase(ready)).toBe('ready')
     expect(readyVersion(ready)).toBe('0.1.193')
     expect(updateInFlight(ready)).toBe(false)
     expect(updateRestarting({ ...base, progress: progress('running') })).toBe(true)
-    // A download overtaken by a newer release, or one already running, is not ready.
-    expect(updatePhase({ ...ready, latest: '0.1.194' })).toBe('available')
-    expect(updatePhase({ ...ready, current: '0.1.193', available: false })).toBe('current')
+    // npm moving on keeps the downloaded version installable; one already running is not ready.
+    const overtaken = { ...ready, latest: '0.1.194' }
+    expect(updatePhase(overtaken)).toBe('ready')
+    expect(readyVersion(overtaken)).toBe('0.1.193')
+    expect(noticeVersion(overtaken)).toBe('0.1.193')
+    expect(updatePhase({ ...ready, current: '0.1.193', available: false, downloaded: null })).toBe('current')
   })
 })
 
@@ -52,7 +55,7 @@ describe('showUpdateNotice', () => {
   })
 
   it('shows a downloaded version until it is dismissed', () => {
-    const ready = { ...base, progress: progress('ready', 1_000, 'download') }
+    const ready = { ...base, progress: progress('ready', 1_000, 'download'), downloaded: '0.1.193' }
     expect(showUpdateNotice(owner, ready, null)).toBe(true)
     expect(showUpdateNotice(owner, ready, '0.1.193')).toBe(false)
   })
