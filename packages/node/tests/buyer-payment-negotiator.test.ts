@@ -49,7 +49,6 @@ function createMockBpm(): BuyerPaymentManager & Record<string, unknown> {
     extendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
     getCumulativeAmount: vi.fn().mockReturnValue(0n),
     resendCurrentSpendingAuth: vi.fn().mockResolvedValue(undefined),
-    reauthorizeAt: vi.fn().mockResolvedValue(undefined),
     resendReserveAuth: vi.fn().mockResolvedValue(undefined),
     resendPendingReserveAuth: vi.fn().mockResolvedValue(undefined),
     isLockConfirmed: vi.fn().mockReturnValue(false),
@@ -393,22 +392,22 @@ describe('BuyerPaymentNegotiator', () => {
 
       beforeEach(async () => {
         await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
-        for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.reauthorizeAt, bpm.retireSession]) {
+        for (const fn of [bpm.authorizeSpending, bpm.extendCurrentSpendingAuth, bpm.resendCurrentSpendingAuth, bpm.retireSession]) {
           (fn as ReturnType<typeof vi.fn>).mockClear();
         }
         (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
-        // Signed 30.39 USDC locally, but the seller only ever received 5.511.
+        // Signed 30.39 USDC locally; the seller has only accepted 5.511.
         (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(30_393_050n);
-        (bpm.reauthorizeAt as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        (bpm.resendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
           (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
         });
       });
 
-      it('signs exactly the required amount instead of raising the signed cumulative', async () => {
+      it('resends the current authorization instead of raising the signed cumulative', async () => {
         const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
 
         expect(result.action).toBe('retry');
-        expect(bpm.reauthorizeAt).toHaveBeenCalledWith(peer.peerId, 5_537_080n, expect.anything());
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledWith(peer.peerId, expect.anything());
         expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
         expect(bpm.retireSession).not.toHaveBeenCalled();
       });
@@ -428,7 +427,7 @@ describe('BuyerPaymentNegotiator', () => {
         const result = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
 
         expect(close).toHaveBeenCalledOnce();
-        expect(bpm.reauthorizeAt).toHaveBeenCalledTimes(1);
+        expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
         expect(bpm.retireSession).not.toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
         expect(bpm.authorizeSpending).toHaveBeenCalled();
         expect(result.action).toBe('retry');

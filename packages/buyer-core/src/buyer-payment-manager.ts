@@ -495,43 +495,6 @@ export class BuyerPaymentManager {
     this._rejectedPeers.delete(sellerPeerId);
   }
 
-  /**
-   * Sign and send a SpendingAuth for exactly `cumulativeAmount` when the seller
-   * asks for less than the buyer has already signed. The seller's accepted
-   * total proves it never received those larger authorizations (e.g. frames it
-   * dropped), so re-signing the larger amount would only let it claim more than
-   * it delivered. The local cumulative is lowered to the signed amount.
-   */
-  async reauthorizeAt(
-    sellerPeerId: string,
-    cumulativeAmount: bigint,
-    paymentMux: PaymentMux,
-  ): Promise<string> {
-    const session = this.getActiveSession(sellerPeerId);
-    if (!session) {
-      throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
-    }
-    const signed = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
-    if (cumulativeAmount <= 0n || cumulativeAmount > signed) {
-      throw buyerFault(
-        `[BuyerPayment] reauthorizeAt only lowers a signed cumulative (signed=${signed} requested=${cumulativeAmount})`,
-        'buyer-session-state',
-      );
-    }
-    const payload = await this._signAndCommitSpendingAuth(
-      session,
-      cumulativeAmount,
-      this._metadata.get(sellerPeerId) ?? ZERO_METADATA,
-    );
-    this._cumulativeAmount.set(sellerPeerId, cumulativeAmount);
-    debugWarn(
-      `[BuyerPayment] Re-signed channel ${session.sessionId.slice(0, 18)}... at the seller's ` +
-      `required ${cumulativeAmount} (previously signed ${signed}, never received)`,
-    );
-    paymentMux.sendSpendingAuth(payload);
-    return session.sessionId;
-  }
-
   async resendCurrentSpendingAuth(
     sellerPeerId: string,
     paymentMux: PaymentMux,

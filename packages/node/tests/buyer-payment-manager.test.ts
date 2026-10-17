@@ -1920,29 +1920,6 @@ describe('BuyerPaymentManager', () => {
     expect(store.getMetadataServiceTotals(channelId)).toHaveLength(MAX_METADATA_SERVICES);
   });
 
-  it('reauthorizeAt re-signs exactly the seller-required amount below an undelivered higher auth', async () => {
-    const sellerPeerId = fakePeerId('seller-reauthorize');
-    await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
-    manager.handleAuthAck(sellerPeerId, { channelId: (mux.sentSpendingAuths[0] as Record<string, string>).channelId! });
-    await manager.signPerRequestAuth(
-      sellerPeerId,
-      { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 10_000n },
-    );
-    await manager.extendCurrentSpendingAuth(sellerPeerId, 20_000n, mux);
-    const signed = manager.getCumulativeAmount(sellerPeerId);
-    const required = signed - 15_000n;
-    mux.sentSpendingAuths.length = 0;
-
-    const channelId = await manager.reauthorizeAt(sellerPeerId, required, mux);
-
-    expect(mux.sentSpendingAuths).toHaveLength(1);
-    expect((mux.sentSpendingAuths[0] as Record<string, string>).cumulativeAmount).toBe(required.toString());
-    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(required);
-    expect(store.getChannel(channelId)!.authMax).toBe(required.toString());
-    // It never raises a signed amount.
-    await expect(manager.reauthorizeAt(sellerPeerId, required + 1n, mux)).rejects.toThrow(/only lowers/);
-  });
-
   it('extendCurrentSpendingAuth raises cumulative for an exhausted active session without changing metadata', async () => {
     const sellerPeerId = fakePeerId('seller-extend-current');
     await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);

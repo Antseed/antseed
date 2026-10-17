@@ -159,7 +159,7 @@ export class BuyerPaymentNegotiator {
 
   /** Tracks which seller peers the buyer has already negotiated payment for. */
   private readonly _lockedPeers = new Set<string>();
-  /** peerId -> catch-up target already answered by re-signing exactly that amount. */
+  /** peerId -> catch-up target already answered by resending the current SpendingAuth. */
   private readonly _resentForTarget = new Map<string, bigint>();
   /** Pending PaymentRequired payloads from sellers, keyed by peerId. */
   private readonly _pendingPaymentRequired = new Map<string, {
@@ -1540,15 +1540,14 @@ export class BuyerPaymentNegotiator {
     }
     const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
     if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
-      // We already signed at least what the seller asks for, so the seller never
-      // received that SpendingAuth. Signing more would only raise what it may
-      // claim without delivering anything new: sign exactly the amount it asks
-      // for instead.
+      // We already signed at least what the seller asks for, so our latest
+      // SpendingAuth has not reached it (or the 402 predates it). Signing more
+      // would only raise what the seller may claim without delivering
+      // anything new: resend the highest authorization unchanged.
       if (this._resentForTarget.get(peer.peerId) === targetCumulative) {
-        // That did not reach the seller either. Close the channel cooperatively
-        // (the close carries the exact authorization) so its reserve is
-        // released before a replacement is funded; never forget a channel
-        // that is still active on-chain.
+        // The resend did not reach the seller either. Close the channel
+        // cooperatively so its reserve is released before a replacement is
+        // funded; never forget a channel that is still active on-chain.
         this._resentForTarget.delete(peer.peerId);
         try {
           const result = await this.requestChannelClose(peer.peerId, conn);
@@ -1567,11 +1566,7 @@ export class BuyerPaymentNegotiator {
         return false;
       }
       this._resentForTarget.set(peer.peerId, targetCumulative);
-      if (signedCumulative > targetCumulative) {
-        await this._bpm.reauthorizeAt(peer.peerId, targetCumulative, pmux);
-      } else {
-        await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
-      }
+      await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
     } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
       this._resentForTarget.delete(peer.peerId);
       const cumulativeBefore = signedCumulative;
