@@ -542,6 +542,8 @@ export class GatewayServer {
           if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
         }
         responseHeaders.connection = 'close'
+        // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
+        responseHeaders['x-antseed-gateway-tag'] = tag
         upstreamRes.once('error', () => finish!(status, buyerRequestId))
         res.once('close', () => finish!(status, buyerRequestId))
         const modelListPolicy = request.modelListPolicy
