@@ -6,6 +6,7 @@ import pkg from '../../../package.json' with { type: 'json' }
 import { detectInstallMethod, type InstallKind, type InstallMethod } from '../../update/install-method.js'
 import {
   readRootUpdateProgress,
+  ROOT_UPDATE_STALE_MS,
   requestRootUpdate,
   rootUpdaterPaths,
   updateInFlight,
@@ -48,19 +49,24 @@ function runCommand(argv: string[], json: boolean): Promise<number> {
   })
 }
 
-async function waitForRootUpdate(paths: RootUpdaterPaths, log: (line: string) => void): Promise<RootUpdateProgress | null> {
+function readProgress(paths: RootUpdaterPaths): RootUpdateProgress | null {
+  return readRootUpdateProgress(paths, { staleAfterMs: ROOT_UPDATE_STALE_MS })
+}
+
+/** Waits for the run that started at `since` or later to finish. */
+async function waitForRootUpdate(paths: RootUpdaterPaths, since: number, log: (line: string) => void): Promise<RootUpdateProgress | null> {
   const started = Date.now()
   let last: string | null = null
   let warned = false
   for (;;) {
-    const progress = readRootUpdateProgress(paths)
+    const progress = readProgress(paths)
     const state = progress?.state ?? null
     if (state !== last) {
       if (state === 'requested') log('Waiting for the update service…')
       else if (state === 'running') log(`Installing @antseed/cli@latest (from ${progress?.from ?? 'unknown'})…`)
       last = state
     }
-    if (progress && !updateInFlight(progress) && progress.startedAt >= started - 5_000) return progress
+    if (progress && !updateInFlight(progress) && progress.startedAt >= since - 5_000) return progress
     if (!warned && state === 'requested' && Date.now() - started > ROOT_PICKUP_WARN_MS) {
       warned = true
       log(chalk.yellow('The update service has not picked up the request. Check `systemctl status antseed-update.path`; servers installed before it existed need the installer re-run once.'))
@@ -73,13 +79,17 @@ async function waitForRootUpdate(paths: RootUpdaterPaths, log: (line: string) =>
 async function updateThroughRoot(method: InstallMethod, log: (line: string) => void): Promise<boolean> {
   const paths = rootUpdaterPaths()
   if (!paths) throw new Error(method.note)
-  if (!updateInFlight(readRootUpdateProgress(paths))) requestRootUpdate(paths, `cli:${userInfo().username}`)
-  let result = await waitForRootUpdate(paths, log)
-  // It joined a download the console asked for; now install it.
-  if (result?.state === 'ready') {
-    requestRootUpdate(paths, `cli:${userInfo().username}`)
-    result = await waitForRootUpdate(paths, log)
+  // Joins a run already going (one the console asked for), else asks for one.
+  const run = async () => {
+    const current = readProgress(paths)
+    if (updateInFlight(current)) return waitForRootUpdate(paths, current!.startedAt, log)
+    const since = Date.now()
+    requestRootUpdate(paths, `cli:${userInfo().username}`, since)
+    return waitForRootUpdate(paths, since, log)
   }
+  let result = await run()
+  // It joined a download; now install it.
+  if (result?.state === 'ready') result = await run()
   if (result?.state === 'succeeded') {
     log(chalk.green(`Updated ${result.from ?? ''} → ${result.to ?? 'latest'}; the buyer and gateway services restarted.`))
     return true

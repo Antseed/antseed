@@ -90,6 +90,8 @@ test('Download, then Restart & update: the first only fetches, the second restar
     await h.as('owner', 'POST', '/update/check')
     const download = await h.post('download')
     assert.equal(download.status, 202)
+    const early = await h.post('install') as unknown as { status: number; body: { error: { code: string } } }
+    assert.deepEqual([early.status, early.body.error.code], [409, 'update_in_progress'], 'restarting waits for the download')
     assert.deepEqual([download.body.progress?.state, download.body.progress?.action], ['requested', 'download'])
     assert.equal(JSON.parse(readFileSync(h.env.ANTSEED_UPDATER_REQUEST!, 'utf8')).action, 'download')
     assert.equal(h.store.listAudit({ action: 'gateway.update' }).entries.filter((entry) => entry.action === 'gateway.update').length, 0)

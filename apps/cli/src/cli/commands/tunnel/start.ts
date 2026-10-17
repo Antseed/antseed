@@ -258,8 +258,9 @@ export function registerTunnelStartCommand(cmd: Command): void {
 
       setupShutdownHandler(async () => {
         updates.stop()
-        tunnelProcess?.kill('SIGTERM')
+        // The gateway drains its requests in flight through the tunnel first.
         await gateway.stop()
+        tunnelProcess?.kill('SIGTERM')
         await unlink(tunnelPidFile(dataDir)).catch(() => undefined)
         await unlink(tunnelStateFile(dataDir)).catch(() => undefined)
         console.log(chalk.dim('Public HTTPS tunnel stopped.'))

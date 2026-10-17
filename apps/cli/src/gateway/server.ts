@@ -634,6 +634,13 @@ export class GatewayServer {
         upstream.end(body)
       }
       const closedByClient = (): void => {
+        // stop() closes what is left after its drain; that is not the client's cancel.
+        if (this._server === null) {
+          this._log(`gateway stopped before the buyer answered: key=${key.id}`)
+          gatewayError = { code: 'gateway_stopping', message: 'The gateway stopped before the buyer answered' }
+          finish!(503, null)
+          return
+        }
         this._log(`gateway client closed before the buyer answered: key=${key.id}`)
         gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
         finish!(499, null)

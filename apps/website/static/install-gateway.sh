@@ -719,8 +719,11 @@ status() {
   printf '{"state":"%s","action":"%s","from":%s,"to":%s,"startedAt":%s,"finishedAt":%s,"error":%s}\n' \
     "$1" "$ACTION" "$(str "$2")" "$(str "$3")" "$STARTED" "${4:-null}" "$(str "${5:-}")" >"$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
 }
-fail() { status failed "$FROM" "" "$(now)" "$1"; exit 1; }
-# answers <url> <status>: something answers <url> with <status> within two minutes.
+# done_status <state> ...: the run's last status; the exit trap leaves it alone.
+done_status() { DONE=1; status "$@"; }
+fail() { done_status failed "$FROM" "" "$(now)" "$1"; exit 1; }
+# answers <url> <status>: something answers <url> with <status> within two
+# minutes, as long as the gateway holds requests for a restarting buyer.
 answers() {
   local _ code
   for _ in $(seq 1 120); do
@@ -740,35 +743,60 @@ rollback() {
   systemctl restart antseed-buyer.service
   systemctl restart antseed-gateway.service
   rm -rf "$PREFIX/releases/$TO"
-  status failed "$FROM" "" "$(now)" "$1; rolled back to ${FROM:-the previous version}"
+  done_status failed "$FROM" "" "$(now)" "$1; rolled back to ${FROM:-the previous version}"
   exit 1
+}
+# Stopped part way (systemctl stop, the start timeout): go back to the
+# version the services ran and say so, instead of leaving "running" behind.
+interrupted() {
+  [ "$DONE" = 1 ] && return
+  if [ "$ACTIVATED" = 1 ]; then
+    activate_release "$PREVIOUS"
+    systemctl --no-block restart antseed-buyer.service antseed-gateway.service
+  fi
+  status failed "$FROM" "" "$(now)" "the update service stopped before finishing${ACTIVATED:+; went back to ${FROM:-the previous version}}"
 }
 
 STARTED="$(now)"
 FROM="$(cli_version "$CLI_HOME")"
-TO=""
+TO="" PREVIOUS="" ACTIVATED="" DONE=0
 ACTION=install
-grep -q '"action":"download"' "$REQUEST" 2>/dev/null && ACTION=download
+# The request is the antseed user's file: only a little of a regular file is
+# read, never through a link, and only to pick the step.
+if [[ -f "$REQUEST" && ! -L "$REQUEST" ]] && timeout 5 head -c 1024 -- "$REQUEST" 2>/dev/null | grep -q '"action":"download"'; then
+  ACTION=download
+fi
+# A version this service downloaded earlier (its own status, which only root writes).
+READY="$(sed -nE 's/^\{"state":"ready","action":"download","from":[^,]*,"to":"([^"]+)".*/\1/p' "$STATUS" 2>/dev/null | head -1)"
+trap interrupted EXIT
+trap 'exit 1' TERM INT
 status running "$FROM" ""
-rm -f -- "$REQUEST"
-TO="$(npm view @antseed/cli@latest version 2>/dev/null | tail -1)"
+rm -rf -- "$REQUEST"
+# Restart & update installs what was downloaded, even if npm moved on since.
+if [ "$ACTION" = install ] && [ -n "$READY" ] && [ "$READY" != "$FROM" ] && release_ready "$READY"; then
+  TO="$READY"
+else
+  TO="$(npm view @antseed/cli@latest version 2>/dev/null | tail -1)"
+fi
 [[ "$TO" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "could not read the latest version from npm"
 # Already on it: nothing to install, nothing to restart.
-if [ "$TO" = "$FROM" ]; then status succeeded "$FROM" "$TO" "$(now)"; exit 0; fi
+if [ "$TO" = "$FROM" ]; then done_status succeeded "$FROM" "$TO" "$(now)"; exit 0; fi
 status running "$FROM" "$TO"
 install_release "$TO" error || fail "npm could not install @antseed/cli@$TO"
 # Downloaded: the services keep running $FROM until someone restarts them onto it.
 if [ "$ACTION" = download ]; then
   prune_releases "$PREFIX/releases/$TO"
-  status ready "$FROM" "$TO" "$(now)"
+  done_status ready "$FROM" "$TO" "$(now)"
   exit 0
 fi
-PREVIOUS="$(readlink -f "$CLI_HOME")"
+PREVIOUS="$(readlink -f "$CLI_HOME" 2>/dev/null || true)"
+[ -n "$PREVIOUS" ] && [ -d "$PREVIOUS" ] || fail "no release is active to go back to; re-run the installer"
+ACTIVATED=1
 activate_release "$PREFIX/releases/$TO"
 restart antseed-buyer.service "$BUYER_URL" 200 || rollback "the buyer did not start on $TO"
 restart antseed-gateway.service "$GATEWAY_URL" 401 || rollback "the gateway did not start on $TO"
 prune_releases "$PREVIOUS"
-status succeeded "$FROM" "$TO" "$(now)"
+done_status succeeded "$FROM" "$TO" "$(now)"
 EOF
   } >"$UPDATER"
   chmod 0755 "$UPDATER"
@@ -861,7 +889,10 @@ $DOMAIN {
 	reverse_proxy 127.0.0.1:$PORT {
 		flush_interval -1
 		# While the gateway restarts (an update finishing its requests in
-		# flight, then starting), new requests wait for it instead of failing.
+		# flight, then starting), new requests wait for it instead of failing:
+		# its 60 s drain plus a start, within the updater's two-minute wait
+		# for it to answer. (The gateway holds requests for the buyer the
+		# same two minutes.)
 		lb_try_duration 75s
 		lb_try_interval 250ms
 	}

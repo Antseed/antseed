@@ -605,16 +605,20 @@ app.whenReady().then(async () => {
   // download finished restarts as soon as it is ready, since nobody may be
   // at this computer to click.
   let installWhenReady = false;
+  // What electron-updater holds downloaded; unlike updateVersion, an error does not clear it.
+  let downloadedVersion: string | null = null;
   const consoleUpdates = createConsoleUpdates({
     paths: consoleUpdatePaths(resolveConnectDataDir()),
     appVersion: app.getVersion(),
+    // A finished download stays usable after a failed install (the banner then shows the error).
     download: () => {
-      if (updatePhase === 'ready' && lastUpdateStatus?.status === 'ready') consoleUpdates.downloaded(lastUpdateStatus.version);
+      if (updatePhase === 'ready' && downloadedVersion) consoleUpdates.downloaded(downloadedVersion);
       else startUpdateDownload();
     },
     install: async () => {
       installWhenReady = true;
-      if (updatePhase === 'ready' && lastUpdateStatus?.status === 'ready') {
+      if (updatePhase === 'ready' && downloadedVersion) {
+        updateVersion = downloadedVersion;
         const result = await installDownloadedUpdate();
         if (!result.ok) throw new Error(result.error);
         return;
@@ -762,6 +766,7 @@ app.whenReady().then(async () => {
   autoUpdater.on('update-downloaded', (info) => {
     updatePhase = 'ready';
     updateVersion = info.version;
+    downloadedVersion = info.version;
     clearStallWatchdog();
     clearDownloadRetry();
     if (updateCheckInterval) {

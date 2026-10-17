@@ -1,4 +1,5 @@
 import type { RootUpdateAction } from '../../../update/root-updater.js'
+import type { GatewayUpdate } from '../types.js'
 import { recordAudit } from '../../services/context.js'
 import { createGatewayUpdates, type GatewayUpdates } from '../../updates.js'
 import { requestActor, requireOrgAdmin } from '../access.js'
@@ -38,13 +39,19 @@ export function registerUpdateRoutes(router: ConsoleRouter, deps: ConsoleDeps): 
         : before.note)
     }
     if (!before.available && !inFlight(before)) throw new ConsoleError(409, 'up_to_date', `Antseed ${before.current} is already the latest version`)
+    // Asking again for the step that is running is harmless; the other step waits for it.
+    if (inFlight(before) && before.progress?.action !== action) {
+      throw new ConsoleError(409, 'update_in_progress', before.progress?.action === 'download'
+        ? 'The download is still running; restart once it is ready'
+        : 'An update is installing; try again when it is done')
+    }
     // Downloaded already: nothing to fetch until the next version is out.
     if (action === 'download' && before.progress?.state === 'ready' && before.progress.to === before.latest) return respond(202, before)
     const actor = requestActor(deps, request)
     const after = updates.apply(actor.actor.label ?? actor.actor.kind, action)
     // Only the step that restarts the gateway is audited.
     if (action === 'install' && !inFlight(before)) {
-      recordAudit(deps, actor, 'gateway.update', { kind: 'settings', id: 'update', label: 'Antseed version' }, { from: before.current, to: before.latest })
+      recordAudit(deps, actor, 'gateway.update', { kind: 'settings', id: 'update', label: 'Antseed version' }, { from: before.current, to: before.progress?.state === 'ready' ? before.progress.to : before.latest })
     }
     return respond(202, after)
   })
@@ -57,6 +64,6 @@ function readAction(body: unknown): RootUpdateAction {
   throw new ConsoleError(400, 'invalid_action', 'action must be "download" or "install"')
 }
 
-function inFlight(update: { progress: { state: string } | null }): boolean {
+function inFlight(update: GatewayUpdate): boolean {
   return update.progress?.state === 'requested' || update.progress?.state === 'running'
 }

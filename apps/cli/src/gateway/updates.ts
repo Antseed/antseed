@@ -2,6 +2,7 @@ import { detectInstallMethod, type InstallMethod } from '../update/install-metho
 import {
   readRootUpdateProgress,
   readUpdaterAppVersions,
+  ROOT_UPDATE_STALE_MS,
   requestRootUpdate,
   rootUpdaterPaths,
   updateInFlight,
@@ -55,6 +56,8 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
   // The desktop app checks its own releases; npm's CLI version is not what it ships.
   const desktop = method.kind === 'desktop' && updater !== null
   const disabled = updateChecksDisabled(env)
+  // The desktop app finishes an install on its next launch, however long that takes.
+  const progress = () => updater ? readRootUpdateProgress(updater, desktop ? {} : { staleAfterMs: ROOT_UPDATE_STALE_MS, now: now() }) : null
 
   let latest: string | null = null
   let checkedAt: number | null = null
@@ -116,7 +119,7 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
         install: method.kind,
         command: null,
         note: method.note,
-        progress: readRootUpdateProgress(updater),
+        progress: progress(),
       }
     }
     return {
@@ -131,7 +134,7 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
       install: method.kind,
       command: method.command,
       note: method.note,
-      progress: updater ? readRootUpdateProgress(updater) : null,
+      progress: progress(),
     }
   }
 
@@ -147,7 +150,7 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
     },
     apply(requestedBy, action = 'install') {
       if (!updater) throw new Error('This gateway has no update service')
-      if (!updateInFlight(readRootUpdateProgress(updater))) requestRootUpdate(updater, requestedBy, now(), action)
+      if (!updateInFlight(progress())) requestRootUpdate(updater, requestedBy, now(), action)
       return info()
     },
     watch() {

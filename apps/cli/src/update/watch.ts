@@ -24,8 +24,12 @@ export interface UpdateWatchOptions {
 }
 
 export interface UpdateWatch {
-  /** Asks the registry now (or reads a fresh cache) and announces a version not announced yet. */
-  check(): Promise<void>
+  /**
+   * Announces a version not announced yet. Reads a fresh cache (another
+   * command may have just asked npm) unless `fresh`, as every 30-minute tick
+   * is: the cache it wrote itself would otherwise still look fresh then.
+   */
+  check(fresh?: boolean): Promise<void>
   stop(): void
 }
 
@@ -45,9 +49,9 @@ export function watchForUpdates(options: UpdateWatchOptions): UpdateWatch {
   const intervalMs = options.intervalMs ?? UPDATE_CHECK_INTERVAL_MS
   let announced: string | null = null
 
-  const check = async (): Promise<void> => {
+  const check = async (fresh = false): Promise<void> => {
     let latest: string
-    const cache = readUpdateCache(options.dataDir)
+    const cache = fresh ? null : readUpdateCache(options.dataDir)
     if (cache && now() - cache.checkedAt < intervalMs) {
       latest = cache.latest
     } else {
@@ -71,7 +75,7 @@ export function watchForUpdates(options: UpdateWatchOptions): UpdateWatch {
     return { check: async () => {}, stop: () => {} }
   }
   void check()
-  let timer: ReturnType<typeof setInterval> | null = setInterval(() => { void check() }, intervalMs)
+  let timer: ReturnType<typeof setInterval> | null = setInterval(() => { void check(true) }, intervalMs)
   timer.unref?.()
   return {
     check,

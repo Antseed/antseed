@@ -198,6 +198,9 @@ test('stopping lets requests in flight finish, and closes the ones that outlast 
     await bounded.stop()
     assert.ok(Date.now() - startedStop < 2_000, 'a request that never ends does not hold the stop')
     assert.equal(await cut, 'closed')
+    for (let attempt = 0; attempt < 100 && store.listRequests({})[0]?.status == null; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    const [closed] = store.listRequests({})
+    assert.deepEqual([closed!.status, closed!.errorCode], [503, 'gateway_stopping'], 'the gateway closed it, not the client')
   } finally {
     await slow.close()
     await stuck.close().catch(() => {})

@@ -71,7 +71,7 @@ function RestartDialog({ update, actions }: { update: GatewayUpdate | undefined;
       title={`Restart on ${update ? productName(update) : 'Antseed'} ${version ?? ''}?`} confirmLabel="Restart & update"
       body={update?.product === 'desktop'
         ? 'The desktop app restarts into the new release. The gateway is unreachable while the app restarts, usually under a minute, and requests sent meanwhile fail. This page reloads by itself when the gateway is back.'
-        : 'The buyer and the gateway restart one at a time on the new version. New requests wait for them instead of failing, and requests in flight get up to a minute to finish. If the new version does not start, the server goes back to this one.'} />
+        : 'The buyer and the gateway restart one at a time on the new version. Requests in flight get up to a minute to finish, and new ones wait instead of failing, except through a Cloudflare tunnel while the gateway itself restarts (a few seconds). If the new version does not start, the server goes back to this one.'} />
   )
 }
 

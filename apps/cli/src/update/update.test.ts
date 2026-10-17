@@ -172,6 +172,13 @@ test('root updater: a download request reads as one, and a downloaded version as
     const ready = readRootUpdateProgress(paths)
     assert.deepEqual([ready?.state, ready?.action, ready?.to], ['ready', 'download', '0.1.193'])
     assert.equal(updateInFlight(ready), false)
+    // A run left "running" (a reboot, a kill) stops blocking updates once it is stale.
+    writeFileSync(paths.status, JSON.stringify({ state: 'running', action: 'install', from: '0.1.180', to: '0.1.193', startedAt: 1_000, finishedAt: null, error: null }))
+    assert.equal(readRootUpdateProgress(paths, { staleAfterMs: 60_000, now: 30_000 })?.state, 'running')
+    const stale = readRootUpdateProgress(paths, { staleAfterMs: 60_000, now: 90_000 })
+    assert.deepEqual([stale?.state, stale?.error], ['failed', 'the update service stopped before finishing'])
+    assert.equal(updateInFlight(stale), false)
+    assert.equal(readRootUpdateProgress(paths)?.state, 'running', 'the desktop app finishes on its next launch, however late')
     // Requests and statuses from before the two steps install.
     writeFileSync(paths.status, JSON.stringify({ state: 'succeeded', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
     assert.equal(readRootUpdateProgress(paths)?.action, 'install')
@@ -213,6 +220,12 @@ test('a running seller logs each newer version once and installs nothing', async
       clock = 6_000
       await watch.check()
       assert.equal(lines.length, 2)
+      // The 30-minute tick asks npm even when the cache it wrote looks fresh.
+      latest = '0.1.195'
+      const before = fetches
+      await watch.check(true)
+      assert.equal(fetches, before + 1)
+      assert.equal(lines.length, 3)
     } finally {
       watch.stop()
     }

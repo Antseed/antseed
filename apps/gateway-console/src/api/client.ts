@@ -40,6 +40,7 @@ export const ERROR_COPY: Record<string, string> = {
   last_credential: 'You cannot remove your only sign-in method, or you could not sign in again. Add another passkey or wallet first.',
   credential_exists: 'This passkey or wallet is already registered.',
   update_unsupported: 'This gateway cannot update itself from the console. Run the update command on its host.',
+  update_in_progress: 'An update is already running. Try again when it is done.',
   max_keys_reached: 'You already have as many keys as you are allowed. Revoke one, or ask an admin to raise your limit.',
 }
 

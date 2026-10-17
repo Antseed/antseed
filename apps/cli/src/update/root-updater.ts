@@ -88,8 +88,21 @@ function readAction(value: unknown): RootUpdateAction {
 
 const STATES: ReadonlySet<string> = new Set(['running', 'ready', 'succeeded', 'failed'])
 
-/** The pending request, else the updater's last run; null when it never ran. */
-export function readRootUpdateProgress(paths: RootUpdaterPaths): RootUpdateProgress | null {
+/**
+ * The gateway server's update service gives up after 15 minutes
+ * (`TimeoutStartSec`); a run still "running" well past that was cut off
+ * (a reboot, a kill) and would otherwise block every later update.
+ */
+export const ROOT_UPDATE_STALE_MS = 20 * 60_000
+
+/**
+ * The pending request, else the updater's last run; null when it never ran.
+ * With `staleAfterMs`, a run that has been "running" longer reads as failed.
+ */
+export function readRootUpdateProgress(
+  paths: RootUpdaterPaths,
+  options: { staleAfterMs?: number; now?: number } = {},
+): RootUpdateProgress | null {
   if (existsSync(paths.request)) {
     let startedAt = Date.now()
     try {
@@ -108,7 +121,7 @@ export function readRootUpdateProgress(paths: RootUpdaterPaths): RootUpdateProgr
   try {
     const raw = JSON.parse(readFileSync(paths.status, 'utf8')) as Record<string, unknown>
     if (typeof raw['state'] !== 'string' || !STATES.has(raw['state']) || typeof raw['startedAt'] !== 'number') return null
-    return {
+    const progress: RootUpdateProgress = {
       state: raw['state'] as RootUpdateState,
       action: readAction(raw['action']),
       from: isSemver(raw['from']) ? raw['from'] : null,
@@ -117,6 +130,9 @@ export function readRootUpdateProgress(paths: RootUpdaterPaths): RootUpdateProgr
       finishedAt: typeof raw['finishedAt'] === 'number' ? raw['finishedAt'] : null,
       error: typeof raw['error'] === 'string' ? raw['error'].slice(0, 500) : null,
     }
+    const stale = options.staleAfterMs !== undefined && progress.state === 'running'
+      && (options.now ?? Date.now()) - progress.startedAt > options.staleAfterMs
+    return stale ? { ...progress, state: 'failed', error: 'the update service stopped before finishing' } : progress
   } catch {
     return null
   }
