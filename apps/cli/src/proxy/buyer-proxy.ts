@@ -170,6 +170,9 @@ export { parsePeerPinnedService, rewritePeerPinnedServiceInBody, substituteRoute
 /** On shutdown, requests in flight get this long to finish before their connections are closed. */
 export const BUYER_SHUTDOWN_DRAIN_MS = 60_000
 
+/** How long a graceful buyer shutdown may take before the process exits anyway: the proxy's drain, then the node. */
+export const BUYER_SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DRAIN_MS + 15_000
+
 /**
  * Why this daemon runs no hot-wallet deposit watcher — surfaced on
  * `/_antseed/deposits/status` so UIs can name the actual cause instead of
