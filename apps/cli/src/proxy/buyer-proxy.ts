@@ -4231,6 +4231,9 @@ export class BuyerProxy {
       const countFailures = (servedBy: string | null): void => {
         const buyerHealthy = this._attribution.isBuyerHealthy(this._now())
         for (const [peerId, { serviceId, failure }] of failedSellers) {
+          // A seller that recovered on its own retry (a 429, then an answer)
+          // proved nothing against itself.
+          if (peerId === servedBy) continue
           if (servedBy === null && (!failure.sellerOnly || !buyerHealthy)) continue
           const detail = servedBy ? `${failure.description} (peer ${servedBy.slice(0, 12)}... served it)` : failure.description
           this._recordSellerFailure(peerId, serviceId, detail, failure.weight)

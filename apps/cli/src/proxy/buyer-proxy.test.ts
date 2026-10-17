@@ -5919,3 +5919,24 @@ test('a seller already holding as many of our requests as it advertises it can t
 
   assert.equal((proxy as any)._inFlightBySeller.get(pricier.peerId) ?? 0, 0, 'in-flight counts are released')
 })
+
+test('a seller that answers on its own retry after a 429 is not counted against', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return attempts.length === 1
+      ? { requestId: request.requestId, statusCode: 429, headers: { 'content-type': 'application/json', 'retry-after': '0' }, body: Buffer.from('{"error":{"message":"busy"}}') }
+      : jsonResponse(request.requestId, 200, answer())
+  }
+
+  const res = await invokeProxy(proxy, modelRequest())
+
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [cheap.peerId, cheap.peerId])
+  const health = sellerHealthOf(proxy, cheap, clock.now())
+  assert.equal(health.successes, 1)
+  assert.equal(health.failures, 0)
+})
