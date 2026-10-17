@@ -1734,6 +1734,11 @@ export class AntseedNode extends EventEmitter {
           paymentMux.handleFrame(frame).catch((err) => {
             const message = err instanceof Error ? err.message : String(err);
             debugWarn(`[Node] Failed to handle payment frame from ${peerId.slice(0, 12)}...: ${message}`);
+            // A SpendingAuth too large to decode will be resent the same way on
+            // every catch-up, wedging the channel; rotate it instead.
+            if (frame.type === MessageType.SpendingAuth && /payload too large/i.test(message)) {
+              this._sellerPaymentManager?.blockChannelForBuyer(peerId, message);
+            }
           });
         } else if (verificationMux && VerificationMux.isVerificationMessage(frame.type)) {
           verificationMux.handleFrame(frame).catch((err) => {
