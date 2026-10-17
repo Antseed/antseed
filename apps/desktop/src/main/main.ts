@@ -121,6 +121,7 @@ function initializeTelemetry(hadExistingIdentity: boolean): Promise<Awaited<Retu
     arch: process.arch,
     getDistinctId: () => getSecureIdentity()?.wallet.address ?? null,
     hadExistingIdentity,
+    execPath: process.execPath,
   }).then(async (service) => {
     setTelemetryService(service);
     await service.recordAppStarted();
