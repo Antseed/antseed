@@ -43,7 +43,7 @@ test('streams several MB with one request and no ranges', async () => {
 })
 
 test('returns errors before a stream starts', async () => {
-  for (const status of [404, 409, 410, 413, 429, 504]) {
+  for (const status of [404, 409, 410, 413, 429]) {
     await serve(async () => ({ ...start, statusCode: status }), async url => {
       const response = await fetch(url)
       assert.equal(response.status, status)
@@ -104,7 +104,7 @@ test('forwards a POST download body and passes JSON status answers through', asy
   try {
     const response = await fetch(`http://127.0.0.1:${(server.address() as { port: number }).port}`)
     assert.equal(response.status, 200)
-    assert.deepEqual(await response.json(), { status: 'PROCESSING' })
+    assert.deepEqual(await response.json(), { status: 'processing', upstream_status: 'PROCESSING' })
     assert.deepEqual(Buffer.from(sentBody!), body)
   } finally {
     server.closeAllConnections()
@@ -112,23 +112,76 @@ test('forwards a POST download body and passes JSON status answers through', asy
   }
 })
 
-test('passes allowed seller error codes through and hides unknown ones', async () => {
+test('passes seller JSON errors below 500 through unchanged', async () => {
+  await serve(async sent => ({
+    requestId: sent.requestId, statusCode: 404, headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ error: { code: 'resource_not_found', message: 'Video job not found' } })),
+  }), async url => {
+    const response = await fetch(url)
+    assert.equal(response.status, 404)
+    assert.deepEqual(await response.json(), { error: { code: 'resource_not_found', message: 'Video job not found' } })
+  })
+})
+
+test('reports a reachable seller that cannot read the job state as unknown, not 502', async () => {
   const sellerError = (statusCode: number, code: string): SerializedHttpResponse => ({
     requestId: request.requestId, statusCode, headers: { 'content-type': 'application/json' },
     body: Buffer.from(JSON.stringify({ error: { code, message: 'internal detail' } })),
   })
-  for (const [statusCode, code, expectedStatus, expectedCode] of [
-    [502, 'video_download_failed', 502, 'video_download_failed'],
-    [504, 'video_download_failed', 504, 'video_download_failed'],
-    [502, 'video_status_unavailable', 502, 'video_status_unavailable'],
-    [500, 'secret_internal_code', 502, 'video_download_unavailable'],
+  for (const [statusCode, code, expectedCode] of [
+    [502, 'video_status_unavailable', 'video_status_unavailable'],
+    [502, 'video_download_failed', 'video_download_failed'],
+    [504, 'video_download_failed', 'video_download_failed'],
+    [503, 'resource_ownership_unavailable', 'resource_ownership_unavailable'],
+    [500, 'secret_internal_code', 'video_status_unavailable'],
   ] as const) {
     await serve(async () => sellerError(statusCode, code), async url => {
       const response = await fetch(url)
-      assert.equal(response.status, expectedStatus)
-      const body = await response.json() as { error: { code: string, message: string } }
+      assert.equal(response.status, 200)
+      const body = await response.json() as { status: string, retryable: boolean, error: { code: string } }
+      assert.equal(body.status, 'unknown')
+      assert.equal(body.retryable, true)
       assert.equal(body.error.code, expectedCode)
-      assert.equal(body.error.message, 'Video download unavailable')
     })
   }
+})
+
+test('maps every seller status word to one vocabulary', async () => {
+  for (const [upstream, expected] of [
+    ['IN_QUEUE', 'processing'], ['IN_PROGRESS', 'processing'], ['QUEUED', 'processing'],
+    ['FAILED', 'failed'], ['CANCELLED', 'failed'], ['error', 'failed'], ['COMPLETED', 'completed'],
+  ] as const) {
+    await serve(async sent => ({
+      requestId: sent.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+      body: Buffer.from(JSON.stringify({ status: upstream, error: 'reason' })),
+    }), async url => {
+      const response = await fetch(url)
+      assert.equal(response.status, 200)
+      assert.deepEqual(await response.json(), { status: expected, upstream_status: upstream, error: 'reason' })
+    })
+  }
+})
+
+test('reports an unreachable seller as seller_unreachable and keeps the job', async () => {
+  await serve(async () => { throw new Error('Connection to peer failed during request') }, async url => {
+    const response = await fetch(url)
+    assert.equal(response.status, 502)
+    const body = await response.json() as { status: string, retryable: boolean, error: { code: string } }
+    assert.equal(body.status, 'seller_unreachable')
+    assert.equal(body.retryable, true)
+    assert.equal(body.error.code, 'video_download_failed')
+  })
+})
+
+test('reports a broken stream start from a reachable seller as a failed download', async () => {
+  await serve(async (_request, callbacks) => {
+    callbacks.onResponseStart!({ ...start, headers: { 'content-type': 'text/html' } }, { streaming: true })
+    return start
+  }, async url => {
+    const response = await fetch(url)
+    assert.equal(response.status, 502)
+    const body = await response.json() as { status?: string, error: { code: string } }
+    assert.equal(body.status, undefined)
+    assert.equal(body.error.code, 'video_download_failed')
+  })
 })

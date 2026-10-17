@@ -1988,6 +1988,23 @@ test('sweep control endpoint validates and dispatches sequentially via the runni
   assert.deepEqual(JSON.parse(missing.body), { ok: true, receipt: null })
 })
 
+test('peer refresh drops services a seller stopped advertising', () => {
+  const advertised = makePeer('a', ['venice-video'])
+  advertised.providerPricing = { 'venice-video': { defaults: { inputUsdPerMillion: 0, outputUsdPerMillion: 0 }, services: { 'video-model': { inputUsdPerMillion: 0, outputUsdPerMillion: 0 } } } }
+  advertised.providerServiceApiProtocols = { 'venice-video': { services: { 'video-model': ['venice-video'] } } }
+  advertised.lastReachedAt = Date.now() - 1000
+  const proxy = makeBuyerProxyWithPeers([])
+  ;(proxy as any)._replacePeers([advertised])
+  const unadvertised = makePeer('a', [])
+  ;(proxy as any)._replacePeers([unadvertised])
+  const cached = (proxy as any)._cachedPeers as PeerInfo[]
+  assert.equal(cached.length, 1)
+  assert.deepEqual(cached[0]!.providers, [])
+  assert.equal(cached[0]!.providerPricing, undefined)
+  assert.equal(cached[0]!.providerServiceApiProtocols, undefined)
+  assert.equal(cached[0]!.lastReachedAt, advertised.lastReachedAt)
+})
+
 test('peer refresh control endpoint triggers immediate refresh', async () => {
   const refreshedPeer = makePeer('a', ['anthropic'])
   const proxy = makeBuyerProxyWithPeers([], [refreshedPeer])
