@@ -93,6 +93,14 @@ export function requestRootUpdate(paths: RootUpdaterPaths, requestedBy: string, 
   }
 }
 
+/**
+ * Asks the desktop app's updater to check for a release now. A separate file
+ * from the update request, so a check is never read as an install.
+ */
+export function requestDesktopUpdateCheck(paths: RootUpdaterPaths): void {
+  writeFileSync(`${paths.request}.check`, '', { mode: 0o644 })
+}
+
 function readAction(value: unknown): RootUpdateAction {
   return value === 'download' ? 'download' : 'install'
 }

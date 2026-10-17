@@ -3,19 +3,21 @@ import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'no
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import test from 'node:test';
-import { consoleUpdatePaths, consoleUpdaterEnv, createConsoleUpdates, isNewerVersion } from './console-updates.js';
+import { consoleUpdateCheckPath, consoleUpdatePaths, consoleUpdaterEnv, createConsoleUpdates, isNewerVersion } from './console-updates.js';
 
 function harness(appVersion = '0.2.62', install: () => Promise<void> = async () => {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'console-updates-'));
   const paths = consoleUpdatePaths(dir);
   const installs: string[] = [];
   const downloads: string[] = [];
+  let checks = 0;
   let clock = 1_000;
   const make = (version: string, run: () => Promise<void> = install) => createConsoleUpdates({
     paths,
     appVersion: version,
     download: () => { downloads.push(version); },
     install: async () => { installs.push(version); await run(); },
+    check: () => { checks += 1; },
     log: () => {},
     now: () => clock,
   });
@@ -23,6 +25,7 @@ function harness(appVersion = '0.2.62', install: () => Promise<void> = async () 
   const request = (action?: 'download' | 'install') => writeFileSync(paths.request, JSON.stringify(action ? { action } : {}));
   return {
     paths, installs, downloads, status, request, make,
+    checks: () => checks,
     updates: make(appVersion),
     tick: (ms: number) => { clock += ms; },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
@@ -30,6 +33,21 @@ function harness(appVersion = '0.2.62', install: () => Promise<void> = async () 
 }
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
+
+test('a console check request asks the updater to check and starts no update', () => {
+  const h = harness();
+  try {
+    writeFileSync(consoleUpdateCheckPath(h.paths), '');
+    h.updates.poll();
+    assert.equal(h.checks(), 1);
+    assert.equal(existsSync(consoleUpdateCheckPath(h.paths)), false);
+    assert.equal(h.installs.length + h.downloads.length, 0);
+    h.updates.poll();
+    assert.equal(h.checks(), 1, 'one request, one check');
+  } finally {
+    h.cleanup();
+  }
+});
 
 test('versions compare like semver, pre-releases before their release', () => {
   assert.equal(isNewerVersion('0.2.63', '0.2.62'), true);

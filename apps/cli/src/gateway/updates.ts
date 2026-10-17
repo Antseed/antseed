@@ -3,6 +3,7 @@ import {
   readRootUpdateProgress,
   readUpdaterAppVersions,
   ROOT_UPDATE_STALE_MS,
+  requestDesktopUpdateCheck,
   requestRootUpdate,
   rootUpdaterPaths,
   updateInFlight,
@@ -18,6 +19,9 @@ import type { GatewayUpdate } from './console-api/types.js'
 const GATEWAY_CHECK_INTERVAL_MS = UPDATE_CHECK_INTERVAL_MS
 /** Forced checks closer together than this reuse the last answer. */
 const FORCED_CHECK_MIN_GAP_MS = 15_000
+/** Check now on a desktop-hosted gateway waits this long for the app's updater to answer. */
+const DESKTOP_CHECK_WAIT_MS = 20_000
+const DESKTOP_CHECK_POLL_MS = 250
 
 export interface GatewayUpdates {
   /** What the console shows; starts a background registry check when the last one is stale. */
@@ -46,6 +50,8 @@ export interface GatewayUpdatesOptions {
   fetchLatest?: () => Promise<string>
   method?: InstallMethod
   log?: (message: string) => void
+  /** How long Check now on a desktop-hosted gateway waits for the app to answer. */
+  desktopCheckWaitMs?: number
 }
 
 export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpdates {
@@ -153,7 +159,17 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
       return info()
     },
     async check() {
-      if (desktop) return info()
+      if (desktop) {
+        if (!updater) return info()
+        // The desktop app owns the check; wait briefly for it to report back.
+        const before = info().checkedAt
+        requestDesktopUpdateCheck(updater)
+        const deadline = Date.now() + (options.desktopCheckWaitMs ?? DESKTOP_CHECK_WAIT_MS)
+        while (Date.now() < deadline && info().checkedAt === before) {
+          await new Promise((resolve) => setTimeout(resolve, DESKTOP_CHECK_POLL_MS))
+        }
+        return info()
+      }
       if (checkedAt === null || now() - checkedAt > FORCED_CHECK_MIN_GAP_MS || inFlight) await runCheck()
       return info()
     },

@@ -52,12 +52,19 @@ export type ConsoleUpdatesDependencies = {
   download: () => void;
   /** Downloads the release the updater found, if needed, then quits and installs it. Throws when it cannot start. */
   install: () => Promise<void>;
+  /** Asks the app's updater to check for a release now; the result arrives through `checked`. */
+  check: () => void;
   log: (message: string) => void;
   now?: () => number;
   pollMs?: number;
 };
 
 const POLL_MS = 2_000;
+
+/** The gateway console asks for an update check by creating this file next to the request. */
+export function consoleUpdateCheckPath(paths: ConsoleUpdatePaths): string {
+  return `${paths.request}.check`;
+}
 
 export function consoleUpdatePaths(dataDir: string): ConsoleUpdatePaths {
   const dir = path.join(dataDir, 'tunnel');
@@ -185,6 +192,17 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
   };
 
   const poll = (): void => {
+    // The console's Check now: a separate file, so it never reads as an update.
+    const checkRequest = consoleUpdateCheckPath(deps.paths);
+    if (existsSync(checkRequest)) {
+      try {
+        rmSync(checkRequest, { force: true });
+      } catch {
+        // Gone already; the check still runs once.
+      }
+      deps.log('Checking for updates for the gateway console');
+      deps.check();
+    }
     if (!existsSync(deps.paths.request)) return;
     const action = readAction();
     try {

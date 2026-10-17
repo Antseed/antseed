@@ -25,6 +25,7 @@ async function harness(options: { installer: boolean; latest?: string; desktop?:
     current: '0.1.180',
     env,
     fetchLatest: async () => { fetches += 1; return options.latest ?? '0.1.193' },
+    desktopCheckWaitMs: 2_000,
     method: options.installer
       ? detectInstallMethod({ env, scriptPath: '/opt/antseed/cli/lib/node_modules/@antseed/cli/dist/cli/index.js', electron: false })
       : detectInstallMethod({ env, scriptPath: '/usr/local/lib/node_modules/@antseed/cli/dist/cli/index.js', electron: false, isWritable: () => true }),
@@ -172,8 +173,19 @@ test('in the desktop app, the console shows the app\'s versions and its Update h
     assert.equal(before.body.available, false, 'nothing is known until the app reports')
 
     // The app reports its own version and newest release; npm is never asked.
-    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ app: { current: '0.2.62', latest: '0.2.63', checkedAt: 5, error: null } }))
+    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ app: { current: '0.2.62', latest: '0.2.62', checkedAt: 4, error: null } }))
+    // Check now asks the app's updater (a separate file, never an update
+    // request) and waits for its answer.
+    const checkRequest = `${h.env.ANTSEED_UPDATER_REQUEST!}.check`
+    const answer = setInterval(() => {
+      if (!existsSync(checkRequest)) return
+      clearInterval(answer)
+      rmSync(checkRequest)
+      writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ app: { current: '0.2.62', latest: '0.2.63', checkedAt: 5, error: null } }))
+    }, 20)
     const checked = await h.as('owner', 'POST', '/update/check')
+    clearInterval(answer)
+    assert.equal(existsSync(h.env.ANTSEED_UPDATER_REQUEST!), false, 'a check is not an update request')
     assert.deepEqual([checked.body.current, checked.body.latest, checked.body.available, checked.body.apply], ['0.2.62', '0.2.63', true, 'console'])
     assert.equal(h.fetches(), 0)
 

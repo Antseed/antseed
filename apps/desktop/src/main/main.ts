@@ -625,6 +625,9 @@ app.whenReady().then(async () => {
       }
       startUpdateDownload();
     },
+    check: () => {
+      void autoUpdater.checkForUpdates().catch(() => {});
+    },
     log: (message) => appendLog('connect', 'system', message),
   });
 
