@@ -7,6 +7,7 @@ import { registerPresetRoutes } from './presets.js'
 import { registerRoutingRoutes } from './routing.js'
 import { registerSettingsRoutes } from './settings.js'
 import { registerStatusRoutes } from './status.js'
+import { registerUpdateRoutes } from './update.js'
 import { registerUsageRoutes } from './usage.js'
 import { registerWorkspaceRoutes } from './workspaces.js'
 
@@ -22,4 +23,5 @@ export const coreConsoleRegistrars: ConsoleRegistrar[] = [
   registerRoutingRoutes,
   registerSettingsRoutes,
   registerStatusRoutes,
+  registerUpdateRoutes,
 ]

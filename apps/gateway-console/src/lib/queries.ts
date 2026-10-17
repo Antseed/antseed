@@ -15,6 +15,7 @@ export const qk = {
   me: ['me'] as const,
   authConfig: ['auth-config'] as const,
   status: ['status'] as const,
+  update: ['update'] as const,
   settings: ['settings'] as const,
   workspaces: ['workspaces', 'list'] as const,
   workspace: (workspaceId: string) => ['workspaces', 'detail', workspaceId] as const,
@@ -127,6 +128,20 @@ export function useAuthConfig(enabled = true) {
 
 export function useStatus() {
   return useQuery({ queryKey: qk.status, queryFn: api.settings.status, refetchInterval: 30_000 })
+}
+
+/** Antseed updates (org admins): polls fast while an update runs, so the console notices the restart. */
+export function useUpdate(enabled = true) {
+  return useQuery({
+    queryKey: qk.update,
+    queryFn: api.update.get,
+    enabled,
+    retry: false,
+    refetchInterval: (query) => {
+      const progress = query.state.data?.progress?.state
+      return progress === 'requested' || progress === 'running' ? 2_000 : 10 * 60_000
+    },
+  })
 }
 
 export function useChain(enabled = true) {

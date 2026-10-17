@@ -11,6 +11,7 @@ import { useStatus } from '../lib/queries'
 import { startTour, tourSeen } from '../lib/tour'
 import { AccountModal } from './AccountModal'
 import { ExposureBanner } from './ExposureBanner'
+import { UpdateNotice } from './UpdatePanel'
 import { GatewayEndpoint } from './GatewayEndpoint'
 import { Icon } from './icons'
 
@@ -224,7 +225,7 @@ export function Shell({ page, children }: { page: PageId; children: ReactNode })
         <div className="gc-body">
           <aside className="gc-rail"><Nav current={current} /><GatewayVersion /></aside>
           <main id="gc-main" className="gc-main" tabIndex={-1}>
-            {migrating ? <Suspense fallback={<LoadingRows rows={6} />}><MigratePage /></Suspense> : <><ExposureBanner />{children}</>}
+            {migrating ? <Suspense fallback={<LoadingRows rows={6} />}><MigratePage /></Suspense> : <><UpdateNotice quiet={current === 'settings'} /><ExposureBanner />{children}</>}
           </main>
         </div>
       </div>

@@ -64,6 +64,15 @@ const MAX_ERROR_BODY_BYTES = 16 * 1024
 const MAX_ERROR_MESSAGE_CHARS = 500
 /** Request and response bodies kept per request while content logging is on. */
 const MAX_LOGGED_CONTENT_BYTES = 64 * 1024
+/**
+ * A buyer that refuses connections is restarting (an update, a console
+ * restart): requests wait this long for it instead of failing. It covers the
+ * buyer's shutdown drain and its startup.
+ */
+const BUYER_RESTART_HOLD_MS = 120_000
+const BUYER_RETRY_INTERVAL_MS = 500
+/** On shutdown, requests in flight get this long to finish before they are closed. */
+const SHUTDOWN_DRAIN_MS = 60_000
 const RETENTION_SWEEP_MS = 60 * 60 * 1000
 const DAY_MS = 24 * 60 * 60 * 1000
 /** Why a key with caps cannot be served while its buyer's spend feed is not reporting. */
@@ -155,6 +164,10 @@ export interface GatewayServerOptions {
   console?: { handle(req: http.IncomingMessage, res: http.ServerResponse): Promise<boolean> } | null
   /** Span exporter; defaults to one reading the observability settings from the store. */
   exporter?: OtlpExporter
+  /** How long a request waits for a buyer that refuses connections (restarting); default BUYER_RESTART_HOLD_MS. */
+  buyerRestartHoldMs?: number
+  /** How long `stop()` lets requests in flight finish before closing them; default SHUTDOWN_DRAIN_MS. */
+  shutdownDrainMs?: number
 }
 
 export interface GatewayTopupOptions {
@@ -231,9 +244,23 @@ export class GatewayServer {
     this._port = 0
     if (this._retentionTimer) clearInterval(this._retentionTimer)
     this._retentionTimer = null
+    if (!server) {
+      await this._exporter.stop()
+      return
+    }
+    // Stop accepting (a proxy in front retries elsewhere or waits for the next
+    // process), let requests in flight finish, then close what is left.
+    const closed = new Promise<void>((resolve) => server.close(() => resolve()))
+    const drain = setTimeout(() => server.closeAllConnections(), this._options.shutdownDrainMs ?? SHUTDOWN_DRAIN_MS)
+    drain.unref?.()
+    await closed
+    clearTimeout(drain)
     await this._exporter.stop()
-    if (!server) return
-    await new Promise<void>((resolve) => server.close(() => resolve()))
+  }
+
+  /** Whether the gateway should keep waiting for a buyer that has refused connections since `since`. */
+  private _holdForBuyer(since: number): boolean {
+    return this._server !== null && Date.now() - since < (this._options.buyerRestartHoldMs ?? BUYER_RESTART_HOLD_MS)
   }
 
   private _log(message: string): void {
@@ -385,7 +412,15 @@ export class GatewayServer {
   private async _spendFeedReporting(res: http.ServerResponse): Promise<boolean> {
     if (this._options.spendFeedState() === 'reporting') return true
     await this._options.refreshSpendFeed()
-    const state = this._options.spendFeedState()
+    let state = this._options.spendFeedState()
+    // A buyer that is restarting reports again once it is back.
+    const since = Date.now()
+    while (state === 'unreachable' && !res.destroyed && this._holdForBuyer(since)) {
+      await new Promise((resolve) => setTimeout(resolve, BUYER_RETRY_INTERVAL_MS))
+      await this._options.refreshSpendFeed()
+      state = this._options.spendFeedState()
+    }
+    if (res.destroyed) return false
     if (state === 'reporting') return true
     sendError(res, 503, 'api_error', 'spend_tracking_unavailable', SPEND_FEED_UNAVAILABLE_MESSAGES[state])
     return false
@@ -515,77 +550,117 @@ export class GatewayServer {
         if (controlSecret) headers[GATEWAY_CONTROL_HEADER] = controlSecret
       }
 
-      const upstream = http.request({
-        hostname: '127.0.0.1',
-        port: buyerPort,
-        method,
-        path: request.buyerPath,
-        headers,
-      }, (upstreamRes) => {
-        const status = upstreamRes.statusCode ?? 502
-        const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
-        sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
-        reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
-        firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
-        respondedAt = Date.now()
-        const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
-        // A video is priced per second, not per token: zero token prices do not make it free.
-        servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
-        if (request.video?.action === 'create' && status >= 200 && status < 300) videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
-        videoDelivered = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
-        if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
-        if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
-        // A delivered video is an MP4 stream with no usage to read.
-        else if (request.model !== null && !contentType.startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
-        const responseHeaders: http.OutgoingHttpHeaders = {}
-        for (const [name, value] of Object.entries(upstreamRes.headers)) {
-          if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
-        }
-        responseHeaders.connection = 'close'
-        upstreamRes.once('error', () => finish!(status, buyerRequestId))
-        res.once('close', () => finish!(status, buyerRequestId))
-        const modelListPolicy = request.modelListPolicy
-        if (modelListPolicy && status === 200) {
-          const chunks: Buffer[] = []
-          upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
-          upstreamRes.once('end', () => {
-            const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
-            res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
-            res.end(listing)
-            finish!(status, buyerRequestId)
-          })
-          return
-        }
-        res.writeHead(status, responseHeaders)
-        upstreamRes.pipe(res)
-        upstreamRes.once('end', () => finish!(status, buyerRequestId))
-      })
+      let upstream: http.ClientRequest
+      // Set while the request waits for a restarting buyer.
+      let retryTimer: ReturnType<typeof setTimeout> | null = null
+      let refusedSince: number | null = null
+      const send = (): void => {
+        retryTimer = null
+        upstream = http.request({
+          hostname: '127.0.0.1',
+          port: buyerPort,
+          method,
+          path: request.buyerPath,
+          headers,
+        }, (upstreamRes) => {
+          const status = upstreamRes.statusCode ?? 502
+          const buyerRequestId = firstHeader(upstreamRes.headers['x-antseed-request-id']) || null
+          sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
+          reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
+          firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
+          respondedAt = Date.now()
+          const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
+          // A video is priced per second, not per token: zero token prices do not make it free.
+          servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
+          if (request.video?.action === 'create' && status >= 200 && status < 300) videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+          videoDelivered = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
+          if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
+          if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+          // A delivered video is an MP4 stream with no usage to read.
+          else if (request.model !== null && !contentType.startsWith('video/')) usageReader = readUsage(upstreamRes, (message) => this._log(message))
+          const responseHeaders: http.OutgoingHttpHeaders = {}
+          for (const [name, value] of Object.entries(upstreamRes.headers)) {
+            if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
+          }
+          responseHeaders.connection = 'close'
+          upstreamRes.once('error', () => finish!(status, buyerRequestId))
+          res.once('close', () => finish!(status, buyerRequestId))
+          const modelListPolicy = request.modelListPolicy
+          if (modelListPolicy && status === 200) {
+            const chunks: Buffer[] = []
+            upstreamRes.on('data', (chunk: Buffer) => chunks.push(chunk))
+            upstreamRes.once('end', () => {
+              const listing = filterModelList(Buffer.concat(chunks), modelListPolicy)
+              res.writeHead(status, { ...responseHeaders, 'content-length': String(listing.length) })
+              res.end(listing)
+              finish!(status, buyerRequestId)
+            })
+            return
+          }
+          res.writeHead(status, responseHeaders)
+          upstreamRes.pipe(res)
+          upstreamRes.once('end', () => finish!(status, buyerRequestId))
+        })
 
-      upstream.on('error', (error) => {
-        // Destroying the buyer request for a client that left fails it too; that is the client's cancel, not a buyer outage.
-        if (clientClosed) {
-          this._log(`gateway client closed before the buyer answered: key=${key.id}`)
-          gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
-          finish!(499, null)
+        upstream.on('error', (error) => {
+          // Destroying the buyer request for a client that left fails it too; that is the client's cancel, not a buyer outage.
+          if (clientClosed) {
+            closedByClient()
+            return
+          }
+          // Refused: the buyer never saw the request and is restarting, so it is safe to send again.
+          const refused = (error as NodeJS.ErrnoException).code === 'ECONNREFUSED'
+          if (refused) {
+            if (refusedSince === null) {
+              refusedSince = Date.now()
+              this._log(`gateway holding request until the buyer is back: key=${key.id}`)
+            }
+            if (this._holdForBuyer(refusedSince)) {
+              retryTimer = setTimeout(send, BUYER_RETRY_INTERVAL_MS)
+              return
+            }
+          }
+          this._log(`gateway upstream error: ${error.message}`)
+          gatewayError = { code: 'buyer_unavailable', message: 'Antseed buyer proxy is unavailable' }
+          finish!(502, null)
+          // Never accepted, so never signed for: no spend can follow.
+          if (refused) this._options.accounting.release(tag)
+          if (!res.headersSent) {
+            sendError(res, 502, 'api_error', 'buyer_unavailable', 'Antseed buyer proxy is unavailable')
+          } else {
+            res.destroy()
+          }
+        })
+        upstream.end(body)
+      }
+      const closedByClient = (): void => {
+        // stop() closes what is left after its drain; that is not the client's cancel.
+        if (this._server === null) {
+          this._log(`gateway stopped before the buyer answered: key=${key.id}`)
+          gatewayError = { code: 'gateway_stopping', message: 'The gateway stopped before the buyer answered' }
+          finish!(503, null)
           return
         }
-        this._log(`gateway upstream error: ${error.message}`)
-        gatewayError = { code: 'buyer_unavailable', message: 'Antseed buyer proxy is unavailable' }
-        finish!(502, null)
-        if (!res.headersSent) {
-          sendError(res, 502, 'api_error', 'buyer_unavailable', 'Antseed buyer proxy is unavailable')
-        } else {
-          res.destroy()
-        }
-      })
+        this._log(`gateway client closed before the buyer answered: key=${key.id}`)
+        gatewayError = { code: 'client_closed_request', message: 'Client closed the request before the buyer answered' }
+        finish!(499, null)
+      }
       // A client that disconnects mid-stream should stop the paid request too.
       res.once('close', () => {
         if (res.writableFinished) return
         clientClosed = true
-        upstream.destroy()
+        if (retryTimer) {
+          // Waiting for the buyer, which never saw this request.
+          clearTimeout(retryTimer)
+          retryTimer = null
+          closedByClient()
+          this._options.accounting.release(tag)
+        } else {
+          upstream.destroy()
+        }
       })
       sentToBuyer = true
-      upstream.end(body)
+      send()
     } catch (error) {
       this._log(`gateway error after admission: ${errorMessage(error)}`)
       if (finish) finish(500, null)

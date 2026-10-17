@@ -14,6 +14,7 @@ import { clearMaskedValues, endpointOriginChanged, headersToText, maskedHeaderNa
 import { useConsoleMutation } from '../lib/mutations'
 import { isOverridden } from '../lib/settings'
 import { BuyerSettingsEditor } from '../components/BuyerSettingsEditor'
+import { UpdatePanel } from '../components/UpdatePanel'
 import { qk, useAdminTokens, useStatus } from '../lib/queries'
 
 type Tab = 'general' | 'buyer' | 'observability' | 'tokens' | 'auth'
@@ -27,7 +28,6 @@ function General() {
         {(data) => (
           <DetailList items={[
             ['Public URL', data.publicUrl ? <Mono key="u">{data.publicUrl}</Mono> : <span className="gc-muted">Not set. Clients use this console's address.</span>],
-            ['Version', data.version],
             ['Buyer', data.buyer.reachable ? <Badge key="b" tone="success">Connected</Badge> : <Badge key="b" tone="danger">Unreachable</Badge>],
             ['Sellers seen', String(data.buyer.peers)],
             ['Spend feed', data.spendFeed],
@@ -206,7 +206,7 @@ export default function Settings() {
         { id: 'tokens', label: 'Management tokens' }, { id: 'auth', label: 'Sign-in' },
       ]} />
       <TabPanel tabsId="gc-settings" tab={tab} className="gc-stack">
-        {tab === 'general' && <General />}
+        {tab === 'general' && <><General /><UpdatePanel /></>}
         {tab === 'tokens' && <Tokens />}
         {(tab === 'buyer' || tab === 'observability' || tab === 'auth') && (
           <QueryView query={settings}>

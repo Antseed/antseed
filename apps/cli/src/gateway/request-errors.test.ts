@@ -18,12 +18,12 @@ test('error bodies: OpenAI, Anthropic, plain-string and non-JSON envelopes', () 
   assert.equal(parse(JSON.stringify({ error: { message: 'y'.repeat(2_000) } })).message!.length, 500)
 })
 
-async function fakeBuyer(respond: (res: http.ServerResponse) => void): Promise<{ port: number; close: () => Promise<void> }> {
+async function fakeBuyer(respond: (res: http.ServerResponse) => void, port = 0): Promise<{ port: number; close: () => Promise<void> }> {
   const server = http.createServer((req, res) => {
     req.resume()
     req.on('end', () => respond(res))
   })
-  await new Promise<void>((resolve) => server.listen(0, '127.0.0.1', resolve))
+  await new Promise<void>((resolve) => server.listen(port, '127.0.0.1', resolve))
   return { port: (server.address() as { port: number }).port, close: () => new Promise((resolve) => server.close(() => resolve())) }
 }
 
@@ -47,7 +47,7 @@ test('failed requests keep the seller\'s error code and message, and buyer outag
   const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
   const options = { store, accounting, identityAddress: async () => null, spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {} }
   const gateway = new GatewayServer({ ...options, buyerPort: buyer.port })
-  const deadBuyer = new GatewayServer({ ...options, buyerPort: 1 })
+  const deadBuyer = new GatewayServer({ ...options, buyerPort: 1, buyerRestartHoldMs: 0 })
   try {
     const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
     assert.equal(await post(await gateway.start(), secret), 429)
@@ -87,6 +87,123 @@ test('a client that leaves before the buyer answers is recorded as its cancel, n
   } finally {
     await gateway.stop()
     await buyer.close()
+    accounting.dispose()
+    cleanup()
+  }
+})
+
+/** A port nothing listens on, like a buyer between its old process and the new one. */
+async function closedPort(): Promise<number> {
+  const probe = await fakeBuyer(() => {})
+  await probe.close()
+  return probe.port
+}
+
+const ok = (res: http.ServerResponse): void => {
+  res.writeHead(200, { 'content-type': 'application/json' })
+  res.end('{"ok":true}')
+}
+
+test('a request waits for a restarting buyer instead of failing, and gives up after the hold', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyerPort = await closedPort()
+  const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
+  const gateway = new GatewayServer({ store, accounting, buyerPort, buyerRestartHoldMs: 5_000, identityAddress: async () => null, spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {} })
+  const shortHold = new GatewayServer({ store, accounting, buyerPort: await closedPort(), buyerRestartHoldMs: 300, identityAddress: async () => null, spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {} })
+  let buyer: Awaited<ReturnType<typeof fakeBuyer>> | null = null
+  try {
+    const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const port = await gateway.start()
+    const answered = post(port, secret)
+    await new Promise((resolve) => setTimeout(resolve, 800))
+    buyer = await fakeBuyer(ok, buyerPort)
+    assert.equal(await answered, 200, 'the request reaches the buyer once it is back')
+    assert.deepEqual(store.listRequests({}).map((row) => row.status), [200], 'one request, recorded once')
+
+    assert.equal(await post(await shortHold.start(), secret), 502)
+    assert.equal(store.listRequests({})[0]!.errorCode, 'buyer_unavailable')
+  } finally {
+    await gateway.stop()
+    await shortHold.stop()
+    await buyer?.close()
+    accounting.dispose()
+    cleanup()
+  }
+})
+
+test('a client that leaves while its request waits for the buyer is recorded as its cancel', async () => {
+  const { store, cleanup } = tempDataDir()
+  const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
+  const gateway = new GatewayServer({ store, accounting, buyerPort: await closedPort(), buyerRestartHoldMs: 5_000, identityAddress: async () => null, spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {} })
+  try {
+    const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const port = await gateway.start()
+    const req = http.request({ hostname: '127.0.0.1', port, path: '/v1/chat/completions', method: 'POST', headers: { authorization: `Bearer ${secret}`, 'content-type': 'application/json' } })
+    req.on('error', () => {})
+    req.end('{"model":"open-model"}')
+    await new Promise((resolve) => setTimeout(resolve, 600))
+    req.destroy()
+    for (let attempt = 0; attempt < 100 && store.listRequests({})[0]?.status == null; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    const [cancelled] = store.listRequests({})
+    assert.deepEqual([cancelled!.status, cancelled!.errorCode], [499, 'client_closed_request'])
+    assert.equal(accounting.heldUsdc(cancelled!.keyId), 0)
+  } finally {
+    await gateway.stop()
+    accounting.dispose()
+    cleanup()
+  }
+})
+
+test('a capped key waits for the spend feed of a restarting buyer instead of failing closed at once', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer(ok)
+  const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
+  let state: 'reporting' | 'unreachable' = 'unreachable'
+  let polls = 0
+  const gateway = new GatewayServer({
+    store, accounting, buyerPort: buyer.port, buyerRestartHoldMs: 5_000, identityAddress: async () => null,
+    spendFeedState: () => state,
+    refreshSpendFeed: async () => { polls += 1; if (polls >= 3) state = 'reporting' },
+  })
+  try {
+    const { secret } = store.createKey({ label: 'capped', limits: { ...NO_LIMITS, monthly: 5_000_000 }, expiresAt: null })
+    assert.equal(await post(await gateway.start(), secret), 200)
+    assert.equal(polls, 3)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    accounting.dispose()
+    cleanup()
+  }
+})
+
+test('stopping lets requests in flight finish, and closes the ones that outlast the drain', async () => {
+  const { store, cleanup } = tempDataDir()
+  const slow = await fakeBuyer((res) => { setTimeout(() => ok(res), 300) })
+  const stuck = await fakeBuyer(() => {})
+  const accounting = new GatewayAccounting(store, { holdUsdc: 1_000, settleGraceMs: 10 })
+  const options = { store, accounting, identityAddress: async () => null, spendFeedState: () => 'reporting' as const, refreshSpendFeed: async () => {} }
+  const draining = new GatewayServer({ ...options, buyerPort: slow.port })
+  const bounded = new GatewayServer({ ...options, buyerPort: stuck.port, shutdownDrainMs: 200 })
+  try {
+    const { secret } = store.createKey({ label: 'k', limits: NO_LIMITS, expiresAt: null })
+    const answered = post(await draining.start(), secret)
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    await draining.stop()
+    assert.equal(await answered, 200, 'the request in flight finished before the gateway stopped')
+
+    const cut = post(await bounded.start(), secret).catch(() => 'closed')
+    await new Promise((resolve) => setTimeout(resolve, 100))
+    const startedStop = Date.now()
+    await bounded.stop()
+    assert.ok(Date.now() - startedStop < 2_000, 'a request that never ends does not hold the stop')
+    assert.equal(await cut, 'closed')
+    for (let attempt = 0; attempt < 100 && store.listRequests({})[0]?.status == null; attempt += 1) await new Promise((resolve) => setTimeout(resolve, 10))
+    const [closed] = store.listRequests({})
+    assert.deepEqual([closed!.status, closed!.errorCode], [503, 'gateway_stopping'], 'the gateway closed it, not the client')
+  } finally {
+    await slow.close()
+    await stuck.close().catch(() => {})
     accounting.dispose()
     cleanup()
   }
