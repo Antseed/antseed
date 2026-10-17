@@ -380,6 +380,49 @@ describe('BuyerPaymentNegotiator', () => {
       expect(result.action).toBe('retry');
     });
 
+    it('resends instead of signing more when the buyer already signed the catch-up target', async () => {
+      await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.extendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockClear();
+      (bpm.resendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockClear();
+
+      (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(makeActiveSession(peer.peerId));
+      // Signed 30.39 USDC locally, but the seller only ever received 5.511.
+      (bpm.getCumulativeAmount as ReturnType<typeof vi.fn>).mockReturnValue(30_393_050n);
+      (bpm.resendCurrentSpendingAuth as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      });
+      (bpm.retireSession as ReturnType<typeof vi.fn>).mockImplementation(() => {
+        (bpm.getActiveSession as ReturnType<typeof vi.fn>).mockReturnValue(null);
+      });
+      (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockImplementation(async () => {
+        (bpm.isLockConfirmed as ReturnType<typeof vi.fn>).mockReturnValue(true);
+      });
+      const catchUp = {
+        error: 'payment_required',
+        minBudgetPerRequest: '10000',
+        suggestedAmount: '1000000',
+        requiredCumulativeAmount: '5537080',
+        currentSpent: '5537080',
+        currentAcceptedCumulative: '5511251',
+      };
+
+      const first = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+      expect(first.action).toBe('retry');
+      expect(bpm.resendCurrentSpendingAuth).toHaveBeenCalledTimes(1);
+      expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+      expect(bpm.retireSession).not.toHaveBeenCalled();
+
+      // The seller still asks for the same amount: the channel cannot be
+      // caught up, so it is retired and a fresh reserve is negotiated.
+      bufferPaymentRequired(negotiator, peer.peerId, conn);
+      const second = await negotiator.handle402(make402Response(catchUp), peer, conn, makeRequest());
+      expect(bpm.extendCurrentSpendingAuth).not.toHaveBeenCalled();
+      expect(bpm.retireSession).toHaveBeenCalledWith(peer.peerId, CHANNEL_STATUS.GHOST);
+      expect(bpm.authorizeSpending).toHaveBeenCalled();
+      expect(second.action).toBe('retry');
+    });
+
     it('retires session as settled and renegotiates without retrying extend when seller flags channel_exhausted', async () => {
       await simulateSuccessfulNegotiation(negotiator, bpm, peer, conn);
       (bpm.authorizeSpending as ReturnType<typeof vi.fn>).mockClear();

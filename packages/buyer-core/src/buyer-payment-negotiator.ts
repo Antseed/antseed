@@ -159,6 +159,8 @@ export class BuyerPaymentNegotiator {
 
   /** Tracks which seller peers the buyer has already negotiated payment for. */
   private readonly _lockedPeers = new Set<string>();
+  /** peerId -> catch-up target we answered by resending an already-sufficient SpendingAuth. */
+  private readonly _resentForTarget = new Map<string, bigint>();
   /** Pending PaymentRequired payloads from sellers, keyed by peerId. */
   private readonly _pendingPaymentRequired = new Map<string, {
     resolve: (payload: PaymentRequiredPayload) => void;
@@ -1536,8 +1538,28 @@ export class BuyerPaymentNegotiator {
     if (hasPendingReserve) {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
     }
-    if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
-      const cumulativeBefore = this._bpm.getCumulativeAmount(peer.peerId);
+    const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
+    if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
+      // We already signed at least what the seller asks for, so the seller never
+      // received that SpendingAuth. Signing more would only raise what the
+      // seller may claim without paying for anything new: resend it once, and
+      // give the channel up if the seller still asks for the same amount.
+      if (this._resentForTarget.get(peer.peerId) === targetCumulative) {
+        debugWarn(
+          `[BuyerNegotiator] Seller ${peer.peerId.slice(0, 12)}... still asks for ${targetCumulative} after a resend ` +
+          `(signed=${signedCumulative}); retiring session`,
+        );
+        this._resentForTarget.delete(peer.peerId);
+        this._bpm.retireSession(peer.peerId, CHANNEL_STATUS.GHOST);
+        this._lockedPeers.delete(peer.peerId);
+        this._firstRequestSent.delete(peer.peerId);
+        return false;
+      }
+      this._resentForTarget.set(peer.peerId, targetCumulative);
+      await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
+    } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+      this._resentForTarget.delete(peer.peerId);
+      const cumulativeBefore = signedCumulative;
       await this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,
