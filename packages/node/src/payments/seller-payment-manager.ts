@@ -1966,6 +1966,22 @@ export class SellerPaymentManager {
 
   // ── Queries ───────────────────────────────────────────────────
 
+  /**
+   * Stop serving a buyer's channel when its SpendingAuth can no longer be
+   * received (e.g. it exceeds the payment frame limit). The next request then
+   * gets 402 channel_exhausted, the channel is closed at the last accepted
+   * auth, and the buyer opens a replacement instead of retrying forever.
+   */
+  blockChannelForBuyer(buyerPeerId: string, reason: string): boolean {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    if (!session || this._blockedChannels.has(session.sessionId)) return false;
+    this._blockedChannels.add(session.sessionId);
+    debugWarn(
+      `[SellerPayment] Blocking channel ${session.sessionId.slice(0, 18)}... for buyer ${buyerPeerId.slice(0, 12)}...: ${reason}`,
+    );
+    return true;
+  }
+
   hasSession(buyerPeerId: string): boolean {
     return this._activeBuyers.has(buyerPeerId);
   }

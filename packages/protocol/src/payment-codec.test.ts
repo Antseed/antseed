@@ -71,6 +71,16 @@ describe('payment payload codec', () => {
     expect(decodeAuthAck(encodeAuthAck(ack))).toEqual(ack);
   });
 
+  it('refuses to encode a payment payload the peer would drop', () => {
+    expect(() => encodeSpendingAuth({
+      channelId: `0x${'1'.repeat(64)}`,
+      cumulativeAmount: '1',
+      metadataHash: `0x${'2'.repeat(64)}`,
+      metadata: `0x${'0'.repeat(70_000)}`,
+      spendingAuthSig: `0x${'3'.repeat(130)}`,
+    })).toThrow(/Payment payload too large/);
+  });
+
   it('rejects payloads missing required fields', () => {
     expect(() => decodeNeedAuth(new TextEncoder().encode('{"channelId":"x"}'))).toThrow();
     expect(() => decodeSpendingAuth(new TextEncoder().encode('not json'))).toThrow();

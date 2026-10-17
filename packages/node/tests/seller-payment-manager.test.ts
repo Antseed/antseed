@@ -706,6 +706,21 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
   });
 
+  it('blocks a buyer channel whose SpendingAuth can no longer be received', async () => {
+    const channelId = makeChannelId(106);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
+    expect(manager.isChannelBlocked(channelId)).toBe(true);
+    // Already blocked, and unknown buyers have nothing to block.
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'again')).toBe(false);
+    expect(manager.blockChannelForBuyer('0x' + 'ab'.repeat(20), 'unknown')).toBe(false);
+  });
+
   it('blocks the channel if permanent top-up failure cannot close immediately', async () => {
     const channelId = makeChannelId(105);
 

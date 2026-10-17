@@ -20,6 +20,7 @@ import {
   ZERO_METADATA,
   ZERO_METADATA_HASH,
   computeChannelId,
+  boundServiceMetadata,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
@@ -415,7 +416,9 @@ export class BuyerPaymentManager {
 
   private _sanitizeMetadata(metadata: SpendingAuthMetadata | undefined): SpendingAuthMetadata {
     const current = metadata ?? ZERO_METADATA;
-    if (!this._disableMetadataV2Services) return current;
+    // Bounds service lists persisted before MAX_METADATA_SERVICES existed, so a
+    // channel whose SpendingAuth outgrew the payment frame can be signed again.
+    if (!this._disableMetadataV2Services) return boundServiceMetadata(current);
     return {
       cumulativeInputTokens: current.cumulativeInputTokens,
       cumulativeOutputTokens: current.cumulativeOutputTokens,
