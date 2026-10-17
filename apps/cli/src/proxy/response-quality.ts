@@ -144,6 +144,34 @@ export function isEmptyAnswer(contentType: string | undefined, body: Uint8Array)
   return content.recognised && !content.answered && !content.truncated
 }
 
+/**
+ * True when a stream reported a failure partway through: an `event: error`
+ * frame (what a seller sends when its provider throws after the stream
+ * started), an Anthropic or Responses error event, or a chunk carrying an
+ * `error` object. Such a stream ends normally on the wire, but it is not a
+ * completed answer.
+ */
+export function hasStreamError(contentType: string | undefined, body: Uint8Array): boolean {
+  if (!(contentType ?? '').toLowerCase().includes('text/event-stream')) return false
+  if (body.length > 4 * 1024 * 1024) return false
+  for (const line of Buffer.from(body).toString('utf8').split('\n')) {
+    const trimmed = line.trim()
+    if (trimmed === 'event: error' || trimmed === 'event:error') return true
+    if (!trimmed.startsWith('data:')) continue
+    const payload = trimmed.slice(5).trim()
+    if (!payload.startsWith('{')) continue
+    try {
+      const event = asObject(JSON.parse(payload))
+      if (!event) continue
+      if (event['type'] === 'error' || event['type'] === 'response.failed') return true
+      if (asObject(event['error'])) return true
+    } catch {
+      // A partial or non-JSON event: judge on the rest.
+    }
+  }
+  return false
+}
+
 /** Receipt failures that can only be the seller's: the signed response differs from what arrived. */
 export function isSellerVerificationFailure(verificationError: string | null | undefined): boolean {
   return verificationError === 'response_hash_mismatch' || verificationError === 'invalid_signature'

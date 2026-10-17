@@ -132,7 +132,7 @@ import {
   type PeerHealthEntry,
 } from './peer-health.js'
 import { PeerAttributionTracker, HEARTBEAT_MS } from './peer-attribution.js'
-import { isEmptyAnswer, isSellerVerificationFailure } from './response-quality.js'
+import { hasStreamError, isEmptyAnswer, isSellerVerificationFailure } from './response-quality.js'
 import { estimateAnthropicPromptTokens, isCountTokensPath } from './count-tokens.js'
 import { runVerifier, selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type SellerReach, type VerifyOutcome } from '../plugins/verifier.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
@@ -4938,17 +4938,28 @@ export class BuyerProxy {
         }
 
         if (streamed) {
-          const streamedEmpty = !pinned && responseForClient.statusCode < 300
-            && isEmptyAnswer(response.headers['content-type'], Buffer.concat([streamStartBody, response.body]))
+          const streamedBody = Buffer.concat([streamStartBody, response.body])
+          // The seller's provider failed after the stream started: the wire
+          // ends normally, but the answer never completed.
+          const streamFailed = responseForClient.statusCode < 300
+            && hasStreamError(response.headers['content-type'], streamedBody)
+          const streamedEmpty = !pinned && !streamFailed && responseForClient.statusCode < 300
+            && isEmptyAnswer(response.headers['content-type'], streamedBody)
           // Already sent, so there is nothing to compare against: an empty
           // answer counts against the seller by itself.
           if (streamedEmpty) this._recordSellerFailure(selectedPeer.peerId, latencyServiceId, 'streamed an answer with no text or tool call')
-          else if (streamTiming) this._recordSellerSuccess(selectedPeer.peerId, latencyServiceId, streamTiming)
+          else if (streamFailed) {
+            // Auto-routing attributes it with the other attempts; a pinned
+            // request has no other attempts, so count it here.
+            if (pinned && this._attribution.isBuyerHealthy(this._now())) {
+              this._recordSellerFailure(selectedPeer.peerId, latencyServiceId, 'stream interrupted')
+            }
+          } else if (streamTiming) this._recordSellerSuccess(selectedPeer.peerId, latencyServiceId, streamTiming)
           // Headers already sent to client, can't retry
           if (!res.writableEnded) {
             res.end()
           }
-          return { done: true, emptyAnswer: streamedEmpty }
+          return streamFailed ? { done: true, interrupted: 'seller' } : { done: true, emptyAnswer: streamedEmpty }
         }
 
         // Non-streamed response — check if retryable

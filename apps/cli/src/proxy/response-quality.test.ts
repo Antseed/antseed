@@ -1,6 +1,6 @@
 import assert from 'node:assert/strict'
 import test from 'node:test'
-import { isEmptyAnswer } from './response-quality.js'
+import { hasStreamError, isEmptyAnswer } from './response-quality.js'
 
 const json = (value: unknown): Uint8Array => Buffer.from(JSON.stringify(value))
 const sse = (...events: unknown[]): Uint8Array => Buffer.from(events.map((event) => `data: ${typeof event === 'string' ? event : JSON.stringify(event)}\n\n`).join(''))
@@ -60,4 +60,15 @@ test('legacy completions and legacy function calls are answers', () => {
   assert.equal(isEmptyAnswer(SSE_TYPE, sse({ choices: [{ delta: { function_call: { name: 'f' } } }] }, '[DONE]')), false)
   // A choice shape we do not know is not judged.
   assert.equal(isEmptyAnswer(JSON_TYPE, json({ choices: [{ index: 0, output: 'x' }] })), false)
+})
+
+test('a stream that reports an error partway through is detected', () => {
+  // What a seller sends when its provider throws after the stream started.
+  assert.equal(hasStreamError(SSE_TYPE, Buffer.from('data: {"choices":[{"delta":{"content":"par"}}]}\n\nevent: error\ndata: upstream failed\n\n')), true)
+  assert.equal(hasStreamError(SSE_TYPE, sse({ type: 'content_block_delta', delta: { type: 'text_delta', text: 'a' } }, { type: 'error', error: { type: 'overloaded_error' } })), true)
+  assert.equal(hasStreamError(SSE_TYPE, sse({ type: 'response.failed', response: { status: 'failed' } })), true)
+  assert.equal(hasStreamError(SSE_TYPE, sse({ choices: [{ delta: { content: 'a' } }] }, { error: { message: 'boom' } })), true)
+  assert.equal(hasStreamError(SSE_TYPE, sse({ choices: [{ delta: { content: 'ok' }, finish_reason: 'stop' }] }, '[DONE]')), false)
+  assert.equal(hasStreamError(SSE_TYPE, sse({ choices: [{ delta: { content: 'ok' } }], error: null })), false)
+  assert.equal(hasStreamError(JSON_TYPE, json({ error: { message: 'not a stream' } })), false)
 })

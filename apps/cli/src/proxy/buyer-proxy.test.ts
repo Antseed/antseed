@@ -5677,6 +5677,44 @@ test('a stream that breaks after its headers does not prove an earlier rejection
   assert.equal(sellerHealthOf(proxy, pricier, clock.now()).successes, 0)
 })
 
+test('a stream whose provider fails after partial text is not a served answer', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequestStream = async (
+    peer: PeerInfo,
+    request: SerializedHttpRequest,
+    callbacks: {
+      onResponseStart: (response: SerializedHttpResponse, metadata: { streaming: boolean }) => void
+      onResponseChunk: (chunk: { requestId: string; data: Uint8Array; done: boolean }) => void
+    },
+  ) => {
+    attempts.push(peer.peerId)
+    if (peer.peerId === cheap.peerId) {
+      const rejected = jsonResponse(request.requestId, 422, { error: { type: 'invalid_request_error', message: 'unsupported parameter' } })
+      callbacks.onResponseStart(rejected, { streaming: false })
+      return rejected
+    }
+    const headers = { 'content-type': 'text/event-stream' }
+    callbacks.onResponseStart({ requestId: request.requestId, statusCode: 200, headers, body: new Uint8Array() }, { streaming: true })
+    // The seller's wire behavior when its provider throws mid-stream: an
+    // error frame, then a normal terminal chunk.
+    const text = Buffer.from('data: {"choices":[{"delta":{"content":"partial"}}]}\n\n')
+    const errorFrame = Buffer.from('event: error\ndata: upstream failed\n\n')
+    callbacks.onResponseChunk({ requestId: request.requestId, data: text, done: false })
+    callbacks.onResponseChunk({ requestId: request.requestId, data: errorFrame, done: false })
+    callbacks.onResponseChunk({ requestId: request.requestId, data: new Uint8Array(0), done: true })
+    return { requestId: request.requestId, statusCode: 200, headers, body: Buffer.concat([text, errorFrame]) }
+  }
+
+  await invokeProxy(proxy, makeProxyRequest({ headers: { accept: 'text/event-stream' }, body: { model: 'gpt-5', messages: [], stream: true } }))
+  assert.deepEqual(attempts, [cheap.peerId, pricier.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()), null, 'the rejection is unproven: nobody completed the request')
+  assert.equal(sellerHealthOf(proxy, pricier, clock.now()).failures, 1)
+  assert.equal(sellerHealthOf(proxy, pricier, clock.now()).successes, 0)
+})
+
 test('a rejection every seller shares reaches the client after one extra seller and counts against nobody', async () => {
   const clock = makeTestClock()
   const { cheap, pricier, extra } = makeModelSellers()
