@@ -97,7 +97,7 @@ async function setup(t: TestContext) {
       return routes
     },
   }
-  proxy = new BuyerProxy({ port: 0, dataDir: join(dir, 'buyer'), node: node as any, modelRoutingClient: modelRoutingClient as any })
+  proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir: join(dir, 'buyer'), node: node as any, modelRoutingClient: modelRoutingClient as any })
   ;(proxy as any)._getPeers = async () => [first, second, router]
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}

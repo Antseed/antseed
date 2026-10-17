@@ -58,7 +58,7 @@ async function startHarness(t: TestContext, peers: PeerInfo[], extra: Partial<Bu
       return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from('{}') }
     },
   }
-  proxy = new BuyerProxy({ port: 0, dataDir, node: node as any, ...extra })
+  proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir, node: node as any, ...extra })
   ;(proxy as any)._getPeers = async () => peers
   ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
   ;(proxy as any)._mergeStateFile = async () => {}
@@ -560,9 +560,9 @@ test('without a control secret the attributed-spend feed stays readable and unac
 test('latency and throughput are measured per seller and model', async (t) => {
   const h = await startHarness(t, [cheap])
   const proxy = h.proxy as any
-  proxy._recordPeerSpeed(cheap.peerId, 'gpt-5', 100, 1000, 50)
-  proxy._recordPeerSpeed(cheap.peerId, 'GPT-5', 200, 1000, 100)
-  proxy._recordPeerSpeed(cheap.peerId, 'big-model', 5000, 1000, 5)
+  proxy._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 100, streamMs: 1000, outputTokens: 50, streamed: true })
+  proxy._recordSellerSuccess(cheap.peerId, 'GPT-5', { firstTokenMs: 200, streamMs: 1000, outputTokens: 100, streamed: true })
+  proxy._recordSellerSuccess(cheap.peerId, 'big-model', { firstTokenMs: 5000, streamMs: 1000, outputTokens: 5, streamed: true })
   assert.equal(proxy._peerLatency(cheap.peerId, 'gpt-5'), 130)
   assert.equal(proxy._peerThroughput(cheap.peerId, 'gpt-5'), 65)
   assert.equal(proxy._peerLatency(cheap.peerId, 'big-model'), 5000)
@@ -570,7 +570,7 @@ test('latency and throughput are measured per seller and model', async (t) => {
   assert.equal(proxy._peerLatency(cheap.peerId, 'other'), null)
 })
 
-test('a streamed answer records time to first frame and tokens per second; a non-streamed one records neither', async (t) => {
+test('a streamed answer records time to first frame and tokens per second; a non-streamed one only an estimate of when it started', async (t) => {
   const h = await startHarness(t, [cheap])
   const proxy = h.proxy as any
   const sse = 'data: {"choices":[{"delta":{"content":"hi"}}]}\n\ndata: {"choices":[],"usage":{"prompt_tokens":10,"completion_tokens":40,"total_tokens":50}}\n\ndata: [DONE]\n\n'
@@ -594,7 +594,8 @@ test('a streamed answer records time to first frame and tokens per second; a non
 
   const h2 = await startHarness(t, [cheap])
   assert.equal((await chat(h2)).status, 200)
-  assert.equal((h2.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), null)
+  assert.notEqual((h2.proxy as any)._peerLatency(cheap.peerId, 'gpt-5'), null)
+  assert.equal((h2.proxy as any)._peerThroughput(cheap.peerId, 'gpt-5'), null)
 })
 
 test('gateway-policy automatic routing falls back to a free seller when a paid one cannot be funded, and remembers only the seller that answered', async (t) => {
