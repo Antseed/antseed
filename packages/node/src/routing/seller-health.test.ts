@@ -198,4 +198,14 @@ describe('seller health', () => {
       expect(ordered.indexOf('a')).toBe(2);
     }
   });
+
+  it('the only open-channel seller in the pool goes first even when a seller needing a new channel scores better', () => {
+    const book = new SellerHealthBook();
+    const closedLeader = seller('a', 0.1, 0.3, { channelOpen: false });
+    const openAlternative = seller('b', 0.13, 0.39, { channelOpen: true });
+    const result = order([closedLeader, openAlternative], book);
+    expect(result.scores.get(closedLeader)!.score).toBeLessThan(result.scores.get(openAlternative)!.score);
+    expect(result.pool).toEqual([openAlternative]);
+    expect(result.ordered.map((s) => s.peerId[0])).toEqual(['b', 'a']);
+  });
 });

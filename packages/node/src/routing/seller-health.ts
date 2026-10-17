@@ -413,12 +413,16 @@ export function orderAdaptiveRoutes<T>(
     pool = open.length > 0 ? open : pool.slice(0, 1)
   }
   let ordered = [...healthy, ...unhealthy, ...cooling]
-  if (pool.length > 1) {
-    // Weight 1/score²: twice as expensive gets a quarter of the traffic.
+  if (pool.length > 0) {
+    // Weight 1/score²: twice as expensive gets a quarter of the traffic. The
+    // pool may no longer hold the leader (it needed a new channel), so even a
+    // single remaining seller goes first.
     const weights = pool.map((candidate) => 1 / Math.max(scores.get(candidate)!.score, 1e-9) ** 2)
-    const picked = options.affinityKey
-      ? rendezvousPick(pool, weights, (candidate) => inputs.get(candidate)!.peerId, options.affinityKey)
-      : weightedPick(pool, weights, random())
+    const picked = pool.length === 1
+      ? pool[0]!
+      : options.affinityKey
+        ? rendezvousPick(pool, weights, (candidate) => inputs.get(candidate)!.peerId, options.affinityKey)
+        : weightedPick(pool, weights, random())
     ordered = [picked, ...ordered.filter((candidate) => candidate !== picked)]
   }
 
