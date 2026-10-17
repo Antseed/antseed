@@ -3,7 +3,7 @@ import { mkdtempSync, rmSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join } from 'node:path';
 import type { Provider, ProviderStreamCallbacks, SerializedHttpRequest } from '@antseed/node';
-import plugin, { veniceInputParameters } from './index.js';
+import plugin, { veniceAcceptsEndFrame, veniceInputParameters } from './index.js';
 
 afterEach(() => vi.unstubAllGlobals());
 
@@ -58,6 +58,47 @@ it('announces queue fields from the Venice model list and keeps configured ones'
   await configured.init!();
   expect(fetchMock).not.toHaveBeenCalled();
   expect(configured.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['prompt']);
+});
+
+const invalid = (details: Record<string, unknown>) => Response.json({ error: 'Invalid request parameters', details: { _errors: [], duration: { _errors: ['Invalid enum value'] }, ...details } }, { status: 400 });
+
+it('asks Venice for free whether a model takes a last frame', async () => {
+  const fetchMock = vi.fn().mockResolvedValue(invalid({}));
+  vi.stubGlobal('fetch', fetchMock);
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'seller-secret', 'seedance')).toBe(true);
+  const [url, init] = fetchMock.mock.calls[0]!;
+  expect(url).toBe('https://api.venice.ai/api/v1/video/queue');
+  expect(JSON.parse(init.body)).toMatchObject({ model: 'seedance', prompt: '', duration: '999s' });
+
+  fetchMock.mockResolvedValue(invalid({ end_image_url: { _errors: ['This model does not support end_image_url'] } }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'wan-2.6')).toBe(false);
+  fetchMock.mockResolvedValue(Response.json({ queue_id: 'started' }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'm')).toBeNull();
+  fetchMock.mockResolvedValue(Response.json({ error: 'Invalid request parameters', details: { prompt: { _errors: ['required'] } } }, { status: 400 }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'm')).toBeNull();
+  fetchMock.mockResolvedValue(Response.json({ error: 'Too many requests' }, { status: 429 }));
+  expect(await veniceAcceptsEndFrame('https://api.venice.ai', 'k', 'm')).toBeNull();
+});
+
+it('announces end_image_url for image-to-video models Venice says take a last frame, unless frames are configured', async () => {
+  const models = Response.json({ data: [veniceModel('wan-2.5', { model_type: 'image-to-video', resolutions: [], aspect_ratios: [], audio_configurable: false })] });
+  const fetchMock = vi.fn().mockResolvedValueOnce(models.clone()).mockResolvedValueOnce(invalid({}));
+  vi.stubGlobal('fetch', fetchMock);
+  const provider = plugin.createProvider(config) as Provider;
+  await provider.init!();
+  expect(fetchMock).toHaveBeenCalledTimes(2);
+  expect(provider.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'end_image_url', 'image_url', 'prompt']);
+
+  fetchMock.mockReset().mockResolvedValueOnce(models.clone()).mockResolvedValueOnce(invalid({ end_image_url: { _errors: ['This model does not support end_image_url'] } }));
+  const firstOnly = plugin.createProvider(config) as Provider;
+  await firstOnly.init!();
+  expect(firstOnly.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'image_url', 'prompt']);
+
+  fetchMock.mockReset().mockResolvedValueOnce(models.clone());
+  const configured = plugin.createProvider({ ...config, ANTSEED_SERVICE_CAPABILITIES_JSON: JSON.stringify({ 'wan-2.5': { video: { inputs: ['first_frame'] } } }) }) as Provider;
+  await configured.init!();
+  expect(fetchMock).toHaveBeenCalledTimes(1);
+  expect(configured.serviceCapabilities?.['wan-2.5']?.supportedParameters).toEqual(['duration', 'image_url', 'prompt']);
 });
 
 it('starts without queue fields when the Venice model list is unavailable or lacks the model', async () => {

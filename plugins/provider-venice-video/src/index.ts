@@ -24,6 +24,10 @@ const DOWNLOAD_URL_TTL_MS = 24 * 60 * 60_000;
 const MAX_DOWNLOAD_URLS = 1000;
 const DOWNLOAD_URLS_FILE = 'venice-video-download-urls.json';
 const HEALTH_CHECK_TIMEOUT_MS = 15_000;
+/** Venice allows 40 video requests a minute per key, and the end-frame check counts toward it. */
+const END_FRAME_CHECK_INTERVAL_MS = 1_600;
+const END_FRAME_CHECK_DURATION = '999s';
+const END_FRAME_CHECK_IMAGE = 'data:image/png;base64,AAAA';
 
 type DownloadUrls = Map<string, { url: string; expiresAt: number }>;
 
@@ -64,15 +68,18 @@ const FRAME_FIELDS = { first_frame: 'image_url', last_frame: 'end_image_url', re
 
 /**
  * Queue fields a Venice model takes, from its `/models` constraints. Frame
- * fields follow the seller's announced `video.inputs`, because Venice does not
- * say which models accept a last frame.
+ * fields follow the seller's announced `video.inputs`; without them an
+ * image-to-video model takes `image_url`, plus `end_image_url` when
+ * `endFrame` is true (Venice's model list does not say, see veniceAcceptsEndFrame).
  */
-export function veniceInputParameters(model: unknown, inputs?: readonly string[]): string[] | null {
+export function veniceInputParameters(model: unknown, inputs?: readonly string[], endFrame = false): string[] | null {
   const constraints = (model as { model_spec?: { constraints?: Record<string, unknown> } } | null)?.model_spec?.constraints;
   if (!constraints || typeof constraints !== 'object') return null;
   const frames = inputs
     ? Object.entries(FRAME_FIELDS).filter(([input]) => inputs.includes(input)).map(([, field]) => field)
-    : constraints.model_type === 'image-to-video' ? [FRAME_FIELDS.first_frame] : [];
+    : constraints.model_type === 'image-to-video'
+      ? [FRAME_FIELDS.first_frame, ...(endFrame ? [FRAME_FIELDS.last_frame] : [])]
+      : [];
   const parameters = [
     'prompt',
     'duration',
@@ -82,6 +89,32 @@ export function veniceInputParameters(model: unknown, inputs?: readonly string[]
     ...frames,
   ].sort();
   return validateServiceCapabilityFields({ supportedParameters: parameters }).length === 0 ? parameters : null;
+}
+
+/**
+ * Whether a Venice model accepts a last frame (`end_image_url`), or null when
+ * Venice's answer does not say. Free: the create is invalid on purpose (empty
+ * prompt, impossible duration), so Venice rejects it with `400` and lists each
+ * problem, naming `end_image_url` when the model does not support it. Any
+ * other answer is treated as unknown.
+ */
+export async function veniceAcceptsEndFrame(baseUrl: string, apiKey: string, model: string): Promise<boolean | null> {
+  try {
+    const response = await fetch(`${baseUrl}/api/v1/video/queue`, {
+      method: 'POST',
+      headers: { authorization: `Bearer ${apiKey}`, 'content-type': 'application/json' },
+      body: JSON.stringify({ model, prompt: '', duration: END_FRAME_CHECK_DURATION, end_image_url: END_FRAME_CHECK_IMAGE }),
+      redirect: 'error',
+      signal: AbortSignal.timeout(HEALTH_CHECK_TIMEOUT_MS),
+    });
+    const body = Buffer.from(await response.arrayBuffer());
+    const details = response.status === 400 && body.length <= MAX_STATUS_BYTES ? parseJsonObject(body)?.details : null;
+    if (!details || typeof details !== 'object' || !('duration' in details)) return null;
+    const errors = (details as Record<string, { _errors?: unknown }>).end_image_url?._errors;
+    return !(Array.isArray(errors) && errors.some(message => typeof message === 'string' && /not support/i.test(message)));
+  } catch {
+    return null;
+  }
 }
 
 function error(request: SerializedHttpRequest, statusCode: number, code: string, message: string) {
@@ -234,9 +267,17 @@ const plugin: AntseedProviderPlugin = {
         const body = Buffer.from(await response.arrayBuffer());
         const data = response.ok && body.length <= MAX_MODELS_BYTES ? parseJsonObject(body)?.data : null;
         if (!Array.isArray(data)) return;
+        let checks = 0;
         for (const service of pending) {
           const capabilities = serviceCapabilities[service]!;
-          const parameters = veniceInputParameters(data.find(model => model?.id === service), capabilities.video?.inputs);
+          const model = data.find(entry => entry?.id === service);
+          // Frames the seller did not announce: ask Venice whether this image-to-video model takes a last frame.
+          let endFrame = false;
+          if (!capabilities.video?.inputs && model?.model_spec?.constraints?.model_type === 'image-to-video') {
+            if (checks++ > 0) await new Promise(resolve => setTimeout(resolve, END_FRAME_CHECK_INTERVAL_MS));
+            endFrame = await veniceAcceptsEndFrame(baseUrl, apiKey, service) === true;
+          }
+          const parameters = veniceInputParameters(model, capabilities.video?.inputs, endFrame);
           if (parameters) capabilities.supportedParameters = parameters;
         }
       } catch {
