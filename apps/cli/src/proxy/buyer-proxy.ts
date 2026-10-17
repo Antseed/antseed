@@ -605,8 +605,13 @@ type BuyerDispatchContext = {
 }
 
 type PeerDispatchResult =
-  /** `emptyAnswer`: the answer sent to the client had no text and no tool call. */
-  | { done: true; emptyAnswer?: boolean }
+  /**
+   * `emptyAnswer`: the answer sent to the client had no text and no tool call.
+   * `interrupted`: the answer never completed (a stream broke after its headers,
+   * or the client went away), so it is no proof the seller served the request;
+   * the value says whose side the break was on.
+   */
+  | { done: true; emptyAnswer?: boolean; interrupted?: 'seller' | 'buyer' | 'cancelled' }
   | {
     done: false; statusCode: number; responseBody: Buffer; responseHeaders: Record<string, string>; errorMessage: string | null
     /** The seller no longer serves the model: a stale catalog entry, not a rejected request. */
@@ -4288,10 +4293,20 @@ export class BuyerProxy {
               : null,
           )
           if (result.done) {
-            countFailures(res.statusCode < 400 && !result.emptyAnswer ? selected.peer.peerId : null)
+            // A stream that broke after its headers proves nothing for the
+            // sellers before it, and counts against this one like any other
+            // transport failure.
+            if (result.interrupted === 'seller') {
+              failedSellers.set(selected.peer.peerId, {
+                serviceId: selected.serviceId,
+                failure: { description: 'stream interrupted', sellerOnly: true, weight: 1 },
+              })
+            }
+            const answered = res.statusCode < 400 && !result.emptyAnswer && !result.interrupted
+            countFailures(answered ? selected.peer.peerId : null)
             // Only a seller that answered becomes the chat's route: an error
             // must not pin later turns to it.
-            if (trackedConversationId && res.statusCode < 400) {
+            if (trackedConversationId && answered) {
               this._conversations.recordRoutedModel(
                 trackedConversationId,
                 `${selected.peer.peerId}@${selected.serviceId}`,
@@ -5093,7 +5108,7 @@ export class BuyerProxy {
             // ignore
           }
         }
-        return { done: true }
+        return { done: true, interrupted: 'cancelled' }
       }
 
       // Whose fault was this? Errors raised by our own wallet, deposits,
@@ -5114,7 +5129,7 @@ export class BuyerProxy {
         if (!res.writableEnded) {
           res.end()
         }
-        return { done: true }
+        return { done: true, interrupted: fault === 'buyer' ? 'buyer' : 'seller' }
       }
 
       if (fault === 'buyer') {
