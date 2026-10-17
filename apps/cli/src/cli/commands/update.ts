@@ -74,7 +74,12 @@ async function updateThroughRoot(method: InstallMethod, log: (line: string) => v
   const paths = rootUpdaterPaths()
   if (!paths) throw new Error(method.note)
   if (!updateInFlight(readRootUpdateProgress(paths))) requestRootUpdate(paths, `cli:${userInfo().username}`)
-  const result = await waitForRootUpdate(paths, log)
+  let result = await waitForRootUpdate(paths, log)
+  // It joined a download the console asked for; now install it.
+  if (result?.state === 'ready') {
+    requestRootUpdate(paths, `cli:${userInfo().username}`)
+    result = await waitForRootUpdate(paths, log)
+  }
   if (result?.state === 'succeeded') {
     log(chalk.green(`Updated ${result.from ?? ''} → ${result.to ?? 'latest'}; the buyer and gateway services restarted.`))
     return true

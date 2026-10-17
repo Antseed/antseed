@@ -1,5 +1,5 @@
 import assert from 'node:assert/strict'
-import { existsSync, rmSync, writeFileSync } from 'node:fs'
+import { existsSync, readFileSync, rmSync, writeFileSync } from 'node:fs'
 import { join } from 'node:path'
 import { test } from 'node:test'
 import { detectInstallMethod } from '../../update/install-method.js'
@@ -32,7 +32,9 @@ async function harness(options: { installer: boolean; latest?: string; desktop?:
   const server = await startConsole(testDeps(store, dir, { updates }), auth, [registerUpdateRoutes])
   const as = <T = GatewayUpdate>(who: string, method: string, path: string) =>
     call(server.port, method, `/console/api${path}`, { who, bearer: who === 'reader' }) as Promise<{ status: number; body: T }>
-  return { dir, store, env, as, fetches: () => fetches, close: async () => { await server.close(); cleanup() } }
+  const post = (action: string) =>
+    call(server.port, 'POST', '/console/api/update', { who: 'owner', body: { action } }) as Promise<{ status: number; body: GatewayUpdate }>
+  return { dir, store, env, as, post, fetches: () => fetches, close: async () => { await server.close(); cleanup() } }
 }
 
 test('GET /update and POST /update/check are for org admins and report npm latest', async () => {
@@ -77,6 +79,36 @@ test('POST /update on an installer server writes the request once, audits it and
     const failed = await h.as('owner', 'GET', '/update')
     assert.equal(failed.body.progress?.state, 'failed')
     assert.equal(failed.body.progress?.error, 'npm install exited with 1')
+  } finally {
+    await h.close()
+  }
+})
+
+test('Download, then Restart & update: the first only fetches, the second restarts and is audited', async () => {
+  const h = await harness({ installer: true })
+  try {
+    await h.as('owner', 'POST', '/update/check')
+    const download = await h.post('download')
+    assert.equal(download.status, 202)
+    assert.deepEqual([download.body.progress?.state, download.body.progress?.action], ['requested', 'download'])
+    assert.equal(JSON.parse(readFileSync(h.env.ANTSEED_UPDATER_REQUEST!, 'utf8')).action, 'download')
+    assert.equal(h.store.listAudit({ action: 'gateway.update' }).entries.filter((entry) => entry.action === 'gateway.update').length, 0)
+
+    // The updater downloaded it next to the running version.
+    rmSync(h.env.ANTSEED_UPDATER_REQUEST!)
+    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ state: 'ready', action: 'download', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
+    const again = await h.post('download')
+    assert.equal(again.status, 202)
+    assert.equal(existsSync(h.env.ANTSEED_UPDATER_REQUEST!), false, 'downloaded already: nothing to ask for')
+    assert.equal(again.body.progress?.state, 'ready')
+
+    const install = await h.post('install')
+    assert.equal(install.status, 202)
+    assert.deepEqual([install.body.progress?.state, install.body.progress?.action], ['requested', 'install'])
+    assert.equal(h.store.listAudit({ action: 'gateway.update' }).entries.filter((entry) => entry.action === 'gateway.update').length, 1)
+
+    const bad = await h.post('reboot')
+    assert.equal(bad.status, 400)
   } finally {
     await h.close()
   }

@@ -5,6 +5,8 @@ import { writeFile, unlink } from 'node:fs/promises'
 import { createRequire } from 'node:module'
 import { join, resolve, isAbsolute, dirname } from 'node:path'
 import { getGlobalOptions } from '../types.js'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
 import { DEFAULT_RESTRICTED_COUNTRIES } from '../../../config/defaults.js'
 import {
@@ -1051,7 +1053,15 @@ export function registerSellerStartCommand(sellerCmd: Command): void {
         }
       }
 
+      const updateWatch = watchForUpdates({
+        dataDir: globalOpts.dataDir,
+        current: pkg.version,
+        running: 'seller',
+        log: (line) => console.log(chalk.yellow(line)),
+      })
+
       setupShutdownHandler(async () => {
+        updateWatch.stop()
         healthChecker?.stop()
         gasMonitor?.stop()
         clearInterval(stateInterval)

@@ -882,13 +882,16 @@ const routes: Array<[string, string, Handler]> = [
   ['GET', '/status', () => ({ version: '0.1.0-mock', publicUrl: mockExposure === 'public' ? db.settings.publicUrl : null, buyer: { reachable: true, peers: db.peers.length, dhtNodes: 42, uptimeMs: 26 * 3600_000 }, spendFeed: 'local', x402: true, exposure: exposureFor(mockExposure) })],
   ['GET', '/update', () => { requireOrgAdmin(); return mockUpdate() }],
   ['POST', '/update/check', () => { requireOrgAdmin(); mockUpdateState.checkedAt = Date.now(); return mockUpdate() }],
-  ['POST', '/update', () => {
+  ['POST', '/update', ({ body }) => {
     requireOrgAdmin()
     const update = mockUpdate()
     if (update.apply !== 'console') throw new MockError(409, 'update_unsupported', `On its host, run: ${update.command}`)
     if (!update.available) throw new MockError(409, 'up_to_date', 'Already the latest version')
+    const action = body?.action === 'download' ? 'download' : 'install'
+    if (action === 'download' && mockUpdateState.downloaded) return update
     mockUpdateState.requestedAt = Date.now()
-    audit('gateway.update')
+    mockUpdateState.action = action
+    if (action === 'install') audit('gateway.update')
     return mockUpdate()
   }],
   ['GET', '/settings', () => { requireOrgAdmin(); return maskedSettings() }],
@@ -918,7 +921,14 @@ const routes: Array<[string, string, Handler]> = [
  * app). An applied update waits 3 s for the update service, installs for
  * 5 s, then reports the new version.
  */
-const mockUpdateState = { mode: 'available' as 'available' | 'command' | 'current' | 'desktop', current: '0.1.180', checkedAt: Date.now() - 40 * 60_000, requestedAt: null as number | null }
+const mockUpdateState = {
+  mode: 'available' as 'available' | 'command' | 'current' | 'desktop',
+  current: '0.1.180',
+  checkedAt: Date.now() - 20 * 60_000,
+  requestedAt: null as number | null,
+  action: 'install' as 'download' | 'install',
+  downloaded: false,
+}
 function mockUpdate(): GatewayUpdate {
   const mode = mockUpdateState.mode
   if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
@@ -934,13 +944,23 @@ function mockUpdate(): GatewayUpdate {
     progress: null,
   }
   const at = mockUpdateState.requestedAt
-  if (at === null) return base
+  const action = mockUpdateState.action
+  if (at === null) {
+    return mockUpdateState.downloaded
+      ? { ...base, progress: { state: 'ready', action: 'download', from: base.current, to: latest, startedAt: 1, finishedAt: 2, error: null } }
+      : base
+  }
   const elapsed = Date.now() - at
-  if (elapsed < 3_000) return { ...base, progress: { state: 'requested', from: null, to: null, startedAt: at, finishedAt: null, error: null } }
-  if (elapsed < 8_000) return { ...base, progress: { state: 'running', from: base.current, to: null, startedAt: at + 3_000, finishedAt: null, error: null } }
-  mockUpdateState.current = latest
+  if (elapsed < 1_500) return { ...base, progress: { state: 'requested', action, from: null, to: null, startedAt: at, finishedAt: null, error: null } }
+  if (elapsed < 6_000) return { ...base, progress: { state: 'running', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: null, error: null } }
   mockUpdateState.requestedAt = null
-  return { ...base, current: latest, available: false, progress: { state: 'succeeded', from: base.current, to: latest, startedAt: at + 3_000, finishedAt: at + 8_000, error: null } }
+  if (action === 'download') {
+    mockUpdateState.downloaded = true
+    return mockUpdate()
+  }
+  mockUpdateState.current = latest
+  mockUpdateState.downloaded = false
+  return { ...base, current: latest, available: false, progress: { state: 'succeeded', action, from: base.current, to: latest, startedAt: at + 1_500, finishedAt: at + 6_000, error: null } }
 }
 
 /** `?exposure=local|lan|public` on the first load picks what `/status` reports (default public). */
@@ -985,6 +1005,8 @@ export function installMockApi(): void {
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
   const updateParam = new URLSearchParams(window.location.search).get('update')
   if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
+  // `?update=ready`: the new version is downloaded and waits for Restart & update.
+  if (updateParam === 'ready') mockUpdateState.downloaded = true
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0

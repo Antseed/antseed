@@ -8,9 +8,12 @@ import { isSemver } from './version.js'
  * the request file appears, and tells the CLI both paths:
  *
  * - `ANTSEED_UPDATER_REQUEST`: a file in the `antseed` user's home. Its
- *   existence is the whole request; the updater deletes it, installs
- *   `@antseed/cli@latest` (never a version named in the file) and restarts
- *   the buyer and gateway services.
+ *   existence is the request; the updater deletes it and installs
+ *   `@antseed/cli@latest` (never a version named in the file). The file's
+ *   `action` only picks the step, the way the desktop app splits them:
+ *   `download` installs the new version next to the running one and stops
+ *   (`ready`); `install` (the default) also switches to it and restarts the
+ *   buyer and gateway services.
  * - `ANTSEED_UPDATER_STATUS`: JSON the updater writes in a root-owned
  *   directory, so the `antseed` user can read but not forge it.
  */
@@ -19,13 +22,17 @@ export interface RootUpdaterPaths {
   status: string
 }
 
-export type RootUpdateState = 'requested' | 'running' | 'succeeded' | 'failed'
+export type RootUpdateState = 'requested' | 'running' | 'ready' | 'succeeded' | 'failed'
+
+/** `download` fetches the new version; `install` switches to it and restarts. */
+export type RootUpdateAction = 'download' | 'install'
 
 export interface RootUpdateProgress {
   state: RootUpdateState
+  action: RootUpdateAction
   /** Version before the update; null while only requested. */
   from: string | null
-  /** Version installed; null until it succeeded. */
+  /** Version downloaded (ready) or installed (succeeded); null until then. */
   to: string | null
   /** When the request was made (requested) or the updater started (otherwise). */
   startedAt: number
@@ -71,11 +78,15 @@ export function rootUpdaterPaths(env: NodeJS.ProcessEnv = process.env): RootUpda
 }
 
 /** Asks the root updater for `@antseed/cli@latest`. Writing the file is all it takes. */
-export function requestRootUpdate(paths: RootUpdaterPaths, requestedBy: string, now = Date.now()): void {
-  writeFileSync(paths.request, `${JSON.stringify({ requestedAt: now, requestedBy })}\n`, { mode: 0o644 })
+export function requestRootUpdate(paths: RootUpdaterPaths, requestedBy: string, now = Date.now(), action: RootUpdateAction = 'install'): void {
+  writeFileSync(paths.request, `${JSON.stringify({ requestedAt: now, requestedBy, action })}\n`, { mode: 0o644 })
 }
 
-const STATES: ReadonlySet<string> = new Set(['running', 'succeeded', 'failed'])
+function readAction(value: unknown): RootUpdateAction {
+  return value === 'download' ? 'download' : 'install'
+}
+
+const STATES: ReadonlySet<string> = new Set(['running', 'ready', 'succeeded', 'failed'])
 
 /** The pending request, else the updater's last run; null when it never ran. */
 export function readRootUpdateProgress(paths: RootUpdaterPaths): RootUpdateProgress | null {
@@ -86,13 +97,20 @@ export function readRootUpdateProgress(paths: RootUpdaterPaths): RootUpdateProgr
     } catch {
       // picked up just now
     }
-    return { state: 'requested', from: null, to: null, startedAt: Math.floor(startedAt), finishedAt: null, error: null }
+    let action: RootUpdateAction = 'install'
+    try {
+      action = readAction((JSON.parse(readFileSync(paths.request, 'utf8')) as Record<string, unknown>)['action'])
+    } catch {
+      // an empty or older request installs
+    }
+    return { state: 'requested', action, from: null, to: null, startedAt: Math.floor(startedAt), finishedAt: null, error: null }
   }
   try {
     const raw = JSON.parse(readFileSync(paths.status, 'utf8')) as Record<string, unknown>
     if (typeof raw['state'] !== 'string' || !STATES.has(raw['state']) || typeof raw['startedAt'] !== 'number') return null
     return {
       state: raw['state'] as RootUpdateState,
+      action: readAction(raw['action']),
       from: isSemver(raw['from']) ? raw['from'] : null,
       to: isSemver(raw['to']) ? raw['to'] : null,
       startedAt: raw['startedAt'],

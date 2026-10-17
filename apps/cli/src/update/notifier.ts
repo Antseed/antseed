@@ -1,6 +1,6 @@
 import { spawn } from 'node:child_process'
 import chalk from 'chalk'
-import { detectInstallMethod, type InstallKind } from './install-method.js'
+import { detectInstallMethod, type InstallKind, type InstallMethod } from './install-method.js'
 import {
   isNewer,
   readUpdateCache,
@@ -11,7 +11,7 @@ import {
 } from './version.js'
 
 /** Installs that `antseed update` (or the person) can act on; the others update some other way. */
-const NOTIFY_KINDS: ReadonlySet<InstallKind> = new Set(['installer', 'npm', 'pnpm', 'yarn', 'bun', 'volta', 'nix'])
+export const NOTIFY_KINDS: ReadonlySet<InstallKind> = new Set(['installer', 'npm', 'pnpm', 'yarn', 'bun', 'volta', 'nix'])
 
 /**
  * Refreshes the cache in a detached child, the way update-notifier does, so
@@ -63,7 +63,7 @@ export interface NotifyOptions {
 
 /**
  * Prints a one-line notice on stderr when the last registry check found a
- * newer CLI, and refreshes that check in the background once a day. Silent
+ * newer CLI, and refreshes that check in the background every 30 minutes. Silent
  * for non-interactive runs (`--json`, pipes, services, CI) and when
  * `NO_UPDATE_NOTIFIER` or `ANTSEED_NO_UPDATE_CHECK` is set.
  */
@@ -80,6 +80,25 @@ export function notifyIfUpdateAvailable(options: NotifyOptions): void {
   if (!cache || now - cache.checkedAt > UPDATE_CHECK_INTERVAL_MS) (options.refresh ?? ((dir) => refreshUpdateCacheInBackground(dir, env)))(options.dataDir)
   if (!cache || !isNewer(cache.latest, options.current)) return
 
-  const how = method.kind === 'nix' ? `Update your Nix flake input to get it.` : `Run ${chalk.bold('antseed update')} to install it.`
-  stream.write(`${chalk.yellow('●')} Antseed ${cache.latest} is available (you have ${options.current}). ${how}\n`)
+  stream.write(`${chalk.yellow('●')} ${updateAvailableLine(cache.latest, options.current, method)}\n`)
+}
+
+/**
+ * The one line that announces a newer CLI. Nothing installs by itself: like
+ * the desktop app, Antseed says a version is out and the person takes it.
+ * `running` names a long-running process, which keeps its version until it
+ * restarts.
+ */
+export function updateAvailableLine(latest: string, current: string, method: InstallMethod, running?: string): string {
+  const have = running ? `this ${running} runs ${current}` : `you have ${current}`
+  return `Antseed ${latest} is available (${have}). ${howToUpdate(method, running)}`
+}
+
+function howToUpdate(method: InstallMethod, running?: string): string {
+  const command = chalk.bold('antseed update')
+  if (method.kind === 'installer') return `Update from the gateway console (Settings → General) or run ${command}; the services restart on it.`
+  if (method.kind === 'nix') {
+    return running ? `Update your Nix flake input, then restart the ${running}.` : 'Update your Nix flake input to get it.'
+  }
+  return running ? `Run ${command}, then restart the ${running}.` : `Run ${command} to install it.`
 }

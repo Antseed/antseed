@@ -804,7 +804,8 @@ export interface GatewayStatus {
 
 // GET   /update                    → GatewayUpdate  (org admins)
 // POST  /update/check              → GatewayUpdate  (asks npm now)
-// POST  /update                    → GatewayUpdate  (installer servers: installs @antseed/cli@latest and restarts)
+// POST  /update                    → GatewayUpdate  (installer servers and the desktop app; body {action: 'download' | 'install'}:
+//                                     download fetches the latest version, install switches to it and restarts; default install)
 export interface GatewayUpdate {
   /**
    * What updates: `cli` is @antseed/cli from npm; `desktop` is the desktop
@@ -823,7 +824,7 @@ export interface GatewayUpdate {
   /** `NO_UPDATE_NOTIFIER`, `ANTSEED_NO_UPDATE_CHECK` or `CI` turned background checks off. */
   checksDisabled: boolean
   /**
-   * `console`: `POST /update` installs it (servers set up by the gateway
+   * `console`: `POST /update` downloads and installs it (servers set up by the gateway
    * installer, and the desktop app); `command`: run `command` on the gateway
    * host; `none`: it updates some other way.
    */

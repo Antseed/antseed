@@ -9,18 +9,20 @@ function harness(appVersion = '0.2.62', install: () => Promise<void> = async () 
   const dir = mkdtempSync(path.join(tmpdir(), 'console-updates-'));
   const paths = consoleUpdatePaths(dir);
   const installs: string[] = [];
+  const downloads: string[] = [];
   let clock = 1_000;
   const make = (version: string, run: () => Promise<void> = install) => createConsoleUpdates({
     paths,
     appVersion: version,
+    download: () => { downloads.push(version); },
     install: async () => { installs.push(version); await run(); },
     log: () => {},
     now: () => clock,
   });
   const status = () => JSON.parse(readFileSync(paths.status, 'utf8')) as Record<string, any>;
-  const request = () => writeFileSync(paths.request, '{}');
+  const request = (action?: 'download' | 'install') => writeFileSync(paths.request, JSON.stringify(action ? { action } : {}));
   return {
-    paths, installs, status, request, make,
+    paths, installs, downloads, status, request, make,
     updates: make(appVersion),
     tick: (ms: number) => { clock += ms; },
     cleanup: () => rmSync(dir, { recursive: true, force: true }),
@@ -125,6 +127,65 @@ test('an updater error while installing ends the run; a failed background check 
     h.updates.failed('code signature invalid');
     assert.deepEqual([h.status().state, h.status().error], ['failed', 'code signature invalid']);
     assert.equal(h.updates.running(), false);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('Download, then Restart & update, as on the app\'s banner', async () => {
+  const h = harness();
+  try {
+    h.updates.checked('0.2.63');
+    h.request('download');
+    h.updates.poll();
+    await settle();
+    assert.deepEqual([h.downloads, h.installs], [['0.2.62'], []]);
+    assert.deepEqual([h.status().state, h.status().action, h.status().to], ['running', 'download', '0.2.63']);
+
+    h.updates.downloaded('0.2.63');
+    assert.deepEqual([h.status().state, h.status().action, h.status().to], ['ready', 'download', '0.2.63']);
+    assert.equal(h.updates.running(), false);
+
+    // Asking again downloads nothing.
+    h.request('download');
+    h.updates.poll();
+    await settle();
+    assert.equal(h.downloads.length, 1);
+
+    h.request('install');
+    h.updates.poll();
+    await settle();
+    assert.deepEqual(h.installs, ['0.2.62']);
+    assert.deepEqual([h.status().state, h.status().action], ['running', 'install']);
+    h.make('0.2.63');
+    assert.deepEqual([h.status().state, h.status().app.current], ['succeeded', '0.2.63']);
+  } finally {
+    h.cleanup();
+  }
+});
+
+test('a download from the banner shows as ready, and one the app quits on is installed or kept', () => {
+  const h = harness();
+  try {
+    h.updates.checked('0.2.63');
+    h.updates.downloaded('0.2.63');
+    assert.deepEqual([h.status().state, h.status().to], ['ready', '0.2.63']);
+    // Relaunched without installing: still downloaded as far as the console goes.
+    h.make('0.2.62');
+    assert.deepEqual([h.status().state, h.status().to], ['ready', '0.2.63']);
+    // The updater installed it on quit.
+    h.make('0.2.63');
+    assert.deepEqual([h.status().state, h.status().to], ['succeeded', '0.2.63']);
+
+    // A download the app quit during is forgotten.
+    h.updates.checked('0.2.64');
+    const updates = h.make('0.2.63');
+    updates.checked('0.2.64');
+    h.request('download');
+    updates.poll();
+    assert.equal(h.status().state, 'running');
+    h.make('0.2.63');
+    assert.equal(h.status().state, undefined);
   } finally {
     h.cleanup();
   }

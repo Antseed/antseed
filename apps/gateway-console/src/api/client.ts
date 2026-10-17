@@ -271,7 +271,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
     update: {
       get: () => get<GatewayUpdate>('/update'),
       check: () => post<GatewayUpdate>('/update/check'),
-      apply: () => post<GatewayUpdate>('/update'),
+      /** `download` fetches the new version; `install` switches to it and restarts. */
+      apply: (action: 'download' | 'install') => post<GatewayUpdate>('/update', { action }),
     },
   }
 }

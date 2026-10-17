@@ -600,13 +600,18 @@ app.whenReady().then(async () => {
   ipcMain.handle('app:get-update-status', () => lastUpdateStatus);
 
   // The gateway console the public tunnel serves can ask for an update too
-  // (see public-tunnel/console-updates.ts). It runs the same flow as the
-  // banner: download if needed, then restart into the new version as soon
-  // as it is ready, since nobody may be at this computer to click.
+  // (see public-tunnel/console-updates.ts), in the banner's two steps:
+  // Download, then Restart & update. An install asked for before the
+  // download finished restarts as soon as it is ready, since nobody may be
+  // at this computer to click.
   let installWhenReady = false;
   const consoleUpdates = createConsoleUpdates({
     paths: consoleUpdatePaths(resolveConnectDataDir()),
     appVersion: app.getVersion(),
+    download: () => {
+      if (updatePhase === 'ready' && lastUpdateStatus?.status === 'ready') consoleUpdates.downloaded(lastUpdateStatus.version);
+      else startUpdateDownload();
+    },
     install: async () => {
       installWhenReady = true;
       if (updatePhase === 'ready' && lastUpdateStatus?.status === 'ready') {
@@ -737,6 +742,7 @@ app.whenReady().then(async () => {
     }
     pendingReadyVersion = null;
     sendUpdateStatus({ status: 'ready', version });
+    consoleUpdates.downloaded(version);
     if (installWhenReady) {
       void installDownloadedUpdate().then((result) => {
         if (!result.ok) consoleUpdates.failed(result.error ?? 'the update did not install');

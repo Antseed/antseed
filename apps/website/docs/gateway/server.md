@@ -163,9 +163,14 @@ You can also set **Base RPC URL** under **Settings → Buyer → Payments**. A v
 
 ## Upgrade
 
-**Settings → General → Updates** in the console shows the running version and npm's latest `@antseed/cli` (the gateway checks a few times a day; **Check now** asks at once). Owners and admins also see a one-line notice above every page when a newer version is out, until they dismiss that version.
+**Settings → General → Updates** in the console shows the running version and npm's latest `@antseed/cli`. The gateway checks every 30 minutes and logs the first time it sees a newer version; **Check now** asks at once. Owners and admins also see a one-line notice above every page when a newer version is out, until they dismiss that version. Nothing installs until you choose to.
 
-To install the latest CLI, click **Update** there or run `antseed update` on the server. The services run as the unprivileged `antseed` user and cannot change `/opt/antseed`, so both only create `/var/lib/antseed/update-request`. The installer's `antseed-update.path` unit then starts the root `antseed-update.service`, which installs `@antseed/cli@latest` (the request cannot name another version), restarts the buyer and gateway, and records the result in `/var/lib/antseed-update/status.json`. The console reloads once the gateway is back. Logs: `journalctl -u antseed-update`.
+Updating takes two steps, as in the desktop app:
+
+1. **Download** installs the new version next to the running one. The gateway keeps serving on the old version.
+2. **Restart & update** switches to it and restarts the buyer and gateway. The console reloads once the gateway is back.
+
+`antseed update` on the server does both at once. The services run as the unprivileged `antseed` user and cannot change `/opt/antseed`, so the console and `antseed update` only create `/var/lib/antseed/update-request`. The installer's `antseed-update.path` unit then starts the root `antseed-update.service`, which installs `@antseed/cli@latest` (the request can only pick the step, not another version) and records the result in `/var/lib/antseed-update/status.json`. Logs: `journalctl -u antseed-update`.
 
 An update does not interrupt the gateway:
 

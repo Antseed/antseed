@@ -4,8 +4,8 @@ import { dirname, join } from 'node:path'
 /** The package `antseed update` installs. */
 export const CLI_PACKAGE = '@antseed/cli'
 
-/** How long a registry answer stays fresh: one check a day, like npm's own notifier. */
-export const UPDATE_CHECK_INTERVAL_MS = 24 * 60 * 60 * 1000
+/** How long a registry answer stays fresh, and how often running sellers, buyers and gateways ask again: every 30 minutes, like the desktop app. */
+export const UPDATE_CHECK_INTERVAL_MS = 30 * 60 * 1000
 
 const DEFAULT_REGISTRY = 'https://registry.npmjs.org'
 const SEMVER = /^(\d+)\.(\d+)\.(\d+)(?:-([0-9A-Za-z.-]+))?(?:\+[0-9A-Za-z.-]+)?$/

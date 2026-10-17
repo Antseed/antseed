@@ -474,17 +474,23 @@ cli_version() {
     | grep -E '^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$' || true
 }
 
+# Whether $PREFIX/releases/$1 holds @antseed/cli@$1 and it runs.
+release_ready() {
+  local dir="$PREFIX/releases/$1"
+  [[ "$(cli_version "$dir")" == "$1" ]] && PATH="$PREFIX/node/bin:$PATH" "$dir/bin/antseed" --version >/dev/null 2>&1
+}
+
 # Installs @antseed/cli@$1 (an exact version) in $PREFIX/releases/$1 and
-# checks that it runs. The release in use is never touched.
+# checks that it runs; one already there (downloaded earlier) is kept. The
+# release in use is never touched.
 install_release() {
   local version="$1" loglevel="${2:-error}" dir="$PREFIX/releases/$1"
-  if [[ "$(readlink -f "$CLI_HOME" 2>/dev/null)" == "$dir" ]]; then return 0; fi
+  if [[ "$(readlink -f "$CLI_HOME" 2>/dev/null)" == "$dir" ]] || release_ready "$version"; then return 0; fi
   rm -rf "$dir"
   mkdir -p "$PREFIX/releases"
   if PATH="$PREFIX/node/bin:$PATH" "$PREFIX/node/bin/npm" install --global --prefix "$dir" \
       --no-fund --no-audit --loglevel="$loglevel" "@antseed/cli@$version" \
-    && [[ "$(cli_version "$dir")" == "$version" ]] \
-    && PATH="$PREFIX/node/bin:$PATH" "$dir/bin/antseed" --version >/dev/null 2>&1; then
+    && release_ready "$version"; then
     return 0
   fi
   rm -rf "$dir"
@@ -670,14 +676,18 @@ EOF
 
 # The services run unprivileged and cannot write $PREFIX. A root oneshot,
 # started by a path unit when the gateway (or `antseed update`) creates
-# $UPDATE_REQUEST, installs @antseed/cli@latest and restarts them. The
-# request's content is ignored, so nobody can ask for a particular version,
-# and the status goes to a root-owned directory the services can only read.
+# $UPDATE_REQUEST, installs @antseed/cli@latest. Like the desktop app's
+# Download and Restart & update, it takes two steps: a request with
+# "action":"download" only installs the new version next to the running one
+# (status "ready"), and any other request also switches to it and restarts
+# the services. Nothing else in the request is read, so nobody can ask for a
+# particular version, and the status goes to a root-owned directory the
+# services can only read.
 #
-# The new version is installed next to the running one, so the services keep
-# serving until it is ready. The buyer restarts first while the gateway holds
-# requests for it, then the gateway, with Caddy holding requests for that.
-# Either one not coming back rolls both back to the previous version.
+# The services keep serving until the new version is in place. The buyer
+# restarts first while the gateway holds requests for it, then the gateway,
+# with Caddy holding requests for that. Either one not coming back rolls
+# both back to the previous version.
 install_updater() {
   mkdir -p "$PREFIX/bin"
   local probe_host="$HOST"
@@ -696,7 +706,7 @@ STATUS="$UPDATE_STATUS"
 BUYER_URL="http://127.0.0.1:$BUYER_PORT/_antseed/buyer-identities"
 GATEWAY_URL="http://$probe_host:$PORT/v1/models"
 EOF
-    declare -f cli_version install_release activate_release prune_releases
+    declare -f cli_version release_ready install_release activate_release prune_releases
     cat <<'EOF'
 set -uo pipefail
 umask 022
@@ -706,8 +716,8 @@ now() { date +%s%3N; }
 str() { if [ -n "$1" ]; then printf '"%s"' "$1"; else printf null; fi; }
 # status <state> <from> <to> [finishedAt] [error]
 status() {
-  printf '{"state":"%s","from":%s,"to":%s,"startedAt":%s,"finishedAt":%s,"error":%s}\n' \
-    "$1" "$(str "$2")" "$(str "$3")" "$STARTED" "${4:-null}" "$(str "${5:-}")" >"$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
+  printf '{"state":"%s","action":"%s","from":%s,"to":%s,"startedAt":%s,"finishedAt":%s,"error":%s}\n' \
+    "$1" "$ACTION" "$(str "$2")" "$(str "$3")" "$STARTED" "${4:-null}" "$(str "${5:-}")" >"$STATUS.tmp" && mv -f "$STATUS.tmp" "$STATUS"
 }
 fail() { status failed "$FROM" "" "$(now)" "$1"; exit 1; }
 # answers <url> <status>: something answers <url> with <status> within two minutes.
@@ -737,13 +747,22 @@ rollback() {
 STARTED="$(now)"
 FROM="$(cli_version "$CLI_HOME")"
 TO=""
+ACTION=install
+grep -q '"action":"download"' "$REQUEST" 2>/dev/null && ACTION=download
 status running "$FROM" ""
 rm -f -- "$REQUEST"
 TO="$(npm view @antseed/cli@latest version 2>/dev/null | tail -1)"
 [[ "$TO" =~ ^[0-9]+\.[0-9]+\.[0-9]+(-[0-9A-Za-z.-]+)?$ ]] || fail "could not read the latest version from npm"
 # Already on it: nothing to install, nothing to restart.
 if [ "$TO" = "$FROM" ]; then status succeeded "$FROM" "$TO" "$(now)"; exit 0; fi
+status running "$FROM" "$TO"
 install_release "$TO" error || fail "npm could not install @antseed/cli@$TO"
+# Downloaded: the services keep running $FROM until someone restarts them onto it.
+if [ "$ACTION" = download ]; then
+  prune_releases "$PREFIX/releases/$TO"
+  status ready "$FROM" "$TO" "$(now)"
+  exit 0
+fi
 PREVIOUS="$(readlink -f "$CLI_HOME")"
 activate_release "$PREFIX/releases/$TO"
 restart antseed-buyer.service "$BUYER_URL" 200 || rollback "the buyer did not start on $TO"

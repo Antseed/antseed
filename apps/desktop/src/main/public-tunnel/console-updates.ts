@@ -6,23 +6,29 @@
  * update service, the app is told about the update through two files the
  * tunnel's CLI is given in its environment:
  *
- * - `request`: the console creates it to ask for the update. Its content is
- *   ignored; the app installs the newest release its own updater found.
+ * - `request`: the console creates it to ask for the update. Its `action`
+ *   is the step, as on the app's own banner: `download` fetches the newest
+ *   release the app's updater found, and `install` (the default) restarts
+ *   into it, downloading it first when needed. Nothing else is read.
  * - `status`: JSON the app writes. `app` carries the app's own versions,
  *   which are what the console shows (the CLI's npm version is not what the
  *   app ships), and the rest is the last update run, which the console polls.
  *
- * Installing restarts the app, so a run is finished on the next launch.
+ * A download from the app's banner shows up as `ready` in the console too.
+ * Installing restarts the app, so an install run is finished on the next
+ * launch.
  */
 import { existsSync, mkdirSync, readFileSync, renameSync, rmSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 export type ConsoleUpdatePaths = { request: string; status: string };
 
-type RunState = 'running' | 'succeeded' | 'failed';
+type RunState = 'running' | 'ready' | 'succeeded' | 'failed';
+type RunAction = 'download' | 'install';
 
 type UpdateRun = {
   state: RunState;
+  action: RunAction;
   from: string | null;
   to: string | null;
   startedAt: number;
@@ -40,6 +46,8 @@ type AppVersions = {
 export type ConsoleUpdatesDependencies = {
   paths: ConsoleUpdatePaths;
   appVersion: string;
+  /** Starts downloading the release the updater found; the app reports it with `downloaded`. */
+  download: () => void;
   /** Downloads the release the updater found, if needed, then quits and installs it. Throws when it cannot start. */
   install: () => Promise<void>;
   log: (message: string) => void;
@@ -86,10 +94,11 @@ export function isNewerVersion(candidate: string | null, current: string): boole
 function readRun(statusPath: string): UpdateRun | null {
   try {
     const raw = JSON.parse(readFileSync(statusPath, 'utf8')) as Record<string, unknown>;
-    if (raw.state !== 'running' && raw.state !== 'succeeded' && raw.state !== 'failed') return null;
+    if (raw.state !== 'running' && raw.state !== 'ready' && raw.state !== 'succeeded' && raw.state !== 'failed') return null;
     if (typeof raw.startedAt !== 'number') return null;
     return {
       state: raw.state,
+      action: raw.action === 'download' ? 'download' : 'install',
       from: typeof raw.from === 'string' ? raw.from : null,
       to: typeof raw.to === 'string' ? raw.to : null,
       startedAt: raw.startedAt,
@@ -122,7 +131,7 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
     }
   };
 
-  const finish = (state: 'succeeded' | 'failed', error: string | null = null): void => {
+  const finish = (state: 'ready' | 'succeeded' | 'failed', error: string | null = null): void => {
     if (run?.state !== 'running') return;
     run = { ...run, state, finishedAt: now(), error };
     if (error) deps.log(`Update from the gateway console failed: ${error}`);
@@ -130,33 +139,55 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
   };
 
   // A run that was going when the app quit ends here: installing restarts the app.
-  if (run?.state === 'running') {
+  if (run?.state === 'running' && run.action === 'install') {
     if (run.to === deps.appVersion) finish('succeeded');
     else finish('failed', `Antseed Desktop restarted without installing ${run.to ?? 'the update'}`);
+  } else if (run?.state === 'running') {
+    // A download ends with the app.
+    run = null;
+  } else if (run?.state === 'ready' && !isNewerVersion(run.to, deps.appVersion)) {
+    // The updater installs a finished download when the app quits.
+    run = run.to === deps.appVersion ? { ...run, action: 'install', state: 'succeeded', finishedAt: now() } : null;
   }
   write();
 
-  const startRun = (): void => {
+  const readAction = (): RunAction => {
+    try {
+      const request = JSON.parse(readFileSync(deps.paths.request, 'utf8')) as Record<string, unknown>;
+      return request.action === 'download' ? 'download' : 'install';
+    } catch {
+      return 'install';
+    }
+  };
+
+  const startRun = (action: RunAction): void => {
     if (run?.state === 'running') return;
+    if (action === 'download' && run?.state === 'ready' && run.to === app.latest) return;
     const to = app.latest;
-    run = { state: 'running', from: app.current, to, startedAt: now(), finishedAt: null, error: null };
+    run = { state: 'running', action, from: app.current, to, startedAt: now(), finishedAt: null, error: null };
     if (!isNewerVersion(to, app.current)) {
       finish('failed', `Antseed Desktop ${app.current} is already the latest version`);
       return;
     }
-    deps.log(`Updating to ${to} from the gateway console`);
     write();
+    if (action === 'download') {
+      deps.log(`Downloading ${to} for the gateway console`);
+      deps.download();
+      return;
+    }
+    deps.log(`Updating to ${to} from the gateway console`);
     deps.install().catch((error: unknown) => finish('failed', errorText(error)));
   };
 
   const poll = (): void => {
     if (!existsSync(deps.paths.request)) return;
+    const action = readAction();
     try {
       rmSync(deps.paths.request, { force: true });
     } catch {
       // Gone already; the request still counts once.
     }
-    startRun();
+    startRun(action);
   };
 
   return {
@@ -165,11 +196,22 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
       app = { ...app, latest: latest ?? app.latest, checkedAt: now(), error };
       write();
     },
-    /** The install a console request started failed. */
+    /** The app's updater finished downloading `version`, whoever asked for it. */
+    downloaded(version: string): void {
+      if (run?.state === 'running' && run.action === 'install') return;
+      if (run?.state === 'running') {
+        run = { ...run, to: version };
+        finish('ready');
+        return;
+      }
+      run = { state: 'ready', action: 'download', from: app.current, to: version, startedAt: now(), finishedAt: now(), error: null };
+      write();
+    },
+    /** The download or install a console request started failed. */
     failed(error: string): void {
       finish('failed', error);
     },
-    /** Whether a console request is installing an update. */
+    /** Whether a console request is downloading or installing an update. */
     running(): boolean {
       return run?.state === 'running';
     },

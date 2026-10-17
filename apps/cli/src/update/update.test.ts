@@ -5,6 +5,7 @@ import { join } from 'node:path'
 import test from 'node:test'
 import { detectInstallMethod } from './install-method.js'
 import { notifyIfUpdateAvailable } from './notifier.js'
+import { watchForUpdates } from './watch.js'
 import { readRootUpdateProgress, requestRootUpdate, rootUpdaterPaths, updateInFlight } from './root-updater.js'
 import {
   compareVersions,
@@ -116,7 +117,7 @@ test('root updater: a request reads as requested, then the status file takes ove
     rmSync(paths.request)
     writeFileSync(paths.status, JSON.stringify({ state: 'succeeded', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
     const done = readRootUpdateProgress(paths)
-    assert.deepEqual(done, { state: 'succeeded', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null })
+    assert.deepEqual(done, { state: 'succeeded', action: 'install', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null })
     assert.equal(updateInFlight(done), false)
 
     writeFileSync(paths.status, JSON.stringify({ state: 'pwned', startedAt: 1 }))
@@ -155,6 +156,73 @@ test('the notifier prints from the cache, refreshes when stale, and stays quiet 
     assert.equal(run({}, false), '')
     assert.equal(run({ env: { ...env, NO_UPDATE_NOTIFIER: '1' } }), '')
     assert.equal(run({ current: '0.1.193' }), '')
+  } finally {
+    cleanup()
+  }
+})
+
+test('root updater: a download request reads as one, and a downloaded version as ready', () => {
+  const { dir, cleanup } = tempDir()
+  try {
+    const paths = { request: join(dir, 'update-request'), status: join(dir, 'status.json') }
+    requestRootUpdate(paths, 'owner', 1_000, 'download')
+    assert.deepEqual([readRootUpdateProgress(paths)?.state, readRootUpdateProgress(paths)?.action], ['requested', 'download'])
+    rmSync(paths.request)
+    writeFileSync(paths.status, JSON.stringify({ state: 'ready', action: 'download', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
+    const ready = readRootUpdateProgress(paths)
+    assert.deepEqual([ready?.state, ready?.action, ready?.to], ['ready', 'download', '0.1.193'])
+    assert.equal(updateInFlight(ready), false)
+    // Requests and statuses from before the two steps install.
+    writeFileSync(paths.status, JSON.stringify({ state: 'succeeded', from: '0.1.180', to: '0.1.193', startedAt: 1, finishedAt: 2, error: null }))
+    assert.equal(readRootUpdateProgress(paths)?.action, 'install')
+  } finally {
+    cleanup()
+  }
+})
+
+test('a running seller logs each newer version once and installs nothing', async () => {
+  const { dir, cleanup } = tempDir()
+  try {
+    const npm = detectInstallMethod({ env: {}, scriptPath: '/usr/local/lib/node_modules/@antseed/cli/dist/cli/index.js', electron: false, isWritable: () => true })
+    let latest = '0.1.180'
+    let clock = 0
+    let fetches = 0
+    const lines: string[] = []
+    const watch = watchForUpdates({
+      dataDir: dir, current: '0.1.180', running: 'seller', env: {}, method: npm,
+      log: (line) => lines.push(line), now: () => clock,
+      fetchLatest: async () => { fetches += 1; return latest },
+      intervalMs: 1_000,
+    })
+    try {
+      // It checks once as it starts.
+      await new Promise((resolve) => setImmediate(resolve))
+      assert.equal(fetches, 1)
+      assert.deepEqual(lines, [], 'up to date')
+      latest = '0.1.193'
+      await watch.check()
+      assert.equal(fetches, 1, 'a fresh cache answers within the interval')
+      clock = 2_000
+      await watch.check()
+      assert.equal(lines.length, 1)
+      assert.match(lines[0]!, /Antseed 0\.1\.193 is available \(this seller runs 0\.1\.180\)\. Run .*antseed update.*, then restart the seller\./)
+      clock = 4_000
+      await watch.check()
+      assert.equal(lines.length, 1, 'once per version')
+      latest = '0.1.194'
+      clock = 6_000
+      await watch.check()
+      assert.equal(lines.length, 2)
+    } finally {
+      watch.stop()
+    }
+
+    const quiet: string[] = []
+    const off = watchForUpdates({ dataDir: dir, current: '0.1.180', running: 'seller', env: { ANTSEED_NO_UPDATE_CHECK: '1' }, method: npm, log: (line) => quiet.push(line), fetchLatest: async () => '0.1.199' })
+    await off.check()
+    const desktop = watchForUpdates({ dataDir: dir, current: '0.1.180', running: 'seller', env: {}, method: { ...npm, kind: 'desktop' }, log: (line) => quiet.push(line), fetchLatest: async () => '0.1.199' })
+    await desktop.check()
+    assert.deepEqual(quiet, [], 'off when disabled, and in the desktop app, which has its own updater')
   } finally {
     cleanup()
   }

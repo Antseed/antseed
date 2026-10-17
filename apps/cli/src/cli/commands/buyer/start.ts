@@ -6,6 +6,8 @@ import { join } from 'node:path'
 import { homedir } from 'node:os'
 import { createConnection } from 'node:net'
 import { getGlobalOptions } from '../types.js'
+import pkg from '../../../../package.json' with { type: 'json' }
+import { watchForUpdates } from '../../../update/watch.js'
 import { loadConfig } from '../../../config/loader.js'
 import { AntseedNode, DepositRelayClient, DepositsClient, getInstance, peerRelaysSweeps, resolveChainConfig } from '@antseed/node'
 import type { Identity, NodePaymentsConfig } from '@antseed/node'
@@ -708,6 +710,10 @@ export function registerBuyerStartCommand(buyerCmd: Command): void {
       console.log(chalk.dim('Filter debug logs: antseed buyer start --log-filter ProxyMux'))
       console.log('')
 
-      setupShutdownHandler(() => runShutdown())
+      // A buyer the gateway runs leaves this to the gateway, which tells its console too.
+      const updateWatch = process.env['ANTSEED_SUPERVISED'] === '1' || process.env['ANTSEED_UPDATER_REQUEST']
+        ? null
+        : watchForUpdates({ dataDir: globalOpts.dataDir, current: pkg.version, running: 'buyer', log: (line) => console.log(chalk.yellow(line)) })
+      setupShutdownHandler(() => { updateWatch?.stop(); return runShutdown() })
     })
 }

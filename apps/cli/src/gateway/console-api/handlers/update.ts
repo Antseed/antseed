@@ -1,3 +1,4 @@
+import type { RootUpdateAction } from '../../../update/root-updater.js'
 import { recordAudit } from '../../services/context.js'
 import { createGatewayUpdates, type GatewayUpdates } from '../../updates.js'
 import { requestActor, requireOrgAdmin } from '../access.js'
@@ -6,10 +7,12 @@ import { ConsoleError, respond, type ConsoleRouter } from '../router.js'
 
 /**
  * Antseed updates (org admins and admin tokens). The gateway asks npm for
- * the latest @antseed/cli now and then; on a server set up by the gateway
- * installer `POST /update` hands the install to its root update service,
- * which restarts the buyer and the gateway, so the console reconnects to
- * the new version. Elsewhere the console shows the command to run.
+ * the latest @antseed/cli every 30 minutes. On a server set up by the
+ * gateway installer, or in the desktop app, updating takes two clicks like
+ * the desktop app's banner: `POST /update {"action":"download"}` fetches the
+ * new version without touching the running one, then `POST /update`
+ * (`install`) switches to it and restarts, so the console reconnects to the
+ * new version. Elsewhere the console shows the command to run.
  */
 export function registerUpdateRoutes(router: ConsoleRouter, deps: ConsoleDeps): void {
   const { store } = deps
@@ -27,6 +30,7 @@ export function registerUpdateRoutes(router: ConsoleRouter, deps: ConsoleDeps): 
 
   router.add('POST', '/update', async (request) => {
     requireOrgAdmin(request.principal, store)
+    const action = readAction(request.body)
     const before = updates.info()
     if (before.apply !== 'console') {
       throw new ConsoleError(409, 'update_unsupported', before.command
@@ -34,13 +38,23 @@ export function registerUpdateRoutes(router: ConsoleRouter, deps: ConsoleDeps): 
         : before.note)
     }
     if (!before.available && !inFlight(before)) throw new ConsoleError(409, 'up_to_date', `Antseed ${before.current} is already the latest version`)
+    // Downloaded already: nothing to fetch until the next version is out.
+    if (action === 'download' && before.progress?.state === 'ready' && before.progress.to === before.latest) return respond(202, before)
     const actor = requestActor(deps, request)
-    const after = updates.apply(actor.actor.label ?? actor.actor.kind)
-    if (!inFlight(before)) {
+    const after = updates.apply(actor.actor.label ?? actor.actor.kind, action)
+    // Only the step that restarts the gateway is audited.
+    if (action === 'install' && !inFlight(before)) {
       recordAudit(deps, actor, 'gateway.update', { kind: 'settings', id: 'update', label: 'Antseed version' }, { from: before.current, to: before.latest })
     }
     return respond(202, after)
   })
+}
+
+function readAction(body: unknown): RootUpdateAction {
+  const action = body && typeof body === 'object' ? (body as Record<string, unknown>)['action'] : undefined
+  if (action === undefined || action === 'install') return 'install'
+  if (action === 'download') return 'download'
+  throw new ConsoleError(400, 'invalid_action', 'action must be "download" or "install"')
 }
 
 function inFlight(update: { progress: { state: string } | null }): boolean {

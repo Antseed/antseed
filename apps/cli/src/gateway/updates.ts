@@ -5,13 +5,15 @@ import {
   requestRootUpdate,
   rootUpdaterPaths,
   updateInFlight,
+  type RootUpdateAction,
   type RootUpdaterPaths,
 } from '../update/root-updater.js'
-import { fetchLatestVersion, isNewer, readUpdateCache, updateChecksDisabled, writeUpdateCache } from '../update/version.js'
+import { updateAvailableLine } from '../update/notifier.js'
+import { fetchLatestVersion, isNewer, readUpdateCache, UPDATE_CHECK_INTERVAL_MS, updateChecksDisabled, writeUpdateCache } from '../update/version.js'
 import type { GatewayUpdate } from './console-api/types.js'
 
-/** The gateway re-asks npm at most this often on its own; the console's Check now button forces it. */
-const GATEWAY_CHECK_INTERVAL_MS = 6 * 60 * 60 * 1000
+/** The gateway re-asks npm this often on its own, like the desktop app; the console's Check now button forces it. */
+const GATEWAY_CHECK_INTERVAL_MS = UPDATE_CHECK_INTERVAL_MS
 /** Forced checks closer together than this reuse the last answer. */
 const FORCED_CHECK_MIN_GAP_MS = 15_000
 
@@ -20,8 +22,18 @@ export interface GatewayUpdates {
   info(): GatewayUpdate
   /** Asks the registry now. */
   check(): Promise<GatewayUpdate>
-  /** Asks the root updater (or the desktop app) to install the latest version. Callers check `info().apply === 'console'` first. */
-  apply(requestedBy: string): GatewayUpdate
+  /**
+   * Asks the root updater (or the desktop app) to download the latest
+   * version, or to install it and restart. Callers check
+   * `info().apply === 'console'` first.
+   */
+  apply(requestedBy: string, action?: RootUpdateAction): GatewayUpdate
+  /**
+   * Checks every 30 minutes while the gateway runs and logs the first time
+   * it sees each newer version. Nothing installs until someone asks.
+   */
+  watch(): void
+  stop(): void
 }
 
 export interface GatewayUpdatesOptions {
@@ -48,6 +60,15 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
   let checkedAt: number | null = null
   let checkError: string | null = null
   let inFlight: Promise<void> | null = null
+  let timer: ReturnType<typeof setInterval> | null = null
+  let announced: string | null = null
+
+  // Logs each newer version once, the way a running seller does.
+  function announce(): void {
+    if (!latest || !isNewer(latest, options.current) || latest === announced) return
+    announced = latest
+    options.log?.(updateAvailableLine(latest, options.current, method, 'gateway'))
+  }
 
   const cached = readUpdateCache(options.dataDir)
   if (cached) {
@@ -61,6 +82,7 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
         latest = await fetchLatest()
         checkedAt = now()
         checkError = null
+        announce()
         try {
           writeUpdateCache(options.dataDir, { checkedAt, latest })
         } catch {
@@ -69,7 +91,7 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
       } catch (error) {
         checkError = error instanceof Error ? error.message : String(error)
         checkedAt = now()
-        options.log?.(`gateway: update check failed: ${checkError}`)
+        options.log?.(`update check failed: ${checkError}`)
       } finally {
         inFlight = null
       }
@@ -123,10 +145,21 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
       if (checkedAt === null || now() - checkedAt > FORCED_CHECK_MIN_GAP_MS || inFlight) await runCheck()
       return info()
     },
-    apply(requestedBy) {
+    apply(requestedBy, action = 'install') {
       if (!updater) throw new Error('This gateway has no update service')
-      if (!updateInFlight(readRootUpdateProgress(updater))) requestRootUpdate(updater, requestedBy, now())
+      if (!updateInFlight(readRootUpdateProgress(updater))) requestRootUpdate(updater, requestedBy, now(), action)
       return info()
+    },
+    watch() {
+      if (timer || desktop || disabled) return
+      if (checkedAt === null || now() - checkedAt > GATEWAY_CHECK_INTERVAL_MS) void runCheck()
+      else announce()
+      timer = setInterval(() => { void runCheck() }, GATEWAY_CHECK_INTERVAL_MS)
+      timer.unref?.()
+    },
+    stop() {
+      if (timer) clearInterval(timer)
+      timer = null
     },
   }
 }
