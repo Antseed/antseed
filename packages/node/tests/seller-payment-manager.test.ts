@@ -714,11 +714,15 @@ describe('SellerPaymentManager', () => {
     });
     await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
 
+    const settle = vi.spyOn(manager, 'settleSession').mockResolvedValue(undefined);
     expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
     expect(manager.isChannelBlocked(channelId)).toBe(true);
+    // The close starts immediately, not on the buyer's next request.
+    expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId);
     // Already blocked, and unknown buyers have nothing to block.
     expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'again')).toBe(false);
     expect(manager.blockChannelForBuyer('0x' + 'ab'.repeat(20), 'unknown')).toBe(false);
+    expect(settle).toHaveBeenCalledOnce();
   });
 
   it('blocks the channel if permanent top-up failure cannot close immediately', async () => {
