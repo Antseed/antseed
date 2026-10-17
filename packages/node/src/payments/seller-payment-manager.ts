@@ -1980,10 +1980,25 @@ export class SellerPaymentManager {
     debugWarn(
       `[SellerPayment] Blocking channel ${session.sessionId.slice(0, 18)}... for buyer ${buyerPeerId.slice(0, 12)}...: ${reason}`,
     );
-    void this.settleSession(buyerPeerId).catch((err) => {
+    void this._closeBlockedChannel(buyerPeerId, session.sessionId).catch((err) => {
       debugWarn(`[SellerPayment] Failed to close blocked channel ${session.sessionId.slice(0, 18)}...: ${this._formatError(err)}`);
     });
     return true;
+  }
+
+  private async _closeBlockedChannel(buyerPeerId: string, channelId: string): Promise<void> {
+    if ((this._acceptedCumulative.get(channelId) ?? 0n) > 0n) {
+      await this.settleSession(buyerPeerId);
+      return;
+    }
+    // Nothing accepted yet: settleSession would only defer to the timeout
+    // checker and forget the block. Close at the on-chain settled amount (no
+    // signature needed) so the reserve is released now; if that fails the
+    // channel stays blocked and the timeout checker retries.
+    const onChain = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+    if (onChain.status === 'active') {
+      await this._closeWithoutAuth(channelId, buyerPeerId, onChain.channel.settled);
+    }
   }
 
   hasSession(buyerPeerId: string): boolean {

@@ -1920,6 +1920,26 @@ describe('BuyerPaymentManager', () => {
     expect(store.getMetadataServiceTotals(channelId)).toHaveLength(MAX_METADATA_SERVICES);
   });
 
+  it('caps a close authorization at the given deposit without persisting it', async () => {
+    const sellerPeerId = fakePeerId('seller-close-cap');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);
+    manager.handleAuthAck(sellerPeerId, { channelId: (mux.sentSpendingAuths[0] as Record<string, string>).channelId! });
+    await manager.signPerRequestAuth(
+      sellerPeerId,
+      { inputBytes: SAMPLE_INPUT, outputBytes: SAMPLE_OUTPUT, sellerClaimedCost: 10_000n },
+    );
+    const signed = manager.getCumulativeAmount(sellerPeerId);
+    const persistedSig = store.getChannel(channelId)!.latestSpendingAuthSig;
+
+    const capped = await manager.buildCloseChannelRequest(sellerPeerId, { maxCumulative: signed - 1n });
+    expect(capped.cumulativeAmount).toBe((signed - 1n).toString());
+    expect(store.getChannel(channelId)!.latestSpendingAuthSig).toBe(persistedSig);
+    expect(manager.getCumulativeAmount(sellerPeerId)).toBe(signed);
+
+    const uncapped = await manager.buildCloseChannelRequest(sellerPeerId, { maxCumulative: signed + 1n });
+    expect(uncapped.cumulativeAmount).toBe(signed.toString());
+  });
+
   it('extendCurrentSpendingAuth raises cumulative for an exhausted active session without changing metadata', async () => {
     const sellerPeerId = fakePeerId('seller-extend-current');
     await manager.authorizeSpending(sellerPeerId, mux, 50_000n, TEST_PRICING);

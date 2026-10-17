@@ -620,14 +620,19 @@ export class BuyerPaymentManager {
    */
   async buildCloseChannelRequest(
     sellerPeerId: string,
-    { includeAuth = true }: { includeAuth?: boolean } = {},
+    { includeAuth = true, maxCumulative }: { includeAuth?: boolean; maxCumulative?: bigint } = {},
   ): Promise<CloseChannelRequestPayload> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
     }
 
-    const cumulativeAmount = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    const signedCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    // The contract rejects a close above the channel's deposit, so a close
+    // authorization above it could never settle. Capping it there still covers
+    // everything the seller could claim.
+    const capped = maxCumulative != null && signedCumulative > maxCumulative;
+    const cumulativeAmount = capped ? maxCumulative : signedCumulative;
     if (!includeAuth || cumulativeAmount <= 0n) {
       return { version: 1, channelId: session.sessionId };
     }
@@ -646,13 +651,17 @@ export class BuyerPaymentManager {
       metadataMsg,
     );
     const encodedMetadata = encodeMetadata(currentMeta);
-    await this._commitAuthorization({
-      ...session,
-      latestBuyerSig: spendingAuthSig,
-      latestSpendingAuthSig: spendingAuthSig,
-      latestMetadata: encodedMetadata,
-      updatedAt: Date.now(),
-    }, currentMeta);
+    if (!capped) {
+      // A capped close authorization is below the signed high-water mark; keep
+      // the persisted latest authorization consistent with authMax.
+      await this._commitAuthorization({
+        ...session,
+        latestBuyerSig: spendingAuthSig,
+        latestSpendingAuthSig: spendingAuthSig,
+        latestMetadata: encodedMetadata,
+        updatedAt: Date.now(),
+      }, currentMeta);
+    }
 
     return {
       version: 1,

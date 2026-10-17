@@ -706,23 +706,57 @@ describe('SellerPaymentManager', () => {
     expect(store.getChannel(channelId)!.status).toBe(CHANNEL_STATUS.SETTLED);
   });
 
-  it('blocks a buyer channel whose SpendingAuth can no longer be received', async () => {
+  it('blocks a buyer channel whose SpendingAuth can no longer be received and closes it', async () => {
     const channelId = makeChannelId(106);
     const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
       isReserve: true,
       reserveMaxAmount: '1000000',
     });
     await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 400_000n,
+      reserveMaxAmount: '1000000',
+    }), mux);
 
     const settle = vi.spyOn(manager, 'settleSession').mockResolvedValue(undefined);
     expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
     expect(manager.isChannelBlocked(channelId)).toBe(true);
-    // The close starts immediately, not on the buyer's next request.
-    expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId);
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId));
     // Already blocked, and unknown buyers have nothing to block.
     expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'again')).toBe(false);
     expect(manager.blockChannelForBuyer('0x' + 'ab'.repeat(20), 'unknown')).toBe(false);
     expect(settle).toHaveBeenCalledOnce();
+  });
+
+  it('closes a blocked channel with nothing accepted at the on-chain settled amount', async () => {
+    const channelId = makeChannelId(107);
+    const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    });
+    await manager.handleSpendingAuth(buyerIdentity.peerId, reservePayload, mux);
+    const settle = vi.spyOn(manager, 'settleSession');
+    vi.spyOn(manager.channelsClient, 'getSession').mockResolvedValue({
+      buyer: buyerIdentity.wallet.address,
+      seller: sellerIdentity.wallet.address,
+      deposit: 1_000_000n,
+      settled: 0n,
+      metadataHash: '0x' + '00'.repeat(32),
+      deadline: BigInt(Math.floor(Date.now() / 1000) + 3600),
+      settledAt: 0n,
+      closeRequestedAt: 0n,
+      status: 1,
+    } as never);
+    const close = vi.spyOn(manager.channelsClient, 'close').mockRejectedValue(new Error('rpc down'));
+
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
+
+    // Unsigned close at the settled amount; settleSession would only defer and
+    // forget the block.
+    await vi.waitFor(() => expect(close).toHaveBeenCalledWith(expect.anything(), channelId, 0n, '0x', '0x'));
+    expect(settle).not.toHaveBeenCalled();
+    // The close failed, so the channel stays blocked for the next request.
+    expect(manager.isChannelBlocked(channelId)).toBe(true);
   });
 
   it('blocks the channel if permanent top-up failure cannot close immediately', async () => {
