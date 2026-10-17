@@ -81,6 +81,13 @@ describe('payment payload codec', () => {
     })).toThrow(/Payment payload too large/);
   });
 
+  it('reports an oversized incoming SpendingAuth as too large', () => {
+    // node.ts rotates a buyer's channel when a SpendingAuth fails with this
+    // message, so the decoder's wording is part of that contract.
+    const oversized = new TextEncoder().encode(JSON.stringify({ metadata: '0'.repeat(70_000) }));
+    expect(() => decodeSpendingAuth(oversized)).toThrow(/payload too large/i);
+  });
+
   it('rejects payloads missing required fields', () => {
     expect(() => decodeNeedAuth(new TextEncoder().encode('{"channelId":"x"}'))).toThrow();
     expect(() => decodeSpendingAuth(new TextEncoder().encode('not json'))).toThrow();
