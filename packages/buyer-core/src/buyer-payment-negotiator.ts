@@ -159,6 +159,8 @@ export class BuyerPaymentNegotiator {
 
   /** Tracks which seller peers the buyer has already negotiated payment for. */
   private readonly _lockedPeers = new Set<string>();
+  /** peerId -> catch-up target already answered by resending the current SpendingAuth. */
+  private readonly _resentForTarget = new Map<string, bigint>();
   /** Pending PaymentRequired payloads from sellers, keyed by peerId. */
   private readonly _pendingPaymentRequired = new Map<string, {
     resolve: (payload: PaymentRequiredPayload) => void;
@@ -612,9 +614,11 @@ export class BuyerPaymentNegotiator {
   async requestChannelClose(
     peerId: PeerId,
     conn: BuyerConnection,
-    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS }: {
+    { includeAuth = true, timeoutMs = CLOSE_REQUEST_TIMEOUT_MS, maxCumulative }: {
       includeAuth?: boolean;
       timeoutMs?: number;
+      /** Cap the attached authorization (e.g. at the on-chain deposit). */
+      maxCumulative?: bigint;
     } = {},
   ): Promise<CloseChannelResultPayload> {
     if (this._pendingCloseRequests.has(peerId)) {
@@ -635,7 +639,7 @@ export class BuyerPaymentNegotiator {
     await this.sendPostResponseAuthTo(peerId, conn);
 
     const pmux = this.getOrCreatePaymentMux(peerId, conn);
-    const payload = await this._bpm.buildCloseChannelRequest(peerId, { includeAuth });
+    const payload = await this._bpm.buildCloseChannelRequest(peerId, { includeAuth, maxCumulative });
 
     const result = await new Promise<CloseChannelResultPayload>((resolve, reject) => {
       const timer = setTimeout(() => {
@@ -1536,8 +1540,47 @@ export class BuyerPaymentNegotiator {
     if (hasPendingReserve) {
       await this._bpm.resendPendingReserveAuth(peer.peerId, pmux);
     }
-    if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
-      const cumulativeBefore = this._bpm.getCumulativeAmount(peer.peerId);
+    const signedCumulative = this._bpm.getCumulativeAmount(peer.peerId);
+    const deposit = onChain.channel.deposit;
+    if (!requireFreshAck && targetCumulative != null && targetCumulative > 0n && signedCumulative >= targetCumulative) {
+      // We already signed at least what the seller asks for, so our latest
+      // SpendingAuth has not reached it (or the 402 predates it). Signing more
+      // would only raise what the seller may claim without delivering
+      // anything new: resend the highest authorization unchanged. An
+      // authorization above the on-chain deposit can never be accepted, so
+      // such a channel goes straight to a close capped at the deposit.
+      const resendable = deposit <= 0n || signedCumulative <= deposit;
+      if (!resendable || this._resentForTarget.get(peer.peerId) === targetCumulative) {
+        // The resend did not reach the seller either (or could not be
+        // accepted). Close the channel cooperatively so its reserve is
+        // released before a replacement is funded; never forget a channel
+        // that is still active on-chain.
+        this._resentForTarget.delete(peer.peerId);
+        try {
+          const result = await this.requestChannelClose(
+            peer.peerId,
+            conn,
+            deposit > 0n ? { maxCumulative: deposit } : {},
+          );
+          if (result.status !== 'closed') {
+            debugWarn(
+              `[BuyerNegotiator] Seller ${peer.peerId.slice(0, 12)}... keeps asking for ${targetCumulative} ` +
+              `and declined to close the channel (${result.code ?? 'unknown'})`,
+            );
+          }
+        } catch (err) {
+          debugWarn(
+            `[BuyerNegotiator] Could not close stuck channel with ${peer.peerId.slice(0, 12)}...: ` +
+            `${err instanceof Error ? err.message : err}`,
+          );
+        }
+        return false;
+      }
+      this._resentForTarget.set(peer.peerId, targetCumulative);
+      await this._bpm.resendCurrentSpendingAuth(peer.peerId, pmux);
+    } else if (!requireFreshAck && minBudgetPerRequest != null && minBudgetPerRequest > 0n) {
+      this._resentForTarget.delete(peer.peerId);
+      const cumulativeBefore = signedCumulative;
       await this._bpm.extendCurrentSpendingAuth(
         peer.peerId,
         minBudgetPerRequest,

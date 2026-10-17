@@ -5,6 +5,7 @@ import { activeMember, requestActor, requireOrgAdmin } from './console-api/acces
 import type { ConsoleDeps } from './console-api/deps.js'
 import { coreConsoleRegistrars } from './console-api/handlers/index.js'
 import { registerNetworkRoutes } from './console-api/handlers/network.js'
+import { registerStakingRoutes } from './console-api/handlers/staking.js'
 import { registerWalletRoutes } from './console-api/handlers/wallet.js'
 import { ConsoleError, respond, type ConsoleRouter } from './console-api/router.js'
 import { apiKeyDto, memberDto } from './console-api/serialize.js'
@@ -103,6 +104,7 @@ export function gatewayConsole(options: GatewayConsoleOptions): (context: Gatewa
     const api = createConsoleApi(deps, auth, [
       ...coreConsoleRegistrars,
       registerWalletRoutes,
+      registerStakingRoutes,
       registerNetworkRoutes,
       registerCredentialRoutes(auth),
       recoveryRouteRegistrar((memberId) => auth.createEnrollment(memberId)),

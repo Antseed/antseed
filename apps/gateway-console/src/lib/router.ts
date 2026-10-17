@@ -39,17 +39,19 @@ export function navigate(path: string, options: { replace?: boolean } = {}): voi
   listeners.forEach((listener) => listener())
 }
 
+/** Calls `listener` after every console navigation, including back and forward. */
+export function subscribeLocation(listener: () => void): () => void {
+  listeners.add(listener)
+  window.addEventListener('popstate', listener)
+  return () => {
+    listeners.delete(listener)
+    window.removeEventListener('popstate', listener)
+  }
+}
+
 export function useLocation(): Location {
   const [location, setLocation] = useState(current)
-  useEffect(() => {
-    const update = () => setLocation(current())
-    listeners.add(update)
-    window.addEventListener('popstate', update)
-    return () => {
-      listeners.delete(update)
-      window.removeEventListener('popstate', update)
-    }
-  }, [])
+  useEffect(() => subscribeLocation(() => setLocation(current())), [])
   return location
 }
 

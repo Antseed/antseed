@@ -23,6 +23,7 @@ export const Icon = {
   workspaces: (p: IconProps) => <Svg {...p}><path d="M3 7h18v13H3zM8 7V4h8v3" /></Svg>,
   wallet: (p: IconProps) => <Svg {...p}><path d="M3 7a2 2 0 0 1 2-2h13v4" /><rect x="3" y="7" width="18" height="13" rx="2" /><circle cx="16.5" cy="13.5" r="1.3" /></Svg>,
   rewards: (p: IconProps) => <Svg {...p}><path d="M12 15a6 6 0 1 0 0-12 6 6 0 0 0 0 12Z" /><path d="m8.5 14-1.5 7 5-3 5 3-1.5-7" /></Svg>,
+  staking: (p: IconProps) => <Svg {...p}><path d="M3 20h18M5 16v-4M10 16V7M15 16v-6M20 16V4" /></Svg>,
   providers: (p: IconProps) => <Svg {...p}><circle cx="12" cy="5" r="2.2" /><circle cx="5" cy="18" r="2.2" /><circle cx="19" cy="18" r="2.2" /><path d="M11 7 6 16M13 7l5 9M7.2 18h9.6" /></Svg>,
   network: (p: IconProps) => <Svg {...p}><circle cx="12" cy="5" r="2.2" /><circle cx="5" cy="18" r="2.2" /><circle cx="19" cy="18" r="2.2" /><path d="M11 7 6 16M13 7l5 9M7.2 18h9.6" /></Svg>,
   models: (p: IconProps) => <Svg {...p}><path d="m12 3 9 5-9 5-9-5z" /><path d="m3 12.5 9 5 9-5M3 17l9 5 9-5" /></Svg>,

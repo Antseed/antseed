@@ -52,6 +52,7 @@ The first time someone opens the console, a short tour shows where everything is
 - **Keys**: create, limit and revoke API keys. See [API keys](/docs/gateway/api).
 - **Presets**: named model configurations used as `@preset/<slug>`. See [Routing policies and presets](/docs/gateway/routing).
 - **Wallet & Funding** and **Rewards**: add funds by card or USDC, the authorized wallet, and ANTS rewards. See [Funding](/docs/gateway/funding).
+- **Staking**: stake ANTS into seller pools and manage your positions for the workspace's buyer account. See [ANTS staking](/docs/provide/staking).
 - **Providers** and **Models**: the sellers and models on the network, with copyable `<peerId>@<model>` ids. See [Models and providers](/docs/gateway/models).
 - **Routing**: which sellers may serve requests, and a route preview. See [Routing policies and presets](/docs/gateway/routing).
 - **Members** and **Workspaces**: invite people and organize them. See [Sign-in and access](/docs/gateway/sign-in) and [Budgets](/docs/gateway/budgets).

@@ -11,6 +11,7 @@ import { AddressesPage } from './pages/Addresses';
 import { Layout } from './components/Layout';
 import { nearestIndex, slotIndex } from './components/chart-hover';
 import { parseRoute } from './router';
+import { host, setHost } from './host';
 import { StakeForm } from './components/StakeForm';
 import { poolName, poolLabel, PoolsTable, PoolDrawer, sortPoolsByMetric } from './components/Pools';
 import { formatYieldPercent, poolApyRange, poolApyEstimates } from './pool-yield';
@@ -333,6 +334,39 @@ describe('staking dashboard displays', () => {
     expect(render(createElement(LockSlider, { ...props, startEpoch: 23 }))).toContain('2028-09-14');
     expect(render(createElement(LockSlider, { ...props, value: 1, startEpoch: 126 }))).toContain('2028-09-14');
     expect(render(createElement(LockSlider, props))).not.toContain('unlocks');
+  });
+
+  it('leaves out what an embedding host shows itself', () => {
+    const previousRewards = state.data.rewards;
+    const embedded = { ...host(), embedded: true, pages: ['stake', 'positions', 'rewards'] as const, buyerRewards: false };
+    const standalone = host();
+    setHost(embedded);
+    try {
+      // Pages the host does not show open its first page, without rewriting its URL.
+      expect(parseRoute('network')).toMatchObject({ page: 'stake', redirected: false });
+      expect(parseRoute('seller')).toMatchObject({ page: 'stake' });
+      expect(parseRoute('positions')).toMatchObject({ page: 'positions' });
+      state.data.rewards = {
+        scope: 'all', total: '3000000000000000000',
+        staker: { total: '3000000000000000000', positions: [] }, sellerUsage: { total: '0', claimable: false },
+        buyerUsage: { total: '7000000000000000000', operator: context.config.address, claimable: true },
+        legacy: { seller: '0', buyer: '0', buyerClaimable: false },
+        locked: { locked: '0', claimable: '0', policy: null },
+      } as unknown as RewardsView;
+      const html = render(createElement(RewardsPage));
+      expect(html).toContain('Staking rewards');
+      expect(html).not.toContain('Buyer rewards');
+      expect(html).not.toContain('Seller rewards');
+      state.data.rewards = { ...state.data.rewards as RewardsView, scope: 'buyer' } as RewardsView;
+      expect(render(createElement(RewardsPage))).toContain('Connect the wallet that holds your staking positions');
+      // The epoch links to the Network page only where the host shows it.
+      const toolbar = render(createElement(Layout, { page: 'stake', updatedAt: null, loading: false, children: null }));
+      expect(toolbar).toContain('epoch-chip');
+      expect(toolbar).not.toContain('href="#/network"');
+    } finally {
+      setHost(standalone);
+      state.data.rewards = previousRewards;
+    }
   });
 
   it('shows the locked balance without release-policy copy in its description', () => {

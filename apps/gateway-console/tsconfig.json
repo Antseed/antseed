@@ -15,6 +15,7 @@
     "baseUrl": ".",
     "paths": {
       "@/*": ["./src/*"],
+      "@antseed/ants-web/*": ["../ants/web/src/*"],
       // The workspace hoists React 19 types to the root (website, desktop);
       // this app is on React 18, so hoisted libraries' declarations must see
       // the same React types as the app's own code or JSX types disagree.

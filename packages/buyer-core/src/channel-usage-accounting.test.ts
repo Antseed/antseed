@@ -1,5 +1,14 @@
 import { describe, expect, it } from 'vitest';
-import { getServiceMetadataId, OUTPUT_IMAGE_TOKEN_EQUIVALENT, ZERO_METADATA } from '@antseed/protocol/signatures';
+import {
+  boundServiceMetadata,
+  encodeMetadata,
+  getServiceMetadataId,
+  MAX_METADATA_SERVICES,
+  OTHER_SERVICES_METADATA_ID,
+  OUTPUT_IMAGE_TOKEN_EQUIVALENT,
+  ZERO_METADATA,
+} from '@antseed/protocol/signatures';
+import { encodeSpendingAuth } from '@antseed/protocol/payment-codec';
 import { advanceUsageMetadata, normalizeRequestUsageDelta } from './channel-usage-accounting.js';
 
 describe('normalizeRequestUsageDelta', () => {
@@ -138,5 +147,88 @@ describe('NeedAuth and post-response metadata accounting', () => {
       cumulativeVideoGenerations: 1n,
       cumulativeVideoSeconds: 8n,
     });
+  });
+});
+
+describe('advanceUsageMetadata service cap', () => {
+  const imageDelta = {
+    amount: 5_000n,
+    inputTokens: 0n,
+    cachedInputTokens: 0n,
+    outputTokens: OUTPUT_IMAGE_TOKEN_EQUIVALENT,
+    requests: 1n,
+    outputImages: 1n,
+    videoGenerations: 0n,
+    videoSeconds: 0n,
+  };
+
+  function useServices(count: number, start = ZERO_METADATA) {
+    let metadata = start;
+    for (let i = 0; i < count; i++) metadata = advanceUsageMetadata(metadata, `image-model-${i}`, imageDelta);
+    return metadata;
+  }
+
+  it('keeps a channel that uses many services within the payment frame limit', () => {
+    const metadata = useServices(200);
+    expect(metadata.services).toHaveLength(MAX_METADATA_SERVICES);
+    expect(metadata.cumulativeRequestCount).toBe(200n);
+    expect(metadata.cumulativeOutputImages).toBe(200n);
+
+    const other = metadata.services!.find((s) => s.serviceId === OTHER_SERVICES_METADATA_ID)!;
+    expect(other.cumulativeRequestCount).toBe(BigInt(200 - (MAX_METADATA_SERVICES - 1)));
+    const attributed = metadata.services!.reduce((sum, s) => sum + s.cumulativeAmount, 0n);
+    expect(attributed).toBe(200n * imageDelta.amount);
+
+    const encoded = encodeMetadata(metadata);
+    const payload = {
+      channelId: `0x${'1'.repeat(64)}`,
+      cumulativeAmount: '1000000',
+      metadataHash: `0x${'2'.repeat(64)}`,
+      metadata: encoded,
+      spendingAuthSig: `0x${'3'.repeat(130)}`,
+      reserveBatch: {
+        cumulativeAmount: '1000000',
+        metadataHash: `0x${'2'.repeat(64)}`,
+        metadata: encoded,
+        spendingAuthSig: `0x${'3'.repeat(130)}`,
+        maxAmount: '2000000',
+        deadline: 1,
+        reserveAuthSig: `0x${'4'.repeat(130)}`,
+      },
+    };
+    expect(() => encodeSpendingAuth(payload)).not.toThrow();
+  });
+
+  it('keeps listed services on their own entry once the cap is reached', () => {
+    const full = useServices(MAX_METADATA_SERVICES + 5);
+    const listedId = getServiceMetadataId('image-model-0');
+    const next = advanceUsageMetadata(full, 'image-model-0', imageDelta);
+    const before = full.services!.find((s) => s.serviceId === listedId)!;
+    const after = next.services!.find((s) => s.serviceId === listedId)!;
+    expect(after.cumulativeRequestCount).toBe(before.cumulativeRequestCount + 1n);
+    expect(next.services).toHaveLength(MAX_METADATA_SERVICES);
+  });
+
+  it('folds an oversized persisted list without losing totals', () => {
+    const services = Array.from({ length: 110 }, (_, i) => ({
+      serviceId: getServiceMetadataId(`legacy-${i}`),
+      cumulativeAmount: BigInt(i + 1),
+      cumulativeInputTokens: 1n,
+      cumulativeCachedInputTokens: 0n,
+      cumulativeOutputTokens: 2n,
+      cumulativeRequestCount: 1n,
+      cumulativeOutputImages: 1n,
+      cumulativeVideoGenerations: 0n,
+      cumulativeVideoSeconds: 0n,
+    }));
+    const bounded = boundServiceMetadata({ ...ZERO_METADATA, services });
+    expect(bounded.services).toHaveLength(MAX_METADATA_SERVICES);
+    expect(bounded.services!.reduce((sum, s) => sum + s.cumulativeAmount, 0n))
+      .toBe(services.reduce((sum, s) => sum + s.cumulativeAmount, 0n));
+    expect(bounded.services!.reduce((sum, s) => sum + s.cumulativeRequestCount, 0n)).toBe(110n);
+    // The largest services keep their own entries.
+    expect(bounded.services!.some((s) => s.serviceId === getServiceMetadataId('legacy-109'))).toBe(true);
+    expect(bounded.services!.some((s) => s.serviceId === getServiceMetadataId('legacy-0'))).toBe(false);
+    expect(boundServiceMetadata(bounded)).toBe(bounded);
   });
 });

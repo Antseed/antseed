@@ -20,6 +20,7 @@ import {
   ZERO_METADATA,
   ZERO_METADATA_HASH,
   computeChannelId,
+  boundServiceMetadata,
 } from '@antseed/protocol/signatures';
 import type { SpendingAuthMessage, SpendingAuthMetadata } from '@antseed/protocol/signatures';
 import { debugLog, debugWarn } from './debug.js';
@@ -415,7 +416,9 @@ export class BuyerPaymentManager {
 
   private _sanitizeMetadata(metadata: SpendingAuthMetadata | undefined): SpendingAuthMetadata {
     const current = metadata ?? ZERO_METADATA;
-    if (!this._disableMetadataV2Services) return current;
+    // Bounds service lists persisted before MAX_METADATA_SERVICES existed, so a
+    // channel whose SpendingAuth outgrew the payment frame can be signed again.
+    if (!this._disableMetadataV2Services) return boundServiceMetadata(current);
     return {
       cumulativeInputTokens: current.cumulativeInputTokens,
       cumulativeOutputTokens: current.cumulativeOutputTokens,
@@ -617,14 +620,19 @@ export class BuyerPaymentManager {
    */
   async buildCloseChannelRequest(
     sellerPeerId: string,
-    { includeAuth = true }: { includeAuth?: boolean } = {},
+    { includeAuth = true, maxCumulative }: { includeAuth?: boolean; maxCumulative?: bigint } = {},
   ): Promise<CloseChannelRequestPayload> {
     const session = this.getActiveSession(sellerPeerId);
     if (!session) {
       throw buyerFault(`[BuyerPayment] No active session for seller ${sellerPeerId.slice(0, 12)}...`, 'buyer-session-state');
     }
 
-    const cumulativeAmount = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    const signedCumulative = this._cumulativeAmount.get(sellerPeerId) ?? BigInt(session.authMax);
+    // The contract rejects a close above the channel's deposit, so a close
+    // authorization above it could never settle. Capping it there still covers
+    // everything the seller could claim.
+    const capped = maxCumulative != null && signedCumulative > maxCumulative;
+    const cumulativeAmount = capped ? maxCumulative : signedCumulative;
     if (!includeAuth || cumulativeAmount <= 0n) {
       return { version: 1, channelId: session.sessionId };
     }
@@ -643,13 +651,17 @@ export class BuyerPaymentManager {
       metadataMsg,
     );
     const encodedMetadata = encodeMetadata(currentMeta);
-    await this._commitAuthorization({
-      ...session,
-      latestBuyerSig: spendingAuthSig,
-      latestSpendingAuthSig: spendingAuthSig,
-      latestMetadata: encodedMetadata,
-      updatedAt: Date.now(),
-    }, currentMeta);
+    if (!capped) {
+      // A capped close authorization is below the signed high-water mark; keep
+      // the persisted latest authorization consistent with authMax.
+      await this._commitAuthorization({
+        ...session,
+        latestBuyerSig: spendingAuthSig,
+        latestSpendingAuthSig: spendingAuthSig,
+        latestMetadata: encodedMetadata,
+        updatedAt: Date.now(),
+      }, currentMeta);
+    }
 
     return {
       version: 1,
