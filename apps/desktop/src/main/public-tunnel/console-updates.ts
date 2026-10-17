@@ -175,7 +175,10 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
   const startRun = (action: RunAction): void => {
     if (run?.state === 'running') return;
     if (action === 'download' && run?.state === 'ready' && run.to === app.latest) return;
-    const to = app.latest;
+    // Installing a finished download installs that release, even when a later
+    // check found a newer one.
+    const staged = action === 'install' && run?.state === 'ready' && isNewerVersion(run.to, app.current) ? run.to : null;
+    const to = staged ?? app.latest;
     run = { state: 'running', action, from: app.current, to, startedAt: now(), finishedAt: null, error: null };
     if (!isNewerVersion(to, app.current)) {
       finish('failed', `Antseed Desktop ${app.current} is already the latest version`);

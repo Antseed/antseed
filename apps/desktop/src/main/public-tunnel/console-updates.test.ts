@@ -34,6 +34,24 @@ function harness(appVersion = '0.2.62', install: () => Promise<void> = async () 
 
 const settle = () => new Promise((resolve) => setImmediate(resolve));
 
+test('installing a finished download targets that release even after a newer check', async () => {
+  const h = harness();
+  try {
+    h.updates.checked('0.2.63');
+    h.updates.downloaded('0.2.63');
+    h.updates.checked('0.2.64');
+    h.request('install');
+    h.updates.poll();
+    await settle();
+    assert.equal(h.status().to, '0.2.63');
+    // The app restarts on the downloaded release: that is a success.
+    h.make('0.2.63');
+    assert.equal(h.status().state, 'succeeded');
+  } finally {
+    h.cleanup();
+  }
+});
+
 test('a console check request asks the updater to check and starts no update', () => {
   const h = harness();
   try {
