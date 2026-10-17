@@ -97,6 +97,8 @@ Retrieve goes to the seller that accepted the job. The video is paid once, on th
 
 To attribute requests to your own end users, send the OpenAI-style `user` field in the body, or an `x-antseed-end-user` header. The gateway records it in the request log and does not forward the header.
 
+A response the buyer answered includes `x-antseed-gateway-tag`. That value is the request's tag in the [management API](/docs/gateway/management-api) (`GET /console/api/requests/:tag`). It is not the buyer's `x-antseed-request-id`, which the gateway still forwards unchanged.
+
 ## SDKs
 
 **OpenAI SDK** (Python):
