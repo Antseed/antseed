@@ -42,3 +42,12 @@ test('unrecognised or unparseable bodies count as answers', () => {
   assert.equal(isEmptyAnswer(JSON_TYPE, json({ data: [{ b64_json: 'x' }] })), false)
   assert.equal(isEmptyAnswer('video/mp4', Buffer.from([0, 1, 2])), false)
 })
+
+test('a refusal is an answer', () => {
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ choices: [{ message: { content: null, refusal: 'I can not help with that.' }, finish_reason: 'stop' }] })), false)
+  assert.equal(isEmptyAnswer(SSE_TYPE, sse({ choices: [{ delta: { refusal: 'I can not' } }] }, { choices: [{ delta: {}, finish_reason: 'stop' }] }, '[DONE]')), false)
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ object: 'response', output: [{ type: 'message', content: [{ type: 'refusal', refusal: 'No.' }] }] })), false)
+  assert.equal(isEmptyAnswer(SSE_TYPE, sse({ type: 'response.refusal.delta', delta: 'No.' })), false)
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ type: 'message', content: [], stop_reason: 'refusal' })), false)
+  assert.equal(isEmptyAnswer(SSE_TYPE, sse({ type: 'message_start', message: {} }, { type: 'message_delta', delta: { stop_reason: 'refusal' } })), false)
+})

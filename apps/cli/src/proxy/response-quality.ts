@@ -29,7 +29,8 @@ class AnswerContent {
     this.recognised = true
     for (const part of [asObject(choice['message']), asObject(choice['delta'])]) {
       if (!part) continue
-      if (hasText(part['content']) || (Array.isArray(part['tool_calls']) && part['tool_calls'].length > 0)) this.answered = true
+      if (hasText(part['content']) || hasText(part['refusal'])
+        || (Array.isArray(part['tool_calls']) && part['tool_calls'].length > 0)) this.answered = true
       if (Array.isArray(part['content']) && part['content'].some((block) => hasText(asObject(block)?.['text']))) this.answered = true
     }
     if (choice['finish_reason'] === 'length') this.truncated = true
@@ -49,11 +50,13 @@ class AnswerContent {
     const type = item['type']
     if (type === 'function_call' || type === 'custom_tool_call' || type === 'image_generation_call') this.answered = true
     if (type === 'message' && Array.isArray(item['content'])
-      && item['content'].some((part) => hasText(asObject(part)?.['text']))) this.answered = true
+      && item['content'].some((part) => hasText(asObject(part)?.['text']) || hasText(asObject(part)?.['refusal']))) this.answered = true
   }
 
   stopReason(reason: unknown): void {
     if (reason === 'max_tokens' || reason === 'length' || reason === 'max_output_tokens') this.truncated = true
+    // A refusal is the model's answer, even when it carries no text.
+    if (reason === 'refusal') this.answered = true
   }
 
   feed(event: Json): void {
@@ -94,7 +97,7 @@ class AnswerContent {
       this.stopReason(asObject(response['incomplete_details'])?.['reason'])
       return
     }
-    if (event['type'] === 'response.output_text.delta' && hasText(event['delta'])) {
+    if ((event['type'] === 'response.output_text.delta' || event['type'] === 'response.refusal.delta') && hasText(event['delta'])) {
       this.recognised = true
       this.answered = true
     }
@@ -106,7 +109,7 @@ class AnswerContent {
 }
 
 /**
- * True when a 2xx inference response carried no text and no tool call. A
+ * True when a 2xx inference response carried no text, no refusal and no tool call. A
  * response cut off at the output cap is not judged: the request's own
  * max_tokens may have caused it.
  */
