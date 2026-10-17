@@ -487,6 +487,11 @@ export function isModelNotFoundResponse(response: SerializedHttpResponse): boole
  * liveness (`lastReachedAt`) even if the DHT record is older.
  */
 const CARRY_FORWARD_TTL_MS = 2 * 60 * 60_000
+/**
+ * Seller-announced catalog fields. Explicit tracking ensures stale catalog
+ * (for example after health checks hide all models) is cleared on the next
+ * peer refresh. See #1251 for a cleaner long-term fix at the source.
+ */
 const PEER_CATALOG_FIELDS = [
   'providerPricing',
   'providerServiceCategories',
