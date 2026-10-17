@@ -913,18 +913,24 @@ const routes: Array<[string, string, Handler]> = [
 ]
 
 /**
- * `?update=available|command|current` on the first load picks what `/update`
- * reports (default available). An applied update waits 3 s for the update
- * service, installs for 5 s, then reports the new version.
+ * `?update=available|command|current|desktop` on the first load picks what
+ * `/update` reports (default available; desktop is a gateway in the desktop
+ * app). An applied update waits 3 s for the update service, installs for
+ * 5 s, then reports the new version.
  */
-const mockUpdateState = { mode: 'available' as 'available' | 'command' | 'current', current: '0.1.180', checkedAt: Date.now() - 40 * 60_000, requestedAt: null as number | null }
+const mockUpdateState = { mode: 'available' as 'available' | 'command' | 'current' | 'desktop', current: '0.1.180', checkedAt: Date.now() - 40 * 60_000, requestedAt: null as number | null }
 function mockUpdate(): GatewayUpdate {
-  const latest = mockUpdateState.mode === 'current' ? mockUpdateState.current : '0.1.193'
+  const mode = mockUpdateState.mode
+  if (mode === 'desktop' && mockUpdateState.current === '0.1.180') mockUpdateState.current = '0.2.62'
+  const latest = mode === 'current' ? mockUpdateState.current : mode === 'desktop' ? '0.2.63' : '0.1.193'
   const base: GatewayUpdate = {
+    product: mode === 'desktop' ? 'desktop' : 'cli',
     current: mockUpdateState.current, latest, available: latest !== mockUpdateState.current, checkedAt: mockUpdateState.checkedAt, checkError: null, checksDisabled: false,
-    apply: mockUpdateState.mode === 'command' ? 'command' : 'console', install: mockUpdateState.mode === 'command' ? 'npm' : 'installer',
-    command: mockUpdateState.mode === 'command' ? 'npm install -g @antseed/cli@latest' : 'antseed update',
-    note: mockUpdateState.mode === 'command' ? 'Installed globally with npm.' : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
+    apply: mode === 'command' ? 'command' : 'console', install: mode === 'command' ? 'npm' : mode === 'desktop' ? 'desktop' : 'installer',
+    command: mode === 'command' ? 'npm install -g @antseed/cli@latest' : mode === 'desktop' ? null : 'antseed update',
+    note: mode === 'command' ? 'Installed globally with npm.'
+      : mode === 'desktop' ? 'Bundled with the desktop app, which installs the update and restarts.'
+      : 'Installed by the gateway installer; its root update service installs new versions and restarts the services.',
     progress: null,
   }
   const at = mockUpdateState.requestedAt
@@ -978,7 +984,7 @@ export function installMockApi(): void {
   const exposureParam = new URLSearchParams(window.location.search).get('exposure')
   if (exposureParam === 'local' || exposureParam === 'lan' || exposureParam === 'public') mockExposure = exposureParam
   const updateParam = new URLSearchParams(window.location.search).get('update')
-  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current') mockUpdateState.mode = updateParam
+  if (updateParam === 'available' || updateParam === 'command' || updateParam === 'current' || updateParam === 'desktop') mockUpdateState.mode = updateParam
   // `?mock=empty`: a gateway nothing has run through yet (no keys, no traffic), for the getting-started Overview.
   if (new URLSearchParams(window.location.search).get('mock') === 'empty') {
     db.keys.length = 0
@@ -1007,5 +1013,5 @@ export function installMockApi(): void {
       return json(500, { error: { code: 'mock_error', message: String(error) } })
     }
   }
-  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current')
+  console.info('[antseed console] Mock API active. Switch identity with ?as=owner|admin|wsadmin|member|key|out, reachability with ?exposure=local|lan|public, updates with ?update=available|command|current|desktop')
 }

@@ -4,7 +4,7 @@ import type { Viewer } from './nav'
 import { showUpdateNotice, UPDATE_PICKUP_MS, updateInFlight, updatePhase } from './update'
 
 const base: GatewayUpdate = {
-  current: '0.1.180', latest: '0.1.193', available: true, checkedAt: 1, checkError: null, checksDisabled: false,
+  product: 'cli', current: '0.1.180', latest: '0.1.193', available: true, checkedAt: 1, checkError: null, checksDisabled: false,
   apply: 'console', install: 'installer', command: 'antseed update', note: '', progress: null,
 }
 const owner: Viewer = { orgRole: 'owner', workspaceRole: 'admin' }

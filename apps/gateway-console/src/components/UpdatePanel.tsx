@@ -17,6 +17,11 @@ import '../styles/update.scss'
  * Reloads the console once the gateway comes back on a new version after an
  * update this page watched, so the new console code is the one running.
  */
+/** What an update installs, as people know it. */
+function productName(update: GatewayUpdate): string {
+  return update.product === 'desktop' ? 'Antseed Desktop' : 'Antseed'
+}
+
 function useReloadAfterUpdate(update: GatewayUpdate | undefined) {
   const toast = useToast()
   const watched = useRef<string | null>(null)
@@ -28,7 +33,7 @@ function useReloadAfterUpdate(update: GatewayUpdate | undefined) {
     }
     if (watched.current && update.current !== watched.current) {
       watched.current = null
-      toast(`Updated to Antseed ${update.current}. Reloading…`)
+      toast(`Updated to ${productName(update)} ${update.current}. Reloading…`)
       const timer = window.setTimeout(() => window.location.reload(), 1_500)
       return () => window.clearTimeout(timer)
     }
@@ -58,14 +63,14 @@ export function UpdateNotice({ quiet = false }: { quiet?: boolean }) {
     return (
       <p className="gc-update-notice" role="status">
         <span className="gc-attention" aria-hidden="true" />
-        <span>Updating Antseed{data.latest ? ` to ${data.latest}` : ''}. The gateway restarts when it is done; this page reloads by itself.</span>
+        <span>Updating {productName(data)}{data.latest ? ` to ${data.latest}` : ''}. {data.product === 'desktop' ? 'The app restarts' : 'The gateway restarts'} when it is done; this page reloads by itself.</span>
       </p>
     )
   }
   return (
     <p className="gc-update-notice" role="status">
       <span className="gc-attention" aria-hidden="true" />
-      <span>Antseed {data.latest} is available. This gateway runs {data.current}.</span>
+      <span>{productName(data)} {data.latest} is available. This gateway runs {data.current}.</span>
       <a className="gc-update-notice__link" href={href('settings')} onClick={openSettings}>Update</a>
       <button type="button" className="gc-update-notice__link" onClick={() => { rememberDismissedUpdate(data.latest!); setDismissed(data.latest) }}>Dismiss</button>
     </p>
@@ -80,8 +85,27 @@ function VersionBadge({ update }: { update: GatewayUpdate }) {
 
 function ProgressLine({ update }: { update: GatewayUpdate }) {
   const phase = updatePhase(update)
-  if (phase === 'requested') return <p className="gc-muted">Waiting for the update service…</p>
-  if (phase === 'running') return <p className="gc-muted">Installing @antseed/cli@latest. The buyer and gateway restart when it finishes, and this page reloads.</p>
+  const desktop = update.product === 'desktop'
+  if (phase === 'requested') return <p className="gc-muted">{desktop ? 'Waiting for the desktop app…' : 'Waiting for the update service…'}</p>
+  if (phase === 'running') {
+    return (
+      <p className="gc-muted">{desktop
+        ? `Downloading Antseed Desktop ${update.progress?.to ?? update.latest ?? ''}. The app restarts into it when the download finishes, and this page reloads once it is back.`
+        : 'Installing @antseed/cli@latest next to the running version. The buyer and the gateway then restart one at a time while requests wait for them, and this page reloads.'}</p>
+    )
+  }
+  if (phase === 'stalled' && desktop) {
+    return (
+      <p className="gc-override"><span className="gc-attention" aria-hidden="true" />
+        The desktop app has not picked this up. Update it from the app on that computer instead.</p>
+    )
+  }
+  if (phase === 'failed' && desktop) {
+    return (
+      <p className="gc-override"><span className="gc-attention" aria-hidden="true" />
+        The last update failed: {update.progress?.error ?? 'unknown error'}. The app's log has the details.</p>
+    )
+  }
   if (phase === 'stalled') {
     return (
       <p className="gc-override"><span className="gc-attention" aria-hidden="true" />
@@ -111,7 +135,9 @@ export function UpdatePanel() {
     onSuccess: (data) => { setConfirming(false); queryClient.setQueryData(qk.update, data) },
   })
   return (
-    <Panel title="Updates" description="The gateway asks npm for the latest @antseed/cli a few times a day.">
+    <Panel title="Updates" description={update.data?.product === 'desktop'
+      ? 'This gateway runs in Antseed Desktop, which checks for new releases every 30 minutes.'
+      : 'The gateway asks npm for the latest @antseed/cli a few times a day.'}>
       <QueryView query={update}>
         {(data) => {
           const inFlight = updateInFlight(data)
@@ -119,9 +145,9 @@ export function UpdatePanel() {
             <div className="gc-stack">
               <DetailList items={[
                 ['Running', <span key="v" className="gc-update__version">{data.current} <VersionBadge update={data} /></span>],
-                ['Latest on npm', data.latest ?? '—'],
+                [data.product === 'desktop' ? 'Latest release' : 'Latest on npm', data.latest ?? '—'],
                 ['Last checked', data.checkError
-                  ? <span key="c" className="gc-override"><span className="gc-attention" aria-hidden="true" />Could not reach npm {formatRelative(data.checkedAt)}: {data.checkError}</span>
+                  ? <span key="c" className="gc-override"><span className="gc-attention" aria-hidden="true" />{data.product === 'desktop' ? 'Could not check' : 'Could not reach npm'} {formatRelative(data.checkedAt)}: {data.checkError}</span>
                   : formatRelative(data.checkedAt)],
               ]} />
               <ProgressLine update={data} />
@@ -146,8 +172,10 @@ export function UpdatePanel() {
         }}
       </QueryView>
       <ConfirmDialog isOpen={confirming} busy={apply.isPending} error={apply.error} onClose={() => setConfirming(false)}
-        onConfirm={() => apply.mutate()} title={`Update to Antseed ${update.data?.latest ?? ''}?`} confirmLabel="Update and restart"
-        body="The server installs the latest @antseed/cli, then restarts the buyer and the gateway. Requests in flight are cut off and the console is unreachable for about a minute; it reloads by itself when the gateway is back." />
+        onConfirm={() => apply.mutate()} title={`Update to ${update.data ? productName(update.data) : 'Antseed'} ${update.data?.latest ?? ''}?`} confirmLabel="Update and restart"
+        body={update.data?.product === 'desktop'
+          ? 'The desktop app downloads the new release and restarts into it. The gateway is unreachable while the app restarts, usually under a minute, and requests sent meanwhile fail. This page reloads by itself when the gateway is back.'
+          : 'The server installs the latest @antseed/cli next to the running version, then restarts the buyer and the gateway one at a time. New requests wait for them instead of failing, and requests in flight get up to a minute to finish. If the new version does not start, the server goes back to this one.'} />
     </Panel>
   )
 }

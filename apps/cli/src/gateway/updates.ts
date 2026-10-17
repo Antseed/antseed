@@ -1,6 +1,7 @@
 import { detectInstallMethod, type InstallMethod } from '../update/install-method.js'
 import {
   readRootUpdateProgress,
+  readUpdaterAppVersions,
   requestRootUpdate,
   rootUpdaterPaths,
   updateInFlight,
@@ -19,7 +20,7 @@ export interface GatewayUpdates {
   info(): GatewayUpdate
   /** Asks the registry now. */
   check(): Promise<GatewayUpdate>
-  /** Asks the root updater to install the latest CLI. Callers check `info().apply === 'console'` first. */
+  /** Asks the root updater (or the desktop app) to install the latest version. Callers check `info().apply === 'console'` first. */
   apply(requestedBy: string): GatewayUpdate
 }
 
@@ -38,7 +39,9 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
   const now = options.now ?? Date.now
   const fetchLatest = options.fetchLatest ?? (() => fetchLatestVersion())
   const method = options.method ?? detectInstallMethod({ env })
-  const updater: RootUpdaterPaths | null = method.kind === 'installer' ? rootUpdaterPaths(env) : null
+  const updater: RootUpdaterPaths | null = method.kind === 'installer' || method.kind === 'desktop' ? rootUpdaterPaths(env) : null
+  // The desktop app checks its own releases; npm's CLI version is not what it ships.
+  const desktop = method.kind === 'desktop' && updater !== null
   const disabled = updateChecksDisabled(env)
 
   let latest: string | null = null
@@ -75,7 +78,27 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
   }
 
   function info(): GatewayUpdate {
+    if (desktop) {
+      const app = readUpdaterAppVersions(updater)
+      const current = app?.current ?? options.current
+      const latest = app?.latest ?? null
+      return {
+        product: 'desktop',
+        current,
+        latest,
+        available: isNewer(latest, current),
+        checkedAt: app?.checkedAt ?? null,
+        checkError: app?.error ?? null,
+        checksDisabled: false,
+        apply: 'console',
+        install: method.kind,
+        command: null,
+        note: method.note,
+        progress: readRootUpdateProgress(updater),
+      }
+    }
     return {
+      product: 'cli',
       current: options.current,
       latest,
       available: isNewer(latest, options.current),
@@ -92,10 +115,11 @@ export function createGatewayUpdates(options: GatewayUpdatesOptions): GatewayUpd
 
   return {
     info() {
-      if (!disabled && (checkedAt === null || now() - checkedAt > GATEWAY_CHECK_INTERVAL_MS)) void runCheck()
+      if (!desktop && !disabled && (checkedAt === null || now() - checkedAt > GATEWAY_CHECK_INTERVAL_MS)) void runCheck()
       return info()
     },
     async check() {
+      if (desktop) return info()
       if (checkedAt === null || now() - checkedAt > FORCED_CHECK_MIN_GAP_MS || inFlight) await runCheck()
       return info()
     },

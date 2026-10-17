@@ -8,7 +8,7 @@ import { registerUpdateRoutes } from './handlers/update.js'
 import { FakeConsoleAuth, addActiveMember, call, memberPrincipal, startConsole, tempDataDir, testDeps } from './test-support.js'
 import type { GatewayUpdate } from './types.js'
 
-async function harness(options: { installer: boolean; latest?: string }) {
+async function harness(options: { installer: boolean; latest?: string; desktop?: boolean }) {
   const { dir, store, cleanup } = tempDataDir()
   const auth = new FakeConsoleAuth()
   const owner = store.createOwner({ label: 'Owner', email: 'owner@example.test' })
@@ -16,8 +16,8 @@ async function harness(options: { installer: boolean; latest?: string }) {
   auth.as('owner', memberPrincipal(store, owner.id))
   auth.as('member', memberPrincipal(store, member.id))
   auth.as('reader', { kind: 'token', tokenId: 'tok_r', scope: 'read' })
-  const env = options.installer
-    ? { ANTSEED_UPDATER_REQUEST: join(dir, 'update-request'), ANTSEED_UPDATER_STATUS: join(dir, 'status.json') }
+  const env: Record<string, string> = options.installer
+    ? { ANTSEED_UPDATER_REQUEST: join(dir, 'update-request'), ANTSEED_UPDATER_STATUS: join(dir, 'status.json'), ...(options.desktop ? { ANTSEED_UPDATER_KIND: 'desktop' } : {}) }
     : {}
   let fetches = 0
   const updates = createGatewayUpdates({
@@ -104,5 +104,37 @@ test('POST /update refuses when the gateway cannot update itself or is already c
     assert.equal(refused.body.error.code, 'up_to_date')
   } finally {
     await current.close()
+  }
+})
+
+test('in the desktop app, the console shows the app\'s versions and its Update hands the install to the app', async () => {
+  const h = await harness({ installer: true, desktop: true })
+  try {
+    const before = await h.as('owner', 'GET', '/update')
+    assert.equal(before.body.product, 'desktop')
+    assert.equal(before.body.install, 'desktop')
+    assert.equal(before.body.available, false, 'nothing is known until the app reports')
+
+    // The app reports its own version and newest release; npm is never asked.
+    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({ app: { current: '0.2.62', latest: '0.2.63', checkedAt: 5, error: null } }))
+    const checked = await h.as('owner', 'POST', '/update/check')
+    assert.deepEqual([checked.body.current, checked.body.latest, checked.body.available, checked.body.apply], ['0.2.62', '0.2.63', true, 'console'])
+    assert.equal(h.fetches(), 0)
+
+    const applied = await h.as('owner', 'POST', '/update')
+    assert.equal(applied.status, 202)
+    assert.equal(applied.body.progress?.state, 'requested')
+    assert.equal(existsSync(h.env.ANTSEED_UPDATER_REQUEST!), true)
+
+    // The app picked it up, installed and restarted on the new version.
+    rmSync(h.env.ANTSEED_UPDATER_REQUEST!)
+    writeFileSync(h.env.ANTSEED_UPDATER_STATUS!, JSON.stringify({
+      state: 'succeeded', from: '0.2.62', to: '0.2.63', startedAt: 1, finishedAt: 2, error: null,
+      app: { current: '0.2.63', latest: '0.2.63', checkedAt: 6, error: null },
+    }))
+    const after = await h.as('owner', 'GET', '/update')
+    assert.deepEqual([after.body.current, after.body.available, after.body.progress?.state], ['0.2.63', false, 'succeeded'])
+  } finally {
+    await h.close()
   }
 })

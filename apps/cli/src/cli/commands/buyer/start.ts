@@ -15,7 +15,7 @@ import { walletPassphraseForStart } from '../../wallet-passphrase.js'
 import { loadRouterPlugin, loadVerifierPlugin, buildPluginConfig, getPackageVersions } from '../../../plugins/loader.js'
 import { ensurePluginsUpToDate } from '../../../plugins/drift.js'
 import { resolvePluginPackage } from '../../../plugins/registry.js'
-import { BUYER_RESTART_EXIT_CODE, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
+import { BUYER_RESTART_EXIT_CODE, BUYER_SHUTDOWN_DRAIN_MS, BuyerProxy, type DepositWatcherAbsenceReason } from '../../../proxy/buyer-proxy.js'
 import { DEPOSIT_WATCH_ACTIVE_INTERVAL_MS, DepositWatcher } from '../../../proxy/deposit-watcher.js'
 import { DepositWatchHub } from '../../../proxy/deposit-watch-hub.js'
 import { CachedBuyerChainReader, constantRelayReads } from '../../../proxy/buyer-chain-reader.js'
@@ -26,8 +26,8 @@ import { curatedVerifierIds, resolveVerifierPolicy, type VerifierPolicy } from '
 import { buyerSettingOverrides, resolveEffectiveBuyerConfig, type BuyerRuntimeOverrides } from '../../../config/effective.js'
 import type { BuyerCLIConfig } from '../../../config/types.js'
 
-/** How long a graceful shutdown may take before the process exits anyway. */
-const SHUTDOWN_DEADLINE_MS = 15_000
+/** How long a graceful shutdown may take before the process exits anyway: the proxy's drain, then the node. */
+const SHUTDOWN_DEADLINE_MS = BUYER_SHUTDOWN_DRAIN_MS + 15_000
 
 interface LocalSeederInfo {
   dhtPort: number

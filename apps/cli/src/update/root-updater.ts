@@ -34,6 +34,36 @@ export interface RootUpdateProgress {
   error: string | null
 }
 
+/**
+ * The desktop app runs the gateway too (its public tunnel) and answers the
+ * same request with its own updater (`ANTSEED_UPDATER_KIND=desktop`). It
+ * updates the whole app, not the CLI, so it writes the app's versions into
+ * the status file as `app`, and those are the versions the console shows.
+ */
+export interface UpdaterAppVersions {
+  /** The running app version. */
+  current: string
+  /** The newest release the app knows of; null before its first check. */
+  latest: string | null
+  checkedAt: number | null
+  error: string | null
+}
+
+export function readUpdaterAppVersions(paths: RootUpdaterPaths): UpdaterAppVersions | null {
+  try {
+    const app = (JSON.parse(readFileSync(paths.status, 'utf8')) as Record<string, unknown>)['app'] as Record<string, unknown> | undefined
+    if (!app || !isSemver(app['current'])) return null
+    return {
+      current: app['current'],
+      latest: isSemver(app['latest']) ? app['latest'] : null,
+      checkedAt: typeof app['checkedAt'] === 'number' ? app['checkedAt'] : null,
+      error: typeof app['error'] === 'string' ? app['error'].slice(0, 500) : null,
+    }
+  } catch {
+    return null
+  }
+}
+
 export function rootUpdaterPaths(env: NodeJS.ProcessEnv = process.env): RootUpdaterPaths | null {
   const request = env['ANTSEED_UPDATER_REQUEST']?.trim()
   const status = env['ANTSEED_UPDATER_STATUS']?.trim()

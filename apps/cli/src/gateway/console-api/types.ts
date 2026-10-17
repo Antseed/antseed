@@ -806,9 +806,14 @@ export interface GatewayStatus {
 // POST  /update/check              → GatewayUpdate  (asks npm now)
 // POST  /update                    → GatewayUpdate  (installer servers: installs @antseed/cli@latest and restarts)
 export interface GatewayUpdate {
-  /** The running CLI version. */
+  /**
+   * What updates: `cli` is @antseed/cli from npm; `desktop` is the desktop
+   * app running this gateway, whose own updater reports the versions below.
+   */
+  product: 'cli' | 'desktop'
+  /** The running version (of the CLI, or of the desktop app). */
   current: string
-  /** npm's `latest` for @antseed/cli at the last check; null before the first answer. */
+  /** The newest version at the last check (npm's `latest`, or the app's newest release); null before the first answer. */
   latest: string | null
   available: boolean
   /** When npm was last asked (ms); null when never. */
@@ -819,8 +824,8 @@ export interface GatewayUpdate {
   checksDisabled: boolean
   /**
    * `console`: `POST /update` installs it (servers set up by the gateway
-   * installer); `command`: run `command` on the gateway host; `none`: it
-   * updates some other way (the desktop app).
+   * installer, and the desktop app); `command`: run `command` on the gateway
+   * host; `none`: it updates some other way.
    */
   apply: 'console' | 'command' | 'none'
   install: InstallKind

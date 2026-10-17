@@ -69,6 +69,9 @@ export function detectInstallMethod(options: {
   const isWritable = options.isWritable ?? writable
 
   if (env['ANTSEED_UPDATER_REQUEST']?.trim()) {
+    if (env['ANTSEED_UPDATER_KIND'] === 'desktop') {
+      return { kind: 'desktop', command: null, argv: null, note: 'Bundled with the desktop app, which installs the update and restarts.' }
+    }
     return { kind: 'installer', command: 'antseed update', argv: null, note: 'Installed by the gateway installer; its root update service installs new versions and restarts the services.' }
   }
   if (options.electron ?? (Boolean(process.versions['electron']) || env['ELECTRON_RUN_AS_NODE'] === '1')) {
