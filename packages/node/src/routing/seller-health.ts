@@ -428,10 +428,11 @@ export function orderAdaptiveRoutes<T>(
 
   let explored: T | null = null
   // Probes are separate requests, never a turn of an ongoing conversation
-  // (that would move it off its cached seller), and never open a channel.
+  // (that would move it off its cached seller), never open a channel, and
+  // never go to a seller already at its concurrency limit.
   if (pool.length > 0 && !options.affinityKey && explorationRate > 0 && random() < explorationRate) {
     explored = ready.filter((candidate) => !pool.includes(candidate) && scores.get(candidate)!.stale
-      && channelOpen(candidate) !== false).sort(byScore)[0] ?? null
+      && channelOpen(candidate) !== false && !saturated(candidate)).sort(byScore)[0] ?? null
     if (explored) ordered = [explored, ...ordered.filter((candidate) => candidate !== explored)]
   }
   return { ordered, scores, pool, explored }

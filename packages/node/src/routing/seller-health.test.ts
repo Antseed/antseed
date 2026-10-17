@@ -199,6 +199,16 @@ describe('seller health', () => {
     }
   });
 
+  it('never probes a seller already at its advertised capacity', () => {
+    const book = new SellerHealthBook();
+    const known = seller('a', 0.1, 0.3, { channelOpen: true });
+    const full = seller('b', 1, 3, { channelOpen: true, saturated: true });
+    book.recordSuccess(known.peerId, 'model-x', NOW, { firstTokenMs: 1000, streamed: true });
+    const result = orderAdaptiveRoutes([known, full], (s) => s, book, SHAPE, { now: NOW, random: () => 0, explorationRate: 1 });
+    expect(result.explored).toBeNull();
+    expect(result.ordered.map((s) => s.peerId[0])).toEqual(['a', 'b']);
+  });
+
   it('the only open-channel seller in the pool goes first even when a seller needing a new channel scores better', () => {
     const book = new SellerHealthBook();
     const closedLeader = seller('a', 0.1, 0.3, { channelOpen: false });
