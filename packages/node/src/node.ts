@@ -65,6 +65,7 @@ import {
 } from "./types/protocol.js";
 import { VerificationStorage } from "./verification/storage.js";
 import { VerificationSampler } from "./verification/samples.js";
+import type { ResponseAuthSink } from "@antseed/buyer-core";
 import { FrameDecoder, encodeFrame } from "./p2p/message-protocol.js";
 import { KeepaliveManager, buildPongPayload } from "./p2p/keepalive.js";
 import { MessageType } from "./types/protocol.js";
@@ -397,6 +398,7 @@ const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
 /** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
 export interface ResponseAuthEvent {
   requestId: string;
+  /** The peer the request was sent to (not the receipt's claim). */
   sellerPeerId: string;
   /** The service the request was routed to. */
   advertisedService: string;
@@ -2465,18 +2467,22 @@ export class AntseedNode extends EventEmitter {
   /**
    * Stores each seller-signed response receipt and reports its verdict as a
    * `response-auth` event, so the buyer's routing can demote a seller whose
-   * receipts do not match what it sent. Reported even without storage.
+   * receipts do not match what it sent. Reported even without storage, and
+   * only with the request's own context: the seller and service a receipt
+   * names are the seller's claim, and must not decide who gets the blame.
    */
-  private readonly _responseAuthSink: Pick<VerificationStorage, 'insertResponseAuth'> = {
-    insertResponseAuth: (record) => {
-      const event: ResponseAuthEvent = {
-        requestId: record.requestId,
-        sellerPeerId: record.sellerPeerId,
-        advertisedService: record.advertisedService,
-        verified: record.verified,
-        verificationError: record.verificationError,
-      };
-      this.emit('response-auth', event);
+  private readonly _responseAuthSink: ResponseAuthSink = {
+    insertResponseAuth: (record, context) => {
+      if (context) {
+        const event: ResponseAuthEvent = {
+          requestId: record.requestId,
+          sellerPeerId: context.sellerPeerId,
+          advertisedService: context.requestedService,
+          verified: record.verified,
+          verificationError: record.verificationError,
+        };
+        this.emit('response-auth', event);
+      }
       this._verificationStorage?.insertResponseAuth(record);
     },
   };

@@ -10,7 +10,7 @@ import { MessageType } from "./types/protocol.js";
 import { ProxyMux } from "./proxy/proxy-mux.js";
 import { PaymentMux } from "./p2p/payment-mux.js";
 import { VerificationMux } from "./verification/verification-mux.js";
-import type { VerificationStorage } from "./verification/storage.js";
+import type { ResponseAuthSink } from "@antseed/buyer-core";
 import type { VerificationSampler } from "./verification/samples.js";
 import {
   BuyerFreeUsageManager,
@@ -43,7 +43,7 @@ export interface BuyerIdentitySharedServices {
   depositsClient: DepositsClient | null;
   channelsClient: ChannelsClient | null;
   sellerAddressResolver: SellerAddressResolver | null;
-  verificationStorage: Pick<VerificationStorage, 'insertResponseAuth'> | null;
+  verificationStorage: ResponseAuthSink | null;
   verificationSampler: VerificationSampler | null;
   /** Capabilities each seller advertised in discovery; not identity-specific. */
   peerCapabilities: Map<PeerId, Set<string>>;
