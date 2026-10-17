@@ -51,3 +51,13 @@ test('a refusal is an answer', () => {
   assert.equal(isEmptyAnswer(JSON_TYPE, json({ type: 'message', content: [], stop_reason: 'refusal' })), false)
   assert.equal(isEmptyAnswer(SSE_TYPE, sse({ type: 'message_start', message: {} }, { type: 'message_delta', delta: { stop_reason: 'refusal' } })), false)
 })
+
+test('legacy completions and legacy function calls are answers', () => {
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ object: 'text_completion', choices: [{ text: 'Hello', finish_reason: 'stop' }] })), false)
+  assert.equal(isEmptyAnswer(SSE_TYPE, sse({ choices: [{ text: 'Hel' }] }, { choices: [{ text: 'lo', finish_reason: 'stop' }] }, '[DONE]')), false)
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ choices: [{ text: '', finish_reason: 'stop' }] })), true)
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ choices: [{ message: { content: null, function_call: { name: 'f', arguments: '{}' } }, finish_reason: 'function_call' }] })), false)
+  assert.equal(isEmptyAnswer(SSE_TYPE, sse({ choices: [{ delta: { function_call: { name: 'f' } } }] }, '[DONE]')), false)
+  // A choice shape we do not know is not judged.
+  assert.equal(isEmptyAnswer(JSON_TYPE, json({ choices: [{ index: 0, output: 'x' }] })), false)
+})

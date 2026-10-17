@@ -24,12 +24,15 @@ class AnswerContent {
   /** The answer stopped at the output cap: emptiness may be the request's max_tokens, not the seller. */
   truncated = false
 
-  /** OpenAI chat completion, or one streamed chunk of it. */
+  /** OpenAI chat or legacy completion choice, or one streamed chunk of it. */
   chatChoice(choice: Json): void {
+    const parts = [asObject(choice['message']), asObject(choice['delta'])].filter((part): part is Json => part !== null)
+    // Only judge shapes we know: a chat message/delta or a legacy completion's text.
+    if (parts.length === 0 && !('text' in choice)) return
     this.recognised = true
-    for (const part of [asObject(choice['message']), asObject(choice['delta'])]) {
-      if (!part) continue
-      if (hasText(part['content']) || hasText(part['refusal'])
+    if (hasText(choice['text'])) this.answered = true
+    for (const part of parts) {
+      if (hasText(part['content']) || hasText(part['refusal']) || asObject(part['function_call'])
         || (Array.isArray(part['tool_calls']) && part['tool_calls'].length > 0)) this.answered = true
       if (Array.isArray(part['content']) && part['content'].some((block) => hasText(asObject(block)?.['text']))) this.answered = true
     }

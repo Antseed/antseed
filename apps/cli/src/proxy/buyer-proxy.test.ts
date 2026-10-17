@@ -5789,6 +5789,26 @@ test('a refusal is an answer: not retried and not counted against the seller', a
   assert.equal(sellerHealthOf(proxy, cheap, clock.now()).successes, 1)
 })
 
+test('a legacy completion is an answer: not retried and not counted against the seller', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, {
+      id: 'c', object: 'text_completion', model: 'gpt-5',
+      choices: [{ index: 0, text: 'Hello', finish_reason: 'stop' }],
+    })
+  }
+
+  const res = await invokeProxy(proxy, modelRequest())
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [cheap.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()).failures, 0)
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()).successes, 1)
+})
+
 test('when every seller answers empty, the client gets the answer and nobody is counted against', async () => {
   const clock = makeTestClock()
   const { cheap, pricier, extra } = makeModelSellers()
