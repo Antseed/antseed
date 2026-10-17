@@ -107,15 +107,14 @@ curl -s http://localhost:8377/v1/models | jq '.data[].id'
 ## Tools
 
 - **Desktop app**: connect Claude Code, Codex, OpenCode and others from **Connected apps**. See [Desktop app](/docs/desktop).
-- **CLI wrappers**: `antseed claude`, `antseed codex` and `antseed opencode` launch the tool against the running buyer and pass your other flags through:
+- **`antseed apps`** connects local tools by editing their config files, and `antseed buyer connection set --model` picks the model their `antseed` alias follows:
 
   ```bash
-  antseed claude --model <peerId>@kimi-k2.6
-  antseed codex --model <peerId>@deepseek-v4-flash
-  antseed opencode --model <peerId>@gpt-oss-120b
+  antseed apps connect claude-code
+  antseed buyer connection set --model kimi-k2.6   # or <peerId>@kimi-k2.6
   ```
 
-- **`antseed apps`** connects local tools by editing their config files.
+  `antseed apps` lists the supported apps; `antseed apps disconnect <app>` restores the app's settings.
 - **Manual**: set the base URL above and a placeholder key, for example `ANTHROPIC_BASE_URL=http://localhost:8377` and `ANTHROPIC_API_KEY=antseed` for Claude Code.
 
 Tool-specific guides are in the [Integrations directory](/integrations). For Hermes and OpenClaw, see [Connect agents](/docs/agents).

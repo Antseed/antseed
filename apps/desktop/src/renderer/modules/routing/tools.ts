@@ -1,5 +1,6 @@
 import type { DiscoverRow, PeerEntry } from '../../core/state';
 import type { LogEvent, RuntimeProcessState, SystemProxyProfileSummary } from '../../types/bridge';
+import { CODING_ONLY_SUFFIX_RE } from '../catalog/model-identity';
 
 export type VprPeerOption = { peerId: string; label: string; services: string[]; online: boolean };
 export type VprProfileTraffic = {
@@ -106,6 +107,13 @@ export function resolveVprToolRoute(
     peerId: override?.peerId || defaults.peerId,
     model: override?.model || defaults.model,
   };
+}
+
+/** The serviceId `peerId` advertises for the selected model, so routes never send the catalog id to a peer that names it differently. */
+export function peerServiceIdForModel(modelRoutes: DiscoverRow[], peerId: string): string | null {
+  const peerRoutes = modelRoutes.filter((route) => route.peerId === peerId);
+  const route = peerRoutes.find((candidate) => !CODING_ONLY_SUFFIX_RE.test(candidate.serviceId)) ?? peerRoutes[0];
+  return route?.serviceId ?? null;
 }
 
 export function resolveVprToolRouteForPeerOptions(

@@ -4,13 +4,13 @@ import assert from 'node:assert/strict';
 import path from 'node:path';
 import { homedir } from 'node:os';
 
-import { DEFAULT_APP_PROFILES, mergeWithDefaultAppProfiles, platformConfigPath } from './defaults.js';
+import { DEFAULT_APP_PROFILES, MODEL_PICKER_TOOL_SLUGS, mergeWithDefaultAppProfiles, platformConfigPath } from './defaults.js';
 
 function names(profiles: readonly unknown[]): string[] {
   return profiles.map((profile) => (profile as Record<string, unknown>)['name'] as string);
 }
 
-const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed'];
+const DEFAULT_NAMES = ['opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed'];
 
 test('default app profiles are config-patch entries with unique names', () => {
   assert.deepEqual(names(DEFAULT_APP_PROFILES), DEFAULT_NAMES);
@@ -19,14 +19,11 @@ test('default app profiles are config-patch entries with unique names', () => {
     const patch = profile['configPatch'] as Record<string, unknown>;
     assert.equal(typeof patch['configPath'], 'string');
     // The claude-desktop format writes no provider entry (its gateway
-    // ignores auth), so it alone carries no providerKey; it also talks to
-    // the desktop's Claude gateway while every other tool is pointed
-    // straight at the buyer proxy.
+    // route ignores auth), so it alone carries no providerKey.
     if (patch['format'] !== 'claude-desktop') {
       assert.equal(typeof patch['providerKey'], 'string');
     }
-    const portPlaceholder = patch['format'] === 'claude-desktop' ? '{claudeGatewayPort}' : '{buyerPort}';
-    assert.ok((patch['baseURL'] as string).includes(portPlaceholder));
+    assert.ok((patch['baseURL'] as string).includes('{buyerPort}'));
     const slugs = profile['toolSlugs'] as string[];
     assert.ok(Array.isArray(slugs) && slugs.length > 0);
   }
@@ -70,6 +67,23 @@ test('GooeyPi patches the shared Pi config without requiring pi on PATH', () => 
     baseURL: 'http://localhost:{buyerPort}/v1',
     api: 'openai-responses',
     originator: 'gooeypi',
+  });
+});
+
+test('Prime Agent patches its own pi-format config under ~/.prime/agent', () => {
+  const profile = DEFAULT_APP_PROFILES.find((entry) => entry['name'] === 'prime-agent');
+  assert.ok(profile);
+  assert.equal(profile['displayName'], 'Prime Agent');
+  assert.deepEqual(profile['toolSlugs'], ['prime-agent']);
+  assert.deepEqual(profile['configPatch'], {
+    format: 'pi',
+    configPath: '~/.prime/agent/models.json',
+    settingsPath: '~/.prime/agent/settings.json',
+    providerKey: 'antseed',
+    baseURL: 'http://localhost:{buyerPort}/v1',
+    api: 'openai-responses',
+    originator: 'prime-agent',
+    installProbe: 'prime-agent',
   });
 });
 
@@ -119,6 +133,12 @@ test('mergeWithDefaultAppProfiles lets external profiles override same-name defa
     { name: 'opencode', displayName: 'OpenCode (private override)' },
   ];
   const merged = mergeWithDefaultAppProfiles(external);
-  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'crush', 'goose', 'zed']);
+  assert.deepEqual(names(merged), ['acme', 'opencode', 'codex', 'claude-code', 'claude-desktop', 'hermes', 'droid', 't3code', 'pi', 'gooeypi', 'prime-agent', 'crush', 'goose', 'zed']);
   assert.equal((merged[1] as Record<string, unknown>)['displayName'], 'OpenCode (private override)');
+});
+
+test('model-picker tool slugs come from apps whose config lists the AntSeed catalog', () => {
+  assert.deepEqual([...MODEL_PICKER_TOOL_SLUGS].sort(), [
+    'codex', 'crush', 'droid', 'gooeypi', 'hermes', 'hermes-agent', 'opencode', 'pi', 'prime-agent', 't3code', 'zed',
+  ]);
 });

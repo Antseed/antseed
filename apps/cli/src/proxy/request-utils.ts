@@ -33,7 +33,9 @@ export function parsePeerPinnedService(value: string): { peerId: string; service
     return null
   }
 
-  const peerId = normalizePeerId(value.slice(0, separatorIndex))
+  // Codex catalog slugs can include the connected provider's namespace.
+  const peerPrefix = value.slice(0, separatorIndex).replace(/^antseed\/openai\//, '')
+  const peerId = normalizePeerId(peerPrefix)
   const service = value.slice(separatorIndex + 1).trim()
   if (!peerId || service.length === 0) {
     return null
@@ -263,12 +265,21 @@ export function isLoopbackPeer(peer: PeerInfo): boolean {
 
 /**
  * Model alias that tool configs can carry instead of a concrete
- * `<peerId>@<service>` key. The buyer substitutes the session's default
- * routed model at request time, so the route selected in the desktop
- * (floating pill / VPR) applies to already-running tool sessions without
- * rewriting their configs.
+ * `<peerId>@<service>` key. The buyer substitutes the chat's remembered
+ * model, falling back to the global default for new chats, without rewriting
+ * the tool's config.
  */
 export const ROUTED_MODEL_ALIAS = 'antseed'
+
+/**
+ * A routed-model target is either a bare `<service>` (automatic peer
+ * selection) or an explicit `<peerId>@<service>` pin. The `antseed` alias
+ * itself can never be a target — it would recurse.
+ */
+export function isValidRoutedModelTarget(value: string): boolean {
+  if (value === ROUTED_MODEL_ALIAS) return false
+  return !value.includes('@') || parsePeerPinnedService(value) !== null
+}
 
 export function substituteRoutedModelAlias(
   body: Uint8Array,

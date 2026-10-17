@@ -82,6 +82,7 @@ import {
 } from './conversation-store.js';
 import { createStreamingRunner } from './streaming-run.js';
 import { generateChatImage } from './image-generation.js';
+import { createModelPickerReadyGate } from './model-picker-ready.js';
 import type {
   ActiveRun,
   ChatStreamErrorPayload,
@@ -127,6 +128,10 @@ export type PiChatEngine = {
    * the renderer's first push after launch.
    */
   getModelPicker(): ModelPickerSnapshot | null;
+  /** Resolves true once the first picker snapshot arrives, false after `timeoutMs`. */
+  waitForModelPicker(timeoutMs: number): Promise<boolean>;
+  /** Whether the latest network catalog reports reasoning support for a service. */
+  serviceSupportsReasoning(serviceId: string): boolean;
   /** Rebinds a conversation's model/peer — same semantics as the chat UI's model dropdown. */
   selectPeer(request: ChatPeerSelectionRequest): Promise<{ ok: boolean; error?: string }>;
   /**
@@ -149,6 +154,7 @@ export function registerPiChatHandlers({
   recordChatRequestStarted,
   recordChatRequestFinished,
   recordDiscoveryFailed,
+  onModelPickerSynced,
 }: RegisterPiChatHandlersOptions): PiChatEngine {
   void loadChatWorkspaceDir().catch(() => {});
   const store = new PiConversationStore();
@@ -423,9 +429,14 @@ export function registerPiChatHandlers({
   // Curated model-picker snapshot pushed by the renderer — see
   // shared/model-picker.ts. Main only caches the latest push.
   let modelPickerSnapshot: ModelPickerSnapshot | null = null;
+  const modelPickerReady = createModelPickerReadyGate();
   ipcMain.handle('chat:sync-model-picker', (_event, payload: unknown) => {
     const normalized = normalizeModelPickerSnapshot(payload);
-    if (normalized) modelPickerSnapshot = normalized;
+    if (normalized) {
+      modelPickerSnapshot = normalized;
+      modelPickerReady.markReady();
+      onModelPickerSynced?.(normalized);
+    }
     return { ok: normalized != null };
   });
 
@@ -1100,6 +1111,13 @@ export function registerPiChatHandlers({
     getProxyPort: () => resolveProxyPort(configPath),
     discoverServiceCatalog: discoverPolicyAllowedCatalog,
     getModelPicker: () => modelPickerSnapshot,
+    waitForModelPicker: (timeoutMs) => modelPickerReady.waitForReady(timeoutMs),
+    serviceSupportsReasoning: (serviceId) => {
+      const normalized = serviceId.trim().toLowerCase();
+      return lastServiceCatalogEntries.some((entry) => (
+        entry.id.trim().toLowerCase() === normalized && entry.capabilities?.reasoning === true
+      ));
+    },
     selectPeer: applyPeerSelection,
     setDefaultRoute: async (peerId, service, provider) => {
       const result = await setBuyerDefaultRoute({ kind: 'model', model: peerId ? `${peerId}@${service}` : service });

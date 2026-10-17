@@ -596,6 +596,9 @@ export type VprFloatConversation = {
   sessionShort: string;
   /** Service id of the pinned model, or null when following the default route. */
   pinnedServiceId: string | null;
+  /** Service id the chat's latest request went to (set as soon as a seller is
+      chosen, so an in-app model switch shows before the answer finishes). */
+  routedServiceId: string | null;
   lastActiveAt: number;
   /** True while the chat is receiving traffic (recent request activity) —
       drives the green pulse on its row. */

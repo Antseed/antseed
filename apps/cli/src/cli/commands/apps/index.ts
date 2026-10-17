@@ -1,6 +1,7 @@
 import { InvalidArgumentError, type Command } from 'commander'
 import chalk from 'chalk'
 import {
+  configPatchListsModels,
   connectedAppStatus,
   findConnectedAppProfile,
   loadConnectedAppProfiles,
@@ -11,12 +12,12 @@ import {
   writeConfigPatch,
   type ConnectedAppProfile,
   type ConnectedAppStatus,
+  type ConnectedAppModel,
 } from '@antseed/connected-apps'
 import { mkdirSync, readFileSync } from 'node:fs'
 import { dirname, join } from 'node:path'
 import { getGlobalOptions } from '../types.js'
 import { parsePositiveInteger } from '../parse-positive-integer.js'
-import { resolveDefaultAntseedBaseUrl } from '../wrapped-tools.js'
 
 /** Bump when a field of the --json output changes meaning or is removed. */
 export const APPS_JSON_SCHEMA_VERSION = 1
@@ -40,7 +41,7 @@ export type AppsActionReport = {
   displayName?: string
   /** connect only: buyer proxy port written into the config. */
   buyerPort?: number
-  /** disconnect only: false when the config carried nothing AntSeed added. */
+  /** disconnect only: false when the config carried nothing Antseed added. */
   changed?: boolean
   connected?: boolean
   configPath?: string
@@ -56,14 +57,31 @@ function unknownAppError(name: string, all: readonly ConnectedAppProfile[]): str
   return `Unknown app "${name}". Supported apps: ${all.map((profile) => profile.name).join(', ')}`
 }
 
-/** Buyer proxy port from buyer.state.json / config buyer.proxyPort, else 8377. */
-export async function resolveDefaultBuyerPort(ctx: AppsContext): Promise<number> {
+function readJsonObject(filePath: string): Record<string, unknown> {
   try {
-    const port = Number(new URL(await resolveDefaultAntseedBaseUrl(ctx.dataDir, ctx.configPath)).port)
-    return Number.isInteger(port) && port > 0 && port <= 65535 ? port : DEFAULT_BUYER_PORT
+    const parsed = JSON.parse(readFileSync(filePath, 'utf8')) as unknown
+    return parsed && typeof parsed === 'object' && !Array.isArray(parsed) ? parsed as Record<string, unknown> : {}
   } catch {
-    return DEFAULT_BUYER_PORT
+    return {}
   }
+}
+
+function readBuyerState(dataDir: string): Record<string, unknown> {
+  return readJsonObject(join(dataDir, 'buyer.state.json'))
+}
+
+function asPort(value: unknown): number | null {
+  const port = Number(value)
+  return Number.isInteger(port) && port > 0 && port <= 65535 ? port : null
+}
+
+/** Buyer proxy port from buyer.state.json / config buyer.proxyPort, else 8377. */
+export function resolveDefaultBuyerPort(ctx: AppsContext): number {
+  const buyerConfig = readJsonObject(ctx.configPath)['buyer']
+  const configuredPort = buyerConfig && typeof buyerConfig === 'object'
+    ? asPort((buyerConfig as Record<string, unknown>)['proxyPort'])
+    : null
+  return asPort(readBuyerState(ctx.dataDir)['port']) ?? configuredPort ?? DEFAULT_BUYER_PORT
 }
 
 export function getAppsStatus(ctx: AppsContext): AppsStatusReport {
@@ -80,25 +98,50 @@ export function getAppsStatus(ctx: AppsContext): AppsStatusReport {
  * route is set — the buyer then rejects alias requests with no_default_route.
  */
 export function readDefaultRoutedModel(dataDir: string): string | null {
-  try {
-    const state = JSON.parse(readFileSync(join(dataDir, 'buyer.state.json'), 'utf8')) as Record<string, unknown>
-    const model = typeof state['defaultRoutedModel'] === 'string' ? state['defaultRoutedModel'].trim() : ''
-    return model.length > 0 ? model : null
-  } catch {
-    return null
-  }
+  const model = readBuyerState(dataDir)['defaultRoutedModel']
+  return typeof model === 'string' && model.trim().length > 0 ? model.trim() : null
 }
 
-export function noDefaultRouteWarning(buyerPort: number): string {
-  return 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
-    + 'Pick a model in the Antseed desktop app, or set one on the running buyer: '
-    + `curl -X POST http://localhost:${buyerPort}/_antseed/route -H 'content-type: application/json' -d '{"model":"<peerId>@<service>"}'`
-}
+export const NO_DEFAULT_ROUTE_WARNING = 'No default route is set on the buyer, so requests for model "antseed" will fail with no_default_route. '
+  + 'Pick a model in the Antseed desktop app, or run `antseed buyer connection set --model <service>` (or `<peerId>@<service>`).'
 
 function ensureStateDir(ctx: AppsContext): string {
   const targets = wslTargetsPath(ctx.dataDir)
   mkdirSync(dirname(targets), { recursive: true })
   return targets
+}
+
+/** A model reports reasoning when the model or any seller offering it announces support. */
+function reportsReasoning(entry: Record<string, unknown>): boolean {
+  const announces = (value: unknown) => Boolean(value && typeof value === 'object'
+    && (value as Record<string, unknown>)['reasoning'] === true)
+  if (announces(entry['capabilities'])) return true
+  const peers = entry['peers']
+  return Array.isArray(peers) && peers.some((peer) => (
+    Boolean(peer && typeof peer === 'object') && announces((peer as Record<string, unknown>)['capabilities'])
+  ))
+}
+
+export async function fetchConnectedAppModels(buyerPort: number): Promise<ConnectedAppModel[]> {
+  try {
+    const response = await fetch(`http://127.0.0.1:${buyerPort}/v1/models?type=text`, {
+      headers: { accept: 'application/json' },
+      signal: AbortSignal.timeout(1500),
+    })
+    if (!response.ok) return []
+    const body = await response.json() as { data?: unknown }
+    if (!Array.isArray(body.data)) return []
+    return body.data.flatMap((entry) => {
+      if (!entry || typeof entry !== 'object') return []
+      const id = (entry as Record<string, unknown>)['id']
+      const name = (entry as Record<string, unknown>)['name']
+      const reasoning = reportsReasoning(entry as Record<string, unknown>)
+      if (typeof id !== 'string' || id.trim().length === 0) return []
+      return [{ model: id, label: typeof name === 'string' && name.trim() ? name : id, ...(reasoning ? { reasoning } : {}) }]
+    })
+  } catch {
+    return []
+  }
 }
 
 export async function connectApp(ctx: AppsContext, name: string, buyerPort?: number): Promise<AppsActionReport> {
@@ -107,14 +150,11 @@ export async function connectApp(ctx: AppsContext, name: string, buyerPort?: num
   if (!profile) {
     return { schemaVersion: APPS_JSON_SCHEMA_VERSION, ok: false, action: 'connect', app: name, error: unknownAppError(name, all) }
   }
-  const port = buyerPort ?? await resolveDefaultBuyerPort(ctx)
-  const warnings: string[] = []
-  if (!readDefaultRoutedModel(ctx.dataDir)) warnings.push(noDefaultRouteWarning(port))
-  if (profile.configPatch.format === 'claude-desktop') {
-    warnings.push('Claude Desktop is routed through the Antseed desktop app\'s local Claude gateway; it only works while the desktop app is running.')
-  }
+  const port = buyerPort ?? resolveDefaultBuyerPort(ctx)
+  const warnings = readDefaultRoutedModel(ctx.dataDir) ? [] : [NO_DEFAULT_ROUTE_WARNING]
   try {
-    writeConfigPatch(profile.configPatch, port, ensureStateDir(ctx))
+    const models = configPatchListsModels(profile.configPatch.format) ? await fetchConnectedAppModels(port) : []
+    writeConfigPatch(profile.configPatch, port, { wslTargetsFile: ensureStateDir(ctx), models })
   } catch (err) {
     return {
       schemaVersion: APPS_JSON_SCHEMA_VERSION,
