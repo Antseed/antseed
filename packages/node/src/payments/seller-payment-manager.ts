@@ -45,9 +45,9 @@ export interface SellerPaymentConfig {
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
-/** How long a blocked channel waits for requests already being served before it is closed. */
-const BLOCKED_CHANNEL_DRAIN_MS = 15 * 60_000;
-const BLOCKED_CHANNEL_DRAIN_POLL_MS = 250;
+/** How long a channel close waits for requests already being served before it goes ahead. */
+const IDLE_CLOSE_DRAIN_MS = 15 * 60_000;
+const IDLE_CLOSE_POLL_MS = 250;
 
 /** ~200× typical Base settle gas cost at 0.006 gwei. */
 export const DEFAULT_MIN_SETTLE_DELTA_STR = '2000';
@@ -178,6 +178,8 @@ export class SellerPaymentManager {
 
   /** Channels that must not serve more paid work until closed/renegotiated. */
   private readonly _blockedChannels = new Set<string>();
+  /** channelId -> close waiting for in-flight requests (closeSessionWhenIdle). */
+  private readonly _idleCloses = new Map<string, Promise<void>>();
 
   /**
    * channelId -> in-flight close() result. Every close path shares this map so
@@ -1875,6 +1877,9 @@ export class SellerPaymentManager {
    */
   private async _closeSupersededChannel(channel: StoredChannel): Promise<boolean> {
     const channelId = channel.sessionId;
+    // Requests still being served bill this channel; the buyer retries the
+    // replacement once they are done.
+    if (this.hasInFlightRequests(channel.peerId)) return false;
     const accepted = this._acceptedCumulative.get(channelId)
       ?? this._restorePersistedSpendingAuth(channel)
       ?? 0n;
@@ -1983,32 +1988,46 @@ export class SellerPaymentManager {
     debugWarn(
       `[SellerPayment] Blocking channel ${session.sessionId.slice(0, 18)}... for buyer ${buyerPeerId.slice(0, 12)}...: ${reason}`,
     );
-    void this._closeBlockedChannel(buyerPeerId, session.sessionId).catch((err) => {
+    void this.closeSessionWhenIdle(buyerPeerId).catch((err) => {
       debugWarn(`[SellerPayment] Failed to close blocked channel ${session.sessionId.slice(0, 18)}...: ${this._formatError(err)}`);
     });
     return true;
   }
 
-  private async _closeBlockedChannel(buyerPeerId: string, channelId: string): Promise<void> {
-    // Blocking already refuses new work; requests admitted before it still
-    // record their spend on this channel, so let them finish first.
-    const drainDeadline = Date.now() + BLOCKED_CHANNEL_DRAIN_MS;
-    while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
-      await new Promise((resolve) => setTimeout(resolve, BLOCKED_CHANNEL_DRAIN_POLL_MS));
-    }
-    if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
-    if ((this._acceptedCumulative.get(channelId) ?? 0n) > 0n) {
-      await this.settleSession(buyerPeerId);
-      return;
-    }
-    // Nothing accepted yet: settleSession would only defer to the timeout
-    // checker and forget the block. Close at the on-chain settled amount (no
-    // signature needed) so the reserve is released now; if that fails the
-    // channel stays blocked and the timeout checker retries.
-    const onChain = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
-    if (onChain.status === 'active') {
-      await this._closeWithoutAuth(channelId, buyerPeerId, onChain.channel.settled);
-    }
+  /**
+   * Close the buyer's active channel once the requests it is already serving
+   * have recorded their spend on it; one close per channel however many
+   * callers ask. Requests admitted earlier would otherwise lose their billing
+   * or charge it to a replacement channel.
+   */
+  closeSessionWhenIdle(buyerPeerId: string): Promise<void> {
+    const session = this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER);
+    if (!session) return Promise.resolve();
+    const channelId = session.sessionId;
+    const pending = this._idleCloses.get(channelId);
+    if (pending) return pending;
+    const close = (async () => {
+      const drainDeadline = Date.now() + IDLE_CLOSE_DRAIN_MS;
+      while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
+        await new Promise((resolve) => setTimeout(resolve, IDLE_CLOSE_POLL_MS));
+      }
+      if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
+      if ((this._acceptedCumulative.get(channelId) ?? 0n) > 0n || !this._blockedChannels.has(channelId)) {
+        await this.settleSession(buyerPeerId);
+        return;
+      }
+      // A blocked channel with nothing accepted: settleSession would only
+      // defer to the timeout checker and forget the block. Close at the
+      // on-chain settled amount (no signature needed) so the reserve is
+      // released now; if that fails the channel stays blocked and the timeout
+      // checker retries.
+      const onChain = classifyOnChainChannel(await this._channelsClient.getSession(channelId));
+      if (onChain.status === 'active') {
+        await this._closeWithoutAuth(channelId, buyerPeerId, onChain.channel.settled);
+      }
+    })().finally(() => this._idleCloses.delete(channelId));
+    this._idleCloses.set(channelId, close);
+    return close;
   }
 
   hasSession(buyerPeerId: string): boolean {

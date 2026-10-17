@@ -745,9 +745,41 @@ describe('SellerPaymentManager', () => {
     await new Promise((resolve) => setTimeout(resolve, 600));
     expect(settle).not.toHaveBeenCalled();
 
-    // The running request records its spend on this channel, then the close starts.
+    // Another request on the blocked channel asks for the same close; it
+    // joins the waiting one instead of closing now.
+    void manager.closeSessionWhenIdle(buyerIdentity.peerId);
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settle).not.toHaveBeenCalled();
+
+    // The running request records its spend on this channel, then the close starts, once.
     manager.endBillableRequest(buyerIdentity.peerId);
     await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId));
+    await new Promise((resolve) => setTimeout(resolve, 300));
+    expect(settle).toHaveBeenCalledOnce();
+  });
+
+  it('refuses a replacement reserve while the old channel still serves a request', async () => {
+    const oldChannel = makeChannelId(109);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, oldChannel, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, oldChannel, {
+      cumulativeAmount: 400_000n,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    const close = vi.spyOn(manager.channelsClient, 'close');
+    manager.beginBillableRequest(buyerIdentity.peerId);
+
+    const replacement = await buildSpendingAuth(buyerIdentity, sellerIdentity, makeChannelId(110), {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+      salt: '0x' + '09'.repeat(32),
+    });
+    expect(await manager.handleSpendingAuth(buyerIdentity.peerId, replacement, mux)).toBe('rejected');
+    expect(close).not.toHaveBeenCalled();
+    expect(store.getChannel(oldChannel)!.status).toBe(CHANNEL_STATUS.ACTIVE);
+    manager.endBillableRequest(buyerIdentity.peerId);
   });
 
   it('closes a blocked channel with nothing accepted at the on-chain settled amount', async () => {

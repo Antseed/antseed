@@ -557,7 +557,7 @@ export class SellerRequestHandler {
                 // Default settleSession() performs final close(); do not use
                 // settleOnly here because exhausted channels must release the
                 // buyer's unused reserve before the buyer opens a replacement.
-                void spm.settleSession(buyerPeerId).catch((err) => {
+                void spm.closeSessionWhenIdle(buyerPeerId).catch((err) => {
                   debugWarn(`[SellerHandler] Failed to close exhausted session: ${err instanceof Error ? err.message : err}`);
                 });
               }
