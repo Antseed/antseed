@@ -107,7 +107,7 @@ From the CLI, `antseed gateway workspace operator show <workspace>` reads the au
 
 ## Rewards
 
-**Rewards** shows the ANTS the workspace's usage has earned per epoch, what is ready to claim, and the authorized wallet. **Claim rewards** sends them to the authorized wallet, which you connect in the browser to sign. Without an authorized wallet, nothing can be claimed. [Recognized usage](/docs/recognized-usage) explains how rewards are earned.
+**Rewards** shows the ANTS the workspace's usage has earned per epoch, what is ready to claim, and the authorized wallet. **Claim rewards** sends them to the authorized wallet, which you connect in the browser to sign. Without an authorized wallet, nothing can be claimed. [Recognized usage](/docs/recognized-usage) explains how rewards are earned. Below them, **Staking rewards** shows what your staked positions have earned, to claim or restake with the wallet that holds them. To stake ANTS, including the workspace's buyer rewards, or to manage positions, open **Staking**; see [ANTS staking](/docs/provide/staking).
 
 ## Without a gateway
 

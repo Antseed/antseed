@@ -13,6 +13,9 @@ import { useOperator } from '../lib/operator'
 import { qk, useChain } from '../lib/queries'
 
 const RewardsClaim = lazy(() => import('../wallet/RewardsClaim'))
+const StakingDashboard = lazy(() => import('../staking/StakingDashboard').then((module) => ({ default: module.StakingDashboard })))
+/** The staking dashboard's Rewards page without its buyer rewards, which this page shows. */
+const STAKING_REWARDS = ['rewards'] as const
 
 export default function Rewards() {
   const { workspace } = useConsole()
@@ -27,7 +30,7 @@ export default function Rewards() {
 
   return (
     <div className="gc-page">
-      <PageHeader title="Rewards" description="ANTS earned by this workspace's usage. Claimed ANTS go to the authorized wallet." />
+      <PageHeader title="Rewards" description="ANTS earned by this workspace's usage and by your staking." />
       <QueryView query={rewards} rows={3}>
         {(loaded) => {
           const authorized = operator.data ? operator.data.operator : loaded.operator
@@ -49,6 +52,7 @@ export default function Rewards() {
                     {isSetAddress(data.operator)
                       ? <>Claimed ANTS go to the authorized wallet {shortId(data.operator)}, which signs the claim.</>
                       : <>Only the authorized wallet can claim, and none is set. Authorize one on <PageLink to="wallet">Wallet &amp; Funding</PageLink>.</>}
+                    {antsIsPositive(data.pendingAnts) && isSetAddress(data.operator) ? <> Or stake them into a seller pool on <PageLink to="staking">Staking</PageLink>.</> : null}
                   </span>
                 </div>
                 <Button size="sm" variant="outline" disabled={!isSetAddress(data.operator)} onClick={() => setClaiming(true)}>Claim rewards</Button>
@@ -81,6 +85,11 @@ export default function Rewards() {
           )
         }}
       </QueryView>
+      <Panel title="Staking rewards" description={<>ANTS earned by your staked positions, claimed or restaked with the wallet that holds them. Manage positions on <PageLink to="staking">Staking</PageLink>.</>}>
+        <Suspense fallback={<LoadingRows rows={2} />}>
+          <StakingDashboard pages={STAKING_REWARDS} buyerRewards={false} />
+        </Suspense>
+      </Panel>
     </div>
   )
 }

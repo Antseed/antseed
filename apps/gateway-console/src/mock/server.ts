@@ -949,6 +949,14 @@ export function installMockApi(): void {
   }
   session()
   lastSignInAt = Date.now() - FRESH_MS - 1
+  // Staking pages read a live dashboard backend when Vite proxies one (`ANTSEED_ANTS_URL`);
+  // wallet actions then sign against that backend's chain.
+  const antsProxy = import.meta.env['VITE_ANTS_PROXY'] === '1'
+  const antsChain = antsProxy
+    ? realFetch('/__ants/api/config').then((response) => response.json()).then(({ data }: { data: { evmChainId: number; chainId: string; walletRpcUrl?: string } }) => {
+      db.chain = { ...db.chain, chainId: data.evmChainId, name: data.chainId, rpcUrl: data.walletRpcUrl ?? null, explorerUrl: null }
+    }).catch(() => undefined)
+    : Promise.resolve()
   window.fetch = async (input: RequestInfo | URL, init?: RequestInit) => {
     const url = new URL(requestUrl(input), window.location.origin)
     if (!url.pathname.startsWith('/console/api/')) return realFetch(input, init)
@@ -956,6 +964,12 @@ export function installMockApi(): void {
     const path = url.pathname.slice('/console/api'.length)
     await new Promise((resolve) => setTimeout(resolve, 150 + Math.random() * 200))
     if (method !== 'GET' && new Headers(init?.headers).get('x-antseed-console') !== '1') return json(403, { error: { code: 'csrf', message: 'Missing CSRF header.' } })
+    const staking = /^\/workspaces\/[^/]+\/ants\/(.+)$/.exec(path)
+    if (staking) {
+      if (!antsProxy) return json(503, { ok: false, error: 'The mock has no staking backend. Start `antseed ants --no-open` (or scripts/ants-sandbox.mjs) and run Vite with ANTSEED_ANTS_URL set to its URL.' })
+      return realFetch(`/__ants/api/${staking[1]}${url.search}`, { method, headers: { 'content-type': 'application/json' }, ...(init?.body ? { body: init.body } : {}) })
+    }
+    if (path === '/chain') await antsChain
     if (method !== 'GET' && keySession() && !path.startsWith('/auth/')) return json(403, { error: { code: 'forbidden', message: 'API-key sessions are read-only' } })
     if (method === 'POST' && path === '/chat') return mockChatStream(init?.body ? JSON.parse(String(init.body)) : {})
     const route = match(method, path)
