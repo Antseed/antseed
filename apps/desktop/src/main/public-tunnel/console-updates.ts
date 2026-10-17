@@ -10,7 +10,8 @@
  *   is the step, as on the app's own banner: `download` fetches the newest
  *   release the app's updater found, and `install` (the default) restarts
  *   into it, downloading it first when needed. Nothing else is read, and a
- *   file that is not a whole JSON object is dropped.
+ *   file that is not a JSON object with one of those (or no action) is
+ *   dropped.
  * - `status`: JSON the app writes. `app` carries the app's own versions,
  *   which are what the console shows (the CLI's npm version is not what the
  *   app ships), and the rest is the last update run, which the console polls.
@@ -156,8 +157,9 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
   const readAction = (): RunAction | null => {
     try {
       const request = JSON.parse(readFileSync(deps.paths.request, 'utf8')) as unknown;
-      if (!request || typeof request !== 'object') return null;
-      return (request as Record<string, unknown>).action === 'download' ? 'download' : 'install';
+      if (!request || typeof request !== 'object' || Array.isArray(request)) return null;
+      const action = (request as Record<string, unknown>).action ?? 'install';
+      return action === 'download' || action === 'install' ? action : null;
     } catch {
       return null;
     }

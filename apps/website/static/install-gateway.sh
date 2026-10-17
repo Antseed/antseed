@@ -762,16 +762,19 @@ FROM="$(cli_version "$CLI_HOME")"
 TO="" PREVIOUS="" ACTIVATED="" DONE=0
 # The request is the antseed user's file: only a little of a regular file is
 # read, never through a link, and only to pick the step. Its writers rename it
-# into place whole; anything that is not a whole JSON object restarts nothing.
-# No request at all is root starting this service by hand: an install.
-REQ="{}"
+# into place whole; anything but a JSON object with no action, "download" or
+# "install" restarts nothing. No request at all is root starting this
+# service by hand: an install.
+PARSE_REQUEST='let s="";process.stdin.on("data",(c)=>{s+=c}).on("end",()=>{let r;try{r=JSON.parse(s)}catch{return}if(!r||typeof r!=="object"||Array.isArray(r))return;const a=r.action===undefined?"install":r.action;if(a==="download"||a==="install")process.stdout.write(a)})'
+ACTION=install
 if [[ -e "$REQUEST" || -L "$REQUEST" ]]; then
-  REQ=""
-  [[ -f "$REQUEST" && ! -L "$REQUEST" ]] && REQ="$(timeout 5 head -c 1024 -- "$REQUEST" 2>/dev/null | tr -d '\n')"
+  ACTION=""
+  if [[ -f "$REQUEST" && ! -L "$REQUEST" ]]; then
+    ACTION="$(timeout 5 head -c 1024 -- "$REQUEST" 2>/dev/null | timeout 10 node -e "$PARSE_REQUEST" 2>/dev/null || true)"
+  fi
 fi
-case "$REQ" in
-  '{'*'"action":"download"'*'}') ACTION=download ;;
-  '{'*'}') ACTION=install ;;
+case "$ACTION" in
+  download|install) ;;
   *) ACTION=install; rm -rf -- "$REQUEST"; fail "the update request was incomplete; ask again" ;;
 esac
 # A version this service downloaded earlier (its own status, which only root writes).
