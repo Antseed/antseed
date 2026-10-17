@@ -52,9 +52,12 @@ const HOP_BY_HOP = new Set([
   'upgrade',
 ])
 
-/** Bodies are buffered to read the model for metrics; the buyer buffers them too. */
-const MAX_MODEL_SNIFF_BYTES = 4 * 1024 * 1024
-/** Largest request body the gateway accepts, matching the buyer's default upload limit. */
+/**
+ * Largest request body the gateway accepts, matching the buyer's default
+ * upload limit. Every accepted body is parsed to read its model, the way the
+ * buyer reads it: that model decides the preset, the allow list and the
+ * accounting, so the two must never disagree about it.
+ */
 const MAX_BODY_BYTES = 64 * 1024 * 1024
 /** How much of a failed response is read for its error code and message. */
 const MAX_ERROR_BODY_BYTES = 16 * 1024
@@ -904,9 +907,9 @@ function sendBodyTooLarge(res: http.ServerResponse): void {
   sendError(res, 413, 'invalid_request_error', 'request_too_large', `Request bodies are limited to ${MAX_BODY_BYTES / 1024 / 1024} MiB`)
 }
 
-/** A JSON object body, or null (empty, too large to inspect, not JSON, not an object). */
+/** A JSON object body, or null (empty, not JSON, not an object). */
 function parseJsonBody(body: Buffer, contentType: string | undefined): Record<string, unknown> | null {
-  if (body.length === 0 || body.length > MAX_MODEL_SNIFF_BYTES) return null
+  if (body.length === 0) return null
   if (contentType && !contentType.includes('json')) return null
   try {
     return jsonObject(JSON.parse(body.toString('utf8')))

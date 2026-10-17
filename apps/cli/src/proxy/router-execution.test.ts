@@ -280,3 +280,40 @@ test('routing purchases cannot reuse the parent inference request ID', async () 
     peers: [peer], candidates: candidates(), conversationKey: null, signal: new AbortController().signal, selection: routerSelection,
   }), /distinct request ID/)
 })
+
+test('one seller advertising a model under several names is sent to the router once, at its cheapest price', async () => {
+  const aliased = {
+    ...peer,
+    providerPricing: { openai: { defaults: { inputUsdPerMillion: 1, outputUsdPerMillion: 2 }, services: {
+      'glm-5.3': { inputUsdPerMillion: 1.5, outputUsdPerMillion: 2 },
+      'glm-5-3': { inputUsdPerMillion: 1, outputUsdPerMillion: 2 },
+      'z-ai-glm-5-3': { inputUsdPerMillion: 2, outputUsdPerMillion: 2 },
+    } } },
+    providerServiceApiProtocols: { openai: { services: Object.fromEntries(['glm-5.3', 'glm-5-3', 'z-ai-glm-5-3'].map(id => [id, ['openai-chat-completions']])) } },
+  } as PeerInfo
+  const other = { ...aliased, peerId: 'b'.repeat(40) as PeerInfo['peerId'] } as PeerInfo
+  const found = eligibleRouterCandidates(request, [aliased, other], [], null, () => true)
+  assert.deepEqual(found.map(candidate => [candidate.peerId, candidate.provider, candidate.serviceId, candidate.inputUsdPerMillion]), [
+    [aliased.peerId, 'openai', 'glm-5-3', 1],
+    [other.peerId, 'openai', 'glm-5-3', 1],
+  ])
+
+  for (const tradeoff of [0, 10]) {
+    let sent: Array<{ serviceId: string; peerId: string }> = []
+    const client: ModelRoutingClientApi = {
+      listModels: listAll,
+      selectRoute: async (_request, _peers, context) => {
+        assert.deepEqual(context.options, { cost_quality_tradeoff: tradeoff })
+        sent = context.candidates.map(({ serviceId, peerId }) => ({ serviceId, peerId }))
+        return [{ serviceId: 'glm-5-3', peerId: aliased.peerId, provider: 'openai' }]
+      },
+    }
+    const routes = await executeRouterSelection({
+      node: unusedNode, client, request, peers: [aliased, other], candidates: found, conversationKey: null,
+      selection: { ...routerSelection, options: { cost_quality_tradeoff: tradeoff } }, signal: new AbortController().signal,
+      modelsCache: { get: async () => [{ id: '*' }], invalidate: () => {} } as unknown as RoutingModelsCache,
+    })
+    assert.deepEqual(sent, [{ serviceId: 'glm-5-3', peerId: aliased.peerId }, { serviceId: 'glm-5-3', peerId: other.peerId }])
+    assert.deepEqual(routes, [{ serviceId: 'glm-5-3', peerId: aliased.peerId, provider: 'openai' }])
+  }
+})
