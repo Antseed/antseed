@@ -45,6 +45,9 @@ export interface SellerPaymentConfig {
 
 /** Default minimum budget per request: $0.50 USDC (base units). */
 const DEFAULT_MIN_BUDGET_PER_REQUEST = '500000';
+/** How long a blocked channel waits for requests already being served before it is closed. */
+const BLOCKED_CHANNEL_DRAIN_MS = 15 * 60_000;
+const BLOCKED_CHANNEL_DRAIN_POLL_MS = 250;
 
 /** ~200× typical Base settle gas cost at 0.006 gwei. */
 export const DEFAULT_MIN_SETTLE_DELTA_STR = '2000';
@@ -1987,6 +1990,13 @@ export class SellerPaymentManager {
   }
 
   private async _closeBlockedChannel(buyerPeerId: string, channelId: string): Promise<void> {
+    // Blocking already refuses new work; requests admitted before it still
+    // record their spend on this channel, so let them finish first.
+    const drainDeadline = Date.now() + BLOCKED_CHANNEL_DRAIN_MS;
+    while (this.hasInFlightRequests(buyerPeerId) && Date.now() < drainDeadline) {
+      await new Promise((resolve) => setTimeout(resolve, BLOCKED_CHANNEL_DRAIN_POLL_MS));
+    }
+    if (this._channelStore.getActiveChannelByPeer(buyerPeerId, CHANNEL_ROLE.SELLER)?.sessionId !== channelId) return;
     if ((this._acceptedCumulative.get(channelId) ?? 0n) > 0n) {
       await this.settleSession(buyerPeerId);
       return;

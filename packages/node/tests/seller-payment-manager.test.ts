@@ -728,6 +728,28 @@ describe('SellerPaymentManager', () => {
     expect(settle).toHaveBeenCalledOnce();
   });
 
+  it('waits for requests already being served before closing a blocked channel', async () => {
+    const channelId = makeChannelId(108);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      isReserve: true,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    await manager.handleSpendingAuth(buyerIdentity.peerId, await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
+      cumulativeAmount: 400_000n,
+      reserveMaxAmount: '1000000',
+    }), mux);
+    const settle = vi.spyOn(manager, 'settleSession').mockResolvedValue(undefined);
+
+    manager.beginBillableRequest(buyerIdentity.peerId);
+    expect(manager.blockChannelForBuyer(buyerIdentity.peerId, 'Payment payload too large')).toBe(true);
+    await new Promise((resolve) => setTimeout(resolve, 600));
+    expect(settle).not.toHaveBeenCalled();
+
+    // The running request records its spend on this channel, then the close starts.
+    manager.endBillableRequest(buyerIdentity.peerId);
+    await vi.waitFor(() => expect(settle).toHaveBeenCalledWith(buyerIdentity.peerId));
+  });
+
   it('closes a blocked channel with nothing accepted at the on-chain settled amount', async () => {
     const channelId = makeChannelId(107);
     const reservePayload = await buildSpendingAuth(buyerIdentity, sellerIdentity, channelId, {
