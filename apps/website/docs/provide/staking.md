@@ -32,7 +32,7 @@ In the desktop app (AI VPN), open **Rewards** and choose **Manage staking ↗** 
 
 ### From the gateway console
 
-In the [gateway console](/docs/gateway/overview), **Staking** has the **Sellers** and **My positions** pages for the open workspace's buyer account, and staking rewards are on **Rewards** next to the workspace's buyer rewards. Workspace admins and organization admins can open them. The Seller, Network and Addresses pages are only in the standalone dashboard. Connect your own wallet in the page's toolbar to sign: the gateway never signs staking transactions, and each one is recorded in the audit log.
+In the [gateway console](/docs/gateway), **Staking** has the **Sellers** and **My positions** pages for the open workspace's buyer account, and staking rewards are on **Rewards** next to the workspace's buyer rewards. Workspace admins and organization admins can open them. The Seller, Network and Addresses pages are only in the standalone dashboard. Connect your own wallet in the page's toolbar to sign: the gateway never signs staking transactions, and each one is recorded in the audit log.
 
 ## Choose a seller and stake
 
