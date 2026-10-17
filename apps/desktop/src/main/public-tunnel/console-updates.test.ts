@@ -198,7 +198,7 @@ test('an incomplete request starts nothing', async () => {
     writeFileSync(h.paths.request, '');
     h.updates.poll();
     await settle();
-    for (const bad of ['{"action":"downl', '{not-json}', '{"action":"reboot"}', '[1]']) {
+    for (const bad of ['{"action":"downl', '{not-json}', '{"action":"reboot"}', '{"action":null}', '[1]']) {
       writeFileSync(h.paths.request, bad);
       h.updates.poll();
       await settle();

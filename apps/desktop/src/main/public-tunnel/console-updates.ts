@@ -158,7 +158,7 @@ export function createConsoleUpdates(deps: ConsoleUpdatesDependencies) {
     try {
       const request = JSON.parse(readFileSync(deps.paths.request, 'utf8')) as unknown;
       if (!request || typeof request !== 'object' || Array.isArray(request)) return null;
-      const action = (request as Record<string, unknown>).action ?? 'install';
+      const { action = 'install' } = request as Record<string, unknown>;
       return action === 'download' || action === 'install' ? action : null;
     } catch {
       return null;

@@ -762,15 +762,15 @@ FROM="$(cli_version "$CLI_HOME")"
 TO="" PREVIOUS="" ACTIVATED="" DONE=0
 # The request is the antseed user's file: only a little of a regular file is
 # read, never through a link, and only to pick the step. Its writers rename it
-# into place whole; anything but a JSON object with no action, "download" or
-# "install" restarts nothing. No request at all is root starting this
+# into place whole; anything over 1 KiB, or anything but a JSON object with no
+# action, "download" or "install", restarts nothing. No request at all is root starting this
 # service by hand: an install.
-PARSE_REQUEST='let s="";process.stdin.on("data",(c)=>{s+=c}).on("end",()=>{let r;try{r=JSON.parse(s)}catch{return}if(!r||typeof r!=="object"||Array.isArray(r))return;const a=r.action===undefined?"install":r.action;if(a==="download"||a==="install")process.stdout.write(a)})'
+PARSE_REQUEST='const b=[];process.stdin.on("data",(c)=>{b.push(c)}).on("end",()=>{const s=Buffer.concat(b);if(s.length>1024)return;let r;try{r=JSON.parse(s.toString("utf8"))}catch{return}if(!r||typeof r!=="object"||Array.isArray(r))return;const a=r.action===undefined?"install":r.action;if(a==="download"||a==="install")process.stdout.write(a)})'
 ACTION=install
 if [[ -e "$REQUEST" || -L "$REQUEST" ]]; then
   ACTION=""
   if [[ -f "$REQUEST" && ! -L "$REQUEST" ]]; then
-    ACTION="$(timeout 5 head -c 1024 -- "$REQUEST" 2>/dev/null | timeout 10 node -e "$PARSE_REQUEST" 2>/dev/null || true)"
+    ACTION="$(timeout 5 head -c 1025 -- "$REQUEST" 2>/dev/null | timeout 10 node -e "$PARSE_REQUEST" 2>/dev/null || true)"
   fi
 fi
 case "$ACTION" in
