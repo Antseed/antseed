@@ -26,10 +26,16 @@ import {
   isRoutingSelection,
   DEFAULT_BUYER_IDENTITY,
   rankModelRoutes,
+  SellerHealthBook,
+  orderAdaptiveRoutes,
+  adaptiveFirstTokenTimeoutMs,
   sanitizePeerDisplayName,
   type AntseedNode,
   type FaultAttribution,
   type BuyerSpendEvent,
+  type ResponseAuthEvent,
+  type AdaptiveRouteScore,
+  type RouteRequestShape,
   type PeerInfo,
   type NetworkServiceOffer,
   type PeerMetadata,
@@ -48,6 +54,7 @@ import { canonicalModelKey } from '@antseed/node/model-identity'
 import {
   createStreamingAdapter,
   detectRequestServiceApiProtocol,
+  extractRequestBodyFields,
   type ServiceApiProtocol,
   type StreamingResponseAdapter,
   transformRequest,
@@ -125,6 +132,7 @@ import {
   type PeerHealthEntry,
 } from './peer-health.js'
 import { PeerAttributionTracker, HEARTBEAT_MS } from './peer-attribution.js'
+import { isEmptyAnswer, isSellerVerificationFailure } from './response-quality.js'
 import { estimateAnthropicPromptTokens, isCountTokensPath } from './count-tokens.js'
 import { runVerifier, selectVerifier, verifierSupportFingerprint, type VerifierPolicy, type SellerReach, type VerifyOutcome } from '../plugins/verifier.js'
 import { TEE_VERIFIER_ID } from '@antseed/node/tee-status'
@@ -219,6 +227,8 @@ export interface BuyerProxyConfig {
    * failure spacing directly instead of sleeping past the coalesce window.
    */
   now?: () => number
+  /** Spreading and probing in automatic routing. Test seam: tests turn both off for a deterministic order. */
+  adaptiveRouting?: { random?: () => number; spreadTolerance?: number; explorationRate?: number }
   /** Verifier-SDK policy: which verifier the buyer commits to + whether it is required. */
   verifier?: VerifierPolicy
   /** Loads stored buyer identities on demand; defaults to one reading `dataDir`. */
@@ -279,23 +289,9 @@ const BALANCE_FRESH_FLOOR_MS = 5_000
 const CONTROL_SECRET_RECHECK_MS = 1_000
 /** Floor between forced re-reads on a secret mismatch, so a stream of bad secrets can't hammer the disk. */
 const CONTROL_SECRET_FORCED_RECHECK_MS = 100
-const LATENCY_EMA_ALPHA = 0.3
-const MAX_LATENCY_ENTRIES = 4096
-/** Responses with fewer output tokens than this say little about a seller's generation speed. */
-const MIN_THROUGHPUT_TOKENS = 20
+const SELLER_HEALTH_PERSIST_DELAY_MS = 5_000
 const ZERO_ADDRESS = '0x0000000000000000000000000000000000000000'
 
-/** Moves `key`'s EMA toward `sample`; the map stays least recently measured first and bounded. */
-function updateEma(map: Map<string, number>, key: string, sample: number): void {
-  if (!Number.isFinite(sample) || sample < 0) return
-  const previous = map.get(key)
-  map.delete(key)
-  map.set(key, previous === undefined ? sample : previous + LATENCY_EMA_ALPHA * (sample - previous))
-  if (map.size > MAX_LATENCY_ENTRIES) {
-    const oldest = map.keys().next().value
-    if (oldest !== undefined) map.delete(oldest)
-  }
-}
 
 /** Exact USDC decimal string from base units, e.g. 1500000n -> "1.500000". */
 function formatUsdcBaseUnits(amount: bigint): string {
@@ -363,15 +359,66 @@ function retryableStatusCodesFor(gatewayAutoRoute: boolean): Set<number> {
  * Whether the routing loop should try the next seller. On automatic routing a
  * seller's model_not_found also moves on: its cached catalog was stale (the
  * seller stopped serving the model), and another seller may still serve it.
- * A pinned request keeps the pinned seller's answer.
+ * `extraAttempt` also moves on after any other 4xx except 402: a client error
+ * may be the seller's doing (it refuses a parameter other sellers of the
+ * model accept) or the request's, and only another seller can
+ * tell which. A pinned request keeps the pinned seller's answer.
  */
 function shouldTryNextPeer(
   statusCode: number,
   modelNotFound: boolean,
   pinned: boolean,
   gatewayAutoRoute: boolean,
+  extraAttempt = false,
 ): boolean {
-  return retryableStatusCodesFor(gatewayAutoRoute).has(statusCode) || (modelNotFound && !pinned)
+  return retryableStatusCodesFor(gatewayAutoRoute).has(statusCode)
+    || (modelNotFound && !pinned)
+    || (extraAttempt && !pinned && statusCode >= 400 && statusCode < 500 && statusCode !== 402)
+}
+
+type FailedAttempt = {
+  description: string
+  /**
+   * Only the seller can cause this (a 5xx, an upstream auth failure, a
+   * dropped request): it counts even when no other seller serves the request.
+   * Other failures (a client error, an empty answer) may be the request's and
+   * count only when another seller then serves it.
+   */
+  sellerOnly: boolean
+  weight: number
+}
+
+function classifyFailedAttempt(result: DispatchFailure): FailedAttempt {
+  if (result.emptyAnswer) return { description: 'answered with no text or tool call', sellerOnly: false, weight: 1 }
+  if (result.timedOut) return { description: result.errorMessage ?? 'no answer in time', sellerOnly: true, weight: 0.5 }
+  if (result.errorMessage) return { description: `request failed (${result.errorMessage.split('\n')[0]!.slice(0, 120)})`, sellerOnly: true, weight: 1 }
+  // Busy is not broken: it costs the seller less, and only when another seller served.
+  if (result.statusCode === 429) return { description: 'HTTP 429 (busy)', sellerOnly: false, weight: 0.5 }
+  const sellerOnly = result.statusCode >= 500 || result.statusCode === 401 || result.statusCode === 403 || result.statusCode === 408
+  return { description: `HTTP ${result.statusCode}`, sellerOnly, weight: 1 }
+}
+
+/**
+ * The client's own prompt-cache key (OpenAI `prompt_cache_key`), which asks
+ * for requests sharing it to land where their cache is.
+ */
+function promptCacheKey(request: SerializedHttpRequest): string | null {
+  const value = extractRequestBodyFields(request.headers, request.body)?.['prompt_cache_key']
+  return typeof value === 'string' && value.trim() ? `cache:${value.trim().slice(0, 256)}` : null
+}
+
+/**
+ * Size of a request, for weighing a seller's price against its speed: input
+ * from the body size (~4 bytes a token), output from the requested cap.
+ */
+function requestShape(request: SerializedHttpRequest): RouteRequestShape {
+  const fields = extractRequestBodyFields(request.headers, request.body)
+  const cap = [fields?.['max_tokens'], fields?.['max_completion_tokens'], fields?.['max_output_tokens']]
+    .find((value): value is number => typeof value === 'number' && Number.isFinite(value) && value > 0)
+  return {
+    inputTokens: Math.round(request.body.length / 4),
+    outputTokens: Math.min(cap ?? 400, 2_000),
+  }
 }
 const MODEL_RATE_LIMIT_MAX_ATTEMPTS_PER_PEER = 3
 const MODEL_RATE_LIMIT_RETRY_DELAYS_MS = [250, 750] as const
@@ -558,8 +605,17 @@ type BuyerDispatchContext = {
 }
 
 type PeerDispatchResult =
-  | { done: true }
-  | { done: false; statusCode: number; responseBody: Buffer; responseHeaders: Record<string, string>; errorMessage: string | null }
+  /** `emptyAnswer`: the answer sent to the client had no text and no tool call. */
+  | { done: true; emptyAnswer?: boolean }
+  | {
+    done: false; statusCode: number; responseBody: Buffer; responseHeaders: Record<string, string>; errorMessage: string | null
+    /** The seller no longer serves the model: a stale catalog entry, not a rejected request. */
+    modelNotFound?: boolean
+    /** A 2xx answer with no text and no tool call, held back so another seller can be asked. */
+    emptyAnswer?: boolean
+    /** Given up on after the per-attempt timeout: slow, not necessarily broken. */
+    timedOut?: boolean
+  }
 
 type DispatchFailure = Extract<PeerDispatchResult, { done: false }>
 
@@ -1126,6 +1182,15 @@ export class BuyerProxy {
   private _peerHealth: Map<string, PeerHealthEntry> = new Map()
   /** Decides whether a failure is the peer's fault at all. */
   private readonly _attribution = new PeerAttributionTracker()
+  /**
+   * What this buyer has seen of each seller and model: how often requests
+   * succeed and how fast answers come. Automatic routing ranks by it.
+   */
+  private _sellerHealth = new SellerHealthBook()
+  /** Requests in flight per seller, to stop sending a seller more than it says it can take at once. */
+  private readonly _inFlightBySeller = new Map<string, number>()
+  private _peerHealthPersistTimer: ReturnType<typeof setTimeout> | null = null
+  private readonly _adaptiveRouting: NonNullable<BuyerProxyConfig['adaptiveRouting']>
   private _heartbeatHandle: ReturnType<typeof setInterval> | null = null
   private readonly _now: () => number
   /** Latest relayer receipt per sweep authNonce, for CLI progress polling. */
@@ -1159,14 +1224,6 @@ export class BuyerProxy {
   private _controlSecretCheckedAt = 0
   private _controlSecretForcedAt = 0
   private _loggedUnauthenticatedPolicy = false
-  /**
-   * Per-seller speed measured by this proxy on streamed requests, as EMAs:
-   * time to the first response frame (ms) and output tokens per second after
-   * it. Kept apart so a long answer doesn't read as a slow seller. Latency
-   * feeds `sort: 'latency'`; sellers without a measurement rank after measured ones.
-   */
-  private readonly _peerLatencyMs = new Map<string, number>()
-  private readonly _peerTokensPerSecond = new Map<string, number>()
   private readonly _balanceReader: BuyerBalanceReader | null
   private readonly _balanceCache = new ChainReadCache()
   private readonly _restartHandler: (() => void | Promise<void>) | null
@@ -1209,6 +1266,7 @@ export class BuyerProxy {
         }
       : null
     this._now = config.now ?? (() => Date.now())
+    this._adaptiveRouting = { ...config.adaptiveRouting }
     this._server = createServer((req, res) => {
       this._handleRequest(req, res).catch((err) => {
         log('Unhandled error:', err)
@@ -1239,6 +1297,19 @@ export class BuyerProxy {
       spendEventNode.on('payment:spend', (event: BuyerSpendEvent & { buyerIdentity?: string }) => {
         this._attributeSpend(event)
         this._spendAttribution.record(event)
+      })
+    }
+
+    const responseAuthNode = this._node as AntseedNode & {
+      on?: (event: 'response-auth', listener: (event: ResponseAuthEvent) => void) => unknown
+    }
+    if (typeof responseAuthNode.on === 'function') {
+      responseAuthNode.on('response-auth', (event: ResponseAuthEvent) => {
+        if (event.verified || !isSellerVerificationFailure(event.verificationError)) return
+        // A forged or mismatched receipt can only be the seller's doing: it
+        // counts as several failed requests.
+        this._recordSellerFailure(event.sellerPeerId, event.advertisedService, `response failed verification (${event.verificationError})`, 3)
+        log(`Peer ${event.sellerPeerId.slice(0, 12)}... response failed verification (${event.verificationError}); counted against its ${event.advertisedService} health.`)
       })
     }
 
@@ -1433,26 +1504,62 @@ export class BuyerProxy {
     }
   }
 
-  /** Latency is tracked per seller and model: one seller can serve a small model fast and a large one slowly. */
-  private _latencyKey(peerId: string, serviceId: string | null): string {
-    return `${peerId.toLowerCase()}|${serviceId ? policyModelKey(serviceId) : ''}`
+  /** Health is tracked per seller and model: one seller can serve a small model fast and a large one slowly. */
+  private _healthServiceKey(serviceId: string | null): string | null {
+    return serviceId ? policyModelKey(serviceId) : null
   }
 
   private _peerLatency(peerId: string, serviceId: string | null): number | null {
-    return this._peerLatencyMs.get(this._latencyKey(peerId, serviceId)) ?? null
+    return this._sellerHealth.stats(peerId, this._healthServiceKey(serviceId), this._now())?.firstTokenMs ?? null
   }
 
   private _peerThroughput(peerId: string, serviceId: string | null): number | null {
-    return this._peerTokensPerSecond.get(this._latencyKey(peerId, serviceId)) ?? null
+    return this._sellerHealth.stats(peerId, this._healthServiceKey(serviceId), this._now())?.tokensPerSecond ?? null
   }
 
-  /** One streamed request: time to its first frame, then output tokens over the rest of the stream. */
-  private _recordPeerSpeed(peerId: string, serviceId: string | null, firstFrameMs: number, streamMs: number, outputTokens: number): void {
-    const key = this._latencyKey(peerId, serviceId)
-    updateEma(this._peerLatencyMs, key, firstFrameMs)
-    if (outputTokens >= MIN_THROUGHPUT_TOKENS && streamMs > 0) {
-      updateEma(this._peerTokensPerSecond, key, outputTokens / (streamMs / 1000))
+  /**
+   * Sellers the paying identity already has an open payment channel with, so
+   * routing can spread traffic without reserving funds on new sellers. Null
+   * when the node cannot say.
+   */
+  private _openChannelPeers(buyerIdentity: string | undefined): Set<string> | null {
+    const node = this._node as Partial<Pick<AntseedNode, 'getActiveBuyerChannels'>>
+    if (typeof node.getActiveBuyerChannels !== 'function') return null
+    try {
+      return new Set(node.getActiveBuyerChannels(buyerIdentity).map((channel) => channel.peerId.toLowerCase()))
+    } catch {
+      return null
     }
+  }
+
+  private _attemptTimeoutMs(timedLike: { peerId: string; serviceId: string }, request: SerializedHttpRequest): number | null {
+    return adaptiveFirstTokenTimeoutMs(
+      this._sellerHealth.stats(timedLike.peerId, this._healthServiceKey(timedLike.serviceId), this._now()),
+      requestShape(request).outputTokens,
+      requestWantsStreaming(request.headers, request.body),
+    )
+  }
+
+  /** A seller answered: count the success and how fast the answer came. */
+  private _recordSellerSuccess(peerId: string, serviceId: string | null, timing: { firstTokenMs: number; streamMs?: number; outputTokens: number; streamed: boolean }): void {
+    this._sellerHealth.recordSuccess(peerId, this._healthServiceKey(serviceId), this._now(), timing)
+    this._schedulePeerHealthPersist()
+  }
+
+  /** A seller failed a request: count it against that seller and model. */
+  private _recordSellerFailure(peerId: string, serviceId: string | null, reason: string, weight = 1): void {
+    this._sellerHealth.recordFailure(peerId, this._healthServiceKey(serviceId), this._now(), reason, weight)
+    this._schedulePeerHealthPersist()
+  }
+
+  /** Seller health changes on every request: write it at most every few seconds, not per request. */
+  private _schedulePeerHealthPersist(): void {
+    if (this._peerHealthPersistTimer) return
+    this._peerHealthPersistTimer = setTimeout(() => {
+      this._peerHealthPersistTimer = null
+      void this._persistPeerHealthToState()
+    }, SELLER_HEALTH_PERSIST_DELAY_MS)
+    this._peerHealthPersistTimer.unref?.()
   }
 
   /**
@@ -1472,6 +1579,10 @@ export class BuyerProxy {
     requiredParameters: readonly string[]
     requestPolicy: RoutingPolicy | null
     preferredPeerId: string | null
+    /** Route preview: no random spreading or probing, so it shows the expected order. */
+    deterministic?: boolean
+    /** Stable key of the conversation, so all its turns go to the seller holding its prompt cache. */
+    affinityKey?: string | null
   }) {
     const { modelPeers, modelPlans, request, requestProtocol, requestedService, explicitProvider, requiredParameters } = input
     const policyRouter = this._node.router as BuyerPolicyRouter | null | undefined
@@ -1571,6 +1682,33 @@ export class BuyerProxy {
       candidates = this._readyFirst(ranked, verdicts, now)
     }
     const isCooling = (candidate: (typeof ranked)[number]): boolean => isModelRouteCoolingDown(candidate, now)
+    const openChannels = this._openChannelPeers(request.headers[BUYER_IDENTITY_HEADER])
+    // Among the sellers the buyer's limits allow, rank by what this buyer has
+    // seen them do: expected cost of a successful answer, spread across the
+    // sellers close to the best. An explicit gateway sort or route chain
+    // reorders afterwards, but still tries unhealthy sellers late.
+    const adaptive = orderAdaptiveRoutes(candidates, (candidate) => ({
+      peerId: candidate.peerId,
+      serviceId: this._healthServiceKey(candidate.serviceId),
+      inputUsdPerMillion: candidate.inputUsdPerMillion,
+      outputUsdPerMillion: candidate.outputUsdPerMillion,
+      requestUsd: candidate.minImageUsdPerImage,
+      coolingDown: isCooling(candidate),
+      ...(openChannels ? { channelOpen: modelRouteTotalPrice(candidate) === 0 || openChannels.has(candidate.peerId.toLowerCase()) } : {}),
+      saturated: typeof candidate.peer.maxConcurrency === 'number' && candidate.peer.maxConcurrency > 0
+        && (this._inFlightBySeller.get(candidate.peerId.toLowerCase()) ?? 0) >= candidate.peer.maxConcurrency,
+    }), this._sellerHealth, requestShape(request), {
+      now,
+      affinityKey: input.affinityKey ?? null,
+      ...this._adaptiveRouting,
+      ...(input.deterministic ? { spreadTolerance: 0, explorationRate: 0 } : {}),
+    })
+    // Without routing preferences the buyer ranks by reputation, as before;
+    // health only moves sellers that fail often behind the others.
+    candidates = routingPreferences
+      ? adaptive.ordered
+      : [...candidates].sort((a, b) => Number(adaptive.scores.get(a)!.unhealthy) - Number(adaptive.scores.get(b)!.unhealthy))
+    const healthOf = (candidate: (typeof ranked)[number]): AdaptiveRouteScore => adaptive.scores.get(candidate)!
     let chainPosition: Map<string, number> | null = null
     if (effectivePolicy) {
       const ordering = orderByPolicy(candidates, effectivePolicy, requestedService, {
@@ -1579,6 +1717,7 @@ export class BuyerProxy {
         trustScore: (candidate) => (candidate.reputation >= 0 ? candidate.reputation : null),
         latencyMs: (candidate) => this._peerLatency(candidate.peerId, candidate.serviceId),
         coolingDown: isCooling,
+        unhealthy: (candidate) => healthOf(candidate).unhealthy,
       })
       for (const candidate of candidates) {
         const reason = ordering.excluded.get(normalizePolicyPeerId(candidate.peerId))
@@ -1594,6 +1733,7 @@ export class BuyerProxy {
       const preferredIndex = candidates.findIndex((candidate) => (
         candidate.peer.peerId.toLowerCase() === preferredPeerId
         && !isCoolingDown(this._peerHealth.get(candidate.peer.peerId), now)
+        && !healthOf(candidate).unhealthy
       ))
       if (preferredIndex > 0) {
         const [preferred] = candidates.splice(preferredIndex, 1)
@@ -1607,14 +1747,18 @@ export class BuyerProxy {
       verdict.rank = index + 1
       const position = chainPosition?.get(normalizePolicyPeerId(candidate.peerId))
       if (position !== undefined) verdict.reasons.push(`route chain #${position + 1}`)
+      const health = healthOf(candidate)
       if (isCooling(candidate)) verdict.reasons.push('cooling down (tried last)')
+      else if (health.unhealthy) verdict.reasons.push(`failing lately: ${health.stats?.lastFailureReason ?? 'failed requests'} (tried after healthy sellers)`)
+      if (adaptive.pool.length > 1 && adaptive.pool.includes(candidate)) verdict.reasons.push(`shares traffic with ${adaptive.pool.length - 1} other seller(s)`)
       if (modelRouteTotalPrice(candidate) === 0) verdict.reasons.push('free')
+      verdict.reasons.push(`success ~${Math.round(health.successProbability * 100)}%${health.stats ? '' : ' (no data yet)'}`)
       const latency = this._peerLatency(candidate.peerId, candidate.serviceId)
-      if (latency !== null) verdict.reasons.push(`latency ~${Math.round(latency)}ms`)
+      if (latency !== null) verdict.reasons.push(`first token ~${Math.round(latency)}ms`)
       const throughput = this._peerThroughput(candidate.peerId, candidate.serviceId)
       if (throughput !== null) verdict.reasons.push(`~${Math.round(throughput)} tok/s`)
     })
-    return { candidates, verdicts: [...verdicts.values()], effectivePolicy }
+    return { candidates, verdicts: [...verdicts.values()], effectivePolicy, explored: adaptive.explored }
   }
 
   /**
@@ -1661,6 +1805,7 @@ export class BuyerProxy {
       requiredParameters: [],
       requestPolicy,
       preferredPeerId: null,
+      deterministic: true,
     })
     const effective = plan.effectivePolicy
     const modelAllowed = policyAllowsModel(effective, model)
@@ -1936,6 +2081,7 @@ export class BuyerProxy {
       // impossibly distant, so a restart can never extend one. Nothing new can
       // escalate until a success re-establishes that the buyer is healthy.
       this._peerHealth = parsePersistedPeerHealth(parsed, this._now())
+      this._sellerHealth = SellerHealthBook.parse((parsed as { sellerHealth?: unknown }).sellerHealth, this._now())
       const peers = parsePersistedPeers(parsed)
       if (peers.length === 0) {
         return
@@ -1959,6 +2105,11 @@ export class BuyerProxy {
   async stop(): Promise<void> {
     this._teeVerification.close()
     await this._teeControl.close()
+    if (this._peerHealthPersistTimer) {
+      clearTimeout(this._peerHealthPersistTimer)
+      this._peerHealthPersistTimer = null
+      await this._persistPeerHealthToState().catch(() => {})
+    }
     if (this._stateWatchDebounce) {
       clearTimeout(this._stateWatchDebounce)
       this._stateWatchDebounce = null
@@ -2491,6 +2642,7 @@ export class BuyerProxy {
     this._peerHealth = prunePeerHealth(this._peerHealth, now)
     await this._mergeStateFile({
       peerHealth: serializePeerHealth(this._peerHealth),
+      sellerHealth: this._sellerHealth.serialize(now),
       peerHealthUpdatedAt: now,
     })
   }
@@ -2712,6 +2864,18 @@ export class BuyerProxy {
         suppressedUntil: attribution.suppressedUntil,
         lastSuppressedBy: attribution.lastSuppressedBy,
         peers,
+        // What automatic routing has learned of each seller and model.
+        sellerHealth: this._sellerHealth.entries(now).map(({ peerId, serviceId, stats }) => ({
+          peerId,
+          serviceId,
+          successes: Math.round(stats.successes * 100) / 100,
+          failures: Math.round(stats.failures * 100) / 100,
+          firstTokenMs: stats.firstTokenMs === null ? null : Math.round(stats.firstTokenMs),
+          tokensPerSecond: stats.tokensPerSecond === null ? null : Math.round(stats.tokensPerSecond),
+          lastSuccessAt: stats.lastSuccessAt,
+          lastFailureAt: stats.lastFailureAt,
+          lastFailureReason: stats.lastFailureReason,
+        })),
       }))
       return
     }
@@ -2746,6 +2910,8 @@ export class BuyerProxy {
       // Deliberately does not stamp a success: the user is asking us to give
       // the peer another chance, not asserting that it answered.
       this._rollbackPeerHealth([normalized], 'cleared by request')
+      this._sellerHealth.forget(normalized)
+      void this._persistPeerHealthToState()
       res.writeHead(200, { 'content-type': 'application/json' })
       res.end(JSON.stringify({ ok: true, peerId: normalized }))
       return
@@ -3997,7 +4163,7 @@ export class BuyerProxy {
       }
 
       const router = this._node.router
-      const { candidates, effectivePolicy } = this._planModelRoutes({
+      const { candidates, effectivePolicy, explored } = this._planModelRoutes({
         modelPeers,
         modelPlans,
         request: serializedReq,
@@ -4007,6 +4173,9 @@ export class BuyerProxy {
         requiredParameters,
         requestPolicy,
         preferredPeerId: preferredConversationPeerId,
+        // Conversations the client identifies (session id, prompt-cache key)
+        // stay on one seller so its prompt cache keeps paying off.
+        affinityKey: routingConversationKey ?? promptCacheKey(serializedReq),
       })
       const requireVerified = effectivePolicy?.requireVerified === true
       if (candidates.length === 0) {
@@ -4052,6 +4221,26 @@ export class BuyerProxy {
       // Set once a seller refused for lack of deposits: every other paid
       // seller would too, so only free ones are still worth trying.
       let unfunded = false
+      // Sellers that failed this request, whatever the failure: an error
+      // status, a dropped request, an empty answer. If a later seller serves
+      // the same request, they could have too, and each failure counts
+      // against its seller's health. If none does, the request itself may be
+      // at fault: only failures that can only be the seller's count, and only
+      // while the buyer itself is known to be healthy.
+      const failedSellers = new Map<string, { serviceId: string; failure: FailedAttempt }>()
+      const countFailures = (servedBy: string | null): void => {
+        const buyerHealthy = this._attribution.isBuyerHealthy(this._now())
+        for (const [peerId, { serviceId, failure }] of failedSellers) {
+          if (servedBy === null && (!failure.sellerOnly || !buyerHealthy)) continue
+          const detail = servedBy ? `${failure.description} (peer ${servedBy.slice(0, 12)}... served it)` : failure.description
+          this._recordSellerFailure(peerId, serviceId, detail, failure.weight)
+          log(`Peer ${peerId.slice(0, 12)}... ${detail}; counted against its ${serviceId} health.`)
+        }
+      }
+      // Failures that only maybe are the seller's (a client error, an empty
+      // answer) get one extra seller to compare against, not the whole list:
+      // when every seller fails, the client gets that answer quickly.
+      let comparisonUsed = false
       const isFree = (candidate: (typeof candidates)[number]): boolean => modelRouteTotalPrice(candidate) === 0
       for (const [index, selected] of candidates.entries()) {
         if (unfunded && !isFree(selected)) continue
@@ -4086,8 +4275,17 @@ export class BuyerProxy {
             signal,
             requestPolicy !== null,
             routingConversationKey,
+            !comparisonUsed && index + 1 < candidates.length,
+            // With another seller to fall back on, don't wait far longer than
+            // this one usually takes; the last seller gets the full timeout. A
+            // probe of a seller with no recent data waits no longer than the
+            // seller it stands in for would.
+            index + 1 < candidates.length && !nativeVideo
+              ? this._attemptTimeoutMs(selected === explored ? candidates[index + 1]! : selected, selected.request)
+              : null,
           )
           if (result.done) {
+            countFailures(res.statusCode < 400 && !result.emptyAnswer ? selected.peer.peerId : null)
             // Only a seller that answered becomes the chat's route: an error
             // must not pin later turns to it.
             if (trackedConversationId && res.statusCode < 400) {
@@ -4103,6 +4301,15 @@ export class BuyerProxy {
           // started (and been charged), and follow-ups only exist on one seller.
           if (nativeVideo) return result
           lastRetry = result
+          if (!isBuyerFault(result) && !result.modelNotFound && result.statusCode !== 402) {
+            const failure = classifyFailedAttempt(result)
+            failedSellers.set(selected.peer.peerId, { serviceId: selected.serviceId, failure })
+            if (!failure.sellerOnly && result.statusCode !== 429) {
+              comparisonUsed = true
+              log(`Peer ${selected.peer.peerId.slice(0, 12)}... ${failure.description}; asking one more seller.`)
+              break
+            }
+          }
           if (isBuyerFault(result)) {
             const freeLeft = candidates.slice(index + 1).some(isFree)
             if (result.statusCode === 402 && freeLeft) {
@@ -4124,6 +4331,7 @@ export class BuyerProxy {
         }
       }
 
+      countFailures(null)
       return lastRetry ?? dispatchFailure(502, { 'content-type': 'application/json' }, JSON.stringify({
         error: {
           type: 'peer_verification_failed',
@@ -4346,7 +4554,12 @@ export class BuyerProxy {
         conversationPinAtRouting,
       )
     }
-    // A pinned peer is never retried against another peer; the caller reports any failure.
+    // A pinned peer is never retried against another peer; the caller reports
+    // any failure. Failures only the seller can cause still count against it.
+    if (!result.done && !isBuyerFault(result) && this._attribution.isBuyerHealthy(this._now())) {
+      const failure = classifyFailedAttempt(result)
+      if (failure.sellerOnly) this._recordSellerFailure(selectedPeer.peerId, pinnedServiceId ?? requestedService, failure.description, failure.weight)
+    }
     return result
   }
 
@@ -4467,6 +4680,9 @@ export class BuyerProxy {
     requestSignal: AbortSignal,
     gatewayRouted = false,
     routingConversationKey: string | null = null,
+    extraAttempt = false,
+    /** Give up on this seller if it has not started answering by then, so the next one can be tried. */
+    attemptTimeoutMs: number | null = null,
   ): Promise<PeerDispatchResult> {
     const gatewayAutoRoute = gatewayRouted && !pinned
     const selectedRoutePlan = routePlanByPeerId.get(selectedPeer.peerId)
@@ -4589,15 +4805,27 @@ export class BuyerProxy {
     const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
       adaptPeerFaultErrorResponse(response, peerResponseProtocol, { pinned })
     const startTime = Date.now()
+    const attemptAbort = new AbortController()
+    const attemptSignal = attemptTimeoutMs ? AbortSignal.any([requestSignal, attemptAbort.signal]) : requestSignal
+    const attemptTimer = attemptTimeoutMs
+      ? setTimeout(() => attemptAbort.abort(new Error(`no answer within ${Math.round(attemptTimeoutMs / 1000)}s, about 4x this seller's usual time`)), attemptTimeoutMs)
+      : null
+    attemptTimer?.unref?.()
+    const sellerKey = selectedPeer.peerId.toLowerCase()
+    this._inFlightBySeller.set(sellerKey, (this._inFlightBySeller.get(sellerKey) ?? 0) + 1)
     try {
       if (wantsStreaming) {
         let streamed = false
         let firstFrameAt = 0
+        let streamStartBody: Uint8Array = new Uint8Array()
         const response = await this._node.sendRequestStream(selectedPeer, requestForPeer, {
           onResponseStart: (startResponse: SerializedHttpResponse, metadata: RequestStreamResponseMetadata) => {
             if (!metadata.streaming) return
+            // The seller is answering: from here a slow answer is still an answer.
+            if (attemptTimer) clearTimeout(attemptTimer)
             streamed = true
             firstFrameAt = Date.now()
+            streamStartBody = startResponse.body
             const adaptedStartResponse = streamResponseAdapter
               ? streamResponseAdapter.adaptStart(startResponse)
               : startResponse
@@ -4630,7 +4858,7 @@ export class BuyerProxy {
               }
             }
           },
-        }, { signal: requestSignal, pinned, ...(buyerIdentity ? { buyerIdentity } : {}) })
+        }, { signal: attemptSignal, pinned, ...(buyerIdentity ? { buyerIdentity } : {}) })
 
         recordRouterUsage(this._modelRoutingClient, routingConversationKey, requestForPeer, response, selectedPeer, requestSignal)
 
@@ -4663,8 +4891,9 @@ export class BuyerProxy {
           responseForClient.body,
           selectedPeer,
         )
+        let streamTiming: { firstTokenMs: number; streamMs: number; outputTokens: number; streamed: true } | null = null
         if (streamed && responseForClient.statusCode < 400) {
-          this._recordPeerSpeed(selectedPeer.peerId, latencyServiceId, firstFrameAt - startTime, finishedAt - firstFrameAt, telemetry.usage.outputTokens)
+          streamTiming = { firstTokenMs: firstFrameAt - startTime, streamMs: finishedAt - firstFrameAt, outputTokens: telemetry.usage.outputTokens, streamed: true }
         }
         const responseFault = responseFaultAttribution(responseForClient)
         const modelNotFound = !streamed
@@ -4691,11 +4920,17 @@ export class BuyerProxy {
         }
 
         if (streamed) {
+          const streamedEmpty = !pinned && responseForClient.statusCode < 300
+            && isEmptyAnswer(response.headers['content-type'], Buffer.concat([streamStartBody, response.body]))
+          // Already sent, so there is nothing to compare against: an empty
+          // answer counts against the seller by itself.
+          if (streamedEmpty) this._recordSellerFailure(selectedPeer.peerId, latencyServiceId, 'streamed an answer with no text or tool call')
+          else if (streamTiming) this._recordSellerSuccess(selectedPeer.peerId, latencyServiceId, streamTiming)
           // Headers already sent to client, can't retry
           if (!res.writableEnded) {
             res.end()
           }
-          return { done: true }
+          return { done: true, emptyAnswer: streamedEmpty }
         }
 
         // Non-streamed response — check if retryable
@@ -4706,22 +4941,30 @@ export class BuyerProxy {
           requestForPeer.requestId,
           latencyMs,
         )
-        if (shouldTryNextPeer(responseForClient.statusCode, modelNotFound, pinned, gatewayAutoRoute)) {
+        const answeredEmpty = !pinned && responseForClient.statusCode < 300
+          && isEmptyAnswer(responseForClient.headers['content-type'], responseForClient.body)
+        const emptyAnswer = extraAttempt && answeredEmpty
+        if (emptyAnswer || shouldTryNextPeer(responseForClient.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
           return {
             done: false,
             statusCode: responseForClient.statusCode,
             responseBody: Buffer.from(responseForClient.body),
             responseHeaders,
             errorMessage: null,
+            modelNotFound,
+            emptyAnswer,
           }
         }
 
+        if (responseForClient.statusCode < 300 && !answeredEmpty && !isControlPlaneServicesPath(requestForPeer.path)) {
+          this._recordSellerSuccess(selectedPeer.peerId, latencyServiceId, { firstTokenMs: latencyMs, outputTokens: telemetry.usage.outputTokens, streamed: false })
+        }
         res.writeHead(responseForClient.statusCode, responseHeaders)
         res.end(Buffer.from(responseForClient.body))
-        return { done: true }
+        return { done: true, emptyAnswer: answeredEmpty }
       } else {
         const upstreamResponse = await this._node.sendRequest(selectedPeer, requestForPeer, {
-          signal: requestSignal,
+          signal: attemptSignal,
           pinned,
           ...(buyerIdentity ? { buyerIdentity } : {}),
         })
@@ -4796,18 +5039,27 @@ export class BuyerProxy {
         }
 
         // Check if retryable
-        if (shouldTryNextPeer(response.statusCode, modelNotFound, pinned, gatewayAutoRoute)) {
-          return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null }
+        const answeredEmpty = !pinned && response.statusCode < 300 && !videoRoute
+          && isEmptyAnswer(response.headers['content-type'], response.body)
+        const emptyAnswer = extraAttempt && answeredEmpty
+        if (emptyAnswer || shouldTryNextPeer(response.statusCode, modelNotFound, pinned, gatewayAutoRoute, extraAttempt && responseFault !== 'buyer')) {
+          return { done: false, statusCode: response.statusCode, responseBody: Buffer.from(response.body), responseHeaders, errorMessage: null, modelNotFound, emptyAnswer }
         }
 
+        if (response.statusCode < 300 && !answeredEmpty && !videoRoute && !isControlPlaneServicesPath(requestForPeer.path)) {
+          this._recordSellerSuccess(selectedPeer.peerId, latencyServiceId, { firstTokenMs: latencyMs, outputTokens: telemetry.usage.outputTokens, streamed: false })
+        }
         // Forward response headers and body to the HTTP client
         res.writeHead(response.statusCode, responseHeaders)
         res.end(Buffer.from(response.body))
-        return { done: true }
+        return { done: true, emptyAnswer: answeredEmpty }
       }
     } catch (err) {
       const latencyMs = Date.now() - startTime
-      const message = err instanceof Error ? err.message : String(err)
+      const timedOut = attemptAbort.signal.aborted && !requestSignal.aborted
+      const message = timedOut
+        ? (attemptAbort.signal.reason as Error).message
+        : err instanceof Error ? err.message : String(err)
       const abortedLocally = requestSignal.aborted
       log(`Request failed after ${latencyMs}ms: ${message}`)
 
@@ -4899,7 +5151,13 @@ export class BuyerProxy {
         responseBody: Buffer.from(peerResponse.body),
         responseHeaders: peerResponse.headers,
         errorMessage: message,
+        timedOut,
       }
+    } finally {
+      if (attemptTimer) clearTimeout(attemptTimer)
+      const remaining = (this._inFlightBySeller.get(sellerKey) ?? 1) - 1
+      if (remaining > 0) this._inFlightBySeller.set(sellerKey, remaining)
+      else this._inFlightBySeller.delete(sellerKey)
     }
   }
 }

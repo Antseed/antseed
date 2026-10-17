@@ -43,7 +43,7 @@ export interface BuyerIdentitySharedServices {
   depositsClient: DepositsClient | null;
   channelsClient: ChannelsClient | null;
   sellerAddressResolver: SellerAddressResolver | null;
-  verificationStorage: VerificationStorage | null;
+  verificationStorage: Pick<VerificationStorage, 'insertResponseAuth'> | null;
   verificationSampler: VerificationSampler | null;
   /** Capabilities each seller advertised in discovery; not identity-specific. */
   peerCapabilities: Map<PeerId, Set<string>>;

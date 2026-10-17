@@ -394,6 +394,16 @@ const DEFAULT_SWEEP_OFFER_TIMEOUT_MS = 3_000;
  *  mirrors MIN_REMAINING_VALIDITY_SECS in the seller-side relayer. */
 const MIN_SWEEP_DISPATCH_VALIDITY_SECS = 30;
 
+/** Verdict on one seller-signed response receipt, emitted as `response-auth`. */
+export interface ResponseAuthEvent {
+  requestId: string;
+  sellerPeerId: string;
+  /** The service the request was routed to. */
+  advertisedService: string;
+  verified: boolean;
+  verificationError: string | null;
+}
+
 export class AntseedNode extends EventEmitter {
   private _config: NodeConfig;
   private _identity: Identity | null = null;
@@ -1638,7 +1648,7 @@ export class AntseedNode extends EventEmitter {
         depositsClient: this._depositsClient,
         channelsClient: this._channelsClient,
         sellerAddressResolver: this._sellerAddressResolver,
-        verificationStorage: this._verificationStorage,
+        verificationStorage: this._responseAuthSink,
         verificationSampler: this._verificationSampler,
         peerCapabilities: this._peerCapabilities,
         isChainReachable: () => this._rpcHealth?.reachable ?? true,
@@ -2103,7 +2113,7 @@ export class AntseedNode extends EventEmitter {
         localPeerId: identity.peerId,
         negotiator: this._buyerNegotiator,
         freeUsageManager: this._buyerFreeUsageManager,
-        verificationStorage: this._verificationStorage,
+        verificationStorage: this._responseAuthSink,
         verificationSampler: this._verificationSampler,
         getConnection: (peer) => this._getOrCreateConnection(peer as PeerInfo),
         getMux: (peerId, conn) => this._getOrCreateMux(peerId, conn as PeerConnection),
@@ -2451,6 +2461,25 @@ export class AntseedNode extends EventEmitter {
       debugWarn(`[Node] Failed to load payment balances: ${err instanceof Error ? err.message : err}`);
     });
   }
+
+  /**
+   * Stores each seller-signed response receipt and reports its verdict as a
+   * `response-auth` event, so the buyer's routing can demote a seller whose
+   * receipts do not match what it sent. Reported even without storage.
+   */
+  private readonly _responseAuthSink: Pick<VerificationStorage, 'insertResponseAuth'> = {
+    insertResponseAuth: (record) => {
+      const event: ResponseAuthEvent = {
+        requestId: record.requestId,
+        sellerPeerId: record.sellerPeerId,
+        advertisedService: record.advertisedService,
+        verified: record.verified,
+        verificationError: record.verificationError,
+      };
+      this.emit('response-auth', event);
+      this._verificationStorage?.insertResponseAuth(record);
+    },
+  };
 
   private _initializeVerificationStorage(dataDir: string): void {
     if (this._verificationStorage) return;

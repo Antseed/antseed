@@ -1,5 +1,6 @@
 import assert from 'node:assert/strict'
 import { randomUUID } from 'node:crypto'
+import { EventEmitter } from 'node:events'
 import { mkdir, mkdtemp, readdir, readFile, rm, utimes, writeFile } from 'node:fs/promises'
 import { tmpdir } from 'node:os'
 import { join } from 'node:path'
@@ -856,7 +857,7 @@ test('explicit routing-service target and tradeoff survive the local state-file 
   const response = await invokeProxy(proxy, makeProxyRequest({ path: '/_antseed/route', body: routeBody(selection) }))
   assert.equal(response.statusCode, 200, response.body)
   assert.deepEqual(JSON.parse(await readFile(stateFile, 'utf8')).defaultRouter, routeBody(selection).router)
-  const restarted = new BuyerProxy({ port: 0, dataDir: directory, node: { router: permissiveRouter() } as any, modelRoutingClient: client })
+  const restarted = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir: directory, node: { router: permissiveRouter() } as any, modelRoutingClient: client })
   await (restarted as any)._reloadSessionOverrides()
   const restored = await invokeProxy(restarted, makeProxyRequest({ path: '/_antseed/route', method: 'GET' }))
   assert.deepEqual(JSON.parse(restored.body).router, routeBody(selection).router)
@@ -1723,7 +1724,7 @@ function makeBuyerProxyWithPeers(
   routingPreferences?: ModelRoutingPreferences,
   modelRoutingClient?: ModelRoutingClientApi,
 ): BuyerProxy {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     modelRoutingClient,
@@ -1792,7 +1793,7 @@ async function invokeProxy(proxy: BuyerProxy, req: Readable): Promise<ReturnType
 }
 
 test('BuyerProxy defaults to the configured 5 min background refresh interval', () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -1802,7 +1803,7 @@ test('BuyerProxy defaults to the configured 5 min background refresh interval', 
 })
 
 test('BuyerProxy accepts a custom background refresh interval', () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -1813,7 +1814,7 @@ test('BuyerProxy accepts a custom background refresh interval', () => {
 })
 
 test('BuyerProxy rewrites upstream 413 responses into a clear request size error', () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -1852,7 +1853,7 @@ test('BuyerProxy reloads model routing preferences from config', async (t) => {
     },
   }))
 
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir,
     configPath,
@@ -1875,7 +1876,7 @@ test('BuyerProxy starts incremental discovery on startup', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-proxy-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
   let sweepCalls = 0
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: dir,
     node: {
@@ -1946,7 +1947,7 @@ test('sweep control endpoint validates and dispatches sequentially via the runni
 
   const dispatches: unknown[] = []
   const listeners = new Map<string, (event: unknown) => void>()
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: {
@@ -4667,7 +4668,7 @@ test('overrideRoutedModelInBody no-ops on a matching model, a missing model, or 
 test('route control endpoint sets, persists, and returns the default routed model', async (t) => {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-route-'))
   t.after(() => rm(dir, { recursive: true, force: true }))
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: dir,
     node: { router: null } as any,
@@ -4707,7 +4708,7 @@ test('route control endpoint sets, persists, and returns the default routed mode
 })
 
 test('buyer-usage endpoint reports lastActivityAt, null until a request is dispatched', async () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null, getBuyerUsageTotals: () => ({ totalRequests: 0 }) } as any,
@@ -4760,7 +4761,7 @@ test('rewritePeerPinnedServiceInBody returns original when body is not a JSON ob
 
 async function makeConversationProxy(): Promise<{ proxy: BuyerProxy; dir: string }> {
   const dir = await mkdtemp(join(tmpdir(), 'antseed-buyer-conv-'))
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: dir,
     node: { router: null } as any,
@@ -5220,7 +5221,7 @@ test('sweepStaleStateTmpFiles: tolerates a missing directory', async () => {
 // ---------- Deposit watcher control plane ----------
 
 test('deposits/status reports no watcher until one is attached', async () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -5365,7 +5366,7 @@ test('deposits/status reports the recorded watcher-absence reason and payments h
     chainId: 8453,
     rpc: { state: 'unreachable', lastCheckedAt: 123, lastReadyAt: null, lastError: 'probe failed', attempts: 2 },
   }
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null, getPaymentsStatus: () => paymentsStatus } as any,
@@ -5388,7 +5389,7 @@ test('deposits/status reports the recorded watcher-absence reason and payments h
 })
 
 test('deposits/watch returns 503 when no watcher is attached', async () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -5400,7 +5401,7 @@ test('deposits/watch returns 503 when no watcher is attached', async () => {
 })
 
 test('deposits/watch promotes and demotes an attached watcher and returns its status', async () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -5436,7 +5437,7 @@ test('deposits/watch promotes and demotes an attached watcher and returns its st
 })
 
 test('getSweepReceipt returns cached relayer receipts case-insensitively', () => {
-  const proxy = new BuyerProxy({
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
     port: 0,
     dataDir: '/tmp/antseed-test',
     node: { router: null } as any,
@@ -5517,7 +5518,7 @@ test('switching a chat route while a request is in flight is not reverted when t
     oldPeer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
     const newPeer = makePeer('b', ['openai'])
     newPeer.providerServiceApiProtocols = { openai: { services: { 'claude-sonnet': ['openai-chat-completions'] } } }
-    const proxy = new BuyerProxy({
+    const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 },
       port: 0,
       dataDir: dir,
       node: { router: permissiveRouter() } as any,
@@ -5596,4 +5597,325 @@ test('switching a chat route while a request is in flight is not reverted when t
   } finally {
     await rm(dir, { recursive: true, force: true, maxRetries: 5, retryDelay: 20 })
   }
+})
+
+/** Sellers of one model at trust 80: `cheap` slightly undercuts `pricier`; `extra` costs ten times as much. */
+function makeModelSellers(): { cheap: PeerInfo; pricier: PeerInfo; extra: PeerInfo } {
+  const seller = (seed: string, input: number, output: number): PeerInfo => {
+    const peer = makePeer(seed, ['openai'])
+    peer.reputationScore = 80
+    peer.providerPricing = { openai: { defaults: { inputUsdPerMillion: input, outputUsdPerMillion: output }, services: { 'gpt-5': { inputUsdPerMillion: input, outputUsdPerMillion: output } } } }
+    peer.providerServiceApiProtocols = { openai: { services: { 'gpt-5': ['openai-chat-completions'] } } }
+    return peer
+  }
+  return { cheap: seller('a', 1, 2), pricier: seller('b', 1, 2.4), extra: seller('c', 10, 20) }
+}
+
+function jsonResponse(requestId: string, statusCode: number, body: unknown) {
+  return { requestId, statusCode, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify(body)) }
+}
+
+const answer = (content = 'ok') => ({ choices: [{ message: { content }, finish_reason: 'stop' }] })
+const modelRequest = () => makeProxyRequest({ body: { model: 'gpt-5', messages: [] } })
+const sellerHealthOf = (proxy: BuyerProxy, peer: PeerInfo, now: number) => (proxy as any)._sellerHealth.stats(peer.peerId, (proxy as any)._healthServiceKey('gpt-5'), now)
+
+test('a seller that rejects a request another seller serves loses its place to a slightly pricier seller', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return peer.peerId === cheap.peerId
+      ? jsonResponse(request.requestId, 422, { error: { type: 'invalid_request_error', message: 'unsupported parameter: top_k' } })
+      : jsonResponse(request.requestId, 200, answer())
+  }
+
+  const first = await invokeProxy(proxy, modelRequest())
+  assert.equal(first.statusCode, 200)
+  assert.deepEqual(attempts, [cheap.peerId, pricier.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()).failures, 1)
+
+  attempts.length = 0
+  clock.advance(60_000)
+  assert.equal((await invokeProxy(proxy, modelRequest())).statusCode, 200)
+  assert.deepEqual(attempts, [pricier.peerId], 'the failing seller is no longer tried first')
+
+  const health = await invokeProxy(proxy, makeProxyRequest({ method: 'GET', path: '/_antseed/peer-health' }))
+  const entry = JSON.parse(health.body).sellerHealth.find((row: { peerId: string }) => row.peerId === cheap.peerId)
+  assert.match(entry?.lastFailureReason ?? '', /HTTP 422/)
+})
+
+test('a rejection every seller shares reaches the client after one extra seller and counts against nobody', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier, extra } = makeModelSellers()
+  const peers = [cheap, pricier, extra]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 400, { error: { type: 'invalid_request_error', message: 'messages must not be empty' } })
+  }
+
+  const res = await invokeProxy(proxy, modelRequest())
+
+  assert.equal(res.statusCode, 400)
+  assert.deepEqual(attempts, [cheap.peerId, pricier.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()), null)
+  assert.equal(sellerHealthOf(proxy, pricier, clock.now()), null)
+})
+
+test('a pinned seller keeps its rejection and it does not count against it', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 422, { error: { type: 'invalid_request_error', message: 'nope' } })
+  }
+
+  const res = await invokeProxy(proxy, makeProxyRequest({
+    headers: { 'x-antseed-pin-peer': cheap.peerId },
+    body: { model: 'gpt-5', messages: [] },
+  }))
+
+  assert.equal(res.statusCode, 422)
+  assert.deepEqual(attempts, [cheap.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()), null)
+})
+
+test('a seller whose signed response fails verification falls behind; buyer-side mismatches are ignored', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const node = Object.assign(new EventEmitter(), { router: permissiveRouter() })
+  const proxy = new BuyerProxy({ adaptiveRouting: { spreadTolerance: 0, explorationRate: 0 }, port: 0, dataDir: '/tmp/antseed-test', node: node as any, now: clock.now, routingPreferences: priceAndTrustPreferences })
+  ;(proxy as any)._getPeers = async () => [cheap, pricier]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer())
+  }
+
+  node.emit('response-auth', { requestId: 'r1', sellerPeerId: cheap.peerId, advertisedService: 'gpt-5', verified: false, verificationError: 'channel_id_mismatch' })
+  await invokeProxy(proxy, modelRequest())
+  assert.deepEqual(attempts, [cheap.peerId])
+
+  node.emit('response-auth', { requestId: 'r2', sellerPeerId: cheap.peerId, advertisedService: 'gpt-5', verified: false, verificationError: 'response_hash_mismatch' })
+  attempts.length = 0
+  await invokeProxy(proxy, modelRequest())
+  assert.deepEqual(attempts, [pricier.peerId])
+})
+
+test('failures fade with time, with no timer: a seller that failed a while ago is first again', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  for (let i = 0; i < 3; i += 1) (proxy as any)._recordSellerFailure(cheap.peerId, 'gpt-5', 'HTTP 503')
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer())
+  }
+
+  await invokeProxy(proxy, modelRequest())
+  assert.deepEqual(attempts, [pricier.peerId])
+
+  attempts.length = 0
+  clock.advance(2 * 60 * 60_000)
+  await invokeProxy(proxy, modelRequest())
+  assert.deepEqual(attempts, [cheap.peerId])
+})
+
+test('any failure another seller then serves counts against the failing seller: a 403, a dropped request', async () => {
+  for (const failure of ['403', 'transport'] as const) {
+    const clock = makeTestClock()
+    const { cheap, pricier } = makeModelSellers()
+    const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+    const attempts: string[] = []
+    ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+      attempts.push(peer.peerId)
+      if (peer.peerId !== cheap.peerId) return jsonResponse(request.requestId, 200, answer())
+      if (failure === 'transport') throw new Error('connection reset by peer')
+      return jsonResponse(request.requestId, 403, { error: { message: 'forbidden' } })
+    }
+
+    assert.equal((await invokeProxy(proxy, modelRequest())).statusCode, 200, failure)
+    assert.deepEqual(attempts, [cheap.peerId, pricier.peerId], failure)
+    attempts.length = 0
+    clock.advance(30_000)
+    assert.equal((await invokeProxy(proxy, modelRequest())).statusCode, 200, failure)
+    assert.deepEqual(attempts, [pricier.peerId], `${failure}: the failing seller is no longer tried first`)
+  }
+})
+
+test('an empty answer is retried on one more seller, and counts against the empty one when that one answers', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer(peer.peerId === cheap.peerId ? '' : 'ok'))
+  }
+
+  const res = await invokeProxy(proxy, modelRequest())
+  assert.equal(res.statusCode, 200)
+  assert.equal(JSON.parse(res.body).choices[0].message.content, 'ok')
+  assert.deepEqual(attempts, [cheap.peerId, pricier.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()).failures, 1)
+  assert.equal(sellerHealthOf(proxy, pricier, clock.now()).successes, 1)
+})
+
+test('when every seller answers empty, the client gets the answer and nobody is counted against', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier, extra } = makeModelSellers()
+  const peers = [cheap, pricier, extra]
+  const proxy = makeBuyerProxyWithPeers(peers, peers, permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer(''))
+  }
+
+  const res = await invokeProxy(proxy, modelRequest())
+  assert.equal(res.statusCode, 200)
+  assert.deepEqual(attempts, [cheap.peerId, pricier.peerId])
+  assert.equal(sellerHealthOf(proxy, cheap, clock.now()), null)
+})
+
+test('traffic is spread across sellers close in cost, not sent to one', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier, extra } = makeModelSellers()
+  const peers = [cheap, pricier, extra]
+  let draw = 0
+  const proxy = new BuyerProxy({
+    adaptiveRouting: { random: () => { draw = (draw + 0.37) % 1; return draw }, explorationRate: 0 },
+    port: 0, dataDir: '/tmp/antseed-test', node: { router: permissiveRouter() } as any, now: clock.now, routingPreferences: priceAndTrustPreferences,
+  })
+  ;(proxy as any)._getPeers = async () => peers
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  const served = new Map<string, number>()
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    served.set(peer.peerId, (served.get(peer.peerId) ?? 0) + 1)
+    return jsonResponse(request.requestId, 200, answer())
+  }
+
+  for (let i = 0; i < 20; i += 1) await invokeProxy(proxy, modelRequest())
+
+  assert.ok((served.get(cheap.peerId) ?? 0) > 0 && (served.get(pricier.peerId) ?? 0) > 0, JSON.stringify([...served]))
+  assert.equal(served.get(extra.peerId) ?? 0, 0, 'a seller ten times the price gets no share')
+})
+
+test('a seller far slower than usual is given up on so the next seller can answer', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  for (let i = 0; i < 3; i += 1) (proxy as any)._recordSellerSuccess(cheap.peerId, 'gpt-5', { firstTokenMs: 100, outputTokens: 0, streamed: false })
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }, options: { signal: AbortSignal }) => {
+    attempts.push(peer.peerId)
+    if (peer.peerId !== cheap.peerId) return jsonResponse(request.requestId, 200, answer())
+    return new Promise((_resolve, reject) => {
+      options.signal.addEventListener('abort', () => reject(options.signal.reason), { once: true })
+    })
+  }
+  const timers: Array<() => void> = []
+  const realSetTimeout = globalThis.setTimeout
+  ;(globalThis as any).setTimeout = (fn: () => void, ms: number) => {
+    // The per-attempt timeout (at least 30 s): fire it now instead of waiting.
+    if (ms >= 30_000) { timers.push(fn); return { unref() {} } as any }
+    return realSetTimeout(fn, ms)
+  }
+  try {
+    const pending = invokeProxy(proxy, modelRequest())
+    while (timers.length === 0) await new Promise((resolve) => realSetTimeout(resolve, 1))
+    timers.shift()!()
+    const res = await pending
+    assert.equal(res.statusCode, 200)
+    assert.deepEqual(attempts, [cheap.peerId, pricier.peerId])
+    assert.match(sellerHealthOf(proxy, cheap, clock.now()).lastFailureReason, /no answer within \d+s/)
+  } finally {
+    ;(globalThis as any).setTimeout = realSetTimeout
+  }
+})
+
+test('seller health survives a restart', async () => {
+  const dataDir = await mkdtemp(join(tmpdir(), 'antseed-health-'))
+  try {
+    const clock = makeTestClock()
+    const first = new BuyerProxy({ port: 0, dataDir, node: { router: null } as any, now: clock.now })
+    ;(first as any)._recordSellerFailure('a'.repeat(40), 'gpt-5', 'HTTP 403')
+    await (first as any).stop()
+    const second = new BuyerProxy({ port: 0, dataDir, node: { router: null } as any, now: clock.now })
+    await (second as any)._hydratePeersFromStateFile()
+    assert.equal((second as any)._peerLatency('a'.repeat(40), 'gpt-5'), null)
+    assert.equal((second as any)._sellerHealth.stats('a'.repeat(40), (second as any)._healthServiceKey('gpt-5'), clock.now()).failures, 1)
+  } finally {
+    await rm(dataDir, { recursive: true, force: true })
+  }
+})
+
+test('requests of one identified conversation stay on one seller; others spread', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = new BuyerProxy({
+    adaptiveRouting: { random: Math.random, explorationRate: 0 },
+    port: 0, dataDir: '/tmp/antseed-test', node: { router: permissiveRouter() } as any, now: clock.now, routingPreferences: priceAndTrustPreferences,
+  })
+  ;(proxy as any)._getPeers = async () => [cheap, pricier]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  const served: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    served.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer())
+  }
+  const turn = (cacheKey: string | null, n: number) => makeProxyRequest({
+    body: { model: 'gpt-5', messages: [{ role: 'user', content: `turn ${n}` }], ...(cacheKey ? { prompt_cache_key: cacheKey } : {}) },
+  })
+
+  for (let n = 0; n < 8; n += 1) await invokeProxy(proxy, turn('conversation-1', n))
+  assert.equal(new Set(served).size, 1, 'every turn on the seller holding the cache')
+
+  served.length = 0
+  for (let n = 0; n < 30; n += 1) await invokeProxy(proxy, turn(`conversation-${n + 2}`, 0))
+  assert.equal(new Set(served).size, 2, 'different conversations still spread')
+})
+
+test('spreading stays on sellers with an open channel instead of reserving on new ones', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  const proxy = new BuyerProxy({
+    adaptiveRouting: { random: Math.random },
+    port: 0, dataDir: '/tmp/antseed-test',
+    node: { router: permissiveRouter(), getActiveBuyerChannels: () => [{ peerId: pricier.peerId }] } as any,
+    now: clock.now, routingPreferences: priceAndTrustPreferences,
+  })
+  ;(proxy as any)._getPeers = async () => [cheap, pricier]
+  ;(proxy as any)._cacheLastUpdatedAtMs = Date.now()
+  const served = new Set<string>()
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    served.add(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer())
+  }
+  for (let i = 0; i < 20; i += 1) await invokeProxy(proxy, modelRequest())
+  assert.deepEqual([...served], [pricier.peerId])
+})
+
+test('a seller already holding as many of our requests as it advertises it can take is not chosen first', async () => {
+  const clock = makeTestClock()
+  const { cheap, pricier } = makeModelSellers()
+  cheap.maxConcurrency = 1
+  const proxy = makeBuyerProxyWithPeers([cheap, pricier], [cheap, pricier], permissiveRouter(), clock.now, priceAndTrustPreferences)
+  const attempts: string[] = []
+  ;(proxy as any)._node.sendRequest = async (peer: PeerInfo, request: { requestId: string }) => {
+    attempts.push(peer.peerId)
+    return jsonResponse(request.requestId, 200, answer())
+  }
+  ;(proxy as any)._inFlightBySeller.set(cheap.peerId, 1)
+  await invokeProxy(proxy, modelRequest())
+  assert.deepEqual(attempts, [pricier.peerId])
+
+  assert.equal((proxy as any)._inFlightBySeller.get(pricier.peerId) ?? 0, 0, 'in-flight counts are released')
 })

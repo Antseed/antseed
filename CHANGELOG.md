@@ -6,6 +6,17 @@ This project uses selective package publishing. Each release entry lists the pub
 
 ## Unreleased
 
+### Changed
+
+- CLI buyer: automatic routing now learns from its own traffic which sellers serve each model well, instead of always sending every request to the cheapest seller. For each seller and model the buyer keeps a time-decayed record of successes, failures, time to first token and output speed (half-life 15 minutes, saved in `buyer.state.json`), and ranks sellers by the expected cost of one successful answer: price plus the time it takes, divided by the chance it succeeds. A seller that keeps failing drops behind within a few requests and comes back as soon as it serves again; there is no fixed cooldown. With no record yet, the order is price order as before, and trust stays a filter, not a ranking.
+  - A failure is anything that does not answer: an error status, a dropped or timed-out request, an empty answer (a 200 with no text and no tool call), or a seller-signed receipt that does not match the response. A client error or an empty answer can be the request's own fault, so the buyer asks one more seller, and only if that seller answers does the failure count. A seller's record on one model counts, at half weight, for models it has not served this buyer yet.
+  - Traffic is spread across sellers within 30% of the best expected cost, weighted toward the cheapest, instead of all going to one. Requests of one conversation stay on one seller so its prompt cache keeps working: conversations identified by a session id (Claude Code, Codex, OpenCode) or an OpenAI `prompt_cache_key` always map to the same seller while it stays healthy.
+  - Spreading stays on sellers the buyer already has an open payment channel with (or free ones); a new channel is reserved only when that seller is clearly better or needed for failover. A seller already holding as many of the buyer's requests as it advertises it can take (`maxConcurrency`) is skipped as a first choice.
+  - When another seller can take over, the buyer stops waiting for a seller that has not started answering within about four times its usual time (30 s to 2 min) and tries the next one.
+  - A small share of standalone requests tries a seller the buyer has no recent data on, among those it already has a channel with, so recovered sellers are noticed.
+  - The route preview lists each seller's success rate, speed and whether it shares traffic; `GET /_antseed/peer-health` adds `sellerHealth`, and `POST /_antseed/peer-health/clear` also resets a seller's record. A gateway key's explicit **Cheapest**, **Most trusted** or **Lowest latency** sort and route chains still apply, with failing sellers tried last.
+- Node: `AntseedNode` emits `response-auth` with the verdict on each seller-signed response receipt, and exports the routing model as `SellerHealthBook` and `orderAdaptiveRoutes`.
+
 ### Fixed
 
 - CLI gateway: a request sent while the buyer restarts (an update, or a restart from the console) now waits for the buyer, for up to 2 minutes, instead of failing with `502 buyer_unavailable`; a key with spend caps waits for the buyer's spend feed the same way instead of failing with `503 spend_tracking_unavailable`. Only refused connections are retried, so the buyer never sees a request twice, and a request the buyer never received releases its budget hold at once. On shutdown the gateway and the buyer stop accepting requests and give the ones in flight up to a minute to finish (the buyer used to stop them after 15 s).
