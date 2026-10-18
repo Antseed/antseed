@@ -168,7 +168,18 @@ it.each([429, 500, 503])('does not report a job as FAILED when its result fetch 
 it('reports a job as FAILED when fal refuses its result', async () => {
   vi.stubGlobal('fetch', vi.fn()
     .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
-    .mockResolvedValueOnce(Response.json({ detail: 'invalid input' }, { status: 422 })));
+    .mockResolvedValueOnce(Response.json({ detail: [{ loc: ['body', 'start_image_url'], msg: 'Field required', type: 'missing' }] }, { status: 422 })));
+  const response = await stream(plugin.createProvider(config) as Provider);
+  expect(parse(response.body)).toEqual({
+    status: 'FAILED',
+    error: '[{"loc":["body","start_image_url"],"msg":"Field required","type":"missing"}]',
+  });
+});
+
+it('reports a job as FAILED without a reason when fal gives none', async () => {
+  vi.stubGlobal('fetch', vi.fn()
+    .mockResolvedValueOnce(Response.json({ status: 'COMPLETED' }))
+    .mockResolvedValueOnce(new Response('', { status: 422 })));
   const response = await stream(plugin.createProvider(config) as Provider);
   expect(parse(response.body)).toEqual({ status: 'FAILED' });
 });

@@ -49,7 +49,7 @@ curl -sS --fail-with-body -H "$auth" "$proxy_url/v1/models?type=images" | jq -r 
   | map(tostring) | @tsv'
 ```
 
-Match the user's model case-insensitively against `id` and `aliases`. Several fal models share short aliases, so prefer an exact `id` and ask when an alias matches more than one model. `capabilities.video` lists `durationsSeconds`, `resolutions`, `aspectRatios`, `inputs`, `requiredInputs`, and `audio`; a missing field means unknown, not unsupported. `fields` (`capabilities.supportedParameters`) lists the request fields the seller's model takes, with the upstream API's own names (for example `start_image_url` on fal's Kling V3, `generate_audio` on fal, `audio` on Venice). Show it to the user with the offer. A seller that lists no `fields` is older and takes the common names.
+Match the user's model case-insensitively against `id` and `aliases`. Several fal models share short aliases, so prefer an exact `id` and ask when an alias matches more than one model. `capabilities.video` lists `durationsSeconds`, `resolutions`, `aspectRatios`, `inputs`, `requiredInputs`, and `audio`; a missing field means unknown, not unsupported. `fields` (`capabilities.supportedParameters`) lists the request fields the seller's model takes, with the upstream API's own names (for example `start_image_url` on fal's Kling V3, `generate_audio` on fal, `audio` on Venice). Show it to the user with the offer. A seller that lists no `fields` runs an older plugin: for `fal-video`, [Create once](#create-once) reads the field names from fal's public schema instead, because some fal models (Kling V3, Wan 3.0) require `start_image_url`; Venice sellers take the common names.
 
 ## Price
 
@@ -185,11 +185,18 @@ echo "references: $(jq length "$refs_json")"
 
 Check for a job file first. If `<output>.job.json` exists, go to [Wait and save](#wait-and-save) instead. Set `protocol` and `peer_id` from the chosen [Price](#price) entry and `route_model` to `<peerId>@<model>`. Write the prompt to `prompt.txt` first. Set `aspect_ratio` only when the chosen Price entry has `sendRatio: true`; otherwise leave it unset ([Aspect ratio](#aspect-ratio)). Set `audio=false` only when the user wants a silent video and the seller advertises `audio`; never send `audio=true`, because many models make sound by default and fail the job when `audio` is set. Before an approved retry after a failed job, rename `<name>.job.json` to `<name>.failed.job.json`.
 
-Send each field under the name the seller lists in `fields` ([Price](#price)); the seller passes the body to its upstream API unchanged. The block below takes the frame, reference and audio field names from that list and prints them. Check them against the list before the create. When the seller lists no `fields`, it uses `image_url` and `end_image_url`, and the audio switch only if the seller advertises `audio` (`generate_audio` on fal). Prefer the listed name; fall back to the common name only when the seller lists no name for that input. A field missing from `fields` is not proof the model refuses it (the list can be incomplete), so a field the user needs may still be sent under its common name; a `400` on create then says the seller refused it and nothing was charged.
+Send each field under the name the seller lists in `fields` ([Price](#price)); the seller passes the body to its upstream API unchanged. The block below takes the frame, reference and audio field names from that list and prints them. Check them against the list before the create. When a `fal-video` seller lists no `fields`, the block reads the model's field names from fal's public schema (free, no key) and picks from those. Otherwise, with no list, it uses `image_url` and `end_image_url`, and the audio switch only if the seller advertises `audio` (`generate_audio` on fal). Prefer the listed name; fall back to the common name only when the seller lists no name for that input. A field missing from `fields` is not proof the model refuses it (the list can be incomplete), so a field the user needs may still be sent under its common name; a `400` on create then says the seller refused it and nothing was charged.
 
 ```bash
-read -r first_field last_field ref_field audio_field < <(jq -r --arg peer "$peer_id" '
-  (.peers[] | select(.peerId == $peer)) as $o | ($o.capabilities.supportedParameters // []) as $p
+schema_fields='[]'
+if [ "$protocol" = fal-video ] && [ "$(jq --arg peer "$peer_id" '[.peers[] | select(.peerId == $peer) | .capabilities.supportedParameters // [] | length] | first // 0' "$model_file")" = 0 ]; then
+  schema_fields="$(curl -sS --max-time 20 "https://fal.ai/api/openapi/queue/openapi.json?endpoint_id=$model" \
+    | jq -c '[.components.schemas[] | select(.properties.prompt) | .properties | keys[]] | unique' 2>/dev/null)"
+  [ -n "$schema_fields" ] || schema_fields='[]'
+fi
+read -r first_field last_field ref_field audio_field < <(jq -r --arg peer "$peer_id" --argjson schema "$schema_fields" '
+  (.peers[] | select(.peerId == $peer)) as $o
+  | ($o.capabilities.supportedParameters // [] | if length > 0 then . else $schema end) as $p
   | def pick(names): (names | map(select(. as $n | $p | index($n))) | first) // (if ($p | length) > 0 then "-" else names[0] end);
     [pick(["image_url", "start_image_url", "first_frame_url", "first_image_url"]),
      pick(["end_image_url", "tail_image_url", "last_frame_url", "last_image_url"]),
@@ -242,7 +249,7 @@ else
     false
   else
     echo "create failed: HTTP $code" >&2
-    jq -c '.error | if type == "object" then {code, type, peer_message, peer_status} else . end' "$resp" 2>/dev/null \
+    jq -c '.error | if type == "object" then {code, message, type, peer_message, peer_status} else . end' "$resp" 2>/dev/null \
       || { head -c 300 "$resp"; echo; } >&2
     false
   fi
@@ -288,7 +295,7 @@ else
       000|502|503|504) fails=$((fails + 1)); st="$(jq -r '.status // empty' "$part" 2>/dev/null)"
            [ "$fails" -ge 5 ] && { echo "${st:-proxy or seller} unavailable (HTTP $code); job $job_id kept" >&2; break; } ;;
       *) echo "job $job_id stopped: HTTP $code; not charged" >&2
-         jq -c '.error | if type == "object" then {code, type, peer_message, peer_status} else . end' "$part" >&2 2>/dev/null \
+         jq -c '.error | if type == "object" then {code, message, type, peer_message, peer_status} else . end' "$part" >&2 2>/dev/null \
            || { head -c 300 "$part"; echo; } >&2
          break ;;
     esac
@@ -300,7 +307,7 @@ fi
 [ "$rc" = 0 ]
 ```
 
-After the video is saved, delete the job file unless the user wants to keep it; while it exists, a new create with the same output name is refused. If the loop ends without a video, tell the user the job id and the last HTTP status; for `000`, `429`, or `5xx`, run this block again later to resume. A job that failed at the seller is not charged.
+The `COMPLETED|completed` branch is for older buyers; newer buyers report `failed` with `video_not_delivered` instead. After the video is saved, delete the job file unless the user wants to keep it; while it exists, a new create with the same output name is refused. If the loop ends without a video, tell the user the job id and the last HTTP status; for `000`, `429`, or `5xx`, run this block again later to resume. A job that failed at the seller is not charged.
 
 ## Multi-clip videos
 
@@ -339,11 +346,12 @@ On a failed create or wait, `error.peer_message` carries the seller's reason, in
 - `402`: the buyer needs more deposited USDC or payment-channel capacity.
 - `402 one_off_channel_required`: buyers before `@antseed/cli@0.1.171` hit this; update the buyer. Each failed attempt leaves a funded channel that `antseed buyer channels request-close <channelId>` releases.
 - Price above $5.00, or "above the configured limit": choose a shorter duration or lower resolution.
-- "Explicit video duration is required" or "No billing component matched": send an advertised `duration`, and an advertised `resolution` (exact case, for example `768P`) when the model lists any.
+- "Explicit video duration is required" or "No billing component matched": send an advertised `duration`, and an advertised `resolution` (exact case, for example `768P`) when the model lists any. Neither the buyer nor the seller checks `duration` against `durationsSeconds`; the upstream does, and its answer can name another field (one unlisted duration came back as "Invalid or missing prompt"), so only send a listed duration.
 - `400` or `422` on wait, for example "does not support audio configuration" or "does not support end_image_url": the job failed at the seller and is not charged. Fix the field and ask before creating again. If the message names no field (for example "Request ID is invalid."), offer the next seller from the price list.
 - `502 upstream_error` on create ("pinned peer could not complete the request"): that seller failed and no job started. Offer the next seller from the price list.
 - `502` plain text "Pinned peer … is not reachable": usually the pinned seller does not sell that model, or is offline. Run [Price](#price) again and pin a seller from that list.
 - `model_not_found`: fetch the catalog again and retry once after a few seconds; routing can briefly exclude a seller after a failed request.
+- `video_not_delivered` on wait: the seller says the job finished but sends no video. Nothing is charged. Waiting longer or trying the same seller again will most likely fail the same way, so rename the job file to `<name>.failed.job.json` and offer the next seller from the price list.
 - `404 video_route_not_found` on wait: the buyer has no record of this job (wrong id, or the buyer's record expired). Delete the job file; nothing is charged.
 - `429 video_download_busy`: the buyer runs at most two status checks or downloads at once; the loop keeps waiting.
 - `status: unknown`: the seller is up but could not read the job's state from its video service; the loop keeps polling and stops after 5 minutes of it, keeping the job.

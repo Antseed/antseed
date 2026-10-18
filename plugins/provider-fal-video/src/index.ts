@@ -357,7 +357,10 @@ const plugin: AntseedProviderPlugin = {
             if (resultResponse.status === 408 || resultResponse.status === 429 || resultResponse.status >= 500) {
               return error(request, 502, 'video_result_unavailable', 'fal result is temporarily unavailable');
             }
-            return json(request, 200, { status: 'FAILED' });
+            const reason = result?.detail ?? result?.error;
+            return json(request, 200, reason === undefined || reason === null
+              ? { status: 'FAILED' }
+              : { status: 'FAILED', error: (typeof reason === 'string' ? reason : JSON.stringify(reason)).slice(0, 500) });
           }
           const video = result?.video as { url?: unknown } | undefined;
           if (typeof video?.url !== 'string' || !video.url.startsWith('https://')) {
