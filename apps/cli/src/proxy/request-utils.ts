@@ -321,6 +321,11 @@ export const SYSTEM_PROXY_SOURCE_HEADER = 'x-antseed-system-proxy-source'
     means the default identity. Local to the buyer — stripped before dispatch. */
 export const BUYER_IDENTITY_HEADER = 'x-antseed-buyer-identity'
 
+/** The most a video create may cost, in USDC base units (the gateway sends what
+    is left of the key's spend limits). Can only lower the buyer's own video
+    limit. Local to the buyer — stripped before dispatch. */
+export const MAX_VIDEO_COST_HEADER = 'x-antseed-max-video-usdc'
+
 /**
  * Replace a proxy-assigned model with the chat's pinned route. Only used for
  * requests carrying SYSTEM_ROUTED_MODEL_HEADER — client-chosen models are

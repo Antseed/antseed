@@ -44,6 +44,12 @@ export class ResourceRoutes {
     return this.routes.get(routeKey(protocol, resourceId)) ?? null
   }
 
+  /** Stops routing a job, so later retrieves are answered `video_route_not_found` and can never be charged. */
+  forget(protocol: NativeVideoProtocol, resourceId: string): boolean {
+    return this.routes.delete(routeKey(protocol, resourceId))
+  }
+
+
   private prune(): void {
     const cutoff = this.now() - ROUTE_TTL_MS
     for (const [key, route] of this.routes) {

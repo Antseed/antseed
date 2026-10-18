@@ -14,6 +14,7 @@ import { estimateCostFromBytes } from '../src/payments/pricing.js';
 import { decodeSpendingAuth, encodeSpendingAuth } from '@antseed/protocol/payment-codec';
 import { getServiceMetadataId, MAX_METADATA_SERVICES } from '@antseed/protocol/signatures';
 import type { SpendingAuthPayload } from '@antseed/protocol/messages';
+import { captureUnitBillingContext } from '@antseed/buyer-core';
 
 const enc = new TextEncoder();
 
@@ -1137,6 +1138,50 @@ describe('BuyerPaymentManager', () => {
     expect(totals.inputTokens).toBe(1000n);
     expect(totals.outputTokens).toBe(50n + 2n * 1290n);
     expect(totals.outputImages).toBe(2n);
+  });
+
+  it('handleNeedAuth pays a video exactly its price: no token tolerance above it', async () => {
+    const sellerPeerId = fakePeerId('seller-video-exact');
+    const channelId = await manager.authorizeSpending(sellerPeerId, mux, 10_000n, TEST_PRICING);
+    const unitModel = { version: 1 as const, components: [{ unit: 'video_seconds' as const, priceUsd: 0.1 }] };
+    const captured = captureUnitBillingContext({
+      sellerPeerId,
+      provider: 'venice',
+      service: 'wan-2.5',
+      serviceApiProtocol: 'venice-video',
+      request: {
+        requestId: 'req-video-exact',
+        method: 'POST',
+        path: '/api/v1/video/queue',
+        headers: { 'content-type': 'application/json' },
+        body: new TextEncoder().encode(JSON.stringify({ model: 'wan-2.5', prompt: 'An ant', duration: '8s' })),
+      },
+    });
+    manager.trackRequestBilling('req-video-exact', {
+      context: captured.context,
+      requestFacts: captured.requestFacts,
+      estimatedCostUsdc: 800_000n,
+      unitModel,
+    });
+    manager.recordObservedUnitUsage('req-video-exact', { units: { video_seconds: 8 } });
+    mux.sentSpendingAuths.length = 0;
+    const needAuth = (cost: bigint) => ({
+      channelId,
+      requestId: 'req-video-exact',
+      requiredCumulativeAmount: cost.toString(),
+      currentAcceptedCumulative: '0',
+      deposit: '5000000',
+      lastRequestCost: cost.toString(),
+      inputTokens: '0',
+      outputTokens: '0',
+      billingUsage: { version: 1 as const, units: { video_seconds: '8' } },
+    });
+
+    // $1.00 is within the 1.4x tolerance of $0.80, but a video's price is exact.
+    await manager.handleNeedAuth(sellerPeerId, needAuth(1_000_000n), mux);
+    expect(mux.sentSpendingAuths.length).toBe(0);
+    await manager.handleNeedAuth(sellerPeerId, needAuth(800_000n), mux);
+    expect(mux.sentSpendingAuths.length).toBe(1);
   });
 
   it('handleNeedAuth rejects image billingUsage claiming more images than the buyer observed', async () => {

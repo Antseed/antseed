@@ -19,6 +19,7 @@ import {
 } from './limits.js'
 import { splitPinnedModel } from './pinned-model.js'
 import { MIGRATIONS } from './store-migrations.js'
+import { requestVideoJob } from './video-jobs.js'
 
 export type ApiKeySource = 'created' | 'tunnel-env'
 export type ApiKeyStatus = 'active' | 'revoked'
@@ -229,6 +230,17 @@ export interface LedgerEntryInput {
   memberId?: string | null
   model?: string | null
   endUser?: string | null
+}
+
+export interface VideoCommitmentRecord {
+  job: string
+  keyId: string
+  memberId: string | null
+  workspaceId: string
+  amountUsdc: number
+  expiresAt: number
+  /** When a retrieve last streamed the whole file; null until then. */
+  deliveredAt: number | null
 }
 
 export interface GatewayRequestStart {
@@ -1065,6 +1077,35 @@ export class GatewayStore {
     return ids
   }
 
+  /** Accepted video jobs whose price still counts against the caps (see GatewayAccounting). */
+  listVideoCommitments(now: number): VideoCommitmentRecord[] {
+    this._stmt('DELETE FROM video_commitments WHERE expires_at <= ?').run(now)
+    return (this._stmt('SELECT job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at FROM video_commitments').all() as Array<{
+      job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number; delivered_at: number | null
+    }>).map((row) => ({
+      job: row.job,
+      keyId: row.key_id,
+      memberId: row.member_id,
+      workspaceId: row.workspace_id,
+      amountUsdc: row.amount_usdc,
+      expiresAt: row.expires_at,
+      deliveredAt: row.delivered_at,
+    }))
+  }
+
+  /** Stores a commitment; with `replaces`, removes that one (a create's reservation) in the same transaction. */
+  saveVideoCommitment(record: VideoCommitmentRecord, replaces?: string): void {
+    this._db.transaction(() => {
+      this._stmt(`INSERT OR REPLACE INTO video_commitments (job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(record.job, record.keyId, record.memberId, record.workspaceId, record.amountUsdc, record.expiresAt, record.deliveredAt)
+      if (replaces !== undefined && replaces !== record.job) this._stmt('DELETE FROM video_commitments WHERE job = ?').run(replaces)
+    })()
+  }
+
+  deleteVideoCommitment(job: string): void {
+    this._stmt('DELETE FROM video_commitments WHERE job = ?').run(job)
+  }
+
   /** Records use at most once a minute per key (per process), so requests do not each write. */
   touchKey(id: string): void {
     const now = this._now()
@@ -1192,12 +1233,55 @@ export class GatewayStore {
     memberId: string | null
     model: string | null
     endUser: string | null
+    /** The video job of an accepted create, a status poll or a delivery, keyed like `videoJobKey`. */
+    videoJob: string | null
   } | null {
-    const row = this._stmt('SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user FROM gateway_requests WHERE tag = ?').get(tag) as
-      { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null } | undefined
+    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id
+      FROM gateway_requests WHERE tag = ?`).get(tag) as
+      { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null
+        path: string; video_action: string | null; video_job_id: string | null } | undefined
     return row
-      ? { keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user }
+      ? {
+        keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
+        videoJob: row.video_action === 'create' || row.video_action === 'poll' || row.video_action === 'delivery'
+          ? requestVideoJob(row.path, row.video_job_id)
+          : null,
+      }
       : null
+  }
+
+  /** The job a video create logged by this gateway was accepted as, keyed like `videoJobKey`, if it was recorded. */
+  videoCreateJob(tag: string): string | null {
+    const row = this._stmt("SELECT path, video_job_id FROM gateway_requests WHERE tag = ? AND video_action = 'create'").get(tag) as
+      { path: string; video_job_id: string | null } | undefined
+    return row ? requestVideoJob(row.path, row.video_job_id) : null
+  }
+
+  /** Spend recorded so far on every request of one key that names a video job (its create, polls and delivery). */
+  videoJobSpend(keyId: string, jobId: string): number {
+    const row = this._stmt(`SELECT -COALESCE(SUM(l.amount_usdc), 0) AS spent FROM ledger_entries l
+      JOIN gateway_requests r ON r.tag = l.request_tag
+      WHERE l.kind = 'spend' AND r.key_id = ? AND r.video_job_id = ?`).get(keyId, jobId.slice(0, 256)) as { spent: number }
+    return row.spent
+  }
+
+  /** When one key's retrieve of a video job delivered its file, if one did. */
+  videoJobDeliveredAt(keyId: string, jobId: string): number | null {
+    const row = this._stmt(`SELECT MIN(COALESCE(finished_at, started_at)) AS at FROM gateway_requests
+      WHERE key_id = ? AND video_job_id = ? AND video_action = 'delivery'`).get(keyId, jobId.slice(0, 256)) as { at: number | null }
+    return row.at
+  }
+
+  /** The spend recorded so far on one request. */
+  spendForRequest(tag: string): number {
+    const row = this._stmt("SELECT -COALESCE(SUM(amount_usdc), 0) AS spent FROM ledger_entries WHERE kind = 'spend' AND request_tag = ?").get(tag) as { spent: number }
+    return row.spent
+  }
+
+  /** The key whose create, logged by this gateway, started the video job (jobs created before video commitments were stored). */
+  findVideoJobCreator(jobId: string): string | null {
+    const row = this._stmt("SELECT key_id FROM gateway_requests WHERE video_action = 'create' AND video_job_id = ? LIMIT 1").get(jobId) as { key_id: string } | undefined
+    return row?.key_id ?? null
   }
 
   /** Requests per seller since a time, with the medians of what this gateway measured. */

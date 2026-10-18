@@ -2,7 +2,9 @@ import { randomUUID } from 'node:crypto'
 import type { AttributedSpendEvent } from '../proxy/spend-attribution.js'
 import { BUDGET_PERIODS, cappedPeriods, findLimitBreach, hasSpendLimits, type BudgetLevel, type BudgetLimits, type LimitBreach, type SpendLimits } from './limits.js'
 import { parseBaseUnits } from './money.js'
-import type { ApiKeyRecord, BudgetScope, GatewayStore, MemberRecord, WorkspaceRecord } from './store.js'
+import { isVideoReservationKey, videoReservationKey } from './video-jobs.js'
+export { videoJobKey } from './video-jobs.js'
+import type { ApiKeyRecord, BudgetScope, GatewayStore, MemberRecord, VideoCommitmentRecord, WorkspaceRecord } from './store.js'
 
 /**
  * The member and workspace a key's request is accounted to, when the caller
@@ -26,14 +28,39 @@ export function effectiveKeyLimits(key: Pick<ApiKeyRecord, 'limits' | 'ownerLimi
 /** Spend can be signed after the response ends (seller-initiated auth). */
 const DEFAULT_SETTLE_GRACE_MS = 60_000
 
+/**
+ * An accepted video nobody downloads stops counting against the caps after
+ * this long: as long as the buyer keeps the job's route and billing (30 days),
+ * so a video that can still be delivered and charged is never forgotten first.
+ */
+const DEFAULT_VIDEO_COMMITMENT_MS = 30 * 24 * 60 * 60_000
+
+/**
+ * A delivered video is charged right after its file is received; if no charge
+ * has arrived this long after a complete delivery, none will (the buyer had no
+ * billing for the job, or the seller did not bill it), and the job stops
+ * holding its price.
+ */
+const DELIVERY_CHARGE_WAIT_MS = 60 * 60_000
+
+/** The buyer's default limit for one video ($5), when its config sets none. */
+export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000
+
 export interface GatewayAccountingOptions {
   /**
    * Worst-case cost of one request, reserved against the key's caps while it
    * is in flight. The buyer's maxPerRequestUsdc is the natural bound.
    */
   holdUsdc: number
+  /**
+   * The most one video may cost: the buyer's maxVideoRequestUsdc. A video
+   * create reserves up to this much of a key's room while it is priced.
+   */
+  maxVideoRequestUsdc?: number
   settleGraceMs?: number
+  videoCommitmentMs?: number
   now?: () => number
+  onLog?: (message: string) => void
 }
 
 /** One level whose caps a key's request is admitted against. */
@@ -41,7 +68,8 @@ type BudgetCheck = {
   level: BudgetLevel
   limits: SpendLimits | BudgetLimits
   scope: BudgetScope
-  held: () => number
+  /** With `withoutVideoCreates`, leaving out the room video creates hold while they are priced. */
+  held: (withoutVideoCreates?: boolean) => number
 }
 
 type Hold = {
@@ -51,15 +79,44 @@ type Hold = {
   amountUsdc: number
   finished: boolean
   timer: ReturnType<typeof setTimeout> | null
+  /** A video create whose stored reservation has not been resolved yet (see `admit`). */
+  reserved?: boolean
+  /** A video create still waiting for its price: it holds the whole room it was told about. */
+  videoCreate?: boolean
+  /** A committed job's own poll or download, which may still deliver (and so charge) the job. */
+  videoJob?: string
 }
+
+/** The price of an accepted video job, owed once its file is delivered. Stored, so it survives a restart. */
+type VideoCommitment = Omit<VideoCommitmentRecord, 'job'>
+
 
 export function newRequestTag(): string {
   return `gw_${randomUUID()}`
 }
 
+export interface AdmitOptions {
+  /** A video create: reserve the room it may spend (up to one video's limit) until its price is known. */
+  videoCreate?: boolean
+  /** A video job's own poll or download, admitted without that job's commitment. */
+  videoJob?: string
+}
+
 export type Admission =
-  | { ok: true; tag: string }
+  /**
+   * `remainingUsdc`: the least room left under any cap before this request's
+   * hold, or for a video create the allowance reserved for it; null when
+   * nothing is capped.
+   */
+  | { ok: true; tag: string; remainingUsdc: number | null }
   | { ok: false; breach: LimitBreach }
+  /**
+   * `video_storage`: a capped video create whose reservation could not be
+   * stored; it is not started. `video_pricing`: the request only fails
+   * because video creates still being priced hold the room they may spend;
+   * it fits once they are priced (seconds), so it may be retried.
+   */
+  | { ok: false; breach: null; reason: 'video_storage' | 'video_pricing' }
 
 /**
  * Hold → settle accounting per key. Admission reserves a hold so concurrent
@@ -69,32 +126,259 @@ export type Admission =
  */
 export class GatewayAccounting {
   private readonly _holds = new Map<string, Hold>()
+  /** Accepted video jobs, by `videoJobKey`: their price counts against the caps until delivered, failed or expired. */
+  private readonly _videoCommitments = new Map<string, VideoCommitment>()
+  /**
+   * Commitment writes that failed, retried before admitting a capped request
+   * (null: a delete). A job's write also removes its create's reservation
+   * (`replaces`), in the same transaction.
+   */
+  private readonly _pendingVideoWrites = new Map<string, { record: VideoCommitmentRecord | null; replaces?: string }>()
+  /** Whether the stored commitments were read; until then a capped request cannot be admitted safely. */
+  private _videoCommitmentsLoaded = false
   private readonly _settleGraceMs: number
+  private readonly _videoCommitmentMs: number
+  private readonly _maxVideoRequestUsdc: number
   private readonly _now: () => number
 
   constructor(private readonly _store: GatewayStore, private readonly _options: GatewayAccountingOptions) {
     this._settleGraceMs = _options.settleGraceMs ?? DEFAULT_SETTLE_GRACE_MS
+    this._videoCommitmentMs = _options.videoCommitmentMs ?? DEFAULT_VIDEO_COMMITMENT_MS
+    this._maxVideoRequestUsdc = _options.maxVideoRequestUsdc ?? DEFAULT_MAX_VIDEO_REQUEST_USDC
     this._now = _options.now ?? (() => Date.now())
+    this._loadVideoCommitments()
   }
 
-  heldUsdc(keyId: string): number {
-    return this._held((hold) => hold.keyId === keyId)
+  /** In-flight holds plus accepted videos not yet charged, optionally leaving one video job out. */
+  heldUsdc(keyId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return this._held((hold) => hold.keyId === keyId, excludeVideoJob, withoutVideoCreates)
   }
 
   /** Holds in flight for every key a member owns. */
-  heldForMember(memberId: string): number {
-    return this._held((hold) => hold.memberId === memberId)
+  heldForMember(memberId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return this._held((hold) => hold.memberId === memberId, excludeVideoJob, withoutVideoCreates)
   }
 
-  heldForWorkspace(workspaceId: string): number {
-    return this._held((hold) => hold.workspaceId === workspaceId)
+  heldForWorkspace(workspaceId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return this._held((hold) => hold.workspaceId === workspaceId, excludeVideoJob, withoutVideoCreates)
   }
 
-  private _held(match: (hold: Hold) => boolean): number {
+  private _held(match: (hold: Omit<Hold, 'finished' | 'timer'>) => boolean, excludeVideoJob?: string, withoutVideoCreates = false): number {
     let held = 0
-    for (const hold of this._holds.values()) if (match(hold)) held += hold.amountUsdc
+    for (const hold of this._holds.values()) if (match(hold) && !(withoutVideoCreates && hold.videoCreate)) held += hold.amountUsdc
+    const now = this._now()
+    // A revoked key cannot retrieve its jobs any more (only the creating key may), so they are never charged:
+    // unless a retrieve admitted before the revocation is still running, or a delivery's charge is still to come.
+    let retrieving: Set<string> | null = null
+    const chargeable = (job: string, commitment: VideoCommitment): boolean => {
+      if (commitment.deliveredAt !== null) return true
+      retrieving ??= new Set([...this._holds.values()].flatMap((hold) => hold.videoJob ? [hold.videoJob] : []))
+      return retrieving.has(job)
+    }
+    const active = new Map<string, boolean>()
+    const isActive = (keyId: string): boolean => {
+      let result = active.get(keyId)
+      if (result === undefined) {
+        try {
+          result = this._store.getKey(keyId)?.status !== 'revoked'
+        } catch {
+          // Unreadable: keep counting it, the safe side.
+          result = true
+        }
+        active.set(keyId, result)
+      }
+      return result
+    }
+    for (const [job, commitment] of this._videoCommitments) {
+      if (commitment.expiresAt <= now) {
+        this._forgetVideo(job)
+        continue
+      }
+      if (commitment.amountUsdc > 0 && commitment.deliveredAt !== null && now - commitment.deliveredAt >= DELIVERY_CHARGE_WAIT_MS) {
+        this._setVideoHeld(job, commitment, 0)
+      }
+      if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && (isActive(commitment.keyId) || chargeable(job, commitment))) held += commitment.amountUsdc
+    }
     return held
   }
+
+  /**
+   * A video create was accepted: remember which key owns the job (only that
+   * key may retrieve it) and keep `amountUsdc` counted against the caps of the
+   * key, member and workspace the create was admitted for until the buyer's
+   * charge for its delivery arrives, the buyer retires the job, or the record
+   * expires. A key without caps records the price too, so caps added later
+   * count the job.
+   *
+   * Part of the price may already be spent by the create itself (a one-off
+   * channel's opening fee counts toward the video): what is already in the
+   * ledger is not held again, and a charge on the create that arrives later
+   * lowers the commitment like any other charge of the job (see `ingest`).
+   */
+  commitVideo(tag: string, job: string, amountUsdc: number): void {
+    const hold = this._holds.get(tag)
+    if (!hold) return
+    const existing = this._videoCommitments.get(job)
+    if (existing && existing.keyId !== hold.keyId && existing.expiresAt > this._now()) {
+      // Another key's job by the same ID: it keeps its owner and commitment. This create's job cannot be
+      // retrieved by its key (only the owner may), so it is never charged to it.
+      this._options.onLog?.('gateway ignored a video job ID that another key already owns')
+      this.videoNotAccepted(tag)
+      return
+    }
+    let spent = 0
+    try {
+      spent = this._store.spendForRequest(tag)
+    } catch {
+      // Unreadable now: hold the whole price, never less than the job can still be charged.
+    }
+    const commitment: VideoCommitment = {
+      keyId: hold.keyId,
+      memberId: hold.memberId,
+      workspaceId: hold.workspaceId,
+      amountUsdc: Math.max(0, Math.floor(amountUsdc) - spent),
+      expiresAt: this._now() + this._videoCommitmentMs,
+      deliveredAt: null,
+    }
+    this._videoCommitments.set(job, commitment)
+    this._storeVideo(job, { job, ...commitment }, hold.reserved ? videoReservationKey(tag) : undefined)
+    hold.reserved = false
+    hold.videoCreate = false
+  }
+
+  /** A video create ended without an accepted job: its reservation goes. */
+  videoNotAccepted(tag: string): void {
+    const hold = this._holds.get(tag)
+    if (!hold?.reserved) return
+    hold.reserved = false
+    hold.videoCreate = false
+    this._storeVideo(videoReservationKey(tag), null)
+  }
+
+  /** The key that created a video job through this gateway, if it is still remembered. */
+  videoJobOwner(job: string): string | null {
+    const commitment = this._videoCommitments.get(job)
+    return commitment && commitment.expiresAt > this._now() ? commitment.keyId : null
+  }
+
+  /** What a video job still holds against the caps (0 once charged, or for an uncapped key). */
+  videoJobHeldUsdc(job: string): number {
+    return this._videoCommitments.get(job)?.amountUsdc ?? 0
+  }
+
+  /**
+   * The buyer retired the job: it failed, its seller no longer has it, or the
+   * buyer has no record of it. It can never be delivered or charged.
+   */
+  dropVideo(job: string): void {
+    if (this._videoCommitments.has(job)) this._forgetVideo(job)
+  }
+
+  /** A retrieve streamed the job's whole file: its charge should follow (see DELIVERY_CHARGE_WAIT_MS). */
+  videoDelivered(job: string): void {
+    const commitment = this._videoCommitments.get(job)
+    if (!commitment || commitment.deliveredAt !== null) return
+    commitment.deliveredAt = this._now()
+    this._storeVideo(job, { job, ...commitment })
+  }
+
+  /**
+   * The buyer charged `amountUsdc` for the job's delivery: that much is in the
+   * ledger now, so the job holds that much less. Spend plus what the job still
+   * holds stays the same, whatever request the charge names. Ownership stays,
+   * so its owner can download it again (the buyer does not charge twice).
+   */
+  private _videoCharged(job: string, amountUsdc: number): void {
+    const commitment = this._videoCommitments.get(job)
+    if (!commitment || commitment.amountUsdc === 0) return
+    this._setVideoHeld(job, commitment, Math.max(0, commitment.amountUsdc - amountUsdc))
+  }
+
+  private _setVideoHeld(job: string, commitment: VideoCommitment, amountUsdc: number): void {
+    commitment.amountUsdc = amountUsdc
+    this._storeVideo(job, { job, ...commitment })
+  }
+
+  private _forgetVideo(job: string): void {
+    this._videoCommitments.delete(job)
+    this._storeVideo(job, null)
+  }
+
+  /**
+   * Commitments live in memory first and are stored so a restart keeps them.
+   * A failed write (for example another process holding the database lock)
+   * does not fail the request that caused it; it is retried, and until it
+   * succeeds capped requests are refused (see `videoCommitmentsReady`).
+   * A restart before the retry still keeps the job counted: its create's
+   * reservation, stored before the create was sent, is only removed in the
+   * same transaction that stores the job (see `_loadVideoCommitments`).
+   */
+  private _storeVideo(job: string, record: VideoCommitmentRecord | null, replaces?: string): void {
+    this._pendingVideoWrites.delete(job)
+    try {
+      if (record) this._store.saveVideoCommitment(record, replaces)
+      else this._store.deleteVideoCommitment(job)
+    } catch (error) {
+      this._pendingVideoWrites.set(job, { record, ...(replaces !== undefined ? { replaces } : {}) })
+      this._options.onLog?.(`gateway could not store a video commitment: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Reads the stored commitments. A create's reservation still stored was
+   * left by a gateway that stopped before storing the create's job: when the
+   * request log names the job, the reservation becomes that job's commitment
+   * (the whole room the create was told about, less what it already spent),
+   * since its key can still retrieve it and be charged; otherwise the create
+   * was not accepted, or its job cannot be retrieved through this gateway
+   * (no record names its owner), so it is never charged and the reservation
+   * goes.
+   */
+  private _loadVideoCommitments(): void {
+    try {
+      const rows = this._store.listVideoCommitments(this._now())
+      const stored = new Set(rows.map((row) => row.job))
+      for (const { job, ...commitment } of rows) {
+        if (!isVideoReservationKey(job)) {
+          if (!this._videoCommitments.has(job) && !this._pendingVideoWrites.has(job)) this._videoCommitments.set(job, commitment)
+          continue
+        }
+        const tag = job.slice(videoReservationKey('').length)
+        const created = this._store.videoCreateJob(tag)
+        if (!created || stored.has(created) || this._videoCommitments.has(created)) {
+          this._store.deleteVideoCommitment(job)
+          continue
+        }
+        // Everything already charged for the job (its create, polls and delivery) is spend, not held again; a
+        // delivered job gets the same hour for its charge as any other.
+        const jobId = created.slice(created.indexOf('\n') + 1)
+        const delivery = this._store.videoJobDeliveredAt(commitment.keyId, jobId)
+        const recovered = {
+          ...commitment,
+          amountUsdc: Math.max(0, commitment.amountUsdc - this._store.videoJobSpend(commitment.keyId, jobId)),
+          deliveredAt: delivery,
+        }
+        this._store.saveVideoCommitment({ job: created, ...recovered }, job)
+        stored.add(created)
+        this._videoCommitments.set(created, recovered)
+      }
+      this._videoCommitmentsLoaded = true
+    } catch (error) {
+      this._options.onLog?.(`gateway could not load video commitments: ${error instanceof Error ? error.message : String(error)}`)
+    }
+  }
+
+  /**
+   * Whether every video commitment is read and stored, so caps can be applied:
+   * retries a failed load and failed writes first. A delete that still fails
+   * only over-counts after a restart (the safe side) and does not block.
+   */
+  videoCommitmentsReady(): boolean {
+    if (!this._videoCommitmentsLoaded) this._loadVideoCommitments()
+    for (const [job, { record, replaces }] of [...this._pendingVideoWrites]) this._storeVideo(job, record, replaces)
+    return this._videoCommitmentsLoaded && [...this._pendingVideoWrites.values()].every(({ record }) => record === null)
+  }
+
 
   /** Whether any level above or at the key caps spend (so admission depends on the spend feed). */
   hasBudgets(key: ApiKeyRecord, context: KeyContext = this._context(key)): boolean {
@@ -102,12 +386,12 @@ export class GatewayAccounting {
   }
 
   /** The key (the lower of its admin and owner caps), the member who owns it and its workspace. */
-  private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext): BudgetCheck[] {
+  private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext, excludeVideoJob?: string): BudgetCheck[] {
     const checks: BudgetCheck[] = [
-      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id) },
+      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: (without) => this.heldUsdc(key.id, excludeVideoJob, without) },
     ]
-    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id) })
-    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id) })
+    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: (without) => this.heldForMember(member.id, excludeVideoJob, without) })
+    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: (without) => this.heldForWorkspace(workspace.id, excludeVideoJob, without) })
     return checks
   }
 
@@ -124,26 +408,68 @@ export class GatewayAccounting {
    * Member and workspace spend is the ledger as attributed at request time,
    * so a member who revokes a key and creates a new one still counts
    * everything spent before against the member's caps. Levels and periods
-   * without a cap cost no query.
+   * without a cap cost no query. A video job's own polls and delivery are
+   * admitted without its own commitment (`videoJob`), which they would
+   * otherwise count twice.
    */
-  admit(key: ApiKeyRecord, context: KeyContext = this._context(key)): Admission {
+  admit(key: ApiKeyRecord, context: KeyContext = this._context(key), { videoCreate = false, videoJob }: AdmitOptions = {}): Admission {
     const now = this._now()
-    for (const { level, limits, scope, held } of this._budgetChecks(key, context)) {
+    // A job that still holds its price already covers its delivery's charge, and one that holds nothing (free,
+    // or already charged: the buyer charges a job once) has none to come: its own polls and download are
+    // admitted even when other spend has filled the caps since, so the job can always finish (or be retired).
+    const own = videoJob ? this._videoCommitments.get(videoJob) : undefined
+    if (own && own.keyId === key.id && own.expiresAt > now) {
+      const tag = newRequestTag()
+      this._holds.set(tag, { keyId: key.id, memberId: key.ownerMemberId, workspaceId: key.workspaceId, amountUsdc: 0, finished: false, timer: null, videoJob })
+      return { ok: true, tag, remainingUsdc: null }
+    }
+    let remainingUsdc: number | null = null
+    for (const { level, limits, scope, held } of this._budgetChecks(key, context, videoJob)) {
       const periods = cappedPeriods(limits)
       if (periods.length === 0) continue
-      const breach = findLimitBreach(limits, this._store.spendByPeriod(scope, now, periods), held(), now)
-      if (breach) return { ok: false, breach: { ...breach, level } }
+      const spent = this._store.spendByPeriod(scope, now, periods)
+      const heldUsdc = held()
+      const breach = findLimitBreach(limits, spent, heldUsdc, now)
+      if (breach) {
+        // Room a create holds while it is priced comes back in seconds: say so, rather than that the cap is reached.
+        if (findLimitBreach(limits, spent, held(true), now) === null) return { ok: false, breach: null, reason: 'video_pricing' }
+        return { ok: false, breach: { ...breach, level } }
+      }
+      for (const period of periods) {
+        const room = (limits[period] ?? 0) - (spent[period] ?? 0) - heldUsdc
+        remainingUsdc = remainingUsdc === null ? room : Math.min(remainingUsdc, room)
+      }
     }
+    // A video create may start a job worth up to the room it is told about, so it
+    // holds all of that until the buyer reports the price: two creates in flight
+    // at once cannot both be told the same room.
+    if (videoCreate && remainingUsdc !== null) remainingUsdc = Math.min(remainingUsdc, this._maxVideoRequestUsdc)
     const tag = newRequestTag()
-    this._holds.set(tag, {
+    const hold: Hold = {
       keyId: key.id,
       memberId: key.ownerMemberId,
       workspaceId: key.workspaceId,
-      amountUsdc: this._options.holdUsdc,
+      amountUsdc: videoCreate && remainingUsdc !== null ? remainingUsdc : this._options.holdUsdc,
       finished: false,
       timer: null,
-    })
-    return { ok: true, tag }
+    }
+    if (videoCreate && remainingUsdc !== null) {
+      // Stored before the create is sent, so a job the buyer accepts is never lost from the caps, even when
+      // its own commitment cannot be stored and the gateway restarts (see `_loadVideoCommitments`).
+      try {
+        this._store.saveVideoCommitment({
+          job: videoReservationKey(tag), keyId: hold.keyId, memberId: hold.memberId, workspaceId: hold.workspaceId,
+          amountUsdc: remainingUsdc, expiresAt: now + this._videoCommitmentMs, deliveredAt: null,
+        })
+      } catch (error) {
+        this._options.onLog?.(`gateway could not store a video reservation: ${error instanceof Error ? error.message : String(error)}`)
+        return { ok: false, breach: null, reason: 'video_storage' }
+      }
+      hold.reserved = true
+      hold.videoCreate = true
+    }
+    this._holds.set(tag, hold)
+    return { ok: true, tag, remainingUsdc }
   }
 
   /** Drops a hold at once, for a request that never reached the buyer. */
@@ -191,6 +517,9 @@ export class GatewayAccounting {
       })
       if (!inserted) continue
       recorded += 1
+      // A charge of a video job (its create's opening fee, a poll or its delivery): that much of its commitment is now spend.
+      // Spend without a request ID is only attributed to the seller's latest request, so it may not be the job's.
+      if (request.videoJob && event.requestId !== null) this._videoCharged(request.videoJob, parseBaseUnits(event.amountUsdc))
       // Settled spend replaces that much of the request's worst-case hold.
       // The rest stays until the grace period ends: one request can sign
       // several deltas, and later ones still need to be covered.
@@ -203,6 +532,8 @@ export class GatewayAccounting {
   dispose(): void {
     for (const hold of this._holds.values()) if (hold.timer) clearTimeout(hold.timer)
     this._holds.clear()
+    // Commitments stay stored: the next gateway reloads them.
+    this._videoCommitments.clear()
   }
 }
 
