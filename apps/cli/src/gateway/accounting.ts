@@ -295,6 +295,14 @@ export class GatewayAccounting {
    */
   admit(key: ApiKeyRecord, context: KeyContext = this._context(key), { videoCreate = false, videoJob }: AdmitOptions = {}): Admission {
     const now = this._now()
+    // A job that still holds its price already covers its delivery's charge: its own polls and download are
+    // admitted even when other spend has filled the caps since, so the job can always finish (or be retired).
+    const own = videoJob ? this._videoCommitments.get(videoJob) : undefined
+    if (own && own.keyId === key.id && own.amountUsdc > 0 && own.expiresAt > now) {
+      const tag = newRequestTag()
+      this._holds.set(tag, { keyId: key.id, memberId: key.ownerMemberId, workspaceId: key.workspaceId, amountUsdc: 0, finished: false, timer: null })
+      return { ok: true, tag, remainingUsdc: null }
+    }
     let remainingUsdc: number | null = null
     for (const { level, limits, scope, held } of this._budgetChecks(key, context, videoJob)) {
       const periods = cappedPeriods(limits)

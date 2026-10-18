@@ -632,10 +632,10 @@ test('an accepted video stays counted against the caps, so two videos cannot sha
     assert.equal((await video.create('job-2')).status, 422)
     assert.deepEqual(video.buyer.caps, ['1000000', '400000'])
     await waitFor(() => held() === 600_000)
-    // The job's own polls are admitted without its own price, which they would otherwise count twice.
+    // The job's own polls are admitted without counting its price twice, and hold nothing.
     const own = video.gateway.accounting.admit(video.key, undefined, { videoJob: videoJobKey('venice-video', 'job-1') })
     assert.ok(own.ok)
-    assert.equal(own.remainingUsdc, 1_000_000)
+    assert.equal(video.gateway.accounting.heldUsdc(video.key.id), 600_000)
     video.gateway.accounting.release(own.tag)
     assert.equal((await video.poll('job-1')).status, 200)
     await waitFor(() => held() === 600_000)
@@ -1020,6 +1020,30 @@ test('a charge on a video job lowers what the job holds by that much, whatever r
     accounting.ingest('boot', [event])
     assert.equal(accounting.heldUsdc(key.id), 4_700_000)
     assert.equal(store.periodSpend(key.id).daily, 300_000, 'spend plus what the job holds is still $5')
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('a job that holds its price can always be polled and downloaded, even after other spend fills the cap', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: null, monthly: null, total: 1_000_000 }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, job, 600_000)
+    accounting.release(create.tag)
+    // A late charge of earlier work fills what is left.
+    store.startRequest({ tag: 'late', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: null, startedAt: 0 })
+    accounting.ingest('boot', [{ seq: 1, tag: 'late', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '500000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    assert.equal(accounting.admit(key).ok, false, 'other requests are refused')
+    const poll = accounting.admit(key, undefined, { videoJob: job })
+    assert.ok(poll.ok, 'the job itself is not: its price already covers its charge')
+    assert.equal(accounting.heldUsdc(key.id, job), 0, 'and it adds nothing to what is held')
+    accounting.release(poll.tag)
     accounting.dispose()
   } finally {
     cleanup()
