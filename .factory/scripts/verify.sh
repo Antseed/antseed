@@ -22,6 +22,9 @@ run() {
   echo "== [$phase] $cmd (in $dir)"
   (cd "$dir" && timeout 1800 bash -c "$cmd") > "$out/$id.txt" 2>&1; status=$?
   printf '\n# %s (in %s) -> exit %s\n' "$cmd" "$dir" "$status" >> "$out/$id.txt"
+  # Sandbox reports live under ~/.antseed-sandbox; keep a copy so the evidence resolves after cleanup.
+  report="$(grep -oE '\[sandbox\] (PASSED|FAILED): .+/report\.json' "$out/$id.txt" | tail -1 | sed -E 's/^\[sandbox\] (PASSED|FAILED): //; s#/report\.json$##')"
+  [ -n "$report" ] && [ -d "$report" ] && mkdir -p "$out/reports" && cp -r "$report" "$out/reports/$id" && echo "# report copied to $out/reports/$id" >> "$out/$id.txt"
   printf '%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$phase" "$kind" "$id" "$status" "$(( $(date +%s) - started ))" "$cmd" "$out/$id.txt" >> "$results"
   echo "   exit $status ($(( $(date +%s) - started ))s) -> $out/$id.txt"
 }
