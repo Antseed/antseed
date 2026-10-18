@@ -8,6 +8,7 @@ Rules that hold for every step:
 - Never use `git stash` (the stash is shared with other sessions). Never edit `~/.claude/settings.json`.
 - Use Node 24 from `/usr/local/bin` and Foundry from `/root/.foundry/bin` (`export PATH=/usr/local/bin:/root/.foundry/bin:$PATH`). Give long commands (installs, builds, sandbox runs) a Bash timeout of at least 10 minutes.
 - pstack skills are user-invocable only, so they are not in your skill list: read each named SKILL.md (and the references it names) with the Read tool and follow it, adapted as this prompt says.
+- Scratch files, experiments and evidence go under `{run_dir}/scratch/{stage}`, addressed by absolute path (evidence must still resolve after the run, so not `/tmp`). Before your final answer, run `git -C {worktree} status --porcelain` and remove anything your step was not supposed to leave there (a read-only step must leave it empty). An unquoted glob that matches nothing stays literal: `ln`, `cp` or `>` with it can create a file named `*` in the current directory.
 - Read large files in ranges of at most 150 lines; search with `rg -n` before reading.
 - Decision log (show-me-your-work): log each real decision, fork or verification with
   `bash {skills}/show-me-your-work/scripts/log.sh {run_dir}/decisions.tsv {stage} "<decision>" "<why>" "<evidence path or sha>" "<result>"`
