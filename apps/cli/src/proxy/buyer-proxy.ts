@@ -1188,6 +1188,8 @@ export class BuyerProxy {
   private readonly _resourceRoutes = new ResourceRoutes()
   /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
   private readonly _videoJobQueues = new Map<string, Promise<void>>()
+  /** Jobs whose retirement is being saved: left out of the saved routes, still routable in memory until the save succeeds. */
+  private readonly _retiringVideoJobs = new Set<string>()
 
   private _cachedPeers: PeerInfo[] = []
   private _cacheLastUpdatedAtMs = 0
@@ -2341,21 +2343,27 @@ export class BuyerProxy {
    * restart cannot bring the job back.
    */
   private async _retireVideoJob(protocol: NativeVideoProtocol, resourceId: string): Promise<boolean> {
-    const route = this._resourceRoutes.resolve(protocol, resourceId)
-    if (!route) return true
-    this._resourceRoutes.forget(protocol, resourceId)
+    if (!this._resourceRoutes.resolve(protocol, resourceId)) return true
+    // The route stays usable until the retirement is saved: a retrieve arriving meanwhile waits its turn
+    // (retrieves of one job run one at a time) instead of seeing the job as gone before that is durable.
+    const key = `${protocol}\n${resourceId}`
+    this._retiringVideoJobs.add(key)
     try {
       await this._persistResourceRoutes()
+      this._resourceRoutes.forget(protocol, resourceId)
       return true
     } catch (error) {
-      this._resourceRoutes.restore(route)
       console.error('[proxy] Retired video route was not saved; the job is kept:', error)
       return false
+    } finally {
+      this._retiringVideoJobs.delete(key)
     }
   }
 
   private async _persistResourceRoutes(): Promise<void> {
-    const write = this._stateWriteChain.then(() => mergeJsonStateFile(this._stateDir, this._stateFile, { resourceRoutes: this._resourceRoutes.snapshot() }))
+    const write = this._stateWriteChain.then(() => mergeJsonStateFile(this._stateDir, this._stateFile, {
+      resourceRoutes: this._resourceRoutes.snapshot().filter((route) => !this._retiringVideoJobs.has(`${route.protocol}\n${route.resourceId}`)),
+    }))
     this._stateWriteChain = write.catch(() => {})
     return write
   }

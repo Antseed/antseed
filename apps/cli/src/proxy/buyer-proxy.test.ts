@@ -1628,6 +1628,31 @@ test('a retrieve queued behind one that retires the job as failed never reaches 
   assert.equal(video.calls.retrieves, 1)
 })
 
+test('a retrieve that arrives while a retirement is being saved waits, and keeps the job if the save fails', async () => {
+  let rejectWrite: (error: Error) => void = () => {}
+  let writes = 0
+  const video = failingVideoProxy(
+    () => {
+      writes += 1
+      // The create's write succeeds; the retirement's write is held, then fails.
+      return writes === 1 ? Promise.resolve() : new Promise<void>((_resolve, reject) => { rejectWrite = reject })
+    },
+    async (call) => (call === 1 ? { status: 'FAILED' } : { status: 'PROCESSING' }),
+  )
+  assert.equal((await video.create()).statusCode, 200)
+  const first = video.retrieve()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  const second = video.retrieve()
+  await new Promise((resolve) => setTimeout(resolve, 20))
+  rejectWrite(new Error('disk full'))
+  const [a, b] = await Promise.all([first, second])
+  // Neither answer says the job is gone, so a gateway keeps it held; the second poll reached the seller.
+  assert.deepEqual([JSON.parse(a.body).status, JSON.parse(b.body).status], ['unknown', 'processing'])
+  assert.equal(a.headers['x-antseed-video-job-retired'], undefined)
+  assert.equal(b.headers['x-antseed-video-job-retired'], undefined)
+  assert.equal(video.calls.retrieves, 2)
+})
+
 test('a job its seller no longer has is retired; a status still processing is not', async () => {
   const peer = makePeer('a', ['venice'])
   peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
