@@ -257,7 +257,7 @@ async function verify(label) {
   S = saveState(slug, { last_verify: label })
   const before = snapshot()
   const step = await runStep({ readonly: true, stage: 'verify', round: label.replace(/\D/g, '') || 1, suffix: label.startsWith('r') ? '' : `-${label}`, template: 'verify.md', prefix: 'VERIFY', cwd: S.worktree,
-    addDirs: [`${WT_ROOT}/scratch-${slug}`].filter(existsSync), extra: { verify_dir: join(RD, 'verify', label) } })
+    addDirs: [`${WT_ROOT}/scratch-${slug}`].filter(existsSync), extra: { verify_dir: join(RD, 'verify', label), label } })
   auditGate(step); readOnly(before, 'verify'); tripwire('verify')
   const file = join(RD, 'verify', label, 'verify.md')
   if (!existsSync(file) || lastLine(read(file)) !== step.answer) writeFileSync(file, `${read(file)}\n\n<!-- final message of the verify session -->\n${read(step.out)}`)

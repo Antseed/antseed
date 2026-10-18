@@ -17,8 +17,8 @@
 // call in flight: the pane is read (saved as evidence) and nudged with Enter once; a second stall fails.
 // Exit: 0 answered, 1 no answer line, 2 audit failed, 3 stalled or timed out, 4 could not start.
 import { randomUUID } from 'node:crypto'
-import { appendFileSync, existsSync, mkdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
-import { homedir } from 'node:os'
+import { appendFileSync, existsSync, mkdirSync, readdirSync, readFileSync, statSync, writeFileSync } from 'node:fs'
+import { homedir, tmpdir } from 'node:os'
 import { join, resolve } from 'node:path'
 import { auditRows, auditStep, herdr, runDir, sh } from '../lib/common.mjs'
 import { DENY, sessionEnv } from '../lib/session-env.mjs'
@@ -123,18 +123,41 @@ function transcriptState() {
   return { size: statSync(transcript).size, done: last?.type === 'assistant' && !pendingTool && text.length > 0, pendingTool, text }
 }
 
+// Background Bash jobs of the session write to /tmp/claude-<uid>/<cwd>/<session>/tasks/*.output; their growth is activity.
+const tasksDir = join(tmpdir(), `claude-${process.getuid()}`, cwd.replace(/[^a-zA-Z0-9]/g, '-'), sessionId, 'tasks')
+const taskBytes = () => { try { return readdirSync(tasksDir).reduce((n, f) => n + statSync(join(tasksDir, f)).size, 0) } catch { return 0 } }
+// A tool call in flight is alive (builds, sandbox runs) until toolCeilingMs passes with no activity at all; then
+// the factory presses Escape to interrupt it and tells the session to carry on without it (once).
+const toolCeilingMs = Number(opt('tool-ceiling-min', '20')) * 60_000
+let toolInterrupted = false
+
 const deadline = Date.now() + timeoutMs
-let lastActivity = Date.now(), lastRows = auditRows(tag).length, lastSize = 0, nudged = 0, idleStreak = 0, status = 'timeout'
+let lastActivity = Date.now(), lastRows = auditRows(tag).length, lastSize = 0, lastTasks = 0, nudged = 0, idleStreak = 0, status = 'timeout'
 while (Date.now() < deadline) {
   await new Promise((r) => setTimeout(r, 15_000))
   const agent = herdr(['agent', 'get', name])?.agent
   const state = agent?.agent_status ?? 'gone'
   const rows = auditRows(tag).length
   const t = transcriptState()
-  if (rows !== lastRows || t.size !== lastSize) { lastActivity = Date.now(); lastRows = rows; lastSize = t.size; nudged = Math.min(nudged, 1) }
+  const tasks = taskBytes()
+  if (rows !== lastRows || t.size !== lastSize || tasks !== lastTasks) { lastActivity = Date.now(); lastRows = rows; lastSize = t.size; lastTasks = tasks; nudged = Math.min(nudged, 1) }
   if (state === 'gone') { status = 'exited'; break }
   if ((state === 'idle' || state === 'done') && t.done) { if (++idleStreak >= 2) { status = 'done'; break } } else idleStreak = 0
   const quietMs = Date.now() - lastActivity
+  if (state === 'working' && t.pendingTool && quietMs > toolCeilingMs) {
+    const evidence = snap('tool-ceiling')
+    if (toolInterrupted) {
+      log(`a tool call hung again for ${Math.round(quietMs / 60000)} min; giving up. Screen: ${evidence}`)
+      sh('herdr', ['notification', 'show', `factory ${slug}: ${tag} tool call hung`, '--body', `pane ${pane}; screen in ${evidence}`, '--sound', 'request'])
+      status = 'stalled'; break
+    }
+    log(`a tool call has run ${Math.round(quietMs / 60000)} min with no output, audit or transcript activity: interrupting it (Escape); screen saved to ${evidence}`)
+    sh('herdr', ['agent', 'send-keys', name, 'esc'])
+    await sleep(5000)
+    sh('herdr', ['agent', 'prompt', name, `The factory interrupted your last tool call: it ran ${Math.round(quietMs / 60000)} minutes with no output. Record that as not proven, do not retry it in the same form (use the factory scripts with deadlines), and finish your step with the final answer line it asks for.`])
+    toolInterrupted = true; lastActivity = Date.now()
+    continue
+  }
   if (quietMs > stallMs && !(state === 'working' && t.pendingTool)) {
     const evidence = snap(`stall-${nudged + 1}`)
     if (nudged === 0) {
