@@ -6,8 +6,8 @@ Read with the Read tool: `{skills}/interrogate/SKILL.md`, then `{skills}/interro
 
 Intent (do not question it, challenge the execution): {intent}
 
-Code under review: `git -C {worktree} diff {base}..HEAD` and `git -C {worktree} log --stat {base}..HEAD` (two commits: the failing test, then the fix). Read surrounding code with Read/Grep/Glob and `git -C {worktree} show HEAD:<path>`. Context you may read: `{run_dir}/test-plan.md`, `{run_dir}/blast-radius.md`, `{run_dir}/evidence/red-fresh.txt`, `{run_dir}/evidence/green.txt`, `{verify_dir}/gate.json`.
+Code under review, as files (read them with the Read tool; do not depend on Bash): `{run_dir}/review-input/diff.patch` (the whole change), `{run_dir}/review-input/log.txt` (two commits: the failing test, then the fix), and every changed file at HEAD under `{run_dir}/review-input/files/`. Read surrounding code with Read/Grep/Glob under `{worktree}` (it is checked out at HEAD). Context you may read: `{run_dir}/test-plan.md`, `{run_dir}/blast-radius.md`, `{run_dir}/evidence/red-fresh.txt`, `{run_dir}/evidence/green.txt`, `{verify_dir}/gate.json`.
 
-You are READ-ONLY (plan mode). Do not try to edit, run builds or tests; do not call ExitPlanMode. Trace call sites before claiming a caller can pass an input. A few proven findings beat a long list of maybes; "no findings" is valid.
+You are READ-ONLY (plan mode): use Read, Grep and Glob. Do not edit, run builds or tests, or write decision-log rows (the preamble's logging rule does not apply to you); do not call ExitPlanMode. Trace call sites before claiming a caller can pass an input. A few proven findings beat a long list of maybes; "no findings" is valid.
 
 Your final message IS your review: the `## Findings` list in the reviewer-prompt format, then a line `Checked and cleared: ...`, then exactly `REVIEW {slug} {reviewer} <number of findings> findings`.
