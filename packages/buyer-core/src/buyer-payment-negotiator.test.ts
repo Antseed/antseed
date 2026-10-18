@@ -243,7 +243,8 @@ describe('BuyerPaymentNegotiator', () => {
 
     it('accepts a video the caller can still afford, and any video without a cap', () => {
       const { negotiator, bpm } = makeNegotiator();
-      negotiator.trackRequestBillingContext(request, 'wan-2.5', route, 800_000n);
+      // The price is returned, so an accepted create can report it to the caller.
+      expect(negotiator.trackRequestBillingContext(request, 'wan-2.5', route, 800_000n)).toBe(800_000n);
       negotiator.trackRequestBillingContext(request, 'wan-2.5', route);
       expect(bpm.trackRequestBilling).toHaveBeenCalledTimes(2);
       expect(bpm.trackRequestBilling.mock.calls[0]![1]).toMatchObject({ estimatedCostUsdc: 800_000n });

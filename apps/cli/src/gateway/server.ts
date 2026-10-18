@@ -2,11 +2,11 @@ import { timingSafeEqual } from 'node:crypto'
 import * as http from 'node:http'
 import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
-import { DEFAULT_BUYER_IDENTITY } from '@antseed/node'
+import { DEFAULT_BUYER_IDENTITY, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
-import { effectiveKeyLimits, newRequestTag, type GatewayAccounting, type KeyContext } from './accounting.js'
+import { effectiveKeyLimits, newRequestTag, videoJobKey, type GatewayAccounting, type KeyContext } from './accounting.js'
 import { errorMessage } from './errors.js'
 import { isClientCredentialHeader } from '../proxy/credential-headers.js'
 import { parseBearerToken } from './keys.js'
@@ -323,7 +323,8 @@ export class GatewayServer {
 
     const policy = this._routingPolicy(res, route, key, context, preset, model)
     if (!policy.allowed) return
-    const admission = this._admit(res, route, key, context)
+    const video = nativeVideoRoute({ method, path: route.prefix, body })
+    const admission = this._admit(res, route, key, context, video?.action === 'retrieve' && video.resourceId ? videoJobKey(video.protocol, video.resourceId) : undefined)
     if (!admission) return
     const { tag } = admission
 
@@ -340,7 +341,7 @@ export class GatewayServer {
       body,
       policyHeaders: policy.headers,
       modelListPolicy: route.prefix === '/v1/models' && policy.policy.allowedModels ? policy.policy : null,
-      video: nativeVideoRoute({ method, path: route.prefix, body }),
+      video,
       remainingUsdc: admission.remainingUsdc,
     }
     try {
@@ -469,13 +470,36 @@ export class GatewayServer {
   }
 
   /** The request's tag; a paid request is admitted against its budgets first (402 answered here when one is spent). */
-  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext): { tag: string; remainingUsdc: number | null } | null {
+  private _admit(res: http.ServerResponse, route: CanonicalRoute, key: ApiKeyRecord, context: KeyContext, videoJob?: string): { tag: string; remainingUsdc: number | null } | null {
     if (!route.paid) return { tag: newRequestTag(), remainingUsdc: null }
-    const admission = this._options.accounting.admit(key, context)
+    const admission = this._options.accounting.admit(key, context, videoJob)
     if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
     return null
+  }
+
+  /**
+   * Keeps an accepted video's price counted against the caps until it is
+   * delivered (then its charge settles like any request's) or will never be:
+   * the job failed, or the buyer does not know it.
+   */
+  private _settleVideo(
+    request: ForwardedRequest,
+    status: number,
+    outcome: { videoJobId: string | null; videoPriceUsdc: number; videoDelivered: boolean; poll: Buffer[] | null },
+  ): void {
+    const video = request.video
+    if (!video) return
+    const accounting = this._options.accounting
+    if (video.action === 'create') {
+      if (outcome.videoJobId) accounting.commitVideo(request.tag, videoJobKey(video.protocol, outcome.videoJobId), outcome.videoPriceUsdc)
+      return
+    }
+    if (!video.resourceId) return
+    const job = videoJobKey(video.protocol, video.resourceId)
+    if (outcome.videoDelivered) accounting.deliverVideo(request.tag, job)
+    else if (status === 404 || status === 400 || status === 422 || (outcome.poll && videoPollFailed(Buffer.concat(outcome.poll)))) accounting.dropVideo(job)
   }
 
   /**
@@ -506,6 +530,9 @@ export class GatewayServer {
       // Video: the start of a create's answer (it names the job) and whether a retrieve delivered the file.
       let videoCreateChunks: Buffer[] | null = null
       let videoDelivered = false
+      // The buyer's price for an accepted create, and the start of a status poll's answer (it says whether the job failed).
+      let videoPriceUsdc = 0
+      let videoPollChunks: Buffer[] | null = null
       // Token counts the response reports, kept on the request until (or if
       // the buyer never reports) its spend.
       let usageReader: ResponseUsageReader | null = null
@@ -519,12 +546,13 @@ export class GatewayServer {
         const latencyMs = reportedLatency ?? finishedAt - startedAt
         const responseContent = observability.logContent ? truncateContent(Buffer.concat(responseChunks)) : null
         const store = this._options.store
+        let videoJobId: string | null = null
         try {
           const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
           store.finishRequest(tag, { status, buyerRequestId, error })
           const usage = usageReader?.result() ?? null
           const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
-          const videoJobId = videoCreateChunks && request.video
+          videoJobId = videoCreateChunks && request.video
             ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
             : null
           store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered })
@@ -533,6 +561,7 @@ export class GatewayServer {
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
+        this._settleVideo(request, status, { videoJobId, videoPriceUsdc, videoDelivered, poll: videoPollChunks })
         // Only the retrieve that delivers a video is charged: a create or a status poll holds nothing once answered.
         if (request.video && !videoDelivered) this._options.accounting.release(tag)
         else this._options.accounting.finish(tag)
@@ -582,8 +611,12 @@ export class GatewayServer {
           const contentType = firstHeader(upstreamRes.headers['content-type']).toLowerCase()
           // A video is priced per second, not per token: zero token prices do not make it free.
           servedFree = !request.video && freeSellerPricing(upstreamRes.headers)
-          if (request.video?.action === 'create' && status >= 200 && status < 300) videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+          if (request.video?.action === 'create' && status >= 200 && status < 300) {
+            videoCreateChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
+            videoPriceUsdc = Number(firstHeader(upstreamRes.headers[VIDEO_PRICE_HEADER])) || 0
+          }
           videoDelivered = request.video?.action === 'retrieve' && status === 200 && contentType.startsWith('video/')
+          if (request.video?.action === 'retrieve' && status === 200 && !videoDelivered) videoPollChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           if (observability.logContent) responseChunks = collectPrefix(upstreamRes, MAX_LOGGED_CONTENT_BYTES)
           if (status >= 400) errorChunks = collectPrefix(upstreamRes, MAX_ERROR_BODY_BYTES)
           // A delivered video is an MP4 stream with no usage to read.
@@ -903,6 +936,15 @@ function sendError(res: http.ServerResponse, status: number, type: string, code:
 function sendUnauthorized(res: http.ServerResponse, code: string, message: string): void {
   res.setHeader('www-authenticate', 'Bearer')
   sendError(res, 401, 'authentication_error', code, message)
+}
+
+/** Whether a video status answer says the job failed (the buyer normalizes every seller's status to `failed`). */
+function videoPollFailed(body: Buffer): boolean {
+  try {
+    return (JSON.parse(body.toString('utf8')) as { status?: unknown }).status === 'failed'
+  } catch {
+    return false
+  }
 }
 
 /** The request body, or null once it exceeds MAX_BODY_BYTES (the rest is drained, not kept). */

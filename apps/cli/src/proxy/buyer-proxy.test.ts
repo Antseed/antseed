@@ -1556,11 +1556,13 @@ test('a video create passes the caller spend cap to the buyer and never to the s
   const sent: Array<{ path: string; cap: unknown; header: unknown }> = []
   ;(proxy as any)._node.sendRequest = async (_peer: PeerInfo, request: SerializedHttpRequest, options: { maxVideoCostUsdc?: bigint }) => {
     sent.push({ path: request.path, cap: options?.maxVideoCostUsdc, header: request.headers['x-antseed-max-video-usdc'] })
-    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json' }, body: Buffer.from(JSON.stringify({ queue_id: 'job' })) }
+    return { requestId: request.requestId, statusCode: 200, headers: { 'content-type': 'application/json', 'x-antseed-video-price-usdc': '650000' }, body: Buffer.from(JSON.stringify({ queue_id: 'job' })) }
   }
   for (const cap of ['1500000', 'lots']) {
     const queued = await invokeProxy(proxy, makeProxyRequest({ path: '/api/v1/video/queue', body: { model: 'video-model', prompt: 'cat', duration: '5s' }, headers: { 'x-antseed-max-video-usdc': cap } }))
     assert.equal(queued.statusCode, 200, queued.body)
+    // The accepted job's price reaches the caller, so a gateway can keep it reserved until delivery.
+    assert.equal(queued.headers['x-antseed-video-price-usdc'], '650000')
   }
   assert.deepEqual(sent, [
     { path: '/api/v1/video/queue', cap: 1_500_000n, header: undefined },

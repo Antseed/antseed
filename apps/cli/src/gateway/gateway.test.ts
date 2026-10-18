@@ -2,7 +2,7 @@ import assert from 'node:assert/strict'
 import * as http from 'node:http'
 import { test } from 'node:test'
 import { SPEND_ATTRIBUTION_HEADER, SpendAttributionFeed } from '../proxy/spend-attribution.js'
-import { GatewayAccounting } from './accounting.js'
+import { GatewayAccounting, videoJobKey } from './accounting.js'
 import { generateApiKey } from './keys.js'
 import { findLimitBreach, periodResetsAt, periodStart } from './limits.js'
 import { formatUsdc, parseUsdToUsdc, usdcToDecimalString } from './money.js'
@@ -526,6 +526,108 @@ test('a video create and a status poll hold nothing once answered; only the deli
     await gateway.stop()
     await buyer.close()
     cleanup()
+  }
+})
+
+/**
+ * Buyer that prices every video at `priceUsdc` and refuses one above the cap
+ * the gateway sends, as the real buyer does. A create names its job with the
+ * body's `job`; a retrieve for a job ending in `-fail` reports a failed job,
+ * one ending in `-done` delivers the file, any other is still processing.
+ */
+async function pricedVideoBuyer(priceUsdc: number) {
+  const caps: Array<string | null> = []
+  const server = http.createServer((req, res) => {
+    if (req.url?.startsWith('/_antseed/attributed-spend')) {
+      res.writeHead(200, { 'content-type': 'application/json' })
+      res.end(JSON.stringify({ ok: true, bootId: 'boot', events: [], next: 0 }))
+      return
+    }
+    const chunks: Buffer[] = []
+    req.on('data', (chunk) => chunks.push(chunk))
+    req.on('end', () => {
+      const body = JSON.parse(Buffer.concat(chunks).toString('utf8')) as { job?: string; queue_id?: string }
+      const headers = { 'x-antseed-request-id': `req-${randomBytes(4).toString('hex')}`, 'x-antseed-peer-id': 'seller' }
+      if (req.url?.endsWith('/queue')) {
+        const cap = (req.headers['x-antseed-max-video-usdc'] as string | undefined) ?? null
+        caps.push(cap)
+        if (cap !== null && priceUsdc > Number(cap)) {
+          res.writeHead(422, { ...headers, 'content-type': 'application/json' })
+          res.end(JSON.stringify({ error: { code: 'buyer-budget-too-low', message: 'Video costs more than the spend limit has left' } }))
+          return
+        }
+        res.writeHead(200, { ...headers, 'content-type': 'application/json', 'x-antseed-video-price-usdc': String(priceUsdc) })
+        res.end(JSON.stringify({ queue_id: body.job }))
+        return
+      }
+      if (body.queue_id?.endsWith('-done')) {
+        res.writeHead(200, { ...headers, 'content-type': 'video/mp4' })
+        res.end(Buffer.concat([Buffer.from([0, 0, 0, 0x18]), Buffer.from('ftypisom'), randomBytes(64)]))
+        return
+      }
+      res.writeHead(200, { ...headers, 'content-type': 'application/json' })
+      res.end(JSON.stringify({ status: body.queue_id?.endsWith('-fail') ? 'failed' : 'processing' }))
+    })
+  })
+  const port = await listen(server)
+  return { port, caps, close: () => new Promise<void>((resolve) => server.close(() => resolve())) }
+}
+
+async function videoGateway(priceUsdc: number, dailyCap: number) {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await pricedVideoBuyer(priceUsdc)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: dailyCap, monthly: null, total: null }, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  return {
+    store, key, buyer, gateway,
+    create: (job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
+    poll: (job: string) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
+    close: async () => {
+      await gateway.stop()
+      await buyer.close()
+      cleanup()
+    },
+  }
+}
+
+test('an accepted video stays counted against the caps, so two videos cannot share the same room', async () => {
+  const video = await videoGateway(600_000, 1_000_000)
+  const held = () => video.gateway.accounting.heldUsdc(video.key.id)
+  try {
+    assert.equal((await video.create('job-1')).status, 200)
+    await waitFor(() => held() === 600_000)
+    // Only $0.40 is left once the first job is counted: the buyer refuses a second $0.60 video before it starts.
+    assert.equal((await video.create('job-2')).status, 422)
+    assert.deepEqual(video.buyer.caps, ['1000000', '400000'])
+    await waitFor(() => held() === 600_000)
+    // The job's own polls are admitted without its own price, which they would otherwise count twice.
+    const own = video.gateway.accounting.admit(video.key, undefined, videoJobKey('venice-video', 'job-1'))
+    assert.ok(own.ok)
+    assert.equal(own.remainingUsdc, 1_000_000)
+    video.gateway.accounting.release(own.tag)
+    assert.equal((await video.poll('job-1')).status, 200)
+    await waitFor(() => held() === 600_000)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a video job that fails stops counting, and a delivered one counts until its charge settles', async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  const held = () => video.gateway.accounting.heldUsdc(video.key.id)
+  try {
+    assert.equal((await video.create('job-fail')).status, 200)
+    assert.equal((await video.create('job-done')).status, 200)
+    await waitFor(() => held() === 800_000)
+    assert.equal((await video.poll('job-fail')).status, 200)
+    await waitFor(() => held() === 400_000)
+    // The delivery's request hold takes over the job's price until its spend arrives (none does here).
+    assert.equal((await video.poll('job-done')).status, 200)
+    await waitFor(() => video.store.listRequests({ keyIds: null, keyId: video.key.id }).some((row) => row.video?.action === 'delivery'))
+    assert.equal(held(), 400_000)
+    assert.equal(video.gateway.accounting.heldUsdc(video.key.id, videoJobKey('venice-video', 'job-done')), 400_000, 'a request hold now, no longer a commitment')
+  } finally {
+    await video.close()
   }
 })
 

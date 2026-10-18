@@ -26,6 +26,9 @@ export function effectiveKeyLimits(key: Pick<ApiKeyRecord, 'limits' | 'ownerLimi
 /** Spend can be signed after the response ends (seller-initiated auth). */
 const DEFAULT_SETTLE_GRACE_MS = 60_000
 
+/** An accepted video nobody downloads stops counting against the caps after this long. */
+const DEFAULT_VIDEO_COMMITMENT_MS = 24 * 60 * 60_000
+
 export interface GatewayAccountingOptions {
   /**
    * Worst-case cost of one request, reserved against the key's caps while it
@@ -33,6 +36,7 @@ export interface GatewayAccountingOptions {
    */
   holdUsdc: number
   settleGraceMs?: number
+  videoCommitmentMs?: number
   now?: () => number
 }
 
@@ -53,6 +57,14 @@ type Hold = {
   timer: ReturnType<typeof setTimeout> | null
 }
 
+/** The price of an accepted video job, owed once its file is delivered. */
+type VideoCommitment = Omit<Hold, 'finished' | 'timer'> & { expiresAt: number }
+
+/** Identifies a video job across its create, polls and delivery. */
+export function videoJobKey(protocol: string, jobId: string): string {
+  return `${protocol}\n${jobId}`
+}
+
 export function newRequestTag(): string {
   return `gw_${randomUUID()}`
 }
@@ -70,31 +82,76 @@ export type Admission =
  */
 export class GatewayAccounting {
   private readonly _holds = new Map<string, Hold>()
+  /** Accepted video jobs, by `videoJobKey`: their price counts against the caps until delivered, failed or expired. */
+  private readonly _videoCommitments = new Map<string, VideoCommitment>()
   private readonly _settleGraceMs: number
+  private readonly _videoCommitmentMs: number
   private readonly _now: () => number
 
   constructor(private readonly _store: GatewayStore, private readonly _options: GatewayAccountingOptions) {
     this._settleGraceMs = _options.settleGraceMs ?? DEFAULT_SETTLE_GRACE_MS
+    this._videoCommitmentMs = _options.videoCommitmentMs ?? DEFAULT_VIDEO_COMMITMENT_MS
     this._now = _options.now ?? (() => Date.now())
   }
 
-  heldUsdc(keyId: string): number {
-    return this._held((hold) => hold.keyId === keyId)
+  /** In-flight holds plus accepted videos not yet delivered, optionally leaving one video job out. */
+  heldUsdc(keyId: string, excludeVideoJob?: string): number {
+    return this._held((hold) => hold.keyId === keyId, excludeVideoJob)
   }
 
   /** Holds in flight for every key a member owns. */
-  heldForMember(memberId: string): number {
-    return this._held((hold) => hold.memberId === memberId)
+  heldForMember(memberId: string, excludeVideoJob?: string): number {
+    return this._held((hold) => hold.memberId === memberId, excludeVideoJob)
   }
 
-  heldForWorkspace(workspaceId: string): number {
-    return this._held((hold) => hold.workspaceId === workspaceId)
+  heldForWorkspace(workspaceId: string, excludeVideoJob?: string): number {
+    return this._held((hold) => hold.workspaceId === workspaceId, excludeVideoJob)
   }
 
-  private _held(match: (hold: Hold) => boolean): number {
+  private _held(match: (hold: Omit<Hold, 'finished' | 'timer'>) => boolean, excludeVideoJob?: string): number {
     let held = 0
     for (const hold of this._holds.values()) if (match(hold)) held += hold.amountUsdc
+    const now = this._now()
+    for (const [job, commitment] of this._videoCommitments) {
+      if (commitment.expiresAt <= now) this._videoCommitments.delete(job)
+      else if (job !== excludeVideoJob && match(commitment)) held += commitment.amountUsdc
+    }
     return held
+  }
+
+  /**
+   * A video create was accepted at this price: keep it counted against the
+   * caps of the key, member and workspace the create was admitted for until
+   * the video is delivered, the job fails or the commitment expires.
+   */
+  commitVideo(tag: string, job: string, priceUsdc: number): void {
+    const hold = this._holds.get(tag)
+    if (!hold || !(priceUsdc > 0)) return
+    this._videoCommitments.set(job, {
+      keyId: hold.keyId,
+      memberId: hold.memberId,
+      workspaceId: hold.workspaceId,
+      amountUsdc: priceUsdc,
+      expiresAt: this._now() + this._videoCommitmentMs,
+    })
+  }
+
+  /**
+   * The retrieve `tag` delivered the job's file. Its charge is signed after
+   * the response, so the commitment moves onto that request's hold, which
+   * settled spend then replaces like any other request's.
+   */
+  deliverVideo(tag: string, job: string): void {
+    const commitment = this._videoCommitments.get(job)
+    if (!commitment) return
+    this._videoCommitments.delete(job)
+    const hold = this._holds.get(tag)
+    if (hold) hold.amountUsdc = Math.max(hold.amountUsdc, commitment.amountUsdc)
+  }
+
+  /** The job failed or is unknown to the buyer: it will never be charged. */
+  dropVideo(job: string): void {
+    this._videoCommitments.delete(job)
   }
 
   /** Whether any level above or at the key caps spend (so admission depends on the spend feed). */
@@ -103,12 +160,12 @@ export class GatewayAccounting {
   }
 
   /** The key (the lower of its admin and owner caps), the member who owns it and its workspace. */
-  private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext): BudgetCheck[] {
+  private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext, excludeVideoJob?: string): BudgetCheck[] {
     const checks: BudgetCheck[] = [
-      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id) },
+      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id, excludeVideoJob) },
     ]
-    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id) })
-    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id) })
+    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id, excludeVideoJob) })
+    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id, excludeVideoJob) })
     return checks
   }
 
@@ -125,12 +182,14 @@ export class GatewayAccounting {
    * Member and workspace spend is the ledger as attributed at request time,
    * so a member who revokes a key and creates a new one still counts
    * everything spent before against the member's caps. Levels and periods
-   * without a cap cost no query.
+   * without a cap cost no query. A video job's own polls and delivery are
+   * admitted without its own commitment (`videoJob`), which they would
+   * otherwise count twice.
    */
-  admit(key: ApiKeyRecord, context: KeyContext = this._context(key)): Admission {
+  admit(key: ApiKeyRecord, context: KeyContext = this._context(key), videoJob?: string): Admission {
     const now = this._now()
     let remainingUsdc: number | null = null
-    for (const { level, limits, scope, held } of this._budgetChecks(key, context)) {
+    for (const { level, limits, scope, held } of this._budgetChecks(key, context, videoJob)) {
       const periods = cappedPeriods(limits)
       if (periods.length === 0) continue
       const spent = this._store.spendByPeriod(scope, now, periods)
@@ -211,6 +270,7 @@ export class GatewayAccounting {
   dispose(): void {
     for (const hold of this._holds.values()) if (hold.timer) clearTimeout(hold.timer)
     this._holds.clear()
+    this._videoCommitments.clear()
   }
 }
 

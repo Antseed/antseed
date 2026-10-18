@@ -47,6 +47,9 @@ export interface RequestStreamCallbacks {
   onResponseChunk?: (chunk: SerializedHttpResponseChunk) => void | Promise<void>;
 }
 
+/** On an accepted video create: the job's price in USDC base units, charged when the video is delivered. */
+export const VIDEO_PRICE_HEADER = 'x-antseed-video-price-usdc';
+
 export interface RequestExecutionOptions {
   signal?: AbortSignal;
   /** Skip payment/free-usage machinery for internal control-plane requests. */
@@ -133,8 +136,13 @@ export class BuyerRequestHandler {
     // Track which service the buyer requested so auth validation uses buyer's own pricing.
     const requestedService = options?.controlPlane ? undefined : extractRequestedService(peer, req);
     const requestProtocol = options?.controlPlane ? null : detectRequestServiceApiProtocol(req);
-    const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse =>
-      adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+    // Set when a video create is priced; reported on its accepted response so the caller can reserve it until delivery.
+    let videoPriceUsdc: bigint | undefined;
+    const adaptPeerResponse = (response: SerializedHttpResponse): SerializedHttpResponse => {
+      const adapted = adaptPeerFaultErrorResponse(response, requestProtocol, { pinned: options?.pinned });
+      if (videoPriceUsdc === undefined || adapted.statusCode < 200 || adapted.statusCode >= 300) return adapted;
+      return { ...adapted, headers: { ...adapted.headers, [VIDEO_PRICE_HEADER]: videoPriceUsdc.toString() } };
+    };
     const billingRoute = requestedService ? selectBillingRoute(peer, req, requestedService) : null;
     // Decide free vs paid from the resolved route (provider + protocol), mirroring
     // the seller's per-request gate so both sides classify the request the same way.
@@ -164,7 +172,8 @@ export class BuyerRequestHandler {
             `Cannot send paid ${requestProtocol} request for service "${requestedService}" without service unit billing metadata`,
           );
         }
-        negotiator.trackRequestBillingContext(req, requestedService, billingRoute, options?.maxVideoCostUsdc);
+        const price = negotiator.trackRequestBillingContext(req, requestedService, billingRoute, options?.maxVideoCostUsdc);
+        if (videoRoute?.action === 'create') videoPriceUsdc = price;
       }
     } else if (requestedService && isFreeService && this._deps.freeUsageManager) {
       this._deps.freeUsageManager.trackRequestService(req.requestId, requestedService);
