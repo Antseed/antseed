@@ -1,0 +1,140 @@
+import { useState } from 'react'
+import { Button } from '@antseed/ui'
+import type { NetworkModel, NetworkModelOffer, PeerTeeScope, RoutePreview } from '../api/types'
+import { formatLatency, formatPriceRange, formatSpeed, formatTokens, shortId } from '../lib/format'
+import { CAPABILITY_LABELS, MODEL_TYPE_LABELS, priceSummary } from '../lib/models'
+import { panelPath } from '../lib/nav'
+import { modelCallFormat, pinnedModelId } from '../lib/snippets'
+import { ApiCall } from './ApiCall'
+import { SellerSelection } from './SellerSelection'
+import { PanelRow, PanelSection } from './SidePanel'
+import { TeeBadge } from './TeeBadge'
+import { Badge, CopyButton, DetailList, Mono, PageLink, SelectField } from './ui'
+import { VerificationLinks } from './VerificationLinks'
+
+export function score(value: number | null): string {
+  return value === null ? '—' : String(Math.round(value))
+}
+
+export function context(value: number | null): string {
+  return value === null ? '—' : formatTokens(value)
+}
+
+/** The best TEE any seller of the model has verified. */
+export function modelTeeScope(model: NetworkModel): PeerTeeScope | null {
+  if (model.fullTeeSellers > 0) return 'end-to-end'
+  return model.offers.some((offer) => offer.teeScope === 'seller-node') ? 'seller-node' : null
+}
+
+function offerName(offer: NetworkModelOffer): string {
+  return offer.displayName ?? shortId(offer.peerId, 8, 4)
+}
+
+/** `''` routes automatically; otherwise the `<peerId>:<serviceId>` of the pinned offer. */
+type Route = string
+
+function offerKey(offer: NetworkModelOffer): string {
+  return `${offer.peerId}:${offer.serviceId}`
+}
+
+/**
+ * One model: what it is, who offers it, how automatic routing picks among
+ * them, and how to call it. On the Models page Pin picks the provider for the
+ * API call; in the chat (`pin`) it pins the chat's seller as well.
+ */
+export function ModelDetails({ model, preview, previewLoading, pin }: {
+  model: NetworkModel
+  preview: RoutePreview | undefined
+  previewLoading: boolean
+  pin?: { peerId: string | null; onChange: (peerId: string | null) => void }
+}) {
+  const [localRoute, setLocalRoute] = useState<Route>('')
+  const pinnedOffer = pin
+    ? model.offers.find((offer) => offer.peerId.toLowerCase() === pin.peerId) ?? null
+    : model.offers.find((offer) => offerKey(offer) === localRoute) ?? null
+  const route = pinnedOffer ? offerKey(pinnedOffer) : ''
+  const setRoute = (next: Route) => {
+    if (!pin) return setLocalRoute(next)
+    const offer = model.offers.find((entry) => offerKey(entry) === next)
+    pin.onChange(offer ? offer.peerId.toLowerCase() : null)
+  }
+  const callModel = pinnedOffer ? pinnedModelId(pinnedOffer.peerId, pinnedOffer.serviceId) : model.id
+  const format = modelCallFormat(model.type, pinnedOffer)
+  const perImage = model.offers.some((offer) => offer.usdPerImage !== null)
+
+  return (
+    <>
+      <div className="gc-stack gc-stack--tight">
+        <span className="gc-seller__meta">
+          <span className="gc-peer-id"><Mono title={model.id}>{model.id}</Mono><CopyButton iconOnly value={model.id} label="Copy model id" /></span>
+          <Badge>{MODEL_TYPE_LABELS[model.type]}</Badge>
+          {model.free && <Badge tone="success">Free</Badge>}
+          <TeeBadge tee={model.teeSellers > 0} scope={modelTeeScope(model)} />
+        </span>
+        <DetailList items={[
+          ['Context', context(model.contextLength)],
+          ['Capabilities', model.capabilities.length
+            ? <span className="gc-badges">{model.capabilities.map((capability) => <Badge key={capability}>{CAPABILITY_LABELS[capability]}</Badge>)}</span>
+            : '—'],
+          ['Tags', model.tags.length ? <span className="gc-badges">{model.tags.map((tag) => <Badge key={tag}>{tag}</Badge>)}</span> : '—'],
+          ['Aliases', model.aliases.length ? <Mono>{model.aliases.join(', ')}</Mono> : '—'],
+          ...(perImage ? [] : [
+            ['Input $/M', formatPriceRange(model.inputUsdPerMillion)] as [string, string],
+            ['Output $/M', formatPriceRange(model.outputUsdPerMillion)] as [string, string],
+          ]),
+        ]} />
+      </div>
+
+      <SellerSelection preview={preview} loading={previewLoading} pin={pin} />
+
+      <PanelSection title={`Providers (${model.offers.length})`}>
+        {model.offers.length === 0 ? <p className="gc-fineprint">No provider offers this model right now.</p> : (
+          <ul className="gc-panel-rows" aria-label="Providers offering this model">
+            {model.offers.map((offer) => {
+              const id = pinnedModelId(offer.peerId, offer.serviceId)
+              const on = route === offerKey(offer)
+              return (
+                <PanelRow key={offerKey(offer)} selected={on}
+                  title={<PageLink to={panelPath('providers', offer.peerId)}>{offerName(offer)}</PageLink>}
+                  meta={<>
+                    <span>{priceSummary(offer)}</span>
+                    <span>Trust {score(offer.trustScore)}</span>
+                    {offer.firstTokenMsP50 !== null && <span>{formatLatency(offer.firstTokenMsP50)} first token</span>}
+                    {offer.tokensPerSecondP50 !== null && <span>{formatSpeed(offer.tokensPerSecondP50)}</span>}
+                    {offer.serviceId !== model.id && <Mono>{offer.serviceId}</Mono>}
+                  </>}
+                  badges={(offer.verificationLinks?.length || offer.tee || offer.free) && (
+                    <div className="gc-badges">
+                      <VerificationLinks links={offer.verificationLinks} />
+                      <TeeBadge tee={offer.tee} scope={offer.teeScope} />
+                      {offer.free && <Badge tone="success">Free</Badge>}
+                    </div>
+                  )}
+                  actions={<>
+                    <CopyButton iconOnly value={id} label={`Copy ${offerName(offer)}'s model id (peer@model)`} />
+                    <Button size="sm" variant={on ? 'outline' : 'ghost'} aria-pressed={on}
+                      title={pin ? 'Send this chat to this provider' : 'Use this provider in the API call below'}
+                      onClick={() => setRoute(on ? '' : offerKey(offer))}>{on ? 'Pinned' : 'Pin'}</Button>
+                  </>} />
+              )
+            })}
+          </ul>
+        )}
+      </PanelSection>
+
+      <PanelSection title="API call"
+        actions={model.offers.length > 0 && (
+          <SelectField size="sm" aria-label="Route the call" value={route} onChange={setRoute}
+            options={[{ value: '', label: 'Best provider (automatic)' }, ...model.offers.map((offer) => ({ value: offerKey(offer), label: offerName(offer) }))]} />
+        )}>
+        <p className="gc-fineprint">
+          {pinnedOffer
+            ? <>Pinned to {offerName(pinnedOffer)} with <code>{shortId(callModel, 10, 12)}</code>.</>
+            : <>The gateway picks the best provider for <code>{model.id}</code> under your routing policy.</>}
+        </p>
+        <ApiCall id="gc-model-call" model={callModel} format={format}
+          unsupported={`${MODEL_TYPE_LABELS[model.type]} models are not served through the gateway's /v1 API.`} />
+      </PanelSection>
+    </>
+  )
+}

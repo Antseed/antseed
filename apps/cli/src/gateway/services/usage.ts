@@ -200,7 +200,7 @@ export function listRequestPage(
 export function requestDetail(store: GatewayStore, tag: string, keyIds: readonly string[] | null): RequestDetail {
   const row = store.getRequest(tag, keyIds)
   if (!row) throw notFound('Request')
-  return { ...requestDto(row), requestBody: row.requestBody, responseBody: row.responseBody }
+  return { ...requestDto(row), routeSelection: row.routeSelection, requestBody: row.requestBody, responseBody: row.responseBody }
 }
 
 type CsvEntry = RequestLogEntry & { routerPeerId: string | null; routerService: string | null; routerRank: number | null }

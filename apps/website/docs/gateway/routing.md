@@ -54,15 +54,39 @@ Policies also apply to pinned requests (`<peerId>@<model>`): a client cannot get
 
 ## Edit policies
 
-- **Routing** shows the **Gateway default** and **This workspace** tabs, and **Effective for this workspace**: what keys in the workspace get before member, key and preset policies narrow it.
+- **Routing** lists every level under **Rules that apply**, top to bottom, each one in plain sentences ("Never uses …", "Only sellers with trust 40 or more"). The list ends with **Effective for** the workspace: what keys in the workspace get before member, key and preset policies narrow it. **Edit** (or **Add rules**) opens a level's editor; members see the levels they cannot change read-only.
 - **Members** and **Keys** have a policy section when you edit a member or a key.
 - On **Providers**, **Allow**, **Prefer** and **Block** add one provider to the policy at the scope you choose and keep the rest of that policy. See [Models and providers](/docs/gateway/models).
 
 When a save would leave no provider able to serve, or asks for more than the levels above allow, the console asks you to confirm.
 
-## Route preview
+## Try a request
 
-**Route preview** on the **Routing** page shows, for a model and a workspace, key, member or preset, which providers would serve a request and in what order, and why the others are excluded: blocked, over a price cap, below the trust minimum, and so on. Exclusions caused by the buyer settings read `buyer config: …`, for example `buyer config: reputation 30 below 40`.
+**Try a request** at the top of the **Routing** page shows the route for one model. Choose the model from a searchable list; the page starts with your first starred model, or else the most offered one. Choose who is asking: the workspace, a key, a member or a preset.
+
+The result appears at once:
+
+- the providers that would serve the request, in the order they are tried, with the numbers routing ranks them by;
+- under **Not used**, each excluded provider with its reason, and the level whose rule keeps it out, for example **Gateway default** blocks it, or **Buyer config** requires trust 60+ (it has 55).
+
+Each level in **Rules that apply** then says how many of the model's providers it keeps out.
+
+## How automatic routing picks a seller
+
+Among the providers a policy allows, the buyer ranks by what it has seen them do. With buyer routing preferences set, it ranks by the expected cost of one good answer: the price plus the time it takes, divided by the share of requests the provider answered recently. Providers within 30% of the best share the traffic, cheaper and more reliable ones more often, and requests of one conversation stay on one provider so its prompt cache keeps working. Without routing preferences it ranks by trust. A policy's **Cheapest** or **Lowest latency** sort and its route chains reorder the list. In every order, providers failing lately go after the healthy ones, and cooling-down ones go last.
+
+To see this for a model, open it on the **Models** page, or press the ⓘ button next to the model in **Chat**. **Seller selection** lists the providers in the order automatic routing tries them. For each one it shows:
+
+- the expected cost per good answer;
+- the success rate and how many recent requests it is based on (a provider new to this model borrows its record on other models at half weight, and one with no record is assumed to succeed 80% of the time);
+- first token and speed;
+- its share of the traffic;
+- whether a payment channel is open;
+- how many requests it is serving.
+
+A failing provider shows its last error. Org admins can **Reset history** to give it a fresh start. Providers routing skips are listed under **Not used** with the reason. In the chat, **Pin** sends the conversation to one provider. **Try a request** on **Routing** shows the same list.
+
+Every request that routing picked a provider for records why. Open it in **Logs** to see **Why this seller**. It says how the provider was picked: drawn from the providers sharing the traffic, the best on its own, kept for the conversation, a probe of a provider with no recent record, a failover after the providers before it failed, or the policy's order. It also shows what the buyer had seen of the provider at that moment. Requests pinned to a provider, and requests logged before this version, show none.
 
 ## Presets
 

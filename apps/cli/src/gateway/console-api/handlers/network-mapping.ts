@@ -4,6 +4,7 @@ import { parseVerifierCapabilities } from '@antseed/node/verifier-capabilities'
 import { modelTagsFor } from '@antseed/node/model-metadata'
 import { TEE_VERIFIER_ID, teeScope, type TeeClaim, type TeeScope } from '@antseed/node/tee-status'
 import type { NetworkModel, NetworkModelCapability, NetworkModelOffer, NetworkModelType, NetworkRouter, NetworkRouterOption, Peer, RoutePreview } from '../types.js'
+import { parseRouteSelection } from '../../../proxy/route-selection.js'
 
 type Row = Record<string, unknown>
 
@@ -167,6 +168,7 @@ export function enrichCandidates(candidates: unknown, peers: unknown): RoutePrev
       inputUsdPerMillion: num(row['inputUsdPerMillion']),
       outputUsdPerMillion: num(row['outputUsdPerMillion']),
       trustScore: num(row['trustScore']) ?? trust,
+      selection: parseRouteSelection(row['selection']),
     }]
   })
 }

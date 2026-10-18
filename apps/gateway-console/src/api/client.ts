@@ -254,6 +254,8 @@ export function createApiClient(fetchImpl: FetchLike = (input, init) => fetch(in
       /** Every routing service on the network, one per seller offering it. */
       routers: () => get<NetworkRouter[]>('/routers'),
       routePreview: (query: { model: string; workspace?: string; key?: string; member?: string; preset?: string }) => get<RoutePreview>('/route-preview', query),
+      /** Org admins: forget what the buyer has seen of a seller, so automatic routing gives it a fresh start. */
+      resetSellerHistory: (peerId: string) => post<{ ok: true }>('/routing/seller-history/reset', { peerId }),
       gatewayPolicy: () => get<RoutingPolicy>('/routing'),
       buyerLimits: () => get<BuyerLimits>('/routing/buyer-limits'),
       /** The body is the policy itself, so save flags go in the query string. */

@@ -4,6 +4,7 @@ import type { AddressInfo } from 'node:net'
 import { nativeVideoAcceptance, nativeVideoRoute, type NativeVideoRoute } from '@antseed/api-adapter'
 import { DEFAULT_BUYER_IDENTITY, VIDEO_JOB_RETIRED_HEADER, VIDEO_PRICE_HEADER } from '@antseed/node'
 import { SPEND_ATTRIBUTION_HEADER } from '../proxy/spend-attribution.js'
+import { decodeServedSelection, ROUTE_SELECTION_HEADER, type ServedSelection } from '../proxy/route-selection.js'
 import { ROUTER_PEER_ID_HEADER, ROUTER_RANK_HEADER, ROUTER_SERVICE_HEADER } from '../proxy/telemetry.js'
 import { BUYER_IDENTITY_HEADER, MAX_VIDEO_COST_HEADER } from '../proxy/request-utils.js'
 import { GATEWAY_CONTROL_HEADER, ROUTING_POLICY_HEADER, encodePolicyHeader, meaningfulPolicy, policyAllowsModel, type RoutingPolicy } from '../routing-policy/policy.js'
@@ -584,6 +585,7 @@ export class GatewayServer {
       let gatewayError: RequestError | null = null
       let sellerPeerId: string | null = null
       let servedModel: string | null = null
+      let routeSelection: ServedSelection | null = null
       let router: RequestRouter | null = null
       let reportedLatency: number | null = null
       // Streamed answers: the buyer's time to the seller's first frame, and when that frame reached the gateway.
@@ -624,7 +626,7 @@ export class GatewayServer {
         const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
         try {
           // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
-          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel })
+          store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered, router, servedModel, routeSelection })
         } catch (error) {
           this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
         }
@@ -689,6 +691,7 @@ export class GatewayServer {
           sellerPeerId = firstHeader(upstreamRes.headers['x-antseed-peer-id']).slice(0, 200) || null
           servedModel = firstHeader(upstreamRes.headers['x-antseed-service']).slice(0, 200) || null
           router = routerHeaders(upstreamRes.headers)
+          routeSelection = decodeServedSelection(upstreamRes.headers[ROUTE_SELECTION_HEADER])
           reportedLatency = latencyHeader(firstHeader(upstreamRes.headers['x-antseed-latency-ms']))
           firstTokenMs = status < 400 ? latencyHeader(firstHeader(upstreamRes.headers['x-antseed-first-token-ms'])) : null
           respondedAt = Date.now()

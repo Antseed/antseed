@@ -368,4 +368,9 @@ export const MIGRATIONS: readonly string[] = [
     PRIMARY KEY (owner_kind, owner_id, model)
   );
   `,
+  // Model-routed requests: why automatic routing picked the seller that served it (its rank, how it was
+  // picked and the numbers it was ranked by), as the buyer reported it.
+  `
+  ALTER TABLE gateway_requests ADD COLUMN route_selection TEXT;
+  `,
 ]

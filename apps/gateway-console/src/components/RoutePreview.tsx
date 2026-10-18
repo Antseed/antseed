@@ -1,138 +1,118 @@
-import { useState, type ReactNode } from 'react'
-import { useQuery } from '@tanstack/react-query'
-import { Alert, Button, DataTable, TextField } from '@antseed/ui'
-import { api } from '../api'
+import { Alert } from '@antseed/ui'
 import type { ApiKey, Member, Preset, RoutePreview } from '../api/types'
-import { useConsole, useScopeFilter } from '../app/context'
-import { formatPricePerMillion } from '../lib/format'
+import { useConsole } from '../app/context'
 import { isOrgAdmin } from '../lib/nav'
-import { describePolicy } from '../lib/policy'
-import { modelsFromPeers, qk, useKeys, usePeers, usePresets, useWorkspaceMembers } from '../lib/queries'
-import { copyModelIdItem, useCopy } from './copy-actions'
-import { peerName } from './PeerPicker'
-import { Badge, EmptyState, ErrorAlert, LoadingRows, Panel, SelectField } from './ui'
+import { exclusionsFor, type LevelExclusion } from '../lib/policy-explain'
+import { useFavorites, useKeys, useModels, usePeerLists, usePeers, usePresets, useWorkspaceMembers } from '../lib/queries'
+import { useScopeFilter } from '../app/context'
+import { ModelChooser } from './ModelChooser'
+import { SellerSelection } from './SellerSelection'
+import { Badge, EmptyState, ErrorAlert, Panel, SelectField } from './ui'
 
-/** One level's policy in a row of levels; `result` marks the combined one. */
-export function PolicySource({ level, children, result }: { level: ReactNode; children: ReactNode; result?: boolean }) {
-  return (
-    <div className={result ? 'gc-source gc-source--result' : 'gc-source'}>
-      <div className="gc-source__level">{level}</div>
-      <div className="gc-source__policy">{children}</div>
-    </div>
-  )
+export type PreviewTarget = 'workspace' | 'key' | 'member' | 'preset'
+
+export interface TryRequestState {
+  model: string | null
+  target: PreviewTarget
+  targetId: string
 }
 
-type Target = 'workspace' | 'key' | 'member' | 'preset'
+type Source = RoutePreview['sources'][number]
+
+export const LEVEL_LABELS: Record<Source['level'], string> = {
+  buyer: 'Buyer config', gateway: 'Gateway default', 'workspace-org': 'Organization policy', workspace: 'Workspace policy',
+  member: 'Member policy', key: 'Key policy (admin)', 'key-owner': 'Key policy (owner)', preset: 'Preset',
+}
+
 type Option = { value: string; label: string }
 
-function targetOptions(target: Target, keys: ApiKey[] | undefined, members: Array<{ member: Member }> | undefined, presets: Preset[] | undefined): Option[] {
+function targetOptions(target: PreviewTarget, keys: ApiKey[] | undefined, members: Array<{ member: Member }> | undefined, presets: Preset[] | undefined): Option[] {
   if (target === 'key') return (keys ?? []).filter((key) => key.status === 'active').map((key) => ({ value: key.id, label: key.label }))
   if (target === 'member') return (members ?? []).map(({ member }) => ({ value: member.id, label: member.label }))
   if (target === 'preset') return (presets ?? []).map((preset) => ({ value: preset.slug, label: preset.name }))
   return []
 }
 
-export function RoutePreviewPanel() {
-  const { workspace, viewer } = useConsole()
-  const scope = useScopeFilter()
-  const peers = usePeers()
-  const models = modelsFromPeers(peers.data)
-  const orgAdmin = isOrgAdmin(viewer)
-  const [target, setTarget] = useState<Target>('workspace')
-  const [targetId, setTargetId] = useState('')
-  const [model, setModel] = useState('')
-  const [submitted, setSubmitted] = useState<Record<string, string> | null>(null)
-  const keys = useKeys(scope, target === 'key')
-  const members = useWorkspaceMembers(workspace.id, target === 'member')
-  const presets = usePresets(workspace.id, target === 'preset')
-  const preview = useQuery({
-    queryKey: qk.routePreview(submitted ?? {}),
-    queryFn: () => api.network.routePreview(submitted as { model: string }),
-    enabled: submitted !== null,
-  })
-  const options = targetOptions(target, keys.data, members.data, presets.data)
+/** The preview query for a "Try a request" state, or null until it names a model (and the key, member or preset it is for). */
+export function previewQuery(state: TryRequestState, workspaceId: string): Record<string, string> | null {
+  if (!state.model) return null
+  if (state.target !== 'workspace' && !state.targetId) return null
+  return { model: state.model, workspace: workspaceId, ...(state.target !== 'workspace' ? { [state.target]: state.targetId } : {}) }
+}
 
-  function run() {
-    const query: Record<string, string> = { model: model.trim(), workspace: workspace.id }
-    if (target !== 'workspace' && targetId) query[target] = targetId
-    setSubmitted(query)
-  }
-
+function Exclusions({ exclusions }: { exclusions: LevelExclusion[] }) {
+  if (exclusions.length === 0) return null
   return (
-    <Panel title="Route preview" description="See which sellers a request would go to, and why.">
-      <form className="gc-toolbar" onSubmit={(event) => { event.preventDefault(); run() }}>
-        <SelectField size="sm" aria-label="Preview for" value={target} onChange={(value) => { setTarget(value as Target); setTargetId('') }}
-          options={[
-            { value: 'workspace', label: `Workspace: ${workspace.name}` },
-            { value: 'key', label: 'A key' },
-            ...(orgAdmin ? [{ value: 'member', label: 'A member' }] : []),
-            { value: 'preset', label: 'A preset' },
-          ]} />
-        {target !== 'workspace' && (
-          <SelectField size="sm" aria-label={`Choose a ${target}`} value={targetId} onChange={setTargetId}
-            options={[{ value: '', label: `Choose a ${target}` }, ...options]} />
-        )}
-        <TextField size="sm" aria-label="Model" placeholder="Model id" list="gc-preview-models" value={model} onChange={(event) => setModel(event.target.value)} />
-        <datalist id="gc-preview-models">{models.map((entry) => <option key={entry} value={entry} />)}</datalist>
-        <Button type="submit" size="sm" disabled={!model.trim() || (target !== 'workspace' && !targetId)}>Preview</Button>
-      </form>
-      {preview.isFetching && <LoadingRows rows={4} />}
-      {preview.error ? <ErrorAlert error={preview.error} /> : null}
-      {preview.data && !preview.isFetching && <PreviewResult preview={preview.data} />}
-    </Panel>
+    <span className="gc-fineprint">
+      {exclusions.map((entry, index) => (
+        <span key={`${entry.level}-${index}`}>{index > 0 ? '; ' : ''}<strong>{LEVEL_LABELS[entry.level]}</strong> {entry.rule}</span>
+      ))}
+    </span>
   )
 }
 
-type Source = RoutePreview['sources'][number]
-
-const LEVEL_LABELS: Record<Source['level'], string> = {
-  buyer: 'Buyer', gateway: 'Gateway', 'workspace-org': 'Workspace (org policy)', workspace: 'Workspace', member: 'Member', key: 'Key (admin)', 'key-owner': 'Key (owner)', preset: 'Preset',
-}
-
-function sourcePolicy(source: Source): ReactNode {
-  if (source.policy !== null) return describePolicy(source.policy)
-  return <span className="gc-muted">{source.level === 'buyer' ? 'No hard limits' : 'Inherits'}</span>
-}
-
-function PreviewResult({ preview }: { preview: RoutePreview }) {
-  const { me } = useConsole()
+/**
+ * Pick a model (and, optionally, a key, member or preset) and see at once
+ * which sellers a request would go to, in order and why, and which rule
+ * keeps each of the others out.
+ */
+export function TryRequestPanel({ state, onChange, preview }: {
+  state: TryRequestState
+  onChange: (state: TryRequestState) => void
+  preview: { data: RoutePreview | undefined; isFetching: boolean; error: unknown }
+}) {
+  const { workspace, viewer } = useConsole()
+  const scope = useScopeFilter()
+  const models = useModels()
+  const favorites = useFavorites()
   const peers = usePeers()
-  const copy = useCopy()
-  const eligible = preview.candidates.filter((candidate) => candidate.eligible).length
-  const sourceName = (source: Source) => {
-    if (!source.id) return null
-    if (source.level === 'workspace' || source.level === 'workspace-org') return me.workspaces.find((entry) => entry.workspace.id === source.id)?.workspace.name ?? source.id
-    return source.id
-  }
+  const lists = usePeerLists()
+  const keys = useKeys(scope, state.target === 'key')
+  const members = useWorkspaceMembers(workspace.id, state.target === 'member')
+  const presets = usePresets(workspace.id, state.target === 'preset')
+  const options = targetOptions(state.target, keys.data, members.data, presets.data)
+  const data = preview.data
+  const eligible = data?.candidates.filter((candidate) => candidate.eligible).length ?? 0
+  const modelRule = data && !data.modelAllowed
+    ? data.sources.filter((source) => source.policy?.allowedModels && !source.policy.allowedModels.some((model) => model.toLowerCase() === data.model.toLowerCase()))
+    : []
+
   return (
-    <div className="gc-stack">
-      {!preview.modelAllowed && <Alert tone="danger" title="Model not allowed">The policy does not allow {preview.model}. Requests for it get a 403.</Alert>}
-      <div className="gc-sources">
-        {preview.sources.map((source, index) => (
-          <PolicySource key={`${source.level}-${index}`}
-            level={<>{LEVEL_LABELS[source.level]}{sourceName(source) ? <span className="gc-muted"> · {sourceName(source)}</span> : null}</>}>
-            {sourcePolicy(source)}
-          </PolicySource>
-        ))}
-        <PolicySource level="Effective" result>{describePolicy(preview.policy)}</PolicySource>
+    <Panel title="Try a request" description="Pick a model to see which sellers a request goes to, in what order, and what keeps the others out.">
+      <div className="gc-toolbar">
+        <ModelChooser models={models.data} loading={models.isLoading} value={state.model} favorites={favorites.data}
+          onChange={(model) => onChange({ ...state, model })} />
+        <SelectField size="sm" aria-label="Request from" value={state.target} onChange={(value) => onChange({ ...state, target: value as PreviewTarget, targetId: '' })}
+          options={[
+            { value: 'workspace', label: `From workspace ${workspace.name}` },
+            { value: 'key', label: 'From a key' },
+            ...(isOrgAdmin(viewer) ? [{ value: 'member', label: 'From a member' }] : []),
+            { value: 'preset', label: 'With a preset' },
+          ]} />
+        {state.target !== 'workspace' && (
+          <SelectField size="sm" aria-label={`Choose a ${state.target}`} value={state.targetId} onChange={(targetId) => onChange({ ...state, targetId })}
+            options={[{ value: '', label: `Choose a ${state.target}` }, ...options]} />
+        )}
       </div>
-      <p className="gc-muted">{eligible} of {preview.candidates.length} sellers eligible.</p>
-      {eligible === 0 && preview.candidates.length > 0 && (
-        <Alert tone="warning" title="No eligible seller">Requests for {preview.model} fail with this policy. The reasons below show what excludes each seller.</Alert>
+      {preview.error ? <ErrorAlert error={preview.error} /> : null}
+      {!state.model && <EmptyState title="Pick a model" body="The preview shows the sellers a request for it would use." />}
+      {data && !data.modelAllowed && (
+        <Alert tone="danger" title={`${data.model} is not allowed`}>
+          {modelRule.length
+            ? <>{modelRule.map((source) => LEVEL_LABELS[source.level]).join(' and ')} only allow{modelRule.length === 1 ? 's' : ''} {modelRule[0]!.policy!.allowedModels!.join(', ') || 'no model'}. Requests for {data.model} get a 403.</>
+            : <>Requests for {data.model} get a 403.</>}
+        </Alert>
       )}
-      <DataTable label="Candidates" rows={[...preview.candidates].sort((a, b) => (a.rank ?? 1e9) - (b.rank ?? 1e9))} rowKey={(row) => row.peerId}
-        rowLabel={(row) => row.displayName ?? peerName(peers.data, row.peerId)}
-        actions={(row) => [copyModelIdItem(copy, row.peerId, preview.model)]}
-        empty={<EmptyState title="No seller offers this model" />}
-        columns={[
-          { key: 'rank', header: '#', render: (row) => row.rank ?? '—', width: '3rem' },
-          { key: 'seller', header: 'Seller', render: (row) => row.displayName ?? peerName(peers.data, row.peerId) },
-          { key: 'eligible', header: 'Eligible', render: (row) => row.eligible ? <Badge tone="success">Yes</Badge> : <Badge tone="neutral">No</Badge> },
-          { key: 'reasons', header: 'Why', render: (row) => <span className="gc-muted">{row.reasons.join(' · ') || '—'}</span> },
-          { key: 'input', header: 'Input $/M', align: 'right', secondary: true, render: (row) => formatPricePerMillion(row.inputUsdPerMillion) },
-          { key: 'output', header: 'Output $/M', align: 'right', secondary: true, render: (row) => formatPricePerMillion(row.outputUsdPerMillion) },
-          { key: 'trust', header: 'Trust', align: 'right', secondary: true, render: (row) => row.trustScore === null ? '—' : Math.round(row.trustScore) },
-        ]} />
-    </div>
+      {data && data.modelAllowed && (
+        <div className="gc-stack gc-stack--tight">
+          <p className="gc-try__summary">
+            <Badge tone={eligible > 0 ? 'success' : 'warning'}>{eligible} of {data.candidates.length}</Badge>{' '}
+            {eligible > 0 ? `sellers can serve ${data.model}.` : `No seller can serve ${data.model} with these rules.`}
+          </p>
+          <SellerSelection title="Sellers, in the order they are tried" preview={data} loading={preview.isFetching && !data} skippedOpen
+            explainSkipped={(candidate) => <Exclusions exclusions={exclusionsFor(data, candidate, peers.data, lists.data ?? [])} />} />
+        </div>
+      )}
+    </Panel>
   )
 }

@@ -2,11 +2,12 @@ import { useState, type ReactNode } from 'react'
 import { useInfiniteQuery, useQuery } from '@tanstack/react-query'
 import { Alert, Button, DataTable, Drawer } from '@antseed/ui'
 import { api, isApiError, type RequestQuery } from '../api'
-import type { RequestDetail, RequestLogEntry, RequestRouterInfo } from '../api/types'
+import type { RequestDetail, RequestLogEntry, RequestRouterInfo, ServedSelection } from '../api/types'
 import { formatDateTime, formatLatency, formatNumber, formatSpeed, formatUsd } from '../lib/format'
 import { qk, usePeers } from '../lib/queries'
 import { peerName } from './PeerPicker'
 import { costStatus, routerOutcome } from '../lib/usage'
+import { healthWarning, pickSummary, selectionFacts } from '../lib/selection'
 import { Badge, CodeBlock, DetailList, EmptyState, ErrorAlert, LoadingRows, Mono } from './ui'
 import { Icon } from './icons'
 
@@ -102,6 +103,18 @@ function RequestBodies({ detail }: { detail: RequestDetail }) {
   )
 }
 
+/** Why automatic routing sent the request to its seller: how it was picked, and what the buyer had seen of the seller then. */
+function WhySeller({ selection, at }: { selection: ServedSelection; at: number }) {
+  const warning = healthWarning(selection, at)
+  return (
+    <div className="gc-stack gc-stack--tight">
+      <span>{pickSummary(selection)}</span>
+      <span className="gc-muted">At the time: {selectionFacts(selection).join(' · ')}</span>
+      {warning && <span className="gc-muted">{warning}</span>}
+    </div>
+  )
+}
+
 function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
   const detail = useQuery({
     queryKey: qk.request(entry.tag),
@@ -110,7 +123,7 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
     staleTime: 60_000,
   })
   // Older gateways have no detail route; the list row still has everything but the bodies.
-  const data: RequestLogEntry & Partial<Pick<RequestDetail, 'requestBody' | 'responseBody'>> = detail.data ?? entry
+  const data: RequestLogEntry & Partial<Pick<RequestDetail, 'routeSelection' | 'requestBody' | 'responseBody'>> = detail.data ?? entry
   const missingRoute = isApiError(detail.error) && detail.error.status === 404
   return (
     <>
@@ -125,6 +138,7 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
         ['End user', data.endUser ?? '—'],
         ...(data.router ? [['Router', <RouterDetail key="r" router={data.router} status={data.status} />] as [string, ReactNode]] : []),
         ['Seller', data.sellerPeerId ? <SellerName key="s" peerId={data.sellerPeerId} full /> : '—'],
+        ...(data.routeSelection ? [['Why this seller', <WhySeller key="w" selection={data.routeSelection} at={data.startedAt} />] as [string, ReactNode]] : []),
         ['First token', formatLatency(data.firstTokenMs)],
         ['Speed', formatSpeed(data.tokensPerSecond)],
         ['Duration', data.finishedAt ? formatLatency(data.finishedAt - data.startedAt) : '—'],

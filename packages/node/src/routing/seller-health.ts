@@ -193,6 +193,11 @@ export class SellerHealthBook {
     return sellerWide
   }
 
+  /** Whether the buyer has its own record of this seller on this model (not one borrowed from its other models). */
+  hasRecord(peerId: string, serviceId: string | null): boolean {
+    return this._entries.has(sellerHealthKey(peerId, serviceId))
+  }
+
   entries(now: number): Array<{ peerId: string; serviceId: string | null; stats: SellerHealthStats }> {
     return [...this._entries.entries()].map(([key, stats]) => {
       const [peerId, serviceId] = key.split('|')

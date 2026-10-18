@@ -80,8 +80,8 @@ export function useUsedRouters(scope: UsageFilter) {
 }
 
 /** Every model on the network, with the sellers offering it. */
-export function useModels() {
-  return useQuery({ queryKey: qk.models, queryFn: api.network.models, staleTime: 30_000 })
+export function useModels(enabled = true) {
+  return useQuery({ queryKey: qk.models, queryFn: api.network.models, staleTime: 30_000, enabled })
 }
 
 /** Every routing service on the network. An older gateway has no list: no routers, not an error. */
