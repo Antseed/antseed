@@ -1841,10 +1841,13 @@ function makeProxyResponse(): {
   headersSent: boolean
   writableEnded: boolean
   writeHead: (statusCode: number, headers: Record<string, string>) => unknown
+  setHeader: (name: string, value: string) => unknown
   write: (chunk: string | Buffer | Uint8Array) => unknown
   end: (chunk?: string | Buffer | Uint8Array) => unknown
   once: () => unknown
 } {
+  // Headers set before writeHead merge into it, as on a Node ServerResponse.
+  const pending: Record<string, string> = {}
   return {
     statusCode: 0,
     headers: {},
@@ -1853,8 +1856,12 @@ function makeProxyResponse(): {
     writableEnded: false,
     writeHead(statusCode: number, headers: Record<string, string>) {
       this.statusCode = statusCode
-      this.headers = headers
+      this.headers = { ...pending, ...headers }
       this.headersSent = true
+      return this
+    },
+    setHeader(name: string, value: string) {
+      pending[name.toLowerCase()] = value
       return this
     },
     write(chunk: string | Buffer | Uint8Array) {

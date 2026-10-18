@@ -2,6 +2,7 @@ import {
   decodeCursor,
   listRequestPage,
   parseGrouping,
+  parseRouterFilter,
   parseSearch,
   parseStatusFilter,
   parseTime,
@@ -26,6 +27,7 @@ function scopedFilter(store: GatewayStore, principal: Principal | null, query: U
     keyId: query.get('key') || null,
     memberId: query.get('member') || null,
     model: query.get('model') || null,
+    routerPeerId: parseRouterFilter(query.get('router')),
   }
 }
 

@@ -276,7 +276,7 @@ export interface AdminToken {
 // ── Usage & activity ────────────────────────────────────────────────────
 
 /** `hour` and `day` group by UTC hour (`YYYY-MM-DDTHH`) and day (`YYYY-MM-DD`), oldest first. */
-export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'workspace' | 'user'
+export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'router' | 'workspace' | 'user'
 
 // GET /usage?workspace=&key=&member=&from=&to=&groupBy=&splitBy=   → UsageReport
 //   splitBy (needs groupBy, must differ) adds `splits` to each group, e.g. groupBy=day&splitBy=model
@@ -307,6 +307,18 @@ export interface UsageTotals {
   outputTokens: number
 }
 
+/** The routing service that ranked a request. */
+export interface RequestRouterInfo {
+  peerId: string
+  /** The router's service id, e.g. `levanto-router`. */
+  service: string | null
+  /**
+   * The recommendation tried last, 1 = the router's first pick: the one that served the request, or, when the
+   * request failed, the last one refused (the ones before it were refused too). Null when the ranking failed.
+   */
+  rank: number | null
+}
+
 export interface RequestLogEntry {
   tag: string
   startedAt: number
@@ -321,13 +333,20 @@ export interface RequestLogEntry {
   path: string
   model: string | null
   status: number | null
+  /** The seller that served the request (for a routed request, the one the router picked). */
   sellerPeerId: string | null
+  /** The model that answered, when it differs from `model` (a router picked it). */
+  servedModel?: string | null
+  /** The routing service that ranked the request, when one did. */
+  router?: RequestRouterInfo | null
   latencyMs: number | null
   /** Streamed answers: time from sending to the seller's first frame, measured by the buyer. */
   firstTokenMs: number | null
   /** Streamed answers of 20+ output tokens: output tokens per second after the first frame. */
   tokensPerSecond: number | null
   spent: Usdc | null
+  /** The part of `spent` that paid the router for its ranking (routed requests only). */
+  routingSpent?: Usdc | null
   inputTokens: number
   cachedInputTokens: number
   outputTokens: number

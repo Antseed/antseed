@@ -243,6 +243,7 @@ function filterRequests(query: URLSearchParams): RequestDetail[] {
     && (!query.get('key') || request.keyId === query.get('key'))
     && (!query.get('member') || request.memberId === query.get('member'))
     && (!query.get('model') || (request.model ?? '').includes(query.get('model')!))
+    && (!query.get('router') || request.router?.peerId === query.get('router'))
     && (!query.get('status') || (query.get('status') === 'error' ? (request.status ?? 0) >= 400 : (request.status ?? 0) < 400))
     && (!q || [request.model, request.keyLabel, request.endUser, request.path, request.errorCode, request.errorMessage].some((field) => (field ?? '').toLowerCase().includes(q)))
     && request.startedAt >= from && request.startedAt <= to)
@@ -290,6 +291,7 @@ function groupKey(row: RequestLogEntry, groupBy: UsageGroupBy): [string, string]
     case 'key': return [row.keyId, row.keyLabel]
     case 'member': return [row.memberId ?? 'none', db.members.find((m) => m.id === row.memberId)?.label ?? 'None']
     case 'peer': return [row.sellerPeerId ?? 'none', db.peers.find((p) => p.peerId === row.sellerPeerId)?.displayName ?? row.sellerPeerId ?? 'No seller']
+    case 'router': return [row.router?.peerId ?? '', db.peers.find((p) => p.peerId === row.router?.peerId)?.displayName ?? row.router?.peerId ?? 'Not routed']
     case 'workspace': return [row.workspaceId, db.workspaces.find((w) => w.id === row.workspaceId)?.name ?? row.workspaceId]
     case 'user': return [row.endUser ?? 'none', row.endUser ?? 'Not sent']
   }

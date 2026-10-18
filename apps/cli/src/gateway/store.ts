@@ -230,6 +230,8 @@ export interface LedgerEntryInput {
   memberId?: string | null
   model?: string | null
   endUser?: string | null
+  /** Spend that paid a routing service for its ranking, not a seller for inference. */
+  routingFee?: boolean
 }
 
 export interface VideoCommitmentRecord {
@@ -285,6 +287,18 @@ export interface RequestOutcome {
   videoJobId?: string | null
   /** Video retrieve: it delivered the finished file (so it carries the job's charge). */
   videoDelivered?: boolean
+  /** A routing service ranked the request. */
+  router?: RequestRouter | null
+  /** The model (service) that answered, as the buyer reported it. */
+  servedModel?: string | null
+}
+
+/** The routing service that ranked a request, and which of its recommendations served it. */
+export interface RequestRouter {
+  peerId: string
+  service: string | null
+  /** The recommendation tried last (1 = the router's first pick): it served the request unless the request failed. Null when none was tried. */
+  rank: number | null
 }
 
 /** What a key listing shows: lifetime requests and spend, and spend since a given time. */
@@ -311,6 +325,8 @@ export interface UsageFilter {
   keyId?: string | null
   memberId?: string | null
   model?: string | null
+  /** Only requests this routing service ranked (its peer id). */
+  routerPeerId?: string | null
   from?: number | null
   to?: number | null
 }
@@ -338,7 +354,7 @@ export interface RequestError {
   message: string | null
 }
 
-export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'workspace' | 'user'
+export type UsageGroupBy = 'hour' | 'day' | 'model' | 'key' | 'member' | 'peer' | 'router' | 'workspace' | 'user'
 
 /**
  * A usage group, split further by a second grouping when one was asked for.
@@ -385,10 +401,15 @@ export interface RequestLogRow {
   model: string | null
   status: number | null
   sellerPeerId: string | null
+  /** The model that answered, when it differs from the one asked for (a router picked it). */
+  servedModel: string | null
+  router: RequestRouter | null
   latencyMs: number | null
   firstTokenMs: number | null
   tokensPerSecond: number | null
   spentUsdc: number | null
+  /** The part of `spentUsdc` that paid the router for its ranking. */
+  routingSpentUsdc: number | null
   inputTokens: number
   cachedInputTokens: number
   outputTokens: number
@@ -1151,17 +1172,30 @@ export class GatewayStore {
 
   /** Seller, speed, end user and video job of a request; null fields leave what is stored. */
   recordRequestOutcome(tag: string, outcome: RequestOutcome): void {
+    const router = outcome.router ?? null
+    const routerPeerId = router?.peerId.toLowerCase() ?? null
+    // A model pinned to a router (`<routerPeerId>@<service>`) started with the router as its seller: drop it when no seller served.
     this._stmt(`
-      UPDATE gateway_requests SET seller_peer_id = COALESCE(?, seller_peer_id), latency_ms = COALESCE(?, latency_ms),
+      UPDATE gateway_requests SET
+        seller_peer_id = CASE WHEN ? IS NOT NULL THEN ? WHEN ? IS NOT NULL AND seller_peer_id = ? THEN NULL ELSE seller_peer_id END,
+        latency_ms = COALESCE(?, latency_ms),
         first_token_ms = COALESCE(?, first_token_ms), tokens_per_second = COALESCE(?, tokens_per_second),
         end_user = COALESCE(?, end_user), served_free = MAX(served_free, ?),
         video_job_id = COALESCE(?, video_job_id),
-        video_action = CASE WHEN ? = 1 AND video_action = 'poll' THEN 'delivery' ELSE video_action END
+        video_action = CASE WHEN ? = 1 AND video_action = 'poll' THEN 'delivery' ELSE video_action END,
+        router_peer_id = COALESCE(?, router_peer_id), router_service = COALESCE(?, router_service),
+        router_rank = COALESCE(?, router_rank), served_model = COALESCE(?, served_model)
       WHERE tag = ?
     `).run(
-      outcome.sellerPeerId ?? null, outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
-      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoDelivered ? 1 : 0, tag,
+      outcome.sellerPeerId ?? null, outcome.sellerPeerId ?? null, routerPeerId, routerPeerId,
+      outcome.latencyMs ?? null, outcome.firstTokenMs ?? null, outcome.tokensPerSecond ?? null,
+      outcome.endUser ?? null, outcome.servedFree ? 1 : 0, outcome.videoJobId?.slice(0, 256) ?? null, outcome.videoDelivered ? 1 : 0,
+      routerPeerId, router?.service?.slice(0, 200) ?? null, router?.rank ?? null, outcome.servedModel?.slice(0, 200) ?? null, tag,
     )
+    // Spend can reach the ledger before the response names its router.
+    if (routerPeerId) {
+      this._stmt('UPDATE ledger_entries SET router_peer_id = ? WHERE request_tag = ? AND router_peer_id IS NULL').run(routerPeerId, tag)
+    }
   }
 
   /**
@@ -1201,11 +1235,11 @@ export class GatewayStore {
   async pruneRequests(before: number, chunkSize = 5_000): Promise<number> {
     const select = this._stmt('SELECT rowid FROM gateway_requests WHERE started_at < ? ORDER BY started_at LIMIT ?').pluck()
     const rollup = this._stmt(`
-      INSERT INTO request_rollups (hour_start, key_id, workspace_id, member_id, model, seller_peer_id, end_user, requests, failed_requests)
-      SELECT (r.started_at / ${HOUR_MS}) * ${HOUR_MS}, r.key_id, r.workspace_id, r.member_id, r.model, r.seller_peer_id, r.end_user,
+      INSERT INTO request_rollups (hour_start, key_id, workspace_id, member_id, model, seller_peer_id, end_user, router_peer_id, requests, failed_requests)
+      SELECT (r.started_at / ${HOUR_MS}) * ${HOUR_MS}, r.key_id, r.workspace_id, r.member_id, r.model, r.seller_peer_id, r.end_user, r.router_peer_id,
         COUNT(*), SUM(${FAILED_SQL})
       FROM gateway_requests r WHERE r.rowid IN (SELECT value FROM json_each(?))
-      GROUP BY 1, 2, 3, 4, 5, 6, 7
+      GROUP BY 1, 2, 3, 4, 5, 6, 7, 8
     `)
     const remove = this._stmt('DELETE FROM gateway_requests WHERE rowid IN (SELECT value FROM json_each(?))')
     const pruneChunk = this._db.transaction(() => {
@@ -1235,17 +1269,19 @@ export class GatewayStore {
     endUser: string | null
     /** The video job of an accepted create, a status poll or a delivery, keyed like `videoJobKey`. */
     videoJob: string | null
+    routerPeerId: string | null
   } | null {
-    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id
+    const row = this._stmt(`SELECT key_id, buyer_identity, workspace_id, member_id, model, end_user, path, video_action, video_job_id, router_peer_id
       FROM gateway_requests WHERE tag = ?`).get(tag) as
       { key_id: string; buyer_identity: string; workspace_id: string | null; member_id: string | null; model: string | null; end_user: string | null
-        path: string; video_action: string | null; video_job_id: string | null } | undefined
+        path: string; video_action: string | null; video_job_id: string | null; router_peer_id: string | null } | undefined
     return row
       ? {
         keyId: row.key_id, buyerIdentity: row.buyer_identity, workspaceId: row.workspace_id, memberId: row.member_id, model: row.model, endUser: row.end_user,
         videoJob: row.video_action === 'create' || row.video_action === 'poll' || row.video_action === 'delivery'
           ? requestVideoJob(row.path, row.video_job_id)
           : null,
+        routerPeerId: row.router_peer_id,
       }
       : null
   }
@@ -1317,7 +1353,7 @@ export class GatewayStore {
     const q = filter.q?.trim()
     if (q) {
       const pattern = `%${escapeLike(q)}%`
-      const columns = ['r.model', 'k.label', 'r.end_user', 'r.tag', 'r.seller_peer_id', 'r.path', 'r.error_code', 'r.error_message']
+      const columns = ['r.model', 'r.served_model', 'k.label', 'r.end_user', 'r.tag', 'r.seller_peer_id', 'r.router_peer_id', 'r.path', 'r.error_code', 'r.error_message']
       where.push(`(${columns.map((c) => `${c} LIKE ? ESCAPE '\\'`).join(' OR ')})`)
       params.push(...columns.map(() => pattern))
     }
@@ -1343,7 +1379,8 @@ export class GatewayStore {
       WITH page AS (
         SELECT r.tag, r.started_at, r.finished_at, r.key_id, k.label AS key_label, COALESCE(r.workspace_id, k.workspace_id) AS ws_id,
           r.member_id, r.end_user, r.method, r.path, r.model, r.status, r.seller_peer_id, r.latency_ms, r.first_token_ms, r.tokens_per_second, r.error_code, r.error_message,
-          r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens, r.video_action, r.video_job_id
+          r.served_free, r.usage_input_tokens, r.usage_cached_input_tokens, r.usage_output_tokens, r.video_action, r.video_job_id,
+          r.router_peer_id, r.router_service, r.router_rank, r.served_model
           ${withBodies ? ', r.request_body, r.response_body' : ''}
         FROM gateway_requests r LEFT JOIN api_keys k ON k.id = r.key_id
         ${whereClause(where)}
@@ -1351,7 +1388,8 @@ export class GatewayStore {
       ),
       spend AS (
         SELECT l.request_tag AS tag, -SUM(l.amount_usdc) AS spent, SUM(l.input_tokens) AS in_tokens,
-          SUM(l.cached_input_tokens) AS cached_tokens, SUM(l.output_tokens) AS out_tokens
+          SUM(l.cached_input_tokens) AS cached_tokens, SUM(l.output_tokens) AS out_tokens,
+          -SUM(CASE WHEN l.routing_fee = 1 THEN l.amount_usdc END) AS routing_spent, SUM(l.routing_fee = 0) AS inference_entries
         FROM ledger_entries l WHERE l.kind = 'spend' AND l.request_tag IN (SELECT tag FROM page) GROUP BY l.request_tag
       ),
       video_charge AS (
@@ -1362,7 +1400,7 @@ export class GatewayStore {
         WHERE page.video_action = 'create' AND page.video_job_id IS NOT NULL
         GROUP BY page.tag
       )
-      SELECT page.*, spend.spent, COALESCE(spend.in_tokens, 0) AS in_tokens, COALESCE(spend.cached_tokens, 0) AS cached_tokens,
+      SELECT page.*, spend.spent, spend.routing_spent, COALESCE(spend.inference_entries, 0) AS inference_entries, COALESCE(spend.in_tokens, 0) AS in_tokens, COALESCE(spend.cached_tokens, 0) AS cached_tokens,
         COALESCE(spend.out_tokens, 0) AS out_tokens, video_charge.charged AS video_charged
       FROM page LEFT JOIN spend ON spend.tag = page.tag LEFT JOIN video_charge ON video_charge.tag = page.tag
       ORDER BY page.started_at DESC, page.tag DESC
@@ -1375,6 +1413,7 @@ export class GatewayStore {
       const videoAction = row['video_action'] as VideoAction | null
       // Only a video's delivery is charged: its create and polls never wait for spend.
       const chargeable = videoAction === null || videoAction === 'delivery'
+      const servedModel = row['served_model'] as string | null
       return {
       tag: row['tag'] as string,
       startedAt: row['started_at'] as number,
@@ -1389,17 +1428,25 @@ export class GatewayStore {
       model: row['model'] as string | null,
       status: row['status'] as number | null,
       sellerPeerId: row['seller_peer_id'] as string | null,
+      servedModel: servedModel !== null && servedModel !== row['model'] ? servedModel : null,
+      router: row['router_peer_id'] === null ? null : {
+        peerId: row['router_peer_id'] as string,
+        service: row['router_service'] as string | null,
+        rank: row['router_rank'] as number | null,
+      },
       latencyMs: row['latency_ms'] as number | null,
       firstTokenMs: row['first_token_ms'] as number | null,
       tokensPerSecond: row['tokens_per_second'] as number | null,
       spentUsdc: row['spent'] as number | null,
+      routingSpentUsdc: row['routing_spent'] as number | null,
       inputTokens: ledgerTokens ? row['in_tokens'] as number : (row['usage_input_tokens'] as number | null) ?? 0,
       cachedInputTokens: ledgerTokens ? row['cached_tokens'] as number : (row['usage_cached_input_tokens'] as number | null) ?? 0,
       outputTokens: ledgerTokens ? row['out_tokens'] as number : (row['usage_output_tokens'] as number | null) ?? 0,
       errorCode: row['error_code'] as string | null,
       errorMessage: row['error_message'] as string | null,
       servedFree,
-      costPending: chargeable && row['spent'] === null && !servedFree && row['model'] !== null && (status === null || status < 400),
+      // A router's fee alone is not the request's cost: the seller's spend is still to come.
+      costPending: chargeable && row['inference_entries'] === 0 && !servedFree && row['model'] !== null && (status === null || status < 400),
       video: videoAction === null ? null : {
         action: videoAction,
         jobId: row['video_job_id'] as string | null,
@@ -1511,14 +1558,17 @@ export class GatewayStore {
     const result = this._stmt(`
       INSERT OR IGNORE INTO ledger_entries
         (kind, key_id, buyer_identity, amount_usdc, external_ref, request_tag, seller_peer_id,
-         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+         input_tokens, cached_input_tokens, output_tokens, note, created_at, workspace_id, member_id, model, end_user, routing_fee, router_peer_id)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `).run(
       entry.kind, entry.keyId, entry.buyerIdentity, signed, entry.externalRef,
       entry.requestTag ?? null, entry.sellerPeerId ?? null,
       entry.inputTokens ?? 0, entry.cachedInputTokens ?? 0, entry.outputTokens ?? 0,
       entry.note ?? null, entry.createdAt,
       workspaceId, memberId, splitPinnedModel(entry.model ?? request?.model ?? null).model, entry.endUser ?? request?.endUser ?? null,
+      entry.routingFee ? 1 : 0,
+      // A ranking fee is paid to the router itself, before the response names it.
+      request?.routerPeerId ?? (entry.routingFee ? entry.sellerPeerId?.toLowerCase() ?? null : null),
     )
     return result.changes > 0
   }
@@ -1913,18 +1963,19 @@ interface ScopeColumns {
   member: string
   model: string
   peer: string
+  router: string
   user: string
   time: string
 }
 
 const REQUEST_COLUMNS: ScopeColumns = {
-  key: 'r.key_id', workspace: 'r.workspace_id', member: 'r.member_id', model: 'r.model', peer: 'r.seller_peer_id', user: 'r.end_user', time: 'r.started_at',
+  key: 'r.key_id', workspace: 'r.workspace_id', member: 'r.member_id', model: 'r.model', peer: 'r.seller_peer_id', router: 'r.router_peer_id', user: 'r.end_user', time: 'r.started_at',
 }
 const LEDGER_COLUMNS: ScopeColumns = {
-  key: 'l.key_id', workspace: 'l.workspace_id', member: 'l.member_id', model: 'l.model', peer: 'l.seller_peer_id', user: 'l.end_user', time: 'l.created_at',
+  key: 'l.key_id', workspace: 'l.workspace_id', member: 'l.member_id', model: 'l.model', peer: 'l.seller_peer_id', router: 'l.router_peer_id', user: 'l.end_user', time: 'l.created_at',
 }
 const ROLLUP_COLUMNS: ScopeColumns = {
-  key: 'u.key_id', workspace: 'u.workspace_id', member: 'u.member_id', model: 'u.model', peer: 'u.seller_peer_id', user: 'u.end_user', time: 'u.hour_start',
+  key: 'u.key_id', workspace: 'u.workspace_id', member: 'u.member_id', model: 'u.model', peer: 'u.seller_peer_id', router: 'u.router_peer_id', user: 'u.end_user', time: 'u.hour_start',
 }
 
 const HOUR_MS = 60 * 60 * 1000
@@ -1953,6 +2004,7 @@ function scopeSql(filter: UsageFilter, columns: ScopeColumns): { where: string[]
   if (filter.workspaceId) { where.push(`${columns.workspace} = ?`); params.push(filter.workspaceId) }
   if (filter.memberId) { where.push(`${columns.member} = ?`); params.push(filter.memberId) }
   if (filter.model) { where.push(`${columns.model} = ?`); params.push(filter.model) }
+  if (filter.routerPeerId) { where.push(`${columns.router} = ?`); params.push(filter.routerPeerId.toLowerCase()) }
   if (filter.from != null) { where.push(`${columns.time} >= ?`); params.push(filter.from) }
   if (filter.to != null) { where.push(`${columns.time} < ?`); params.push(filter.to) }
   return { where, params }

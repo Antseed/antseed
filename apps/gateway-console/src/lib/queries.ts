@@ -1,5 +1,5 @@
 import { useQuery } from '@tanstack/react-query'
-import { api, type ApiClient } from '../api'
+import { api, type ApiClient, type UsageFilter } from '../api'
 import type { Workspace } from '../api/types'
 import { isDepositPending } from './channels'
 
@@ -61,6 +61,20 @@ export function useWorkspace(workspaceId: string, enabled = true) {
 
 export function usePeers(enabled = true) {
   return useQuery({ queryKey: qk.peers, queryFn: api.network.peers, staleTime: 30_000, enabled })
+}
+
+const ROUTERS_LOOKBACK_MS = 90 * 24 * 60 * 60 * 1000
+
+/** Peer ids of the routing services that ranked requests in this scope over the last 90 days, most spend first. */
+export function useUsedRouters(scope: UsageFilter) {
+  return useQuery({
+    queryKey: qk.usage({ ...scope, groupBy: 'router', routersUsed: true }),
+    queryFn: async () => {
+      const report = await api.usage.report({ ...scope, groupBy: 'router', from: Date.now() - ROUTERS_LOOKBACK_MS })
+      return report.groups.map((group) => group.group).filter((peerId) => peerId !== '')
+    },
+    staleTime: 60_000,
+  })
 }
 
 /** Every model on the network, with the sellers offering it. */
