@@ -78,7 +78,7 @@ export {
   type FaultAttribution,
   type AntseedErrorCode,
 } from './errors.js';
-export { adaptPeerFaultErrorResponse, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER } from '@antseed/buyer-core';
+export { adaptPeerFaultErrorResponse, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER } from '@antseed/buyer-core';
 
 // Submodule re-exports (commonly used)
 export {

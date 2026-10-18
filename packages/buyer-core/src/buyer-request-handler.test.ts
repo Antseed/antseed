@@ -165,7 +165,7 @@ describe('stripPeerControlledResponseHeaders', () => {
     const response = {
       requestId: 'r',
       statusCode: 200,
-      headers: { 'content-type': 'application/json', 'X-Antseed-Video-Price-Usdc': '1', 'x-antseed-video-job-retired': '1', 'X-AntSeed-Fault-Attribution': 'buyer' },
+      headers: { 'content-type': 'application/json', 'X-Antseed-Video-Price-Usdc': '1', 'x-antseed-video-job-retired': '1', 'X-Antseed-Video-Delivered': '1', 'X-AntSeed-Fault-Attribution': 'buyer' },
       body: new Uint8Array(),
     };
     expect(stripPeerControlledResponseHeaders(response).headers).toEqual({ 'content-type': 'application/json' });

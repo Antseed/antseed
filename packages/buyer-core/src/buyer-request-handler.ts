@@ -57,8 +57,16 @@ export const VIDEO_PRICE_HEADER = 'x-antseed-video-price-usdc';
  */
 export const VIDEO_JOB_RETIRED_HEADER = 'x-antseed-video-job-retired';
 
+/**
+ * On a video retrieve answer: the buyer accepted the streamed file as the
+ * finished video (readable, close enough to the requested duration). Only
+ * such a delivery is charged, so a stream without it was not a delivery.
+ * Set by the buyer only.
+ */
+export const VIDEO_DELIVERED_HEADER = 'x-antseed-video-delivered';
+
 /** Headers only the buyer may set: a seller's copy (in any letter case) is dropped from its responses. */
-const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER]);
+const BUYER_ONLY_RESPONSE_HEADERS: ReadonlySet<string> = new Set([ANTSEED_FAULT_ATTRIBUTION_HEADER, VIDEO_PRICE_HEADER, VIDEO_JOB_RETIRED_HEADER, VIDEO_DELIVERED_HEADER]);
 
 export interface RequestExecutionOptions {
   signal?: AbortSignal;
@@ -464,15 +472,15 @@ export class BuyerRequestHandler {
     if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
-    if (
-      trackedVideoRetrieve && videoRoute && videoJobId
-      && nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId))
-    ) {
+    const videoDelivered = videoRoute?.action === 'retrieve' && Boolean(videoJobId)
+      && nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId));
+    if (trackedVideoRetrieve && videoRoute && videoJobId && videoDelivered) {
       this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
     }
 
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
-    return adaptPeerResponse(response);
+    const adapted = adaptPeerResponse(response);
+    return videoDelivered ? { ...adapted, headers: { ...adapted.headers, [VIDEO_DELIVERED_HEADER]: '1' } } : adapted;
   }
 
   private _requestedVideoDuration(requestId: string): number | undefined {
