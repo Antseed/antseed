@@ -2322,7 +2322,11 @@ export class BuyerPaymentManager {
     while (this._videoJobs.size > MAX_VIDEO_JOBS) {
       const oldest = this._videoJobs.keys().next().value;
       if (oldest === undefined) break;
+      const evicted = this._videoJobs.get(oldest);
       this._videoJobs.delete(oldest);
+      // Gone for good, also after a restart: a job this buyer stopped tracking is never charged, and a later
+      // download of it may already have been taken as delivered.
+      if (evicted?.oneOffChannelId) this._persistVideoJob(evicted.oneOffChannelId, null);
     }
   }
 

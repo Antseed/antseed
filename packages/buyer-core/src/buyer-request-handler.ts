@@ -465,22 +465,36 @@ export class BuyerRequestHandler {
       if (!isFreeService) {
         negotiator.estimateCostFromResponse(peer, retriedResponse, requestedService, req.requestId);
       }
+      const retriedDelivered = this._recordVideoDelivery(peer, req, retriedResponse, trackedVideoRetrieve, videoRoute, videoJobId);
       this._recordResponseAuth(peer, req, retriedResponse, requestedService, verificationMux);
-      return adaptPeerResponse(retriedResponse);
+      return withVideoDelivered(adaptPeerResponse(retriedResponse), retriedDelivered);
     }
 
     if (negotiator && !isFreeService) {
       negotiator.estimateCostFromResponse(peer, response, requestedService, req.requestId);
     }
-    const videoDelivered = videoRoute?.action === 'retrieve' && Boolean(videoJobId)
-      && nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId));
-    if (trackedVideoRetrieve && videoRoute && videoJobId && videoDelivered) {
-      this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
-    }
-
+    const videoDelivered = this._recordVideoDelivery(peer, req, response, trackedVideoRetrieve, videoRoute, videoJobId);
     this._recordResponseAuth(peer, req, response, requestedService, verificationMux);
-    const adapted = adaptPeerResponse(response);
-    return videoDelivered ? { ...adapted, headers: { ...adapted.headers, [VIDEO_DELIVERED_HEADER]: '1' } } : adapted;
+    return withVideoDelivered(adaptPeerResponse(response), videoDelivered);
+  }
+
+  /**
+   * Whether a retrieve's answer is the finished video (readable, close enough
+   * to the requested duration); for a tracked job, records the delivery, which
+   * lets the seller's charge for it be signed.
+   */
+  private _recordVideoDelivery(
+    peer: BuyerPeerView,
+    req: SerializedHttpRequest,
+    response: SerializedHttpResponse,
+    tracked: boolean,
+    videoRoute: ReturnType<typeof nativeVideoRoute>,
+    videoJobId: string | undefined,
+  ): boolean {
+    if (videoRoute?.action !== 'retrieve' || !videoJobId) return false;
+    if (!nativeVideoDelivered(response, this._requestedVideoDuration(req.requestId))) return false;
+    if (tracked) this._deps.negotiator?.bpm?.recordVideoDelivered(peer.peerId, videoRoute.protocol, videoJobId, req.requestId);
+    return true;
   }
 
   private _requestedVideoDuration(requestId: string): number | undefined {
@@ -720,6 +734,11 @@ export function stripPeerControlledResponseHeaders(
   return Object.keys(headers).length === Object.keys(response.headers).length
     ? response
     : { ...response, headers };
+}
+
+/** Marks a retrieve answer the buyer accepted as the finished video. */
+function withVideoDelivered(response: SerializedHttpResponse, delivered: boolean): SerializedHttpResponse {
+  return delivered ? { ...response, headers: { ...response.headers, [VIDEO_DELIVERED_HEADER]: '1' } } : response;
 }
 
 /** True when a 402 body carries the seller's payment_required contract (flat or wrapped). */

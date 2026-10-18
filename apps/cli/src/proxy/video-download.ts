@@ -150,9 +150,13 @@ export async function downloadVideo(
       return
     }
     if (result.statusCode !== 200 || (length !== null && received !== length)) throw new Error('Incomplete video')
-    // Only a file the buyer accepted as the finished video is a delivery (and is charged); cut off any other stream,
-    // so no client or gateway takes it for one while the job can still be delivered and charged.
-    if (result.headers[VIDEO_DELIVERED_HEADER] !== '1') throw new Error('Video not accepted')
+    // Only a file the buyer accepted as the finished video is a delivery (and is charged). Any other stream is cut
+    // off, so no client or gateway takes it for one; the job is retired first (it would only be rejected again), so
+    // the next poll answers it is gone and a gateway stops holding its price.
+    if (result.headers[VIDEO_DELIVERED_HEADER] !== '1') {
+      await retire().catch(() => false)
+      throw new Error('Video not accepted')
+    }
     response.end()
   } catch {
     if (response.headersSent || clientSignal.aborted) response.destroy()
