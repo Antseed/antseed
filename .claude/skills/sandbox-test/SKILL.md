@@ -1,198 +1,90 @@
 ---
 name: sandbox-test
-description: Test the current worktree's changes end to end with pnpm sandbox. Covers four cases (isolated seller/buyer network, desktop-only changes, this worktree's buyer against real mainnet sellers with real funds, and runs on a server). Picks the case and scenarios from the diff, runs isolated scenarios without asking (asks only before --live, --real-funds or mainnet runs), and reports checks and metrics. Use when asked to "sandbox test", "test this end to end", "run the sandbox", "verify payments/routing", or before a release.
+description: How to use the worktree sandbox (pnpm sandbox): prerequisites, up and down, running a scenario, --chain local or fork, reading and serving reports, desktop runs under xvfb-run, share, logs. Runs isolated scenarios without asking and asks only before --live, --real-funds or mainnet runs. What to run for a given change is decided by the verify-antseed skill, not here. Use when asked to "run the sandbox", "run a scenario", "open the report", "share the desktop", or when verify-antseed names a scenario to run.
 ---
 
-# Sandbox Test
+# Sandbox test
 
-Runs the worktree's changes through `pnpm sandbox` (see `e2e/sandbox/README.md`) and
-reports what passed, what failed and which metrics moved. The **verify-antseed** skill
-(`.claude/skills/verify-antseed/SKILL.md`) layers on this one: which scenario a change
-requires and when a change is proven, the red-to-green bug protocol, and evidence for PR bodies.
+How to drive `pnpm sandbox` in this worktree. `e2e/sandbox/README.md` is the full reference for every command and the `sb` API.
+
+**What to run is not decided here.** The **verify-antseed** skill (`.claude/skills/verify-antseed/SKILL.md`, "Decide what to prove") maps a changed path to the unit tests and scenarios it requires, and says when the change is proven. Read it first, then use this skill to run what it names.
 
 ## Rules
 
-- **Isolated runs need no approval.** Once the user has discussed the change, build, write
-  scenarios, and run `--chain local` (or fork, when `.env.local` has the RPC) and desktop QA
-  without asking. Announce the plan (step 3), then run it.
-- **Ask before spending.** `--live`, `--real-funds`, `--chain mainnet` and `pnpm sandbox mainnet`
-  each need an explicit yes for that run.
-- **`--real-funds` spends real USDC** from the user's test wallet on mainnet (case 3). Only
-  propose it, after the isolated runs pass; never start it without an explicit yes for that
-  run. Check `ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX` exists with `grep -c` and never print it.
-- **`--live` spends real money** on upstream provider APIs. Only use it when the user asks
-  for it, and say which `apiKeyEnv` names it will read. Never print key values.
-- Never touch `~/.antseed`, the keychain, port 8377, or processes the sandbox didn't start. Use
-  `pnpm sandbox down`, and only use `--force` if the user approves it.
-- Don't commit. Don't "fix" a failing check by weakening it. Report the failure.
-- Report a `KNOWN` result (a `knownIssue`) as known, not as a new regression.
+- **Isolated runs need no approval.** Builds, new scenarios, `--chain local` runs (or fork runs, when `.env.local` has the RPC) and desktop QA can run without asking. Say what you will run, then run it.
+- **Ask before spending.** `--live` (real upstream API money), `--real-funds`, `--chain mainnet` and `pnpm sandbox mainnet` (real USDC from the test wallet) each need an explicit yes for that run. Never print key or wallet values; check that they exist with `grep -c`.
+- Never touch `~/.antseed`, the keychain, port 8377, or processes the sandbox did not start. Tear down only with `pnpm sandbox down`; use `--force` only with the user's approval.
+- Don't commit. Don't weaken a check to make a run pass. Report a `KNOWN` result (a `knownIssue`) as known.
 
-## Procedure
+## 1. Prerequisites
 
-### 1. Gather the diff
+- Node must match `.nvmrc` (24.x); `up` refuses other majors. Put a Node 24 first on `PATH`: Volta on macOS (`PATH=~/.volta/tools/image/node/<24.x>/bin:$PATH`), `/usr/local/bin` or `nvm use` on Linux.
+- `--chain local` needs Foundry (`forge`, `anvil`; `export PATH=$HOME/.foundry/bin:$PATH`) and `git submodule update --init packages/contracts/lib/forge-std`.
+- `--chain fork` needs `BASE_MAINNET_RPC_URL` (a dedicated Base RPC with an API key) in the worktree's gitignored `.env.local` or the shell. Check with `grep -c '^BASE_MAINNET_RPC_URL=' .env.local`. If it is missing, ask the user to add it or use `--chain local`; never fall back to a public RPC.
+- The sandbox loads `dist/`, not `src/`: `pnpm install && pnpm run build` in a fresh worktree, and rebuild changed packages after an edit.
+- One read-only check for all of this: `.claude/skills/verify-antseed/scripts/doctor.mjs`. Fix every `FAIL` before a run.
 
-Two chains: `--chain fork` (Base mainnet fork, production contracts) and `--chain local`
-(plain Anvil, this worktree's `packages/contracts` deployed from source, no RPC key; needs
-`forge` and `packages/contracts/lib/forge-std`). `payment-flow` defaults to local, other
-scenarios to fork.
-
-Fork prerequisite: `BASE_MAINNET_RPC_URL` (a dedicated Base RPC with an API key) must be in the
-worktree's gitignored `.env.local` or the shell; a fork `up` refuses to start without it. Check
-with `grep -c '^BASE_MAINNET_RPC_URL=' .env.local` and never print the value. If it's
-missing, ask the user to add it (or offer `--chain local`); don't fall back to a public RPC.
-
-Node must match `.nvmrc` (24.x); `up` refuses other majors. If `node -v` differs, put a
-Node 24 first on `PATH`: Volta on macOS (`PATH=~/.volta/tools/image/node/<24.x>/bin:$PATH`),
-`/usr/local/bin` or `nvm use` on Linux. `.claude/skills/verify-antseed/scripts/doctor.mjs`
-checks this, Foundry and stale `dist/` in one read-only pass.
+## 2. Run a scenario
 
 ```bash
-git status --short
-git diff --name-only $(git merge-base HEAD origin/main)...HEAD; git diff --name-only
-pnpm -s sandbox list
-pnpm -s sandbox status
+pnpm -s sandbox list                                  # every sandbox on this machine
+pnpm -s sandbox status                                # this worktree's sandbox, if any
+pnpm sandbox run <scenario> --chain local             # starts a sandbox, runs, writes a report, stops
+pnpm sandbox run <scenario> --chain local --keep      # leaves it up afterwards
 ```
 
-Note whether a sandbox is already running for this worktree. `run` reuses it only if
-the topology matches; otherwise it refuses. Use `--slot NAME` to run alongside it.
+- Scenarios live in `e2e/sandbox/scenarios/<name>.mjs`. The shipped ones: `chat-basic`, `payment-flow`, `routing-smoke`, `desktop-chat`, `mainnet-smoke` (real funds), and the `issue-*` scenarios.
+- Each run prints `PASS`, `FAIL` and `KNOWN` lines and the path of `report.json`. `--strict` turns `KNOWN` into failures.
+- If this worktree's sandbox is already running with the same topology, `run` reuses it (same chain, same channels); with another topology it refuses. Run `pnpm sandbox down` first, or add `--slot NAME` for a second sandbox next to it.
+- Scenarios assume a fresh sandbox: run `pnpm sandbox down` between runs after `--keep` or `up`.
+- For evidence (checks.log, the run transcript, per-run logs) run scenarios through `.claude/skills/verify-antseed/scripts/run-with-evidence.mjs <scenario> --chain local`, as verify-antseed describes.
+- A first `--chain local` run in a worktree compiles the contracts (about 2.5 minutes); later runs are ready in seconds. Give such a run a long command timeout or run it in the background.
 
-### 2. Pick the case, then map changed paths to runs
+## 3. Chains
 
-`e2e/sandbox/README.md` is organised by four cases:
-
-| Case | When | Runs |
+| | `--chain local` | `--chain fork` |
 | --- | --- | --- |
-| 1. Isolated network | seller, buyer, `packages/node`, payments, routing, contracts | `pnpm sandbox run <scenario>` (table below) |
-| 2. Desktop only | only `apps/desktop/**` changed | `desktop-chat` or a new desktop scenario; offer `pnpm sandbox desktop` (hot reload) for hands-on review |
-| 3. Real network | buyer, buyer proxy, routing or desktop-buyer changes, after case 1 passes | propose `pnpm sandbox run mainnet-smoke --chain mainnet --real-funds` |
-| 4. Server | the user is on a Linux server | case 1/2 runs; wrap desktop scenarios in `xvfb-run -a`; `pnpm sandbox share` for hands-on |
+| Chain | empty Anvil, this worktree's `packages/contracts` deployed from source | Anvil fork of Base mainnet, the production contracts |
+| Needs | `forge` + forge-std, no RPC key | `BASE_MAINNET_RPC_URL` |
+| Use for | contract changes, payment checks, offline work | release checks against what is live |
 
-Case 3 is always a separate, explicit proposal: say it spends real USDC from the test wallet
-(capped at `ANTSEED_SANDBOX_MAINNET_MAX_RESERVE_USDC`, default 0.50) and needs
-`ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX` plus `BASE_MAINNET_RPC_URL`. If the wallet env is
-missing, tell the user how to set it (README, case 3) instead of running.
+`payment-flow` defaults to local, other scenarios to fork; pass `--chain` explicitly. A contract change shows up only on `--chain local`.
 
-The required minimum per changed path is the table in **verify-antseed** ("Decide what to prove");
-run that first. This table adds broader runs and the case 3 proposals.
-
-| Changed paths | Runs |
-| --- | --- |
-| `packages/node/src/payments/**`, buyer/seller payment managers, channel store, `storage/migrations/**` | `payment-flow` (local), `chat-basic`, every `issue-*` scenario, then `routing-smoke` |
-| routing, discovery, DHT, `packages/router-core/**`, `apps/cli/src/proxy/**` (buyer proxy) | `routing-smoke`, then `chat-basic`; then propose case 3 `mainnet-smoke` |
-| `packages/buyer-core/**`, `plugins/router-local/**`, desktop buyer runtime (`apps/desktop/src/main/runtime/**`) | `chat-basic`, `desktop-chat`; then propose case 3 `mainnet-smoke` |
-| `packages/provider-core/**`, `plugins/provider-*/**` | `chat-basic`; offer `--live` with the user's config if the change touches the real upstream path |
-| `packages/node/src/node.ts`, connection/transport/metering | `chat-basic` + `routing-smoke` |
-| `apps/desktop/**` | rebuild the desktop, then `desktop-chat`; for UI not covered yet, propose a new desktop scenario (see Desktop feature QA) |
-| `e2e/sandbox/**` | `pnpm test:sandbox`, then `pnpm test:sandbox:e2e` (add scenario names if scenarios changed) |
-| `packages/contracts/**` | `forge test`, then `forge build` and `payment-flow --chain local` + `chat-basic --chain local` (local deploys the changed contracts); keep `Deploy.s.sol` creation order or `base-local` addresses break |
-| docs, website, CHANGELOG only | nothing to run; say so |
-
-Always run the package's own unit tests for changed code first (for example
-`cd packages/node && pnpm test`). They're faster, and a broken unit makes sandbox
-failures noisy.
-
-If none of the existing scenarios cover the changed behaviour (for example channel
-expiry, a seller dying mid-stream, a deposit top-up), write a new scenario in
-`e2e/sandbox/scenarios/<name>.mjs` with its `topology`, the `sb` calls, and the checks it
-asserts. For a bug, name it `issue-<N>-<slug>.mjs` and follow the red-to-green protocol in
-**verify-antseed**.
-
-### 3. State the plan, then run it
-
-Before the first run, tell the user in a few lines:
-
-- the changed areas and why each run was picked
-- the exact commands, in order, including whether a build is needed (`pnpm run build`
-  if any `dist/` the sandbox loads is older than the changed sources)
-- mock or `--live`, which slot, and whether to `--keep` it running afterwards
-- the chain per scenario (`--chain local` or fork) and why
-- a rough cost: a local chain takes seconds, a cold fork about a minute, a warm one a few seconds; `--live` costs real API money
-
-Then continue to step 4 without waiting. Stop and ask only if the plan needs `--live`,
-`--real-funds` or a mainnet run; propose those as a separate step after the isolated runs pass.
-
-### 4. Run
+## 4. Keep a network up and poke at it
 
 ```bash
-pnpm run build                       # only if needed
-pnpm sandbox run <scenario> [--chain fork|local] [--strict] [--keep] [--slot NAME]
-pnpm sandbox run mainnet-smoke --chain mainnet --real-funds   # case 3, only after an explicit yes
+pnpm sandbox up --chain local [--config FILE] [--live]
+eval "$(pnpm -s sandbox status --env)" && curl "$ANTSEED_PROXY_URL/v1/models"
+pnpm sandbox logs supervisor            # also: anvil, seller-<id>; --follow to tail
+pnpm sandbox down                       # settles and closes channels, then stops
 ```
 
-Case 3 failures: read the report's `desktop-main.log`, the screenshots and video, and
-`metrics.json` (`signedThisRunMicroUsdc`, deposit before/after). There are no supervisor logs:
-the desktop runs its own buyer in `~/.antseed-sandbox/<name>/profiles/mainnet/home`.
+## 5. Reports
 
-Run scenarios one at a time. Each prints `PASS`/`FAIL`/`KNOWN` lines and the path of
-`report.json`. On failure, collect evidence before tearing down:
+Every run writes `~/.antseed-sandbox/<name>/reports/<timestamp>-<scenario>/`: `index.html`, `report.json`, `events.jsonl`, `metrics.json`, and for desktop runs `screenshots/`, `video/desktop.webm` and `desktop-main.log`. `pnpm sandbox down` keeps them.
 
-```bash
-pnpm sandbox logs supervisor
-pnpm sandbox logs seller-<id>
-pnpm sandbox status --json
-```
+- Same machine: `pnpm sandbox report --open` (latest run) or the printed `index.html` path.
+- Remote machine or server: `pnpm sandbox report --serve --port 8799` there (it binds to loopback), then `ssh -L 8799:127.0.0.1:8799 <host>` and open `http://127.0.0.1:8799/`. Never bind to `0.0.0.0` unless the user asks: reports contain wallet addresses and logs.
+- `run --trace` records a Playwright trace (`npx playwright show-trace <report>/trace.zip`, 100+ MB) for a step-by-step replay.
+- On a failure, read `report.json`, `events.jsonl` and the logs before tearing down. If an earlier report of the same scenario exists, compare its metrics with the new one.
 
-Read `report.json`, `events.jsonl` and `metrics.json` in the reported directory
-(`~/.antseed-sandbox/<name>/reports/<timestamp>-<scenario>/`).
+## 6. Desktop runs
 
-### 5. Hand the user the evidence
+- Rebuild the desktop first: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`.
+- `pnpm sandbox run desktop-chat --chain local` launches the built attach-only desktop under Playwright on the sandbox buyer (sandbox wallet, sandbox chat store, telemetry off). A window opens while it runs.
+- On a headless Linux server or VPS: `xvfb-run -a pnpm sandbox run desktop-chat --chain local`.
+- After the run, open `screenshots/` and `video/desktop.webm` and say what they show; read `desktop-main.log` for main-process errors. A chat timeout saves `screenshots/*chat-timeout*.png` and puts the visible screen text in the error.
+- A new desktop scenario: `e2e/sandbox/scenarios/desktop-<name>.mjs` with `requires: ['desktop']`, `const ui = await sb.desktop()`, role and label selectors (`getByRole`, `getByLabel`), `ui.screenshot(name)`, and `sb.check('no renderer errors', ui.errors.length === 0, ui.errors)`. If an element has no accessible name, add an `aria-label` as part of the change.
+- Hands-on review: `pnpm sandbox run desktop-chat --chain local --keep`, then `pnpm sandbox desktop` (Vite hot reload, attach-only), or `pnpm sandbox:attach`.
 
-Every run writes `index.html` in its report directory: result, checks, metrics, screenshots,
-the desktop video (`video/desktop.webm`) and events. Always give the user a way to open it:
+## 7. Share (Linux server)
 
-- Same machine: `pnpm sandbox report --open` (latest run), or the printed `index.html` path.
-- Remote machine or server: start `pnpm sandbox report --serve --port 8799` in a background
-  session and tell the user to run `ssh -L 8799:127.0.0.1:8799 <host>` and open
-  `http://127.0.0.1:8799/`. Never bind to `0.0.0.0` unless the user asks: reports contain
-  wallet addresses and logs.
-- Add `--trace` to `run` when a failure needs a step-by-step replay
-  (`npx playwright show-trace <report>/trace.zip`). Traces are large (100+ MB).
+`pnpm sandbox share` streams the attach-only desktop to the user's browser over Tailscale and prints `https://<host>.<tailnet>.ts.net/<sandbox-name>/`. Give the user that URL; `pnpm sandbox share --stop` or `pnpm sandbox down` ends it. Without Tailscale: `--no-tailscale`, then an ssh tunnel to the printed loopback port. Server setup and security rules are in `e2e/sandbox/README.md`, "Share".
 
-### 6. Compare and report
+## 8. Real network (only with an explicit yes)
 
-If an earlier report for the same scenario exists in that sandbox's `reports/`, compare
-its metrics with the new run (settled amounts, fees, routing shares, latency).
+`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds` runs this worktree's buyer against live sellers with real USDC from the test wallet (capped at `ANTSEED_SANDBOX_MAINNET_MAX_RESERVE_USDC`, default 0.50). It needs `ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX` and `BASE_MAINNET_RPC_URL`. Propose it as a separate step; never start it without a yes for that run. Its failures are read from the report's `desktop-main.log`, screenshots, video and `metrics.json`.
 
-Report briefly:
+## 9. Report back
 
-- per scenario: passed/failed, failing checks with their `detail`, and any known issues
-- metrics that changed against the previous report
-- likely cause of each failure, with file references from the diff and log lines
-- the report link (path or served URL) and the video path, for every desktop run
-- whether the sandbox is still running (`--keep`) and how to stop it (`pnpm sandbox down`)
-
-Leave the sandbox running only if the user asked for `--keep` or for desktop QA.
-
-## Desktop feature QA
-
-Desktop QA is agent-run: `sb.desktop()` launches the built attach-only desktop under
-Playwright on the sandbox buyer (sandbox wallet, chats stored in the sandbox, telemetry off).
-
-1. Run the desktop unit tests and typecheck, then rebuild so Playwright runs the changed
-   code: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`.
-2. Run `pnpm sandbox run desktop-chat --chain local` (the chat send/reply/payment path) plus any new
-   scenario for the changed feature. A visible window opens while it runs; tell the user.
-   On a headless Linux server, use `xvfb-run -a pnpm sandbox run desktop-chat --chain local`.
-3. For a feature not covered yet, write a scenario in `e2e/sandbox/scenarios/desktop-<name>.mjs`
-   with `requires: ['desktop']`. Pattern:
-   ```js
-   const ui = await sb.desktop();
-   await ui.page.getByRole('button', { name: 'Models' }).click();   // role/label selectors
-   await ui.screenshot('models');
-   sb.check('sandbox model listed', (await ui.text()).includes('sandbox-chat'));
-   await sb.stopSeller('seller');                                   // drive backend state
-   sb.check('no renderer errors', ui.errors.length === 0, ui.errors);
-   ```
-   Prefer `getByRole`/`getByLabel`/visible text. If an element has no accessible name,
-   add an `aria-label` (or `data-testid`) in the component as part of the change.
-4. After the run, open the screenshots in `reports/<run>/screenshots/` and look at them
-   (layout, empty/error states), and read `desktop-main.log` for main-process errors.
-5. Report each check, the screenshot paths with what you saw, and any mismatch between the
-   UI and the back end (status, channels, mock requests).
-   On a failure, look at `screenshots/*chat-timeout*.png` and the video first: the error
-   text includes what the screen showed.
-6. For pure visual review the user wants to do by hand, offer `pnpm sandbox run desktop-chat --chain local --keep`
-   then `pnpm sandbox desktop`. On a Linux server with Tailscale, offer `pnpm sandbox share` instead:
-   the user gets a tailnet link to the running desktop in their browser (see "Share" in
-   `e2e/sandbox/README.md`). Give them the printed URL, and remind them that `pnpm sandbox down`
-   or `share --stop` ends it.
+Per scenario: passed or failed, the failing checks with their `detail`, `KNOWN` results as known, metrics that moved against the previous report, the report path (and the video for desktop runs), and whether the sandbox is still running and how to stop it.
