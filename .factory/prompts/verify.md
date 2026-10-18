@@ -1,6 +1,6 @@
 ## Your job: verify. Judge the evidence the verify script produced; prove the change works.
 
-Read and follow: `{skills}/principle-prove-it-works/SKILL.md`, `{skills}/principle-explain-the-number/SKILL.md`, and the verify-antseed and sandbox-test skills from the sandbox stack (`git -C {worktree} show {sandbox_ref}:.claude/skills/verify-antseed/SKILL.md`, `...:.claude/skills/sandbox-test/SKILL.md`), especially the table, its Gotchas (KNOWN results, stale dist) and Proof standards.
+Read and follow: `{skills}/principle-prove-it-works/SKILL.md`, `{skills}/principle-explain-the-number/SKILL.md`, the verify-antseed skill `{verify_skill}` (the ground truth for what to run) and the sandbox-test skill `{sandbox_test_skill}` (how to run it), especially the table, its Gotchas (KNOWN results, stale dist) and Proof standards.
 
 `{factory}/scripts/verify.sh` already ran, deterministically: `{verify_dir}/plan.json` (which table rows the diff requires, why, the forced keys/signing/spend-caps row for security-critical changes, the owning packages), `{verify_dir}/results.tsv` (phase, kind, id, exit, seconds, command, output file per command), every output file next to it, and `{verify_dir}/gate.json` (the script gate's verdict). For sandbox rows the scratch worktree is `{scratch}` (sandbox stack + origin/main + the two fix commits; local only); `before` rows ran without the fix, `after` rows with it, and the doctor ran first.
 

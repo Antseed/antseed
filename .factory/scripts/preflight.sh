@@ -21,9 +21,9 @@ done
 [ -f "$PSTACK/agents/comment-sicko.md" ] || missing="$missing agents/comment-sicko"
 [ -z "$missing" ] && ok "pstack skills present ($PSTACK)" || bad "pstack missing:$missing"
 git -C "$FACTORY" fetch -q origin 2>/dev/null
-if git -C "$FACTORY" cat-file -e "$SANDBOX_REF:.claude/skills/verify-antseed/SKILL.md" 2>/dev/null; then
-  ok "sandbox stack $SANDBOX_REF $(git -C "$FACTORY" rev-parse --short "$SANDBOX_REF") has verify-antseed"
-else bad "$SANDBOX_REF has no .claude/skills/verify-antseed/SKILL.md"; fi
+if git -C "$FACTORY" merge-base --is-ancestor "$SANDBOX_REF" HEAD && [ -f "$FACTORY/../.claude/skills/verify-antseed/SKILL.md" ]; then
+  ok "factory branch contains $SANDBOX_REF $(git -C "$FACTORY" rev-parse --short "$SANDBOX_REF") (verify-antseed read from here)"
+else bad "factory branch does not contain $SANDBOX_REF: rebase tooling/claude-factory onto it (the factory reads verify-antseed from its own branch)"; fi
 models="$(node -e 'const m=require(process.argv[1]).stages; console.log([...new Set(Object.values(m).flatMap((s)=>s.models??[s.model]))].join(" "))' "$FACTORY/inputs/models.json")"
 for model in $models; do
   hdr="$(mktemp)"; body="$(mktemp)"

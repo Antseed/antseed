@@ -1,6 +1,6 @@
 ## Your job: intake. Sharpen the task into a test plan.
 
-Read and follow: `{skills}/sharpen/SKILL.md`, `{skills}/poteto-mode/playbooks/bug-fix.md` (step 1: reproduce it yourself), `{skills}/principle-test-behavior-not-implementation/SKILL.md`, the repo's `{worktree}/CLAUDE.md`, and the verify-antseed skill from the sandbox stack: `git -C {worktree} show {sandbox_ref}:.claude/skills/verify-antseed/SKILL.md` (its "Decide what to prove" rule: a unit test unless only a sandbox scenario reproduces it).
+Read and follow: `{skills}/sharpen/SKILL.md`, `{skills}/poteto-mode/playbooks/bug-fix.md` (step 1: reproduce it yourself), `{skills}/principle-test-behavior-not-implementation/SKILL.md`, the repo's `{worktree}/CLAUDE.md`, and the verify-antseed skill `{verify_skill}` (its "Decide what to prove" rule: a unit test unless only a sandbox scenario reproduces it).
 
 The fix worktree is READ-ONLY for you: no edits, no commits, no state-changing git. The driver compares HEAD and `git status` before and after you. Scratch files go in `{run_dir}/scratch/`.
 {sent_back}

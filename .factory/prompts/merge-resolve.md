@@ -1,6 +1,6 @@
 ## Your job: resolve the merge of origin/main into the sandbox scratch worktree.
 
-The scratch worktree `{scratch}` (local branch `scratch/{slug}`, never pushed) is `{sandbox_ref}` with `origin/main` being merged in, and the merge stopped on conflicts (`git -C {scratch} status`). The verify-antseed skill says: resolve conflicts minimally and record each resolution; `CHANGELOG.md` conflicts most often. Read `git -C {scratch} show {sandbox_ref}:.claude/skills/verify-antseed/SKILL.md` (step 1 of "Fix a bug red to green").
+The scratch worktree `{scratch}` (local branch `scratch/{slug}`, never pushed) is `{sandbox_ref}` with `origin/main` being merged in, and the merge stopped on conflicts (`git -C {scratch} status`). The verify-antseed skill says: resolve conflicts minimally and record each resolution; `CHANGELOG.md` conflicts most often. Read `{verify_skill}` (step 1 of "Fix a bug red to green").
 
 Work only in `{scratch}`. The fix worktree is read-only for you.
 1. For each conflicted file, keep both sides' intent: main's product code wins for product behavior, the sandbox stack's additions (e2e/sandbox, skills, fault hooks) stay. Log one decision row per file.
