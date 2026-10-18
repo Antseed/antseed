@@ -373,7 +373,8 @@ export class GatewayServer {
       })
       this._options.store.touchKey(key.id)
     } catch (error) {
-      // Nothing was sent; the hold must not keep counting against the caps.
+      // Nothing was sent; the hold (and a create's reservation) must not keep counting against the caps.
+      this._options.accounting.videoNotAccepted(tag)
       this._options.accounting.release(tag)
       throw error
     }
@@ -487,6 +488,10 @@ export class GatewayServer {
     if (!route.paid) return { tag: newRequestTag(), remainingUsdc: null }
     const admission = this._options.accounting.admit(key, context, video)
     if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
+    if (admission.breach === null) {
+      sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+      return null
+    }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
     sendJson(res, 402, { error: spendLimitError(admission.breach) })
     return null
@@ -514,7 +519,10 @@ export class GatewayServer {
     if (!video) return
     const accounting = this._options.accounting
     if (video.action === 'create') {
-      if (!outcome.videoJobId) return
+      if (!outcome.videoJobId) {
+        accounting.videoNotAccepted(request.tag)
+        return
+      }
       const allowance = request.remainingUsdc
       const price = /^\d{1,15}$/.test(outcome.priceHeader) ? Number(outcome.priceHeader) : null
       // A key without caps has no allowance: it records the buyer's price, so caps added later count the job.
@@ -574,16 +582,26 @@ export class GatewayServer {
         const latencyMs = reportedLatency ?? finishedAt - startedAt
         const responseContent = observability.logContent ? truncateContent(Buffer.concat(responseChunks)) : null
         const store = this._options.store
+        // Read from the answer itself: the job's accounting must not depend on the request log being writable.
         let videoJobId: string | null = null
         try {
-          const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
-          store.finishRequest(tag, { status, buyerRequestId, error })
-          const usage = usageReader?.result() ?? null
-          const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
           videoJobId = videoCreateChunks && request.video
             ? nativeVideoAcceptance(request.video.protocol, { requestId: tag, statusCode: status, headers: {}, body: Buffer.concat(videoCreateChunks) })
             : null
+        } catch (error) {
+          this._log(`gateway could not read video acceptance for ${tag}: ${errorMessage(error)}`)
+        }
+        const usage = usageReader?.result() ?? null
+        const tokensPerSecond = firstTokenMs !== null ? outputTokensPerSecond(usage?.outputTokens ?? 0, finishedAt - respondedAt) : null
+        try {
+          // First, and apart from the rest: the job ID is what lets its key retrieve it after a restart.
           store.recordRequestOutcome(tag, { sellerPeerId, latencyMs, firstTokenMs, tokensPerSecond, endUser, servedFree, videoJobId, videoDelivered })
+        } catch (error) {
+          this._log(`gateway could not record request ${tag}: ${errorMessage(error)}`)
+        }
+        try {
+          const error = status >= 400 ? gatewayError ?? parseErrorBody(Buffer.concat(errorChunks), status) : null
+          store.finishRequest(tag, { status, buyerRequestId, error })
           if (usage) store.recordResponseUsage(tag, usage)
           if (observability.logContent) store.recordRequestContent(tag, { requestBody: requestContent, responseBody: responseContent })
         } catch (error) {

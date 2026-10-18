@@ -1093,9 +1093,13 @@ export class GatewayStore {
     }))
   }
 
-  saveVideoCommitment(record: VideoCommitmentRecord): void {
-    this._stmt(`INSERT OR REPLACE INTO video_commitments (job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?)`).run(record.job, record.keyId, record.memberId, record.workspaceId, record.amountUsdc, record.expiresAt, record.deliveredAt)
+  /** Stores a commitment; with `replaces`, removes that one (a create's reservation) in the same transaction. */
+  saveVideoCommitment(record: VideoCommitmentRecord, replaces?: string): void {
+    this._db.transaction(() => {
+      this._stmt(`INSERT OR REPLACE INTO video_commitments (job, key_id, member_id, workspace_id, amount_usdc, expires_at, delivered_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?)`).run(record.job, record.keyId, record.memberId, record.workspaceId, record.amountUsdc, record.expiresAt, record.deliveredAt)
+      if (replaces !== undefined && replaces !== record.job) this._stmt('DELETE FROM video_commitments WHERE job = ?').run(replaces)
+    })()
   }
 
   deleteVideoCommitment(job: string): void {
@@ -1244,6 +1248,13 @@ export class GatewayStore {
           : null,
       }
       : null
+  }
+
+  /** The job a video create logged by this gateway was accepted as, keyed like `videoJobKey`, if it was recorded. */
+  videoCreateJob(tag: string): string | null {
+    const row = this._stmt("SELECT path, video_job_id FROM gateway_requests WHERE tag = ? AND video_action = 'create'").get(tag) as
+      { path: string; video_job_id: string | null } | undefined
+    return row ? requestVideoJob(row.path, row.video_job_id) : null
   }
 
   /** The spend recorded so far on one request. */

@@ -1088,7 +1088,8 @@ test('capped requests are refused while a video commitment cannot be stored or l
   const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
   const save = store.saveVideoCommitment.bind(store)
   let failWrites = true
-  store.saveVideoCommitment = (record) => { if (failWrites) throw new Error('database is locked'); save(record) }
+  // The create's reservation is stored; its job's commitment is not.
+  store.saveVideoCommitment = (record, replaces) => { if (failWrites && !record.job.startsWith('create\n')) throw new Error('database is locked'); save(record, replaces) }
   const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
   try {
     assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
@@ -1099,10 +1100,139 @@ test('capped requests are refused while a video commitment cannot be stored or l
     assert.equal(JSON.parse(refused.body).error.code, 'spend_tracking_unavailable')
     failWrites = false
     assert.equal((await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"m"}' })).status, 200)
-    assert.equal(store.listVideoCommitments(Date.now()).length, 1, 'stored on the retry')
+    assert.equal(store.listVideoCommitments(Date.now()).length, 1, 'stored on the retry, replacing its reservation')
   } finally {
     await gateway.stop()
     await buyer.close()
+    cleanup()
+  }
+})
+
+test('an accepted video whose commitment could not be stored still counts after a gateway restart', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await pricedVideoBuyer(400_000)
+  const { key, secret } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+  const save = store.saveVideoCommitment.bind(store)
+  let failWrites = true
+  store.saveVideoCommitment = (record, replaces) => { if (failWrites && !record.job.startsWith('create\n')) throw new Error('database is locked'); save(record, replaces) }
+  const gateway = await startGateway(store, buyer.port, 100_000, null, 60_000)
+  try {
+    assert.equal((await request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: '{"model":"seedance","prompt":"An ant","duration":"8s","job":"job-1"}' })).status, 200)
+    await waitFor(() => gateway.accounting.heldUsdc(key.id) === 400_000)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+  }
+  try {
+    // The gateway stopped before the job was stored; the database works again for the next one.
+    failWrites = false
+    const restarted = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    assert.equal(restarted.videoJobOwner(job), key.id, 'its key can still retrieve it')
+    assert.equal(restarted.heldUsdc(key.id), 1_000_000, 'and it still holds the whole room its create was told about')
+    assert.deepEqual(store.listVideoCommitments(Date.now()).map((row) => row.job), [job], 'the reservation became the job')
+    assert.equal(restarted.admit(key).ok, false, 'so other spend cannot take that room')
+    restarted.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('an accepted video is committed even when the request log cannot be written', async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  const finishRequest = video.store.finishRequest.bind(video.store)
+  video.store.finishRequest = (tag, result) => { if (result.status === 200) throw new Error('database is locked'); finishRequest(tag, result) }
+  try {
+    assert.equal((await video.create('job-1')).status, 200)
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 400_000)
+    assert.equal(video.gateway.accounting.videoJobOwner(videoJobKey('venice-video', 'job-1')), video.key.id)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a capped video create whose reservation cannot be stored is refused before it is sent', async () => {
+  const video = await videoGateway(400_000, 1_000_000)
+  video.store.saveVideoCommitment = () => { throw new Error('database is locked') }
+  try {
+    const refused = await video.create('job-1')
+    assert.equal(refused.status, 503)
+    assert.equal(JSON.parse(refused.body).error.code, 'spend_tracking_unavailable')
+    assert.deepEqual(video.buyer.caps, [], 'the buyer never saw it')
+    assert.equal(video.gateway.accounting.heldUsdc(video.key.id), 0)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a video create refused by the buyer leaves no reservation behind', async () => {
+  const video = await videoGateway(600_000, 500_000)
+  try {
+    assert.equal((await video.create('job-1')).status, 422)
+    assert.deepEqual(video.store.listVideoCommitments(Date.now()), [])
+    assert.equal(video.gateway.accounting.heldUsdc(video.key.id), 0)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a reservation left by a create whose job was never recorded is dropped at startup', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+    const before = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    // The gateway stops while the create is in flight: no record names its job, so no key can retrieve it.
+    assert.ok(before.admit(key, undefined, { videoCreate: true }).ok)
+    assert.equal(store.listVideoCommitments(Date.now()).length, 1)
+    before.dispose()
+    const after = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    assert.equal(after.heldUsdc(key.id), 0)
+    assert.deepEqual(store.listVideoCommitments(Date.now()), [])
+    after.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test("a video job ID that another key already owns does not take that key's job", () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const first = store.createKey({ label: 'A', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null }).key
+    const second = store.createKey({ label: 'B', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null }).key
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    for (const [key, amount] of [[first, 600_000], [second, 300_000]] as const) {
+      const create = accounting.admit(key, undefined, { videoCreate: true })
+      assert.ok(create.ok)
+      accounting.commitVideo(create.tag, job, amount)
+      accounting.release(create.tag)
+    }
+    assert.equal(accounting.videoJobOwner(job), first.id)
+    assert.equal(accounting.heldUsdc(first.id), 600_000)
+    assert.equal(accounting.heldUsdc(second.id), 0)
+    assert.deepEqual(store.listVideoCommitments(Date.now()).map((row) => row.job), [job], 'no reservation is left either')
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test('spend without a request ID does not lower what a video job holds', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 5_000_000, monthly: null, total: null }, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const create = accounting.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, videoJobKey('venice-video', 'job-1'), 600_000)
+    accounting.release(create.tag)
+    store.startRequest({ tag: 'poll-tag', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/api/v1/video/retrieve', model: null, startedAt: 0, video: { action: 'poll', jobId: 'job-1' } })
+    // Attributed to the job's poll only because it was the seller's latest request: it may be anything.
+    accounting.ingest('boot', [{ seq: 1, tag: 'poll-tag', requestId: null, buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '200000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    assert.equal(accounting.heldUsdc(key.id), 600_000)
+    assert.equal(store.periodSpend(key.id).daily, 200_000)
+    accounting.dispose()
+  } finally {
     cleanup()
   }
 })
