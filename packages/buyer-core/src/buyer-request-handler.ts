@@ -526,7 +526,7 @@ export class BuyerRequestHandler {
           receivedAt: Date.now(),
           verified: verification.valid,
           verificationError: verification.reason ?? null,
-        });
+        }, { sellerPeerId: peer.peerId, requestedService: advertisedService });
 
         void this._deps.verificationSampler?.maybeStoreResponseAuthSample({
           request,

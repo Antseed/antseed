@@ -1,7 +1,9 @@
 import { describe, expect, it, vi } from 'vitest';
 import { BuyerRequestHandler } from './buyer-request-handler.js';
 import { ConnectionState, toPeerId } from '@antseed/protocol';
-import type { BuyerPeerView } from './interfaces.js';
+import type { BuyerPeerView, ResponseAuthContext, StoredResponseAuth } from './interfaces.js';
+import { hashRequest } from './response-auth.js';
+import { CONNECTION_CAPABILITY_RESPONSE_AUTH_V1 } from '@antseed/protocol/messages';
 import type { SerializedHttpRequest, SerializedHttpResponse } from '@antseed/protocol/http';
 
 const VIDEO_MODEL = {
@@ -108,5 +110,52 @@ describe('BuyerRequestHandler payment negotiation', () => {
 
     expect((await handler.sendRequest(makePeer(), makeRequest({ 'x-antseed-spending-auth': 'client-signed' }))).statusCode).toBe(402);
     expect(handle402).not.toHaveBeenCalled();
+  });
+});
+
+describe('BuyerRequestHandler response receipts', () => {
+  it('attributes a receipt to the peer the request went to, not the peer the receipt names', async () => {
+    const request = makeRequest();
+    const other = toPeerId('6'.repeat(40));
+    const receipt = {
+      version: 1 as const,
+      requestId: request.requestId,
+      buyerPeerId: '4'.repeat(40),
+      sellerPeerId: other,
+      advertisedService: 'other-model',
+      provider: 'venice',
+      statusCode: 200,
+      requestHash: hashRequest(request),
+      responseHash: 'f'.repeat(64),
+      responseStartedAt: 1,
+      responseCompletedAt: 2,
+      signature: '00',
+    };
+    const inserted: Array<{ record: StoredResponseAuth; context?: ResponseAuthContext }> = [];
+    const connection = { state: ConnectionState.Connected, send: vi.fn(), on: vi.fn(), off: vi.fn() };
+    const handler = new BuyerRequestHandler({}, {
+      localPeerId: toPeerId('4'.repeat(40)),
+      negotiator: { getOrCreatePaymentMux: vi.fn(() => ({})), trackRequestBillingContext: vi.fn(), estimateCostFromResponse: vi.fn() } as never,
+      verificationStorage: { insertResponseAuth: (record, context) => { inserted.push({ record, context }); } },
+      verificationSampler: null,
+      getConnection: async () => connection as never,
+      getMux: () => ({
+        sendProxyRequest: (_req: SerializedHttpRequest, onResponse: (value: SerializedHttpResponse, metadata: { streamingStart: boolean }) => void) =>
+          onResponse(ACCEPTED, { streamingStart: false }),
+        cancelProxyRequest: vi.fn(),
+      } as never),
+      getVerificationMux: () => ({ waitForResponseAuth: vi.fn(async () => receipt) } as never),
+      registerPaymentMux: vi.fn(),
+    });
+
+    const peer = { ...makePeer(), capabilities: [CONNECTION_CAPABILITY_RESPONSE_AUTH_V1] };
+    await handler.sendRequest(peer, request);
+    await vi.waitFor(() => expect(inserted).toHaveLength(1));
+
+    expect(inserted[0]!.record.verified).toBe(false);
+    expect(inserted[0]!.record.verificationError).toBe('response_hash_mismatch');
+    // The stored receipt keeps what the seller claimed; the context says who actually answered.
+    expect(inserted[0]!.record.sellerPeerId).toBe(other);
+    expect(inserted[0]!.context).toEqual({ sellerPeerId: peer.peerId, requestedService: 'video-model' });
   });
 });

@@ -209,6 +209,8 @@ export interface PolicyOrderingAccessors<T> {
   /** Recent latency in ms, or null when the buyer has not measured this seller. */
   latencyMs: (candidate: T) => number | null
   coolingDown: (candidate: T) => boolean
+  /** Failing often lately: tried after every healthy seller, before cooling-down ones. */
+  unhealthy?: (candidate: T) => boolean
 }
 
 export interface PolicyOrdering<T> {
@@ -244,10 +246,12 @@ export function orderByPolicy<T>(
 ): PolicyOrdering<T> {
   const indexed = candidates.map((candidate, index) => ({ candidate, index }))
   const sort = policy.sort ?? 'balanced'
+  // Cooling-down sellers go last and unhealthy ones just before them,
+  // whatever the sort or route chain says: neither should take the next request.
+  const backoff = (candidate: T): number => (get.coolingDown(candidate) ? 2 : get.unhealthy?.(candidate) ? 1 : 0)
   indexed.sort((a, b) => {
-    const coolingA = get.coolingDown(a.candidate)
-    const coolingB = get.coolingDown(b.candidate)
-    if (coolingA !== coolingB) return coolingA ? 1 : -1
+    const backoffOrder = backoff(a.candidate) - backoff(b.candidate)
+    if (backoffOrder !== 0) return backoffOrder
     if (policy.preferFreePeers) {
       const freeA = get.totalPrice(a.candidate) === 0
       const freeB = get.totalPrice(b.candidate) === 0
@@ -270,9 +274,8 @@ export function orderByPolicy<T>(
     const inChain = ordered
       .filter((candidate) => chainPosition.has(normalizePeerId(get.peerId(candidate))))
       .sort((a, b) => {
-        const coolingA = get.coolingDown(a)
-        const coolingB = get.coolingDown(b)
-        if (coolingA !== coolingB) return coolingA ? 1 : -1
+        const backoffOrder = backoff(a) - backoff(b)
+        if (backoffOrder !== 0) return backoffOrder
         return chainPosition.get(normalizePeerId(get.peerId(a)))! - chainPosition.get(normalizePeerId(get.peerId(b)))!
       })
     const rest = ordered.filter((candidate) => !chainPosition.has(normalizePeerId(get.peerId(candidate))))

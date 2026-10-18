@@ -12,6 +12,7 @@ export {
   type BuyerChannelSummary,
   type NodeRequestOptions,
   type BuyerIdentitySummary,
+  type ResponseAuthEvent,
 } from './node.js';
 export { DEFAULT_BUYER_IDENTITY, isValidBuyerIdentityName } from './buyer-identity-context.js';
 export type { Provider, ProviderStreamCallbacks } from './interfaces/seller-provider.js';
@@ -343,6 +344,22 @@ export {
   type ModelRoutingPreferences,
   type ScoredModelRoute,
 } from './routing/model-route-ranking.js';
+export {
+  SellerHealthBook,
+  orderAdaptiveRoutes,
+  scoreAdaptiveRoute,
+  successProbability,
+  adaptiveFirstTokenTimeoutMs,
+  sellerHealthKey,
+  DEFAULT_TIME_VALUE_USD_PER_SECOND,
+  SELLER_HEALTH_HALF_LIFE_MS,
+  type SellerHealthStats,
+  type SellerSuccessTiming,
+  type RouteRequestShape,
+  type AdaptiveRouteInput,
+  type AdaptiveRouteScore,
+  type AdaptiveOrder,
+} from './routing/seller-health.js';
 
 export type { AntseedPlugin, AntseedProviderPlugin, AntseedRouterPlugin, AntseedVerifierPlugin, Prover, VerifyContext, VerifyResult, ClaimResult, SellerRequest, SellerResponse, PluginConfigKey, ConfigField } from './interfaces/plugin.js'
 export { ANTSEED_ATTEST_PATH } from './interfaces/plugin.js'
