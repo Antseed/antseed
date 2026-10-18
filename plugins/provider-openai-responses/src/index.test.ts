@@ -354,6 +354,7 @@ describe('provider-openai-responses plugin', () => {
         user: 'user-123',
         temperature: 0.2,
         top_p: 0.9,
+        max_output_tokens: 16000,
         stream: false,
       })),
     });
@@ -365,6 +366,8 @@ describe('provider-openai-responses plugin', () => {
     expect(body.user).toBeUndefined();
     expect(body.temperature).toBeUndefined();
     expect(body.top_p).toBeUndefined();
+    // The upstream enforces the caller's output cap, so it must reach it.
+    expect(body.max_output_tokens).toBe(16000);
     rmSync(dirname(authFile), { recursive: true, force: true });
   });
 

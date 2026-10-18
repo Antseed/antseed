@@ -303,10 +303,11 @@ function prepareRequestBody(
     }
     delete parsed.service;
 
-    // Strip parameters the upstream backend doesn't support.
+    // Strip parameters the upstream backend doesn't support. `max_output_tokens`
+    // is supported and must pass through: it is the caller's only bound on a
+    // runaway answer.
     delete parsed.metadata;
     delete parsed.user;
-    delete parsed.max_output_tokens;
     delete parsed.temperature;
     delete parsed.top_p;
 
