@@ -253,7 +253,7 @@ A missing job id after an HTTP answer means the create failed, nothing started, 
 
 ## Wait and save
 
-Every status answer has one `status`: `processing`, `failed` (with `error`), `completed` (the MP4 follows), `unknown` (the seller answered but could not read the job's state; poll again), or `seller_unreachable` (HTTP 502/504; the seller could not be reached and the job is kept). `upstream_status` keeps the seller's own word. Polling never creates jobs or charges anything. The video's price is charged once, when it is first downloaded; downloading it again does not charge again. The buyer routes them to the seller that accepted the job. Videos commonly take 1 to 10 minutes; this loop waits up to 20, prints progress every minute, and exits non-zero unless the video was saved.
+Every status answer has one `status`: `processing`, `failed` (with `error`; `video_not_delivered` when the seller says the job is done but sends no MP4), `unknown` (the seller answered but could not read the job's state; poll again), or `seller_unreachable` (HTTP 502/504; the seller could not be reached and the job is kept). `upstream_status` keeps the seller's own word. Polling never creates jobs or charges anything. The video's price is charged once, when it is first downloaded; downloading it again does not charge again. The buyer routes them to the seller that accepted the job. Videos commonly take 1 to 10 minutes; this loop waits up to 20, prints progress every minute, and exits non-zero unless the video was saved.
 
 ```bash
 job_file="${output%.*}.job.json"

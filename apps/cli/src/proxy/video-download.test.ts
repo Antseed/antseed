@@ -149,7 +149,7 @@ test('reports a reachable seller that cannot read the job state as unknown, not 
 test('maps every seller status word to one vocabulary', async () => {
   for (const [upstream, expected] of [
     ['IN_QUEUE', 'processing'], ['IN_PROGRESS', 'processing'], ['QUEUED', 'processing'],
-    ['FAILED', 'failed'], ['CANCELLED', 'failed'], ['error', 'failed'], ['COMPLETED', 'completed'],
+    ['FAILED', 'failed'], ['CANCELLED', 'failed'], ['error', 'failed'],
   ] as const) {
     await serve(async sent => ({
       requestId: sent.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
@@ -160,6 +160,21 @@ test('maps every seller status word to one vocabulary', async () => {
       assert.deepEqual(await response.json(), { status: expected, upstream_status: upstream, error: 'reason' })
     })
   }
+})
+
+test('reports a completed status without an MP4 as failed', async () => {
+  await serve(async sent => ({
+    requestId: sent.requestId, statusCode: 200, headers: { 'content-type': 'application/json' },
+    body: Buffer.from(JSON.stringify({ status: 'completed', video_url: '/v1/video/file/job-1' })),
+  }), async url => {
+    const response = await fetch(url)
+    assert.equal(response.status, 200)
+    const body = await response.json() as { status: string, upstream_status: string, video_url?: string, error: { code: string } }
+    assert.equal(body.status, 'failed')
+    assert.equal(body.upstream_status, 'completed')
+    assert.equal(body.error.code, 'video_not_delivered')
+    assert.equal(body.video_url, undefined)
+  })
 })
 
 test('reports an unreachable seller as seller_unreachable and keeps the job', async () => {

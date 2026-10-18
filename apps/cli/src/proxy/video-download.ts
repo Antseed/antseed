@@ -16,7 +16,8 @@ const FAILED_STATUSES = new Set(['FAILED', 'ERROR', 'CANCELLED', 'CANCELED'])
 
 /**
  * One status vocabulary for every video seller and plugin version:
- * - `processing` / `failed` / `completed`: what the seller reported (`upstream_status` keeps its word).
+ * - `processing` / `failed`: what the seller reported (`upstream_status` keeps its word). A JSON `completed`
+ *   becomes `failed` (`video_not_delivered`): a finished video arrives as the MP4 stream itself.
  * - `unknown` (200): the seller answered but could not read the job's state right now; poll again.
  * - `seller_unreachable` (502/504): the seller could not be reached; the job is kept, poll again later.
  */
@@ -46,6 +47,14 @@ function withNormalizedStatus(body: Uint8Array): Uint8Array {
   const parsed = parseObject(body)
   const status = normalizeVideoStatus(parsed?.status)
   if (!parsed || !status) return body
+  // Finished videos arrive as an MP4 stream, so a JSON "completed" means the seller will not deliver one.
+  if (status === 'completed') {
+    return Buffer.from(JSON.stringify({
+      status: 'failed',
+      upstream_status: parsed.status,
+      error: { code: 'video_not_delivered', message: 'The seller reported the job as completed but did not send the video' },
+    }))
+  }
   return Buffer.from(JSON.stringify({ ...parsed, status, upstream_status: parsed.status }))
 }
 
