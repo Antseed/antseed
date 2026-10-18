@@ -80,6 +80,8 @@ export function controlClient({ url, token }) {
     startBuyer: () => call('POST', '/buyer/start', {}, 180_000),
     setMockLatency: (id, latencyMs) => call('POST', `/sellers/${id}/mock`, { latencyMs }),
     mockRequests: (id) => call('GET', `/sellers/${id}/mock`),
+    loseNeedAuths: (count) => call('POST', '/faults/buyer/need-auth-loss', { count }),
+    needAuthLoss: () => call('GET', '/faults/buyer/need-auth-loss'),
     shutdown: () => call('POST', '/shutdown', {}, 10_000),
   };
 }

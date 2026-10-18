@@ -18,18 +18,26 @@ their own message. Auto-committing every tweak produces a noisy history of
 one-line commits that has to be squashed later. Do not chain `edit → build
 → commit → push` as a reflex — even if prior turns in the same session did.
 
-## Sandbox testing (propose, don't auto-run)
+## Sandbox testing (run isolated checks, ask before spending)
 
 After changing payments, routing, discovery, the buyer proxy, provider plugins,
-`packages/node`, or desktop features, **propose** an end-to-end check in the
-worktree sandbox (`pnpm sandbox`, see `e2e/sandbox/README.md`) using the
-`sandbox-test` skill (`.claude/skills/sandbox-test/SKILL.md`). Show the planned
-scenarios and commands and wait for the user's yes before starting anything.
-Never use `--live` (real upstream spend) unless the user asks for it. For
-buyer, proxy or routing changes, also propose the real-network check
+`packages/node`, or desktop features, verify the change end to end in the
+worktree sandbox (`pnpm sandbox`, see `e2e/sandbox/README.md`). The
+`verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) says which
+scenario a changed path requires, the red-to-green protocol for bug fixes, and
+what evidence to keep; the `sandbox-test` skill
+(`.claude/skills/sandbox-test/SKILL.md`) runs the scenarios.
+
+Once a change has been discussed, implement and test it without asking first:
+builds, unit tests, new scenarios, isolated `--chain local` runs (or fork runs
+when `.env.local` has the RPC), and desktop QA. Only these need an explicit yes
+for each run: `--live` (real upstream spend), `--real-funds`, and any mainnet
+run (`--chain mainnet`, `pnpm sandbox mainnet`). For buyer, proxy or routing
+changes, propose the real-network check
 (`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in the
-sandbox README) as a separate step: it spends real USDC from the test wallet,
-so run it only after an explicit yes.
+sandbox README) as a separate step: it spends real USDC from the test wallet.
+Never touch `~/.antseed`, the keychain or port 8377, tear down only with
+`pnpm sandbox down`, and never weaken a check or turn a `KNOWN` result into a pass.
 
 ## Changelog policy for PRs
 

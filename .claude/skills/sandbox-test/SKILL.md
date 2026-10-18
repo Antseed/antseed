@@ -1,23 +1,28 @@
 ---
 name: sandbox-test
-description: Test the current worktree's changes end to end with pnpm sandbox. Covers four cases (isolated seller/buyer network, desktop-only changes, this worktree's buyer against real mainnet sellers with real funds, and runs on a server). Picks the case and scenarios from the diff, asks the user before running anything, then runs them and reports checks and metrics. Use when asked to "sandbox test", "test this end to end", "run the sandbox", "verify payments/routing", or before a release.
+description: Test the current worktree's changes end to end with pnpm sandbox. Covers four cases (isolated seller/buyer network, desktop-only changes, this worktree's buyer against real mainnet sellers with real funds, and runs on a server). Picks the case and scenarios from the diff, runs isolated scenarios without asking (asks only before --live, --real-funds or mainnet runs), and reports checks and metrics. Use when asked to "sandbox test", "test this end to end", "run the sandbox", "verify payments/routing", or before a release.
 ---
 
 # Sandbox Test
 
 Runs the worktree's changes through `pnpm sandbox` (see `e2e/sandbox/README.md`) and
-reports what passed, what failed and which metrics moved.
+reports what passed, what failed and which metrics moved. The **verify-antseed** skill
+(`.claude/skills/verify-antseed/SKILL.md`) layers on this one: which scenario a change
+requires, the red-to-green bug protocol, evidence for PR bodies, and the feature map.
 
 ## Rules
 
-- **Ask before running.** Present the plan (step 3) and wait for an explicit yes. Never
-  start the sandbox, build, use `--live`, or write a new scenario without approval.
+- **Isolated runs need no approval.** Once the user has discussed the change, build, write
+  scenarios, and run `--chain local` (or fork, when `.env.local` has the RPC) and desktop QA
+  without asking. Announce the plan (step 3), then run it.
+- **Ask before spending.** `--live`, `--real-funds`, `--chain mainnet` and `pnpm sandbox mainnet`
+  each need an explicit yes for that run.
 - **`--real-funds` spends real USDC** from the user's test wallet on mainnet (case 3). Only
   propose it, after the isolated runs pass; never start it without an explicit yes for that
   run. Check `ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX` exists with `grep -c` and never print it.
 - **`--live` spends real money** on upstream provider APIs. Only use it when the user asks
   for it, and say which `apiKeyEnv` names it will read. Never print key values.
-- Never touch `~/.antseed`, the keychain, or processes the sandbox didn't start. Use
+- Never touch `~/.antseed`, the keychain, port 8377, or processes the sandbox didn't start. Use
   `pnpm sandbox down`, and only use `--force` if the user approves it.
 - Don't commit. Don't "fix" a failing check by weakening it. Report the failure.
 - Report a `KNOWN` result (a `knownIssue`) as known, not as a new regression.
@@ -36,8 +41,10 @@ worktree's gitignored `.env.local` or the shell; a fork `up` refuses to start wi
 with `grep -c '^BASE_MAINNET_RPC_URL=' .env.local` and never print the value. If it's
 missing, ask the user to add it (or offer `--chain local`); don't fall back to a public RPC.
 
-Node must match `.nvmrc` (24.x); `up` refuses other majors. If `node -v` differs, run
-with `PATH=~/.volta/tools/image/node/<24.x>/bin:$PATH` or `nvm use`.
+Node must match `.nvmrc` (24.x); `up` refuses other majors. If `node -v` differs, put a
+Node 24 first on `PATH`: Volta on macOS (`PATH=~/.volta/tools/image/node/<24.x>/bin:$PATH`),
+`/usr/local/bin` or `nvm use` on Linux. `.claude/skills/verify-antseed/scripts/doctor.mjs`
+checks this, Foundry and stale `dist/` in one read-only pass.
 
 ```bash
 git status --short
@@ -65,9 +72,12 @@ Case 3 is always a separate, explicit proposal: say it spends real USDC from the
 `ANTSEED_SANDBOX_MAINNET_IDENTITY_HEX` plus `BASE_MAINNET_RPC_URL`. If the wallet env is
 missing, tell the user how to set it (README, case 3) instead of running.
 
-| Changed paths | Run |
+The required minimum per changed path is the table in **verify-antseed** ("Decide what to prove");
+run that first. This table adds broader runs and the case 3 proposals.
+
+| Changed paths | Runs |
 | --- | --- |
-| `packages/node/src/payments/**`, buyer/seller payment managers, channel store, `storage/migrations/**` | `payment-flow` (local), `chat-basic --strict`, then `routing-smoke` |
+| `packages/node/src/payments/**`, buyer/seller payment managers, channel store, `storage/migrations/**` | `payment-flow` (local), `chat-basic`, every `issue-*` scenario, then `routing-smoke` |
 | routing, discovery, DHT, `packages/router-core/**`, `apps/cli/src/proxy/**` (buyer proxy) | `routing-smoke`, then `chat-basic`; then propose case 3 `mainnet-smoke` |
 | `packages/buyer-core/**`, `plugins/router-local/**`, desktop buyer runtime (`apps/desktop/src/main/runtime/**`) | `chat-basic`, `desktop-chat`; then propose case 3 `mainnet-smoke` |
 | `packages/provider-core/**`, `plugins/provider-*/**` | `chat-basic`; offer `--live` with the user's config if the change touches the real upstream path |
@@ -82,13 +92,14 @@ Always run the package's own unit tests for changed code first (for example
 failures noisy.
 
 If none of the existing scenarios cover the changed behaviour (for example channel
-expiry, a seller dying mid-stream, a deposit top-up), propose a new scenario in
-`e2e/sandbox/scenarios/<name>.mjs`: its `topology`, the `sb` calls, and the checks it
-would assert. Only write it after approval.
+expiry, a seller dying mid-stream, a deposit top-up), write a new scenario in
+`e2e/sandbox/scenarios/<name>.mjs` with its `topology`, the `sb` calls, and the checks it
+asserts. For a bug, name it `issue-<N>-<slug>.mjs` and follow the red-to-green protocol in
+**verify-antseed**.
 
-### 3. Propose the plan and wait
+### 3. State the plan, then run it
 
-Show the user:
+Before the first run, tell the user in a few lines:
 
 - the changed areas and why each run was picked
 - the exact commands, in order, including whether a build is needed (`pnpm run build`
@@ -97,8 +108,8 @@ Show the user:
 - the chain per scenario (`--chain local` or fork) and why
 - a rough cost: a local chain takes seconds, a cold fork about a minute, a warm one a few seconds; `--live` costs real API money
 
-Ask: run the plan as is, change it (add/remove scenarios, live, keep), or skip.
-Don't continue without an answer.
+Then continue to step 4 without waiting. Stop and ask only if the plan needs `--live`,
+`--real-funds` or a mainnet run; propose those as a separate step after the isolated runs pass.
 
 ### 4. Run
 
@@ -159,9 +170,10 @@ Playwright on the sandbox buyer (sandbox wallet, chats stored in the sandbox, te
 
 1. Run the desktop unit tests and typecheck, then rebuild so Playwright runs the changed
    code: `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`.
-2. Propose `pnpm sandbox run desktop-chat` (the chat send/reply/payment path) plus any new
+2. Run `pnpm sandbox run desktop-chat` (the chat send/reply/payment path) plus any new
    scenario for the changed feature. A visible window opens while it runs; tell the user.
-3. For a feature not covered yet, propose a scenario in `e2e/sandbox/scenarios/desktop-<name>.mjs`
+   On a headless Linux server, use `xvfb-run -a pnpm sandbox run desktop-chat`.
+3. For a feature not covered yet, write a scenario in `e2e/sandbox/scenarios/desktop-<name>.mjs`
    with `requires: ['desktop']`. Pattern:
    ```js
    const ui = await sb.desktop();
@@ -172,7 +184,7 @@ Playwright on the sandbox buyer (sandbox wallet, chats stored in the sandbox, te
    sb.check('no renderer errors', ui.errors.length === 0, ui.errors);
    ```
    Prefer `getByRole`/`getByLabel`/visible text. If an element has no accessible name,
-   propose adding an `aria-label` (or `data-testid`) in the component as part of the change.
+   add an `aria-label` (or `data-testid`) in the component as part of the change.
 4. After the run, open the screenshots in `reports/<run>/screenshots/` and look at them
    (layout, empty/error states), and read `desktop-main.log` for main-process errors.
 5. Report each check, the screenshot paths with what you saw, and any mismatch between the

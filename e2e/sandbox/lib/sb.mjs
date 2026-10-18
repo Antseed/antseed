@@ -182,6 +182,13 @@ export function createSandboxApi({ manifest, control, eventsPath, chain, strict 
       }
       throw new Error(`Timed out after ${timeoutMs}ms waiting for ${label}`);
     },
+    /** Fault injection. Use only to reach a state no public path produces; say why in the scenario. */
+    faults: {
+      /** The buyer drops the next `count` NeedAuth frames from sellers, as if lost on the wire (0 disarms). Clears lostNeedAuths(). */
+      loseNeedAuths: async (count) => { await event('fault-lose-need-auths', { count }); return control.loseNeedAuths(count); },
+      /** The NeedAuth payloads dropped since the fault was last armed, oldest first (`lastRequestCost` is absent on a 402 catch-up). */
+      lostNeedAuths: async () => (await control.needAuthLoss()).lost,
+    },
     setMockLatency: async (id, latencyMs) => { await event('mock-latency', { id, latencyMs }); return control.setMockLatency(id, latencyMs); },
     buyerBalance: () => reader.buyerBalance(manifest.buyer.address),
     /** On-chain state of a channel: { status (1 Active, 2 Settled, 3 TimedOut), deposit, settled, closeRequestedAt }. */
