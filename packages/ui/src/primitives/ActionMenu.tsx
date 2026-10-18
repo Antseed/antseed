@@ -95,13 +95,18 @@ export function ActionMenu({ label, items, trigger, className, triggerStyle = 'i
       if (menuRef.current?.contains(target) || triggerRef.current?.contains(target)) return;
       close(false);
     };
-    const onScroll = () => close(false);
+    // The page moving under the menu closes it; scrolling the menu's own (long) list does not.
+    const onScroll = (event: Event) => {
+      if (event.target instanceof Node && menuRef.current?.contains(event.target)) return;
+      close(false);
+    };
+    const onResize = () => close(false);
     document.addEventListener('mousedown', onPointer);
-    window.addEventListener('resize', onScroll);
+    window.addEventListener('resize', onResize);
     window.addEventListener('scroll', onScroll, true);
     return () => {
       document.removeEventListener('mousedown', onPointer);
-      window.removeEventListener('resize', onScroll);
+      window.removeEventListener('resize', onResize);
       window.removeEventListener('scroll', onScroll, true);
     };
   }, [open, close]);

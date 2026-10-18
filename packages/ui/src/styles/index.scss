@@ -186,10 +186,10 @@ body {
   white-space: nowrap;
 }
 
-.as-icon-button,
-.as-modal__close,
 .as-drawer__actions { display: flex; flex: 0 0 auto; align-items: center; gap: 0.375rem; }
 
+.as-icon-button,
+.as-modal__close,
 .as-drawer__close {
   display: inline-flex;
   align-items: center;

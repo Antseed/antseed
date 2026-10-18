@@ -746,8 +746,8 @@ button:focus-visible, a:focus-visible, select:focus-visible, input:focus-visible
 }
 .gc-model-name { display: flex; align-items: center; gap: 0.5rem; min-width: 0; }
 .gc-model-name__mark { flex: 0 0 auto; display: inline-flex; width: 20px; height: 20px; align-items: center; justify-content: center; color: var(--as-text-secondary); }
-.gc-star.as-icon-button { flex: 0 0 auto; border-color: transparent; background: transparent; color: var(--as-text-muted);
-  &:hover:not(:disabled) { background: var(--as-bg-hover); color: var(--as-text-primary); }
+.gc-star.as-icon-button { flex: 0 0 auto; border-color: transparent; color: var(--as-text-muted);
+  &:hover:not(:disabled) { color: var(--as-text-primary); }
 }
 .gc-star.as-icon-button[aria-pressed="true"] { color: var(--as-text-primary); }
 .gc-section-label { margin: 0 0 0.5rem; color: var(--as-text-muted); font-size: 0.75rem; font-weight: 600; letter-spacing: 0.04em; text-transform: uppercase; }
