@@ -77,4 +77,12 @@ describe('BuyerPaymentManager 402 catch-up', () => {
 
     expect(sent.map((auth) => auth.cumulativeAmount)).toEqual([(1_000n + MAX_PER_REQUEST).toString()]);
   });
+
+  it('advances by minBudgetPerRequest when the seller gives no target', async () => {
+    const { manager, mux, sent } = await sessionSignedUpTo(1_000n);
+
+    await manager.extendCurrentSpendingAuth(SELLER, 500_000n, mux);
+
+    expect(sent.map((auth) => auth.cumulativeAmount)).toEqual(['501000']);
+  });
 });
