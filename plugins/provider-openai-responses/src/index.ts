@@ -303,10 +303,11 @@ function prepareRequestBody(
     }
     delete parsed.service;
 
-    // Strip parameters the upstream backend doesn't support.
+    // Strip parameters the upstream backend doesn't support. `max_output_tokens`
+    // is supported and must pass through: it is the caller's only bound on a
+    // runaway answer.
     delete parsed.metadata;
     delete parsed.user;
-    delete parsed.max_output_tokens;
     delete parsed.temperature;
     delete parsed.top_p;
 
@@ -397,8 +398,11 @@ function parseResponsesSse(text: string): { body: Record<string, unknown>; statu
       .find((line) => line.startsWith('event: '))
       ?.slice('event: '.length)
       .trim();
+    // `response.incomplete` ends a stream that hit `max_output_tokens`; it carries
+    // the partial answer like `response.completed`.
     if (
       event !== 'response.completed'
+      && event !== 'response.incomplete'
       && event !== 'response.failed'
       && event !== 'error'
       && event !== 'response.output_item.done'
