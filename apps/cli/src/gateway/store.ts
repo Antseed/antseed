@@ -231,6 +231,15 @@ export interface LedgerEntryInput {
   endUser?: string | null
 }
 
+export interface VideoCommitmentRecord {
+  job: string
+  keyId: string
+  memberId: string | null
+  workspaceId: string
+  amountUsdc: number
+  expiresAt: number
+}
+
 export interface GatewayRequestStart {
   tag: string
   keyId: string
@@ -1066,6 +1075,30 @@ export class GatewayStore {
   }
 
   /** Records use at most once a minute per key (per process), so requests do not each write. */
+  /** Accepted video jobs whose price still counts against the caps (see GatewayAccounting). */
+  listVideoCommitments(now: number): VideoCommitmentRecord[] {
+    this._stmt('DELETE FROM video_commitments WHERE expires_at <= ?').run(now)
+    return (this._stmt('SELECT job, key_id, member_id, workspace_id, amount_usdc, expires_at FROM video_commitments').all() as Array<{
+      job: string; key_id: string; member_id: string | null; workspace_id: string; amount_usdc: number; expires_at: number
+    }>).map((row) => ({
+      job: row.job,
+      keyId: row.key_id,
+      memberId: row.member_id,
+      workspaceId: row.workspace_id,
+      amountUsdc: row.amount_usdc,
+      expiresAt: row.expires_at,
+    }))
+  }
+
+  saveVideoCommitment(record: VideoCommitmentRecord): void {
+    this._stmt(`INSERT OR REPLACE INTO video_commitments (job, key_id, member_id, workspace_id, amount_usdc, expires_at)
+      VALUES (?, ?, ?, ?, ?, ?)`).run(record.job, record.keyId, record.memberId, record.workspaceId, record.amountUsdc, record.expiresAt)
+  }
+
+  deleteVideoCommitment(job: string): void {
+    this._stmt('DELETE FROM video_commitments WHERE job = ?').run(job)
+  }
+
   touchKey(id: string): void {
     const now = this._now()
     if (!this._shouldTouch(`key:${id}`, now)) return

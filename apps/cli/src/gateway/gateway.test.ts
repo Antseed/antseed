@@ -882,6 +882,49 @@ test('gateway holds block concurrent requests from slipping under a cap', () => 
   }
 })
 
+test('an accepted video stays committed across a gateway restart until it is dropped', () => {
+  const { store, cleanup } = tempDataDir()
+  const job = videoJobKey('venice-video', 'job-1')
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+    const before = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const create = before.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    before.commitVideo(create.tag, job, 600_000)
+    before.release(create.tag)
+    before.dispose()
+
+    const after = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    assert.equal(after.heldUsdc(key.id), 600_000)
+    const next = after.admit(key, undefined, { videoCreate: true })
+    assert.ok(next.ok)
+    assert.equal(next.remainingUsdc, 400_000, 'a second create is told only what the first job leaves')
+    after.release(next.tag)
+    after.dropVideo(job)
+    after.dispose()
+    assert.equal(new GatewayAccounting(store, { holdUsdc: 100_000 }).heldUsdc(key.id), 0)
+  } finally {
+    cleanup()
+  }
+})
+
+test('a video create reserves up to the buyer video limit, configured or default', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 20_000_000, monthly: null, total: null }, expiresAt: null })
+    for (const [maxVideoRequestUsdc, reserved] of [[undefined, 5_000_000], [10_000_000, 10_000_000], [50_000_000, 20_000_000]] as const) {
+      const accounting = new GatewayAccounting(store, { holdUsdc: 100_000, ...(maxVideoRequestUsdc ? { maxVideoRequestUsdc } : {}) })
+      const admission = accounting.admit(key, undefined, { videoCreate: true })
+      assert.ok(admission.ok)
+      assert.equal(admission.remainingUsdc, reserved)
+      assert.equal(accounting.heldUsdc(key.id), reserved)
+      accounting.dispose()
+    }
+  } finally {
+    cleanup()
+  }
+})
+
 test('a finished request keeps its remaining hold after its first spend delta', () => {
   const { store, cleanup } = tempDataDir()
   const accounting = new GatewayAccounting(store, { holdUsdc: 300_000, settleGraceMs: 60_000 })

@@ -333,4 +333,16 @@ export const MIGRATIONS: readonly string[] = [
   ALTER TABLE gateway_requests ADD COLUMN video_job_id TEXT;
   CREATE INDEX gateway_requests_video_job ON gateway_requests(video_job_id) WHERE video_job_id IS NOT NULL;
   `,
+  // Accepted video jobs not yet delivered: their price counts against the caps of whoever created them until the
+  // video is delivered, the job fails or the row expires, also across gateway restarts.
+  `
+  CREATE TABLE video_commitments (
+    job TEXT PRIMARY KEY,
+    key_id TEXT NOT NULL,
+    member_id TEXT,
+    workspace_id TEXT NOT NULL,
+    amount_usdc INTEGER NOT NULL,
+    expires_at INTEGER NOT NULL
+  );
+  `,
 ]

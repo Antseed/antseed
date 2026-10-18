@@ -2,7 +2,7 @@ import { randomUUID } from 'node:crypto'
 import type { AttributedSpendEvent } from '../proxy/spend-attribution.js'
 import { BUDGET_PERIODS, cappedPeriods, findLimitBreach, hasSpendLimits, type BudgetLevel, type BudgetLimits, type LimitBreach, type SpendLimits } from './limits.js'
 import { parseBaseUnits } from './money.js'
-import type { ApiKeyRecord, BudgetScope, GatewayStore, MemberRecord, WorkspaceRecord } from './store.js'
+import type { ApiKeyRecord, BudgetScope, GatewayStore, MemberRecord, VideoCommitmentRecord, WorkspaceRecord } from './store.js'
 
 /**
  * The member and workspace a key's request is accounted to, when the caller
@@ -29,8 +29,8 @@ const DEFAULT_SETTLE_GRACE_MS = 60_000
 /** An accepted video nobody downloads stops counting against the caps after this long. */
 const DEFAULT_VIDEO_COMMITMENT_MS = 24 * 60 * 60_000
 
-/** The most a video create reserves while it is priced: the buyer's default limit for one video ($5). */
-const MAX_VIDEO_CREATE_RESERVE_USDC = 5_000_000
+/** The buyer's default limit for one video ($5), when its config sets none. */
+export const DEFAULT_MAX_VIDEO_REQUEST_USDC = 5_000_000
 
 export interface GatewayAccountingOptions {
   /**
@@ -38,6 +38,11 @@ export interface GatewayAccountingOptions {
    * is in flight. The buyer's maxPerRequestUsdc is the natural bound.
    */
   holdUsdc: number
+  /**
+   * The most one video may cost: the buyer's maxVideoRequestUsdc. A video
+   * create reserves up to this much of a key's room while it is priced.
+   */
+  maxVideoRequestUsdc?: number
   settleGraceMs?: number
   videoCommitmentMs?: number
   now?: () => number
@@ -60,8 +65,8 @@ type Hold = {
   timer: ReturnType<typeof setTimeout> | null
 }
 
-/** The price of an accepted video job, owed once its file is delivered. */
-type VideoCommitment = Omit<Hold, 'finished' | 'timer'> & { expiresAt: number }
+/** The price of an accepted video job, owed once its file is delivered. Stored, so it survives a restart. */
+type VideoCommitment = Omit<VideoCommitmentRecord, 'job'>
 
 /** Identifies a video job across its create, polls and delivery. */
 export function videoJobKey(protocol: string, jobId: string): string {
@@ -100,12 +105,15 @@ export class GatewayAccounting {
   private readonly _videoCommitments = new Map<string, VideoCommitment>()
   private readonly _settleGraceMs: number
   private readonly _videoCommitmentMs: number
+  private readonly _maxVideoRequestUsdc: number
   private readonly _now: () => number
 
   constructor(private readonly _store: GatewayStore, private readonly _options: GatewayAccountingOptions) {
     this._settleGraceMs = _options.settleGraceMs ?? DEFAULT_SETTLE_GRACE_MS
     this._videoCommitmentMs = _options.videoCommitmentMs ?? DEFAULT_VIDEO_COMMITMENT_MS
+    this._maxVideoRequestUsdc = _options.maxVideoRequestUsdc ?? DEFAULT_MAX_VIDEO_REQUEST_USDC
     this._now = _options.now ?? (() => Date.now())
+    for (const { job, ...commitment } of _store.listVideoCommitments(this._now())) this._videoCommitments.set(job, commitment)
   }
 
   /** In-flight holds plus accepted videos not yet delivered, optionally leaving one video job out. */
@@ -127,7 +135,7 @@ export class GatewayAccounting {
     for (const hold of this._holds.values()) if (match(hold)) held += hold.amountUsdc
     const now = this._now()
     for (const [job, commitment] of this._videoCommitments) {
-      if (commitment.expiresAt <= now) this._videoCommitments.delete(job)
+      if (commitment.expiresAt <= now) this._forgetVideo(job)
       else if (job !== excludeVideoJob && match(commitment)) held += commitment.amountUsdc
     }
     return held
@@ -141,13 +149,15 @@ export class GatewayAccounting {
   commitVideo(tag: string, job: string, priceUsdc: number): void {
     const hold = this._holds.get(tag)
     if (!hold || !(priceUsdc > 0)) return
-    this._videoCommitments.set(job, {
+    const commitment: VideoCommitment = {
       keyId: hold.keyId,
       memberId: hold.memberId,
       workspaceId: hold.workspaceId,
       amountUsdc: priceUsdc,
       expiresAt: this._now() + this._videoCommitmentMs,
-    })
+    }
+    this._videoCommitments.set(job, commitment)
+    this._store.saveVideoCommitment({ job, ...commitment })
   }
 
   /**
@@ -158,14 +168,19 @@ export class GatewayAccounting {
   deliverVideo(tag: string, job: string): void {
     const commitment = this._videoCommitments.get(job)
     if (!commitment) return
-    this._videoCommitments.delete(job)
+    this._forgetVideo(job)
     const hold = this._holds.get(tag)
     if (hold) hold.amountUsdc = Math.max(hold.amountUsdc, commitment.amountUsdc)
   }
 
   /** The job failed or is unknown to the buyer: it will never be charged. */
   dropVideo(job: string): void {
+    if (this._videoCommitments.has(job)) this._forgetVideo(job)
+  }
+
+  private _forgetVideo(job: string): void {
     this._videoCommitments.delete(job)
+    this._store.deleteVideoCommitment(job)
   }
 
   /** Whether any level above or at the key caps spend (so admission depends on the spend feed). */
@@ -218,7 +233,7 @@ export class GatewayAccounting {
     // A video create may start a job worth up to the room it is told about, so it
     // holds all of that until the buyer reports the price: two creates in flight
     // at once cannot both be told the same room.
-    if (videoCreate && remainingUsdc !== null) remainingUsdc = Math.min(remainingUsdc, MAX_VIDEO_CREATE_RESERVE_USDC)
+    if (videoCreate && remainingUsdc !== null) remainingUsdc = Math.min(remainingUsdc, this._maxVideoRequestUsdc)
     const tag = newRequestTag()
     this._holds.set(tag, {
       keyId: key.id,
@@ -288,6 +303,7 @@ export class GatewayAccounting {
   dispose(): void {
     for (const hold of this._holds.values()) if (hold.timer) clearTimeout(hold.timer)
     this._holds.clear()
+    // Commitments stay stored: the next gateway reloads them.
     this._videoCommitments.clear()
   }
 }
