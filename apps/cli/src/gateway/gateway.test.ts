@@ -392,6 +392,24 @@ test('gateway exposes only authenticated supported API routes', async () => {
   }
 })
 
+test('gateway returns its journal tag and still forwards the buyer request id', async () => {
+  const { store, cleanup } = tempDataDir()
+  const buyer = await fakeBuyer()
+  const { secret } = store.createKey({ label: 'Cursor', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+  const gateway = await startGateway(store, buyer.port)
+  try {
+    const response = await request(gateway.port, '/v1/chat/completions', { method: 'POST', key: secret, body: '{"model":"m"}' })
+    assert.equal(response.status, 200)
+    assert.equal(response.headers['x-antseed-request-id'], 'req-1')
+    assert.equal(response.headers['x-antseed-gateway-tag'], buyer.captured[0]?.tag)
+    assert.match(String(response.headers['x-antseed-gateway-tag']), /^gw_/)
+  } finally {
+    await gateway.stop()
+    await buyer.close()
+    cleanup()
+  }
+})
+
 test('gateway passes native video jobs to the buyer and books their spend to the key', async () => {
   const { store, cleanup } = tempDataDir()
   const buyer = await fakeBuyer({ costUsdc: 250_000 })

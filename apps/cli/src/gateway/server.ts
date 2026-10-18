@@ -710,6 +710,8 @@ export class GatewayServer {
             if (!HOP_BY_HOP.has(name.toLowerCase()) && value !== undefined) responseHeaders[name] = value
           }
           responseHeaders.connection = 'close'
+          // The request log is keyed by this tag. The buyer's x-antseed-request-id is a different id.
+          responseHeaders['x-antseed-gateway-tag'] = tag
           upstreamRes.once('error', () => {
             finish!(status, buyerRequestId)
             // The buyer's answer broke off: end the client's too, rather than leave it waiting.
