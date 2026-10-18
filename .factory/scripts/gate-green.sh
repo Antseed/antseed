@@ -23,7 +23,9 @@ if [ "${#cs[@]}" -ne 2 ] || [ "$merges" -ne 0 ]; then
 else
   nontest="$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$c1" | grep -Ev "$TEST_RE" || true)"
   src="$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$c2" | grep -Ev "$TEST_RE" | grep -v '^CHANGELOG.md$' || true)"
+  fixtests="$(git -C "$wt" diff-tree --no-commit-id --name-only -r "$c2" | grep -E "$TEST_RE" || true)"
   if [ -n "$nontest" ]; then record history fail "test commit touches non-test files: $(echo $nontest)"
+  elif [ -n "$fixtests" ]; then record history fail "fix commit touches test files (a green must not come from a changed test): $(echo $fixtests)"
   elif [ -z "$src" ]; then record history fail "fix commit changes no source file"
   else record history pass "test $(git -C "$wt" log --format='%h %s' -1 "$c1") | fix $(git -C "$wt" log --format='%h %s' -1 "$c2")"; fi
 fi

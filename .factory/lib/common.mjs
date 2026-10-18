@@ -85,7 +85,7 @@ export function auditStep(tag, model) {
   for (const r of messages) byStatus[r.status] = (byStatus[r.status] ?? 0) + 1
   return {
     tag, model, requests: rows.length, messages: messages.length, count_tokens: rows.length - messages.length,
-    by_status: byStatus, peers: [...new Set(messages.map((r) => r.peer ?? 'none'))], ok: problems.length === 0, problems: [...new Set(problems)].slice(0, 10),
+    by_status: byStatus, degraded: messages.some((r) => r.status !== 200), peers: [...new Set(messages.map((r) => r.peer ?? 'none'))], ok: problems.length === 0, problems: [...new Set(problems)].slice(0, 10),
   }
 }
 

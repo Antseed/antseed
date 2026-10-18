@@ -300,7 +300,11 @@ async function review() {
     const before = snapshot()
     reviewInput()
     const labels = ['A', 'B', 'C']
-    const done = (i) => lastLine(read(join(RD, `review-r${round}-${reviewers[i]}.md`))).startsWith(`REVIEW ${slug} ${labels[i]} `)
+    // A review is reused on resume only if it answered, was made for the current HEAD, and was not degraded
+    // (a session that got refused calls reviewed with less than the change in front of it).
+    const head = sh('git', ['-C', S.worktree, 'rev-parse', 'HEAD']).stdout.trim()
+    const meta = (i) => JSON.parse(read(join(RD, `review-r${round}-${reviewers[i]}.json`)) || '{}')
+    const done = (i) => lastLine(read(join(RD, `review-r${round}-${reviewers[i]}.md`))).startsWith(`REVIEW ${slug} ${labels[i]} `) && meta(i).head === head && meta(i).degraded === false
     const todo = reviewers.map((m, i) => i).filter((i) => !done(i))
     if (todo.length < reviewers.length) event(slug, `review r${round}`, 'resume', `reusing answered reviews: ${reviewers.filter((m, i) => done(i)).join(', ')}`)
     const panes = {}
@@ -318,6 +322,7 @@ async function review() {
       const refused = Object.entries(audit.by_status ?? {}).filter(([code]) => code !== '200').map(([code, n]) => `${n}x HTTP ${code}`)
       const note = refused.length ? `\n\n> Factory audit note: this session got ${refused.join(', ')} from the model; calls that needed the safety classifier were refused. Weigh what it could not check.\n` : ''
       writeFileSync(join(RD, `review-r${round}-${reviewers[st.i]}.md`), note + read(st.out))
+      writeFileSync(join(RD, `review-r${round}-${reviewers[st.i]}.json`), JSON.stringify({ head, tag: st.tag, model: reviewers[st.i], degraded: refused.length > 0, refused }, null, 2) + '\n')
     }
     const files = reviewers.map((m) => join(RD, `review-r${round}-${m}.md`))
     const steps = reviewers.map((m, i) => ({ answer: lastLine(read(files[i])) }))
@@ -386,12 +391,17 @@ try {
   if (wants('publish')) await publish()
   if (outcome.verdict === 'RUNNING') outcome = { verdict: 'STOPPED', reason: `ran until ${STAGES[until]}` }
 } catch (error) {
-  if (!(error instanceof Stop)) { outcome = { verdict: 'FAILED', reason: `driver error: ${error.stack}` }; event(slug, 'outcome', 'FAILED', String(error)) }
+  if (!(error instanceof Stop)) {
+    outcome = { verdict: 'FAILED (driver error)', reason: `driver error: ${error.stack}` }
+    event(slug, 'outcome', outcome.verdict, String(error))
+    decide(slug, 'outcome', `${outcome.verdict}: ${String(error)}`, 'a factory bug, not a gate verdict on the change', 'events.jsonl', outcome.verdict)
+  }
 }
 if (wants('reflect')) { try { await reflect() } catch (error) { event(slug, 'reflect', 'error', String(error)) } }
 const audit = sh('node', [join(FACTORY, 'scripts', 'audit-summary.mjs'), slug])
 writeFileSync(join(RD, 'audit-summary.md'), audit.out)
 writeFileSync(join(RD, 'outcome.md'), `# ${slug}: ${outcome.verdict}\n\n- reason: ${outcome.reason}\n- branch: ${S.branch} (${S.worktree})\n- events: ${join(RD, 'events.jsonl')}\n- decisions: ${join(RD, 'decisions.tsv')}\n- audit: ${join(RD, 'audit-summary.md')}\n${existsSync(join(RD, 'NEEDS-INPUT.md')) ? `- NEEDS INPUT: ${join(RD, 'NEEDS-INPUT.md')}\n` : ''}`)
 event(slug, 'run', outcome.verdict, outcome.reason)
+if (outcome.verdict.startsWith('PASS') || outcome.verdict === 'STOPPED') decide(slug, 'outcome', `${outcome.verdict}: ${outcome.reason}`, 'every stage up to the last requested one passed its gate', 'outcome.md', outcome.verdict)
 sh('herdr', ['notification', 'show', `factory ${slug}: ${outcome.verdict}`, '--body', outcome.reason.slice(0, 180), '--sound', outcome.verdict.startsWith('PASS') ? 'done' : 'request'])
 process.exit(outcome.verdict.startsWith('PASS') || outcome.verdict === 'STOPPED' ? 0 : 1)
