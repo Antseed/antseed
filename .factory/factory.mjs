@@ -81,8 +81,9 @@ function render(template, v) {
 // Read-only stages start in a scratch directory under the run dir, with the fix worktree added by path, so
 // a relative slip (a persisting `cd`, an unmatched glob) cannot land in the tree they must not touch.
 const scratchCwd = (stage) => { const d = join(RD, 'scratch', stage); mkdirSync(d, { recursive: true }); return d }
-function runStep({ stage, round = 1, template, prefix, cwd, pane, model, mode, extra = {}, addDirs = [], suffix = '', readonly = false }) {
+function runStep({ stage, round = 1, template, prefix, cwd, pane, model, mode, extra = {}, addDirs = [], suffix = '', readonly = false, writeRoot }) {
   if (readonly) { addDirs = [...addDirs, cwd]; cwd = scratchCwd(stage) }
+  else writeRoot ??= cwd
   const conf = MODELS.stages[stage] ?? MODELS.stages[template.replace('.md', '')]
   model ??= conf.model
   mode ??= conf.mode
@@ -96,7 +97,7 @@ function runStep({ stage, round = 1, template, prefix, cwd, pane, model, mode, e
   const args = [join(FACTORY, 'scripts', 'native-step.mjs'), '--slug', slug, '--stage', stage, '--tag', tag, '--model', model, '--mode', mode,
     '--pane', pane, '--cwd', cwd, '--prompt', promptFile, '--answer-prefix', prefix, '--out', out, '--effort', conf.effort,
     '--timeout-min', String(conf.timeout_min), '--stall-min', String(MODELS.stall_min),
-    ...[SKILLS, PSTACK, FACTORY, ...addDirs].flatMap((d) => ['--add-dir', d])]
+    ...[SKILLS, PSTACK, FACTORY, ...addDirs].flatMap((d) => ['--add-dir', d]), ...(writeRoot ? ['--write-root', writeRoot] : [])]
   event(slug, `${stage}${suffix} r${round}`, 'start', `${model} (${mode}) in pane ${pane}, tag ${tag}`)
   return new Promise((done) => {
     const child = spawn('node', args, { stdio: ['ignore', 'pipe', 'pipe'] })
@@ -125,6 +126,7 @@ function tripwire(after) {
   if (remote || prs !== '0') stop('FAILED', `tripwire after ${after}: branch on the remote or a PR exists (remote ${remote || 'none'}, PRs ${prs})`)
 }
 function auditGate(step) {
+  if (step.code === 5) stop('FAILED', `${step.tag} stopped at a Claude Code permission prompt (refused with Escape); screen in sessions/*-permission-prompt.txt`)
   if (step.code === 2) stop('FAILED', `audit: ${step.tag} had a request that was not its model on GesundAI; see sessions/*-audit.json`)
 }
 function intakeCheck() {
@@ -373,7 +375,7 @@ async function publish() {
 
 async function reflect() {
   ensureTab()
-  const step = await runStep({ stage: 'reflect', template: 'reflect.md', prefix: 'REFLECT', cwd: S.worktree ?? FACTORY })
+  const step = await runStep({ stage: 'reflect', template: 'reflect.md', prefix: 'REFLECT', cwd: S.worktree ?? FACTORY, writeRoot: '' })
   if (step.code === 2) event(slug, 'reflect', 'audit failed', step.tag)
   if (!existsSync(join(RD, 'reflect.md'))) writeFileSync(join(RD, 'reflect.md'), read(step.out))
 }
