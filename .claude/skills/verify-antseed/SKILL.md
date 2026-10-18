@@ -5,7 +5,7 @@ description: Prove an AntSeed change works end to end on this worktree's isolate
 
 # Verify AntSeed
 
-This skill says what to prove, when a scenario is required, and what evidence to keep. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) owns the run mechanics: cases, scenario lists, report reading. `e2e/sandbox/README.md` is the reference for every command and the `sb` API.
+This skill says what to prove, when a scenario is required, and what evidence to keep. It is the only map from a changed path to what must run. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) is the how-to for running it: prerequisites, commands, chains, reports, desktop under `xvfb-run`, share. `e2e/sandbox/README.md` is the reference for every command and the `sb` API.
 
 ## Autonomy
 
@@ -25,7 +25,7 @@ These rules hold in every run:
 
 ## Decide what to prove
 
-Add a sandbox scenario only when a unit test can't reproduce the bug. Every change runs the row it matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. The table in **sandbox-test** step 2 adds broader runs and says when to propose the real-network check.
+Add a sandbox scenario only when a unit test can't reproduce the bug. Every change runs the row it matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. For buyer, buyer-proxy or routing changes, propose the real-network check (`pnpm sandbox run mainnet-smoke --chain mainnet --real-funds`, case 3 in `e2e/sandbox/README.md`) as a separate step after these runs pass: it spends real USDC and needs an explicit yes.
 
 | If you change… | Run | It's proven when |
 | --- | --- | --- |

@@ -25,8 +25,9 @@ After changing payments, routing, discovery, the buyer proxy, provider plugins,
 worktree sandbox (`pnpm sandbox`, see `e2e/sandbox/README.md`). The
 `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`) says which
 scenario a changed path requires, the red-to-green protocol for bug fixes, and
-what evidence to keep; the `sandbox-test` skill
-(`.claude/skills/sandbox-test/SKILL.md`) runs the scenarios.
+what evidence to keep, and it is the only map from a changed path to what must
+run; the `sandbox-test` skill (`.claude/skills/sandbox-test/SKILL.md`) is the
+how-to for running the sandbox (commands, chains, reports, desktop, share).
 
 Once a change has been discussed, implement and test it without asking first:
 builds, unit tests, new scenarios, isolated `--chain local` runs (or fork runs

@@ -40,14 +40,7 @@ pnpm sandbox run routing-smoke                 # two sellers, routing stays in t
 pnpm sandbox run desktop-chat                  # the desktop drives a chat through the sandbox buyer
 ```
 
-Pick by what changed:
-
-| Change | Scenarios |
-| --- | --- |
-| payments, channels, settlement, contracts | `payment-flow --chain local`, then `chat-basic` (fork, production contracts) |
-| routing, discovery, buyer proxy | `routing-smoke`, `chat-basic` |
-| seller or provider plugin | `chat-basic`, with `--config <seller config>` for your seller setup; `--live` for the real upstream |
-| new seller feature | a new scenario with its own `topology` (see [Scenarios](#scenarios)) |
+Which scenarios a change needs is decided in one place: the table in the `verify-antseed` skill (`.claude/skills/verify-antseed/SKILL.md`, "Decide what to prove"). A new seller feature gets a new scenario with its own `topology` (see [Scenarios](#scenarios)); for your own seller setup add `--config <seller config>`, and `--live` for the real upstream.
 
 To keep the network up and poke at it yourself:
 
