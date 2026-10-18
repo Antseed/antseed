@@ -5,7 +5,7 @@ description: Prove an AntSeed change works end to end on this worktree's isolate
 
 # Verify AntSeed
 
-This skill says what to prove, when a scenario is required, and what evidence to keep. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) owns the run mechanics: cases, scenario lists, report reading. `e2e/sandbox/README.md` is the reference for every command and the `sb` API. The feature map in [`features/README.md`](features/README.md) holds one recipe per user journey.
+This skill says what to prove, when a scenario is required, and what evidence to keep. The **sandbox-test** skill (`.claude/skills/sandbox-test/SKILL.md`) owns the run mechanics: cases, scenario lists, report reading. `e2e/sandbox/README.md` is the reference for every command and the `sb` API.
 
 ## Autonomy
 
@@ -25,20 +25,27 @@ These rules hold in every run:
 
 ## Decide what to prove
 
-A sandbox scenario is required only when a changed path appears in this table. The first matching row wins. For every other path, a unit test in the owning package is enough (`pnpm --filter <pkg> test`). This table is the required minimum. The table in **sandbox-test** step 2 adds broader runs and says when to propose the real-network check.
+Add a sandbox scenario only when a unit test can't reproduce the bug. Every change runs the row it matches. For any other path, the owning package's unit tests are the proof (`pnpm --filter <pkg> test`). `packages/contracts/**` also needs `cd packages/contracts && forge test` and `pnpm sandbox run payment-flow --chain local`. `e2e/sandbox/**` needs `pnpm test:sandbox` and a run of each changed scenario. Provider plugins other than `plugins/provider-openai` have no mock upstream, so their unit tests are the proof unless the user approves `--live`. The table in **sandbox-test** step 2 adds broader runs and says when to propose the real-network check.
 
-| Changed path | Required runs (all `--chain local`) |
-| --- | --- |
-| `packages/buyer-core/**`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts`, `packages/node/src/storage/migrations/**` | `payment-flow`, `chat-basic`, every `issue-*` scenario |
-| `packages/contracts/**` | `forge test`, then `payment-flow`, `chat-basic`, every `issue-*` scenario |
-| `packages/node/src/discovery/**`, `packages/router-core/**`, `plugins/router-local/**`, `apps/cli/src/proxy/**` | `routing-smoke`, `chat-basic` |
-| other `packages/node/src/**` | `chat-basic`, `routing-smoke` |
-| `packages/provider-core/**`, `plugins/provider-openai/**` | `chat-basic` |
-| `apps/desktop/src/main/runtime/**` (the desktop buyer) | `desktop-chat`, `chat-basic` |
-| other `apps/desktop/**` | `desktop-chat`, plus a `desktop-<feature>` scenario for a UI path no scenario drives |
-| `e2e/sandbox/**` | `pnpm test:sandbox`, then each changed scenario |
+| If you change… | Run | It's proven when |
+| --- | --- | --- |
+| buyer payments or SpendingAuth: `packages/buyer-core/**`, `packages/node/src/payments/**`, `packages/node/src/seller-request-handler.ts` | `pnpm --filter @antseed/buyer-core test` (`buyer-payment-negotiator.test.ts`, `channel-usage-accounting.test.ts`, `pricing.test.ts`), `pnpm --filter @antseed/node test tests/buyer-payment-manager.test.ts tests/buyer-payment-negotiator.test.ts tests/payment-flow-integration.test.ts`, then `pnpm sandbox run payment-flow --chain local` and every `e2e/sandbox/scenarios/issue-*.mjs` | The tests pass and `payment-flow` prints `PASSED`. That means: three paid chats on one channel with a growing cumulative SpendingAuth, a reserve locked on-chain, settle-on-disconnect that charges exactly the delivered work and releases the reserve, a fresh channel after reconnect, and on-chain settlement equal to what the buyer signed. |
+| the buyer proxy or routing: `apps/cli/src/proxy/**`, `packages/node/src/discovery/**`, `packages/router-core/**`, `plugins/router-local/**` | `pnpm sandbox run chat-basic --chain local`. For pinned or multi-seller routing, also `pnpm sandbox run routing-smoke --chain local` | `chat-basic` prints `PASSED`: the catalog lists the seller's models, a non-streaming and a streaming chat through the proxy answer with usage, the upstream saw exactly two chats, one channel holds both receipts, and settlement is exact. `chat-basic` sends model-only requests to one seller and does not pin. `routing-smoke` pins `<peerId>@<model>` to each of two sellers, auto-routes six more chats, and checks that the buyer sees only sandbox sellers. |
+| the desktop chat UI: `apps/desktop/**` | `pnpm --filter @antseed/desktop run build:main && pnpm --filter @antseed/desktop run build:renderer`, then `pnpm sandbox run desktop-chat --chain local`. On a headless Linux server or VPS: `xvfb-run -a pnpm sandbox run desktop-chat --chain local` | `desktop-chat` prints `PASSED`: the desktop shows `Port: <proxy port>`, a chat sent from the composer shows the sandbox seller's reply, the upstream saw it, the channel signed a nonzero amount, the renderer logged no errors, and settlement is exact. Open `screenshots/` and `video/desktop.webm` in the report and say what they show. |
+| keys, signing or spend caps: `packages/node/src/p2p/identity.ts`, `packages/protocol/src/signatures.ts`, `apps/desktop/src/main/identity.ts`, `maxPerRequestUsdc`, `maxReserveAmountUsdc` | `pnpm --filter @antseed/node test tests/identity.test.ts tests/evm-keypair.test.ts tests/eip712-contract-compat.test.ts tests/buyer-payment-manager.test.ts` and `pnpm --filter @antseed/protocol test src/signatures.test.ts` | All pass. These cover identity persistence, the derived EVM wallet, SpendingAuth and ReserveAuth EIP-712 signatures against the contract's typehash and golden vectors, and the overdraft (`verifiedCost + maxPerRequestUsdc`) and reserve-ceiling caps. No sandbox scenario covers keys or caps. There is no dedicated always-run security suite: CI runs every package's tests (`pnpm -r run test`). `apps/desktop/src/main/identity.ts` has no test. |
 
-Run `ls e2e/sandbox/scenarios/issue-*.mjs` for the `issue-*` scenarios. Each one guards a fixed payment bug. A bug fix in a mapped path also needs an issue scenario (see [Fix a bug red to green](#fix-a-bug-red-to-green)). A bug in an unmapped path gets a failing unit test first. Other provider plugins cannot be mocked (the mock is OpenAI-compatible only), so their unit tests are the proof unless the user approves `--live`.
+### Gotchas
+
+- `issue-1200-spendingauth-catchup` needs the lose-NeedAuth fault (`sb.faults.loseNeedAuths`). Without it, the seller's cost-free NeedAuth wins the race against the buyer's 402 negotiator, and the scenario passes on buggy code. Arm the fault right before the chat it targets, and wait for `sb.faults.lostNeedAuths()` to return the dropped frame before you read `cumulativeSigned`. Arming clears that list, and every buyer start disarms the fault.
+- The roughly 5-second delay on a 402 catch-up chat is the seller waiting for a catch-up SpendingAuth (`DEFAULT_CATCH_UP_WAIT_MS` in `packages/node/src/seller-request-handler.ts`). It is not a buyer timeout.
+- The cooperative-close `knownIssue` checks are stale against `origin/main`. On this branch's base, `payment-flow` reports `KNOWN cooperative close charges exactly the delivered work` (36 settled for 18 delivered) and `chat-basic` reports `KNOWN settled amount equals the cost of delivered work` (54 for 36). After a merge with `origin/main` (checked at 4026643ca) both print `PASS`. Both outcomes are expected. Turn them into plain checks once the sandbox branch includes that fix.
+- Pricing is a topology knob (`topology.sellers[].providers.<name>.services.<model>.pricing`, read by `sb.mockCostPerChat()`). A seller's `minBudgetPerRequest` is not. Scenarios get the default of 0.5 USDC, which is the amount the #1200 bug over-signs (500018 signed for 54 delivered).
+- When doctor flags a stale `dist/`, run `pnpm run build`, or the changed package's build plus its dependents. The sandbox loads `dist/`, so an unbuilt fix looks like a fix that does not work.
+- The `BuyerPaymentManager` tests live in `packages/node/tests/`, not in `packages/buyer-core`. The class moved to buyer-core, and `packages/node/src/payments/buyer-payment-manager.ts` re-exports it.
+- On this base, `payment:spend` events do not report the negotiator's catch-up. Read `cumulativeSigned` from `sb.channels()` instead. It is a decimal string of micro-USDC, so compare it as `BigInt`.
+- `--chain fork` runs the production contracts. A contract change shows up only on `--chain local`.
+- `withdraw()` after `sb.buyerRequestClose()` needs `sb.warp(15 * 60 + 60)` first. Waiting in wall-clock time does not move Anvil's clock.
+- A desktop chat that times out saves `screenshots/chat-timeout.png` and puts the visible screen text in the error. Read those and the video before you change the scenario.
 
 ## Launch
 
@@ -73,9 +80,10 @@ Read-only. It checks the Node major against `.nvmrc`, `pnpm`, `anvil`, `forge` w
 - Assert with `sb.check(name, ok, detail)`. Put the observed and expected values in `detail`: the failing line in the output is the evidence.
 - `sb.faults.loseNeedAuths(count)` makes the buyer drop its next `count` seller NeedAuth frames, and `sb.faults.lostNeedAuths()` returns what it dropped since that call. Arming clears the list, and every buyer start disarms the fault. Use a fault only to reach a state that no public path produces, and say why in a comment.
 - Desktop: `const ui = await sb.desktop()`, then `ui.sendChat(prompt)`, `ui.screenshot(name)` and `ui.page` (Playwright). Prefer `getByRole` and `getByLabel`. On a headless Linux server, run `xvfb-run -a pnpm sandbox run desktop-chat --chain local`. Without `--chain`, `desktop-chat`, `chat-basic` and `routing-smoke` run on their first target, the fork.
-- Journeys with exact steps: [`features/README.md`](features/README.md).
 
 ## Fix a bug red to green
+
+Reproduce the bug with a failing unit test in the owning package first. If the unit test reproduces it, that test is the red and the green, the fix PR is the failing test plus the fix (steps 5 and 8), and the regressions are the matching row of [Decide what to prove](#decide-what-to-prove). Follow steps 1 to 9 only when a unit test can't reproduce the bug: when it shows only across a seller, the buyer proxy and an on-chain settlement. `issue-1200-spendingauth-catchup.mjs` is the worked example. It proves on-chain what #1200's unit test proves for one method: the seller settles the over-signed amount.
 
 The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch from `origin/main`. A scratch worktree combines both for the sandbox runs and is never pushed.
 
@@ -105,11 +113,7 @@ The sandbox lives on a sandbox branch, not on `main`. The fix lives on a branch 
    - Committed fix: `git cherry-pick <test-sha> <fix-sha>`.
    - Uncommitted fix: `git -C ../<repo>-fix-<N> add -N . && git -C ../<repo>-fix-<N> diff --binary HEAD | git apply`. Plain `git diff` leaves out new files (the new unit test) and staged changes. Check that `git status --short` in the scratch lists every file the fix changed.
    - Rebuild the changed packages (doctor names them), then run `run-with-evidence.mjs issue-<N>-<slug> --chain local`.
-7. **Run the regressions** in the scratch worktree: the required runs for the fixed path from [Decide what to prove](#decide-what-to-prove), at least `payment-flow --chain local` and `chat-basic --chain local` for a payment bug. Each reports one `KNOWN` result for the cooperative close defect:
-   - `payment-flow`: `KNOWN cooperative close charges exactly the delivered work`, settled 36 against 18 delivered.
-   - `chat-basic`: `KNOWN settled amount equals the cost of delivered work`, settled 54 against 36 delivered.
-
-   Unless the issue is about that defect, these `KNOWN` results are expected. After a merge with `origin/main` (checked at 4026643ca), both checks print `PASS` instead: `main` no longer settles the extra request. Both outcomes are expected. Once the sandbox branch includes that fix, turn the two `knownIssue` calls into plain checks.
+7. **Run the regressions** in the scratch worktree: the matching row of [Decide what to prove](#decide-what-to-prove), plus `chat-basic --chain local` for a payment bug. The cooperative-close `KNOWN` results are expected (see [Gotchas](#gotchas)).
 8. **Run the owning package's checks** in the fix worktree: `pnpm --filter <pkg> test` and `pnpm --filter <pkg> run typecheck`.
 9. **Tear down:** `pnpm sandbox down` in every worktree that ran a sandbox.
 
@@ -164,13 +168,14 @@ The sandbox cannot do these yet. Treat each as a known limit, not as a reason to
 - **Seller payment knobs.** A topology cannot set a seller's `minBudgetPerRequest`, so scenarios get the default (0.5 USDC). Per-model pricing is settable: `topology.sellers[].providers.<name>.services.<model>.pricing`, which `sb.mockCostPerChat()` reads.
 - **`sb.request()` for other endpoints.** `sb.chat()` drives only `/v1/chat/completions`. No helper drives `/v1/responses`.
 - **RPC fault injection.** No proxy sits between the nodes and Anvil to delay, drop or fail RPC calls.
-- **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth` (see [`features/payment-catch-up-402.md`](features/payment-catch-up-402.md)). A frame-level fault on the payment channel between buyer and seller would be cleaner.
+- **Transport faults.** The only fault is NeedAuth loss, and it wraps the buyer payment manager's public `handleNeedAuth`. No public setting leaves a buyer under-signed: the buyer's `costToleranceMultiplier` is not in the node's payment config, and the sandbox fixes `maxPerRequestUsdc` at 5 USDC. A frame-level fault on the payment channel between buyer and seller would be cleaner.
+- **Security-critical tests.** There is no dedicated always-run suite for keys, signing and spend caps. CI runs every package's tests, and the desktop's `apps/desktop/src/main/identity.ts` has no test.
 - **Checkout and wallet flows.** No harness drives the card checkout, deposits or withdrawals in the desktop.
 - **Routing beyond the buyer's own routing.** `routing-smoke` covers model-only and pinned routing between sandbox sellers. Scenarios for routing services and other routing behavior live elsewhere.
 - **`mainnet-smoke` has never run funded.** Case 3 is untested with a real wallet.
 - **`pnpm sandbox share` is untested on a real server with Tailscale.**
 - **Network simulation and failpoints** are separate branches, not in this sandbox.
 
-## Keep the map honest
+## Keep this skill honest
 
-When a feature's entry point or a scenario changes, update the matching file in `features/`. If the pstack plugin is installed, its `/maintain-verification-skill` skill audits this skill and its feature map against the code. Run it when the map looks stale.
+When a scenario, a test file or a command named in [Decide what to prove](#decide-what-to-prove) changes, update its row. If the pstack plugin is installed, its `/maintain-verification-skill` skill audits this skill against the code. Run it when a row looks stale.
