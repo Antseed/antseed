@@ -75,6 +75,14 @@ function statusCell(entry: RequestLogEntry): string {
   return entry.status < 400 ? chalk.green(String(entry.status)) : chalk.red(`${entry.status}${entry.errorCode ? ` ${entry.errorCode}` : ''}`)
 }
 
+/** What became of a routed request's recommendations: the pick that served it, or how many were tried. */
+function routerOutcome(rank: number | null, status: number | null): string {
+  if (rank === null) return 'ranking failed'
+  if (status === null) return `trying pick #${rank}`
+  if (status < 400) return `served by pick #${rank}`
+  return rank === 1 ? 'pick #1 failed' : `picks #1-${rank} all failed`
+}
+
 /** The model asked for, and the one a router picked for it (`levanto-router → opus-5.5`). */
 function modelCell(entry: RequestLogEntry): string {
   const model = entry.model ?? '-'
@@ -211,7 +219,7 @@ export function registerGatewayActivityCommands(gateway: Command): void {
       console.log(`Key: ${detail.keyLabel ?? '-'} (${detail.keyId ?? '-'}), workspace ${workspace}, member ${detail.memberId ?? '-'}, end user ${detail.endUser ?? '-'}`)
       console.log(`Model: ${modelCell(detail)}  Seller: ${detail.sellerPeerId ?? '-'}  Latency: ${detail.latencyMs ?? '-'}ms`)
       if (detail.router) {
-        const pick = detail.router.rank === null ? 'ranking failed' : `served by pick #${detail.router.rank}`
+        const pick = routerOutcome(detail.router.rank, detail.status)
         console.log(`Router: ${detail.router.peerId}${detail.router.service ? `@${detail.router.service}` : ''} (${pick})  Routing fee: ${money(detail.routingSpent ?? null)}`)
       }
       console.log(`Tokens: ${detail.inputTokens ?? 0} in (${detail.cachedInputTokens ?? 0} cached), ${detail.outputTokens ?? 0} out  Spent: ${money(detail.spent)}`)

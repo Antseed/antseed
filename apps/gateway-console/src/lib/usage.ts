@@ -214,6 +214,17 @@ export const COST_PENDING_MS = 10 * 60 * 1000
  * reads `video-charged` (that charge) or `on-delivery`, a status poll
  * `not-charged`.
  */
+/**
+ * What became of a routed request's recommendations: which pick served it,
+ * or, when it failed, how many were tried (each one after a refusal of the last).
+ */
+export function routerOutcome(rank: number | null, status: number | null): string {
+  if (rank === null) return 'ranking failed'
+  if (status === null) return rank === 1 ? 'trying its first pick' : `trying its pick #${rank}`
+  if (status < 400) return rank === 1 ? 'its first pick served it' : `its pick #${rank} served it (the ones before failed)`
+  return rank === 1 ? 'its first pick failed' : `its picks #1–${rank} all failed`
+}
+
 export function costStatus(
   entry: Pick<RequestLogEntry, 'spent' | 'servedFree' | 'costPending' | 'startedAt' | 'finishedAt' | 'video'>,
   now: number,

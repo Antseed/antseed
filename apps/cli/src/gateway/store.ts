@@ -297,7 +297,7 @@ export interface RequestOutcome {
 export interface RequestRouter {
   peerId: string
   service: string | null
-  /** 1 = the router's first pick; null when no recommendation was tried (the ranking failed). */
+  /** The recommendation tried last (1 = the router's first pick): it served the request unless the request failed. Null when none was tried. */
   rank: number | null
 }
 

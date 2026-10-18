@@ -1,7 +1,7 @@
 import { describe, expect, it } from 'vitest'
 import type { UsageReport } from '../api/types'
 import {
-  COST_PENDING_MS, OTHERS_GROUP, OTHER_SERIES, bucketReports, chartGrouping, columnRequests, costStatus, groupLabel, groupStart, rangeBuckets, stackSeries, tokenSeries,
+  COST_PENDING_MS, OTHERS_GROUP, OTHER_SERIES, bucketReports, chartGrouping, columnRequests, costStatus, groupLabel, groupStart, rangeBuckets, routerOutcome, stackSeries, tokenSeries,
 } from './usage'
 
 const NOW = Date.UTC(2026, 9, 8, 15, 30)
@@ -113,6 +113,17 @@ describe('one-request chart data', () => {
     const columns = bucketReports(dayReport([['2026-10-08', [split('a', '0', 1)]]]), rangeBuckets('7d', NOW))
     expect(columnRequests(columns)).toBe(1)
     expect(stackSeries(columns, 'spend').series).toEqual([])
+  })
+})
+
+describe('routerOutcome', () => {
+  it('names the pick that served a request, and never says a failed one was served', () => {
+    expect(routerOutcome(1, 200)).toBe('its first pick served it')
+    expect(routerOutcome(2, 200)).toBe('its pick #2 served it (the ones before failed)')
+    expect(routerOutcome(1, 503)).toBe('its first pick failed')
+    expect(routerOutcome(2, 503)).toBe('its picks #1–2 all failed')
+    expect(routerOutcome(2, null)).toBe('trying its pick #2')
+    expect(routerOutcome(null, 502)).toBe('ranking failed')
   })
 })
 

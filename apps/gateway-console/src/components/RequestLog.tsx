@@ -6,7 +6,7 @@ import type { RequestDetail, RequestLogEntry, RequestRouterInfo } from '../api/t
 import { formatDateTime, formatLatency, formatNumber, formatSpeed, formatUsd } from '../lib/format'
 import { qk, usePeers } from '../lib/queries'
 import { peerName } from './PeerPicker'
-import { costStatus } from '../lib/usage'
+import { costStatus, routerOutcome } from '../lib/usage'
 import { Badge, CodeBlock, DetailList, EmptyState, ErrorAlert, LoadingRows, Mono } from './ui'
 import { Icon } from './icons'
 
@@ -59,21 +59,14 @@ function modelTitle(entry: RequestLogEntry): string {
   return entry.servedModel ? `${model} → ${entry.servedModel}` : model
 }
 
-/** Which of the router's recommendations served the request. */
-function routerPick(rank: number | null): string {
-  if (rank === null) return 'ranking failed'
-  if (rank === 1) return 'its first pick served it'
-  return `its pick #${rank} served it (the ones before failed)`
-}
-
-/** The routing service that ranked a request, by name, with its service and which pick served the request. */
-function RouterDetail({ router }: { router: RequestRouterInfo }) {
+/** The routing service that ranked a request, by name, with its service and which pick served the request (or failed). */
+function RouterDetail({ router, status }: { router: RequestRouterInfo; status: number | null }) {
   const peers = usePeers()
   return (
     <div className="gc-stack gc-stack--tight">
       <span>{peerName(peers.data, router.peerId)}</span>
       <Mono>{router.peerId}</Mono>
-      <span className="gc-muted">{router.service ? `${router.service} · ` : ''}{routerPick(router.rank)}</span>
+      <span className="gc-muted">{router.service ? `${router.service} · ` : ''}{routerOutcome(router.rank, status)}</span>
     </div>
   )
 }
@@ -130,7 +123,7 @@ function RequestDetailView({ entry }: { entry: RequestLogEntry }) {
         ['Model', <ModelName key="m" entry={data} />],
         ['Key', data.keyLabel],
         ['End user', data.endUser ?? '—'],
-        ...(data.router ? [['Router', <RouterDetail key="r" router={data.router} />] as [string, ReactNode]] : []),
+        ...(data.router ? [['Router', <RouterDetail key="r" router={data.router} status={data.status} />] as [string, ReactNode]] : []),
         ['Seller', data.sellerPeerId ? <SellerName key="s" peerId={data.sellerPeerId} full /> : '—'],
         ['First token', formatLatency(data.firstTokenMs)],
         ['Speed', formatSpeed(data.tokensPerSecond)],

@@ -322,8 +322,9 @@ export function computeResponseTelemetry(
 
 /**
  * Response headers of a request a routing service ranked: the router's peer
- * and service, and which of its recommendations (1 = its first pick) served
- * the request. Router-path failures carry the router's peer and service too.
+ * and service, and which of its recommendations (1 = its first pick) was tried
+ * last: it served the request, unless the response is the last refusal. A
+ * failed ranking carries the router's peer and service only.
  */
 export const ROUTER_PEER_ID_HEADER = 'x-antseed-router-peer-id'
 export const ROUTER_SERVICE_HEADER = 'x-antseed-router-service'

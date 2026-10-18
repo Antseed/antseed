@@ -312,7 +312,10 @@ export interface RequestRouterInfo {
   peerId: string
   /** The router's service id, e.g. `levanto-router`. */
   service: string | null
-  /** Which of its recommendations served the request: 1 = its first pick; null when the ranking failed. */
+  /**
+   * The recommendation tried last, 1 = the router's first pick: the one that served the request, or, when the
+   * request failed, the last one refused (the ones before it were refused too). Null when the ranking failed.
+   */
   rank: number | null
 }
 

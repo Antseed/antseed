@@ -226,6 +226,20 @@ test('a seller cannot name a router: its router headers are dropped on routed an
   assert.equal(ctx.store.listRequests({ keyId: key.id, routerPeerId: fake }).length, 0)
 })
 
+test('when every recommended seller refuses, the log keeps the last pick tried and the failure', async (t) => {
+  const ctx = await setup(t)
+  const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
+  ctx.failingPeers.add(first.peerId)
+  ctx.failingPeers.add(second.peerId)
+
+  const res = await ctx.call(secret, '/v1/chat/completions', chatBody)
+  assert.equal(res.status, 503, res.text)
+  assert.deepEqual(ctx.sent.map((entry) => entry.peerId), [router.peerId, second.peerId, first.peerId])
+  const [row] = ctx.store.listRequests({ keyId: key.id })
+  assert.equal(row!.status, 503)
+  assert.deepEqual(row!.router, { peerId: router.peerId, service: 'alpha-route', rank: 2 }, 'rank 2 was tried last, not served')
+})
+
 test('a failed ranking is logged against the router, with no seller', async (t) => {
   const ctx = await setup(t)
   const { secret, key } = ctx.store.createKey({ label: 'team', limits: NO_LIMITS, expiresAt: null, routingPolicy: null })
