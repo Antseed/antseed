@@ -83,6 +83,8 @@ type Hold = {
   reserved?: boolean
   /** A video create still waiting for its price: it holds the whole room it was told about. */
   videoCreate?: boolean
+  /** A committed job's own poll or download, which may still deliver (and so charge) the job. */
+  videoJob?: string
 }
 
 /** The price of an accepted video job, owed once its file is delivered. Stored, so it survives a restart. */
@@ -165,7 +167,14 @@ export class GatewayAccounting {
     let held = 0
     for (const hold of this._holds.values()) if (match(hold) && !(withoutVideoCreates && hold.videoCreate)) held += hold.amountUsdc
     const now = this._now()
-    // A revoked key cannot retrieve its jobs any more (only the creating key may), so they are never charged.
+    // A revoked key cannot retrieve its jobs any more (only the creating key may), so they are never charged:
+    // unless a retrieve admitted before the revocation is still running, or a delivery's charge is still to come.
+    let retrieving: Set<string> | null = null
+    const chargeable = (job: string, commitment: VideoCommitment): boolean => {
+      if (commitment.deliveredAt !== null) return true
+      retrieving ??= new Set([...this._holds.values()].flatMap((hold) => hold.videoJob ? [hold.videoJob] : []))
+      return retrieving.has(job)
+    }
     const active = new Map<string, boolean>()
     const isActive = (keyId: string): boolean => {
       let result = active.get(keyId)
@@ -188,7 +197,7 @@ export class GatewayAccounting {
       if (commitment.amountUsdc > 0 && commitment.deliveredAt !== null && now - commitment.deliveredAt >= DELIVERY_CHARGE_WAIT_MS) {
         this._setVideoHeld(job, commitment, 0)
       }
-      if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && isActive(commitment.keyId)) held += commitment.amountUsdc
+      if (commitment.amountUsdc > 0 && job !== excludeVideoJob && match(commitment) && (isActive(commitment.keyId) || chargeable(job, commitment))) held += commitment.amountUsdc
     }
     return held
   }
@@ -411,7 +420,7 @@ export class GatewayAccounting {
     const own = videoJob ? this._videoCommitments.get(videoJob) : undefined
     if (own && own.keyId === key.id && own.expiresAt > now) {
       const tag = newRequestTag()
-      this._holds.set(tag, { keyId: key.id, memberId: key.ownerMemberId, workspaceId: key.workspaceId, amountUsdc: 0, finished: false, timer: null })
+      this._holds.set(tag, { keyId: key.id, memberId: key.ownerMemberId, workspaceId: key.workspaceId, amountUsdc: 0, finished: false, timer: null, videoJob })
       return { ok: true, tag, remainingUsdc: null }
     }
     let remainingUsdc: number | null = null

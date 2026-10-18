@@ -1356,6 +1356,52 @@ test('a recovered video job does not hold again what its delivery was already ch
   }
 })
 
+test("a revoked key's video keeps counting while a download admitted before the revocation can still charge it", () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    const create = accounting.admit(key)
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, job, 600_000)
+    accounting.release(create.tag)
+    const download = accounting.admit(key, undefined, { videoJob: job })
+    assert.ok(download.ok)
+    store.revokeKey(key.id)
+    assert.equal(accounting.heldForWorkspace(key.workspaceId), 600_000, 'the running download may still be charged')
+    // Delivered: its charge is still to come.
+    accounting.videoDelivered(job)
+    accounting.release(download.tag)
+    assert.equal(accounting.heldForWorkspace(key.workspaceId), 600_000)
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
+test("a revoked key's undelivered video stops counting once nothing can retrieve it", () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: NO_LIMITS, expiresAt: null })
+    const accounting = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    const create = accounting.admit(key)
+    assert.ok(create.ok)
+    accounting.commitVideo(create.tag, job, 600_000)
+    accounting.release(create.tag)
+    const poll = accounting.admit(key, undefined, { videoJob: job })
+    assert.ok(poll.ok)
+    store.revokeKey(key.id)
+    assert.equal(accounting.heldForWorkspace(key.workspaceId), 600_000)
+    accounting.release(poll.tag)
+    assert.equal(accounting.heldForWorkspace(key.workspaceId), 0)
+    accounting.dispose()
+  } finally {
+    cleanup()
+  }
+})
+
 test('a delivered video that is never charged stops holding its price an hour after delivery', () => {
   const { store, cleanup } = tempDataDir()
   let now = Date.UTC(2026, 0, 1)
