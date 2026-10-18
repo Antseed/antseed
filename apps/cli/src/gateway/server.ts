@@ -500,7 +500,12 @@ export class GatewayServer {
     const admission = this._options.accounting.admit(key, context, video)
     if (admission.ok) return { tag: admission.tag, remainingUsdc: admission.remainingUsdc }
     if (admission.breach === null) {
-      sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+      if (admission.reason === 'video_pricing') {
+        res.setHeader('retry-after', '5')
+        sendError(res, 429, 'rate_limit_error', 'video_pricing_in_progress', 'A video started on this spend limit is still being priced and holds the room it may cost. Retry in a few seconds.')
+      } else {
+        sendError(res, 503, 'api_error', 'spend_tracking_unavailable', 'Spend limits cannot be applied right now: video jobs could not be stored. Try again shortly.')
+      }
       return null
     }
     this._log(`gateway spend limit reached: key=${key.id} level=${admission.breach.level ?? 'key'} period=${admission.breach.period}`)
@@ -740,7 +745,9 @@ export class GatewayServer {
               refusedSince = Date.now()
               this._log(`gateway holding request until the buyer is back: key=${key.id}`)
             }
-            if (this._holdForBuyer(refusedSince)) {
+            // A capped video create is not held: the buyer that comes back may be an older one, which would
+            // start the job without checking its price (see `_videoBudgetEnforced`).
+            if (!(request.video?.action === 'create' && request.remainingUsdc !== null) && this._holdForBuyer(refusedSince)) {
               retryTimer = setTimeout(send, BUYER_RETRY_INTERVAL_MS)
               return
             }

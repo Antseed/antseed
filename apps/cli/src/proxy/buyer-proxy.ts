@@ -1189,6 +1189,8 @@ export class BuyerProxy {
   /** Retrieves of one video job run one at a time, so a job retired as failed cannot be delivered by a retrieve already under way. */
   private readonly _videoJobQueues = new Map<string, Promise<void>>()
   /** Jobs whose retirement is being saved: left out of the saved routes, still routable in memory until the save succeeds. */
+  /** The saved video routes existed but could not be read at start (see `start`). */
+  private _resourceRoutesUnread = false
   private readonly _retiringVideoJobs = new Set<string>()
 
   private _cachedPeers: PeerInfo[] = []
@@ -2068,7 +2070,13 @@ export class BuyerProxy {
     try {
       const state = JSON.parse(await readFile(this._stateFile, 'utf8'))
       this._resourceRoutes.hydrate(state.resourceRoutes)
-    } catch {}
+    } catch (error) {
+      // Routes that could not be read may come back on a later start: until then no job is said to be retired.
+      if ((error as NodeJS.ErrnoException).code !== 'ENOENT') {
+        this._resourceRoutesUnread = true
+        console.warn(`[buyer-proxy] Could not read saved video routes: ${error instanceof Error ? error.message : String(error)}`)
+      }
+    }
     // Adopt persisted session overrides (peer pin, default routed model) so
     // they survive daemon restart. A --peer CLI flag beats the persisted pin
     // at startup; runtime `connection set` writes still take over via the
@@ -3756,8 +3764,9 @@ export class BuyerProxy {
       // Re-classify with the body: some APIs (Venice) carry the job ID in it.
       const prepared = prepareVideoRequest(nativeVideoRoute(serializedReq) ?? nativeVideo, serializedReq.headers, this._resourceRoutes)
       if ('error' in prepared) {
-        // No route for the job: this buyer can never deliver or charge it.
-        const retired = prepared.error.body.error.code === 'video_route_not_found' ? { [VIDEO_JOB_RETIRED_HEADER]: '1' } : {}
+        // No route for the job: this buyer can never deliver or charge it. Unless its saved routes could not be
+        // read at start, when the job may still be there on the next one.
+        const retired = prepared.error.body.error.code === 'video_route_not_found' && !this._resourceRoutesUnread ? { [VIDEO_JOB_RETIRED_HEADER]: '1' } : {}
         res.writeHead(prepared.error.statusCode, { 'content-type': 'application/json', ...retired })
         res.end(JSON.stringify(prepared.error.body))
         return

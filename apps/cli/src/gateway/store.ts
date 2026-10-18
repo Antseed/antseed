@@ -1257,6 +1257,21 @@ export class GatewayStore {
     return row ? requestVideoJob(row.path, row.video_job_id) : null
   }
 
+  /** Spend recorded so far on every request of one key that names a video job (its create, polls and delivery). */
+  videoJobSpend(keyId: string, jobId: string): number {
+    const row = this._stmt(`SELECT -COALESCE(SUM(l.amount_usdc), 0) AS spent FROM ledger_entries l
+      JOIN gateway_requests r ON r.tag = l.request_tag
+      WHERE l.kind = 'spend' AND r.key_id = ? AND r.video_job_id = ?`).get(keyId, jobId.slice(0, 256)) as { spent: number }
+    return row.spent
+  }
+
+  /** When one key's retrieve of a video job delivered its file, if one did. */
+  videoJobDeliveredAt(keyId: string, jobId: string): number | null {
+    const row = this._stmt(`SELECT MIN(COALESCE(finished_at, started_at)) AS at FROM gateway_requests
+      WHERE key_id = ? AND video_job_id = ? AND video_action = 'delivery'`).get(keyId, jobId.slice(0, 256)) as { at: number | null }
+    return row.at
+  }
+
   /** The spend recorded so far on one request. */
   spendForRequest(tag: string): number {
     const row = this._stmt("SELECT -COALESCE(SUM(amount_usdc), 0) AS spent FROM ledger_entries WHERE kind = 'spend' AND request_tag = ?").get(tag) as { spent: number }

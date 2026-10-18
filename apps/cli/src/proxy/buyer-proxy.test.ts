@@ -1570,6 +1570,22 @@ test('a video create passes the caller spend cap to the buyer and never to the s
   ])
 })
 
+test('an unknown video job is not said to be retired while the saved routes could not be read', async () => {
+  const peer = makePeer('a', ['venice'])
+  peer.providerServiceApiProtocols = { venice: { services: { 'video-model': ['venice-video'] } } }
+  const proxy = makeBuyerProxyWithPeers([peer], [peer], permissiveRouter())
+  const retrieve = () => invokeProxy(proxy, makeProxyRequest({ method: 'POST', path: '/api/v1/video/retrieve', body: { model: 'video-model', queue_id: 'job' } }))
+  const known = await retrieve()
+  assert.equal(known.statusCode, 404)
+  assert.equal(known.headers['x-antseed-video-job-retired'], '1', 'with the routes read, an unknown job can never be charged')
+  // Its route may be in the file that could not be read, and come back on the next start.
+  ;(proxy as any)._resourceRoutesUnread = true
+  const unread = await retrieve()
+  assert.equal(unread.statusCode, 404)
+  assert.equal(JSON.parse(unread.body).error.code, 'video_route_not_found')
+  assert.equal(unread.headers['x-antseed-video-job-retired'], undefined)
+})
+
 test('a video job that reports failed is retired: later retrieves never reach the seller, so it cannot be charged', async () => {
   for (const upstream of [{ status: 'FAILED' }, { status: 'COMPLETED' }]) {
     const peer = makePeer('a', ['venice'])

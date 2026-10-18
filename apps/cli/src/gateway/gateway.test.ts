@@ -617,6 +617,7 @@ async function videoGateway(priceUsdc: number, dailyCap: number, createDelayMs =
     store, key, buyer, gateway,
     create: (job: string) => request(gateway.port, '/api/v1/video/queue', { method: 'POST', key: secret, body: JSON.stringify({ model: 'seedance', prompt: 'An ant', duration: '8s', job }) }),
     poll: (job: string, as: string = secret) => request(gateway.port, '/api/v1/video/retrieve', { method: 'POST', key: as, body: JSON.stringify({ model: 'seedance', queue_id: job }) }),
+    secret,
     otherSecret: other.secret,
     close: async () => {
       await gateway.stop()
@@ -653,7 +654,9 @@ test('video creates in flight at once cannot both be told the same room', async 
   try {
     // The first create holds the whole $1 it may spend until its price is known, so the second is refused at once.
     const [first, second] = await Promise.all([video.create('job-1'), new Promise((resolve) => setTimeout(resolve, 20)).then(() => video.create('job-2'))])
-    assert.deepEqual([first.status, second.status], [200, 402])
+    // Retryable: it fits once the first is priced.
+    assert.deepEqual([first.status, second.status], [200, 429])
+    assert.equal(JSON.parse(second.body).error.code, 'video_pricing_in_progress')
     assert.deepEqual(video.buyer.caps, ['1000000'])
     // Once priced, only the job's $0.60 stays committed.
     await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 600_000)
@@ -1292,6 +1295,64 @@ test('a free video holds nothing for its job', async () => {
     assert.equal(video.gateway.accounting.videoJobOwner(videoJobKey('venice-video', 'job-free')), video.key.id)
   } finally {
     await video.close()
+  }
+})
+
+test('a request refused only because a video create is being priced is told to retry, not that the cap is reached', async () => {
+  const video = await videoGateway(600_000, 1_000_000, 200)
+  try {
+    const created = video.create('job-1')
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 1_000_000)
+    const chat = await request(video.gateway.port, '/v1/chat/completions', { method: 'POST', key: video.secret, body: '{"model":"m"}' })
+    assert.equal(chat.status, 429)
+    assert.equal(JSON.parse(chat.body).error.code, 'video_pricing_in_progress')
+    assert.equal(chat.headers['retry-after'], '5')
+    assert.equal((await created).status, 200)
+    await waitFor(() => video.gateway.accounting.heldUsdc(video.key.id) === 600_000)
+    assert.notEqual((await request(video.gateway.port, '/v1/chat/completions', { method: 'POST', key: video.secret, body: '{"model":"m"}' })).status, 429)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a free video can always be polled by its key, even with the caps filled', async () => {
+  const video = await videoGateway(0, 1_000_000)
+  try {
+    assert.equal((await video.create('job-free')).status, 200)
+    await waitFor(() => video.gateway.accounting.videoJobOwner(videoJobKey('venice-video', 'job-free')) === video.key.id)
+    video.store.startRequest({ tag: 'other', keyId: video.key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/v1/chat/completions', model: null, startedAt: 0 })
+    video.gateway.accounting.ingest('boot', [{ seq: 1, tag: 'other', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '1000000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    assert.equal((await request(video.gateway.port, '/v1/chat/completions', { method: 'POST', key: video.secret, body: '{"model":"m"}' })).status, 402)
+    assert.equal((await video.poll('job-free')).status, 200)
+  } finally {
+    await video.close()
+  }
+})
+
+test('a recovered video job does not hold again what its delivery was already charged', () => {
+  const { store, cleanup } = tempDataDir()
+  try {
+    const { key } = store.createKey({ label: 'Video', buyerIdentity: DEFAULT_BUYER_IDENTITY, limits: { daily: 1_000_000, monthly: null, total: null }, expiresAt: null })
+    const before = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const create = before.admit(key, undefined, { videoCreate: true })
+    assert.ok(create.ok)
+    store.startRequest({ tag: create.tag, keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/api/v1/video/queue', model: null, startedAt: 0, video: { action: 'create', jobId: null } })
+    store.recordRequestOutcome(create.tag, { videoJobId: 'job-1' })
+    // The job's own commitment is never stored; it is delivered and charged $0.40, then the gateway stops.
+    store.startRequest({ tag: 'delivery', keyId: key.id, buyerIdentity: DEFAULT_BUYER_IDENTITY, method: 'POST', path: '/api/v1/video/retrieve', model: null, startedAt: 1, video: { action: 'poll', jobId: 'job-1' } })
+    store.recordRequestOutcome('delivery', { videoDelivered: true })
+    store.finishRequest('delivery', { status: 200, buyerRequestId: null })
+    before.ingest('boot', [{ seq: 1, tag: 'delivery', requestId: 'r', buyerIdentity: DEFAULT_BUYER_IDENTITY, sellerPeerId: 's', amountUsdc: '400000', inputTokens: '0', cachedInputTokens: '0', outputTokens: '0', outputImages: '0', at: Date.now() }])
+    before.dispose()
+    const after = new GatewayAccounting(store, { holdUsdc: 100_000 })
+    const job = videoJobKey('venice-video', 'job-1')
+    assert.equal(after.videoJobOwner(job), key.id)
+    assert.equal(after.videoJobHeldUsdc(job), 600_000, 'the room it was told about, less its charge')
+    const record = store.listVideoCommitments(Date.now()).find((row) => row.job === job)
+    assert.notEqual(record?.deliveredAt, null, 'and, delivered, it stops holding the rest an hour later')
+    after.dispose()
+  } finally {
+    cleanup()
   }
 })
 

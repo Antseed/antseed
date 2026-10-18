@@ -68,7 +68,8 @@ type BudgetCheck = {
   level: BudgetLevel
   limits: SpendLimits | BudgetLimits
   scope: BudgetScope
-  held: () => number
+  /** With `withoutVideoCreates`, leaving out the room video creates hold while they are priced. */
+  held: (withoutVideoCreates?: boolean) => number
 }
 
 type Hold = {
@@ -80,6 +81,8 @@ type Hold = {
   timer: ReturnType<typeof setTimeout> | null
   /** A video create whose stored reservation has not been resolved yet (see `admit`). */
   reserved?: boolean
+  /** A video create still waiting for its price: it holds the whole room it was told about. */
+  videoCreate?: boolean
 }
 
 /** The price of an accepted video job, owed once its file is delivered. Stored, so it survives a restart. */
@@ -105,8 +108,13 @@ export type Admission =
    */
   | { ok: true; tag: string; remainingUsdc: number | null }
   | { ok: false; breach: LimitBreach }
-  /** A capped video create whose reservation could not be stored: it is not started. */
-  | { ok: false; breach: null }
+  /**
+   * `video_storage`: a capped video create whose reservation could not be
+   * stored; it is not started. `video_pricing`: the request only fails
+   * because video creates still being priced hold the room they may spend;
+   * it fits once they are priced (seconds), so it may be retried.
+   */
+  | { ok: false; breach: null; reason: 'video_storage' | 'video_pricing' }
 
 /**
  * Hold → settle accounting per key. Admission reserves a hold so concurrent
@@ -140,22 +148,22 @@ export class GatewayAccounting {
   }
 
   /** In-flight holds plus accepted videos not yet charged, optionally leaving one video job out. */
-  heldUsdc(keyId: string, excludeVideoJob?: string): number {
-    return this._held((hold) => hold.keyId === keyId, excludeVideoJob)
+  heldUsdc(keyId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return this._held((hold) => hold.keyId === keyId, excludeVideoJob, withoutVideoCreates)
   }
 
   /** Holds in flight for every key a member owns. */
-  heldForMember(memberId: string, excludeVideoJob?: string): number {
-    return this._held((hold) => hold.memberId === memberId, excludeVideoJob)
+  heldForMember(memberId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return this._held((hold) => hold.memberId === memberId, excludeVideoJob, withoutVideoCreates)
   }
 
-  heldForWorkspace(workspaceId: string, excludeVideoJob?: string): number {
-    return this._held((hold) => hold.workspaceId === workspaceId, excludeVideoJob)
+  heldForWorkspace(workspaceId: string, excludeVideoJob?: string, withoutVideoCreates = false): number {
+    return this._held((hold) => hold.workspaceId === workspaceId, excludeVideoJob, withoutVideoCreates)
   }
 
-  private _held(match: (hold: Omit<Hold, 'finished' | 'timer'>) => boolean, excludeVideoJob?: string): number {
+  private _held(match: (hold: Omit<Hold, 'finished' | 'timer'>) => boolean, excludeVideoJob?: string, withoutVideoCreates = false): number {
     let held = 0
-    for (const hold of this._holds.values()) if (match(hold)) held += hold.amountUsdc
+    for (const hold of this._holds.values()) if (match(hold) && !(withoutVideoCreates && hold.videoCreate)) held += hold.amountUsdc
     const now = this._now()
     // A revoked key cannot retrieve its jobs any more (only the creating key may), so they are never charged.
     const active = new Map<string, boolean>()
@@ -226,6 +234,7 @@ export class GatewayAccounting {
     this._videoCommitments.set(job, commitment)
     this._storeVideo(job, { job, ...commitment }, hold.reserved ? videoReservationKey(tag) : undefined)
     hold.reserved = false
+    hold.videoCreate = false
   }
 
   /** A video create ended without an accepted job: its reservation goes. */
@@ -233,6 +242,7 @@ export class GatewayAccounting {
     const hold = this._holds.get(tag)
     if (!hold?.reserved) return
     hold.reserved = false
+    hold.videoCreate = false
     this._storeVideo(videoReservationKey(tag), null)
   }
 
@@ -330,7 +340,15 @@ export class GatewayAccounting {
           this._store.deleteVideoCommitment(job)
           continue
         }
-        const recovered = { ...commitment, amountUsdc: Math.max(0, commitment.amountUsdc - this._store.spendForRequest(tag)) }
+        // Everything already charged for the job (its create, polls and delivery) is spend, not held again; a
+        // delivered job gets the same hour for its charge as any other.
+        const jobId = created.slice(created.indexOf('\n') + 1)
+        const delivery = this._store.videoJobDeliveredAt(commitment.keyId, jobId)
+        const recovered = {
+          ...commitment,
+          amountUsdc: Math.max(0, commitment.amountUsdc - this._store.videoJobSpend(commitment.keyId, jobId)),
+          deliveredAt: delivery,
+        }
         this._store.saveVideoCommitment({ job: created, ...recovered }, job)
         stored.add(created)
         this._videoCommitments.set(created, recovered)
@@ -361,10 +379,10 @@ export class GatewayAccounting {
   /** The key (the lower of its admin and owner caps), the member who owns it and its workspace. */
   private _budgetChecks(key: ApiKeyRecord, { member, workspace }: KeyContext, excludeVideoJob?: string): BudgetCheck[] {
     const checks: BudgetCheck[] = [
-      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: () => this.heldUsdc(key.id, excludeVideoJob) },
+      { level: 'key', limits: effectiveKeyLimits(key), scope: { keyId: key.id }, held: (without) => this.heldUsdc(key.id, excludeVideoJob, without) },
     ]
-    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: () => this.heldForMember(member.id, excludeVideoJob) })
-    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: () => this.heldForWorkspace(workspace.id, excludeVideoJob) })
+    if (member) checks.push({ level: 'member', limits: member.limits, scope: { memberId: member.id }, held: (without) => this.heldForMember(member.id, excludeVideoJob, without) })
+    if (workspace) checks.push({ level: 'workspace', limits: workspace.limits, scope: { workspaceId: workspace.id }, held: (without) => this.heldForWorkspace(workspace.id, excludeVideoJob, without) })
     return checks
   }
 
@@ -387,10 +405,11 @@ export class GatewayAccounting {
    */
   admit(key: ApiKeyRecord, context: KeyContext = this._context(key), { videoCreate = false, videoJob }: AdmitOptions = {}): Admission {
     const now = this._now()
-    // A job that still holds its price already covers its delivery's charge: its own polls and download are
+    // A job that still holds its price already covers its delivery's charge, and one that holds nothing (free,
+    // or already charged: the buyer charges a job once) has none to come: its own polls and download are
     // admitted even when other spend has filled the caps since, so the job can always finish (or be retired).
     const own = videoJob ? this._videoCommitments.get(videoJob) : undefined
-    if (own && own.keyId === key.id && own.amountUsdc > 0 && own.expiresAt > now) {
+    if (own && own.keyId === key.id && own.expiresAt > now) {
       const tag = newRequestTag()
       this._holds.set(tag, { keyId: key.id, memberId: key.ownerMemberId, workspaceId: key.workspaceId, amountUsdc: 0, finished: false, timer: null })
       return { ok: true, tag, remainingUsdc: null }
@@ -402,7 +421,11 @@ export class GatewayAccounting {
       const spent = this._store.spendByPeriod(scope, now, periods)
       const heldUsdc = held()
       const breach = findLimitBreach(limits, spent, heldUsdc, now)
-      if (breach) return { ok: false, breach: { ...breach, level } }
+      if (breach) {
+        // Room a create holds while it is priced comes back in seconds: say so, rather than that the cap is reached.
+        if (findLimitBreach(limits, spent, held(true), now) === null) return { ok: false, breach: null, reason: 'video_pricing' }
+        return { ok: false, breach: { ...breach, level } }
+      }
       for (const period of periods) {
         const room = (limits[period] ?? 0) - (spent[period] ?? 0) - heldUsdc
         remainingUsdc = remainingUsdc === null ? room : Math.min(remainingUsdc, room)
@@ -431,9 +454,10 @@ export class GatewayAccounting {
         })
       } catch (error) {
         this._options.onLog?.(`gateway could not store a video reservation: ${error instanceof Error ? error.message : String(error)}`)
-        return { ok: false, breach: null }
+        return { ok: false, breach: null, reason: 'video_storage' }
       }
       hold.reserved = true
+      hold.videoCreate = true
     }
     this._holds.set(tag, hold)
     return { ok: true, tag, remainingUsdc }
